@@ -1,18 +1,41 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { alive, captured, CliError, detached, killTree, portOpen, reachable, sleep } from "./process.ts";
+import { alive, captured, CliError, detached, killTree, portOpen, processStartTime, reachable, requireOwned, sleep } from "./process.ts";
 import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
 
 const urls = (api: number, web: number) => ({ api: `http://localhost:${api}`, web: `http://localhost:${web}` });
+async function devPost(ctx: Context, path: string, body: unknown): Promise<Result> {
+	if (process.env.ACQUIT_DEV !== "1") throw new CliError("DEV_DISABLED", "Development controls are disabled.", "Set ACQUIT_DEV=1 for the API start and this ctl command.");
+	const ports = await app(ctx);
+	const session = await login({ "test-user": "maya-client" }, ctx) as { token: string };
+	const response = await fetch(`http://127.0.0.1:${ports.api}/api/dev/${path}`, { method: "POST", headers: {
+		"Content-Type": "application/json", Authorization: `Bearer ${session.token}`,
+	}, body: JSON.stringify(body), signal: AbortSignal.timeout(120_000) });
+	if (response.status === 403) throw new CliError("DEV_DISABLED", "The API refused development controls.", "Restart the API with ACQUIT_DEV=1.");
+	if (!response.ok) throw new CliError("PROCESS_FAILED", `Development command returned HTTP ${response.status}.`, "Run ctl status and inspect the local API log.");
+	return await response.json() as Result;
+}
+export async function clockAdvance(parsed: Parsed, ctx: Context): Promise<Result> {
+	const match = String(parsed.duration).match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/);
+	const units = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+	const advanceMs = match ? Number(match[1]) * units[match[2] as keyof typeof units] : NaN;
+	if (!Number.isSafeInteger(advanceMs) || advanceMs <= 0 || advanceMs > 365 * 86400000) throw new CliError("INVALID_ARGUMENT", "Use a positive duration of at most 365 days.", "Run npm run -s ctl -- clock advance 4h.", 2);
+	return devPost(ctx, "clock", { advanceMs });
+}
+export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
+	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);
+	return devPost(ctx, "fund-mode", { mode: parsed.mode });
+}
 async function probes(api: number, web: number) {
 	const [apiPort, webPort, apiReady, webReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/users`), reachable(`http://127.0.0.1:${web}/`)]);
 	return { apiPort, webPort, apiReady, webReady };
 }
 async function stopOwned(state: RunState): Promise<void> {
-	await Promise.all([killTree(state.api.pid), killTree(state.web.pid)]);
+	for (const service of [state.api, state.web]) requireOwned(service);
+	for (const service of [state.api, state.web]) { requireOwned(service); await killTree(service.pid); }
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
 		if (!(await portOpen(state.api.port)) && !(await portOpen(state.web.port))) return;
@@ -32,6 +55,7 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
 		if (previous) {
+			for (const service of [previous.api, previous.web]) requireOwned(service);
 			const probe = await probes(previous.api.port, previous.web.port);
 			if (alive(previous.api.pid) && alive(previous.web.pid) && probe.apiReady && probe.webReady) return runData(previous, true);
 			for (const service of [previous.api, previous.web]) if (!alive(service.pid) && await portOpen(service.port)) {
@@ -45,13 +69,19 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 		}
 		const vite = resolve(ctx.root, "apps/web/node_modules/vite/bin/vite.js");
 		if (!existsSync(vite)) throw new CliError("PROCESS_FAILED", "The web app's Vite dependency is missing.", "Run npm install from the repository root, then npm run -s ctl -- start.");
-		const state: RunState = { api: { pid: 0, port: ctx.apiPort }, web: { pid: 0, port: ctx.webPort },
+		await mkdir(dirname(ctx.databasePath), { recursive: true });
+		const state: RunState = { api: { pid: 0, port: ctx.apiPort, startTime: null }, web: { pid: 0, port: ctx.webPort, startTime: null },
 			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log") }, startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
 		try {
-			state.api.pid = await detached(["apps/api/src/server.ts"], ctx.root, { ...process.env, PORT: String(ctx.apiPort) }, state.logs.api);
+			state.api.pid = await detached(["apps/api/src/server.ts"], ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
+				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api);
+			state.api.startTime = processStartTime(state.api.pid);
+			if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
 			await atomicJson(ctx.stateFile, state);
 			state.web.pid = await detached([vite, "--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], resolve(ctx.root, "apps/web"),
 				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web);
+			state.web.startTime = processStartTime(state.web.pid);
+			if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
 			await atomicJson(ctx.stateFile, state);
 			const deadline = Date.now() + timeout * 1000;
 			while (Date.now() < deadline) {
@@ -75,6 +105,7 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 		const state = await readState(ctx);
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
 		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
+		for (const service of wouldKill) requireOwned(service);
 		if (parsed["dry-run"]) return { stopped: false, wouldKill, run: state };
 		await stopOwned(state);
 		await clearState(ctx);
@@ -147,13 +178,13 @@ export async function screenshot(parsed: Parsed, ctx: Context): Promise<Result> 
 		if (!out.toLowerCase().endsWith(".png")) throw new CliError("INVALID_ARGUMENT", "--out must name a .png file.", "Run npm run -s ctl -- screenshot --out data/evidence/jobs.png.", 2);
 		const env = { ...process.env };
 		for (const name of Object.keys(env)) if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT" || name.startsWith("PAYPAL_") || name.endsWith("_MERCHANT_ID")) delete env[name];
-		env.AGENT_BROWSER_SESSION = "acquit-ctl";
+		env.AGENT_BROWSER_SESSION = ctx.browserSession;
 		env.AGENT_BROWSER_HEADED = "false";
 		const browserConfig = resolve(ctx.dir, "browser.json");
 		await atomicJson(browserConfig, { headed: false });
 		const browser = async (args: string[]) => {
 			let result;
-			try { result = await captured("agent-browser", ["--config", browserConfig, "--namespace", "acquit-ctl", "--session", "acquit-ctl", "--json", ...args], ctx.root, env); }
+			try { result = await captured("agent-browser", ["--config", browserConfig, "--namespace", ctx.browserSession, "--session", ctx.browserSession, "--json", ...args], ctx.root, env); }
 			catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new CliError("AGENT_BROWSER_MISSING", "agent-browser was not found on PATH.", "Install or update Factory Droid, then ensure agent-browser --help works in this shell.");
 				throw error;

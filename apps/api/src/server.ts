@@ -4,9 +4,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import { config } from "./config.ts";
+import { config, devEnabled, webOrigin } from "./config.ts";
 
-const settings = config();
+let clockOffset = 0;
+let fundingMode: "checkout" | "card" = "checkout";
+const clock = { now: () => instant(new Date(Date.now() + clockOffset).toISOString()) };
+const baseSettings = config();
+const settings = { ...baseSettings, clock, paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
 const db = new DatabaseSync(settings.databaseUrl);
 const port = Number(process.env.PORT ?? 4310);
@@ -80,10 +84,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const method = req.method ?? "GET";
 	// Session cookies stay same-origin. The sandbox/dev identity picker is not production authentication.
 	const origin = req.headers.origin;
-	if (origin && ![`http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) {
+	const webAlias = new URL(webOrigin);
+	if (webAlias.hostname === "localhost") webAlias.hostname = "127.0.0.1";
+	if (origin && ![webOrigin, webAlias.origin, `http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) {
 		json(res, 403, { error: "ORIGIN_DENIED" }); return;
 	}
 	if (url.pathname === "/api/users" && method === "GET") { json(res, 200, { users: SEEDED_USERS }); return; }
+	if (url.pathname.startsWith("/api/dev/") && !devEnabled) {
+		json(res, 403, { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }); return;
+	}
 	if (url.pathname === "/api/session") {
 		if (method === "GET") { json(res, 200, { user: session(req)?.user ?? null }); return; }
 		if (method === "POST") {
@@ -131,6 +140,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		} catch (error) { json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return; }
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
+	}
+	if (url.pathname === "/api/dev/clock" && method === "POST") {
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "advanceMs")) throw new BadBody("Unsupported clock field");
+		const advanceMs = integer(input.advanceMs, "advanceMs", 365 * 86400000);
+		clockOffset += advanceMs;
+		await acquit.tick();
+		json(res, 200, { now: clock.now() }); return;
+	}
+	if (url.pathname === "/api/dev/fund-mode" && method === "POST") {
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "mode") || !["card", "checkout"].includes(String(input.mode))) throw new BadBody("Expected card or checkout");
+		fundingMode = input.mode as "card" | "checkout";
+		json(res, 200, { mode: fundingMode }); return;
 	}
 	if (url.pathname === "/api/dev/tick" && method === "POST") { await acquit.tick(); json(res, 200, { ok: true }); return; }
 	if (url.pathname === "/api/jobs" && method === "GET") {

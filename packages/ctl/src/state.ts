@@ -5,11 +5,23 @@ import { fileURLToPath } from "node:url";
 import { alive, CliError } from "./process.ts";
 
 export interface RunState {
-	api: { pid: number; port: number };
-	web: { pid: number; port: number };
+	api: { pid: number; port: number; startTime: string | null };
+	web: { pid: number; port: number; startTime: string | null };
 	logs: { api: string; web: string };
 	startedAt: string;
 	databasePath: string;
+}
+export interface LaneSlot {
+	apiPort: number;
+	webPort: number;
+	databasePath: string;
+	runDir: string;
+	browserSession: string;
+}
+export function laneSlot(n?: number): LaneSlot {
+	if (n === undefined) return { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" };
+	if (!Number.isSafeInteger(n) || n < 0 || 5173 + 10 * n > 65535) throw new CliError("INVALID_ARGUMENT", "ACQUIT_LANE must be an integer between 0 and 6036.", "Set ACQUIT_LANE to a valid lane number.", 2);
+	return { apiPort: 4310 + 10 * n, webPort: 5173 + 10 * n, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` };
 }
 export interface Context {
 	root: string;
@@ -18,6 +30,7 @@ export interface Context {
 	databasePath: string;
 	apiPort: number;
 	webPort: number;
+	browserSession: string;
 }
 export function context(): Context {
 	const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -28,8 +41,11 @@ export function context(): Context {
 		if (!Number.isSafeInteger(value) || value < 1 || value > 65535) throw new CliError("INVALID_ARGUMENT", `${name} must be a port between 1 and 65535.`, `Set ${name} to an unused port, then retry.`, 2);
 		return value;
 	};
-	const dir = resolve(root, "data/ctl");
-	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, process.env.DATABASE_PATH ?? "./data/acquit.db"), apiPort: port("PORT", 4310), webPort: port("WEB_PORT", 5173) };
+	const lane = process.env.ACQUIT_LANE;
+	const slot = laneSlot(lane === undefined ? undefined : /^\d+$/.test(lane) ? Number(lane) : NaN);
+	const dir = resolve(root, slot.runDir);
+	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, lane === undefined ? process.env.DATABASE_PATH ?? slot.databasePath : slot.databasePath),
+		apiPort: lane === undefined ? port("PORT", slot.apiPort) : slot.apiPort, webPort: lane === undefined ? port("WEB_PORT", slot.webPort) : slot.webPort, browserSession: slot.browserSession };
 }
 export async function readState(ctx: Context): Promise<RunState | null> {
 	let raw: string;
@@ -37,7 +53,8 @@ export async function readState(ctx: Context): Promise<RunState | null> {
 	try {
 		const state = JSON.parse(raw) as RunState;
 		for (const service of [state.api, state.web]) {
-			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535) throw new Error();
+			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535 ||
+				(service.pid > 0 ? typeof service.startTime !== "string" || !service.startTime : service.startTime !== null)) throw new Error();
 		}
 		if (typeof state.logs?.api !== "string" || typeof state.logs.web !== "string" || typeof state.databasePath !== "string" || typeof state.startedAt !== "string") throw new Error();
 		return state;

@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { alive, captured, killTree } from "../src/process.ts";
+import { alive, captured, killTree, processStartTime } from "../src/process.ts";
+import { laneSlot } from "../src/state.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
 async function unusedPort(): Promise<number> {
@@ -26,7 +27,7 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 		const cli = (args: string[]) => {
 			const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], {
 				cwd: root, encoding: "utf8", timeout: 10_000,
-				env: { ...process.env, PORT: String(api), WEB_PORT: String(web), DATABASE_PATH: resolve(root, "test.db") },
+				env: { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), DATABASE_PATH: resolve(root, "test.db") },
 			});
 			assert.equal(result.error, undefined);
 			return { code: result.status, stdout: result.stdout };
@@ -38,13 +39,45 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 	await fixture(async cli => {
 		const result = cli(["--help"]);
 		assert.equal(result.code, 0);
-		assert.deepEqual(result.stdout.match(/^(start|stop|status|seed-db|login|screenshot)(?= |\n)/gm), ["start", "stop", "status", "seed-db", "login", "screenshot"]);
+		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "login", "screenshot"]);
 		assert.equal(result.stdout.includes("stop [destructive]"), true);
 		assert.equal(result.stdout.includes("Exit codes: 0 success, 1 runtime failure, 2 usage error."), true);
 		assert.equal(result.stdout.includes('Failure: {"ok":false'), true);
 		const command = cli(["screenshot", "--help"]);
 		assert.equal(command.code, 0);
 		assert.equal(command.stdout.includes("--path <value>  Same-origin route to capture. Default: /."), true);
+	});
+});
+test("lane slots isolate all resources for lanes 0, 1, and 10", () => {
+	assert.deepEqual(laneSlot(), { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" });
+	for (const [n, apiPort, webPort] of [[0, 4310, 5173], [1, 4320, 5183], [10, 4410, 5273]]) {
+		assert.deepEqual(laneSlot(n), { apiPort, webPort, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` });
+	}
+	for (const n of [-1, 1.5, NaN, 6037]) assert.throws(() => laneSlot(n));
+});
+test("stop refuses an unrelated live PID with a different start time", async () => {
+	await fixture(async (cli, root) => {
+		const file = resolve(root, "data/ctl/run.json");
+		await mkdir(resolve(root, "data/ctl"), { recursive: true });
+		await writeFile(file, JSON.stringify({ api: { pid: process.pid, port: 4310, startTime: `not-${processStartTime(process.pid)}` },
+			web: { pid: 0, port: 5173, startTime: null }, logs: { api: "api.log", web: "web.log" }, databasePath: "test.db", startedAt: new Date().toISOString() }));
+		const before = await readFile(file, "utf8");
+		const result = cli(["stop"]);
+		assert.equal(result.code, 1);
+		assert.equal(JSON.parse(result.stdout).error.code, "PID_MISMATCH");
+		assert.equal(alive(process.pid), true);
+		assert.equal(await readFile(file, "utf8"), before);
+	});
+});
+test("development controls refuse use without ACQUIT_DEV=1 before app access", async () => {
+	await fixture(async cli => {
+		for (const args of [["clock", "advance", "4h"], ["fund-mode", "card"]]) {
+			const result = cli(args);
+			assert.equal(result.code, 1);
+			assert.equal(JSON.parse(result.stdout).error.code, "DEV_DISABLED");
+			assert.match(JSON.parse(result.stdout).error.fix, /ACQUIT_DEV=1/);
+		}
+		assert.equal(JSON.parse(cli(["clock", "advance", "-1h"]).stdout).error.code, "INVALID_ARGUMENT");
 	});
 });
 test("unknown command returns one actionable JSON usage error", async () => {

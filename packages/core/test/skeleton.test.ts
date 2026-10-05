@@ -16,6 +16,10 @@ import { frozenDefinition } from "../src/seed-data.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
+import { closeAcquit, createAcquit } from "../src/acquit.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -87,6 +91,40 @@ test("commercialSplit is integer cents and quotes the measured platform fee", ()
 	assert.equal(quote(split, model).platformFeeInstruction, 4485);
 	assert.equal(formatUsd(usd("420.00")), "420.00");
 	assert.throws(() => usd("1.005"));
+});
+test("createAcquit uses its injected Clock to expire checkout after three hours", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-clock-test-"));
+	const databaseUrl = join(root, "clock.db");
+	const f = fixture();
+	let currentNow = now;
+	const service = createAcquit({ databaseUrl, clock: { now: () => currentNow },
+		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243",
+			clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model },
+		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+	const store = new SqliteStore(databaseUrl);
+	try {
+		const opened = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+		const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: opened.id,
+			price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		const row = await f.store.readJob(opened.id);
+		assert(row);
+		const plan = applyJobCommand(row, { type: "AcceptBid", jobId: row.id, bidId: bid.result.bid },
+			{ actor: maya, now, loaded: { kind: "ACCEPT_BID", quote: quote(commercialSplit(usd("400.00")), model) } });
+		if (typeof plan === "string") throw new Error(plan);
+		const account = await f.store.readCredits("devon-ops" as OperatorId);
+		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+		await store.commit({ job: { expectedVersion: null, row: plan.next, wakeAt: instant("2026-10-06T15:00:00Z") }, operator: null, credits: [], outbox: [], acknowledge: null, request: null, delivery: null });
+		currentNow = instant("2026-10-06T15:00:00Z");
+		await service.tick();
+		const result = await service.query(maya, { type: "Job", jobId: row.id });
+		assert.equal(result.kind, "JOB");
+		if (result.kind !== "JOB") throw new Error("Missing job");
+		assert.equal(result.job.status, "OPEN");
+		assert.equal(result.job.phase, "BIDDING");
+		assert.equal(result.job.bids.operators[0].status, "PENDING");
+		assert.deepEqual(result.job.ledger, []);
+	} finally { store.close(); closeAcquit(service); f.store.close(); await rm(root, { recursive: true, force: true }); }
 });
 test("credits grant 30, spend 10 once, then refuse insufficient funds", () => {
 	const initial = grant();

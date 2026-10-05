@@ -109,6 +109,8 @@ export type WebhookDelivery = {
 };
 
 export type PayPalConfig = {
+	readonly webOrigin: string;
+	readonly fundingMode?: () => "checkout" | "card";
 	readonly apiBase: "https://api-m.sandbox.paypal.com";
 	readonly clientId: string;
 	readonly secret: string;
@@ -204,12 +206,20 @@ export function createPayPal(config: PayPalConfig): PayPal {
 						payment_instruction: { disbursement_mode: "DELAYED", platform_fees: [
 							{ amount: { currency_code: "USD", value: formatUsd(call.quote.platformFeeInstruction) } },
 						] },
-					}], payment_source: { paypal: { experience_context: {
+					}], payment_source: config.fundingMode?.() === "card" ? { card: {
+						number: "4111111111111111", expiry: "2028-12", security_code: "123", name: "Acquit Sandbox Probe",
+						billing_address: { address_line_1: "123 Test Street", admin_area_2: "San Jose", admin_area_1: "CA", postal_code: "95131", country_code: "US" },
+					} } : { paypal: { experience_context: {
 						shipping_preference: "NO_SHIPPING", user_action: "PAY_NOW",
-						return_url: `http://localhost:5173/paypal/return?jobId=${encodeURIComponent(call.jobId)}`,
-						cancel_url: `http://localhost:5173/paypal/cancel?jobId=${encodeURIComponent(call.jobId)}`,
+						return_url: `${config.webOrigin}/paypal/return?jobId=${encodeURIComponent(call.jobId)}`,
+						cancel_url: `${config.webOrigin}/paypal/cancel?jobId=${encodeURIComponent(call.jobId)}`,
 					} } },
 				}, requestId));
+				if (json.status === "COMPLETED") {
+					parseCapture(json);
+					return { kind: "CONFIRMED", observation: { kind: "ORDER_CREATED", orderId: text(json.id) as OrderId,
+						approveUrl: `${config.webOrigin}/paypal/return?jobId=${encodeURIComponent(call.jobId)}` } };
+				}
 				const link = array(json.links).map(object).find(link => link.rel === "approve" || link.rel === "payer-action");
 				const approveUrl = text(link?.href);
 				const url = new URL(approveUrl);

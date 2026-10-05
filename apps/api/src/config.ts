@@ -10,6 +10,8 @@ export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
 if (existsSync(envPath)) process.loadEnvFile(envPath);
 export const databasePath = resolve(rootPath, process.env.DATABASE_PATH ?? "./data/acquit.db");
+export const webOrigin = new URL(process.env.WEB_ORIGIN ?? `http://localhost:${process.env.WEB_PORT ?? 5173}`).origin;
+export const devEnabled = process.env.ACQUIT_DEV === "1";
 export function required(name: string): string {
 	const value = process.env[name]?.trim();
 	if (!value) throw new Error(`Missing configuration: ${name}`);
@@ -19,6 +21,7 @@ export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
 	return { databaseUrl: databasePath, paypal: {
+		webOrigin,
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,
 		feeModel: { version: "sandbox-349bps-plus-49-v1", rateBps: 349 as Bps, fixed: usd("0.49") },

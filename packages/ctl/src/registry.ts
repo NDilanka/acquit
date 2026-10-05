@@ -1,4 +1,4 @@
-import { login, screenshot, seedDb, start, status, stop } from "./commands.ts";
+import { clockAdvance, fundMode, login, screenshot, seedDb, start, status, stop } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -21,6 +21,12 @@ export interface Command {
 	run: (parsed: Parsed, ctx: Context) => Promise<Result>;
 }
 export const registry: Command[] = [
+	{ name: "clock", summary: "Advance the development clock and run due work. Requires ACQUIT_DEV=1.", usage: "clock advance <duration>",
+		flags: [{ name: "duration", type: "string", summary: "Positive duration with ms, s, m, h, or d.", required: true }],
+		examples: ["clock advance 4h"], destructive: false, run: clockAdvance },
+	{ name: "fund-mode", summary: "Choose sandbox checkout or test-card funding. Requires ACQUIT_DEV=1.", usage: "fund-mode <card|checkout>",
+		flags: [{ name: "mode", type: "string", summary: "Funding source, card or checkout.", required: true }],
+		examples: ["fund-mode card"], destructive: false, run: fundMode },
 	{ name: "start", summary: "Launch the API and web app, or reuse a healthy owned run.", usage: "start [--timeout <s>]",
 		flags: [{ name: "timeout", type: "string", summary: "Readiness timeout in seconds.", default: "30" }],
 		examples: ["start", "start --timeout 60"], destructive: false, run: start },

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rmdir, unlink } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,7 +10,7 @@ import { join } from "node:path";
 export type ErrorCode = "UNKNOWN_COMMAND" | "UNKNOWN_FLAG" | "INVALID_ARGUMENT" | "MISSING_ARGUMENT"
 	| "PORT_IN_USE" | "START_TIMEOUT" | "STOP_TIMEOUT" | "APP_NOT_RUNNING" | "UNKNOWN_TEST_USER"
 	| "AGENT_BROWSER_MISSING" | "BROWSER_FAILED" | "SEED_FAILED" | "CONFIRMATION_REQUIRED"
-	| "INVALID_STATE" | "CLI_BUSY" | "DATABASE_UNREADABLE" | "PROCESS_FAILED" | "IO_FAILED";
+	| "INVALID_STATE" | "CLI_BUSY" | "DATABASE_UNREADABLE" | "PROCESS_FAILED" | "IO_FAILED" | "PID_MISMATCH" | "DEV_DISABLED";
 export class CliError extends Error {
 	readonly code: ErrorCode;
 	readonly fix: string;
@@ -24,6 +26,21 @@ export const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(res
 export function alive(pid: number): boolean {
 	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 	try { process.kill(pid, 0); return true; } catch { return false; }
+}
+export function processStartTime(pid: number): string | null {
+	if (!alive(pid)) return null;
+	try {
+		if (process.platform === "win32") return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+			`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks.ToString()`], { encoding: "utf8", windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+		if (process.platform === "linux") return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.split(" ")[19];
+		return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: 3000 }).trim() || null;
+	} catch { return null; }
+}
+export function requireOwned(service: { pid: number; startTime: string | null }): void {
+	if (!alive(service.pid)) return;
+	if (!service.startTime || processStartTime(service.pid) !== service.startTime) {
+		throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: process start-time mismatch.`, "Inspect the lane run file. Do not stop an unrelated process.");
+	}
 }
 export function portOpen(port: number): Promise<boolean> {
 	return new Promise(resolve => {

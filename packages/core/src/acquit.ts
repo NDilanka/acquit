@@ -118,9 +118,13 @@ export interface Acquit {
 	/** Timer worker. Fires due job clocks and the weekly grant, then drains the outbox. */
 	tick(): Promise<void>;
 }
+export interface Clock {
+	now(): Instant;
+}
 
 export type AcquitConfig = {
 	readonly databaseUrl: string;
+	readonly clock?: Clock;
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
 	readonly github: { readonly appId: string; readonly privateKey: string };
@@ -132,10 +136,16 @@ export function createAcquit(config: AcquitConfig): Acquit {
 	const ports: Ports = { store, paypal: createPayPal(config.paypal), feeModel: config.paypal.feeModel,
 		verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented },
-		clock: { now: () => instant(new Date().toISOString()) } };
+		clock: config.clock ?? { now: () => instant(new Date().toISOString()) } };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
-		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
+		execute: async (actor, key, command) => {
+			const outcome = await executeCommand(ports, actor, key, command);
+			if (command.type !== "AcceptBid" || config.paypal.fundingMode?.() !== "card" || outcome.kind === "DENIED" || outcome.result.kind !== "JOB") return outcome;
+			await confirmFunding(ports, actor, command.jobId);
+			const result = await service.query(actor, { type: "Job", jobId: command.jobId });
+			return result.kind === "JOB" ? { ...outcome, result } : outcome;
+		},
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
 			switch (query.type) {
