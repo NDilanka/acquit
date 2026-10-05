@@ -124,15 +124,25 @@ export async function measure() {
 		for (const { n, run } of owned.reverse()) await cleanupLane(n, { api: run.api, web: run.web });
 	}
 }
-export function planWave(count, freeMB, memory, { maxLanes = count, reserveMB = memory.measuredReserveMB, browsers = false, maxBrowsers = 2 } = {}) {
+export function planWave(count, freeMB, memory, { maxLanes = count, reserveMB = memory.measuredReserveMB, browsers = false, maxBrowsers = 2, runningLanes = 0, runningBrowserLanes = 0 } = {}) {
 	assert(Number.isSafeInteger(maxLanes) && maxLanes >= 0, "ACQUIT_MAX_LANES must be a nonnegative integer.");
 	assert(Number.isSafeInteger(maxBrowsers) && maxBrowsers >= 0, "ACQUIT_MAX_BROWSERS must be a nonnegative integer.");
-	const cost = memory.perLaneMB + (browsers ? memory.browserMarginalMB : 0);
-	const memoryLimit = memoryCap(freeMB, cost, reserveMB);
-	const cap = Math.min(count, memoryLimit, maxLanes, browsers ? maxBrowsers : count);
-	const browserCap = Math.min(maxBrowsers, memoryCap(Math.max(0, freeMB - cap * memory.perLaneMB), memory.browserMarginalMB, reserveMB));
-	const reason = count > cap ? `Start ${cap} of ${count}. Free physical memory ${freeMB} MB; one app${browsers ? " and browser" : ""} needs ${cost + reserveMB} MB including reserve ${reserveMB} MB. Limits: ACQUIT_MAX_LANES=${maxLanes}${browsers ? `, ACQUIT_MAX_BROWSERS=${maxBrowsers}` : ""}. Run the refused lanes in another wave.` : null;
-	return { ...memory, cap, browserCap, memoryLimit, maxLanes, maxBrowsers, freeMB, reserveMB, refused: count - cap, reason, lanes: [] };
+	assert(Number.isSafeInteger(runningLanes) && runningLanes >= 0, "Running lanes must be a nonnegative integer.");
+	assert(Number.isSafeInteger(runningBrowserLanes) && runningBrowserLanes >= 0 && runningBrowserLanes <= runningLanes, "Running browser lanes must be within running lanes.");
+	// Free memory already excludes the working sets of lanes that are running, so
+	// those lanes are not priced again. What remains must cover the new lanes
+	// plus the reserve. The slot cap is the total, running plus new, so an append
+	// cannot slip past a budget the first wave already filled.
+	const addedCost = memory.perLaneMB + (browsers ? memory.browserMarginalMB : 0);
+	const affordable = memoryCap(freeMB, addedCost, reserveMB);
+	const room = Math.max(0, Math.min(maxLanes, browsers ? maxBrowsers : maxLanes) - runningLanes);
+	const cap = Math.min(count, affordable, room);
+	const browserCap = Math.max(0, Math.min(maxBrowsers - runningBrowserLanes, memoryCap(Math.max(0, freeMB - cap * memory.perLaneMB), memory.browserMarginalMB, reserveMB)));
+	const total = runningLanes + cap;
+	const reason = count > cap
+		? `Start ${cap} of ${count}. ${runningLanes} lanes already running; free physical memory ${freeMB} MB already excludes them. One added app${browsers ? " and browser" : ""} needs ${addedCost} MB plus reserve ${reserveMB} MB, which affords ${affordable}; the slot cap leaves room for ${room}. Limits: ACQUIT_MAX_LANES=${maxLanes}${browsers ? `, ACQUIT_MAX_BROWSERS=${maxBrowsers}` : ""}. Run the refused lanes in another wave.`
+		: null;
+	return { ...memory, cap, browserCap, memoryLimit: affordable, maxLanes, maxBrowsers, freeMB, reserveMB, runningLanes, runningBrowserLanes, total, refused: count - cap, reason, lanes: [] };
 }
 export async function startWave(requested, onPlan = () => {}, options = {}) {
 	const numbers = Array.isArray(requested) ? requested : Array.from({ length: requested }, (_, i) => i + 1);
@@ -144,8 +154,11 @@ export async function startWave(requested, onPlan = () => {}, options = {}) {
 	if (memory?.version !== 2) memory = null;
 	memory ??= await measure();
 	const report = planWave(numbers.length, freePhysicalMB(), memory, {
-		maxLanes: Number(process.env.ACQUIT_MAX_LANES ?? numbers.length), reserveMB: Number(process.env.ACQUIT_RESERVE_MB ?? memory.measuredReserveMB),
-		maxBrowsers: Number(process.env.ACQUIT_MAX_BROWSERS ?? 2), ...options });
+		maxLanes: Number(process.env.ACQUIT_MAX_LANES ?? (options.append ? previous.lanes.length + numbers.length : numbers.length)),
+		reserveMB: Number(process.env.ACQUIT_RESERVE_MB ?? memory.measuredReserveMB),
+		maxBrowsers: Number(process.env.ACQUIT_MAX_BROWSERS ?? 2),
+		runningLanes: options.append ? previous.lanes.length : 0,
+		runningBrowserLanes: options.append ? previous.lanes.filter(lane => lane.browser).length : 0, ...options });
 	report.requestedLanes = numbers;
 	report.startedLanes = numbers.slice(0, report.cap);
 	if (options.append) report.lanes = previous.lanes;
@@ -153,13 +166,16 @@ export async function startWave(requested, onPlan = () => {}, options = {}) {
 	console.log(JSON.stringify({ ...report, lanes: undefined }));
 	onPlan(report);
 	assert(report.cap > 0, report.reason);
+	const startedHere = [];
 	for (const n of report.startedLanes) {
 		try {
 			const before = await ctl(n, "status");
 			assert(!before.run && !before.ports.api.open && !before.ports.web.open, `Lane ${n} is occupied. Refuse to reuse or reset it.`);
 			const launch = await ctl(n, "start", "--timeout", "60");
 			const run = (await ctl(n, "status")).run;
-			report.lanes.push({ n, api: run.api, web: run.web, browser: Boolean(options.browsers) });
+			const lane = { n, api: run.api, web: run.web, browser: Boolean(options.browsers) };
+			startedHere.push(lane);
+			report.lanes.push(lane);
 			await atomicJson(waveFile, report);
 			await ctl(n, "seed-db", "--yes");
 			if (process.env.ACQUIT_EVIDENCE_DIR) await atomicJson(resolve(root, process.env.ACQUIT_EVIDENCE_DIR, `lane-${n}`, "launch.json"), { ok: true, command: "start", data: launch });
@@ -171,8 +187,11 @@ export async function startWave(requested, onPlan = () => {}, options = {}) {
 			assert(status.healthy, `Lane ${n} is unhealthy.`);
 			console.log(JSON.stringify({ lane: n, healthy: status.healthy, urls: status.urls, databasePath: status.database.path }));
 		} catch (error) {
-			for (const lane of report.lanes) await cleanupLane(lane.n, { api: lane.api, web: lane.web });
-			await atomicJson(waveFile, { ...report, lanes: [] });
+			// Only lanes this invocation started. An append that fails must not
+			// stop the lanes the wave was already running.
+			for (const lane of startedHere) await cleanupLane(lane.n, { api: lane.api, web: lane.web });
+			report.lanes = report.lanes.filter(lane => !startedHere.some(started => started.n === lane.n));
+			await atomicJson(waveFile, report);
 			throw error;
 		}
 	}
