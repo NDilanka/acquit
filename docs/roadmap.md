@@ -9,10 +9,10 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | gf-tutorial | Write the tutorial first | done | 2026-10-05 | All three boxes in the gf-tutorial section are ticked. |
 | gf-prototype | Settle four open decisions with throwaways | done | 2026-10-06 to 2026-10-18 | Each of the four decisions has a result and a decision log row. |
 | gf-architect | Sketch the domain and stop | done | 2026-10-15 to 2026-10-17 | The sketch exists, and no implementation exists. |
-| gf-skeleton | Build the walking skeleton | next | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
-| gf-verify | Create the verification skill | pending | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
-| gf-plan | Turn the design into a plan | pending | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
-| gf-feature | Build each feature with proof | pending | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
+| gf-skeleton | Build the walking skeleton | done | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
+| gf-verify | Create the verification skill | done | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
+| gf-plan | Turn the design into a plan | done | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
+| gf-feature | Build each feature with proof | next | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
 | Step 8 (id not printed) | Open the PR, babysit, ship | pending | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
 | Step 9 (id not printed) | Maintain the verification skill | pending | Daily from 2026-10-23 | A daily run reports `clean`, `changed`, or `blocked`. |
 
@@ -25,7 +25,7 @@ The playbook lists gf-feature before gf-plan. For Acquit, run gf-plan first, bec
 These tasks run beside the build. None of them waits for code.
 
 - [x] Run `git init` and commit `docs/`. Done 2026-10-05.
-- [ ] Create the public GitHub repo with a license and push. Target 2026-10-06.
+- [x] Create the public GitHub repo with a license and push. Done 2026-10-05 (`NDilanka/acquit`, MIT).
 - [ ] Read the Devpost rules on existing projects and record the answer in the decision log. Target 2026-10-06.
 - [ ] Apply for PayPal partner status, which live delayed disbursement needs. Target 2026-10-06.
 - [ ] Look at thejobcafe.com and assay.guide. Record whether either is a direct competitor in the decision log. Target 2026-10-07.
@@ -284,10 +284,10 @@ The feature list above is seven or more PRs across five systems. Run this step b
 
 Done when:
 
-- [ ] The plan file exists, and `check-plan.mjs` prints no problems.
-- [ ] Each PR section has its own files, build step, and unit, live, and perf checks.
-- [ ] Prototypes answered the open questions, and the plan's first appendix lists them.
-- [ ] None of the planned work is built yet, and the agent waits for your go.
+- [x] The plan file exists, and `check-plan.mjs` prints no problems. (`docs/plan.md`, `8 PR sections, 0 problems`.)
+- [x] Each PR section has its own files, build step, and unit, live, and perf checks.
+- [x] Prototypes answered the open questions, and the plan's first appendix lists them. (Appendix A. Docker verifier, webhook fetch, and link expiry stay unproven.)
+- [x] None of the planned work is built yet, and the agent waits for your go. (Go given 2026-10-05.)
 - [ ] Or you skipped this step because the work fits in one PR, and you wrote down that reason.
 
 **Acquit end check.** The plan's first appendix lists the four gf-prototype results, and the last PR in the plan ends with the full tutorial run.
@@ -397,6 +397,8 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-05 | The core is one versioned job row with typed substates, one transition table, and an outbox. Funding moves from job open to bid accept. | PayPal names the payee when the order is created. Candidate 2 won the arena, with grafts from candidates 1 and 3. | `docs/architecture/rationale.md` |
 | 2026-10-05 | The verifier runs on frozen inputs, rejects protected-path changes in the merge diff, and requires all 54 tests to complete. | Each variant alone missed a case. A config cheat exited 0 with no tests collected. | `scratch/verifier/RESULT.md`, `docs/tutorial.md` attempt 2 |
 | 2026-10-05 | The job page uses the proof-first layout for bids, then the ledger spine after a bid is accepted. | Prices are equal, so receipts are the deciding signal. | `scratch/job-page/shots/` |
+| 2026-10-05 | The feature PRs run as one stack in the order H0, F1, F3, F2, F4, F5, F6, F7 under Autopilot-stack. H0 isolates verification lanes and adds a dev clock. | Release needs a VERIFIED job, so the verifier goes before the PayPal adapter. Ten parallel lanes need separate ports, databases, and run state. | `docs/plan.md` Appendix B |
+| 2026-10-05 | The repo is public at `NDilanka/acquit` under the MIT license. | The hackathon needs a public repo. MIT is the default the agent chose; change it before others depend on it if you want another. | `LICENSE` |
 | 2026-10-05 | Follow the greenfield line with the Balanced role sheet. Frontend tasks run on pv-opus-medium only. | The user's role sheet and frontend rule. | This doc, Status table |
 
 ## How to update this doc
