@@ -5,8 +5,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
-import { captured as captureCommand } from "../../../../packages/ctl/src/process.ts";
-import { credentialFill, redactor } from "./safe-browser.mjs";
+import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
+import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -33,6 +33,9 @@ for (const name of Object.keys(browserEnv)) {
 }
 browserEnv.AGENT_BROWSER_SESSION = browserSession;
 browserEnv.AGENT_BROWSER_HEADED = "false";
+// Sandbox token + order calls can each consume their 15s timeout before a
+// durable retry. The browser's 25s default is shorter than that valid path.
+browserEnv.AGENT_BROWSER_DEFAULT_TIMEOUT = "60000";
 const secrets = Object.entries(process.env)
 	.filter(([name, value]) => value && /PAYPAL_CLIENT_|MERCHANT_ID|SANDBOX_BUYER_|PASSWORD|SECRET|TOKEN|API_KEY/.test(name))
 	.map(([, value]) => value);
@@ -105,25 +108,56 @@ async function approve() {
 	await doctor();
 	const previous = JSON.parse(await readFile(join(evidence, "summary.json"), "utf8"));
 	assert(previous.passed && previous.jobId, "Run drive to checkout before approve.");
+	const checkDashboard = async () => {
+		const ports = [];
+		if (process.env.AGENT_BROWSER_DASHBOARD_PORT) ports.push(Number(process.env.AGENT_BROWSER_DASHBOARD_PORT));
+		if (process.platform === "win32") {
+			// Discover custom dashboard ports without emitting command lines/env.
+			const script = '$ids=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -like "agent-browser*" -and $_.CommandLine -match "dashboard" } | ForEach-Object ProcessId); $ports=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in $ids } | ForEach-Object LocalPort); ConvertTo-Json -Compress -InputObject $ports';
+			const result = await captureCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], root, browserEnv, 30_000);
+			assert.equal(result.code, 0, "Could not verify dashboard absence; approval refused.");
+			ports.push(...JSON.parse(result.stdout));
+		}
+		await refuseDashboard(ports, portOpen);
+	};
+	await checkDashboard();
+	// Force checkout locale even when PayPal inferred Sinhala from this host.
+	// Apply it to the order approval URL, not a later /signin redirect.
+	const funding = await api(`/api/jobs/${previous.jobId}`, "maya-client");
+	assert(funding.job.approveUrl, "The job has no pending approval URL.");
+	await browser("open", englishCheckoutUrl(funding.job.approveUrl));
+	await browser("wait", "--load", "domcontentloaded");
 	const fillCredential = async (selector, key) => {
+		await checkDashboard();
 		const command = credentialFill(selector, process.env[key]);
 		// Do not use browser(): its action journal must never receive credential input.
-		const result = await captureCommand("agent-browser", ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
+		const code = await discarded("agent-browser", ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
 			"--session", browserSession, "--json", ...command.args], root, browserEnv, 90_000, command.input);
 		// Withhold batch diagnostics, including echoed command input on failure.
-		assert.equal(result.code, 0, "Credential field could not be filled. No diagnostics saved.");
+		assert.equal(code, 0, "Credential field could not be filled. No diagnostics saved.");
 	};
 	for (let step = 0; step < 12; step++) {
 		const current = new URL((await browser("get", "url")).url);
 		if (current.origin === webUrl && current.pathname === `/jobs/${previous.jobId}`) break;
-		assert.equal(current.origin, "https://www.sandbox.paypal.com", "Approval left the sandbox checkout.");
-		const page = await browser("eval", `JSON.stringify({email:!!document.querySelector('input[type="email"],input[name="login_email"]'),password:!!document.querySelector('input[type="password"]'),buttons:Array.from(document.querySelectorAll('button,input[type="submit"]')).filter(e=>e.offsetParent!==null).map(e=>e.innerText||e.value)})`);
+		assert(current.protocol === "https:" && ["sandbox.paypal.com", "www.sandbox.paypal.com"].includes(current.hostname), "Approval left the sandbox checkout.");
+		const probe = `(${paypalPageProbe.toString()})(${JSON.stringify(paypalControlSelectors)})`;
+		await browser("wait", "--fn", `location.origin===${JSON.stringify(webUrl)}||!!${probe}.control`);
+		if (new URL((await browser("get", "url")).url).origin === webUrl) break;
+		const page = await browser("eval", `JSON.stringify(${probe})`);
 		const fields = JSON.parse(page.result);
 		if (fields.email) await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
 		if (fields.password) await fillCredential('input[type="password"]', "SANDBOX_BUYER_PASSWORD");
-		const label = fields.buttons.find(label => /^(log in|login|next|continue|pay now|complete purchase|agree.*pay)$/i.test(label.trim()));
-		assert(label, "No observed login or purchase control. Approval is unverified.");
-		await browser("find", "role", "button", "click", "--name", label, "--exact");
+		// Visibility was checked in the DOM probe. agent-browser uses native CSS,
+		// not Playwright's nonstandard :visible pseudo-class.
+		if (fields.control) {
+			await browser("scrollintoview", fields.control);
+			await browser("click", fields.control);
+		}
+		else {
+			const label = fields.buttons.find(label => /^(log in|login|next|continue|pay now|complete purchase|agree.*pay)$/i.test(label.trim()));
+			assert(label, "No observed login or purchase control. Approval is unverified.");
+			await browser("find", "role", "button", "click", "--name", label, "--exact");
+		}
 		await browser("wait", "--load", "domcontentloaded");
 	}
 	await browser("wait", "--url", `${webUrl}/jobs/${previous.jobId}`);
@@ -169,7 +203,7 @@ try {
 	} else {
 		await doctor();
 		assert(process.env.OPERATOR_DEVON_MERCHANT_ID?.trim(), "Configure OPERATOR_DEVON_MERCHANT_ID without printing its value.");
-		await save("browser.json", { headed: false, autoConnect: false });
+		await save("browser.json", { headed: false, autoConnect: false, args: "--lang=en-US", headers: JSON.stringify({ "Accept-Language": "en-US,en;q=0.9" }) });
 		await cli("login", "--test-user", "maya-client", "--save");
 		await cli("login", "--test-user", "devon-ops", "--save");
 		await browser("open", "about:blank");
@@ -291,6 +325,15 @@ try {
 		console.log(JSON.stringify(summary));
 	}
 } catch (error) {
+	if (mode === "approve") {
+		await save("approval-error.json", { passed: false, step: "approval", error: redact(error.message) });
+		// Structural diagnostics only: never input values, body text, snapshots,
+		// screenshots, network bodies, or saved state on a credential page.
+		try {
+			const page = await browser("eval", `JSON.stringify({path:location.pathname,controls:Array.from(document.querySelectorAll('button,input')).map(e=>({tag:e.tagName,type:e.type,id:["btnLogin","btnNext","payment-submit-btn","button-profile","confirmButtonTop","confirmButtonBottom"].includes(e.id)?e.id:"[other]",disabled:e.disabled,display:getComputedStyle(e).display,visibility:getComputedStyle(e).visibility,opacity:getComputedStyle(e).opacity,rect:{x:e.getBoundingClientRect().x,y:e.getBoundingClientRect().y,width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height}}))})`);
+			await save("approval-controls.json", JSON.parse(page.result));
+		} catch {}
+	}
 	if (mode === "drive") {
 		if (existsSync(join(evidence, "browser.json"))) {
 			try { await capture("failure"); } catch {}
