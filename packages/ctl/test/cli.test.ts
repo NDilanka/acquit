@@ -24,6 +24,7 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-ctl-test-"));
 	try {
 		await cp(source, resolve(root, "packages/ctl/src"), { recursive: true });
+		await cp(fileURLToPath(new URL("../../core/src", import.meta.url)), resolve(root, "packages/core/src"), { recursive: true });
 		await writeFile(resolve(root, "package.json"), '{"type":"module"}');
 		const [api, web] = [await unusedPort(), await unusedPort()];
 		const cli = (args: string[]) => {
@@ -41,13 +42,51 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 	await fixture(async cli => {
 		const result = cli(["--help"]);
 		assert.equal(result.code, 0);
-		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|ledger|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "ledger", "login", "screenshot"]);
+		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|ledger|jobs|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "ledger", "jobs", "login", "screenshot"]);
 		assert.equal(result.stdout.includes("stop [destructive]"), true);
 		assert.equal(result.stdout.includes("Exit codes: 0 success, 1 runtime failure, 2 usage error."), true);
 		assert.equal(result.stdout.includes('Failure: {"ok":false'), true);
 		const command = cli(["screenshot", "--help"]);
 		assert.equal(command.code, 0);
 		assert.equal(command.stdout.includes("--path <value>  Same-origin route to capture. Default: /."), true);
+	});
+});
+test("ledger --all covers every stored job and names the broken law with its evidence", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		const at = "2026-11-03T15:22:00.000Z";
+		db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT)");
+		const insert = (id: string, client: string, state: unknown) =>
+			db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(id, JSON.stringify({ id, version: 1, client, bids: [], state }));
+		insert("job_open", "other-client", { status: "OPEN", phase: { kind: "BIDDING" } });
+		insert("job_broken", "other-client", { status: "IN_PROGRESS", escrow: { book: [
+			{ kind: "HELD", cents: 42000, at },
+			{ kind: "RELEASED", cents: 36000, at },
+			{ kind: "FEE", cents: 6000, processor: 1515, acquit: 4485, at },
+			{ kind: "REFUND", cents: 42000, at },
+		] } });
+		db.close();
+		const listed = cli(["jobs"]);
+		assert.equal(listed.code, 0);
+		assert.deepEqual(JSON.parse(listed.stdout).data.jobs, [{ id: "job_open", status: "OPEN" }, { id: "job_broken", status: "IN_PROGRESS" }]);
+		const report = cli(["ledger", "--all"]);
+		assert.equal(report.code, 0);
+		assert.match(report.stdout, /job_open\nNo ledger lines\nLaws: OK\n/);
+		assert.match(report.stdout, /job_broken\n/);
+		assert.match(report.stdout, /RELEASED/);
+		assert.match(report.stdout, /Laws: BROKEN refund_xor_payout \(one disposition\)/);
+		const json = JSON.parse(cli(["ledger", "--all", "--json"]).stdout);
+		assert.deepEqual(json.data.jobs.map((job: { id: string; laws: string; law: string | null }) => [job.id, job.laws, job.law]),
+			[["job_open", "OK", null], ["job_broken", "BROKEN", "refund_xor_payout"]]);
+		const check = cli(["ledger", "--all", "--check"]);
+		assert.equal(check.code, 1);
+		const failure = JSON.parse(check.stdout);
+		assert.equal(failure.error.code, "LAW_BREAK");
+		assert.match(failure.error.message, /job_broken breaks refund_xor_payout \(one disposition\)/);
+		assert.match(failure.error.fix, /job_broken/);
+		assert.match(failure.error.fix, /RELEASED/);
+		assert.match(failure.error.fix, /REFUND/);
 	});
 });
 test("lane zero is the default slot; positive lanes isolate all resources", () => {

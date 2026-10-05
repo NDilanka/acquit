@@ -1,9 +1,12 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { checkLaws, lawText } from "../../core/src/ledger.ts";
+import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
+import { storedBook } from "../../core/src/job.ts";
 import { alive, captured, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
-import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
+import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
 import { browserExecutable } from "./executables.ts";
@@ -33,19 +36,11 @@ type JobBody = { job: { id: string; ledger: LedgerLine[]; bids: { operators: { p
 function money(cents: number): string {
 	return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
 }
-function lawResult(lines: readonly LedgerLine[]): "OK" | "BROKEN" {
-	const count = (kind: LedgerLine["kind"]) => lines.filter(line => line.kind === kind).length;
-	const held = lines.find(line => line.kind === "HELD");
-	const released = lines.find(line => line.kind === "RELEASED");
-	const fee = lines.find(line => line.kind === "FEE");
-	const refund = lines.find(line => line.kind === "REFUND");
-	const open = lines.length === 0 || (lines.length === 1 && count("HELD") === 1 && (held?.cents ?? 0) > 0);
-	const paid = lines.length === 3 && count("HELD") === 1 && count("RELEASED") === 1 && count("FEE") === 1 && released && fee
-		&& released.cents + fee.cents === held?.cents && fee.processor !== undefined && fee.acquit !== undefined && fee.processor + fee.acquit === fee.cents;
-	const refunded = lines.length === 2 && count("HELD") === 1 && count("REFUND") === 1 && refund?.cents === held?.cents;
-	return open || paid || refunded ? "OK" : "BROKEN";
+function lawCheck(lines: readonly LedgerLine[]): { laws: "OK" | "BROKEN"; law: LedgerLaw | null } {
+	const result = checkLaws(lines as unknown as readonly BookLine[]);
+	return typeof result === "string" ? { laws: "OK", law: null } : { laws: "BROKEN", law: result.law };
 }
-function ledgerText(job: JobBody["job"]): { text: string; laws: "OK" | "BROKEN"; lines: LedgerLine[] } {
+function ledgerText(job: JobBody["job"]): { text: string; laws: "OK" | "BROKEN"; law: LedgerLaw | null; lines: LedgerLine[] } {
 	const price = [...job.bids.operators, job.bids.house].find(bid => bid && ["ACCEPTED", "CHOSEN"].includes(bid.status))?.price ?? null;
 	const note = (line: LedgerLine) => {
 		if (line.kind === "HELD") {
@@ -57,28 +52,38 @@ function ledgerText(job: JobBody["job"]): { text: string; laws: "OK" | "BROKEN";
 		return "refunded to client";
 	};
 	const rendered = job.ledger.map(line => `${line.at.slice(0, 16).replace("T", " ")}  ${job.id}  ${line.kind.padEnd(8)}  ${money(line.cents).padStart(6)} USD  ${note(line)}`);
-	const laws = lawResult(job.ledger);
-	return { text: `${rendered.length ? rendered.join("\n") : "No ledger lines"}\nLaws: ${laws}\n`, laws, lines: job.ledger };
+	const check = lawCheck(job.ledger);
+	const verdict = check.law === null ? "OK" : `BROKEN ${check.law} (${lawText(check.law)})`;
+	return { text: `${rendered.length ? rendered.join("\n") : "No ledger lines"}\nLaws: ${verdict}\n`, laws: check.laws, law: check.law, lines: job.ledger };
 }
 export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (Boolean(parsed.job) === Boolean(parsed.all)) throw new CliError("INVALID_ARGUMENT", "Name one job with --job or every job with --all.", "Run npm run -s ctl -- ledger --job <id>.", 2);
-	const ports = await app(ctx);
-	const session = await login({ "test-user": "maya-client" }, ctx) as { token: string };
-	const read = async (id: string): Promise<JobBody["job"]> => {
-		const response = await fetch(`http://127.0.0.1:${ports.api}/api/jobs/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(5000) });
-		if (response.status === 404) throw new CliError("JOB_NOT_FOUND", `No job has id ${id}.`, "Run npm run -s ctl -- jobs, or check the id.");
+	let jobs: JobBody["job"][];
+	if (parsed.all) {
+		// Read every stored job straight from the lane database: the API listing hides other clients' non-OPEN books.
+		jobs = (await readStoredJobs(ctx.databasePath)).map(row => ({ id: row.id, ledger: storedBook(row) as unknown as LedgerLine[],
+			bids: { operators: row.bids.filter(bid => bid.kind === "INDEPENDENT"), house: row.bids.find(bid => bid.kind === "HOUSE") ?? null } }));
+	} else {
+		const ports = await app(ctx);
+		const session = await login({ "test-user": "maya-client" }, ctx) as { token: string };
+		const response = await fetch(`http://127.0.0.1:${ports.api}/api/jobs/${encodeURIComponent(String(parsed.job))}`, { headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(5000) });
+		if (response.status === 404) throw new CliError("JOB_NOT_FOUND", `No job has id ${String(parsed.job)}.`, "Run npm run -s ctl -- jobs, or check the id.");
 		if (!response.ok) throw new CliError("PROCESS_FAILED", `The API returned HTTP ${response.status}.`, "Run npm run -s ctl -- status, then retry ledger.");
-		return ((await response.json()) as JobBody).job;
-	};
-	const jobs = parsed.all ? await (async () => {
-		const response = await fetch(`http://127.0.0.1:${ports.api}/api/jobs`, { headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(5000) });
-		if (!response.ok) throw new CliError("PROCESS_FAILED", `The API returned HTTP ${response.status}.`, "Run npm run -s ctl -- status, then retry ledger.");
-		const listed = (await response.json()) as { jobs: { id: string }[] };
-		return Promise.all(listed.jobs.map(job => read(job.id)));
-	})() : [await read(String(parsed.job))];
+		jobs = [((await response.json()) as JobBody).job];
+	}
 	const reports = jobs.map(ledgerText);
-	if (parsed.check && reports.some(report => report.laws !== "OK")) throw new CliError("LAW_BREAK", "A stored book breaks an escrow law.", "Inspect the printed lines, then stop the lane before another money move.");
-	return { text: reports.map((report, index) => parsed.all ? `${jobs[index].id}\n${report.text}` : report.text).join(""), jobs: reports.map((report, index) => ({ id: jobs[index].id, laws: report.laws, ledger: report.lines })) };
+	const broken = reports.findIndex(report => report.laws !== "OK");
+	if (parsed.check && broken >= 0) {
+		const law = reports[broken].law ?? "order";
+		throw new CliError("LAW_BREAK", `${jobs[broken].id} breaks ${law} (${lawText(law)}).`,
+			`Inspect the stored book, then stop the lane before another money move.\n${jobs[broken].id}\n${reports[broken].text}`);
+	}
+	return { text: reports.map((report, index) => parsed.all ? `${jobs[index].id}\n${report.text}` : report.text).join(""),
+		jobs: reports.map((report, index) => ({ id: jobs[index].id, laws: report.laws, law: report.law, ledger: report.lines })) };
+}
+export async function jobList(_parsed: Parsed, ctx: Context): Promise<Result> {
+	const rows = await readStoredJobs(ctx.databasePath);
+	return { jobs: rows.map(row => ({ id: row.id, status: row.state.status })) };
 }
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);
