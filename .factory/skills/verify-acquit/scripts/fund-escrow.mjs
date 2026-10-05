@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
 import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
-import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, paypalControlReady } from "./safe-browser.mjs";
+import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -119,6 +119,8 @@ async function approve() {
 			const result = await captureCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], root, browserEnv, 30_000);
 			assert.equal(result.code, 0, "Could not verify dashboard absence; approval refused.");
 			ports.push(...JSON.parse(result.stdout));
+		} else if (process.env.AGENT_BROWSER_DASHBOARD_PORT === undefined) {
+			throw new Error("Approval refused: custom dashboard ports can only be discovered on Windows. Set AGENT_BROWSER_DASHBOARD_PORT or close the dashboard.");
 		}
 		await refuseDashboard(ports, portOpen);
 	};
@@ -141,7 +143,11 @@ async function approve() {
 	}
 	await browser("wait", "--load", "domcontentloaded");
 	const fillCredential = async (selector, key) => {
+		// Recheck immediately before the fill. A dashboard or stream client that
+		// attaches between steps must not see the credential.
 		await checkDashboard();
+		await browser("stream", "disable").catch(() => {});
+		if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
 		const command = credentialFill(selector, process.env[key]);
 		// Do not use browser(): its action journal must never receive credential input.
 		const code = await discarded("agent-browser", ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
@@ -149,45 +155,51 @@ async function approve() {
 		// Withhold batch diagnostics, including echoed command input on failure.
 		assert.equal(code, 0, "Credential field could not be filled. No diagnostics saved.");
 	};
-	for (let step = 0; step < 12 && !alreadyHeld; step++) {
+	const probe = `(${paypalPageProbe.toString()})(${JSON.stringify(paypalControlSelectors)})`;
+	const observe = async () => JSON.parse((await browser("eval", `JSON.stringify(${probe})`)).result);
+	// Each iteration re-probes and classifies the page, acts once, then waits
+	// until the classification changes. A control observed in one probe is never
+	// waited on: the next iteration probes again.
+	const deadline = Date.now() + 180_000;
+	let previousClass = "";
+	for (let step = 0; step < 12 && !alreadyHeld && Date.now() < deadline; step++) {
 		const current = new URL((await browser("get", "url")).url);
 		if (current.origin === webUrl && current.pathname === `/jobs/${previous.jobId}`) break;
 		assert(current.protocol === "https:" && ["sandbox.paypal.com", "www.sandbox.paypal.com"].includes(current.hostname), "Approval left the sandbox checkout.");
-		const probe = `(${paypalPageProbe.toString()})(${JSON.stringify(paypalControlSelectors)})`;
-		let page;
-		try {
-			await browser("wait", "--fn", `location.origin===${JSON.stringify(webUrl)}||!!${probe}.control||!!${probe}.overlays.length`);
-			page = await browser("eval", `JSON.stringify(${probe})`);
-		} catch (error) {
-			// Structural only. A screenshot of a credential page would record the email.
-			const diagnostic = await browser("eval", `JSON.stringify({step:${step},path:location.pathname,title:document.title,probe:${probe}})`).catch(() => null);
+		const fields = await observe();
+		const pageClass = classifyCheckout(fields, webUrl);
+		if (pageClass === "returned") break;
+		await save(`approval-step-${step}.json`, { pageClass, control: fields.control, email: fields.email, password: fields.password, overlays: fields.overlays });
+		if (pageClass === "overlay") { for (const overlay of fields.overlays) await browser("find", "role", "button", "click", "--name", overlay, "--exact"); }
+		else if (pageClass === "email") await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
+		else if (pageClass === "password" || pageClass === "login") {
+			if (fields.email) await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
+			await fillCredential('input[type="password"]', "SANDBOX_BUYER_PASSWORD");
+		} else if (pageClass === "spinner") await browser("wait", "--load", "domcontentloaded").catch(() => {});
+		// Re-probe before clicking. The control from the classification probe may
+		// already be the previous step's leftover at 0x0.
+		if (["email", "password", "login", "review"].includes(pageClass)) {
+			const fresh = await observe();
+			if (fresh.origin !== webUrl && fresh.control) {
+				await browser("scrollintoview", fresh.control);
+				await browser("click", fresh.control);
+			}
+		}
+		const stepDeadline = Date.now() + 20_000;
+		let changed = false;
+		while (Date.now() < stepDeadline) {
+			const next = await observe().catch(() => null);
+			if (next && (next.origin === webUrl || classifyCheckout(next, webUrl) !== pageClass)) { changed = true; break; }
+			await new Promise(resolve => setTimeout(resolve, 400));
+		}
+		if (!changed && pageClass === previousClass) {
+			const diagnostic = await browser("eval", `JSON.stringify({step:${step},pageClass:${JSON.stringify(pageClass)},path:location.pathname,title:document.title,probe:${probe}})`).catch(() => null);
 			if (diagnostic) await save(`approval-timeout-${step}.json`, JSON.parse(diagnostic.result));
-			throw error;
+			throw new Error(`Approval step ${step} (${pageClass}) did not change within 20s.`);
 		}
-		const fields = JSON.parse(page.result);
-		if (fields.origin === webUrl) break;
-		for (const overlay of fields.overlays) await browser("find", "role", "button", "click", "--name", overlay, "--exact");
-		if (fields.overlays.length) continue;
-		if (fields.email) await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
-		if (fields.password) await fillCredential('input[type="password"]', "SANDBOX_BUYER_PASSWORD");
-		// Visibility was checked in the DOM probe. agent-browser uses native CSS,
-		// not Playwright's nonstandard :visible pseudo-class.
-		if (fields.control) {
-			await save(`approval-step-${step}.json`, { control: fields.control, email: fields.email, password: fields.password, overlays: fields.overlays });
-			await browser("scrollintoview", fields.control);
-			// Hermes overlays its still-present purchase button with a spinner.
-			// Wait for true click readiness or the app return, not just DOM load.
-			await browser("wait", "--fn", `(${paypalControlReady.toString()})(${JSON.stringify(fields.control)},${JSON.stringify(webUrl)})`);
-			if (new URL((await browser("get", "url")).url).origin === webUrl) break;
-			await browser("click", fields.control);
-		}
-		else {
-			const label = fields.buttons.find(label => /^(log in|login|next|continue|pay now|complete purchase|agree.*pay)$/i.test(label.trim()));
-			assert(label, "No observed login or purchase control. Approval is unverified.");
-			await browser("find", "role", "button", "click", "--name", label, "--exact");
-		}
-		await browser("wait", "--load", "domcontentloaded");
+		previousClass = pageClass;
 	}
+	assert(Date.now() < deadline, "Approval exceeded its total deadline.");
 	await browser("wait", "--url", `${webUrl}/jobs/${previous.jobId}`);
 	// The return page renders the held line after the capture settles. Give it
 	// longer than a login step, and record the page state if it never appears.

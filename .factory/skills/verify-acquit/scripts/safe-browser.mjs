@@ -4,9 +4,13 @@ export function credentialFill(selector, value) {
 	return { args: ["batch", "--bail"], input: JSON.stringify([["fill", selector, value]]) };
 }
 export async function refuseDashboard(ports, isOpen) {
+	// A listening port is not enough. The dashboard answers a connect on
+	// 127.0.0.1; a port discovered only by its listener (including one bound on
+	// ::1) is refused unless that probe succeeds, which it cannot for ::1.
 	for (const port of new Set([4848, ...ports])) {
 		if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid dashboard port; approval refused.");
-		if (await isOpen(port)) throw new Error("Approval refused: a dashboard port is listening. Close the dashboard and detach every stream client before approval.");
+		if (await isOpen(port) && !(await isOpen(port, "127.0.0.1"))) throw new Error("Approval refused: a dashboard port is listening but did not answer on 127.0.0.1. Close the dashboard and detach every stream client before approval.");
+		if (await isOpen(port, "127.0.0.1")) throw new Error("Approval refused: a dashboard port is listening. Close the dashboard and detach every stream client before approval.");
 	}
 }
 export const paypalControlSelectors = [
@@ -21,14 +25,14 @@ export function englishCheckoutUrl(value) {
 	url.searchParams.set("locale.x", "en_US");
 	return url.toString();
 }
-export function paypalControlReady(selector, returnOrigin) {
-	if (typeof location !== "undefined" && location.origin === returnOrigin) return true;
-	const element = document.querySelector(selector);
-	if (!element || element.disabled) return false;
-	const rect = element.getBoundingClientRect();
-	if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(element).opacity === "0") return false;
-	const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-	return top === element || element.contains(top);
+export function classifyCheckout(probe, returnOrigin) {
+	if (probe.origin === returnOrigin) return "returned";
+	if (probe.overlays.length) return "overlay";
+	if (probe.email && probe.password) return "login";
+	if (probe.email) return "email";
+	if (probe.password) return "password";
+	if (probe.control) return "review";
+	return "spinner";
 }
 // Self-contained so it can run in the page without sending any input values back.
 export function paypalPageProbe(selectors) {
@@ -81,38 +85,42 @@ export function paypalPageProbe(selectors) {
 		}).slice(0, 3),
 	};
 }
+const sandboxHost = String.raw`(?:[a-z0-9-]+\.)*sandbox\.paypal\.com(?![a-z0-9.-])`;
 function stripUrls(text) {
-	// Strip entire approval/return query and fragment, not just known token keys.
-	text = text.replace(/(https?:\/\/(?:www\.)?sandbox\.paypal\.com(?=\/|[?#"\s<>]|$)[^?#"\s<>]*)(?:[?#][^"\s<>]*)/gi, "$1?[redacted]");
-	text = text.replace(/(\/paypal\/return)(?:[?#][^"\s<>]*)/gi, "$1?[redacted]");
-	// Nested percent-encoded URLs can occur in redirect parameters and JSON.
-	for (const level of [2, 1]) {
-		const marker = level === 2 ? "%253A%252F%252F" : "%3A%2F%2F";
-		const pattern = new RegExp(`https?${marker}[^"\\s<>]*`, "gi");
-		text = text.replace(pattern, encoded => {
-			try {
-				let decoded = encoded;
-				for (let i = 0; i < level; i++) decoded = decodeURIComponent(decoded);
-				const clean = stripUrls(decoded);
-				if (clean === decoded) return encoded;
-				let result = clean;
-				for (let i = 0; i < level; i++) result = encodeURIComponent(result);
-				return result;
-			} catch { return encoded; }
-		});
+	// Strip the query and fragment of every sandbox PayPal URL: any subdomain,
+	// schemeless, JSON-escaped slashes, and slash escapes. The match stops before
+	// a closing quote, so href='...' keeps its quote. Then decode to a fixed
+	// point and strip again, so nested percent-encoding cannot hide a token.
+	const clean = value => value
+		.replace(new RegExp(String.raw`(https?:(?:\\?\/){2}${sandboxHost}[^?\s"'<>]*)(?:[?#][^"'\s<>]*)`, "gi"), "$1?[redacted]")
+		.replace(new RegExp(String.raw`((?:^|[\s"'=])${sandboxHost}\/[^?\s"'<>]*)(?:[?#][^"'\s<>]*)`, "gi"), "$1?[redacted]")
+		.replace(/(\/paypal\/return)(?:[?#][^"'\s<>]*)/gi, "$1?[redacted]");
+	let current = text;
+	for (let i = 0; i < 4; i++) {
+		const stripped = clean(current);
+		const decoded = stripped
+			.replace(/\\u([0-9a-f]{4})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+			.replace(/%[0-9a-f]{2}/gi, encoded => { try { return decodeURIComponent(encoded); } catch { return encoded; } });
+		if (decoded === current) return stripped;
+		current = decoded;
 	}
-	return text;
+	return clean(current);
 }
 export function redactor(secrets = []) {
 	const forms = [...new Set(secrets.filter(secret => typeof secret === "string" && secret).flatMap(secret => {
 		const html = secret.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 		const numeric = base => [...secret].map(char => `&#${base === 16 ? "x" : ""}${char.codePointAt(0).toString(base)};`).join("");
-		return [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret),
-			new URLSearchParams({ value: secret }).toString().slice(6), html, html.replaceAll("&#39;", "&apos;"),
+		const escaped = JSON.stringify(secret).slice(1, -1);
+		const email = /^[^@\s]+@[^@\s]+$/.test(secret) ? [secret.toLowerCase()] : [];
+		return [secret, ...email, escaped, escaped.replace(/\\/g, "\\\\"), encodeURIComponent(secret), encodeURIComponent(secret).toLowerCase(),
+			encodeURI(secret), new URLSearchParams({ value: secret }).toString().slice(6), html, html.replaceAll("&#39;", "&apos;"),
 			html.replaceAll("&#39;", "&#x27;"), numeric(10), numeric(16),
 			secret.replace(/[&<>"']/g, char => `&#${char.codePointAt(0)};`),
 			secret.replace(/[&<>"']/g, char => `&#x${char.codePointAt(0).toString(16)};`),
-			secret.replace(/[&<>"']/g, char => `&#x${char.codePointAt(0).toString(16).toUpperCase()};`)];
+			secret.replace(/[&<>"']/g, char => `&#x${char.codePointAt(0).toString(16).toUpperCase()};`),
+			[...secret].map(char => `\\u${char.codePointAt(0).toString(16).padStart(4, "0")}`).join(""),
+			[...secret].map(char => `\\u${char.codePointAt(0).toString(16).padStart(4, "0").toUpperCase()}`).join(""),
+			secret.replace(/[<>&]/g, char => `\\u${char.codePointAt(0).toString(16).padStart(4, "0")}`)];
 	}))].sort((a, b) => b.length - a.length);
 	return value => {
 		let text = value == null ? "" : typeof value === "string" ? value : JSON.stringify(value) ?? "";

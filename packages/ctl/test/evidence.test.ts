@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-ignore Node executes the helper's native ESM.
-import { credentialFill, redactor, refuseDashboard, englishCheckoutUrl, paypalControlSelectors, paypalPageProbe, paypalControlReady } from "../../../.factory/skills/verify-acquit/scripts/safe-browser.mjs";
+import { credentialFill, redactor, refuseDashboard, englishCheckoutUrl, paypalControlSelectors, paypalPageProbe, classifyCheckout } from "../../../.factory/skills/verify-acquit/scripts/safe-browser.mjs";
 
 test("credential fills travel only through batch stdin, never eval or command argv", () => {
 	const command = credentialFill('input[type="password"]', 'synthetic-"password');
@@ -25,10 +25,16 @@ test("redaction handles nulls, overlapping secrets, form encoding and HTML entit
 		"a b&amp;&lt;&quot;&apos;", "a b&amp;&lt;&quot;&#x27;", "a b&#38;&#60;&#34;&#39;",
 		"a b&#x26;&#x3c;&#x22;&#x27;", "a b&#x26;&#x3C;&#x22;&#x27;",
 		[...secret].map(c => `&#${c.codePointAt(0)};`).join(""),
-		[...secret].map(c => `&#x${c.codePointAt(0)!.toString(16)};`).join("")]) {
+		[...secret].map(c => `&#x${c.codePointAt(0)!.toString(16)};`).join(""),
+		[...secret].map(c => `\\u${c.codePointAt(0)!.toString(16).padStart(4, "0")}`).join(""),
+		secret.replace(/[<>&]/g, c => `\\u${c.codePointAt(0)!.toString(16).padStart(4, "0")}`)]) {
 		assert.equal(redact(form), "[redacted]", form);
 	}
 	assert.equal(redactor(["short", "short-long"])("short-long"), "[redacted]");
+	const email = redactor(["Buyer@Sandbox.example"]);
+	assert.equal(email("buyer@sandbox.example"), "[redacted]", "email redaction is case-insensitive");
+	assert.equal(email(encodeURIComponent("Buyer@Sandbox.example").toLowerCase()), "[redacted]", "percent-encoding is matched lowercase");
+	assert.equal(redactor(["a/b"]).call(null, JSON.stringify("a/b").slice(1, -1).replace(/\\/g, "\\\\")), "[redacted]", "double JSON escaping");
 });
 test("approval and return URL redaction includes hosts, empty paths, fragments and nested encoding", () => {
 	const redact = redactor();
@@ -48,6 +54,14 @@ test("approval and return URL redaction includes hosts, empty paths, fragments a
 		}
 	}
 	assert.equal(redact("https://sandbox.paypal.com.evil.test/?token=public"), "https://sandbox.paypal.com.evil.test/?token=public");
+	for (const host of ["api.sandbox.paypal.com", "www.api-m.sandbox.paypal.com"]) {
+		assert(!redact(`https://${host}/v2/checkout?token=synthetic`).includes("synthetic"), host);
+		assert(!redact(`${host}/checkoutnow?token=synthetic`).includes("synthetic"), `schemeless ${host}`);
+	}
+	assert(!redact(String.raw`https:\/\/www.sandbox.paypal.com\/checkoutnow?token=synthetic`).includes("synthetic"), "JSON-escaped slashes");
+	assert(!redact("https:\\u002F\\u002Fwww.sandbox.paypal.com\\u002Fcheckoutnow?token=synthetic").includes("synthetic"), "unicode-escaped slashes");
+	assert.equal(redact("href='https://www.sandbox.paypal.com/checkoutnow?token=synthetic'"), "href='https://www.sandbox.paypal.com/checkoutnow?[redacted]'");
+	assert(!redact(encodeURIComponent(encodeURIComponent("https://www.sandbox.paypal.com/checkoutnow?token=synthetic"))).includes("synthetic"), "double percent-encoding");
 });
 test("approval refuses default and custom dashboard listeners", async () => {
 	for (const active of [4848, 61234]) {
@@ -55,6 +69,8 @@ test("approval refuses default and custom dashboard listeners", async () => {
 	}
 	await refuseDashboard([61234], async () => false);
 	await assert.rejects(refuseDashboard([NaN], async () => false), /Invalid dashboard port/);
+	// A port that answers only off 127.0.0.1, such as ::1, cannot pass the probe.
+	await assert.rejects(refuseDashboard([61234], async (_port: number, host?: string) => host !== "127.0.0.1"), /did not answer on 127.0.0.1/);
 });
 test("checkout forces English while preserving the order and prefers structural PayPal controls", () => {
 	for (const host of ["sandbox.paypal.com", "www.sandbox.paypal.com"]) {
@@ -98,13 +114,7 @@ test("localized PayPal controls exclude covered and hidden buttons, without retu
 			querySelectorAll: (selector: string) => selector === 'button[type="submit"]' || selector === 'button,input[type="submit"]' ? [profile, purchase] : [],
 		} });
 		assert.equal(paypalPageProbe(paypalControlSelectors).control, '[id="purchase"]');
-		let top: unknown = {};
-		Object.defineProperty(globalThis, "document", { configurable: true, value: {
-			querySelector: () => purchase, elementFromPoint: () => top,
-		} });
-		assert.equal(paypalControlReady('[id="purchase"]', "http://app.test"), false, "a spinner-covered button must wait");
-		top = purchase;
-		assert.equal(paypalControlReady('[id="purchase"]', "http://app.test"), true);
+		assert.equal(classifyCheckout({ origin: "https://www.sandbox.paypal.com", overlays: [], email: false, password: false, control: null }, "http://app.test"), "spinner");
 		// Default HTMLButtonElement.type is submit even when no type attribute
 		// exists. PayPal Hermes uses this implicit submit for its purchase button.
 		Object.defineProperty(globalThis, "document", { configurable: true, value: {
@@ -115,7 +125,7 @@ test("localized PayPal controls exclude covered and hidden buttons, without retu
 		Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "http://app.test" } });
 		Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelectorAll: () => [] } });
 		assert.equal(paypalPageProbe(paypalControlSelectors).origin, "http://app.test");
-		assert.equal(paypalControlReady("unused", "http://app.test"), true, "a completed return requires no PayPal control");
+		assert.equal(classifyCheckout({ origin: "http://app.test", overlays: [], email: false, password: false, control: null }, "http://app.test"), "returned");
 	} finally {
 		if (documentBefore) Object.defineProperty(globalThis, "document", documentBefore);
 		else Reflect.deleteProperty(globalThis, "document");
