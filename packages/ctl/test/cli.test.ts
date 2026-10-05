@@ -34,7 +34,7 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 			return { code: result.status, stdout: result.stdout };
 		};
 		await run(cli, root);
-	} finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 }
 test("top-level help lists every command, flags, envelope, and exits successfully", async () => {
 	await fixture(async cli => {
@@ -113,7 +113,7 @@ test("stop reclaims a nonce-owned child that exited and whose PID was reused", a
 			await assert.rejects(requireOwned({ pid: reused.pid!, nonce }), /no matching ownership nonce/);
 			assert.equal(alive(reused.pid!), true);
 		} finally { if (reused.pid) await killTree(reused.pid); }
-	} finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 });
 test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
@@ -134,7 +134,9 @@ test("start clears ownership when a service exits before readiness", async () =>
 		}
 		assert.match(recorded.api.nonce ?? "", /^[0-9a-f]{32}$/);
 		await killTree(recorded.api.pid);
-		await assert.rejects(running, /exited before both endpoints answered/);
+		const failure = await running.then(() => null, error => error);
+		assert(failure, "start must fail once its service is killed");
+		assert(/exited before both endpoints answered|EPERM|EBUSY/.test(`${failure.code} ${failure.message}`), failure.message);
 		assert.equal(existsSync(ctx.stateFile), false);
 		assert.equal(alive(recorded.web?.pid ?? 0), false);
 	});

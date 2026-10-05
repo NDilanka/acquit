@@ -137,10 +137,9 @@ export function planWave(count, freeMB, memory, { maxLanes = count, reserveMB = 
 export async function startWave(requested, onPlan = () => {}, options = {}) {
 	const numbers = Array.isArray(requested) ? requested : Array.from({ length: requested }, (_, i) => i + 1);
 	assert(numbers.length > 0 && numbers.length <= 100 && new Set(numbers).size === numbers.length && numbers.every(n => Number.isSafeInteger(n) && n > 0 && n <= 100), "Use start <count> (1..100) or start --lanes 6,7,8.");
-	if (existsSync(waveFile)) {
-		const previous = JSON.parse(await readFile(waveFile, "utf8"));
-		assert(previous.lanes.length === 0, "A wave still owns lane slots. Run doctor or cleanup before another start.");
-	}
+	const previous = existsSync(waveFile) ? JSON.parse(await readFile(waveFile, "utf8")) : { lanes: [] };
+	if (!options.append) assert(previous.lanes.length === 0, "A wave still owns lane slots. Run doctor or cleanup before another start.");
+	else assert(previous.lanes.every(lane => !numbers.includes(lane.n)), "Refusing to append a lane the current wave already owns.");
 	let memory = existsSync(memoryFile) ? JSON.parse(await readFile(memoryFile, "utf8")) : null;
 	if (memory?.version !== 2) memory = null;
 	memory ??= await measure();
@@ -149,6 +148,7 @@ export async function startWave(requested, onPlan = () => {}, options = {}) {
 		maxBrowsers: Number(process.env.ACQUIT_MAX_BROWSERS ?? 2), ...options });
 	report.requestedLanes = numbers;
 	report.startedLanes = numbers.slice(0, report.cap);
+	if (options.append) report.lanes = previous.lanes;
 	await atomicJson(waveFile, report);
 	console.log(JSON.stringify({ ...report, lanes: undefined }));
 	onPlan(report);
@@ -209,8 +209,8 @@ async function main() {
 			const explicit = count === "--lanes";
 			const numbers = explicit ? extra[0]?.split(",").map(Number) : Number(count);
 			const flags = explicit ? extra.slice(1) : extra;
-			assert(flags.every(flag => flag === "--browsers"), "Unknown start option.");
-			await startWave(numbers, () => {}, { browsers: flags.includes("--browsers") }); return;
+			assert(flags.every(flag => flag === "--browsers" || flag === "--append"), "Unknown start option.");
+			await startWave(numbers, () => {}, { browsers: flags.includes("--browsers"), append: flags.includes("--append") }); return;
 		}
 		const wave = existsSync(waveFile) ? JSON.parse(await readFile(waveFile, "utf8")) : { lanes: [] };
 		if (count !== undefined) assert(/^\d+$/.test(count) && wave.lanes.some(lane => lane.n === Number(count)), "The requested lane is not owned by this wave.");
