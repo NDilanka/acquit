@@ -68,7 +68,7 @@ async function doctor() {
 }
 
 async function browser(...args) {
-	const command = args[0] === "wait" ? ["wait", "--timeout", "20000", ...args.slice(1)] : args;
+	const command = args[0] === "wait" && !args.includes("--timeout") ? ["wait", "--timeout", "20000", ...args.slice(1)] : args;
 	let reply;
 	try {
 		reply = await captured("agent-browser", [
@@ -201,6 +201,18 @@ async function approve() {
 	}
 	assert(Date.now() < deadline, "Approval exceeded its total deadline.");
 	await browser("wait", "--url", `${webUrl}/jobs/${previous.jobId}`);
+	// The return redirect drops the session cookie. Sign back in so the held
+	// line renders; the capture itself already happened server-side.
+	// The return redirect drops the session, and a single click on the picker can
+	// land before the page is ready to handle it. Re-probe and click until the
+	// picker is gone rather than trusting one click.
+	const pickerGone = Date.now() + 20_000;
+	while (Date.now() < pickerGone) {
+		const signedOut = await browser("eval", `document.body.innerText.includes("Sign in as a seeded user")`);
+		if (signedOut.result !== true && signedOut.result !== "true") break;
+		await browser("find", "role", "button", "click", "--name", "maya-client").catch(() => {});
+		await new Promise(resolve => setTimeout(resolve, 500));
+	}
 	// The return page renders the held line after the capture settles. Give it
 	// longer than a login step, and record the page state if it never appears.
 	try { await browser("wait", "--timeout", "60000", "--text", "Escrow: HELD, locked to devon-ops"); }
