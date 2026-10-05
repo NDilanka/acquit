@@ -8,8 +8,8 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | --- | --- | --- | --- | --- |
 | gf-tutorial | Write the tutorial first | done | 2026-10-05 | All three boxes in the gf-tutorial section are ticked. |
 | gf-prototype | Settle four open decisions with throwaways | done | 2026-10-06 to 2026-10-18 | Each of the four decisions has a result and a decision log row. |
-| gf-architect | Sketch the domain and stop | next (sketch done, waiting for your approval) | 2026-10-15 to 2026-10-17 | The sketch exists, and no implementation exists. |
-| gf-skeleton | Build the walking skeleton | pending | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
+| gf-architect | Sketch the domain and stop | done | 2026-10-15 to 2026-10-17 | The sketch exists, and no implementation exists. |
+| gf-skeleton | Build the walking skeleton | next | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | pending | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | pending | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
 | gf-feature | Build each feature with proof | pending | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
@@ -186,7 +186,7 @@ Watch out:
 The verification skill needs an app it can launch. The first real action in the tutorial is posting a job and funding the escrow.
 
 ```text
-/poteto-mode build the smallest version of Acquit that starts with one command and lets a user post a job and fund its escrow in the PayPal sandbox end to end. add a seed script with the test users maya-client (client) and devon-ops (operator) and the invoice-app repository. show me it running. use the sketch from gf-architect. delegate backend code to pv-sol-high and any frontend code only to pv-opus-medium.
+/poteto-mode build the smallest version of Acquit that starts with one command and lets a client post a job, an onboarded operator bid on it, and the client accept the bid and fund escrow in the PayPal sandbox end to end. add a seed script with the test users maya-client (client) and devon-ops (operator, already onboarded to the sandbox merchant) and the invoice-app repository. show me it running. implement against docs/architecture/sketch and its rationale. delegate backend code to pv-sol-high and any frontend code only to pv-opus-medium.
 ```
 
 Done when:
@@ -195,7 +195,7 @@ Done when:
 - [ ] One user action works end to end, and you saw it work.
 - [ ] Seed data and a test login exist, if the app needs them.
 
-**Acquit end check.** One command on Windows starts the web app and the API. `maya-client` posts a 400.00 USD job and pays 420.00 USD in the sandbox. The ledger shows one `HELD 420.00 USD` line, as in `docs/tutorial.md:114`.
+**Acquit end check.** One command on Windows starts the web app and the API. `maya-client` posts a 400.00 USD job, `devon-ops` bids, and `maya-client` accepts and pays 420.00 USD in the sandbox. The ledger shows one `HELD 420.00 USD` line, as in the Accept section of `docs/tutorial.md`.
 
 **Who runs it.** The `pv-sol-high` droid writes backend code. The `pv-opus-medium` droid writes frontend code.
 
@@ -225,7 +225,7 @@ Done when:
 - [ ] `features/README.md` lists at least one feature, and each listed feature has its own file.
 - [ ] The agent launched the app and showed you a screenshot or output from one feature.
 
-**Acquit end check.** `.factory/skills/verify-acquit/` exists, and its Feature Map lists "post a job and fund escrow".
+**Acquit end check.** `.factory/skills/verify-acquit/` exists, and its Feature Map lists "post a job, accept a bid, and fund escrow".
 
 **Who runs it.** You run the skill in the main session. The control CLI code goes to pv-sol-high.
 
@@ -391,7 +391,8 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-05 | Release is guarded by the job's HELD to RELEASED transition, not by webhook event id. | Event-id dedupe paid twice on a re-sent event with a new id. | `scratch/paypal-escrow/RESULT.md` |
 | 2026-10-05 | PayPal escrow works in the sandbox: delayed capture, a 60.00 USD platform fee that includes the client fee, referenced-payout release, and a plain full refund. Operators must grant permissions through Partner Referrals before their first job. Refunds don't name `platform_fees`. | Measured in the sandbox. A refund with `platform_fees` failed with `PLATFORM_FEE_NOT_ENABLED`, and order creation failed before the seller granted permissions. | `scratch/paypal-escrow/run2.log`, `run3.log`, `run4.log` |
 | 2026-10-05 | Acquit absorbs PayPal's processing fee by sending `platform_fees` of 60.00 minus the predicted fee (44.85 on 420.00). Acquit also pays back the 15.15 PayPal takes from the operator on a refund. | Measured in the sandbox. 44.85 released exactly 360.00, and a refund lowered the operator's balance by 15.15. | `scratch/paypal-escrow/run6.log`, `docs/architecture/rationale.md` |
-| 2026-10-05 | Proposed, waiting for approval. The core is one versioned job row with typed substates, one transition table, and an outbox. Funding moves from job open to bid accept. | PayPal names the payee when the order is created. Candidate 2 won the arena, with grafts from candidates 1 and 3. | `docs/architecture/rationale.md` |
+| 2026-10-05 | Approved. A job cancelled before payment ends as CLOSED, a sixth status. A dispute the arbiter does not decide within 48 hours releases to the operator. The tutorial edits from the rationale are applied. | You approved funding at Accept and CLOSED. You left the dispute default to me, and the verifier already passed, so a late arbiter should not delay the operator. | `docs/tutorial.md`, `docs/architecture/rationale.md` |
+| 2026-10-05 | The core is one versioned job row with typed substates, one transition table, and an outbox. Funding moves from job open to bid accept. | PayPal names the payee when the order is created. Candidate 2 won the arena, with grafts from candidates 1 and 3. | `docs/architecture/rationale.md` |
 | 2026-10-05 | The verifier runs on frozen inputs, rejects protected-path changes in the merge diff, and requires all 54 tests to complete. | Each variant alone missed a case. A config cheat exited 0 with no tests collected. | `scratch/verifier/RESULT.md`, `docs/tutorial.md` attempt 2 |
 | 2026-10-05 | The job page uses the proof-first layout for bids, then the ledger spine after a bid is accepted. | Prices are equal, so receipts are the deciding signal. | `scratch/job-page/shots/` |
 | 2026-10-05 | Follow the greenfield line with the Balanced role sheet. Frontend tasks run on pv-opus-medium only. | The user's role sheet and frontend rule. | This doc, Status table |

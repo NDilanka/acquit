@@ -104,7 +104,7 @@ export type RefundReason =
 export type RefundIntent = { readonly reason: RefundReason; readonly selectedAt: Instant };
 
 export type ReleaseIntent = {
-	readonly authority: "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "CAPTURE_CUTOFF";
+	readonly authority: "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "ARBITER_SLA_MISSED" | "CAPTURE_CUTOFF";
 	readonly selectedAt: Instant;
 };
 
@@ -392,7 +392,8 @@ function transitionTable(): {
 	// TODO 3 IN_PROGRESS VERIFYING past runEndsAt. If now < deliveryEndsAt, give the slot back and return to READY.
 	//        Otherwise refund DELIVERY_DEADLINE. A running attempt defers the deadline by at most VERIFIER_RUN_MINUTES.
 	// TODO 4 VERIFIED AWAITING_CLIENT past endsAt releases REVIEW_SILENCE.
-	// TODO 5 VERIFIED DISPUTED past resolveBy emits ALERT DISPUTE_SLA_MISSED once. The cutoff still releases.
+	// TODO 5 VERIFIED DISPUTED past resolveBy releases ARBITER_SLA_MISSED and emits ALERT DISPUTE_SLA_MISSED.
+	//      The verifier passed, so a missed arbiter deadline is Acquit's failure and the operator is not made to wait.
 	// TODO 6 OPEN FUNDING past checkoutEndsAt and not CAPTURING returns to BIDDING, chosen bid back to PENDING.
 	// TODO 7 OPEN past deliveryEndsAt and not CAPTURING enters CLOSED NO_ACCEPT_BY_DEADLINE, Return all open bids.
 	// TODO 8 OPEN, PENDING bids past respondBy become RETURNED. Return each with NO_CLIENT_RESPONSE.

@@ -1,6 +1,6 @@
 # Acquit core domain sketch
 
-This is a sketch only. Every function body throws `not implemented`. Nothing here is implemented. The tutorial stays unchanged until the human approves the edits listed below.
+This is a sketch only. Every function body throws `not implemented`. Nothing here is implemented. The human approved this design on 2026-10-05.
 
 ## Problem
 
@@ -160,7 +160,7 @@ Every tutorial transition maps to one table edge in `sketch/job.ts`.
 
 ## The six roadmap questions
 
-**1. The 72-hour review window ends with no client action.** The job releases with authority REVIEW_SILENCE. The verifier already passed against the frozen contract, and silence cannot hold an operator's pay forever. A dispute opened inside the window pauses the clock. The arbiter has 48 hours. If the arbiter misses that deadline, the job raises an alert. The capture-age cutoff at day 21 releases it if nobody decides.
+**1. The 72-hour review window ends with no client action.** The job releases with authority REVIEW_SILENCE. The verifier already passed against the frozen contract, and silence cannot hold an operator's pay forever. A dispute opened inside the window pauses the clock. The arbiter has 48 hours. If the arbiter misses that deadline, the job releases with authority ARBITER_SLA_MISSED and raises an alert. The verifier passed, so a late arbiter is Acquit's failure, and the operator should not wait for it. The capture-age cutoff at day 21 stays as the last guard.
 
 **2. Whether House bids spend credits.** No. Credits stop operators from flooding clients, and charging Acquit its own currency limits nothing. The flood guard for House is structural instead. A job admits at most one House bid (`HOUSE_ALREADY_BID`).
 
@@ -174,7 +174,7 @@ Every tutorial transition maps to one table edge in `sketch/job.ts`.
 
 ## Tutorial changes this design needs
 
-Apply these to `docs/tutorial.md` only after the human approves.
+Approved on 2026-10-05 and applied to `docs/tutorial.md`, together with CLOSED as the sixth status and release when the arbiter misses its deadline.
 
 1. In the intro, change "we post a bug from GitHub and fund the escrow" to "we post a bug from GitHub, accept a bid, and fund the escrow".
 2. Delete the "Fund the escrow" section from "Post the job as the client". The job opens with status OPEN and no ledger line.
@@ -195,7 +195,7 @@ Apply these to `docs/tutorial.md` only after the human approves.
 - We accept that bids live on the job row, so concurrent bids retry on version conflict, in exchange for one writer per job.
 - We accept a three-hour checkout window in exchange for a chosen operator who is not held hostage by an abandoned checkout.
 - We accept that Acquit's net take moves by a few cents with PayPal's real fee in exchange for exact tutorial numbers.
-- We accept that an undecided dispute releases at day 21 in exchange for never letting PayPal's day 28 decide.
+- We accept that a dispute the arbiter does not decide within 48 hours releases to the operator, in exchange for operators never waiting on Acquit's own delay.
 - We accept a 15.15 cost to Acquit on every refund in exchange for operators never losing money on a job that did not pay them.
 
 ## Alternatives considered
@@ -206,12 +206,9 @@ Apply these to `docs/tutorial.md` only after the human approves.
 
 ## Open questions and risks
 
-- Do you approve moving funding into Accept and the tutorial edits above?
-- Is CLOSED acceptable as a sixth user-facing status, or should a pre-capture cancel display as something else?
 - Can a sandbox run confirm that the payee cannot change after order creation? It is inferred from the request shape.
 - Does PayPal honor `PayPal-Request-Id` on referenced payouts and refunds, and for how long? Reconcile by lookup is the fallback either way.
 - How does Acquit pay the refund reimbursement to the operator? A Standard Payout from the platform account is the likely path. It is not built or measured.
-- Should an arbiter who misses the 48-hour deadline trigger release sooner than day 21?
 - Will every job's hidden tests target exported functions, a CLI, or HTTP, so they always cross a process boundary?
 - Is three hours right for checkout, given PayPal approval links expire on their own schedule (not measured)?
 
