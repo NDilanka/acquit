@@ -1,4 +1,5 @@
 scratch/
 node_modules/
 .env
+data/
 
