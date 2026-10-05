@@ -28,6 +28,58 @@ export async function clockAdvance(parsed: Parsed, ctx: Context): Promise<Result
 	if (!Number.isSafeInteger(advanceMs) || advanceMs <= 0 || advanceMs > 365 * 86400000) throw new CliError("INVALID_ARGUMENT", "Use a positive duration of at most 365 days.", "Run npm run -s ctl -- clock advance 4h.", 2);
 	return devPost(ctx, "clock", { advanceMs });
 }
+type LedgerLine = { kind: "HELD" | "RELEASED" | "FEE" | "REFUND"; cents: number; at: string; processor?: number; acquit?: number };
+type JobBody = { job: { id: string; ledger: LedgerLine[]; bids: { operators: { price: number; status: string }[]; house: { price: number; status: string } | null } } };
+function money(cents: number): string {
+	return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+}
+function lawResult(lines: readonly LedgerLine[]): "OK" | "BROKEN" {
+	const count = (kind: LedgerLine["kind"]) => lines.filter(line => line.kind === kind).length;
+	const held = lines.find(line => line.kind === "HELD");
+	const released = lines.find(line => line.kind === "RELEASED");
+	const fee = lines.find(line => line.kind === "FEE");
+	const refund = lines.find(line => line.kind === "REFUND");
+	const open = lines.length === 0 || (lines.length === 1 && count("HELD") === 1 && (held?.cents ?? 0) > 0);
+	const paid = lines.length === 3 && count("HELD") === 1 && count("RELEASED") === 1 && count("FEE") === 1 && released && fee
+		&& released.cents + fee.cents === held?.cents && fee.processor !== undefined && fee.acquit !== undefined && fee.processor + fee.acquit === fee.cents;
+	const refunded = lines.length === 2 && count("HELD") === 1 && count("REFUND") === 1 && refund?.cents === held?.cents;
+	return open || paid || refunded ? "OK" : "BROKEN";
+}
+function ledgerText(job: JobBody["job"]): { text: string; laws: "OK" | "BROKEN"; lines: LedgerLine[] } {
+	const price = [...job.bids.operators, job.bids.house].find(bid => bid && ["ACCEPTED", "CHOSEN"].includes(bid.status))?.price ?? null;
+	const note = (line: LedgerLine) => {
+		if (line.kind === "HELD") {
+			const jobPrice = price ?? Math.round((line.cents * 100) / 105);
+			return `client payment (${money(jobPrice)} job + ${money(line.cents - jobPrice)} escrow fee)`;
+		}
+		if (line.kind === "RELEASED") return `payout to operator (${money(line.cents)})`;
+		if (line.kind === "FEE") return `fees (${money(line.processor ?? 0)} PayPal processing + ${money(line.acquit ?? 0)} Acquit)`;
+		return "refunded to client";
+	};
+	const rendered = job.ledger.map(line => `${line.at.slice(0, 16).replace("T", " ")}  ${job.id}  ${line.kind.padEnd(8)}  ${money(line.cents).padStart(6)} USD  ${note(line)}`);
+	const laws = lawResult(job.ledger);
+	return { text: `${rendered.length ? rendered.join("\n") : "No ledger lines"}\nLaws: ${laws}\n`, laws, lines: job.ledger };
+}
+export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
+	if (Boolean(parsed.job) === Boolean(parsed.all)) throw new CliError("INVALID_ARGUMENT", "Name one job with --job or every job with --all.", "Run npm run -s ctl -- ledger --job <id>.", 2);
+	const ports = await app(ctx);
+	const session = await login({ "test-user": "maya-client" }, ctx) as { token: string };
+	const read = async (id: string): Promise<JobBody["job"]> => {
+		const response = await fetch(`http://127.0.0.1:${ports.api}/api/jobs/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(5000) });
+		if (response.status === 404) throw new CliError("JOB_NOT_FOUND", `No job has id ${id}.`, "Run npm run -s ctl -- jobs, or check the id.");
+		if (!response.ok) throw new CliError("PROCESS_FAILED", `The API returned HTTP ${response.status}.`, "Run npm run -s ctl -- status, then retry ledger.");
+		return ((await response.json()) as JobBody).job;
+	};
+	const jobs = parsed.all ? await (async () => {
+		const response = await fetch(`http://127.0.0.1:${ports.api}/api/jobs`, { headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(5000) });
+		if (!response.ok) throw new CliError("PROCESS_FAILED", `The API returned HTTP ${response.status}.`, "Run npm run -s ctl -- status, then retry ledger.");
+		const listed = (await response.json()) as { jobs: { id: string }[] };
+		return Promise.all(listed.jobs.map(job => read(job.id)));
+	})() : [await read(String(parsed.job))];
+	const reports = jobs.map(ledgerText);
+	if (parsed.check && reports.some(report => report.laws !== "OK")) throw new CliError("LAW_BREAK", "A stored book breaks an escrow law.", "Inspect the printed lines, then stop the lane before another money move.");
+	return { text: reports.map((report, index) => parsed.all ? `${jobs[index].id}\n${report.text}` : report.text).join(""), jobs: reports.map((report, index) => ({ id: jobs[index].id, laws: report.laws, ledger: report.lines })) };
+}
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);
 	return devPost(ctx, "fund-mode", { mode: parsed.mode });

@@ -41,7 +41,7 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 	await fixture(async cli => {
 		const result = cli(["--help"]);
 		assert.equal(result.code, 0);
-		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "login", "screenshot"]);
+		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|ledger|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "ledger", "login", "screenshot"]);
 		assert.equal(result.stdout.includes("stop [destructive]"), true);
 		assert.equal(result.stdout.includes("Exit codes: 0 success, 1 runtime failure, 2 usage error."), true);
 		assert.equal(result.stdout.includes('Failure: {"ok":false'), true);
