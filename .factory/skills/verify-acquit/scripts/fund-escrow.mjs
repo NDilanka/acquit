@@ -124,8 +124,12 @@ async function approve() {
 	// Force checkout locale even when PayPal inferred Sinhala from this host.
 	// Apply it to the order approval URL, not a later /signin redirect.
 	const funding = await api(`/api/jobs/${previous.jobId}`, "maya-client");
-	assert(funding.job.approveUrl, "The job has no pending approval URL.");
-	await browser("open", englishCheckoutUrl(funding.job.approveUrl));
+	const alreadyHeld = funding.job.escrow === "HELD";
+	if (alreadyHeld) await browser("open", `${webUrl}/jobs/${previous.jobId}`);
+	else {
+		assert(funding.job.approveUrl, "The job has no pending approval URL.");
+		await browser("open", englishCheckoutUrl(funding.job.approveUrl));
+	}
 	await browser("wait", "--load", "domcontentloaded");
 	const fillCredential = async (selector, key) => {
 		await checkDashboard();
@@ -136,7 +140,7 @@ async function approve() {
 		// Withhold batch diagnostics, including echoed command input on failure.
 		assert.equal(code, 0, "Credential field could not be filled. No diagnostics saved.");
 	};
-	for (let step = 0; step < 12; step++) {
+	for (let step = 0; step < 12 && !alreadyHeld; step++) {
 		const current = new URL((await browser("get", "url")).url);
 		if (current.origin === webUrl && current.pathname === `/jobs/${previous.jobId}`) break;
 		assert(current.protocol === "https:" && ["sandbox.paypal.com", "www.sandbox.paypal.com"].includes(current.hostname), "Approval left the sandbox checkout.");
@@ -145,6 +149,9 @@ async function approve() {
 		if (new URL((await browser("get", "url")).url).origin === webUrl) break;
 		const page = await browser("eval", `JSON.stringify(${probe})`);
 		const fields = JSON.parse(page.result);
+		// Navigation may finish between get-url and eval. Read the origin in the
+		// same DOM probe so a successful return is not treated as a blank login.
+		if (fields.origin === webUrl) break;
 		if (fields.email) await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
 		if (fields.password) await fillCredential('input[type="password"]', "SANDBOX_BUYER_PASSWORD");
 		// Visibility was checked in the DOM probe. agent-browser uses native CSS,

@@ -67,6 +67,7 @@ export function paypalPageProbe(selectors) {
 		break;
 	}
 	return {
+		origin: typeof location === "undefined" ? null : location.origin,
 		email: Array.from(document.querySelectorAll('input[type="email"],input[name="login_email"]')).some(visible),
 		password: Array.from(document.querySelectorAll('input[type="password"]')).some(visible),
 		control,

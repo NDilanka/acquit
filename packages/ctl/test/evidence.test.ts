@@ -76,6 +76,7 @@ test("localized PayPal controls exclude covered and hidden buttons, without retu
 	const hidden = make("payment-submit-btn", 0);
 	const documentBefore = Object.getOwnPropertyDescriptor(globalThis, "document");
 	const styleBefore = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+	const locationBefore = Object.getOwnPropertyDescriptor(globalThis, "location");
 	try {
 		Object.defineProperty(globalThis, "document", { configurable: true, value: {
 			elementFromPoint: () => next,
@@ -111,10 +112,16 @@ test("localized PayPal controls exclude covered and hidden buttons, without retu
 			querySelectorAll: (selector: string) => selector === 'button:not([type])' || selector === 'button,input[type="submit"]' ? [profile, purchase] : [],
 		} });
 		assert.equal(paypalPageProbe(paypalControlSelectors).control, '[id="purchase"]');
+		Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "http://app.test" } });
+		Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelectorAll: () => [] } });
+		assert.equal(paypalPageProbe(paypalControlSelectors).origin, "http://app.test");
+		assert.equal(paypalControlReady("unused", "http://app.test"), true, "a completed return requires no PayPal control");
 	} finally {
 		if (documentBefore) Object.defineProperty(globalThis, "document", documentBefore);
 		else Reflect.deleteProperty(globalThis, "document");
 		if (styleBefore) Object.defineProperty(globalThis, "getComputedStyle", styleBefore);
 		else Reflect.deleteProperty(globalThis, "getComputedStyle");
+		if (locationBefore) Object.defineProperty(globalThis, "location", locationBefore);
+		else Reflect.deleteProperty(globalThis, "location");
 	}
 });
