@@ -1,19 +1,27 @@
 // The package's only entry point. package.json "exports" maps "." to this file and nothing else,
 // so an import of job.ts, ledger.ts, or effects.ts from outside the package fails to resolve.
 
-import type { Credits } from "./credits";
-import type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids";
-import type { DomainFailure, JobStatus, Receipt, UserJobCommand } from "./job";
-import type { LedgerLine, UsdCents } from "./ledger";
-import type { OperatorCommand } from "./operator";
-import type { PayPalConfig } from "./paypal";
+import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
+import type { Credits } from "./credits.ts";
+import { confirmFunding, executeCommand, runDueTimers, runOutboxOnce } from "./effects.ts";
+import type { Ports } from "./effects.ts";
+import { instant } from "./ids.ts";
+import type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
+import { projectJob } from "./job.ts";
+import type { DomainFailure, JobStatus, Receipt, UserJobCommand } from "./job.ts";
+import type { LedgerLine, UsdCents } from "./ledger.ts";
+import type { OperatorCommand } from "./operator.ts";
+import { createPayPal } from "./paypal.ts";
+import type { PayPalConfig } from "./paypal.ts";
+import { SqliteStore } from "./store.ts";
 
-export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey } from "./ids";
-export { hours, instant, parseBidId, parseJobId, parseRequestKey } from "./ids";
-export type { UsdCents, LedgerLine } from "./ledger";
-export { formatUsd, usd } from "./ledger";
-export type { Credits } from "./credits";
-export type { JobStatus, Receipt } from "./job";
+export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
+export { hours, instant, parseBidId, parseJobId, parseRequestKey } from "./ids.ts";
+export type { UsdCents, LedgerLine } from "./ledger.ts";
+export { formatUsd, usd } from "./ledger.ts";
+export type { Credits } from "./credits.ts";
+export type { JobStatus, Receipt } from "./job.ts";
+export { ISSUE, SEEDED_USERS } from "./seed-data.ts";
 
 export type Actor =
 	| { readonly role: "CLIENT"; readonly clientId: ClientId }
@@ -119,5 +127,70 @@ export type AcquitConfig = {
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
-	throw new Error("not implemented");
+	const store = new SqliteStore(config.databaseUrl);
+	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	const ports: Ports = { store, paypal: createPayPal(config.paypal), feeModel: config.paypal.feeModel,
+		verifier: { start: unimplemented, parseCallback: unimplemented },
+		github: { merge: unimplemented }, alerts: { raise: unimplemented },
+		clock: { now: () => instant(new Date().toISOString()) } };
+	let ticking: Promise<void> | null = null;
+	const service: Acquit = {
+		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
+		query: async (actor, query) => {
+			const counts = await store.receiptCounts();
+			switch (query.type) {
+				case "Job": {
+					const row = await store.readJob(query.jobId);
+					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
+					const mayRead = row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
+						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER";
+					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts) } : { kind: "DENIED", reason: "NOT_OWNER" };
+				}
+				case "OpenJobs": {
+					const jobs = (await store.listJobs()).filter(row => row.state.status === "OPEN" ||
+						actor.role === "CLIENT" && row.client === actor.clientId ||
+						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId));
+					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts)), nextCursor: null };
+				}
+				case "Operator": {
+					if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
+					const row = await store.readOperator(actor.operatorId);
+					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
+					return { kind: "OPERATOR", operator: { id: row.id, handle: row.handle, label: row.kind,
+						payouts: row.payouts.kind, onboardingUrl: row.payouts.kind === "AWAITING_CONSENT" ? row.payouts.actionUrl : null,
+						paidReceipts: counts.get(row.id) ?? 0 } };
+				}
+				case "Credits": {
+					if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
+					const account = await store.readCredits(actor.operatorId);
+					return { kind: "CREDITS", credits: { available: (account.balance.allowance + account.balance.purchased) as Credits,
+						weeklyAllowance: weeklyAllowance(counts.get(actor.operatorId) ?? 0), nextGrantAt: nextCreditGrant(ports.clock.now()) } };
+				}
+				default: throw new Error("not implemented");
+			}
+		},
+		handlePayPalWebhook: async () => Response.json({ error: "NOT_IMPLEMENTED", detail: "Signed webhook ingestion is outside the local skeleton; use the checkout return route." }, { status: 501 }),
+		handleVerifierCallback: unimplemented,
+		tick: () => {
+			if (!ticking) ticking = (async () => {
+				await runDueTimers(ports);
+				for (let i = 0; i < 20; i++) if (await runOutboxOnce(ports) === "IDLE") break;
+			})().finally(() => { ticking = null; });
+			return ticking;
+		},
+	};
+	runtimes.set(service, { ports, store });
+	return service;
+}
+
+const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore }>();
+/** HTTP-only checkout boundary: re-read the provider, never trust URL token/PayerID. */
+export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId): Promise<boolean> {
+	const runtime = runtimes.get(service);
+	if (!runtime) throw new Error("Unknown Acquit service");
+	return confirmFunding(runtime.ports, actor, jobId);
+}
+export function closeAcquit(service: Acquit): void {
+	runtimes.get(service)?.store.close();
+	runtimes.delete(service);
 }

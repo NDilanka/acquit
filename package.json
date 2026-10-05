@@ -1,0 +1,20 @@
+{
+  "name": "acquit",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/core"],
+  "scripts": {
+    "postinstall": "node scripts/install-web.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "node apps/api/src/server.ts",
+    "seed": "node scripts/seed.ts",
+    "test": "node --test packages/core/test/*.test.ts",
+    "typecheck": "tsc -p . --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=24.0.0" }
+}

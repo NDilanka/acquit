@@ -5,7 +5,7 @@
 // value. The subject runs submitted code in a credential-free container, receives calls without
 // expected values, and returns raw results. A replaced matcher can only lie to itself.
 
-import type { Branded, CommitSha, Digest, Instant, JobId, TestId } from "./ids";
+import type { Branded, CommitSha, Digest, Instant, JobId, TestId } from "./ids.ts";
 
 export type VerifierRunId = Branded<string, "VerifierRunId">;
 export type Glob = Branded<string, "Glob">;

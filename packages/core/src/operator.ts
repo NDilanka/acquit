@@ -1,7 +1,7 @@
 // Operator facts: payout onboarding and agents. No money invariant lives here.
 // job.ts reads an operator row at PlaceBid. Only this file writes one.
 
-import type { AgentId, Digest, Instant, MerchantId, OperatorId, Version } from "./ids";
+import type { AgentId, Digest, Instant, MerchantId, OperatorId, Version } from "./ids.ts";
 
 /**
  * Measured. Order create failed with "No permissions to set target_client_id" until the operator
@@ -72,5 +72,5 @@ export function applyOperatorCommand(
 }
 
 export function readyToBid(row: OperatorRow): row is ReadyOperator {
-	throw new Error("not implemented");
+	return row.payouts.kind === "READY" && row.payouts.merchant.length > 0;
 }

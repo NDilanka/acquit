@@ -26,25 +26,32 @@ export type PayoutItemId = Branded<string, "PayPalPayoutItemId">;
 export type RefundId = Branded<string, "PayPalRefundId">;
 
 export function parseJobId(raw: string): JobId {
-	throw new Error("not implemented");
+	if (!/^job_[A-Za-z0-9_-]{4,80}$/.test(raw)) throw new Error("Invalid job id");
+	return raw as JobId;
 }
 
 export function parseBidId(raw: string): BidId {
-	throw new Error("not implemented");
+	if (!/^bid_[A-Za-z0-9_-]{4,80}$/.test(raw)) throw new Error("Invalid bid id");
+	return raw as BidId;
 }
 
 export function parseRequestKey(raw: string): RequestKey {
-	throw new Error("not implemented");
+	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) throw new Error("Request key must be a UUID v4");
+	return raw as RequestKey;
 }
 
 export function instant(raw: string): Instant {
-	throw new Error("not implemented");
+	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(raw) || !Number.isFinite(Date.parse(raw))) throw new Error("Invalid UTC instant");
+	const normalized = new Date(raw).toISOString();
+	if (normalized !== raw && normalized.replace(".000Z", "Z") !== raw) throw new Error("Invalid UTC instant");
+	return normalized as Instant;
 }
 
 export function hours(value: number): Hours {
-	throw new Error("not implemented");
+	if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Hours must be a positive integer");
+	return value as Hours;
 }
 
 export function addHours(at: Instant, span: Hours): Instant {
-	throw new Error("not implemented");
+	return instant(new Date(Date.parse(at) + span * 3_600_000).toISOString());
 }

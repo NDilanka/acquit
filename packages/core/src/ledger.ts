@@ -7,18 +7,23 @@
 //
 // Credits never enter this file. credits.ts has its own unit brand.
 
-import type { Branded, Instant, JobId, OperatorId } from "./ids";
+import type { Branded, Instant, JobId, OperatorId } from "./ids.ts";
 
 /** Non-negative safe integer. 420.00 USD is 42000. */
 export type UsdCents = Branded<number, "UsdCents">;
 
 /** Parses "420.00" without floating point. Rejects negatives, fractions of a cent, and unsafe integers. */
 export function usd(decimal: string): UsdCents {
-	throw new Error("not implemented");
+	if (!/^\d+(?:\.\d{1,2})?$/.test(decimal)) throw new Error("Invalid USD amount");
+	const [whole, fraction = ""] = decimal.split(".");
+	const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+	if (cents > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Unsafe USD amount");
+	return Number(cents) as UsdCents;
 }
 
 export function formatUsd(amount: UsdCents): string {
-	throw new Error("not implemented");
+	if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid cents");
+	return `${Math.floor(amount / 100)}.${String(amount % 100).padStart(2, "0")}`;
 }
 
 export type HeldLine = { readonly kind: "HELD"; readonly cents: UsdCents; readonly at: Instant };
@@ -67,6 +72,11 @@ export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | L
 	//      Break "conservation" unless operatorNet + processorFee + platformFee = HELD.
 	// TODO Refund on held writes REFUND. Break "conservation" unless refunded = HELD.
 	// TODO Any other pair breaks "order", "one_release", or "refund_xor_payout".
+	if (book.length === 0 && move.kind === "Hold") {
+		if (!Number.isSafeInteger(move.gross) || move.gross <= 0) return { kind: "LAW_BREAK", law: "conservation" };
+		return [{ kind: "HELD", cents: move.gross, at: move.at }];
+	}
+	// Release and refund remain outside the walking skeleton.
 	throw new Error("not implemented");
 }
 
@@ -89,7 +99,14 @@ export function commercialSplit(price: UsdCents): CommercialSplit {
 	// TODO Integer basis points, half-up rounding to the cent.
 	// TODO held = price + clientFee (42000). operatorNet = price - operatorFee (36000).
 	// TODO fee = clientFee + operatorFee (6000). Assert operatorNet + fee = held.
-	throw new Error("not implemented");
+	if (!Number.isSafeInteger(price) || price <= 0) throw new Error("Invalid price");
+	const round = (bps: number): UsdCents => Number((BigInt(price) * BigInt(bps) + 5000n) / 10000n) as UsdCents;
+	const clientFee = round(500);
+	const operatorFee = round(1000);
+	const held = price + clientFee;
+	if (!Number.isSafeInteger(held)) throw new Error("Unsafe total");
+	return { price, clientFee, operatorFee, held: held as UsdCents,
+		operatorNet: (price - operatorFee) as UsdCents, fee: (clientFee + operatorFee) as UsdCents };
 }
 
 /**

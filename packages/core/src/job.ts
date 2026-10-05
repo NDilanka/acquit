@@ -1,8 +1,11 @@
 // The job owner. One versioned row per job, one state union, one private transition table.
 // Pure. No I/O. effects.ts loads facts, calls applyJobCommand, and commits the plan with compare-and-set.
 
-import type { Actor, JobView } from "./acquit";
-import type { CreditAccount } from "./credits";
+import { randomUUID } from "node:crypto";
+import type { Actor, JobView } from "./acquit.ts";
+import { reduceCredits } from "./credits.ts";
+import type { CreditAccount } from "./credits.ts";
+import { addHours, hours, parseBidId, parseJobId } from "./ids.ts";
 import type {
 	AgentId,
 	BidId,
@@ -17,11 +20,13 @@ import type {
 	OrderId,
 	ReceiptId,
 	Version,
-} from "./ids";
-import type { EmptyBook, HeldBook, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger";
-import type { Agent, OperatorRow } from "./operator";
-import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal";
-import type { DefinitionOfDone, TestTally, Verdict, VerifierRunId } from "./verifier";
+} from "./ids.ts";
+import { reduceLedger } from "./ledger.ts";
+import type { EmptyBook, HeldBook, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
+import { readyToBid } from "./operator.ts";
+import type { Agent, OperatorRow } from "./operator.ts";
+import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal.ts";
+import type { DefinitionOfDone, TestTally, Verdict, VerifierRunId } from "./verifier.ts";
 
 // Worst-case timeline from capture is delivery 14d, review 72h, dispute 48h, so day 19.
 // The cutoff at day 21 leaves a week to reconcile an uncertain settlement before PayPal's day 28.
@@ -397,7 +402,151 @@ function transitionTable(): {
 	// TODO 6 OPEN FUNDING past checkoutEndsAt and not CAPTURING returns to BIDDING, chosen bid back to PENDING.
 	// TODO 7 OPEN past deliveryEndsAt and not CAPTURING enters CLOSED NO_ACCEPT_BY_DEADLINE, Return all open bids.
 	// TODO 8 OPEN, PENDING bids past respondBy become RETURNED. Return each with NO_CLIENT_RESPONSE.
-	throw new Error("not implemented");
+	const unimplemented = () => { throw new Error("not implemented"); };
+	return {
+		OpenJob: { by: "CLIENT", apply: (_row, command, facts) => {
+			if (facts.actor.role !== "CLIENT" || facts.loaded.kind !== "OPEN_JOB") return "NOT_OWNER";
+			if (command.deliveryEndsAt <= facts.now) return "DEADLINE_PASSED";
+			if (command.deliveryEndsAt > addHours(facts.now, hours(14 * 24))) return "DEADLINE_TOO_FAR";
+			return { next: { id: parseJobId(`job_${randomUUID()}`), version: 0 as Version,
+				client: facts.actor.clientId, title: facts.loaded.title, contract: facts.loaded.contract,
+				openedAt: facts.now, bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } },
+				credits: [], effects: [] };
+		} },
+		PlaceBid: { by: "OPERATOR", apply: (row, command, facts) => {
+			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
+			const { operator, agent, credits } = facts.loaded;
+			if (operator.id !== facts.actor.operatorId || agent.owner !== operator.id || agent.id !== command.agent) return "NOT_OWNER";
+			if (!readyToBid(operator)) return "ONBOARDING_REQUIRED";
+			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
+			if (row.state.phase.kind === "FUNDING" && row.state.phase.checkout.phase === "REFUND_PENDING") return "WRONG_STATE";
+			if (command.price > row.contract.budget) return "PRICE_OVER_BUDGET";
+			if (operator.kind === "HOUSE" && row.bids.some(bid => bid.kind === "HOUSE")) return "HOUSE_ALREADY_BID";
+			if (row.bids.some(bid => bid.operator === operator.id)) return "ALREADY_BID";
+			const bid: Bid = { id: parseBidId(`bid_${randomUUID()}`), operator: operator.id, handle: operator.handle,
+				kind: operator.kind, payee: operator.payouts.merchant, agent: agent.id, runner: agent.runner,
+				price: command.price, eta: command.eta, pitch: command.pitch, placedAt: facts.now,
+				respondBy: addHours(facts.now, hours(TERMS.bidReviewHours)), status: "PENDING" };
+			const charged = operator.kind === "HOUSE" ? credits : reduceCredits(credits, { kind: "Spend", bid: bid.id, at: facts.now });
+			if (charged === "INSUFFICIENT_CREDITS") return charged;
+			return { next: { ...row, version: (row.version + 1) as Version, bids: [...row.bids, bid] },
+				credits: operator.kind === "HOUSE" ? [] : [charged], effects: [] };
+		} },
+		AcceptBid: { by: "CLIENT", apply: (row, command, facts) => {
+			if (row.state.phase.kind !== "BIDDING" || facts.loaded.kind !== "ACCEPT_BID") return "WRONG_STATE";
+			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
+			const bid = row.bids.find(b => b.id === command.bidId && b.status === "PENDING");
+			if (!bid) return "NOT_FOUND";
+			if (facts.now >= bid.respondBy) return "DEADLINE_PASSED";
+			const chosen: LockedBid = { bidId: bid.id, operator: bid.operator, payee: bid.payee,
+				agent: bid.agent, price: bid.price, eta: bid.eta };
+			const round = row.state.phase.fundingRounds + 1;
+			const quote = facts.loaded.quote;
+			if (quote.split.price !== bid.price) return "WRONG_STATE";
+			return { next: { ...row, version: (row.version + 1) as Version,
+				bids: row.bids.map(b => b.id === bid.id ? { ...b, status: "CHOSEN" } : b),
+				state: { status: "OPEN", phase: { kind: "FUNDING", round, chosen, quote,
+					checkoutEndsAt: addHours(facts.now, hours(TERMS.checkoutHours)), checkout: { phase: "CREATING_ORDER" } } } },
+				credits: [], effects: [{ kind: "CREATE_ORDER", jobId: row.id, round, payee: bid.payee, quote }] };
+		} },
+		CancelJob: { by: "CLIENT", apply: (row, _command, facts) => {
+			if (row.state.phase.kind === "FUNDING" && ["CAPTURING", "REFUND_PENDING"].includes(row.state.phase.checkout.phase)) return "PAYMENT_IN_PROGRESS";
+			const returned: CreditAccount[] = [];
+			if (facts.loaded.kind !== "BIDDER_CREDITS") return "WRONG_STATE";
+			for (const bid of row.bids) {
+				if (bid.kind === "HOUSE" || !["PENDING", "CHOSEN"].includes(bid.status)) continue;
+				const account = returned.find(a => a.operator === bid.operator) ?? facts.loaded.accounts.get(bid.operator);
+				if (!account) return "NOT_FOUND";
+				const changed = reduceCredits(account, { kind: "Return", bid: bid.id, reason: "CLIENT_CANCEL", at: facts.now });
+				if (changed !== "INSUFFICIENT_CREDITS" && changed !== account) {
+					const index = returned.findIndex(a => a.operator === bid.operator);
+					if (index >= 0) returned[index] = changed; else returned.push(changed);
+				}
+			}
+			return { next: { ...row, version: (row.version + 1) as Version,
+				bids: row.bids.map(b => ["PENDING", "CHOSEN"].includes(b.status) ? { ...b, status: "RETURNED" } : b),
+				state: { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: facts.now, book: [] } }, credits: returned, effects: [] };
+		} },
+		OrderCreated: { by: "SYSTEM", apply: (row, command) => {
+			const phase = row.state.phase;
+			if (phase.kind !== "FUNDING" || phase.round !== command.round || phase.checkout.phase !== "CREATING_ORDER") return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { status: "OPEN", phase: { ...phase, checkout: { phase: "AWAITING_APPROVAL", orderId: command.orderId, approveUrl: command.approveUrl } } } }, credits: [], effects: [] };
+		} },
+		FundingFailed: { by: "SYSTEM", apply: (row, command) => {
+			const phase = row.state.phase;
+			if (phase.kind !== "FUNDING" || phase.round !== command.round || phase.checkout.phase === "REFUND_PENDING") return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version,
+				bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "PENDING" } : b),
+				state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: phase.round } } }, credits: [], effects: [] };
+		} },
+		BuyerApproved: { by: "SYSTEM", apply: (row, command) => {
+			const phase = row.state.phase;
+			if (phase.kind !== "FUNDING" || phase.checkout.phase !== "AWAITING_APPROVAL" || phase.checkout.orderId !== command.orderId) return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { status: "OPEN", phase: { ...phase, checkout: { phase: "CAPTURING", orderId: command.orderId } } } },
+				credits: [], effects: [{ kind: "CAPTURE", jobId: row.id, round: phase.round, orderId: command.orderId, payee: phase.chosen.payee }] };
+		} },
+		CaptureCompleted: { by: "SYSTEM", apply: (row, command) => {
+			const phase = row.state.phase;
+			if (phase.kind !== "FUNDING" || !("orderId" in phase.checkout) || phase.checkout.orderId !== command.capture.orderId) return unchanged(row);
+			const capture = command.capture;
+			const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: capture.capturedAt });
+			if ("kind" in book) return "WRONG_STATE";
+			const escrow: HeldEscrow = { payee: phase.chosen, quote: phase.quote, capture, book,
+				cutoffAt: addHours(capture.capturedAt, hours(TERMS.captureCutoffDays * 24)) };
+			if (capture.payee !== phase.chosen.payee || capture.gross !== phase.quote.split.held || capture.platformFee !== phase.quote.platformFeeInstruction) {
+				return { next: { ...row, version: (row.version + 1) as Version,
+					state: { status: "OPEN", phase: { ...phase, checkout: { phase: "REFUND_PENDING", escrow, refund: { reason: "CAPTURE_MISMATCH", selectedAt: capture.capturedAt } } } } },
+					credits: [], effects: [{ kind: "REFUND", jobId: row.id, captureId: capture.captureId, payee: capture.payee, amount: capture.gross }] };
+			}
+			return { next: { ...row, version: (row.version + 1) as Version,
+				bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "ACCEPTED" } : b.status === "PENDING" ? { ...b, status: "NOT_SELECTED" } : b),
+				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0 } } }, credits: [], effects: [] };
+		} },
+		Submit: { by: "OPERATOR", apply: unimplemented },
+		VerifierFinished: { by: "SYSTEM", apply: unimplemented },
+		Approve: { by: "CLIENT", apply: unimplemented },
+		Dispute: { by: "CLIENT", apply: unimplemented },
+		ResolveDispute: { by: "ARBITER", apply: unimplemented },
+		ReleaseSettled: { by: "SYSTEM", apply: unimplemented },
+		RefundSettled: { by: "SYSTEM", apply: unimplemented },
+		MergeFinished: { by: "SYSTEM", apply: unimplemented },
+		TimerDue: { by: "SYSTEM", apply: (row, command, facts) => {
+			// Only pre-capture timers belong to this skeleton.
+			if (row.state.status !== "OPEN") return unchanged(row);
+			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
+			const phase = row.state.phase;
+			if (phase.kind === "FUNDING") {
+				if (["CAPTURING", "REFUND_PENDING"].includes(phase.checkout.phase)) return unchanged(row);
+				if (facts.now >= phase.checkoutEndsAt) return { next: { ...row, version: (row.version + 1) as Version,
+					bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "PENDING" } : b),
+					state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: phase.round } } }, credits: [], effects: [] };
+			}
+			if (facts.now >= row.contract.deliveryEndsAt) {
+				const closed = transitionTable().CancelJob.apply(row as Open, { jobId: row.id }, facts);
+				if (typeof closed === "string") return closed;
+				return { ...closed, next: { ...closed.next, state: { ...closed.next.state, reason: "NO_ACCEPT_BY_DEADLINE" } } };
+			}
+			if (facts.loaded.kind !== "BIDDER_CREDITS") return "WRONG_STATE";
+			const expired = row.bids.filter(b => b.status === "PENDING" && facts.now >= b.respondBy);
+			if (!expired.length) return unchanged(row);
+			const credits: CreditAccount[] = [];
+			for (const bid of expired) {
+				if (bid.kind === "HOUSE") continue;
+				const account = facts.loaded.accounts.get(bid.operator);
+				if (!account) return "NOT_FOUND";
+				const returned = reduceCredits(account, { kind: "Return", bid: bid.id, reason: "NO_CLIENT_RESPONSE", at: facts.now });
+				if (returned !== "INSUFFICIENT_CREDITS" && returned !== account) credits.push(returned);
+			}
+			return { next: { ...row, version: (row.version + 1) as Version,
+				bids: row.bids.map(b => expired.some(old => old.id === b.id) ? { ...b, status: "RETURNED" } : b) }, credits, effects: [] };
+		} },
+	};
+}
+
+function unchanged<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
+	return { next: row, credits: [], effects: [] };
 }
 
 type TransitionTable = ReturnType<typeof transitionTable>;
@@ -415,20 +564,70 @@ export type SystemJobCommand = Exclude<JobCommand, UserJobCommand>;
 /** The only entry into the table. Exhaustive over command types at compile time. */
 export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: Facts): Plan<JobRow> | DomainFailure {
 	// TODO Look up the edge, check facts.actor against edge.by and row ownership, narrow row.state, apply.
-	throw new Error("not implemented");
+	const table = transitionTable();
+	if (facts.actor.role !== table[command.type].by) return "NOT_OWNER";
+	if (command.type === "OpenJob") return row === null ? table.OpenJob.apply(null, command, facts) : "WRONG_STATE";
+	if (!row || row.id !== command.jobId) return "NOT_FOUND";
+	if (facts.actor.role === "CLIENT" && row.client !== facts.actor.clientId) return "NOT_OWNER";
+	if (command.type === "CaptureCompleted" && row.state.status !== "OPEN") return unchanged(row);
+	if (row.state.status !== "OPEN") return "WRONG_STATE";
+	const open = row as Open;
+	switch (command.type) {
+		case "PlaceBid": return table.PlaceBid.apply(open, command, facts);
+		case "AcceptBid": return table.AcceptBid.apply(open, command, facts);
+		case "CancelJob": return table.CancelJob.apply(open, command, facts);
+		case "OrderCreated": return table.OrderCreated.apply(open, command, facts);
+		case "FundingFailed": return table.FundingFailed.apply(open, command, facts);
+		case "BuyerApproved": return table.BuyerApproved.apply(open, command, facts);
+		case "CaptureCompleted": return table.CaptureCompleted.apply(open, command, facts);
+		case "TimerDue": return table.TimerDue.apply(open, command, facts);
+		default: throw new Error("not implemented");
+	}
 }
 
 /** The earliest instant at which TimerDue would change this row. Stored by the commit for the timer index. */
 export function wakeAt(row: JobRow): Instant | null {
 	// TODO min over: PENDING respondBy, checkoutEndsAt, deliveryEndsAt, runEndsAt, review endsAt, resolveBy, cutoffAt.
-	throw new Error("not implemented");
+	if (row.state.status !== "OPEN") return null;
+	const candidates = [row.contract.deliveryEndsAt];
+	if (row.state.phase.kind === "FUNDING") {
+		if (["CAPTURING", "REFUND_PENDING"].includes(row.state.phase.checkout.phase)) return null;
+		candidates.push(row.state.phase.checkoutEndsAt);
+	}
+	candidates.push(...row.bids.filter(b => b.status === "PENDING").map(b => b.respondBy));
+	return candidates.sort()[0];
 }
 
 export function rankBids(bids: readonly Bid[], paidReceipts: ReadonlyMap<OperatorId, number>): RankedBids {
-	throw new Error("not implemented");
+	return { operators: bids.filter(b => b.kind === "INDEPENDENT").sort((a, b) =>
+		(paidReceipts.get(b.operator) ?? 0) - (paidReceipts.get(a.operator) ?? 0) ||
+		a.placedAt.localeCompare(b.placedAt) || a.id.localeCompare(b.id)),
+		house: bids.find(b => b.kind === "HOUSE") ?? null };
 }
 
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobView {
-	throw new Error("not implemented");
+	const ranked = rankBids(row.bids, paidReceipts);
+	const viewBid = (bid: Bid) => ({ id: bid.id, operator: bid.operator, handle: bid.handle,
+		label: bid.kind, price: bid.price, eta: bid.eta, agent: String(bid.agent), runner: bid.runner,
+		pitch: bid.pitch, paidReceipts: paidReceipts.get(bid.operator) ?? 0, status: bid.status });
+	const state = row.state;
+	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
+	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow
+		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
+	const ledger = held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
+	const history = state.status === "IN_PROGRESS" ? state.attempts.history
+		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
+	const used = history.length + (state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? 1 : 0);
+	return { id: row.id, title: row.title, status: state.status,
+		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
+		budget: row.contract.budget, deliveryEndsAt: row.contract.deliveryEndsAt,
+		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
+		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
+		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : held ? "HELD" : "NONE",
+		approveUrl: funding?.checkout.phase === "AWAITING_APPROVAL" && viewer.role === "CLIENT" && viewer.clientId === row.client ? funding.checkout.approveUrl : null,
+		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: history.at(-1)?.verdict.result ?? null, reasons: [] },
+		reviewEndsAt: state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT" ? state.review.endsAt : null,
+		pullRequest: state.status === "VERIFIED" ? state.passed.verdict.pullRequest : state.status === "PAID" ? state.receipt.pullRequest : null,
+		receipt: state.status === "PAID" ? state.receipt : null };
 }
