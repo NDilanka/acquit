@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-ignore Node executes the helper's native ESM.
-import { credentialFill, redactor, refuseDashboard, englishCheckoutUrl, paypalControlSelectors, paypalPageProbe } from "../../../.factory/skills/verify-acquit/scripts/safe-browser.mjs";
+import { credentialFill, redactor, refuseDashboard, englishCheckoutUrl, paypalControlSelectors, paypalPageProbe, paypalControlReady } from "../../../.factory/skills/verify-acquit/scripts/safe-browser.mjs";
 
 test("credential fills travel only through batch stdin, never eval or command argv", () => {
 	const command = credentialFill('input[type="password"]', 'synthetic-"password');
@@ -66,6 +66,7 @@ test("checkout forces English while preserving the order and prefers structural 
 	assert.throws(() => englishCheckoutUrl("http://sandbox.paypal.com"), /outside PayPal sandbox/);
 	assert.deepEqual(paypalControlSelectors.slice(0, 3), ["#btnLogin", "#btnNext", "#payment-submit-btn"]);
 	assert(paypalControlSelectors.includes('button[type="submit"]'));
+	assert(paypalControlSelectors.includes('button:not([type])'));
 });
 test("localized PayPal controls exclude covered and hidden buttons, without returning field values", () => {
 	const make = (id: string, width = 100) => ({ id, disabled: false, innerText: "ඊළඟ", value: "synthetic-private",
@@ -94,6 +95,20 @@ test("localized PayPal controls exclude covered and hidden buttons, without retu
 		Object.defineProperty(globalThis, "document", { configurable: true, value: {
 			elementFromPoint: (x: number) => x > 200 ? profile : purchase,
 			querySelectorAll: (selector: string) => selector === 'button[type="submit"]' || selector === 'button,input[type="submit"]' ? [profile, purchase] : [],
+		} });
+		assert.equal(paypalPageProbe(paypalControlSelectors).control, '[id="purchase"]');
+		let top: unknown = {};
+		Object.defineProperty(globalThis, "document", { configurable: true, value: {
+			querySelector: () => purchase, elementFromPoint: () => top,
+		} });
+		assert.equal(paypalControlReady('[id="purchase"]', "http://app.test"), false, "a spinner-covered button must wait");
+		top = purchase;
+		assert.equal(paypalControlReady('[id="purchase"]', "http://app.test"), true);
+		// Default HTMLButtonElement.type is submit even when no type attribute
+		// exists. PayPal Hermes uses this implicit submit for its purchase button.
+		Object.defineProperty(globalThis, "document", { configurable: true, value: {
+			elementFromPoint: (x: number) => x > 200 ? profile : purchase,
+			querySelectorAll: (selector: string) => selector === 'button:not([type])' || selector === 'button,input[type="submit"]' ? [profile, purchase] : [],
 		} });
 		assert.equal(paypalPageProbe(paypalControlSelectors).control, '[id="purchase"]');
 	} finally {

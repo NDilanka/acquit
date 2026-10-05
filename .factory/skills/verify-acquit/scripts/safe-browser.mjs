@@ -11,7 +11,7 @@ export async function refuseDashboard(ports, isOpen) {
 }
 export const paypalControlSelectors = [
 	"#btnLogin", "#btnNext", "#payment-submit-btn", "#confirmButtonTop", "#confirmButtonBottom",
-	'[data-testid="submit-button"]', '[data-testid="pay-now-button"]', 'button[type="submit"]', 'input[type="submit"]',
+	'[data-testid="submit-button"]', '[data-testid="pay-now-button"]', 'button[type="submit"]', 'button:not([type])', 'input[type="submit"]',
 ];
 export function englishCheckoutUrl(value) {
 	const url = new URL(value);
@@ -20,6 +20,15 @@ export function englishCheckoutUrl(value) {
 	}
 	url.searchParams.set("locale.x", "en_US");
 	return url.toString();
+}
+export function paypalControlReady(selector, returnOrigin) {
+	if (typeof location !== "undefined" && location.origin === returnOrigin) return true;
+	const element = document.querySelector(selector);
+	if (!element || element.disabled) return false;
+	const rect = element.getBoundingClientRect();
+	if (rect.width <= 0 || rect.height <= 0 || getComputedStyle(element).opacity === "0") return false;
+	const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+	return top === element || element.contains(top);
 }
 // Self-contained so it can run in the page without sending any input values back.
 export function paypalPageProbe(selectors) {
@@ -41,7 +50,7 @@ export function paypalPageProbe(selectors) {
 		const candidates = Array.from(document.querySelectorAll(selector));
 		// Hermes renders header/profile buttons as type=submit too. Its purchase
 		// submit is the last submit control; never choose the header/profile menu.
-		const genericSubmit = selector === 'button[type="submit"]' || selector === 'input[type="submit"]';
+		const genericSubmit = selector === 'button[type="submit"]' || selector === 'button:not([type])' || selector === 'input[type="submit"]';
 		if (genericSubmit) candidates.reverse();
 		// The sticky Hermes purchase footer may fail a pre-scroll hit test.
 		// Native click still enforces coverage after scrollintoview.

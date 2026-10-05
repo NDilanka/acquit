@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
 import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
-import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe } from "./safe-browser.mjs";
+import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, paypalControlReady } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -151,6 +151,10 @@ async function approve() {
 		// not Playwright's nonstandard :visible pseudo-class.
 		if (fields.control) {
 			await browser("scrollintoview", fields.control);
+			// Hermes overlays its still-present purchase button with a spinner.
+			// Wait for true click readiness or the app return, not just DOM load.
+			await browser("wait", "--fn", `(${paypalControlReady.toString()})(${JSON.stringify(fields.control)},${JSON.stringify(webUrl)})`);
+			if (new URL((await browser("get", "url")).url).origin === webUrl) break;
 			await browser("click", fields.control);
 		}
 		else {
