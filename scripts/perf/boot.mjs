@@ -14,18 +14,9 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const { values } = parseArgs({ options: { rounds: { type: "string", default: "5" }, trunk: { type: "string" } } });
 const rounds = Number(values.rounds);
 assert(Number.isSafeInteger(rounds) && rounds >= 5, "Use at least five rounds.");
-const evidence = resolve(root, "data/evidence/self-proof-h0/perf");
+const evidence = resolve(root, process.env.ACQUIT_PERF_EVIDENCE_DIR ?? "data/evidence/self-proof-h0/perf");
 const trunk = resolve(root, values.trunk ?? "data/perf/trunk");
 await mkdir(evidence, { recursive: true });
-const memoryFile = resolve(root, "data/ctl/lanes/memory.json");
-const memory = existsSync(memoryFile) ? JSON.parse(await readFile(memoryFile, "utf8")) : null;
-const freeMB = freePhysicalMB();
-if (memory && freeMB < 1024 + memory.perLaneMB) {
-	const report = { status: "BLOCKED", reason: "Insufficient physical memory for one slot and the 1024 MB reserve.", freeMB, reserveMB: 1024, perLaneMB: memory.perLaneMB };
-	await writeFile(resolve(evidence, "boot.json"), JSON.stringify(report, null, 2) + "\n");
-	console.log(JSON.stringify(report));
-	process.exit(1);
-}
 if (!existsSync(resolve(trunk, "package.json"))) {
 	assert(!values.trunk, "The supplied trunk worktree is missing.");
 	const result = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunk, "origin/main"], { encoding: "utf8" });
@@ -73,13 +64,13 @@ const median = values => {
 };
 const baseline = median(samples.trunk);
 const head = median(samples.head);
-process.env.ACQUIT_MAX_LANES ??= "2";
 let waveTiming;
-const wave = await startWave(10, ({ cap }) => {
+try {
+const wave = await startWave(10, ({ cap, startedLanes }) => {
 	const startedAt = performance.now();
 	waveTiming = (async () => {
 		if (cap === 0) return { seconds: 0, answered: 0 };
-		const urls = Array.from({ length: cap }, (_, i) => laneSlot(i + 1)).flatMap(slot => [
+		const urls = startedLanes.map(laneSlot).flatMap(slot => [
 			`http://127.0.0.1:${slot.apiPort}/api/users`, `http://127.0.0.1:${slot.webPort}/`,
 		]);
 		while (performance.now() - startedAt < 120_000) {
@@ -95,9 +86,16 @@ const waveSeconds = timing.seconds;
 const report = { rounds, samples, trunkMedianSeconds: baseline, headMedianSeconds: head, ratio: head / baseline,
 	singlePassed: head <= baseline * 1.15, waveSeconds, wavePassed: wave.cap > 0 && timing.answered === wave.cap * 2 && waveSeconds <= 120,
 	perLaneMB: wave.perLaneMB, cap: wave.cap, freeMB: wave.freeMB, reserveMB: wave.reserveMB,
+	appMarginalMB: wave.appMarginalMB, browserMarginalMB: wave.browserMarginalMB,
 	physicalFreeMBAfter: freePhysicalMB(), failures: 0, endpointsPerSingle: 2, node: process.version };
 await writeFile(resolve(evidence, "boot.json"), JSON.stringify(report, null, 2) + "\n");
 console.log(JSON.stringify(report));
+if (!report.singlePassed || !report.wavePassed) process.exitCode = 1;
+} catch (error) {
+	await writeFile(resolve(evidence, "boot.json"), JSON.stringify({ samples, trunkMedianSeconds: baseline, headMedianSeconds: head,
+		ratio: head / baseline, singlePassed: head <= baseline * 1.15, wavePassed: false, error: error.message }, null, 2) + "\n");
+	throw error;
+} finally {
 const cleanup = await captured(process.execPath, [".factory/skills/verify-acquit/scripts/lanes.mjs", "cleanup"], root, process.env, 180_000);
 assert.equal(cleanup.code, 0, "Wave cleanup failed.");
-if (!report.singlePassed || !report.wavePassed) process.exitCode = 1;
+}

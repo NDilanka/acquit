@@ -61,14 +61,14 @@ test("a failed start-time lookup releases spawned handles and preserves the orig
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
-		const marker = `import { writeFileSync } from "node:fs"; writeFileSync(process.argv[1]+".pid", String(process.pid)); setInterval(()=>{},1000);`;
+		const marker = `import { createServer } from "node:http"; createServer((_q,r)=>r.end("ok")).listen(Number(process.argv.includes("--port") ? process.env.WEB_PORT : process.env.PORT), "127.0.0.1");`;
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
 			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
 		const pids: number[] = [];
-		await assert.rejects(start({ timeout: "1" }, ctx, async pid => { pids.push(pid); return null; }),
+		await assert.rejects(start({ timeout: "5" }, ctx, async pid => { pids.push(pid); return null; }),
 			(error: any) => error.code === "PROCESS_FAILED" && error.message === "Could not record the API start time.");
 		assert.equal(pids.length, 2);
 		assert(pids.every(pid => !alive(pid)));

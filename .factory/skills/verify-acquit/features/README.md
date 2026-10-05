@@ -8,7 +8,7 @@ Read this index before driving Acquit. Each entry names a user path and its obse
 - Set `ACQUIT_LANE=<n>` for every call. Never reset the user's `data/acquit.db`. The no-lane fallback requires `DATABASE_PATH=./data/verify/acquit.db`.
 - Start with the seeded users, issue `maya-client/invoice-app#12`, Devon's `ts-bugfixer`, and 30 bid credits.
 - Use the URLs from `ctl status`. Lane n uses web port `5173 + 10n` and API port `4310 + 10n`.
-- Run separate slots within the cap printed by `scripts/lanes.mjs start <count>`. Keep at most two active on this machine.
+- Run app slots within the cap printed by `scripts/lanes.mjs start <count>`. Browser memory is measured separately; keep at most two browser sessions and respect the printed `browserCap`. App-only waves may run three or more slots.
 - Use the isolated headless namespace and session `verify-acquit-lane-<n>`.
 
 ## Driving conventions

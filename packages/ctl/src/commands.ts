@@ -80,21 +80,24 @@ export async function start(parsed: Parsed, ctx: Context, identity = captureStar
 			children.push(api);
 			state.api.pid = api.pid!;
 			await atomicJson(ctx.stateFile, state);
-			const apiIdentity = identity(state.api.pid);
 			const web = await detached([vite, "--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], resolve(ctx.root, "apps/web"),
 				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web);
 			children.push(web);
 			state.web.pid = web.pid!;
 			await atomicJson(ctx.stateFile, state);
-			[state.api.startTime, state.web.startTime] = await Promise.all([apiIdentity, identity(state.web.pid)]);
-			if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
-			if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
-			await atomicJson(ctx.stateFile, state);
 			const deadline = Date.now() + timeout * 1000;
 			while (Date.now() < deadline) {
 				if (alive(state.api.pid) && alive(state.web.pid)) {
 					const probe = await probes(ctx.apiPort, ctx.webPort);
-					if (probe.apiReady && probe.webReady) return await runData(state, false);
+					if (probe.apiReady && probe.webReady) {
+						// Identity inspection competes with cold TypeScript/Vite boot
+						// on small Windows hosts. Defer it until endpoints answer.
+						[state.api.startTime, state.web.startTime] = await Promise.all([identity(state.api.pid), identity(state.web.pid)]);
+						if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
+						if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
+						await atomicJson(ctx.stateFile, state);
+						return await runData(state, false);
+					}
 				}
 				await sleep(200);
 			}

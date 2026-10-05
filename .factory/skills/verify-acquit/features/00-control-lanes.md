@@ -15,4 +15,4 @@ Each lane owns its ports, database, process record, and headless browser. Start 
 
 ## Automatic waves
 
-Run `lanes.mjs start 10`, `doctor`, and `cleanup`. Require the printed memory measurement, cap, and a healthy row for every started lane. A zero cap means memory is insufficient and the live wave remains BLOCKED. `cleanup <n>` must preserve other owned slots.
+Run `lanes.mjs start 10`, `doctor`, and `cleanup`. Require separate app/browser marginal measurements, measured reserve, cap, and a healthy row for every started lane. A zero cap exits nonzero and names needed/available MB and `ACQUIT_MAX_LANES`. Use `start --lanes 6,7,8` for the app-only cleanup-isolation proof; `cleanup 7` must close only lane 7 while lanes 6 and 8 remain healthy. Use `--browsers` only for waves needing simultaneous browsers.
