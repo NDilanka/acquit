@@ -168,7 +168,7 @@ Done when:
 
 - [x] A usage sketch shows how callers will use the code. See the Usage section of `docs/architecture/rationale.md`.
 - [x] At least two structurally different designs were compared. Three were: an event log, a versioned row with an outbox, and split money and work machines (`scratch/architect/candidate-1` to `candidate-3`).
-- [x] Types and signatures exist with placeholder bodies, in one file or a module map. Nine files in `docs/architecture/sketch/`, 44 `not implemented` bodies, strict `tsc` exit 0.
+- [x] Types and signatures exist with placeholder bodies, in one file or a module map. Nine files in `packages/core/src/`, 44 `not implemented` bodies, strict `tsc` exit 0.
 - [x] A rationale records which design won and why. See its Synthesis decision section.
 - [x] The agent stopped after the sketch and did not implement it.
 - [ ] Or you skipped this step because the shape was obvious, and you wrote down that reason.
@@ -186,7 +186,7 @@ Watch out:
 The verification skill needs an app it can launch. The first real action in the tutorial is posting a job and funding the escrow.
 
 ```text
-/poteto-mode build the smallest version of Acquit that starts with one command and lets a client post a job, an onboarded operator bid on it, and the client accept the bid and fund escrow in the PayPal sandbox end to end. add a seed script with the test users maya-client (client) and devon-ops (operator, already onboarded to the sandbox merchant) and the invoice-app repository. show me it running. implement against docs/architecture/sketch and its rationale. delegate backend code to pv-sol-high and any frontend code only to pv-opus-medium.
+/poteto-mode build the smallest version of Acquit that starts with one command and lets a client post a job, an onboarded operator bid on it, and the client accept the bid and fund escrow in the PayPal sandbox end to end. add a seed script with the test users maya-client (client) and devon-ops (operator, already onboarded to the sandbox merchant) and the invoice-app repository. show me it running. implement against packages/core/src and its rationale. delegate backend code to pv-sol-high and any frontend code only to pv-opus-medium.
 ```
 
 Done when:

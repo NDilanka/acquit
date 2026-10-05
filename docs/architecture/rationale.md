@@ -70,7 +70,7 @@ The timer worker is one loop. `tick` fires due job clocks and the weekly credit 
 setInterval(() => void acquit.tick(), 30_000);
 ```
 
-Every tutorial transition maps to one table edge in `sketch/job.ts`.
+Every tutorial transition maps to one table edge in `packages/core/src/job.ts`.
 
 | Tutorial step | Caller | Command | Edge |
 | --- | --- | --- | --- |
