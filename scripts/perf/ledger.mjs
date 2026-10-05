@@ -17,8 +17,9 @@ const trunk = resolve(root, values.trunk ?? "data/perf/trunk");
 await mkdir(evidence, { recursive: true });
 if (!existsSync(resolve(trunk, "package.json"))) {
 	assert(!values.trunk, "The supplied trunk worktree is missing.");
-	const created = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunk, "origin/main"], { encoding: "utf8" });
-	assert.equal(created.status, 0, "Could not create the isolated trunk baseline.");
+	// The baseline is the parent tip of this PR, so H0's delta is never attributed to F1.
+	const created = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunk, "origin/stack/h0-lanes"], { encoding: "utf8" });
+	assert.equal(created.status, 0, "Could not create the isolated trunk baseline from origin/stack/h0-lanes.");
 	await copyFile(resolve(root, ".env"), resolve(trunk, ".env"));
 	const installed = await captured(process.execPath, [process.env.npm_execpath ?? "npm", "install"], trunk, process.env, 300_000);
 	assert.equal(installed.code, 0, "Could not install the baseline dependencies.");
@@ -38,14 +39,32 @@ async function ready(label, cwd) {
 	const started = await captured(process.execPath, [cli, "start", "--timeout", "120"], cwd, env, 180_000);
 	assert.equal(started.code, 0, `${label} did not start.`);
 	running.push({ cwd, cli, env, api: side.api, web: side.web });
+	// Seed so the seeded operators and agents exist; the automatic house bid needs them.
+	const seeded = await captured(process.execPath, [cli, "seed-db", "--yes"], cwd, env, 120_000);
+	assert.equal(seeded.code, 0, `${label} did not seed.`);
 	const session = await fetch(`http://127.0.0.1:${side.api}/api/session`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle: "maya-client" }) });
 	assert.equal(session.ok, true, `${label} login failed.`);
 	const token = (await session.json()).token;
-	const opened = await fetch(`http://127.0.0.1:${side.api}/api/commands`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-		body: JSON.stringify({ key: crypto.randomUUID(), command: { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000, deliveryEndsAt: "2026-10-20T12:00:00.000Z" } }) });
-	const outcome = await opened.json();
-	assert.equal(opened.ok && outcome.outcome?.result?.job?.id !== undefined, true, `${label} did not open a job.`);
-	return { api: side.api, token, jobId: outcome.outcome.result.job.id };
+	const command = async (body) => {
+		const response = await fetch(`http://127.0.0.1:${side.api}/api/commands`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+			body: JSON.stringify({ key: crypto.randomUUID(), command: body }) });
+		const outcome = await response.json();
+		assert.equal(response.ok && outcome.outcome && outcome.outcome.kind !== "DENIED", true, `${label} ${body.type} was denied.`);
+		return outcome.outcome.result;
+	};
+	// Card funding is the documented ACQUIT_DEV path: the sandbox order completes without buyer approval.
+	const mode = await fetch(`http://127.0.0.1:${side.api}/api/dev/fund-mode`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ mode: "card" }) });
+	assert.equal(mode.ok, true, `${label} could not select card funding.`);
+	const opened = await command({ type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000,
+		deliveryEndsAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+	const jobId = opened.job.id;
+	const view = await (await fetch(`http://127.0.0.1:${side.api}/api/jobs/${jobId}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+	assert(view.job?.bids?.house?.id, `${label} opened a job without a house bid.`);
+	// Fund the sampled job so the metric reads a HELD book, per the plan's metric.
+	const accepted = await command({ type: "AcceptBid", jobId, bidId: view.job.bids.house.id });
+	assert.equal(accepted.job?.escrow, "HELD", `${label} job was not funded to HELD.`);
+	assert.equal(accepted.job.ledger.some(line => line.kind === "HELD"), true, `${label} book has no HELD line.`);
+	return { api: side.api, token, jobId };
 }
 async function round(label, state) {
 	for (let index = 0; index < 20; index++) {
