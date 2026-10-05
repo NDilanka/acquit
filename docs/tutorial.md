@@ -380,6 +380,7 @@ Submitted job_7Q2K (attempt 2 of 3)
 Verifier result: VERIFIED
 	Frozen tests: 48 passed (suite frozen at a41c9e2)
 	Hidden tests: 6 passed
+	Required tests: 54 completed, 0 skipped or missing
 	Protected paths: none touched
 Pull request opened: maya-client/invoice-app#13
 Job status: VERIFIED

@@ -7,8 +7,8 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | Step id | Step | Status | Target dates | Done-check |
 | --- | --- | --- | --- | --- |
 | gf-tutorial | Write the tutorial first | done | 2026-10-05 | All three boxes in the gf-tutorial section are ticked. |
-| gf-prototype | Settle four open decisions with throwaways | next | 2026-10-06 to 2026-10-18 | Each of the four decisions has a result and a decision log row. |
-| gf-architect | Sketch the domain and stop | pending | 2026-10-15 to 2026-10-17 | The sketch exists, and no implementation exists. |
+| gf-prototype | Settle four open decisions with throwaways | done (b needs a sandbox run) | 2026-10-06 to 2026-10-18 | Each of the four decisions has a result and a decision log row. |
+| gf-architect | Sketch the domain and stop | next | 2026-10-15 to 2026-10-17 | The sketch exists, and no implementation exists. |
 | gf-skeleton | Build the walking skeleton | pending | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | pending | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | pending | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
@@ -121,11 +121,18 @@ The client decides on this page, and judges score design. Frontend work runs on 
 
 ### Done when
 
-- [ ] Two or three variants exist in a scratch folder, outside production code.
-- [ ] You have a screenshot, an output, or a timing for each variant.
-- [ ] You picked one direction and wrote down why.
-- [ ] The agent's reply says plainly that the prototype is throwaway.
-- [ ] Or you skipped this step because no decision was open, and you wrote down that reason.
+- [x] Two or three variants exist in a scratch folder, outside production code.
+- [x] You have a screenshot, an output, or a timing for each variant.
+- [x] You picked one direction and wrote down why.
+- [x] The agent's reply says plainly that the prototype is throwaway.
+- [ ] Or you skipped this step because no decision was open, and you wrote down that reason. (Not applicable. All four decisions were open.)
+
+Results, 2026-10-05. Each folder has a `RESULT.md` with raw output.
+
+- **a.** Gate passed when warm. `bend --check-only bad.bend` printed `SOME PROOFS FAIL` at the one-release proof in a median of 0.32s over 3 runs. The first `bend --verdict` after installing Lean took 44.57s, because it builds the kernel once. Decision: TypeScript runs the product ledger, and `scratch/bend2-ledger/ledger.bend` becomes the proof of the same three laws for the demo. Pre-warm the kernel before recording. See `scratch/bend2-ledger/RESULT.md`.
+- **b.** Partly settled. No PayPal sandbox credentials exist yet, so `sandbox.mjs` exits 2 and names the missing variables. A local replay showed that dedupe on event id alone pays twice when PayPal re-sends with a new event id (`payout_count=3`). Guarding the job's HELD to RELEASED transition paid once per job (`payout_count=2` for two jobs). Decision: guard the job state transition. Still open: the real sandbox run and whether `platform_fees` can carry the client fee. See `scratch/paypal-escrow/RESULT.md`.
+- **c.** Neither variant alone was enough. Path protection (A) rejected a fix that also touched a test. The frozen overlay (B) verified a tree that differs from what merges. Decision: run on frozen inputs (B), reject protected-path changes in the merge diff (A), and require every test to complete. Residual: source code that replaces a test matcher passed both, so assertions must run outside the submitted code's process. See `scratch/verifier/RESULT.md`.
+- **d.** Three layouts. Decision: variant 2, proof first, for choosing a bid. After a bid is accepted, the page switches to variant 3, the ledger spine. Screenshots are in `scratch/job-page/shots/`.
 
 Watch out:
 
@@ -143,14 +150,15 @@ Acquit spans the web app, the API, the ledger, PayPal, the verifier CI, and the 
 	Receipt is created only by an escrow release, and it records frozen tests, hidden tests, and attempts.
 	Credits ledger. A bid costs 10 credits. The weekly allowance is 30, plus 10 per verified receipt, up to 100. Credits return when the client cancels or does not respond to bids within the review window. Extra credits cost 0.15 USD each. Credits cannot be transferred or cashed out, and they never mix with escrow money.
 	Acceptance contract with definition of done, 3 attempts, a 72-hour client review window, and a dispute path.
-keep the ledger behind one interface so the Bend2 gate result picks the implementation. carry the results from scratch/ into the sketch.
+the ledger is a pure TypeScript reducer. scratch/bend2-ledger/ledger.bend proves the same three laws for the demo. carry the decisions from the gf-prototype results into the sketch.
 ```
 
 Questions the sketch must answer:
 
 - What happens when the 72-hour review window ends with no client action.
 - Whether House agent bids spend credits.
-- How the demo shows a live refund, which `docs/concept.md:55` names as part of the centerpiece. The tutorial shows a rejection that keeps the escrow held.
+- Whether House bids sort first on the job page. Sorting by receipts puts House first, which works against new operators.
+- How assertions run outside the submitted code's process, so a replaced test matcher cannot pass hidden tests.
 
 Done when:
 
@@ -372,8 +380,13 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-05 | First customers are agencies and non-technical founders with private repos. Get three committed buyers before building much. | Output of the three-model stress test. | `docs/concept.md:62` |
 | 2026-10-05 | Write an acceptance contract with definition of done, rework limits, review deadline, and dispute path. | Verified payment needs agreed terms before work starts. | `docs/concept.md:63` |
 | 2026-10-05 | Duplicate PayPal webhooks produce exactly one payout. | PayPal can deliver the same webhook more than once. | `docs/concept.md:64` |
-| 2026-10-05 | The product name is Acquit, with the tagline "Cleared, then paid". | Chosen this session from the shortlist work. `docs/concept.md:66` still says the name is undecided and needs an update. | `docs/tutorial.md:1`, `docs/tutorial.md:11` |
+| 2026-10-05 | The product name is Acquit, with the tagline "Cleared, then paid". | Chosen this session from the shortlist work. | `docs/tutorial.md:1`, `docs/tutorial.md:11` |
 | 2026-10-05 | Write the tutorial before any code. | The tutorial is the target that agents and the demo video check against. | `docs/tutorial.md` |
+| 2026-10-05 | A verifier rejection keeps escrow held while the operator reworks. Refunds happen only on deadline expiry or after 3 failed attempts. | More realistic than an instant refund, and the tutorial already shows it. | `docs/concept.md:55`, `docs/tutorial.md` attempt 1 |
+| 2026-10-05 | The product ledger is TypeScript. Bend2 proves the same three laws as a demo artifact. | The Bend2 reject ran in 0.32s warm, so the gate passed. The cold kernel build took 44.57s, `Nat` overflowed at cent values, and calling Bend2 from the server needs WSL. | `scratch/bend2-ledger/RESULT.md` |
+| 2026-10-05 | Release is guarded by the job's HELD to RELEASED transition, not by webhook event id. | Event-id dedupe paid twice on a re-sent event with a new id. | `scratch/paypal-escrow/RESULT.md` |
+| 2026-10-05 | The verifier runs on frozen inputs, rejects protected-path changes in the merge diff, and requires all 54 tests to complete. | Each variant alone missed a case. A config cheat exited 0 with no tests collected. | `scratch/verifier/RESULT.md`, `docs/tutorial.md` attempt 2 |
+| 2026-10-05 | The job page uses the proof-first layout for bids, then the ledger spine after a bid is accepted. | Prices are equal, so receipts are the deciding signal. | `scratch/job-page/shots/` |
 | 2026-10-05 | Follow the greenfield line with the Balanced role sheet. Frontend tasks run on pv-opus-medium only. | The user's role sheet and frontend rule. | This doc, Status table |
 
 ## How to update this doc
