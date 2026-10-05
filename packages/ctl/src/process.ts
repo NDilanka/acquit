@@ -79,6 +79,23 @@ export async function captured(executable: string, args: string[], cwd: string, 
 		await rmdir(dir);
 	}
 }
+export async function discarded(executable: string, args: string[], cwd: string, env = process.env, timeout = 60_000, input?: string): Promise<number> {
+	// Credential output never touches a temporary file, even if this CLI dies.
+	// Resolve on exit, not close: a cold daemon can inherit the stdout pipe.
+	return new Promise((resolve, reject) => {
+		const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "ignore"] });
+		child.stdout?.resume();
+		if (input !== undefined) { child.stdin?.on("error", () => {}); child.stdin?.end(input); }
+		const finish = () => { clearTimeout(timer); child.stdout?.destroy(); child.stdin?.destroy(); };
+		const timer = setTimeout(() => {
+			void releaseSpawned(child).catch(() => {});
+			finish();
+			reject(new CliError("PROCESS_FAILED", "The credential command timed out. No diagnostics saved.", "Retry approval without dashboard or stream clients."));
+		}, timeout);
+		child.once("error", error => { finish(); reject(error); });
+		child.once("exit", code => { finish(); resolve(code ?? 1); });
+	});
+}
 export async function killTree(pid: number): Promise<void> {
 	if (!alive(pid)) return;
 	if (pid === process.pid) throw new CliError("INVALID_STATE", "The ownership file refers to this CLI process.", "Inspect data/ctl/run.json and remove the invalid record.");
@@ -112,11 +129,26 @@ export async function captureStartTime(pid: number): Promise<string | null> {
 	}
 	return null;
 }
+export function requireSpawned(child: ChildProcess): void {
+	if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+		throw new CliError("PROCESS_FAILED", "A spawned service exited before ownership could be recorded.", "Inspect the service logs, then retry start.");
+	}
+}
+export async function captureOwnedIdentity(child: ChildProcess, lookup = captureStartTime): Promise<string | null> {
+	requireSpawned(child);
+	const identity = await lookup(child.pid!);
+	// A PID lookup may observe a reused PID. Only a still-live handle may adopt it.
+	requireSpawned(child);
+	return identity;
+}
 export async function releaseSpawned(child: ChildProcess): Promise<void> {
 	// A ChildProcess retains the native process handle on Windows. Unlike stale
 	// run.json, this invocation has direct ownership even if identity lookup fails.
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	if (process.platform !== "win32") { await killTree(child.pid!); return; }
+	// detached() unrefs this handle. Waiting on a Promise alone does not keep
+	// Node alive long enough to observe exit and finish ownership cleanup.
+	child.ref();
 	const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
 	child.kill();
 	await exited;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,10 +64,17 @@ export async function readState(ctx: Context): Promise<RunState | null> {
 		return state;
 	} catch { throw new CliError("INVALID_STATE", "The CLI ownership file is invalid.", `Inspect ${ctx.stateFile}. Restore its owned PIDs or remove the file only after stopping those processes.`); }
 }
-export async function atomicJson(path: string, value: unknown): Promise<void> {
+export async function atomicJson(path: string, value: unknown, beforePublish?: () => void): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	const temp = `${path}.${process.pid}.tmp`;
-	try { await writeFile(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 }); await rename(temp, path); }
+	try {
+		await writeFile(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+		if (beforePublish) {
+			beforePublish();
+			// No asynchronous filesystem/event-loop gap between guard and publish.
+			renameSync(temp, path);
+		} else await rename(temp, path);
+	}
 	finally { await unlink(temp).catch(() => {}); }
 }
 export async function clearState(ctx: Context): Promise<void> {

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { alive, captured, captureStartTime, CliError, detached, killTree, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
+import { alive, captured, captureStartTime, captureOwnedIdentity, CliError, detached, killTree, portOpen, reachable, releaseSpawned, requireOwned, requireSpawned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
@@ -92,10 +92,12 @@ export async function start(parsed: Parsed, ctx: Context, identity = captureStar
 					if (probe.apiReady && probe.webReady) {
 						// Identity inspection competes with cold TypeScript/Vite boot
 						// on small Windows hosts. Defer it until endpoints answer.
-						[state.api.startTime, state.web.startTime] = await Promise.all([identity(state.api.pid), identity(state.web.pid)]);
+						[state.api.startTime, state.web.startTime] = await Promise.all([captureOwnedIdentity(api, identity), captureOwnedIdentity(web, identity)]);
+						const guard = () => children.forEach(requireSpawned);
+						guard();
 						if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
 						if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
-						await atomicJson(ctx.stateFile, state);
+						await atomicJson(ctx.stateFile, state, guard);
 						return await runData(state, false);
 					}
 				}

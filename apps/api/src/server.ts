@@ -22,7 +22,7 @@ function session(req: IncomingMessage) {
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
 	if (!token) return null;
-	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), new Date().toISOString());
+	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), clock.now());
 	const selected = record ? user(String(record.handle)) : null;
 	return selected ? { user: selected, token, actor: selected.role === "CLIENT"
 		? { role: "CLIENT", clientId: selected.handle as ClientId } as Actor
@@ -97,7 +97,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			const selected = user(text(object(await body(req)).handle, "handle"));
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
 			const token = randomBytes(32).toString("base64url");
-			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), selected.handle, new Date(Date.now() + 7 * 86400000).toISOString());
+			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), selected.handle, new Date(Date.parse(clock.now()) + 7 * 86400000).toISOString());
 			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 			json(res, 200, { user: selected, token }); return;
 		}

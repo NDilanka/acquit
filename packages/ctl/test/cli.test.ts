@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { ChildProcess, spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { alive, captured, killTree, processStartTime } from "../src/process.ts";
-import { laneSlot } from "../src/state.ts";
+import { alive, captured, captureOwnedIdentity, killTree, processStartTime, requireSpawned, sleep } from "../src/process.ts";
+import { atomicJson, laneSlot } from "../src/state.ts";
 import { start } from "../src/commands.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
@@ -74,6 +74,46 @@ test("a failed start-time lookup releases spawned handles and preserves the orig
 		assert(pids.every(pid => !alive(pid)));
 		assert.equal(existsSync(ctx.stateFile), false);
 		assert.equal(existsSync(resolve(dir, "operation.lock")), false);
+	});
+});
+test("an injected identity lookup cannot adopt a PID after its spawned handle exits", async () => {
+	const child = new ChildProcess();
+	Object.defineProperty(child, "pid", { value: 123 });
+	await assert.rejects(captureOwnedIdentity(child, async () => {
+		Object.defineProperty(child, "exitCode", { value: 1 }); // A reused PID's identity.
+		return "unrelated-start-time";
+	}), /exited before ownership/);
+});
+test("ownership is checked again after temporary-file writes, immediately before publication", async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-publish-test-"));
+	const file = resolve(root, "run.json");
+	const child = new ChildProcess();
+	try {
+		await atomicJson(file, { previous: true });
+		Object.defineProperty(child, "exitCode", { value: 1 });
+		await assert.rejects(atomicJson(file, { unsafe: true }, () => requireSpawned(child)), /exited before ownership/);
+		assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { previous: true });
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+test("start clears interrupted ownership when a service exits during identity inspection", async () => {
+	await fixture(async (_cli, root) => {
+		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
+		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		const marker = `import { createServer } from "node:http"; createServer((_q,r)=>r.end("ok")).listen(Number(process.argv.includes("--port") ? process.env.WEB_PORT : process.env.PORT), "127.0.0.1");`;
+		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
+		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
+		const dir = resolve(root, "data/ctl");
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
+			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
+		const pids: number[] = [];
+		await assert.rejects(start({ timeout: "5" }, ctx, async pid => {
+			pids.push(pid);
+			if (pids.length === 1) { await killTree(pid); await sleep(100); }
+			return "hypothetical-reused-pid-start";
+		}), /exited before ownership/);
+		assert.equal(pids.length, 2);
+		assert(pids.every(pid => !alive(pid)));
+		assert.equal(existsSync(ctx.stateFile), false);
 	});
 });
 test("legacy and interrupted ownership records are readable but never authorize a live PID", async () => {

@@ -16,7 +16,9 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Pr
 	await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
 	const port = (listener.address() as { port: number }).port;
 	await new Promise<void>(resolve => listener.close(() => resolve()));
-	const child = spawn(process.execPath, ["apps/api/src/server.ts"], { cwd: root, stdio: "ignore", env: {
+	// Inject a frozen wall clock before importing the server. No timing tolerance
+	// or one-sided assertion can accidentally accept an ignored offset.
+	const child = spawn(process.execPath, ["--import", "data:text/javascript,Date.now=()=>1760000000000", "apps/api/src/server.ts"], { cwd: root, stdio: "ignore", env: {
 		...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
 		DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
 	} });
@@ -58,14 +60,22 @@ test("development routes require the flag and the configured lane origin", async
 		assert.equal((await fetch(`${url}/api/dev/clock`, { method: "POST", body: '{"advanceMs":1}' })).status, 401);
 		assert.equal((await post("clock", { advanceMs: -1 })).status, 400);
 		assert.equal((await post("clock", { advanceMs: 1, unexpected: true })).status, 400);
-		const before = Date.now();
 		const advanced = await post("clock", { advanceMs: 14_400_000 });
 		assert.equal(advanced.status, 200);
 		const now = Date.parse((await advanced.json() as { now: string }).now);
-		assert(now >= before + 14_400_000 && now <= Date.now() + 14_400_000);
+		assert.equal(now, 1760000000000 + 14_400_000);
 		const mode = await post("fund-mode", { mode: "card" });
 		assert.equal(mode.status, 200);
 		assert.deepEqual(await mode.json(), { mode: "card" });
 		assert.equal((await post("fund-mode", { mode: "production" })).status, 400);
+		// Sessions use the same clock for both issuance and expiry, including
+		// sessions created after a development-time jump.
+		const fresh = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "maya-client" }) });
+		const freshAuth = await fresh.json() as { token: string };
+		assert.equal((await post("clock", { advanceMs: 7 * 86400000 - 1 })).status, 200);
+		assert.equal((await fetch(`${url}/api/me/credits`, { headers: { Authorization: `Bearer ${freshAuth.token}` } })).status, 403);
+		assert.equal((await fetch(`${url}/api/me/credits`, { headers: { Authorization: `Bearer ${auth.token}` } })).status, 401);
+		assert.equal((await fetch(`${url}/api/dev/clock`, { method: "POST", headers: { Authorization: `Bearer ${freshAuth.token}` }, body: '{"advanceMs":1}' })).status, 200);
+		assert.equal((await fetch(`${url}/api/me/credits`, { headers: { Authorization: `Bearer ${freshAuth.token}` } })).status, 401);
 	});
 });
