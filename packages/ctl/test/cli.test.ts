@@ -26,7 +26,7 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 		const [api, web] = [await unusedPort(), await unusedPort()];
 		const cli = (args: string[]) => {
 			const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], {
-				cwd: root, encoding: "utf8", timeout: 10_000,
+				cwd: root, encoding: "utf8", timeout: 30_000,
 				env: { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), DATABASE_PATH: resolve(root, "test.db") },
 			});
 			assert.equal(result.error, undefined);

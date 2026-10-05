@@ -1,6 +1,3 @@
-// The package's only entry point. package.json "exports" maps "." to this file and nothing else,
-// so an import of job.ts, ledger.ts, or effects.ts from outside the package fails to resolve.
-
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, runDueTimers, runOutboxOnce } from "./effects.ts";
@@ -28,7 +25,6 @@ export type Actor =
 	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId }
 	| { readonly role: "ARBITER"; readonly staffId: StaffId };
 
-/** Derived from the transition table. Adding a user edge there adds a command here. */
 export type UserCommand = UserJobCommand | OperatorCommand;
 
 export type Failure = DomainFailure | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";

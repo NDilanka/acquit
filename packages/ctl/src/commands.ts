@@ -75,11 +75,13 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 		try {
 			state.api.pid = await detached(["apps/api/src/server.ts"], ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
 				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api);
+			await atomicJson(ctx.stateFile, state);
 			state.api.startTime = processStartTime(state.api.pid);
 			if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
 			await atomicJson(ctx.stateFile, state);
 			state.web.pid = await detached([vite, "--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], resolve(ctx.root, "apps/web"),
 				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web);
+			await atomicJson(ctx.stateFile, state);
 			state.web.startTime = processStartTime(state.web.pid);
 			if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
 			await atomicJson(ctx.stateFile, state);
@@ -121,7 +123,7 @@ export async function status(_parsed: Parsed, ctx: Context): Promise<Result> {
 	const path = run?.databasePath ?? ctx.databasePath;
 	const rows = await counts(path);
 	const database = { path, exists: existsSync(path), seeded: rows.operators > 0, counts: { operators: rows.operators, jobs: rows.jobs } };
-	return { healthy: Boolean(run && pids.api.alive && pids.web.alive && probe.apiReady && probe.webReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
+	return { healthy: Boolean(run?.api.startTime && run.web.startTime && pids.api.alive && pids.web.alive && probe.apiReady && probe.webReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
 		runFile: ctx.stateFile, run, pids, ports: { api: { port: ports.api, open: probe.apiPort }, web: { port: ports.web, open: probe.webPort } },
 		reachability: { api: probe.apiReady, web: probe.webReady }, urls: urls(ports.api, ports.web), database, env: { fileExists: existsSync(resolve(ctx.root, ".env")), requiredKeys: keys } };
 }

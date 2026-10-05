@@ -1,7 +1,5 @@
-import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
-import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rmdir, unlink } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -55,14 +53,15 @@ export async function reachable(url: string): Promise<boolean> {
 	try { const response = await fetch(url, { signal: AbortSignal.timeout(1500) }); await response.body?.cancel(); return response.status === 200; }
 	catch { return false; }
 }
-export async function captured(executable: string, args: string[], cwd: string, env = process.env, timeout = 60_000): Promise<{ code: number; stdout: string }> {
+export async function captured(executable: string, args: string[], cwd: string, env = process.env, timeout = 60_000, input?: string): Promise<{ code: number; stdout: string }> {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-capture-"));
 	const file = join(dir, "stdout");
 	const fd = openSync(file, "w", 0o600);
 	try {
 		// A cold browser daemon inherits pipe handles on Windows. Its CLI exits before those handles close.
 		const code = await new Promise<number>((resolve, reject) => {
-			const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: ["ignore", fd, "ignore"] });
+			const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: [input === undefined ? "ignore" : "pipe", fd, "ignore"] });
+			if (input !== undefined) { child.stdin?.on("error", () => {}); child.stdin?.end(input); }
 			const timer = setTimeout(() => {
 				void killTree(child.pid ?? 0).catch(() => {});
 				reject(new CliError("PROCESS_FAILED", "The child command timed out.", "Retry the command. If it repeats, run npm run -s ctl -- status."));

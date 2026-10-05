@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { parseArgs } from "node:util";
 import { captured, portOpen, reachable, sleep } from "../../packages/ctl/src/process.ts";
+import { laneSlot } from "../../packages/ctl/src/state.ts";
 import { freePhysicalMB, startWave } from "../../.factory/skills/verify-acquit/scripts/lanes.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -16,12 +17,19 @@ assert(Number.isSafeInteger(rounds) && rounds >= 5, "Use at least five rounds.")
 const evidence = resolve(root, "data/evidence/self-proof-h0/perf");
 const trunk = resolve(root, values.trunk ?? "data/perf/trunk");
 await mkdir(evidence, { recursive: true });
+const memoryFile = resolve(root, "data/ctl/lanes/memory.json");
+const memory = existsSync(memoryFile) ? JSON.parse(await readFile(memoryFile, "utf8")) : null;
+const freeMB = freePhysicalMB();
+if (memory && freeMB < 1024 + memory.perLaneMB) {
+	const report = { status: "BLOCKED", reason: "Insufficient physical memory for one slot and the 1024 MB reserve.", freeMB, reserveMB: 1024, perLaneMB: memory.perLaneMB };
+	await writeFile(resolve(evidence, "boot.json"), JSON.stringify(report, null, 2) + "\n");
+	console.log(JSON.stringify(report));
+	process.exit(1);
+}
 if (!existsSync(resolve(trunk, "package.json"))) {
 	assert(!values.trunk, "The supplied trunk worktree is missing.");
-	for (const args of [["worktree", "add", "--detach", trunk, "origin/main"]]) {
-		const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
-		assert.equal(result.status, 0, "Could not create the isolated trunk baseline.");
-	}
+	const result = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunk, "origin/main"], { encoding: "utf8" });
+	assert.equal(result.status, 0, "Could not create the isolated trunk baseline.");
 	await copyFile(resolve(root, ".env"), resolve(trunk, ".env"));
 	const installed = await captured(process.execPath, [process.env.npm_execpath ?? resolve(process.execPath, "../node_modules/npm/bin/npm-cli.js"), "install"], trunk, process.env, 300_000);
 	assert.equal(installed.code, 0, "Could not install the baseline dependencies.");
@@ -29,7 +37,7 @@ if (!existsSync(resolve(trunk, "package.json"))) {
 const samples = { trunk: [], head: [] };
 async function single(label, cwd) {
 	const isHead = label === "head";
-	const cli = isHead ? "packages/ctl/src/main.ts" : "packages/cli/src/main.ts";
+	const cli = isHead || existsSync(resolve(cwd, "packages/ctl/src/main.ts")) ? "packages/ctl/src/main.ts" : "packages/cli/src/main.ts";
 	const env = { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: "1", PORT: "5510", WEB_PORT: "5573", DATABASE_PATH: "./data/verify/boot/acquit.db" };
 	assert(!(await portOpen(5510)) && !(await portOpen(5573)), "Boot probe ports are occupied.");
 	await mkdir(resolve(cwd, "data/verify/boot"), { recursive: true });
@@ -58,15 +66,34 @@ async function single(label, cwd) {
 	}
 }
 for (let round = 0; round < rounds; round++) { await single("trunk", trunk); await single("head", root); }
-const median = values => values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)];
+const median = values => {
+	const sorted = values.toSorted((a, b) => a - b);
+	const middle = Math.floor(sorted.length / 2);
+	return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
 const baseline = median(samples.trunk);
 const head = median(samples.head);
-const waveStart = performance.now();
 process.env.ACQUIT_MAX_LANES ??= "2";
-const wave = await startWave(10);
-const waveSeconds = (performance.now() - waveStart) / 1000;
+let waveTiming;
+const wave = await startWave(10, ({ cap }) => {
+	const startedAt = performance.now();
+	waveTiming = (async () => {
+		if (cap === 0) return { seconds: 0, answered: 0 };
+		const urls = Array.from({ length: cap }, (_, i) => laneSlot(i + 1)).flatMap(slot => [
+			`http://127.0.0.1:${slot.apiPort}/api/users`, `http://127.0.0.1:${slot.webPort}/`,
+		]);
+		while (performance.now() - startedAt < 120_000) {
+			if ((await Promise.all(urls.map(reachable))).every(Boolean)) return { seconds: (performance.now() - startedAt) / 1000, answered: urls.length };
+			await sleep(25);
+		}
+		return { seconds: (performance.now() - startedAt) / 1000, answered: 0 };
+	})();
+});
+const timing = await waveTiming;
+assert(timing, "Wave endpoint timing did not start.");
+const waveSeconds = timing.seconds;
 const report = { rounds, samples, trunkMedianSeconds: baseline, headMedianSeconds: head, ratio: head / baseline,
-	singlePassed: head <= baseline * 1.15, waveSeconds, wavePassed: wave.cap > 0 && waveSeconds <= 120,
+	singlePassed: head <= baseline * 1.15, waveSeconds, wavePassed: wave.cap > 0 && timing.answered === wave.cap * 2 && waveSeconds <= 120,
 	perLaneMB: wave.perLaneMB, cap: wave.cap, freeMB: wave.freeMB, reserveMB: wave.reserveMB,
 	physicalFreeMBAfter: freePhysicalMB(), failures: 0, endpointsPerSingle: 2, node: process.version };
 await writeFile(resolve(evidence, "boot.json"), JSON.stringify(report, null, 2) + "\n");

@@ -66,7 +66,6 @@ function parseCommand(value: unknown): UserCommand {
 	};
 	const allowed = typeof command.type === "string" ? keys[command.type] : undefined;
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
-	// Construct just the documented payload. System edges cannot cross HTTP.
 	switch (command.type) {
 		case "OpenJob": return { type: "OpenJob", repository: text(command.repository, "repository"),
 			issueNumber: integer(command.issueNumber, "issue number"), budget: integer(command.budget, "budget") as UsdCents,
@@ -82,7 +81,6 @@ function parseCommand(value: unknown): UserCommand {
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	const method = req.method ?? "GET";
-	// Session cookies stay same-origin. The sandbox/dev identity picker is not production authentication.
 	const origin = req.headers.origin;
 	const webAlias = new URL(webOrigin);
 	if (webAlias.hostname === "localhost") webAlias.hostname = "127.0.0.1";
@@ -193,7 +191,6 @@ const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });
 		else res.end();
-		// Never log request headers, environment values, tokens, or provider payloads.
 		if (!(error instanceof BadBody)) console.error("Request failed; no sensitive payload logged.");
 	});
 });

@@ -1,6 +1,3 @@
-// PayPal adapter. The only file that knows Orders v2, referenced payouts, refunds, Partner Referrals,
-// PayPal-Auth-Assertion, webhook signatures, and HATEOAS host quirks. Callers get domain observations.
-//
 // Measured in the sandbox (scratch/paypal-escrow):
 //   the payee is named at order creation, with disbursement_mode DELAYED and platform_fees
 //   release is POST /v1/payments/referenced-payouts-items with the capture id and no amount field
@@ -33,8 +30,6 @@ export type FeeQuote = {
 };
 
 export function quote(split: CommercialSplit, model: ProcessorFeeModel): FeeQuote {
-	// TODO predicted = halfUp(split.held * rateBps / 10000) + fixed. 42000 gives 1466 + 49 = 1515.
-	// TODO Reject when platformFeeInstruction would be negative. The job price is too small to carry the fee.
 	if (!Number.isSafeInteger(model.rateBps) || model.rateBps < 0 || !Number.isSafeInteger(model.fixed) || model.fixed < 0) throw new Error("Invalid fee model");
 	const predictedProcessorFee = (Number((BigInt(split.held) * BigInt(model.rateBps) + 5000n) / 10000n) + model.fixed) as UsdCents;
 	if (predictedProcessorFee > split.fee) throw new Error("Price cannot carry processing fee");
@@ -130,11 +125,6 @@ export interface PayPal {
 }
 
 export function createPayPal(config: PayPalConfig): PayPal {
-	// TODO CREATE_ORDER: intent CAPTURE, amount quote.split.held, payee.merchant_id = payee,
-	//      payment_instruction.disbursement_mode DELAYED, platform_fees = quote.platformFeeInstruction.
-	// TODO CAPTURE, RELEASE, REFUND carry authAssertion(payee).
-	// TODO Normalize HATEOAS hosts with normalizeLink before following them.
-	// TODO parseWebhook verifies the signature, then re-reads the named resource and builds the observation.
 	if (config.apiBase !== "https://api-m.sandbox.paypal.com") throw new Error("Only PayPal sandbox is supported");
 	let token: string | null = null;
 	let tokenExpires = 0;
@@ -198,6 +188,8 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
 			if (call.kind === "CREATE_ORDER") {
+				const fundingMode = config.fundingMode?.() ?? "checkout";
+				if (fundingMode === "card" && process.env.ACQUIT_DEV !== "1") return { kind: "PERMANENT_FAILURE", reason: "DEV_DISABLED" };
 				const json = object(await request("POST", "/v2/checkout/orders", call.payee, {
 					intent: "CAPTURE", purchase_units: [{
 						reference_id: call.jobId, custom_id: call.jobId, description: "Acquit verified coding work",
@@ -206,7 +198,7 @@ export function createPayPal(config: PayPalConfig): PayPal {
 						payment_instruction: { disbursement_mode: "DELAYED", platform_fees: [
 							{ amount: { currency_code: "USD", value: formatUsd(call.quote.platformFeeInstruction) } },
 						] },
-					}], payment_source: config.fundingMode?.() === "card" ? { card: {
+					}], payment_source: fundingMode === "card" ? { card: {
 						number: "4111111111111111", expiry: "2028-12", security_code: "123", name: "Acquit Sandbox Probe",
 						billing_address: { address_line_1: "123 Test Street", admin_area_2: "San Jose", admin_area_1: "CA", postal_code: "95131", country_code: "US" },
 					} } : { paypal: { experience_context: {

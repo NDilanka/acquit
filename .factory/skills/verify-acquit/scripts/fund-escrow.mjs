@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync } from "node:fs";
-import { mkdtemp, readFile, writeFile, unlink, rmdir, appendFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { readFile, writeFile, appendFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
+import { captured as captureCommand } from "../../../../packages/ctl/src/process.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -44,31 +43,10 @@ const redact = value => {
 const save = (name, value) => writeFile(join(evidence, name), redact(value) + "\n");
 
 async function captured(executable, args, env, input) {
-	const dir = await mkdtemp(join(tmpdir(), "verify-acquit-"));
-	const file = join(dir, "stdout");
-	const fd = openSync(file, "w", 0o600);
-	try {
-		// Browser daemons retain pipe handles on Windows after their CLI exits.
-		const code = await new Promise((resolveExit, reject) => {
-			const child = spawn(executable, args, { cwd: root, env, windowsHide: true, stdio: [input === undefined ? "ignore" : "pipe", fd, "ignore"] });
-			if (input !== undefined) { child.stdin.on("error", () => {}); child.stdin.end(input); }
-			const timer = setTimeout(() => {
-				if (process.platform === "win32") {
-					spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
-				} else child.kill();
-				reject(new Error("Child command timed out. Run cleanup."));
-			}, 90_000);
-			child.once("error", error => { clearTimeout(timer); reject(error); });
-			child.once("exit", code => { clearTimeout(timer); resolveExit(code); });
-		});
-		const reply = JSON.parse(await readFile(file, "utf8"));
-		assert.equal(code, 0, redact(reply.error ?? "Child command failed without a JSON error."));
-		return reply;
-	} finally {
-		closeSync(fd);
-		await unlink(file);
-		await rmdir(dir);
-	}
+	const { code, stdout } = await captureCommand(executable, args, root, env, 90_000, input);
+	const reply = JSON.parse(stdout);
+	assert.equal(code, 0, redact(reply.error ?? "Child command failed without a JSON error."));
+	return reply;
 }
 
 async function cli(...args) {

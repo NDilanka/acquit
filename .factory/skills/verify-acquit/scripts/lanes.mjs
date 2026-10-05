@@ -98,7 +98,7 @@ async function measure() {
 		return memory;
 	} finally { await cleanupLane(n, owned && { api: owned.api, web: owned.web }); }
 }
-export async function startWave(count) {
+export async function startWave(count, onPlan = () => {}) {
 	assert(Number.isSafeInteger(count) && count > 0 && count <= 100, "Use start <count>, between 1 and 100.");
 	if (existsSync(waveFile)) {
 		const previous = JSON.parse(await readFile(waveFile, "utf8"));
@@ -111,6 +111,7 @@ export async function startWave(count) {
 			reason: `Free physical memory ${freeMB} MB is below the ${reserveMB} MB reserve. Cannot measure a slot safely.` };
 		await atomicJson(waveFile, { ...result, lanes: [] });
 		console.log(JSON.stringify(result));
+		onPlan(result);
 		return result;
 	}
 	memory ??= await measure();
@@ -119,10 +120,11 @@ export async function startWave(count) {
 	const requestedLimit = Number(process.env.ACQUIT_MAX_LANES ?? count);
 	assert(Number.isSafeInteger(requestedLimit) && requestedLimit >= 0, "ACQUIT_MAX_LANES must be a nonnegative integer.");
 	const cap = Math.min(count, memoryLimit, requestedLimit);
-	const report = { cap, memoryLimit, freeMB, reserveMB, ...memory, refused: count - cap,
+	const report = { cap, memoryLimit, maxLanes: requestedLimit, freeMB, reserveMB, ...memory, refused: count - cap,
 		reason: count > cap ? `Start ${cap} of ${count}. Free physical memory is ${freeMB} MB. Run the remaining lanes in another wave.` : null, lanes: [] };
 	await atomicJson(waveFile, report);
 	console.log(JSON.stringify({ ...report, lanes: undefined }));
+	onPlan(report);
 	for (let n = 1; n <= cap; n++) {
 		try {
 			const before = await ctl(n, "status");

@@ -54,7 +54,7 @@ export async function readState(ctx: Context): Promise<RunState | null> {
 		const state = JSON.parse(raw) as RunState;
 		for (const service of [state.api, state.web]) {
 			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535 ||
-				(service.pid > 0 ? typeof service.startTime !== "string" || !service.startTime : service.startTime !== null)) throw new Error();
+				(service.startTime !== null && (typeof service.startTime !== "string" || !service.startTime))) throw new Error();
 		}
 		if (typeof state.logs?.api !== "string" || typeof state.logs.web !== "string" || typeof state.databasePath !== "string" || typeof state.startedAt !== "string") throw new Error();
 		return state;
