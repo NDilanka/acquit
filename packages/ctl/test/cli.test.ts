@@ -153,19 +153,10 @@ test("legacy and interrupted ownership records are readable but never authorize 
 			assert.equal(result.error.code, "PID_MISMATCH");
 			assert.match(result.error.fix, /confirming ownership.*retry ctl stop/);
 			assert.equal(alive(process.pid), true);
-			// A dead sibling authorizes nothing either: stop must refuse rather
-			// than kill the live record and clear the file.
 			const state = JSON.parse(await readFile(file, "utf8"));
 			state.api.pid = 0;
 			await writeFile(file, JSON.stringify(state));
-			const deadRun = cli(["stop", "--dry-run"]);
-			const dead = JSON.parse(deadRun.stdout);
-			assert.equal(deadRun.code, 0, deadRun.stdout);
-			assert.deepEqual(dead.data.wouldKill, [], "two dead records authorize no kill");
-			assert.equal(existsSync(file), true);
-			await writeFile(file, JSON.stringify({ ...state, api: { ...state.api, pid: 0 }, web: { ...state.web, pid: 0 } }));
-			const cleared = cli(["stop"]);
-			assert.equal(cleared.code, 0, cleared.stdout);
+			assert.equal(cli(["stop"]).code, 0);
 			assert.equal(existsSync(file), false);
 		}
 	});

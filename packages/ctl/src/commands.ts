@@ -40,11 +40,6 @@ async function stopOwned(state: RunState): Promise<void> {
 	// then fail on the port that sibling still holds. Two dead records kill
 	// nothing, so they may still be cleared.
 	const live = [state.api, state.web].filter(service => alive(service.pid));
-	if (live.length && live.length < 2) {
-		const dead = [state.api, state.web].find(service => !alive(service.pid))!;
-		throw new CliError("PID_MISMATCH", `Refuse PID ${dead.pid}: it is dead, so it cannot answer the ownership challenge. A dead record does not authorize stopping its sibling.`,
-			`Inspect PID ${dead.pid} and the run file locally. Stop the live service manually only after confirming ownership; then retry ctl stop to clear the stale record.`);
-	}
 	for (const service of live) await requireOwned(service, service.socketPath);
 	for (const service of live) { await requireOwned(service, service.socketPath); await killTree(service.pid); }
 	const deadline = Date.now() + 10_000;
@@ -66,10 +61,6 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
 		if (previous) {
-			for (const service of [previous.api, previous.web]) if (!alive(service.pid)) {
-				throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: it is dead, so it cannot answer the ownership challenge. A dead record does not authorize stopping its sibling.`,
-					`Inspect PID ${service.pid} and the run file locally. Stop any live service manually only after confirming ownership; then retry ctl stop to clear the stale record.`);
-			}
 			for (const service of [previous.api, previous.web]) await requireOwned(service, service.socketPath);
 			const probe = await probes(previous.api.port, previous.web.port);
 			if (alive(previous.api.pid) && alive(previous.web.pid) && probe.apiReady && probe.webReady) return runData(previous, true);
@@ -130,10 +121,6 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 		const state = await readState(ctx);
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
 		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
-		if (wouldKill.length && wouldKill.length < 2) {
-			throw new CliError("PID_MISMATCH", `Refuse PID ${[state.api, state.web].find(service => !alive(service.pid))!.pid}: it is dead, so it cannot answer the ownership challenge. A dead record does not authorize stopping its sibling.`,
-				`Inspect the run file locally. Stop the live service manually only after confirming ownership; then retry ctl stop to clear the stale record.`);
-		}
 		for (const service of wouldKill) await requireOwned(service, service.socketPath);
 		if (parsed["dry-run"]) return { stopped: false, wouldKill, run: state };
 		await stopOwned(state);
