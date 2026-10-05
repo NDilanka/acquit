@@ -28,7 +28,7 @@ export function context(): Context {
 		if (!Number.isSafeInteger(value) || value < 1 || value > 65535) throw new CliError("INVALID_ARGUMENT", `${name} must be a port between 1 and 65535.`, `Set ${name} to an unused port, then retry.`, 2);
 		return value;
 	};
-	const dir = resolve(root, "data/cli");
+	const dir = resolve(root, "data/ctl");
 	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, process.env.DATABASE_PATH ?? "./data/acquit.db"), apiPort: port("PORT", 4310), webPort: port("WEB_PORT", 5173) };
 }
 export async function readState(ctx: Context): Promise<RunState | null> {
@@ -78,7 +78,7 @@ export async function counts(path: string): Promise<Record<string, number>> {
 		const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => String(row.name)));
 		for (const table of resetTables) if (tables.has(table)) result[table] = Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count);
 		return result;
-	} catch { throw new CliError("DATABASE_UNREADABLE", "The configured SQLite database could not be read.", `Check file access to ${path}, then run npm run -s acquit -- status.`); }
+	} catch { throw new CliError("DATABASE_UNREADABLE", "The configured SQLite database could not be read.", `Check file access to ${path}, then run npm run -s ctl -- status.`); }
 	finally { db?.close(); }
 }
 export function envKeys(ctx: Context): Record<string, { inDotEnv: boolean; configured: boolean }> {

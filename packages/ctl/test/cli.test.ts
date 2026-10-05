@@ -18,13 +18,13 @@ async function unusedPort(): Promise<number> {
 	return port;
 }
 async function fixture(run: (cli: (args: string[]) => { code: number | null; stdout: string }, root: string) => Promise<void>): Promise<void> {
-	const root = await mkdtemp(resolve(tmpdir(), "acquit-cli-test-"));
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-ctl-test-"));
 	try {
-		await cp(source, resolve(root, "packages/cli/src"), { recursive: true });
+		await cp(source, resolve(root, "packages/ctl/src"), { recursive: true });
 		await writeFile(resolve(root, "package.json"), '{"type":"module"}');
 		const [api, web] = [await unusedPort(), await unusedPort()];
 		const cli = (args: string[]) => {
-			const result = spawnSync(process.execPath, [resolve(root, "packages/cli/src/main.ts"), ...args], {
+			const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], {
 				cwd: root, encoding: "utf8", timeout: 10_000,
 				env: { ...process.env, PORT: String(api), WEB_PORT: String(web), DATABASE_PATH: resolve(root, "test.db") },
 			});
@@ -53,16 +53,16 @@ test("unknown command returns one actionable JSON usage error", async () => {
 		assert.equal(result.code, 2);
 		assert.deepEqual(JSON.parse(result.stdout), { ok: false, command: "strat", error: {
 			code: "UNKNOWN_COMMAND", message: 'Unknown command "strat".',
-			fix: "Try npm run -s acquit -- start, or npm run -s acquit -- --help.",
+			fix: "Try npm run -s ctl -- start, or npm run -s ctl -- --help.",
 		} });
 	});
 });
 test("command prefixes suggest the command they start, and missing flags name a runnable example", async () => {
 	await fixture(async cli => {
-		assert.equal(JSON.parse(cli(["stat"]).stdout).error.fix, "Try npm run -s acquit -- status, or npm run -s acquit -- --help.");
+		assert.equal(JSON.parse(cli(["stat"]).stdout).error.fix, "Try npm run -s ctl -- status, or npm run -s ctl -- --help.");
 		const missing = cli(["login"]);
 		assert.equal(missing.code, 2);
-		assert.equal(JSON.parse(missing.stdout).error.fix, "Run npm run -s acquit -- login --test-user maya-client --save. See npm run -s acquit -- login --help.");
+		assert.equal(JSON.parse(missing.stdout).error.fix, "Run npm run -s ctl -- login --test-user maya-client --save. See npm run -s ctl -- login --help.");
 	});
 });
 test("status is unhealthy on unused ports and never creates the database or state", async () => {
@@ -81,7 +81,7 @@ test("status is unhealthy on unused ports and never creates the database or stat
 		assert.deepEqual(report.data.database.counts, { operators: 0, jobs: 0 });
 		assert.equal(report.data.database.exists, false);
 		assert.equal(existsSync(resolve(root, "test.db")), false);
-		assert.equal(existsSync(resolve(root, "data/cli/run.json")), false);
+		assert.equal(existsSync(resolve(root, "data/ctl/run.json")), false);
 	});
 });
 test("stop dry-run with no ownership file kills nothing", async () => {
@@ -89,7 +89,7 @@ test("stop dry-run with no ownership file kills nothing", async () => {
 		const result = cli(["stop", "--dry-run"]);
 		assert.equal(result.code, 0);
 		assert.deepEqual(JSON.parse(result.stdout), { ok: true, command: "stop", dryRun: true, data: { stopped: false, reason: "not running", wouldKill: [] } });
-		assert.equal(existsSync(resolve(root, "data/cli/run.json")), false);
+		assert.equal(existsSync(resolve(root, "data/ctl/run.json")), false);
 		const again = cli(["stop"]);
 		assert.equal(again.code, 0);
 		assert.deepEqual(JSON.parse(again.stdout), { ok: true, command: "stop", data: { stopped: false, reason: "not running" } });
@@ -101,7 +101,7 @@ test("registry rejects dry-run on non-destructive login before any app operation
 		assert.equal(result.code, 2);
 		assert.deepEqual(JSON.parse(result.stdout), { ok: false, command: "login", error: {
 			code: "UNKNOWN_FLAG", message: "Unknown option '--dry-run'",
-			fix: "Try --save, or npm run -s acquit -- login --help.",
+			fix: "Try --save, or npm run -s ctl -- login --help.",
 		} });
 		const missing = cli(["login"]);
 		assert.equal(missing.code, 2);
@@ -122,8 +122,8 @@ test("seed-db dry-run on an absent database changes nothing", async () => {
 });
 test("malformed ownership files fail closed without replacing their contents", async () => {
 	await fixture(async (cli, root) => {
-		const file = resolve(root, "data/cli/run.json");
-		await mkdir(resolve(root, "data/cli"), { recursive: true });
+		const file = resolve(root, "data/ctl/run.json");
+		await mkdir(resolve(root, "data/ctl"), { recursive: true });
 		await writeFile(file, '{"api":{"pid":"not-a-pid"}}');
 		const result = cli(["stop"]);
 		assert.equal(result.code, 1);

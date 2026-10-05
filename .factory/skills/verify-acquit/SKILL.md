@@ -28,7 +28,7 @@ Set-Location 'D:\dev\Apps\unnamed'
 $env:DATABASE_PATH='./data/verify/acquit.db'
 $env:PORT='4310'
 $env:WEB_PORT='5173'
-$status = node packages/cli/src/main.ts status | ConvertFrom-Json
+$status = node packages/ctl/src/main.ts status | ConvertFrom-Json
 if (!$status.ok -or $status.data.run -or $status.data.ports.api.open -or $status.data.ports.web.open) { throw 'Refuse a shared or occupied instance.' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $evidence = "data/evidence/verify-acquit/$stamp"
@@ -45,7 +45,7 @@ Set-Location 'D:\dev\Apps\unnamed'
 $env:DATABASE_PATH='./data/verify/acquit.db'
 $env:PORT='4310'
 $env:WEB_PORT='5173'
-node packages/cli/src/main.ts start --timeout 60 | Tee-Object -FilePath 'data/evidence/verify-acquit/RUN_STAMP/launch.json'
+node packages/ctl/src/main.ts start --timeout 60 | Tee-Object -FilePath 'data/evidence/verify-acquit/RUN_STAMP/launch.json'
 ```
 
 Note the background PID and log path. Wait, then read `launch.json`. Require `ok:true`, `alreadyRunning:false`, the verification database path, and the expected URLs. The CLI reports ready only after both endpoints answer.
@@ -57,8 +57,8 @@ Set-Location 'D:\dev\Apps\unnamed'
 $env:DATABASE_PATH='./data/verify/acquit.db'
 $env:PORT='4310'
 $env:WEB_PORT='5173'
-node packages/cli/src/main.ts seed-db --dry-run
-node packages/cli/src/main.ts seed-db --yes
+node packages/ctl/src/main.ts seed-db --dry-run
+node packages/ctl/src/main.ts seed-db --yes
 ```
 
 Require the dry-run's `databasePath` to end with `data\verify\acquit.db`. `--dry-run` reads counts and skips the reset and seed subprocess. It is not a funding dry-run. Real `Accept` creates a sandbox order.
@@ -162,7 +162,7 @@ Require `stopped:true`, `portsClosed:[4310,5173]`, an evidence file listing, and
 
 If Launch failed before `launch.json` appeared, run `status` with the verification database env. Stop only if its recorded database and PIDs match the failed start's output. Otherwise report the ownership gap. Check the background PID and stop that exact launcher if it is still alive.
 
-Retain the verification database and evidence for inspection. Do not delete session files in the shared `data/cli/sessions` directory. Do not reset a funded sandbox run just to tidy it.
+Retain the verification database and evidence for inspection. Do not delete session files in the shared `data/ctl/sessions` directory. Do not reset a funded sandbox run just to tidy it.
 
 ## Helpers
 

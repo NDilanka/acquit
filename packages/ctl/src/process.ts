@@ -48,7 +48,7 @@ export async function captured(executable: string, args: string[], cwd: string, 
 			const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: ["ignore", fd, "ignore"] });
 			const timer = setTimeout(() => {
 				void killTree(child.pid ?? 0).catch(() => {});
-				reject(new CliError("PROCESS_FAILED", "The child command timed out.", "Retry the command. If it repeats, run npm run -s acquit -- status."));
+				reject(new CliError("PROCESS_FAILED", "The child command timed out.", "Retry the command. If it repeats, run npm run -s ctl -- status."));
 			}, timeout);
 			child.once("error", error => { clearTimeout(timer); reject(error); });
 			child.once("exit", code => { clearTimeout(timer); resolve(code ?? 1); });
@@ -62,13 +62,13 @@ export async function captured(executable: string, args: string[], cwd: string, 
 }
 export async function killTree(pid: number): Promise<void> {
 	if (!alive(pid)) return;
-	if (pid === process.pid) throw new CliError("INVALID_STATE", "The ownership file refers to this CLI process.", "Inspect data/cli/run.json and remove the invalid record.");
+	if (pid === process.pid) throw new CliError("INVALID_STATE", "The ownership file refers to this CLI process.", "Inspect data/ctl/run.json and remove the invalid record.");
 	if (process.platform === "win32") {
 		const result = await captured("taskkill", ["/pid", String(pid), "/t", "/f"], process.cwd());
-		if (result.code !== 0 && alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned PID ${pid}.`, `Run taskkill /pid ${pid} /t /f, then npm run -s acquit -- stop.`);
+		if (result.code !== 0 && alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned PID ${pid}.`, `Run taskkill /pid ${pid} /t /f, then npm run -s ctl -- stop.`);
 	} else {
 		try { process.kill(-pid, "SIGTERM"); }
-		catch (error) { if (alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned process group ${pid}.`, `Run kill -TERM -- -${pid}, then npm run -s acquit -- stop.`); }
+		catch (error) { if (alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned process group ${pid}.`, `Run kill -TERM -- -${pid}, then npm run -s ctl -- stop.`); }
 	}
 }
 export async function detached(args: string[], cwd: string, env: NodeJS.ProcessEnv, log: string): Promise<number> {

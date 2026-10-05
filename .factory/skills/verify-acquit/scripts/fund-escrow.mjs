@@ -65,7 +65,7 @@ async function captured(executable, args, env) {
 }
 
 async function cli(...args) {
-	const reply = await captured(process.execPath, ["packages/cli/src/main.ts", ...args], process.env);
+	const reply = await captured(process.execPath, ["packages/ctl/src/main.ts", ...args], process.env);
 	assert(reply.ok, `Acquit CLI ${args[0]} failed.`);
 	return reply.data;
 }
@@ -110,7 +110,7 @@ async function signIn(handle) {
 }
 
 async function api(path, handle) {
-	const session = JSON.parse(await readFile(resolve(root, "data/cli/sessions", `${handle}.json`), "utf8"));
+	const session = JSON.parse(await readFile(resolve(root, "data/ctl/sessions", `${handle}.json`), "utf8"));
 	const response = await fetch(`http://localhost:4310${path}`, {
 		headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(10_000),
 	});

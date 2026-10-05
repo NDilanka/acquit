@@ -18,16 +18,16 @@ async function stopOwned(state: RunState): Promise<void> {
 		if (!(await portOpen(state.api.port)) && !(await portOpen(state.web.port))) return;
 		await sleep(150);
 	}
-	throw new CliError("STOP_TIMEOUT", "Owned process trees were stopped, but their ports did not close.", "Inspect data/cli/run.json and the listening ports. Stop any remaining process yourself, then retry npm run -s acquit -- stop.");
+	throw new CliError("STOP_TIMEOUT", "Owned process trees were stopped, but their ports did not close.", "Inspect data/ctl/run.json and the listening ports. Stop any remaining process yourself, then retry npm run -s ctl -- stop.");
 }
 async function runData(state: RunState, alreadyRunning: boolean): Promise<Result> {
 	const rows = await counts(state.databasePath);
 	return { alreadyRunning, urls: urls(state.api.port, state.web.port), pids: { api: state.api.pid, web: state.web.pid }, logs: state.logs,
-		databasePath: state.databasePath, seeded: rows.operators > 0, ...(rows.operators === 0 ? { hint: "Run npm run -s acquit -- seed-db --yes." } : {}) };
+		databasePath: state.databasePath, seeded: rows.operators > 0, ...(rows.operators === 0 ? { hint: "Run npm run -s ctl -- seed-db --yes." } : {}) };
 }
 export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	const timeout = Number(parsed.timeout);
-	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600) throw new CliError("INVALID_ARGUMENT", "--timeout must be between 0 and 600 seconds, excluding zero.", "Run npm run -s acquit -- start --timeout 30.", 2);
+	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600) throw new CliError("INVALID_ARGUMENT", "--timeout must be between 0 and 600 seconds, excluding zero.", "Run npm run -s ctl -- start --timeout 30.", 2);
 	if (ctx.apiPort === ctx.webPort) throw new CliError("PORT_IN_USE", "API and web ports must differ.", "Set PORT=4310 and WEB_PORT=5173, or choose two unused ports.");
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
@@ -41,10 +41,10 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			await clearState(ctx);
 		}
 		for (const [name, port] of [["PORT", ctx.apiPort], ["WEB_PORT", ctx.webPort]] as const) if (await portOpen(port)) {
-			throw new CliError("PORT_IN_USE", `Port ${port} is already in use by a process this CLI does not own.`, `Stop that process yourself, or set ${name} to an unused port, then run npm run -s acquit -- start.`);
+			throw new CliError("PORT_IN_USE", `Port ${port} is already in use by a process this CLI does not own.`, `Stop that process yourself, or set ${name} to an unused port, then run npm run -s ctl -- start.`);
 		}
 		const vite = resolve(ctx.root, "apps/web/node_modules/vite/bin/vite.js");
-		if (!existsSync(vite)) throw new CliError("PROCESS_FAILED", "The web app's Vite dependency is missing.", "Run npm install from the repository root, then npm run -s acquit -- start.");
+		if (!existsSync(vite)) throw new CliError("PROCESS_FAILED", "The web app's Vite dependency is missing.", "Run npm install from the repository root, then npm run -s ctl -- start.");
 		const state: RunState = { api: { pid: 0, port: ctx.apiPort }, web: { pid: 0, port: ctx.webPort },
 			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log") }, startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
 		try {
@@ -62,7 +62,7 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 				await sleep(200);
 			}
 			throw new CliError("START_TIMEOUT", `The app did not become ready within ${timeout}s. Last log lines are in ${state.logs.api} and ${state.logs.web}.`,
-				`Inspect the last lines of those logs locally without sharing configuration values. Check .env key names with npm run -s acquit -- status, then npm run -s acquit -- start --timeout 60.`);
+				`Inspect the last lines of those logs locally without sharing configuration values. Check .env key names with npm run -s ctl -- status, then npm run -s ctl -- start --timeout 60.`);
 		} catch (error) {
 			await stopOwned(state);
 			await clearState(ctx);
@@ -103,10 +103,10 @@ export async function seedDb(parsed: Parsed, ctx: Context): Promise<Result> {
 		const run = await readState(ctx);
 		const path = run?.databasePath ?? ctx.databasePath;
 		if (!parsed.yes && ((run && (alive(run.api.pid) || alive(run.web.pid))) || await portOpen(ctx.apiPort) || await portOpen(ctx.webPort))) {
-			throw new CliError("CONFIRMATION_REQUIRED", "Resetting the database while an app is running invalidates its sessions.", "Run npm run -s acquit -- seed-db --yes to confirm the reset.");
+			throw new CliError("CONFIRMATION_REQUIRED", "Resetting the database while an app is running invalidates its sessions.", "Run npm run -s ctl -- seed-db --yes to confirm the reset.");
 		}
 		const result = await captured(process.execPath, ["scripts/seed.ts"], ctx.root, { ...process.env, DATABASE_PATH: path });
-		if (result.code !== 0) throw new CliError("SEED_FAILED", "The existing seed script failed. No script output or configuration values were forwarded.", "Check PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and OPERATOR_DEVON_MERCHANT_ID in .env, then run npm run -s acquit -- seed-db --yes.");
+		if (result.code !== 0) throw new CliError("SEED_FAILED", "The existing seed script failed. No script output or configuration values were forwarded.", "Check PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and OPERATOR_DEVON_MERCHANT_ID in .env, then run npm run -s ctl -- seed-db --yes.");
 		return { databasePath: path, counts: await counts(path), sessionsInvalidated: true };
 	});
 }
@@ -114,22 +114,22 @@ async function app(ctx: Context, webRequired = false): Promise<{ api: number; we
 	const run = await readState(ctx);
 	const ports = { api: run?.api.port ?? ctx.apiPort, web: run?.web.port ?? ctx.webPort };
 	if (!(await reachable(`http://127.0.0.1:${ports.api}/api/users`)) || (webRequired && !(await reachable(`http://127.0.0.1:${ports.web}/`)))) {
-		throw new CliError("APP_NOT_RUNNING", "The required Acquit app endpoints are not ready.", "Run npm run -s acquit -- start.");
+		throw new CliError("APP_NOT_RUNNING", "The required Acquit app endpoints are not ready.", "Run npm run -s ctl -- start.");
 	}
 	return ports;
 }
 export async function login(parsed: Parsed, ctx: Context): Promise<Result> {
 	const ports = await app(ctx);
 	const handle = String(parsed["test-user"]);
-	if (!/^[a-zA-Z0-9_-]+$/.test(handle)) throw new CliError("INVALID_ARGUMENT", "--test-user must be a plain development handle.", "Run npm run -s acquit -- login --test-user maya-client.", 2);
+	if (!/^[a-zA-Z0-9_-]+$/.test(handle)) throw new CliError("INVALID_ARGUMENT", "--test-user must be a plain development handle.", "Run npm run -s ctl -- login --test-user maya-client.", 2);
 	let response: Response;
 	try { response = await fetch(`http://127.0.0.1:${ports.api}/api/session`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle }), signal: AbortSignal.timeout(3000) }); }
-	catch { throw new CliError("APP_NOT_RUNNING", "The API stopped responding during login.", "Run npm run -s acquit -- start."); }
+	catch { throw new CliError("APP_NOT_RUNNING", "The API stopped responding during login.", "Run npm run -s ctl -- start."); }
 	if (response.status === 400) {
 		const users = await fetch(`http://127.0.0.1:${ports.api}/api/users`, { signal: AbortSignal.timeout(3000) }).then(response => response.json()) as { users: { handle: string }[] };
-		throw new CliError("UNKNOWN_TEST_USER", `Unknown development handle ${JSON.stringify(handle)}.`, `Run npm run -s acquit -- login --test-user <handle>. Valid handles: ${users.users.map(user => user.handle).join(", ")}.`);
+		throw new CliError("UNKNOWN_TEST_USER", `Unknown development handle ${JSON.stringify(handle)}.`, `Run npm run -s ctl -- login --test-user <handle>. Valid handles: ${users.users.map(user => user.handle).join(", ")}.`);
 	}
-	if (!response.ok) throw new CliError("PROCESS_FAILED", `The API rejected login with HTTP ${response.status}.`, "Run npm run -s acquit -- status, then retry login.");
+	if (!response.ok) throw new CliError("PROCESS_FAILED", `The API rejected login with HTTP ${response.status}.`, "Run npm run -s ctl -- status, then retry login.");
 	const session = await response.json() as { user: { handle: string; role: string }; token: string };
 	const data = { handle: session.user.handle, role: session.user.role, token: session.token, cookie: { name: "acquit_session", value: session.token, url: `http://localhost:${ports.web}` } };
 	if (!parsed.save) return data;
@@ -141,24 +141,24 @@ export async function screenshot(parsed: Parsed, ctx: Context): Promise<Result> 
 	return locked(ctx, async () => {
 		const ports = await app(ctx, true);
 		const path = String(parsed.path);
-		if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) throw new CliError("INVALID_ARGUMENT", "--path must be a same-origin route beginning with one slash.", "Run npm run -s acquit -- screenshot --path /.", 2);
+		if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) throw new CliError("INVALID_ARGUMENT", "--path must be a same-origin route beginning with one slash.", "Run npm run -s ctl -- screenshot --path /.", 2);
 		const url = `http://localhost:${ports.web}${path}`;
 		const out = parsed.out === undefined ? resolve(ctx.root, "data/evidence", `${new Date().toISOString().replaceAll(":", "-")}-${path.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || "jobs"}.png`) : resolve(ctx.root, String(parsed.out));
-		if (!out.toLowerCase().endsWith(".png")) throw new CliError("INVALID_ARGUMENT", "--out must name a .png file.", "Run npm run -s acquit -- screenshot --out data/evidence/jobs.png.", 2);
+		if (!out.toLowerCase().endsWith(".png")) throw new CliError("INVALID_ARGUMENT", "--out must name a .png file.", "Run npm run -s ctl -- screenshot --out data/evidence/jobs.png.", 2);
 		const env = { ...process.env };
 		for (const name of Object.keys(env)) if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT" || name.startsWith("PAYPAL_") || name.endsWith("_MERCHANT_ID")) delete env[name];
-		env.AGENT_BROWSER_SESSION = "acquit-cli";
+		env.AGENT_BROWSER_SESSION = "acquit-ctl";
 		env.AGENT_BROWSER_HEADED = "false";
 		const browserConfig = resolve(ctx.dir, "browser.json");
 		await atomicJson(browserConfig, { headed: false });
 		const browser = async (args: string[]) => {
 			let result;
-			try { result = await captured("agent-browser", ["--config", browserConfig, "--namespace", "acquit-cli", "--session", "acquit-cli", "--json", ...args], ctx.root, env); }
+			try { result = await captured("agent-browser", ["--config", browserConfig, "--namespace", "acquit-ctl", "--session", "acquit-ctl", "--json", ...args], ctx.root, env); }
 			catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new CliError("AGENT_BROWSER_MISSING", "agent-browser was not found on PATH.", "Install or update Factory Droid, then ensure agent-browser --help works in this shell.");
 				throw error;
 			}
-			if (result.code !== 0) throw new CliError("BROWSER_FAILED", "The isolated acquit-cli browser command failed. No child diagnostics were forwarded.", "Run agent-browser doctor --offline --quick, then retry npm run -s acquit -- screenshot --as maya-client --path /.");
+			if (result.code !== 0) throw new CliError("BROWSER_FAILED", "The isolated acquit-ctl browser command failed. No child diagnostics were forwarded.", "Run agent-browser doctor --offline --quick, then retry npm run -s ctl -- screenshot --as maya-client --path /.");
 			const reply = JSON.parse(result.stdout) as { success: boolean; data: { title?: string } };
 			if (!reply.success) throw new CliError("BROWSER_FAILED", "agent-browser reported an unsuccessful command.", "Run agent-browser doctor --offline --quick, then retry the screenshot.");
 			return reply.data;
