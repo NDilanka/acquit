@@ -135,12 +135,15 @@ export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFU
 	if (!total) return breakLaw("conservation");
 	const noRefund = total.refundCount === 0 && total.refund === 0;
 	const noPayout = total.releaseCount === 0 && total.released === 0 && total.fee === 0;
-	const paid = noRefund && total.releaseCount === 1 && total.released + total.fee === total.held;
-	const refunded = noPayout && total.refundCount === 1 && total.refund === total.held;
-	const open = noRefund && noPayout && (lines.length === 0 || total.held > 0);
+	// The reducer refuses a zero hold, so every reachable book is funded. Zero-value books break conservation too.
+	const funded = total.held > 0;
+	const paid = funded && noRefund && total.releaseCount === 1 && total.released + total.fee === total.held;
+	const refunded = funded && noPayout && total.refundCount === 1 && total.refund === total.held;
+	const open = noRefund && noPayout && (lines.length === 0 || funded);
 	if (total.releaseCount > 1) return breakLaw("one_release");
-	if (!paid && !refunded && !open) return breakLaw("conservation");
+	// A payout and a refund on one book is the disposition violation, whatever the sums say.
 	if (!noRefund && !noPayout) return breakLaw("refund_xor_payout");
+	if (!paid && !refunded && !open) return breakLaw("conservation");
 	if (lines.length === 0 || (lines.length === 1 && lines[0].kind === "HELD" && total.held > 0)) return "OPEN";
 	if (lines.length === 3 && lines[0].kind === "HELD" && lines[1].kind === "RELEASED" && lines[2].kind === "FEE") return "PAID";
 	if (lines.length === 2 && lines[0].kind === "HELD" && lines[1].kind === "REFUND") return "REFUNDED";
@@ -158,9 +161,7 @@ export type CommercialSplit = {
 };
 
 export function commercialSplit(price: UsdCents): CommercialSplit {
-	// TODO Integer basis points, half-up rounding to the cent.
-	// TODO held = price + clientFee (42000). operatorNet = price - operatorFee (36000).
-	// TODO fee = clientFee + operatorFee (6000). Assert operatorNet + fee = held.
+	// Integer basis points, half-up rounding to the cent.
 	if (!Number.isSafeInteger(price) || price <= 0) throw new Error("Invalid price");
 	const round = (bps: number): UsdCents => Number((BigInt(price) * BigInt(bps) + 5000n) / 10000n) as UsdCents;
 	const clientFee = round(500);
@@ -196,7 +197,10 @@ export type TreasuryEntry =
 export type ReleaseFacts = {
 	readonly jobId: JobId;
 	readonly operator: OperatorId;
+	/** The operator net quoted at accept. */
 	readonly promisedNet: UsdCents;
+	/** The net the operator actually received, parsed from the provider's capture. */
+	readonly observedNet: UsdCents;
 	readonly predictedProcessorFee: UsdCents;
 	readonly observedProcessorFee: UsdCents;
 	readonly at: Instant;
@@ -210,12 +214,15 @@ export type RefundFacts = {
 };
 
 export function releaseTreasury(facts: ReleaseFacts): readonly TreasuryEntry[] {
-	if (!cents(facts.promisedNet) || !cents(facts.predictedProcessorFee) || !cents(facts.observedProcessorFee)) throw new Error("Invalid treasury facts");
+	if (!cents(facts.promisedNet) || !cents(facts.observedNet) || !cents(facts.predictedProcessorFee) || !cents(facts.observedProcessorFee)) throw new Error("Invalid treasury facts");
 	const entries: TreasuryEntry[] = [];
-	if (facts.observedProcessorFee === facts.predictedProcessorFee) return entries;
-	entries.push({ kind: "PROCESSOR_FEE_VARIANCE", jobId: facts.jobId, predicted: facts.predictedProcessorFee, observed: facts.observedProcessorFee, at: facts.at });
-	if (facts.observedProcessorFee < facts.predictedProcessorFee) return entries;
-	entries.push({ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: facts.jobId, operator: facts.operator, cents: (facts.observedProcessorFee - facts.predictedProcessorFee) as UsdCents, cause: "NET_BELOW_PROMISE", at: facts.at });
+	if (facts.observedProcessorFee !== facts.predictedProcessorFee) {
+		entries.push({ kind: "PROCESSOR_FEE_VARIANCE", jobId: facts.jobId, predicted: facts.predictedProcessorFee, observed: facts.observedProcessorFee, at: facts.at });
+	}
+	// Compare the observed net with the promise directly: a fee-driven gap in what the operator receives is owed back.
+	if (facts.observedNet < facts.promisedNet) {
+		entries.push({ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: facts.jobId, operator: facts.operator, cents: (facts.promisedNet - facts.observedNet) as UsdCents, cause: "NET_BELOW_PROMISE", at: facts.at });
+	}
 	return entries;
 }
 

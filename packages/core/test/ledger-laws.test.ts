@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { checkLaws, reduceLedger, usd } from "../src/ledger.ts";
-import type { EscrowBook, LawBreak, LedgerMove } from "../src/ledger.ts";
+import type { EscrowBook, LawBreak, LedgerLaw, LedgerLine, LedgerMove } from "../src/ledger.ts";
 import { instant } from "../src/ids.ts";
 
 function mulberry32(seed: number): () => number {
@@ -78,4 +78,55 @@ test("each refused move names its law on one concrete book", () => {
 	assert.deepEqual(reduceLedger(paid, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at }), { kind: "LAW_BREAK", law: "one_release" });
 	assert.deepEqual(reduceLedger(paid, { kind: "Refund", refunded: usd("420.00"), at }), { kind: "LAW_BREAK", law: "refund_xor_payout" });
 	assert.deepEqual(reduceLedger([], { kind: "Refund", refunded: usd("420.00"), at }), { kind: "LAW_BREAK", law: "order" });
+});
+
+test("checkLaws names the exact law on mutated and illegal books", () => {
+	const at = instant("2026-11-03T15:22:00Z");
+	const held: LedgerLine = { kind: "HELD", cents: usd("420.00"), at };
+	const released: LedgerLine = { kind: "RELEASED", cents: usd("360.00"), at };
+	const fee: LedgerLine = { kind: "FEE", cents: usd("60.00"), processor: usd("15.15"), acquit: usd("44.85"), at };
+	const refund: LedgerLine = { kind: "REFUND", cents: usd("420.00"), at };
+	const broken = (lines: readonly LedgerLine[]): LedgerLaw => {
+		const result = checkLaws(lines);
+		assert.equal(typeof result, "object");
+		return (result as LawBreak).law;
+	};
+	// A payout and a refund on one book is the disposition violation, even when the sums conserve.
+	assert.equal(broken([held, released, fee, refund]), "refund_xor_payout");
+	assert.equal(broken([held, refund, released, fee]), "refund_xor_payout");
+	assert.equal(broken([held, released, fee, { kind: "REFUND", cents: usd("0.00"), at }]), "refund_xor_payout");
+	// A second RELEASED line is a double release.
+	assert.equal(broken([held, released, fee, released]), "one_release");
+	// Sums that do not add up to HELD break conservation, including a FEE whose split disagrees.
+	assert.equal(broken([held, { kind: "RELEASED", cents: usd("300.00"), at }, fee]), "conservation");
+	assert.equal(broken([held, released, { kind: "FEE", cents: usd("60.00"), processor: usd("15.15"), acquit: usd("44.00"), at }]), "conservation");
+	assert.equal(broken([held, { kind: "REFUND", cents: usd("400.00"), at }]), "conservation");
+	// Valid sums in the wrong shape break order.
+	assert.equal(broken([released, fee, held]), "order");
+	assert.equal(broken([refund, held]), "order");
+	assert.equal(broken([held, held]), "order");
+	// Zero-value books match the reducer, which refuses a zero hold.
+	assert.deepEqual(reduceLedger([], { kind: "Hold", gross: usd("0.00"), at }), { kind: "LAW_BREAK", law: "conservation" });
+	assert.equal(broken([{ kind: "HELD", cents: usd("0.00"), at }]), "conservation");
+	assert.equal(broken([{ kind: "HELD", cents: usd("0.00"), at }, { kind: "RELEASED", cents: usd("0.00"), at },
+		{ kind: "FEE", cents: usd("0.00"), processor: usd("0.00"), acquit: usd("0.00"), at }]), "conservation");
+	assert.equal(broken([{ kind: "HELD", cents: usd("0.00"), at }, { kind: "REFUND", cents: usd("0.00"), at }]), "conservation");
+	// Negative, fractional, and unsafe cents are illegal wherever they appear.
+	assert.equal(broken([{ kind: "HELD", cents: -1 as never, at }]), "conservation");
+	assert.equal(broken([{ kind: "HELD", cents: 1.5 as never, at }]), "conservation");
+	assert.equal(broken([{ kind: "HELD", cents: Number.MAX_SAFE_INTEGER + 1 as never, at }]), "conservation");
+	assert.equal(broken([held, released, { kind: "FEE", cents: usd("60.00"), processor: -1515 as never, acquit: usd("75.15"), at }]), "conservation");
+	// The reachable books are untouched.
+	assert.equal(checkLaws([]), "OPEN");
+	assert.equal(checkLaws([held]), "OPEN");
+	assert.equal(checkLaws([held, released, fee]), "PAID");
+	assert.equal(checkLaws([held, refund]), "REFUNDED");
+});
+
+test("usd rejects negative, fractional-cent, and unsafe amounts", () => {
+	for (const bad of ["-1.00", "-0.01", "1.001", "0.005", "1e3", "abc", "1.", ".50", "1,000.00", "90071992547409.92"]) {
+		assert.throws(() => usd(bad), /Invalid|Unsafe/);
+	}
+	assert.equal(usd("0.00"), 0);
+	assert.equal(usd("9007199254740.91"), 900719925474091);
 });

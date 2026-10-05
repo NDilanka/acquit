@@ -22,7 +22,7 @@ import type {
 	Version,
 } from "./ids.ts";
 import { reduceLedger } from "./ledger.ts";
-import type { EmptyBook, HeldBook, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
+import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal.ts";
@@ -605,6 +605,15 @@ export function rankBids(bids: readonly Bid[], paidReceipts: ReadonlyMap<Operato
 		house: bids.find(b => b.kind === "HOUSE") ?? null };
 }
 
+/** The stored book, whatever the reader's role. projectJob serves it through the API; the ctl ledger command reads it straight from the lane database. */
+export function storedBook(row: JobRow): readonly LedgerLine[] {
+	const state = row.state;
+	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
+	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow
+		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
+	return held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
+}
+
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobView {
 	const ranked = rankBids(row.bids, paidReceipts);
@@ -615,7 +624,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
 	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow
 		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
-	const ledger = held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
+	const ledger = storedBook(row);
 	const history = state.status === "IN_PROGRESS" ? state.attempts.history
 		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
 	const used = history.length + (state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? 1 : 0);

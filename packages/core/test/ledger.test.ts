@@ -31,17 +31,24 @@ test("card funding records the observed 363.78 net and the processor variance", 
 		{ kind: "RELEASED", cents: 36378, at },
 		{ kind: "FEE", cents: 5622, processor: 1137, acquit: 4485, at },
 	]);
-	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("11.37"), at }), [
+	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), observedNet: usd("363.78"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("11.37"), at }), [
 		{ kind: "PROCESSOR_FEE_VARIANCE", jobId, predicted: 1515, observed: 1137, at },
 	]);
 });
 
 test("a higher observed fee records the variance and the operator shortfall", () => {
-	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("16.15"), at }), [
+	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), observedNet: usd("359.00"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("16.15"), at }), [
 		{ kind: "PROCESSOR_FEE_VARIANCE", jobId, predicted: 1515, observed: 1615, at },
 		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId, operator: devon, cents: 100, cause: "NET_BELOW_PROMISE", at },
 	]);
-	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("15.15"), at }), []);
+	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), observedNet: usd("360.00"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("15.15"), at }), []);
+});
+
+test("a net below the promise is owed back even when the fee matched the quote", () => {
+	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), observedNet: usd("358.00"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("15.15"), at }), [
+		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId, operator: devon, cents: 200, cause: "NET_BELOW_PROMISE", at },
+	]);
+	assert.deepEqual(releaseTreasury({ jobId, operator: devon, promisedNet: usd("360.00"), observedNet: usd("360.50"), predictedProcessorFee: usd("15.15"), observedProcessorFee: usd("15.15"), at }), []);
 });
 
 test("a full refund equals HELD and records the fee PayPal kept", () => {
