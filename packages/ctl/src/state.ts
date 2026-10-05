@@ -19,6 +19,7 @@ export interface LaneSlot {
 	browserSession: string;
 }
 export function laneSlot(n?: number): LaneSlot {
+	if (n === 0) n = undefined;
 	if (n === undefined) return { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" };
 	if (!Number.isSafeInteger(n) || n < 0 || 5173 + 10 * n > 65535) throw new CliError("INVALID_ARGUMENT", "ACQUIT_LANE must be an integer between 0 and 6036.", "Set ACQUIT_LANE to a valid lane number.", 2);
 	return { apiPort: 4310 + 10 * n, webPort: 5173 + 10 * n, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` };
@@ -41,7 +42,7 @@ export function context(): Context {
 		if (!Number.isSafeInteger(value) || value < 1 || value > 65535) throw new CliError("INVALID_ARGUMENT", `${name} must be a port between 1 and 65535.`, `Set ${name} to an unused port, then retry.`, 2);
 		return value;
 	};
-	const lane = process.env.ACQUIT_LANE;
+	const lane = process.env.ACQUIT_LANE === "0" ? undefined : process.env.ACQUIT_LANE;
 	const slot = laneSlot(lane === undefined ? undefined : /^\d+$/.test(lane) ? Number(lane) : NaN);
 	const dir = resolve(root, slot.runDir);
 	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, lane === undefined ? process.env.DATABASE_PATH ?? slot.databasePath : slot.databasePath),
@@ -53,6 +54,9 @@ export async function readState(ctx: Context): Promise<RunState | null> {
 	try {
 		const state = JSON.parse(raw) as RunState;
 		for (const service of [state.api, state.web]) {
+			// Older run files and interrupted starts have no identity proof. Keep them
+			// readable for diagnostics, but requireOwned must never kill a live PID.
+			if (service && service.startTime === undefined) service.startTime = null;
 			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535 ||
 				(service.startTime !== null && (typeof service.startTime !== "string" || !service.startTime))) throw new Error();
 		}

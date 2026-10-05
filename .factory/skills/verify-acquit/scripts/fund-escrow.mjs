@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
 import { captured as captureCommand } from "../../../../packages/ctl/src/process.ts";
+import { credentialFill, redactor } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -35,11 +36,7 @@ browserEnv.AGENT_BROWSER_HEADED = "false";
 const secrets = Object.entries(process.env)
 	.filter(([name, value]) => value && /PAYPAL_CLIENT_|MERCHANT_ID|SANDBOX_BUYER_|PASSWORD|SECRET|TOKEN|API_KEY/.test(name))
 	.map(([, value]) => value);
-const redact = value => {
-	let text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-	for (const secret of secrets) text = text.replaceAll(secret, "[redacted]");
-	return text.replace(/(https:\/\/www\.sandbox\.paypal\.com\/[^"\s?]+)\?[^"\s]+/g, "$1?[redacted]");
-};
+const redact = redactor(secrets);
 const save = (name, value) => writeFile(join(evidence, name), redact(value) + "\n");
 
 async function captured(executable, args, env, input) {
@@ -74,11 +71,11 @@ async function browser(...args) {
 			"--session", browserSession, "--json", ...args,
 		], browserEnv);
 	} catch (error) {
-		if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), JSON.stringify({ command: args, ok: false }) + "\n");
-		throw new Error(`Browser command failed: ${args.join(" ")}. ${redact(error.message)}`);
+		if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command: args, ok: false }) + "\n");
+		throw new Error(redact(`Browser command failed: ${args.join(" ")}. ${error.message}`));
 	}
 	assert(reply.success, `Browser ${args[0]} failed. Child diagnostics are withheld.`);
-	if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), JSON.stringify({ command: args, ok: true }) + "\n");
+	if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command: args, ok: true }) + "\n");
 	return reply.data;
 }
 
@@ -109,10 +106,12 @@ async function approve() {
 	const previous = JSON.parse(await readFile(join(evidence, "summary.json"), "utf8"));
 	assert(previous.passed && previous.jobId, "Run drive to checkout before approve.");
 	const fillCredential = async (selector, key) => {
-		const script = `const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw Error("Login field missing"); e.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(e, ${JSON.stringify(process.env[key])}); e.dispatchEvent(new Event("input",{bubbles:true})); e.dispatchEvent(new Event("change",{bubbles:true})); "Credential field filled";`;
-		const result = await captured("agent-browser", ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
-			"--session", browserSession, "--json", "eval", "--stdin"], browserEnv, script);
-		assert(result.success, "Credential field could not be filled. No diagnostics saved.");
+		const command = credentialFill(selector, process.env[key]);
+		// Do not use browser(): its action journal must never receive credential input.
+		const result = await captureCommand("agent-browser", ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
+			"--session", browserSession, "--json", ...command.args], root, browserEnv, 90_000, command.input);
+		// Withhold batch diagnostics, including echoed command input on failure.
+		assert.equal(result.code, 0, "Credential field could not be filled. No diagnostics saved.");
 	};
 	for (let step = 0; step < 12; step++) {
 		const current = new URL((await browser("get", "url")).url);

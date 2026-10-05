@@ -257,7 +257,7 @@ export type JobRow<S extends JobState = JobState> = {
 // Effects the table asks for. effects.ts derives their keys and PayPal request ids.
 
 export type JobEffect =
-	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly round: number; readonly payee: MerchantId; readonly quote: FeeQuote }
+	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly round: number; readonly payee: MerchantId; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
 	| { readonly kind: "CAPTURE"; readonly jobId: JobId; readonly round: number; readonly orderId: OrderId; readonly payee: MerchantId }
 	| { readonly kind: "RELEASE"; readonly jobId: JobId; readonly captureId: CaptureId; readonly payee: MerchantId }
 	| { readonly kind: "REFUND"; readonly jobId: JobId; readonly captureId: CaptureId; readonly payee: MerchantId; readonly amount: UsdCents }
@@ -296,7 +296,7 @@ export type Loaded =
 	| { readonly kind: "NONE" }
 	| { readonly kind: "OPEN_JOB"; readonly contract: AcceptanceContract; readonly title: string }
 	| { readonly kind: "PLACE_BID"; readonly operator: OperatorRow; readonly agent: Agent; readonly credits: CreditAccount }
-	| { readonly kind: "ACCEPT_BID"; readonly quote: FeeQuote }
+	| { readonly kind: "ACCEPT_BID"; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
 	| { readonly kind: "BIDDER_CREDITS"; readonly accounts: ReadonlyMap<OperatorId, CreditAccount> };
 
 export type Facts = { readonly actor: TrustedActor; readonly now: Instant; readonly loaded: Loaded };
@@ -447,7 +447,7 @@ function transitionTable(): {
 				bids: row.bids.map(b => b.id === bid.id ? { ...b, status: "CHOSEN" } : b),
 				state: { status: "OPEN", phase: { kind: "FUNDING", round, chosen, quote,
 					checkoutEndsAt: addHours(facts.now, hours(TERMS.checkoutHours)), checkout: { phase: "CREATING_ORDER" } } } },
-				credits: [], effects: [{ kind: "CREATE_ORDER", jobId: row.id, round, payee: bid.payee, quote }] };
+				credits: [], effects: [{ kind: "CREATE_ORDER", jobId: row.id, round, payee: bid.payee, quote, fundingMode: facts.loaded.fundingMode ?? "checkout" }] };
 		} },
 		CancelJob: { by: "CLIENT", apply: (row, _command, facts) => {
 			if (row.state.phase.kind === "FUNDING" && ["CAPTURING", "REFUND_PENDING"].includes(row.state.phase.checkout.phase)) return "PAYMENT_IN_PROGRESS";

@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { alive, captured, CliError, detached, killTree, portOpen, processStartTime, reachable, requireOwned, sleep } from "./process.ts";
+import { alive, captured, captureStartTime, CliError, detached, killTree, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
+import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
@@ -48,7 +49,7 @@ async function runData(state: RunState, alreadyRunning: boolean): Promise<Result
 	return { alreadyRunning, urls: urls(state.api.port, state.web.port), pids: { api: state.api.pid, web: state.web.pid }, logs: state.logs,
 		databasePath: state.databasePath, seeded: rows.operators > 0, ...(rows.operators === 0 ? { hint: "Run npm run -s ctl -- seed-db --yes." } : {}) };
 }
-export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
+export async function start(parsed: Parsed, ctx: Context, identity = captureStartTime): Promise<Result> {
 	const timeout = Number(parsed.timeout);
 	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600) throw new CliError("INVALID_ARGUMENT", "--timeout must be between 0 and 600 seconds, excluding zero.", "Run npm run -s ctl -- start --timeout 30.", 2);
 	if (ctx.apiPort === ctx.webPort) throw new CliError("PORT_IN_USE", "API and web ports must differ.", "Set PORT=4310 and WEB_PORT=5173, or choose two unused ports.");
@@ -72,17 +73,21 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 		await mkdir(dirname(ctx.databasePath), { recursive: true });
 		const state: RunState = { api: { pid: 0, port: ctx.apiPort, startTime: null }, web: { pid: 0, port: ctx.webPort, startTime: null },
 			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log") }, startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
+		const children: ChildProcess[] = [];
 		try {
-			state.api.pid = await detached(["apps/api/src/server.ts"], ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
+			const api = await detached(["apps/api/src/server.ts"], ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
 				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api);
+			children.push(api);
+			state.api.pid = api.pid!;
 			await atomicJson(ctx.stateFile, state);
-			state.api.startTime = processStartTime(state.api.pid);
-			if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
-			await atomicJson(ctx.stateFile, state);
-			state.web.pid = await detached([vite, "--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], resolve(ctx.root, "apps/web"),
+			const apiIdentity = identity(state.api.pid);
+			const web = await detached([vite, "--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], resolve(ctx.root, "apps/web"),
 				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web);
+			children.push(web);
+			state.web.pid = web.pid!;
 			await atomicJson(ctx.stateFile, state);
-			state.web.startTime = processStartTime(state.web.pid);
+			[state.api.startTime, state.web.startTime] = await Promise.all([apiIdentity, identity(state.web.pid)]);
+			if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
 			if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
 			await atomicJson(ctx.stateFile, state);
 			const deadline = Date.now() + timeout * 1000;
@@ -96,8 +101,10 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			throw new CliError("START_TIMEOUT", `The app did not become ready within ${timeout}s. Last log lines are in ${state.logs.api} and ${state.logs.web}.`,
 				`Inspect the last lines of those logs locally without sharing configuration values. Check .env key names with npm run -s ctl -- status, then npm run -s ctl -- start --timeout 60.`);
 		} catch (error) {
-			await stopOwned(state);
-			await clearState(ctx);
+			// Release handles we spawned, not unverified run-file PIDs. Cleanup must
+			// not mask the original startup error. Retain the file if release fails.
+			const cleanup = await Promise.allSettled(children.map(releaseSpawned));
+			if (cleanup.every(result => result.status === "fulfilled")) await clearState(ctx).catch(() => {});
 			throw error;
 		}
 	});

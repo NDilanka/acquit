@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rmdir, unlink } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -36,6 +37,8 @@ export function processStartTime(pid: number): string | null {
 }
 export function requireOwned(service: { pid: number; startTime: string | null }): void {
 	if (!alive(service.pid)) return;
+	if (!service.startTime) throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: the run file has no verified process start time (legacy or interrupted start).`,
+		`Inspect PID ${service.pid} and the run file locally. Stop it manually only after confirming ownership; then retry ctl stop to clear the stale record. Never adopt an unverified PID.`);
 	if (!service.startTime || processStartTime(service.pid) !== service.startTime) {
 		throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: process start-time mismatch.`, "Inspect the lane run file. Do not stop an unrelated process.");
 	}
@@ -87,12 +90,34 @@ export async function killTree(pid: number): Promise<void> {
 		catch (error) { if (alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned process group ${pid}.`, `Run kill -TERM -- -${pid}, then npm run -s ctl -- stop.`); }
 	}
 }
-export async function detached(args: string[], cwd: string, env: NodeJS.ProcessEnv, log: string): Promise<number> {
+export async function detached(args: string[], cwd: string, env: NodeJS.ProcessEnv, log: string): Promise<ChildProcess> {
 	const fd = openSync(log, "a");
 	try {
 		const child = spawn(process.execPath, args, { cwd, env, detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
 		await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
 		child.unref();
-		return child.pid!;
+		return child;
 	} finally { closeSync(fd); }
+}
+export async function captureStartTime(pid: number): Promise<string | null> {
+	// Run asynchronously so Windows identity lookup does not delay spawning the
+	// other service or probing readiness. Retry transient memory-pressure errors.
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (!alive(pid)) return null;
+		if (process.platform !== "win32") return processStartTime(pid);
+		const result = await captured("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+			`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks.ToString()`], process.cwd(), process.env, 10_000).catch(() => null);
+		if (result?.code === 0 && result.stdout.trim()) return result.stdout.trim();
+		await sleep(100);
+	}
+	return null;
+}
+export async function releaseSpawned(child: ChildProcess): Promise<void> {
+	// A ChildProcess retains the native process handle on Windows. Unlike stale
+	// run.json, this invocation has direct ownership even if identity lookup fails.
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	if (process.platform !== "win32") { await killTree(child.pid!); return; }
+	const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+	child.kill();
+	await exited;
 }

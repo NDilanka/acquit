@@ -127,21 +127,16 @@ export type AcquitConfig = {
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
-	const store = new SqliteStore(config.databaseUrl);
+	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
+	const store = new SqliteStore(config.databaseUrl, clock);
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, paypal: createPayPal(config.paypal), feeModel: config.paypal.feeModel,
+	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented },
-		clock: config.clock ?? { now: () => instant(new Date().toISOString()) } };
+		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
-		execute: async (actor, key, command) => {
-			const outcome = await executeCommand(ports, actor, key, command);
-			if (command.type !== "AcceptBid" || config.paypal.fundingMode?.() !== "card" || outcome.kind === "DENIED" || outcome.result.kind !== "JOB") return outcome;
-			await confirmFunding(ports, actor, command.jobId);
-			const result = await service.query(actor, { type: "Job", jobId: command.jobId });
-			return result.kind === "JOB" ? { ...outcome, result } : outcome;
-		},
+		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
 			switch (query.type) {

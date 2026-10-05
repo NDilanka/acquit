@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { alive, captured, killTree, processStartTime } from "../src/process.ts";
 import { laneSlot } from "../src/state.ts";
+import { start } from "../src/commands.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
 async function unusedPort(): Promise<number> {
@@ -48,12 +49,51 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 		assert.equal(command.stdout.includes("--path <value>  Same-origin route to capture. Default: /."), true);
 	});
 });
-test("lane slots isolate all resources for lanes 0, 1, and 10", () => {
+test("lane zero is the default slot; positive lanes isolate all resources", () => {
 	assert.deepEqual(laneSlot(), { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" });
-	for (const [n, apiPort, webPort] of [[0, 4310, 5173], [1, 4320, 5183], [10, 4410, 5273]]) {
+	assert.deepEqual(laneSlot(0), laneSlot());
+	for (const [n, apiPort, webPort] of [[1, 4320, 5183], [10, 4410, 5273]]) {
 		assert.deepEqual(laneSlot(n), { apiPort, webPort, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` });
 	}
 	for (const n of [-1, 1.5, NaN, 6037]) assert.throws(() => laneSlot(n));
+});
+test("a failed start-time lookup releases spawned handles and preserves the original error", async () => {
+	await fixture(async (_cli, root) => {
+		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
+		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		const marker = `import { writeFileSync } from "node:fs"; writeFileSync(process.argv[1]+".pid", String(process.pid)); setInterval(()=>{},1000);`;
+		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
+		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
+		const dir = resolve(root, "data/ctl");
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
+			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
+		const pids: number[] = [];
+		await assert.rejects(start({ timeout: "1" }, ctx, async pid => { pids.push(pid); return null; }),
+			(error: any) => error.code === "PROCESS_FAILED" && error.message === "Could not record the API start time.");
+		assert.equal(pids.length, 2);
+		assert(pids.every(pid => !alive(pid)));
+		assert.equal(existsSync(ctx.stateFile), false);
+		assert.equal(existsSync(resolve(dir, "operation.lock")), false);
+	});
+});
+test("legacy and interrupted ownership records are readable but never authorize a live PID", async () => {
+	await fixture(async (cli, root) => {
+		const file = resolve(root, "data/ctl/run.json");
+		await mkdir(resolve(root, "data/ctl"), { recursive: true });
+		for (const startTime of [undefined, null]) {
+			await writeFile(file, JSON.stringify({ api: { pid: process.pid, port: 4310, startTime },
+				web: { pid: 0, port: 5173, startTime }, logs: { api: "api.log", web: "web.log" }, databasePath: "test.db", startedAt: "test" }));
+			const result = JSON.parse(cli(["stop"]).stdout);
+			assert.equal(result.error.code, "PID_MISMATCH");
+			assert.match(result.error.fix, /confirming ownership.*retry ctl stop/);
+			assert.equal(alive(process.pid), true);
+			const state = JSON.parse(await readFile(file, "utf8"));
+			state.api.pid = 0;
+			await writeFile(file, JSON.stringify(state));
+			assert.equal(cli(["stop"]).code, 0);
+			assert.equal(existsSync(file), false);
+		}
+	});
 });
 test("stop refuses an unrelated live PID with a different start time", async () => {
 	await fixture(async (cli, root) => {

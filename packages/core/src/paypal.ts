@@ -13,6 +13,7 @@ import { instant } from "./ids.ts";
 import type { Branded, CaptureId, Instant, JobId, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId } from "./ids.ts";
 import { formatUsd, usd } from "./ledger.ts";
 import type { CommercialSplit, UsdCents } from "./ledger.ts";
+import type { Clock } from "./acquit.ts";
 
 /** Basis points. 349 is 3.49%. */
 export type Bps = Branded<number, "Bps">;
@@ -66,7 +67,7 @@ export type RefundEvidence = {
 };
 
 export type PayPalCall =
-	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly payee: MerchantId; readonly quote: FeeQuote }
+	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly payee: MerchantId; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
 	| { readonly kind: "CAPTURE"; readonly orderId: OrderId; readonly payee: MerchantId }
 	| { readonly kind: "RELEASE"; readonly captureId: CaptureId; readonly payee: MerchantId }
 	/** Full amount only. Never names platform_fees. */
@@ -124,12 +125,12 @@ export interface PayPal {
 	parseWebhook(request: Request): Promise<WebhookDelivery | null>;
 }
 
-export function createPayPal(config: PayPalConfig): PayPal {
+export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => instant(new Date().toISOString()) }): PayPal {
 	if (config.apiBase !== "https://api-m.sandbox.paypal.com") throw new Error("Only PayPal sandbox is supported");
 	let token: string | null = null;
 	let tokenExpires = 0;
 	async function accessToken(): Promise<string> {
-		if (token && Date.now() < tokenExpires) return token;
+		if (token && Date.parse(clock.now()) < tokenExpires) return token;
 		const response = await fetch(`${config.apiBase}/v1/oauth2/token`, {
 			method: "POST", headers: { Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.secret}`).toString("base64")}`,
 				"Content-Type": "application/x-www-form-urlencoded" },
@@ -138,7 +139,7 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		if (!response.ok) throw new ProviderError(response.status);
 		const body = object(await response.json());
 		token = text(body.access_token);
-		tokenExpires = Date.now() + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
+		tokenExpires = Date.parse(clock.now()) + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
 		return token;
 	}
 	async function request(method: "GET" | "POST", path: string, payee: MerchantId, body?: unknown, requestId?: string): Promise<unknown> {
@@ -165,7 +166,7 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		}
 		throw new Error("Unreachable");
 	}
-	const pending = (): Extract<RemoteOutcome, { kind: "UNKNOWN" }> => ({ kind: "UNKNOWN", checkAt: instant(new Date(Date.now() + 5000).toISOString()) });
+	const pending = (): Extract<RemoteOutcome, { kind: "UNKNOWN" }> => ({ kind: "UNKNOWN", checkAt: instant(new Date(Date.parse(clock.now()) + 5000).toISOString()) });
 	async function guarded(action: () => Promise<RemoteOutcome>, creating = false): Promise<RemoteOutcome> {
 		try { return await action(); } catch (error) {
 			if (error instanceof ProviderError && error.status >= 400 && error.status < 500 && ![401, 408, 409, 429].includes(error.status) && (creating || error.status !== 422)) {
@@ -182,13 +183,15 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		if (order.status === "COMPLETED") return { kind: "CONFIRMED", observation: { kind: "CAPTURE_COMPLETED", capture: parseCapture(json) } };
 		if (order.status === "APPROVED") return { kind: "CONFIRMED", observation: { kind: "ORDER_APPROVED", orderId } };
 		if (order.status === "VOIDED") return { kind: "PERMANENT_FAILURE", reason: "ORDER_VOIDED" };
-		return { kind: "PENDING", checkAt: instant(new Date(Date.now() + 5000).toISOString()) };
+		return { kind: "PENDING", checkAt: instant(new Date(Date.parse(clock.now()) + 5000).toISOString()) };
 	}
 	return {
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
 			if (call.kind === "CREATE_ORDER") {
-				const fundingMode = config.fundingMode?.() ?? "checkout";
+				// Legacy payloads always mean checkout; runtime toggles cannot change
+				// the payment source bound to a queued order/request-id.
+				const fundingMode = call.fundingMode ?? "checkout";
 				if (fundingMode === "card" && process.env.ACQUIT_DEV !== "1") return { kind: "PERMANENT_FAILURE", reason: "DEV_DISABLED" };
 				const json = object(await request("POST", "/v2/checkout/orders", call.payee, {
 					intent: "CAPTURE", purchase_units: [{
