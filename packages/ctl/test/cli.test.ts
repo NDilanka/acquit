@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { ChildProcess, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { alive, captured, captureOwnedIdentity, killTree, processStartTime, requireSpawned, sleep } from "../src/process.ts";
-import { atomicJson, laneSlot } from "../src/state.ts";
+import { alive, captured, killTree, ownedCommand, ownershipArg, ownershipNonce, requireOwned, sleep } from "../src/process.ts";
+import { laneSlot } from "../src/state.ts";
 import { start } from "../src/commands.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
@@ -34,7 +34,7 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 			return { code: result.status, stdout: result.stdout };
 		};
 		await run(cli, root);
-	} finally { await rm(root, { recursive: true, force: true }); }
+	} finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 }
 test("top-level help lists every command, flags, envelope, and exits successfully", async () => {
 	await fixture(async cli => {
@@ -57,72 +57,95 @@ test("lane zero is the default slot; positive lanes isolate all resources", () =
 	}
 	for (const n of [-1, 1.5, NaN, 6037]) assert.throws(() => laneSlot(n));
 });
-test("a failed start-time lookup releases spawned handles and preserves the original error", async () => {
+test("a service that dies before readiness releases both spawned handles and clears the run file", async () => {
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
-		const marker = `import { createServer } from "node:http"; createServer((_q,r)=>r.end("ok")).listen(Number(process.argv.includes("--port") ? process.env.WEB_PORT : process.env.PORT), "127.0.0.1");`;
+		const marker = `import { createServer } from "node:http"; const port = Number(process.env.WEB_PORT && process.argv.some(arg => arg === "--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
 			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
-		const pids: number[] = [];
-		await assert.rejects(start({ timeout: "5" }, ctx, async pid => { pids.push(pid); return null; }),
-			(error: any) => error.code === "PROCESS_FAILED" && error.message === "Could not record the API start time.");
-		assert.equal(pids.length, 2);
-		assert(pids.every(pid => !alive(pid)));
+		const original = await readFile(resolve(root, "apps/api/src/server.ts"), "utf8");
+		await writeFile(resolve(root, "apps/api/src/server.ts"), "process.exit(1);");
+		await assert.rejects(start({ timeout: "5" }, ctx),
+			(error: any) => error.code === "PROCESS_FAILED" && /exited before both endpoints answered/.test(error.message));
+		await writeFile(resolve(root, "apps/api/src/server.ts"), original);
 		assert.equal(existsSync(ctx.stateFile), false);
 		assert.equal(existsSync(resolve(dir, "operation.lock")), false);
 	});
 });
-test("an injected identity lookup cannot adopt a PID after its spawned handle exits", async () => {
-	const child = new ChildProcess();
-	Object.defineProperty(child, "pid", { value: 123 });
-	await assert.rejects(captureOwnedIdentity(child, async () => {
-		Object.defineProperty(child, "exitCode", { value: 1 }); // A reused PID's identity.
-		return "unrelated-start-time";
-	}), /exited before ownership/);
-});
-test("ownership is checked again after temporary-file writes, immediately before publication", async () => {
-	const root = await mkdtemp(resolve(tmpdir(), "acquit-publish-test-"));
-	const file = resolve(root, "run.json");
-	const child = new ChildProcess();
+test("a dead child then a reused PID cannot satisfy the nonce recorded before spawn", async () => {
+	const nonce = ownershipNonce();
+	const child = spawnSync(process.execPath, [ownershipArg, fileURLToPath(new URL("../src/ownership-preload.cjs", import.meta.url)), "-e", "process.exit(0)", "--", nonce], { encoding: "utf8" });
+	assert.equal(child.status, 0, child.stderr);
+	const reused = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, windowsHide: true, stdio: "ignore" });
+	reused.unref();
 	try {
-		await atomicJson(file, { previous: true });
-		Object.defineProperty(child, "exitCode", { value: 1 });
-		await assert.rejects(atomicJson(file, { unsafe: true }, () => requireSpawned(child)), /exited before ownership/);
-		assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { previous: true });
-	} finally { await rm(root, { recursive: true, force: true }); }
+		assert.equal(await ownedCommand(child.pid!, nonce), false, "A dead PID must not match its old nonce.");
+		assert.equal(await ownedCommand(reused.pid!, nonce), false, "A reused live PID was not started with this nonce.");
+		await assert.rejects(requireOwned({ pid: reused.pid!, nonce }), /no matching ownership nonce/);
+		assert.equal(alive(reused.pid!), true);
+	} finally { if (reused.pid) await killTree(reused.pid); }
 });
-test("start clears interrupted ownership when a service exits during identity inspection", async () => {
+test("stop reclaims a nonce-owned child that exited and whose PID was reused", async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-reuse-test-"));
+	const marker = resolve(root, "child.pid");
+	const nonce = ownershipNonce();
+	const script = `import { spawn } from "node:child_process";
+		import { writeFileSync } from "node:fs";
+		const child = spawn(process.execPath, [${JSON.stringify(ownershipArg)}, ${JSON.stringify(fileURLToPath(new URL("../src/ownership-preload.cjs", import.meta.url)))}, "-e", "setInterval(() => {}, 1000)", "--", ${JSON.stringify(nonce)}],
+			{ detached: true, stdio: "ignore", windowsHide: true });
+		writeFileSync(process.argv[1], String(child.pid));
+		child.unref();`;
+	try {
+		const launched = spawnSync(process.execPath, ["--input-type=module", "-e", script, marker], { cwd: root, encoding: "utf8" });
+		assert.equal(launched.status, 0);
+		const pid = Number(await readFile(marker, "utf8"));
+		assert.equal(await ownedCommand(pid, nonce), true);
+		await killTree(pid);
+		await sleep(50);
+		const reused = spawn(process.execPath, ["-e", "setInterval(() => {}, 5000)"], { detached: true, windowsHide: true, stdio: "ignore" });
+		reused.unref();
+		try {
+			assert.equal(await ownedCommand(reused.pid!, nonce), false);
+			await assert.rejects(requireOwned({ pid: reused.pid!, nonce }), /no matching ownership nonce/);
+			assert.equal(alive(reused.pid!), true);
+		} finally { if (reused.pid) await killTree(reused.pid); }
+	} finally { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
-		const marker = `import { createServer } from "node:http"; createServer((_q,r)=>r.end("ok")).listen(Number(process.argv.includes("--port") ? process.env.WEB_PORT : process.env.PORT), "127.0.0.1");`;
+		const marker = `import { createServer } from "node:http"; const port = Number(process.env.WEB_PORT && process.argv.some(arg => arg === "--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
 			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
-		const pids: number[] = [];
-		await assert.rejects(start({ timeout: "5" }, ctx, async pid => {
-			pids.push(pid);
-			if (pids.length === 1) { await killTree(pid); await sleep(100); }
-			return "hypothetical-reused-pid-start";
-		}), /exited before ownership/);
-		assert.equal(pids.length, 2);
-		assert(pids.every(pid => !alive(pid)));
+		const running = start({ timeout: "5" }, ctx);
+		const deadline = Date.now() + 4000;
+		let recorded: { api: { pid: number; nonce?: string }; web?: { pid: number } } = { api: { pid: 0 } };
+		while (recorded.api.pid === 0 && Date.now() < deadline) {
+			await sleep(20);
+			if (existsSync(ctx.stateFile)) recorded = JSON.parse(await readFile(ctx.stateFile, "utf8"));
+		}
+		assert.match(recorded.api.nonce ?? "", /^[0-9a-f]{32}$/);
+		await killTree(recorded.api.pid);
+		await assert.rejects(running, /exited before both endpoints answered/);
 		assert.equal(existsSync(ctx.stateFile), false);
+		assert.equal(alive(recorded.web?.pid ?? 0), false);
 	});
 });
 test("legacy and interrupted ownership records are readable but never authorize a live PID", async () => {
 	await fixture(async (cli, root) => {
 		const file = resolve(root, "data/ctl/run.json");
 		await mkdir(resolve(root, "data/ctl"), { recursive: true });
-		for (const startTime of [undefined, null]) {
-			await writeFile(file, JSON.stringify({ api: { pid: process.pid, port: 4310, startTime },
-				web: { pid: 0, port: 5173, startTime }, logs: { api: "api.log", web: "web.log" }, databasePath: "test.db", startedAt: "test" }));
+		for (const nonce of [undefined, null, "legacy-start-time"]) {
+			await writeFile(file, JSON.stringify({ api: { pid: process.pid, port: 4310, nonce, startTime: "legacy" },
+				web: { pid: 0, port: 5173, nonce }, logs: { api: "api.log", web: "web.log" }, databasePath: "test.db", startedAt: "test" }));
 			const result = JSON.parse(cli(["stop"]).stdout);
 			assert.equal(result.error.code, "PID_MISMATCH");
 			assert.match(result.error.fix, /confirming ownership.*retry ctl stop/);
@@ -139,8 +162,8 @@ test("stop refuses an unrelated live PID with a different start time", async () 
 	await fixture(async (cli, root) => {
 		const file = resolve(root, "data/ctl/run.json");
 		await mkdir(resolve(root, "data/ctl"), { recursive: true });
-		await writeFile(file, JSON.stringify({ api: { pid: process.pid, port: 4310, startTime: `not-${processStartTime(process.pid)}` },
-			web: { pid: 0, port: 5173, startTime: null }, logs: { api: "api.log", web: "web.log" }, databasePath: "test.db", startedAt: new Date().toISOString() }));
+		await writeFile(file, JSON.stringify({ api: { pid: process.pid, port: 4310, nonce: ownershipNonce() },
+			web: { pid: 0, port: 5173, nonce: ownershipNonce() }, logs: { api: "api.log", web: "web.log" }, databasePath: "test.db", startedAt: new Date().toISOString() }));
 		const before = await readFile(file, "utf8");
 		const result = cli(["stop"]);
 		assert.equal(result.code, 1);

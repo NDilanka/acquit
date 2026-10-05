@@ -35,6 +35,8 @@ export function paypalPageProbe(selectors) {
 	const visible = element => {
 		const rect = element.getBoundingClientRect();
 		const style = getComputedStyle(element);
+		// PayPal keeps the previous step's controls in the DOM at 0x0. A positive
+		// rect is the only signal that a step is actually showing.
 		return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
 	};
 	const clickable = element => {
@@ -72,6 +74,10 @@ export function paypalPageProbe(selectors) {
 		password: Array.from(document.querySelectorAll('input[type="password"]')).some(visible),
 		control,
 		buttons: Array.from(document.querySelectorAll('button,input[type="submit"]')).filter(clickable).map(element => element.innerText || element.value),
+		overlays: Array.from(document.querySelectorAll('button,[role="button"],[role="dialog"] button')).filter(visible).flatMap(element => {
+			const label = (element.innerText || element.getAttribute("aria-label") || "").trim();
+			return /^(accept|agree|allow all|allow|got it|ok|reject|decline)$/i.test(label) ? [label] : [];
+		}).slice(0, 3),
 	};
 }
 function stripUrls(text) {

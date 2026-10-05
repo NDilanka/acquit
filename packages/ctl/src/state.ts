@@ -4,9 +4,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { alive, CliError } from "./process.ts";
 
+export interface ServiceRecord {
+	pid: number;
+	port: number;
+	// Present only for nonce-owned runs. Legacy files recorded startTime instead;
+	// readState keeps them readable and marks them unowned.
+	nonce?: string | null;
+	startTime?: string | null;
+}
 export interface RunState {
-	api: { pid: number; port: number; startTime: string | null };
-	web: { pid: number; port: number; startTime: string | null };
+	api: ServiceRecord;
+	web: ServiceRecord;
 	logs: { api: string; web: string };
 	startedAt: string;
 	databasePath: string;
@@ -54,11 +62,10 @@ export async function readState(ctx: Context): Promise<RunState | null> {
 	try {
 		const state = JSON.parse(raw) as RunState;
 		for (const service of [state.api, state.web]) {
-			// Older run files and interrupted starts have no identity proof. Keep them
-			// readable for diagnostics, but requireOwned must never kill a live PID.
-			if (service && service.startTime === undefined) service.startTime = null;
-			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535 ||
-				(service.startTime !== null && (typeof service.startTime !== "string" || !service.startTime))) throw new Error();
+			// A nonce is the only kill authority. Legacy startTime records and
+			// interrupted files stay readable, but requireOwned must refuse them.
+			if (service && !/^[0-9a-f]{32}$/.test(service.nonce ?? "")) service.nonce = null;
+			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535) throw new Error();
 		}
 		if (typeof state.logs?.api !== "string" || typeof state.logs.web !== "string" || typeof state.databasePath !== "string" || typeof state.startedAt !== "string") throw new Error();
 		return state;

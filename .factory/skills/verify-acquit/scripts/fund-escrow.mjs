@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, appendFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -67,18 +68,19 @@ async function doctor() {
 }
 
 async function browser(...args) {
+	const command = args[0] === "wait" ? ["wait", "--timeout", "20000", ...args.slice(1)] : args;
 	let reply;
 	try {
 		reply = await captured("agent-browser", [
 			"--config", join(evidence, "browser.json"), "--namespace", browserSession,
-			"--session", browserSession, "--json", ...args,
+			"--session", browserSession, "--json", ...command,
 		], browserEnv);
 	} catch (error) {
-		if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command: args, ok: false }) + "\n");
-		throw new Error(redact(`Browser command failed: ${args.join(" ")}. ${error.message}`));
+		if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command, ok: false }) + "\n");
+		throw new Error(redact(`Browser command failed: ${command.join(" ")}. ${error.message}`));
 	}
 	assert(reply.success, `Browser ${args[0]} failed. Child diagnostics are withheld.`);
-	if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command: args, ok: true }) + "\n");
+	if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command, ok: true }) + "\n");
 	return reply.data;
 }
 
@@ -121,6 +123,13 @@ async function approve() {
 		await refuseDashboard(ports, portOpen);
 	};
 	await checkDashboard();
+	// agent-browser 0.37.1 starts a per-session stream server at
+	// ~/.agent-browser/namespaces/<ns>/run/<ns>.stream. A synthetic experiment
+	// showed stream disable closes that port and removes the file. Do it before
+	// any credential command, and refuse if the file remains.
+	const streamFile = join(homedir(), ".agent-browser", "namespaces", browserSession, "run", `${browserSession}.stream`);
+	await browser("stream", "disable").catch(() => {});
+	if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
 	// Force checkout locale even when PayPal inferred Sinhala from this host.
 	// Apply it to the order approval URL, not a later /signin redirect.
 	const funding = await api(`/api/jobs/${previous.jobId}`, "maya-client");
@@ -145,13 +154,20 @@ async function approve() {
 		if (current.origin === webUrl && current.pathname === `/jobs/${previous.jobId}`) break;
 		assert(current.protocol === "https:" && ["sandbox.paypal.com", "www.sandbox.paypal.com"].includes(current.hostname), "Approval left the sandbox checkout.");
 		const probe = `(${paypalPageProbe.toString()})(${JSON.stringify(paypalControlSelectors)})`;
-		await browser("wait", "--fn", `location.origin===${JSON.stringify(webUrl)}||!!${probe}.control`);
-		if (new URL((await browser("get", "url")).url).origin === webUrl) break;
-		const page = await browser("eval", `JSON.stringify(${probe})`);
+		let page;
+		try {
+			await browser("wait", "--fn", `location.origin===${JSON.stringify(webUrl)}||!!${probe}.control||!!${probe}.overlays.length`);
+			page = await browser("eval", `JSON.stringify(${probe})`);
+		} catch (error) {
+			// Structural only. A screenshot of a credential page would record the email.
+			const diagnostic = await browser("eval", `JSON.stringify({step:${step},path:location.pathname,title:document.title,probe:${probe}})`).catch(() => null);
+			if (diagnostic) await save(`approval-timeout-${step}.json`, JSON.parse(diagnostic.result));
+			throw error;
+		}
 		const fields = JSON.parse(page.result);
-		// Navigation may finish between get-url and eval. Read the origin in the
-		// same DOM probe so a successful return is not treated as a blank login.
 		if (fields.origin === webUrl) break;
+		for (const overlay of fields.overlays) await browser("find", "role", "button", "click", "--name", overlay, "--exact");
+		if (fields.overlays.length) continue;
 		if (fields.email) await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
 		if (fields.password) await fillCredential('input[type="password"]', "SANDBOX_BUYER_PASSWORD");
 		// Visibility was checked in the DOM probe. agent-browser uses native CSS,

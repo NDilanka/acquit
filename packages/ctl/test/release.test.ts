@@ -8,9 +8,9 @@ import { alive, captured } from "../src/process.ts";
 test("release of an unreferenced detached handle keeps the CLI alive until cleanup finishes", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-release-test-"));
 	const module = new URL("../src/process.ts", import.meta.url).href;
-	const script = `import { detached, releaseSpawned } from ${JSON.stringify(module)};
+	const script = `import { detached, ownershipNonce, releaseSpawned } from ${JSON.stringify(module)};
 		import { writeFile } from "node:fs/promises";
-		const child = await detached(["-e","setInterval(()=>{},1000)"], process.cwd(), process.env, "child.log");
+		const child = await detached("-e", ownershipNonce(), process.cwd(), process.env, "child.log", ["setInterval(()=>{},1000)"]);
 		await writeFile("pid", String(child.pid));
 		await releaseSpawned(child);
 		console.log("released");`;

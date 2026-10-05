@@ -1,10 +1,12 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { closeSync, openSync, readFileSync } from "node:fs";
+import { closeSync, openSync } from "node:fs";
 import { mkdtemp, readFile, rmdir, unlink } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
 
 export type ErrorCode = "UNKNOWN_COMMAND" | "UNKNOWN_FLAG" | "INVALID_ARGUMENT" | "MISSING_ARGUMENT"
 	| "PORT_IN_USE" | "START_TIMEOUT" | "STOP_TIMEOUT" | "APP_NOT_RUNNING" | "UNKNOWN_TEST_USER"
@@ -26,22 +28,39 @@ export function alive(pid: number): boolean {
 	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 	try { process.kill(pid, 0); return true; } catch { return false; }
 }
-export function processStartTime(pid: number): string | null {
-	if (!alive(pid)) return null;
-	try {
-		if (process.platform === "win32") return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-			`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks.ToString()`], { encoding: "utf8", windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
-		if (process.platform === "linux") return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.split(" ")[19];
-		return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: 3000 }).trim() || null;
-	} catch { return null; }
+// The proof is chosen before spawn and placed in the child's argv. A reused PID
+// cannot carry a nonce it was never given, so no post-spawn identity lookup is needed.
+// Node rejects unknown options, and Vite rejects unknown positionals. A --require
+// of a no-op preload is accepted by both and is visible in the OS command line.
+// The filename is the nonce: one preload, no per-start file.
+export const ownershipArg = "--require";
+const ownershipPreload = fileURLToPath(new URL("./ownership-preload.cjs", import.meta.url));
+export function ownershipNonce(): string {
+	return randomBytes(16).toString("hex");
 }
-export function requireOwned(service: { pid: number; startTime: string | null }): void {
+function commandLine(pid: number): Promise<string | null> {
+	if (!alive(pid)) return Promise.resolve(null);
+	if (process.platform === "win32") return new Promise(resolve => {
+		execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+			`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop).CommandLine`],
+			{ encoding: "utf8", windowsHide: true, timeout: 10_000 }, (error, stdout) => resolve(error ? null : stdout));
+	});
+	if (process.platform === "linux") return readFile(`/proc/${pid}/cmdline`, "utf8").then(text => text.replaceAll("\0", " ")).catch(() => null);
+	return new Promise(resolve => {
+		execFile("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8", timeout: 3000 }, (error, stdout) => resolve(error ? null : stdout));
+	});
+}
+export async function ownedCommand(pid: number, nonce: string | null): Promise<boolean> {
+	if (!nonce || !/^[0-9a-f]{32}$/.test(nonce) || !alive(pid)) return false;
+	const line = await commandLine(pid);
+	// Recheck after the lookup: the PID may have died and been reused meanwhile.
+	return line !== null && alive(pid) && line.includes(`${ownershipArg} ${ownershipPreload}`) && line.includes(nonce);
+}
+export async function requireOwned(service: { pid: number; nonce?: string | null }): Promise<void> {
 	if (!alive(service.pid)) return;
-	if (!service.startTime) throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: the run file has no verified process start time (legacy or interrupted start).`,
+	if (await ownedCommand(service.pid, service.nonce ?? null)) return;
+	throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: its command line has no matching ownership nonce (dead, reused, unrelated, or a legacy run file).`,
 		`Inspect PID ${service.pid} and the run file locally. Stop it manually only after confirming ownership; then retry ctl stop to clear the stale record. Never adopt an unverified PID.`);
-	if (!service.startTime || processStartTime(service.pid) !== service.startTime) {
-		throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: process start-time mismatch.`, "Inspect the lane run file. Do not stop an unrelated process.");
-	}
 }
 export function portOpen(port: number): Promise<boolean> {
 	return new Promise(resolve => {
@@ -107,43 +126,25 @@ export async function killTree(pid: number): Promise<void> {
 		catch (error) { if (alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned process group ${pid}.`, `Run kill -TERM -- -${pid}, then npm run -s ctl -- stop.`); }
 	}
 }
-export async function detached(args: string[], cwd: string, env: NodeJS.ProcessEnv, log: string): Promise<ChildProcess> {
+export async function detached(script: string, nonce: string, cwd: string, env: NodeJS.ProcessEnv, log: string, extra: string[] = []): Promise<ChildProcess> {
+	if (!/^[0-9a-f]{32}$/.test(nonce)) throw new CliError("INVALID_STATE", "Refusing to spawn a service without an ownership nonce.", "Retry start. Do not reuse a legacy run file.");
 	const fd = openSync(log, "a");
 	try {
-		const child = spawn(process.execPath, args, { cwd, env, detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
+		// The nonce is an argv marker, never an environment value, so command-line
+		// inspection can prove ownership without reading the process environment.
+		// The nonce is a script argument after `--`, so neither Node nor Vite parses
+		// it, while Win32_Process/ps still report it in the command line.
+		const child = spawn(process.execPath, [ownershipArg, ownershipPreload, script, ...extra, "--", nonce], { cwd, env, detached: true, windowsHide: true, stdio: ["ignore", fd, fd] });
 		await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
 		child.unref();
 		return child;
 	} finally { closeSync(fd); }
 }
-export async function captureStartTime(pid: number): Promise<string | null> {
-	// Run asynchronously so Windows identity lookup does not delay spawning the
-	// other service or probing readiness. Retry transient memory-pressure errors.
-	for (let attempt = 0; attempt < 3; attempt++) {
-		if (!alive(pid)) return null;
-		if (process.platform !== "win32") return processStartTime(pid);
-		const result = await captured("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-			`(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks.ToString()`], process.cwd(), process.env, 10_000).catch(() => null);
-		if (result?.code === 0 && result.stdout.trim()) return result.stdout.trim();
-		await sleep(100);
-	}
-	return null;
-}
-export function requireSpawned(child: ChildProcess): void {
-	if (child.exitCode !== null || child.signalCode !== null || child.killed) {
-		throw new CliError("PROCESS_FAILED", "A spawned service exited before ownership could be recorded.", "Inspect the service logs, then retry start.");
-	}
-}
-export async function captureOwnedIdentity(child: ChildProcess, lookup = captureStartTime): Promise<string | null> {
-	requireSpawned(child);
-	const identity = await lookup(child.pid!);
-	// A PID lookup may observe a reused PID. Only a still-live handle may adopt it.
-	requireSpawned(child);
-	return identity;
-}
 export async function releaseSpawned(child: ChildProcess): Promise<void> {
-	// A ChildProcess retains the native process handle on Windows. Unlike stale
-	// run.json, this invocation has direct ownership even if identity lookup fails.
+	// A ChildProcess from this invocation retains its native handle. Unlike a
+	// run-file PID, that handle is ownership; do not consult a command line.
+	// exitCode is not trustworthy here: Node sets it only on the exit event,
+	// after the PID is already dead and reusable.
 	if (child.exitCode !== null || child.signalCode !== null) return;
 	if (process.platform !== "win32") { await killTree(child.pid!); return; }
 	// detached() unrefs this handle. Waiting on a Promise alone does not keep

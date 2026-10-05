@@ -178,12 +178,33 @@ export async function startWave(requested, onPlan = () => {}, options = {}) {
 	}
 	return report;
 }
+export async function restartLane(n, options = {}) {
+	assert(Number.isSafeInteger(n) && n > 0 && n <= 100, "Use restart <n> for one occupied lane.");
+	const status = await ctl(n, "status");
+	assert(status.run, `Lane ${n} has no owned run to restart.`);
+	const wave = existsSync(waveFile) ? JSON.parse(await readFile(waveFile, "utf8")) : { lanes: [] };
+	const owned = wave.lanes.find(lane => lane.n === n);
+	if (owned) assert.deepEqual({ api: status.run.api, web: status.run.web }, { api: owned.api, web: owned.web }, "Lane ownership changed. Refuse restart.");
+	// Free the slot before measuring. planWave prices additions, so measuring
+	// while this slot still runs would double-count it and can refuse a restart
+	// the machine can actually afford.
+	await cleanupLane(n, { api: status.run.api, web: status.run.web });
+	if (owned) {
+		wave.lanes = wave.lanes.filter(lane => lane.n !== n);
+		await atomicJson(waveFile, wave);
+	}
+	return startWave([n], () => {}, options);
+}
 async function main() {
 	const [mode, count, ...extra] = process.argv.slice(2);
-	assert(["start", "measure", "doctor", "cleanup"].includes(mode), "Use lanes.mjs start <count> [--browsers], start --lanes 6,7,8, measure, doctor, or cleanup [lane].");
+	assert(["start", "restart", "measure", "doctor", "cleanup"].includes(mode), "Use lanes.mjs start <count> [--browsers], start --lanes 6,7,8, restart <n> [--browsers], measure, doctor, or cleanup [lane].");
 	await mkdir(managerDir, { recursive: true });
 	await locked({ ...ctx, dir: managerDir }, async () => {
 		if (mode === "measure") { console.log(JSON.stringify(await measure())); return; }
+		if (mode === "restart") {
+			assert(/^\d+$/.test(count) && extra.every(flag => flag === "--browsers"), "Use restart <n> [--browsers].");
+			await restartLane(Number(count), { browsers: extra.includes("--browsers") }); return;
+		}
 		if (mode === "start") {
 			const explicit = count === "--lanes";
 			const numbers = explicit ? extra[0]?.split(",").map(Number) : Number(count);

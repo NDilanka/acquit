@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { alive, captured, captureStartTime, captureOwnedIdentity, CliError, detached, killTree, portOpen, reachable, releaseSpawned, requireOwned, requireSpawned, sleep } from "./process.ts";
+import { alive, captured, CliError, detached, killTree, ownershipNonce, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
@@ -35,8 +35,8 @@ async function probes(api: number, web: number) {
 	return { apiPort, webPort, apiReady, webReady };
 }
 async function stopOwned(state: RunState): Promise<void> {
-	for (const service of [state.api, state.web]) requireOwned(service);
-	for (const service of [state.api, state.web]) { requireOwned(service); await killTree(service.pid); }
+	for (const service of [state.api, state.web]) await requireOwned(service);
+	for (const service of [state.api, state.web]) { await requireOwned(service); await killTree(service.pid); }
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
 		if (!(await portOpen(state.api.port)) && !(await portOpen(state.web.port))) return;
@@ -49,14 +49,14 @@ async function runData(state: RunState, alreadyRunning: boolean): Promise<Result
 	return { alreadyRunning, urls: urls(state.api.port, state.web.port), pids: { api: state.api.pid, web: state.web.pid }, logs: state.logs,
 		databasePath: state.databasePath, seeded: rows.operators > 0, ...(rows.operators === 0 ? { hint: "Run npm run -s ctl -- seed-db --yes." } : {}) };
 }
-export async function start(parsed: Parsed, ctx: Context, identity = captureStartTime): Promise<Result> {
+export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	const timeout = Number(parsed.timeout);
 	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600) throw new CliError("INVALID_ARGUMENT", "--timeout must be between 0 and 600 seconds, excluding zero.", "Run npm run -s ctl -- start --timeout 30.", 2);
 	if (ctx.apiPort === ctx.webPort) throw new CliError("PORT_IN_USE", "API and web ports must differ.", "Set PORT=4310 and WEB_PORT=5173, or choose two unused ports.");
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
 		if (previous) {
-			for (const service of [previous.api, previous.web]) requireOwned(service);
+			for (const service of [previous.api, previous.web]) await requireOwned(service);
 			const probe = await probes(previous.api.port, previous.web.port);
 			if (alive(previous.api.pid) && alive(previous.web.pid) && probe.apiReady && probe.webReady) return runData(previous, true);
 			for (const service of [previous.api, previous.web]) if (!alive(service.pid) && await portOpen(service.port)) {
@@ -71,36 +71,29 @@ export async function start(parsed: Parsed, ctx: Context, identity = captureStar
 		const vite = resolve(ctx.root, "apps/web/node_modules/vite/bin/vite.js");
 		if (!existsSync(vite)) throw new CliError("PROCESS_FAILED", "The web app's Vite dependency is missing.", "Run npm install from the repository root, then npm run -s ctl -- start.");
 		await mkdir(dirname(ctx.databasePath), { recursive: true });
-		const state: RunState = { api: { pid: 0, port: ctx.apiPort, startTime: null }, web: { pid: 0, port: ctx.webPort, startTime: null },
+		const state: RunState = { api: { pid: 0, port: ctx.apiPort, nonce: ownershipNonce() }, web: { pid: 0, port: ctx.webPort, nonce: ownershipNonce() },
 			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log") }, startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
 		const children: ChildProcess[] = [];
 		try {
-			const api = await detached(["apps/api/src/server.ts"], ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
+			// Record the nonce before launch. A CLI killed during readiness leaves a
+			// run file that a later stop can reclaim; no post-spawn lookup is required.
+			await atomicJson(ctx.stateFile, state);
+			const api = await detached("apps/api/src/server.ts", state.api.nonce!, ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
 				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api);
 			children.push(api);
 			state.api.pid = api.pid!;
 			await atomicJson(ctx.stateFile, state);
-			const web = await detached([vite, "--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], resolve(ctx.root, "apps/web"),
-				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web);
+			const web = await detached(vite, state.web.nonce!, resolve(ctx.root, "apps/web"),
+				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web,
+				["--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"]);
 			children.push(web);
 			state.web.pid = web.pid!;
 			await atomicJson(ctx.stateFile, state);
 			const deadline = Date.now() + timeout * 1000;
 			while (Date.now() < deadline) {
-				if (alive(state.api.pid) && alive(state.web.pid)) {
-					const probe = await probes(ctx.apiPort, ctx.webPort);
-					if (probe.apiReady && probe.webReady) {
-						// Identity inspection competes with cold TypeScript/Vite boot
-						// on small Windows hosts. Defer it until endpoints answer.
-						[state.api.startTime, state.web.startTime] = await Promise.all([captureOwnedIdentity(api, identity), captureOwnedIdentity(web, identity)]);
-						const guard = () => children.forEach(requireSpawned);
-						guard();
-						if (!state.api.startTime) throw new CliError("PROCESS_FAILED", "Could not record the API start time.", "Inspect the API log, then retry start.");
-						if (!state.web.startTime) throw new CliError("PROCESS_FAILED", "Could not record the web start time.", "Inspect the web log, then retry start.");
-						await atomicJson(ctx.stateFile, state, guard);
-						return await runData(state, false);
-					}
-				}
+				const probe = await probes(ctx.apiPort, ctx.webPort);
+				if (probe.apiReady && probe.webReady) return await runData(state, false);
+				if (!alive(state.api.pid) || !alive(state.web.pid)) throw new CliError("PROCESS_FAILED", "A spawned service exited before both endpoints answered.", "Inspect the service logs, then retry start.");
 				await sleep(200);
 			}
 			throw new CliError("START_TIMEOUT", `The app did not become ready within ${timeout}s. Last log lines are in ${state.logs.api} and ${state.logs.web}.`,
@@ -119,7 +112,7 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 		const state = await readState(ctx);
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
 		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
-		for (const service of wouldKill) requireOwned(service);
+		for (const service of wouldKill) await requireOwned(service);
 		if (parsed["dry-run"]) return { stopped: false, wouldKill, run: state };
 		await stopOwned(state);
 		await clearState(ctx);
@@ -135,7 +128,7 @@ export async function status(_parsed: Parsed, ctx: Context): Promise<Result> {
 	const path = run?.databasePath ?? ctx.databasePath;
 	const rows = await counts(path);
 	const database = { path, exists: existsSync(path), seeded: rows.operators > 0, counts: { operators: rows.operators, jobs: rows.jobs } };
-	return { healthy: Boolean(run?.api.startTime && run.web.startTime && pids.api.alive && pids.web.alive && probe.apiReady && probe.webReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
+	return { healthy: Boolean(run?.api.nonce && run.web.nonce && pids.api.alive && pids.web.alive && probe.apiReady && probe.webReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
 		runFile: ctx.stateFile, run, pids, ports: { api: { port: ports.api, open: probe.apiPort }, web: { port: ports.web, open: probe.webPort } },
 		reachability: { api: probe.apiReady, web: probe.webReady }, urls: urls(ports.api, ports.web), database, env: { fileExists: existsSync(resolve(ctx.root, ".env")), requiredKeys: keys } };
 }
