@@ -112,12 +112,12 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 - [ ] Record each child's process start time in the run file. `stop` kills a PID only when its start time still matches, which closes the PID reuse gap.
 - [ ] Add an injectable `Clock` to `createAcquit` config. Add `POST /api/dev/clock` with `{ advanceMs }` and `npm run ctl -- clock advance <duration>`. Both exist only when `ACQUIT_DEV=1`.
 - [ ] Add an `approve` mode to `fund-escrow.mjs` that completes buyer approval through standard input per the skill's Optional buyer approval section, and drives on to HELD.
-- [ ] Add `lanes.mjs` with `start <count>`, `doctor`, and `cleanup` across lane slots.
+- [ ] Add `lanes.mjs` with `start <count>`, `doctor`, and `cleanup` across lane slots. `start` reads free physical memory and starts at most `floor((free MB - 1024) / per-lane MB)` slots at once, where per-lane MB is the measured peak of one slot (API, Vite, and its headless browser). It prints the cap and the measurement. The root runs a PR's ten lanes in waves of that cap. This machine has 8 GB, and 904 MB was free on 2026-10-05, so ten slots at once do not fit.
 - [ ] Add a dev-only card funding source. With `ACQUIT_DEV=1` and `npm run ctl -- fund-mode card`, the `CREATE_ORDER` effect sends a PayPal sandbox test card as `payment_source.card`, and PayPal returns a completed DELAYED capture with no buyer login (Appendix A, P2). The capture still flows through `CaptureCompleted`. Lanes whose scenario is not funding use it. Regression lanes and the tutorial run keep the buyer checkout.
 
 **You see.**
 
-- [ ] `node .factory/skills/verify-acquit/scripts/lanes.mjs start 10` prints ten `healthy:true` rows with ports 4320 to 4410 and 5183 to 5273.
+- [ ] `node .factory/skills/verify-acquit/scripts/lanes.mjs start 10` prints its memory cap and one `healthy:true` row per started slot, with lane n on ports `4310 + 10n` and `5173 + 10n`.
 - [ ] `npm run ctl -- clock advance 4h` on a job in checkout prints the new clock time, and the job page shows `OPEN` with bidding open again.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
@@ -130,7 +130,7 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 
 - [ ] Lane 1. Regression lane against trunk. Run the verify-acquit feature 04 drive at trunk and at head on the default slot. Save `fund-checkout.png`. Pass when both `summary.json` files show `passed:true` and the same stored quote (total 42000, platform fee 4485, operator net 36000).
 - [ ] Lane 2. Start lanes 1 and 2 at the same time and run the feature 04 drive on both. Save `two-lanes-checkout.png`. Pass when both drives pass and the two jobs have different ids in different database files.
-- [ ] Lane 3. Run `lanes.mjs start 10`, then `lanes.mjs doctor`. Save `ten-lanes-doctor.png`. Pass when all ten rows show `healthy:true`.
+- [ ] Lane 3. Run `lanes.mjs start 10`, then `lanes.mjs doctor`. Save `lanes-cap-doctor.png`. Pass when `start` prints a cap with its per-lane measurement, starts exactly that many slots, refuses the rest with a message naming the free memory, and every started row shows `healthy:true`.
 - [ ] Lane 4. From lane 3's browser session, send a command to lane 4's API with the lane 3 origin. Save `cross-origin-refused.png`. Pass when lane 4 refuses it with 403 and accepts the same command from its own origin.
 - [ ] Lane 5. On lane 5, accept a bid and read the order from the sandbox. Save `return-url.png`. Pass when the order's return URL names port 5223.
 - [ ] Lane 6. Write a lane run file that names a live unrelated `node` process, then run `npm run ctl -- stop`. Save `pid-guard.png`. Pass when `stop` refuses with a start-time mismatch and the unrelated process still runs.
@@ -141,10 +141,10 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. Seconds from `start` to both endpoints answering, for one instance at trunk and head. At head also, seconds until ten lanes all answer.
-- [ ] Probe. `node scripts/perf/boot.mjs --rounds 5` alternates trunk and head single starts, then runs one ten-lane start at head.
+- [ ] Metric. Seconds from `start` to both endpoints answering, for one instance at trunk and head. At head also, seconds until one wave of slots at the memory cap all answer, and the measured per-lane MB.
+- [ ] Probe. `node scripts/perf/boot.mjs --rounds 5` alternates trunk and head single starts, then runs one wave at the cap at head.
 - [ ] Baseline. Record the trunk single-start median first.
-- [ ] Rule. Fail if the head single-start median exceeds trunk by more than 15 percent. Fail if ten lanes take more than 120 seconds.
+- [ ] Rule. Fail if the head single-start median exceeds trunk by more than 15 percent. Fail if one wave at the memory cap takes more than 120 seconds to answer.
 
 **Review gate.** None. H0 is not review-gated.
 
@@ -672,6 +672,8 @@ No capture is left HELD. Capture A was released, and captures B, C, and D were r
 **Hidden tests that need more than an exported function.** This lands in F3. The prototype settled exported pure functions for the invoice fixture only. A job whose behavior needs a CLI or HTTP call needs a different call kind. The hackathon demo uses only the invoice fixture, so this stays a known limit.
 
 **PayPal timing is outside our control.** This lands in F2. A GET on an order returned a transient 503 once. Approve-to-PAID depends on sandbox latency, so the 20 second budget can fail for PayPal's reasons. The perf lane records PayPal's share of each run separately.
+
+**The machine has 8 GB of memory.** This lands in every PR. On 2026-10-05, 904 MB was free, and `gh` crashed with `cannot allocate memory` during the repo push. Ten lanes run in waves at the cap `lanes.mjs` computes, so a verdict takes several waves. The root counts a lane that dies from memory as a gap, not a pass or a failure, and reruns it in the next wave.
 
 **The tuistory binary is not on PATH.** This lands in F1 and F5. The tuistory skill is listed, but `tuistory` did not resolve on 2026-10-05. The owner installs it per its skill before the first CLI lane. `ffmpeg` and `agent-browser record` are present.
 
