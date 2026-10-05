@@ -173,6 +173,7 @@ async function approve() {
 		// Visibility was checked in the DOM probe. agent-browser uses native CSS,
 		// not Playwright's nonstandard :visible pseudo-class.
 		if (fields.control) {
+			await save(`approval-step-${step}.json`, { control: fields.control, email: fields.email, password: fields.password, overlays: fields.overlays });
 			await browser("scrollintoview", fields.control);
 			// Hermes overlays its still-present purchase button with a spinner.
 			// Wait for true click readiness or the app return, not just DOM load.
@@ -188,7 +189,14 @@ async function approve() {
 		await browser("wait", "--load", "domcontentloaded");
 	}
 	await browser("wait", "--url", `${webUrl}/jobs/${previous.jobId}`);
-	await browser("wait", "--text", "Escrow: HELD, locked to devon-ops");
+	// The return page renders the held line after the capture settles. Give it
+	// longer than a login step, and record the page state if it never appears.
+	try { await browser("wait", "--timeout", "60000", "--text", "Escrow: HELD, locked to devon-ops"); }
+	catch (error) {
+		const page = await browser("eval", `JSON.stringify({path:location.pathname,text:(document.body.innerText||"").slice(0,400)})`).catch(() => null);
+		if (page) await save("approval-held-timeout.json", JSON.parse(page.result));
+		throw error;
+	}
 	const held = await api(`/api/jobs/${previous.jobId}`, "maya-client");
 	assert.equal(held.job.status, "IN_PROGRESS");
 	assert.equal(held.job.escrow, "HELD");

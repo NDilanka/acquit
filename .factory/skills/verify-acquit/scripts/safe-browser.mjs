@@ -55,8 +55,9 @@ export function paypalPageProbe(selectors) {
 		const genericSubmit = selector === 'button[type="submit"]' || selector === 'button:not([type])' || selector === 'input[type="submit"]';
 		if (genericSubmit) candidates.reverse();
 		// The sticky Hermes purchase footer may fail a pre-scroll hit test.
-		// Native click still enforces coverage after scrollintoview.
-		const element = candidates.find(genericSubmit ? element => !element.disabled && visible(element) : clickable);
+		// Native click still enforces coverage after scrollintoview. A zero rect
+		// is the previous step kept in the DOM, never a control to click.
+		const element = candidates.find(element => visible(element) && (genericSubmit ? !element.disabled : clickable(element)));
 		if (!element) continue;
 		if (element.id) control = `[id=${JSON.stringify(element.id)}]`;
 		else {
