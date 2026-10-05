@@ -177,7 +177,7 @@ export async function screenshot(parsed: Parsed, ctx: Context): Promise<Result> 
 		const out = parsed.out === undefined ? resolve(ctx.root, "data/evidence", `${new Date().toISOString().replaceAll(":", "-")}-${path.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || "jobs"}.png`) : resolve(ctx.root, String(parsed.out));
 		if (!out.toLowerCase().endsWith(".png")) throw new CliError("INVALID_ARGUMENT", "--out must name a .png file.", "Run npm run -s ctl -- screenshot --out data/evidence/jobs.png.", 2);
 		const env = { ...process.env };
-		for (const name of Object.keys(env)) if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT" || name.startsWith("PAYPAL_") || name.endsWith("_MERCHANT_ID")) delete env[name];
+		for (const name of Object.keys(env)) if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT" || /PAYPAL|SANDBOX|MERCHANT_ID|PASSWORD|SECRET|TOKEN|API_KEY/.test(name)) delete env[name];
 		env.AGENT_BROWSER_SESSION = ctx.browserSession;
 		env.AGENT_BROWSER_HEADED = "false";
 		const browserConfig = resolve(ctx.dir, "browser.json");

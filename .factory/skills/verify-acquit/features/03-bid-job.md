@@ -22,9 +22,9 @@ Preconditions:
 - A fresh verification database has a Maya job from feature 02 and Devon has 30 credits.
 - Sign in as `devon-ops`. Use `ab` from the index.
 
-- **Read the starting credits.** Use a captured `login --test-user devon-ops --save` result with `DATABASE_PATH=./data/verify/acquit.db`. Read `GET /api/me/credits` with its saved Bearer token. Require `credits.available:30`.
-- **Open the job form.** Run `ab open http://localhost:5173/jobs/JOB_ID` and `ab wait --text 'Place a bid'`.
-- **Prove the dashboard entry separately.** Run `ab open http://localhost:5173/operator`, snapshot the list, and click the fresh `Bid` ref beside the target job. The inline form appears. Choose `Close` to dismiss it. Use a new job and seeded credits to prove submission through this entry.
+- **Read the starting credits.** Use a captured `login --test-user devon-ops --save` result with `ACQUIT_LANE=<n>`. Read `GET /api/me/credits` with its saved Bearer token. Require `credits.available:30`.
+- **Open the job form.** Run `ab open "$webUrl/jobs/JOB_ID"` and `ab wait --text 'Place a bid'`.
+- **Prove the dashboard entry separately.** Run `ab open "$webUrl/operator"`, snapshot the list, and click the fresh `Bid` ref beside the target job. The inline form appears. Choose `Close` to dismiss it. Use a new job and seeded credits to prove submission through this entry.
 - **Enter the bid.** Run `ab find label 'Price (USD)' fill 400`, `ab select 'select:has(option[value="48"])' 48`, `ab select 'select:has(option[value="ts-bugfixer"])' ts-bugfixer`, and `ab find label Pitch fill 'TypeScript currency fix with a dedicated bug-fix agent. Source changes only.'`.
 - **Send the bid.** Capture the filled form. Run `ab find role button click --name 'Send bid' --exact`. On the job page, run `ab wait --fn "Array.from(document.querySelectorAll('.bidrow')).some(row => row.textContent.includes('devon-ops'))"`. Capture the Devon bid row and ARIA snapshot. On the dashboard's inline form, wait for `Credits spent: 10 (20 left this week)` and capture that receipt.
 - **Verify the debit.** Read `GET /api/me/credits` again and require `credits.available:20`. Save both sanitized credit responses.

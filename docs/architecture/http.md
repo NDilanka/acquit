@@ -7,6 +7,7 @@ The web app and the API meet only here. The API owns this file. The web app read
 - API: `http://localhost:4310` (env `PORT`).
 - Web: `http://localhost:5173` (env `WEB_PORT`). Vite proxies `/api` and `/paypal` to the API, so the browser sees one origin.
 - `npm run dev` at the repo root starts both. `npm run seed` resets the SQLite file at `DATABASE_PATH` and loads the seed.
+- `npm run ctl -- start` with `ACQUIT_LANE=n` selects API port `4310 + 10n`, web port `5173 + 10n`, and `data/verify/lane-n/acquit.db`. The control command passes the selected database and `WEB_ORIGIN` to the API. The API origin check and PayPal callback URLs use that origin.
 
 ## Encoding
 
@@ -65,13 +66,27 @@ Clients see their own jobs and every OPEN job. A query refusal is `403` or `404`
 
 1. `AcceptBid` commits, the job enters OPEN FUNDING, and the outbox creates the order. The API drains the outbox inline after the commit, so the order usually exists before the response returns.
 2. The web app polls `GET /api/jobs/:id` about once a second until `job.approveUrl` is set, then sends the browser there.
-3. The order's return URL is `http://localhost:5173/paypal/return?jobId=<id>` and its cancel URL is `http://localhost:5173/paypal/cancel?jobId=<id>`. Both are API routes reached through the proxy.
+3. The order's return URL is `<webOrigin>/paypal/return?jobId=<id>` and its cancel URL is `<webOrigin>/paypal/cancel?jobId=<id>`. Both are API routes reached through the proxy.
 4. `GET /paypal/return` re-reads the order from PayPal, records `BuyerApproved`, captures, records `CaptureCompleted`, and redirects `302` to `/jobs/<id>`. It is idempotent: a second visit redirects without a second capture.
 5. `GET /paypal/cancel` redirects `302` to `/jobs/<id>` and leaves the job in FUNDING until the checkout window closes.
 
 When capture completes the job is `IN_PROGRESS`, `escrow: "HELD"`, and `ledger` is `[{ kind: "HELD", cents: 42000, at }]`.
 
 Webhooks are not reachable on localhost, so the skeleton relies on the return route plus `POST /api/dev/tick` (fires `Acquit.tick`, dev only). `POST /paypal/webhook` exists and calls `handlePayPalWebhook`, for later.
+
+## Development controls
+
+Every `/api/dev/` route requires `ACQUIT_DEV=1` on the API process and a development session. Without the flag, the API returns `403 { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }`. Cross-origin requests still fail the origin check.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/dev/clock` | `{ advanceMs }`, a positive integer of at most 365 days | `{ now }`, the new UTC clock time after due work runs |
+| POST | `/api/dev/fund-mode` | `{ mode: "card" \| "checkout" }` | `{ mode }` |
+| POST | `/api/dev/tick` | | `{ ok: true }` after due work runs |
+
+`createAcquit` accepts an optional `Clock` with `now(): Instant`. Production code defaults to wall time. The API development clock adds a process-local offset. Session expiry and PayPal token expiry still use wall time. Restart resets the offset and funding mode.
+
+`ctl clock advance <duration>` accepts `ms`, `s`, `m`, `h`, or `d`. `ctl fund-mode card` selects a sandbox card source for CREATE_ORDER. A completed create first records the order identity, then re-reads PayPal and applies the existing CaptureCompleted edge. It never writes HELD directly. The observed card processing fee can differ from the checkout fee quote.
 
 ## Errors
 

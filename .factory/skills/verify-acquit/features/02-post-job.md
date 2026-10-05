@@ -22,7 +22,7 @@ Preconditions:
 - Doctor passes. Sign in as `maya-client`.
 - Use `ab` from the feature index. Save the new job ID for later features.
 
-- **Open the form.** Run `ab open http://localhost:5173/jobs/new` and `ab wait --text '#12 Totals round wrong for 3-decimal currencies'`. To test a link entry, snapshot first and click that link's fresh ref instead of navigating directly.
+- **Open the form.** Run `ab open "$webUrl/jobs/new"` and `ab wait --text '#12 Totals round wrong for 3-decimal currencies'`. To test a link entry, snapshot first and click that link's fresh ref instead of navigating directly.
 - **Configure the job.** Run `ab select 'select:has(option[value="maya-client/invoice-app#12"])' 'maya-client/invoice-app#12'`, `ab find label 'Budget (USD)' fill 400`, and `ab select 'select:has(option[value="7"])' 7`. Bid is the only available mode.
 - **Capture the action.** Run `ab screenshot --full data/evidence/verify-acquit/RUN_STAMP/post-form.png` and save `ab snapshot` before submission.
 - **Open the job.** Run `ab find role button click --name 'Open job' --exact` and `ab wait --text 'Open job page'`. Require `OPEN`, `400.00 USD`, commit `a41c9e2`, 48 visible tests, six hidden tests, and protected paths.

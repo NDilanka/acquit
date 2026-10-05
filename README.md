@@ -55,3 +55,11 @@ npm run typecheck
 npm test
 npm run smoke     # real sandbox: login, OpenJob, PlaceBid, AcceptBid, checkout link
 ```
+
+## Verification lanes
+
+Set `ACQUIT_LANE=<n>` before every control command. Lane n uses API port `4310 + 10n`, web port `5173 + 10n`, database `data/verify/lane-<n>/acquit.db`, run files `data/ctl/lane-<n>/`, and browser session `verify-acquit-lane-<n>`. Without a lane, the control command keeps the configured default ports and database.
+
+Start the API with `ACQUIT_DEV=1` to use `npm run ctl -- clock advance 4h` or `npm run ctl -- fund-mode card`. Card mode uses a real sandbox test-card capture without buyer login. Funding regression and tutorial runs use checkout mode. The clock offset and funding mode reset on restart.
+
+`node .factory/skills/verify-acquit/scripts/lanes.mjs start 10` measures one slot and starts a memory-capped wave with a 1024 MB reserve. Set `ACQUIT_MAX_LANES=2` on this machine. Run `doctor` and `cleanup` through the same script. See [the verification skill](.factory/skills/verify-acquit/SKILL.md) for the browser drive and evidence rules.

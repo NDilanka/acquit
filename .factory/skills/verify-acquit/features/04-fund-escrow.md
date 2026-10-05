@@ -23,7 +23,7 @@ Preconditions:
 - Follow Launch and Doctor in the skill. Start with 30 Devon credits.
 - Real sandbox merchant configuration is present. Do not print its values.
 
-- **Run the complete checkout drive.** Set `$env:DATABASE_PATH='./data/verify/acquit.db'`. Run `node .factory/skills/verify-acquit/scripts/fund-escrow.mjs drive RUN_STAMP`. Require exit code zero and `passed:true`. The script uses the forms and picker, not command API shortcuts.
+- **Run the complete checkout drive.** Set `$env:ACQUIT_LANE='1'`. Run `node .factory/skills/verify-acquit/scripts/fund-escrow.mjs drive RUN_STAMP`. Require exit code zero and `passed:true`. The script uses the forms and picker, not command API shortcuts.
 - **Confirm acceptance.** Inspect `07-accept-confirm.png`. Require `Accept devon-ops?`, `400.00 USD` budget, `20.00 USD` fee, and `420.00 USD` total.
 - **Confirm checkout.** Inspect `08-paypal-checkout.png`, its snapshot, and `summary.json`. Require host `www.sandbox.paypal.com` and path `/checkoutnow`. No live PayPal checkout is allowed.
 - **Confirm funding side effects.** Read `job-funding.json` and `funding-checks.json`. Require `OPEN`, `FUNDING`, `AWAITING_APPROVAL`, total `42000`, platform fee `4485`, operator net `36000`, and `payeeMatchesConfiguredDevon:true`. The API exposes only the public state. The helper reads the omitted quote and checkout substate from SQLite in read-only mode.
