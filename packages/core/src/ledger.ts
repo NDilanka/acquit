@@ -101,22 +101,7 @@ function sums(lines: readonly LedgerLine[]) {
 	return { held, released, fee, refund, releaseCount, refundCount };
 }
 
-function broken(lines: readonly LedgerLine[]): LedgerLaw | null {
-	const total = sums(lines);
-	if (!total) return "conservation";
-	const noRefund = total.refundCount === 0;
-	const conserved = noRefund ? total.released + total.fee === total.held : total.refund === total.held;
-	if (!conserved) return "conservation";
-	if (total.releaseCount > 1) return "one_release";
-	if (total.refund * (total.released + total.fee) !== 0) return "refund_xor_payout";
-	return null;
-}
-
-export function reduceLedger(book: EmptyBook, move: Extract<LedgerMove, { kind: "Hold" }>): HeldBook | LawBreak;
-export function reduceLedger(book: HeldBook, move: Extract<LedgerMove, { kind: "Release" }>): PaidBook | LawBreak;
-export function reduceLedger(book: HeldBook, move: Extract<LedgerMove, { kind: "Refund" }>): RefundedBook | LawBreak;
-export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak;
-export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
+function reduceAny(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
 	if (book.length === 0 && move.kind === "Hold") {
 		if (!cents(move.gross) || move.gross <= 0) return breakLaw("conservation");
 		return [{ kind: "HELD", cents: move.gross, at: move.at }];
@@ -125,9 +110,8 @@ export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | L
 		if (!cents(move.operatorNet) || !cents(move.processorFee) || !cents(move.platformFee)) return breakLaw("conservation");
 		const fee = move.processorFee + move.platformFee;
 		if (!Number.isSafeInteger(fee) || move.operatorNet + fee !== book[0].cents) return breakLaw("conservation");
-		const paid: PaidBook = [book[0], { kind: "RELEASED", cents: move.operatorNet, at: move.at },
+		return [book[0], { kind: "RELEASED", cents: move.operatorNet, at: move.at },
 			{ kind: "FEE", cents: fee as UsdCents, processor: move.processorFee, acquit: move.platformFee, at: move.at }];
-		return broken(paid) === null ? paid : breakLaw("conservation");
 	}
 	if (book.length === 1 && book[0].kind === "HELD" && move.kind === "Refund") {
 		if (!cents(move.refunded) || move.refunded !== book[0].cents) return breakLaw("conservation");
@@ -138,12 +122,14 @@ export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | L
 	return breakLaw("order");
 }
 
-/** The same reducer for a book whose state is known only at runtime. */
-export function applyLedgerMove(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
-	return reduceLedger(book, move);
+export function reduceLedger(book: EmptyBook, move: Extract<LedgerMove, { kind: "Hold" }>): HeldBook | LawBreak;
+export function reduceLedger(book: HeldBook, move: Extract<LedgerMove, { kind: "Release" }>): PaidBook | LawBreak;
+export function reduceLedger(book: HeldBook, move: Extract<LedgerMove, { kind: "Refund" }>): RefundedBook | LawBreak;
+export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak;
+export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
+	return reduceAny(book, move);
 }
 
-/** Same check as close() in ledger.bend. An empty book is open. A held book is open. */
 export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFUNDED" | LawBreak {
 	const total = sums(lines);
 	if (!total) return breakLaw("conservation");
@@ -223,7 +209,6 @@ export type RefundFacts = {
 	readonly at: Instant;
 };
 
-/** Acquit's own cost when the observed card or wallet fee differs from the quote. An equal fee writes nothing. */
 export function releaseTreasury(facts: ReleaseFacts): readonly TreasuryEntry[] {
 	if (!cents(facts.promisedNet) || !cents(facts.predictedProcessorFee) || !cents(facts.observedProcessorFee)) throw new Error("Invalid treasury facts");
 	const entries: TreasuryEntry[] = [];
@@ -234,7 +219,6 @@ export function releaseTreasury(facts: ReleaseFacts): readonly TreasuryEntry[] {
 	return entries;
 }
 
-/** PayPal keeps its fee and debits the operator. Acquit records both and owes the operator that fee back. */
 export function refundTreasury(facts: RefundFacts): readonly TreasuryEntry[] {
 	if (!cents(facts.retainedProcessorFee) || facts.retainedProcessorFee <= 0) throw new Error("Invalid retained fee");
 	return [

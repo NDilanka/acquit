@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyLedgerMove, checkLaws, reduceLedger, usd } from "../src/ledger.ts";
-import type { EscrowBook, LedgerLaw, LedgerMove } from "../src/ledger.ts";
+import { checkLaws, reduceLedger, usd } from "../src/ledger.ts";
+import type { EscrowBook, LawBreak, LedgerMove } from "../src/ledger.ts";
 import { instant } from "../src/ids.ts";
 
 function mulberry32(seed: number): () => number {
@@ -15,10 +15,9 @@ function mulberry32(seed: number): () => number {
 	};
 }
 
-function bookState(book: EscrowBook): "OPEN" | "PAID" | "REFUNDED" {
-	const lines = [...book];
-	if (lines.length === 3) return "PAID";
-	if (lines.length === 2) return "REFUNDED";
+function bookState(book: readonly unknown[]): "OPEN" | "PAID" | "REFUNDED" {
+	if (book.length === 3) return "PAID";
+	if (book.length === 2) return "REFUNDED";
 	return "OPEN";
 }
 function cents(rand: () => number, max: number): number {
@@ -50,7 +49,7 @@ test("10000 seeded move sequences obey the three laws or name the law that refus
 		const steps = 1 + cents(rand, 3);
 		for (let step = 0; step < steps; step++) {
 			const current: EscrowBook = book;
-			const next = applyLedgerMove(current, move(rand, gross));
+			const next: EscrowBook | LawBreak = reduceLedger(current, move(rand, gross));
 			if ("kind" in next && next.kind === "LAW_BREAK") {
 				assert.equal(checkLaws(current), bookState(current));
 				assert.ok(["conservation", "one_release", "refund_xor_payout", "order"].includes(next.law));
@@ -76,7 +75,7 @@ test("each refused move names its law on one concrete book", () => {
 	if ("kind" in paid) throw new Error("Release refused");
 	const short = reduceLedger(held, { kind: "Release", operatorNet: usd("300.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at });
 	assert.deepEqual(short, { kind: "LAW_BREAK", law: "conservation" });
-	assert.deepEqual(applyLedgerMove(paid, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at }), { kind: "LAW_BREAK", law: "one_release" });
-	assert.deepEqual(applyLedgerMove(paid, { kind: "Refund", refunded: usd("420.00"), at }), { kind: "LAW_BREAK", law: "refund_xor_payout" });
-	assert.deepEqual(applyLedgerMove([], { kind: "Refund", refunded: usd("420.00"), at }), { kind: "LAW_BREAK", law: "order" });
+	assert.deepEqual(reduceLedger(paid, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at }), { kind: "LAW_BREAK", law: "one_release" });
+	assert.deepEqual(reduceLedger(paid, { kind: "Refund", refunded: usd("420.00"), at }), { kind: "LAW_BREAK", law: "refund_xor_payout" });
+	assert.deepEqual(reduceLedger([], { kind: "Refund", refunded: usd("420.00"), at }), { kind: "LAW_BREAK", law: "order" });
 });

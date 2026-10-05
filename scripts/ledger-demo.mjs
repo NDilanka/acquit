@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { applyLedgerMove, checkLaws, lawText, reduceLedger, usd } from "../packages/core/src/ledger.ts";
+import { checkLaws, lawText, reduceLedger, usd } from "../packages/core/src/ledger.ts";
 
 const started = performance.now();
 const scenario = process.argv[2];
@@ -10,9 +10,9 @@ const paid = reduceLedger(held, { kind: "Release", operatorNet: usd("360.00"), p
 if ("kind" in paid || checkLaws(paid) !== "PAID") throw new Error("Tutorial release did not pay");
 
 const refused = scenario === "double-release"
-	? applyLedgerMove(paid, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at })
+	? reduceLedger(paid, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at })
 	: scenario === "release-then-refund"
-		? applyLedgerMove(paid, { kind: "Refund", refunded: usd("420.00"), at })
+		? reduceLedger(paid, { kind: "Refund", refunded: usd("420.00"), at })
 		: null;
 if (!refused || !("kind" in refused)) {
 	console.error("Use double-release or release-then-refund.");
