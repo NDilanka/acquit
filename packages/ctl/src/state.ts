@@ -1,16 +1,22 @@
+import { createServer } from "node:net";
+import type { Server } from "node:net";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { alive, CliError } from "./process.ts";
+import { CliError } from "./process.ts";
 
 export interface ServiceRecord {
 	pid: number;
 	port: number;
-	// Present only for nonce-owned runs. Legacy files recorded startTime instead;
-	// readState keeps them readable and marks them unowned.
+	// Present only for nonce-owned runs. The nonce names the private channel the
+	// child answers on; it is not a command-line marker. Legacy files recorded
+	// startTime instead; readState keeps them readable and marks them unowned.
 	nonce?: string | null;
 	startTime?: string | null;
+	// Unix proof channels are filesystem sockets. Windows derives the pipe name
+	// from the nonce, so this is absent there.
+	socketPath?: string;
 }
 export interface RunState {
 	api: ServiceRecord;
@@ -87,19 +93,35 @@ export async function atomicJson(path: string, value: unknown, beforePublish?: (
 export async function clearState(ctx: Context): Promise<void> {
 	try { await unlink(ctx.stateFile); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
+// The lock is an open exclusive handle: a pipe server on Windows, a filesystem
+// socket elsewhere. Two CLIs cannot both listen on the same name, so there is
+// no delete-then-create window. The handle closes when this process exits,
+// even if it is killed, which releases the name for the next CLI. The name is
+// derived from the lane directory so every CLI targeting that lane contends
+// for the same handle.
+export function lockName(dir: string): string {
+	if (process.platform === "win32") return `\\\\.\\pipe\\acquit-lock-${Buffer.from(dir).toString("hex").slice(-48)}`;
+	return resolve(dir, "operation.lock");
+}
+async function acquireLock(name: string): Promise<Server> {
+	// One attempt. Retrying a busy name would paper over the race this lock
+	// exists to close: two CLIs must not both proceed, and the loser must fail
+	// now rather than wait out the winner and then act on a stale decision.
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		const fail = (error: NodeJS.ErrnoException) => {
+			if (["EADDRINUSE", "EEXIST"].includes(error.code ?? "")) reject(new CliError("CLI_BUSY", "Another CLI lifecycle operation is in progress.", "Wait for that command to finish, then retry."));
+			else reject(error);
+		};
+		server.once("error", fail);
+		server.listen(name, () => { server.removeListener("error", fail); resolve(server); });
+	});
+}
 export async function locked<T>(ctx: Context, run: () => Promise<T>): Promise<T> {
 	await mkdir(ctx.dir, { recursive: true });
-	const path = resolve(ctx.dir, "operation.lock");
-	for (let attempt = 0; ; attempt++) {
-		try { await writeFile(path, String(process.pid), { flag: "wx" }); break; }
-		catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			const owner = Number(await readFile(path, "utf8").catch(() => "0"));
-			if (alive(owner) || attempt > 0) throw new CliError("CLI_BUSY", "Another CLI lifecycle operation is in progress.", "Wait for that command to finish, then retry.");
-			await unlink(path).catch(() => {});
-		}
-	}
-	try { return await run(); } finally { await unlink(path); }
+	const server = await acquireLock(lockName(ctx.dir));
+	try { return await run(); }
+	finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 }
 export const resetTables = ["sessions", "deliveries", "resources", "outbox", "requests", "jobs", "agents", "credits", "operators"] as const;
 export async function counts(path: string): Promise<Record<string, number>> {

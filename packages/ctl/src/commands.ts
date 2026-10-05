@@ -35,8 +35,8 @@ async function probes(api: number, web: number) {
 	return { apiPort, webPort, apiReady, webReady };
 }
 async function stopOwned(state: RunState): Promise<void> {
-	for (const service of [state.api, state.web]) await requireOwned(service);
-	for (const service of [state.api, state.web]) { await requireOwned(service); await killTree(service.pid); }
+	for (const service of [state.api, state.web]) await requireOwned(service, service.socketPath);
+	for (const service of [state.api, state.web]) { await requireOwned(service, service.socketPath); await killTree(service.pid); }
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
 		if (!(await portOpen(state.api.port)) && !(await portOpen(state.web.port))) return;
@@ -56,7 +56,7 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
 		if (previous) {
-			for (const service of [previous.api, previous.web]) await requireOwned(service);
+			for (const service of [previous.api, previous.web]) await requireOwned(service, service.socketPath);
 			const probe = await probes(previous.api.port, previous.web.port);
 			if (alive(previous.api.pid) && alive(previous.web.pid) && probe.apiReady && probe.webReady) return runData(previous, true);
 			for (const service of [previous.api, previous.web]) if (!alive(service.pid) && await portOpen(service.port)) {
@@ -73,19 +73,23 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 		await mkdir(dirname(ctx.databasePath), { recursive: true });
 		const state: RunState = { api: { pid: 0, port: ctx.apiPort, nonce: ownershipNonce() }, web: { pid: 0, port: ctx.webPort, nonce: ownershipNonce() },
 			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log") }, startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
+		if (process.platform !== "win32") {
+			state.api.socketPath = resolve(ctx.dir, `own-${state.api.nonce}.sock`);
+			state.web.socketPath = resolve(ctx.dir, `own-${state.web.nonce}.sock`);
+		}
 		const children: ChildProcess[] = [];
 		try {
 			// Record the nonce before launch. A CLI killed during readiness leaves a
 			// run file that a later stop can reclaim; no post-spawn lookup is required.
 			await atomicJson(ctx.stateFile, state);
 			const api = await detached("apps/api/src/server.ts", state.api.nonce!, ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
-				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api);
+				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api, [], state.api.socketPath);
 			children.push(api);
 			state.api.pid = api.pid!;
 			await atomicJson(ctx.stateFile, state);
 			const web = await detached(vite, state.web.nonce!, resolve(ctx.root, "apps/web"),
 				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web,
-				["--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"]);
+				["--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], state.web.socketPath);
 			children.push(web);
 			state.web.pid = web.pid!;
 			await atomicJson(ctx.stateFile, state);
@@ -112,7 +116,7 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 		const state = await readState(ctx);
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
 		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
-		for (const service of wouldKill) await requireOwned(service);
+		for (const service of wouldKill) await requireOwned(service, service.socketPath);
 		if (parsed["dry-run"]) return { stopped: false, wouldKill, run: state };
 		await stopOwned(state);
 		await clearState(ctx);

@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { alive, captured, killTree, ownedCommand, ownershipArg, ownershipNonce, requireOwned, sleep } from "../src/process.ts";
-import { laneSlot } from "../src/state.ts";
+import { alive, captured, detached, killTree, ownedProcess, ownershipNonce, releaseSpawned, requireOwned, sleep } from "../src/process.ts";
+import { laneSlot, lockName } from "../src/state.ts";
 import { start } from "../src/commands.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
@@ -76,44 +76,45 @@ test("a service that dies before readiness releases both spawned handles and cle
 		assert.equal(existsSync(resolve(dir, "operation.lock")), false);
 	});
 });
-test("a dead child then a reused PID cannot satisfy the nonce recorded before spawn", async () => {
+test("the process proves itself: an owned child answers, a bystander with the nonce in argv cannot, and a dead PID cannot", async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-proof-test-"));
 	const nonce = ownershipNonce();
-	const child = spawnSync(process.execPath, [ownershipArg, fileURLToPath(new URL("../src/ownership-preload.cjs", import.meta.url)), "-e", "process.exit(0)", "--", nonce], { encoding: "utf8" });
-	assert.equal(child.status, 0, child.stderr);
-	const reused = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, windowsHide: true, stdio: "ignore" });
-	reused.unref();
+	const socket = process.platform === "win32" ? undefined : resolve(root, "own.sock");
+	const owned = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], socket);
+	// The bystander carries the nonce and the preload path in its command line,
+	// which is exactly what a command-line proof would mistake for ownership.
+	const preload = fileURLToPath(new URL("../src/ownership-preload.cjs", import.meta.url));
+	const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--require", preload, nonce], { detached: true, windowsHide: true, stdio: "ignore" });
+	bystander.unref();
 	try {
-		assert.equal(await ownedCommand(child.pid!, nonce), false, "A dead PID must not match its old nonce.");
-		assert.equal(await ownedCommand(reused.pid!, nonce), false, "A reused live PID was not started with this nonce.");
-		await assert.rejects(requireOwned({ pid: reused.pid!, nonce }), /no matching ownership nonce/);
-		assert.equal(alive(reused.pid!), true);
-	} finally { if (reused.pid) await killTree(reused.pid); }
+		const deadline = Date.now() + 3000;
+		let proved = false;
+		while (!proved && Date.now() < deadline) { proved = await ownedProcess(owned.pid!, nonce, socket); await sleep(20); }
+		assert.equal(proved, true, "The spawned child must answer the challenge with its own pid.");
+		assert.equal(await ownedProcess(bystander.pid!, nonce, socket), false, "A bystander with the nonce in argv must not answer.");
+		await assert.rejects(requireOwned({ pid: bystander.pid!, nonce }, socket), /did not answer the ownership challenge/);
+		assert.equal(alive(bystander.pid!), true);
+		await releaseSpawned(owned);
+		assert.equal(await ownedProcess(owned.pid!, nonce, socket), false, "A dead PID must not answer.");
+	} finally {
+		if (bystander.pid) await killTree(bystander.pid);
+		await releaseSpawned(owned).catch(() => {});
+		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	}
 });
-test("stop reclaims a nonce-owned child that exited and whose PID was reused", async () => {
-	const root = await mkdtemp(resolve(tmpdir(), "acquit-reuse-test-"));
-	const marker = resolve(root, "child.pid");
+test("ownership still holds when the proof channel's directory path contains a space", async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit proof test "));
 	const nonce = ownershipNonce();
-	const script = `import { spawn } from "node:child_process";
-		import { writeFileSync } from "node:fs";
-		const child = spawn(process.execPath, [${JSON.stringify(ownershipArg)}, ${JSON.stringify(fileURLToPath(new URL("../src/ownership-preload.cjs", import.meta.url)))}, "-e", "setInterval(() => {}, 1000)", "--", ${JSON.stringify(nonce)}],
-			{ detached: true, stdio: "ignore", windowsHide: true });
-		writeFileSync(process.argv[1], String(child.pid));
-		child.unref();`;
+	const socket = process.platform === "win32" ? undefined : resolve(root, "own.sock");
+	const owned = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], socket);
 	try {
-		const launched = spawnSync(process.execPath, ["--input-type=module", "-e", script, marker], { cwd: root, encoding: "utf8" });
-		assert.equal(launched.status, 0);
-		const pid = Number(await readFile(marker, "utf8"));
-		assert.equal(await ownedCommand(pid, nonce), true);
-		await killTree(pid);
-		await sleep(50);
-		const reused = spawn(process.execPath, ["-e", "setInterval(() => {}, 5000)"], { detached: true, windowsHide: true, stdio: "ignore" });
-		reused.unref();
-		try {
-			assert.equal(await ownedCommand(reused.pid!, nonce), false);
-			await assert.rejects(requireOwned({ pid: reused.pid!, nonce }), /no matching ownership nonce/);
-			assert.equal(alive(reused.pid!), true);
-		} finally { if (reused.pid) await killTree(reused.pid); }
-	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+		const deadline = Date.now() + 3000;
+		let proved = false;
+		while (!proved && Date.now() < deadline) { proved = await ownedProcess(owned.pid!, nonce, socket); await sleep(20); }
+		assert.equal(proved, true);
+		await releaseSpawned(owned);
+		assert.equal(alive(owned.pid!), false);
+	} finally { await releaseSpawned(owned).catch(() => {}); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 });
 test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
@@ -173,6 +174,26 @@ test("stop refuses an unrelated live PID with a different start time", async () 
 		assert.equal(alive(process.pid), true);
 		assert.equal(await readFile(file, "utf8"), before);
 	});
+});
+test("two concurrent CLIs cannot both hold the lifecycle lock", async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-lock-test-"));
+	const dir = resolve(root, "data/ctl");
+	await mkdir(dir, { recursive: true });
+	const holder = `import { createServer } from "node:net";
+		const server = createServer();
+		server.listen(${JSON.stringify(lockName(dir))}, () => { console.log("held"); setInterval(() => {}, 1000); });`;
+	const first = spawn(process.execPath, ["--input-type=module", "-e", holder], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+	const held = await new Promise<string>(done => { let out = ""; first.stdout?.on("data", chunk => { out += chunk; if (out.includes("\n")) done(out); }); });
+	const second = spawn(process.execPath, ["--input-type=module", "-e",
+		`import { locked } from ${JSON.stringify(new URL("../src/state.ts", import.meta.url).href)};
+		const result = await locked({ dir: ${JSON.stringify(dir)} }, async () => "entered").catch(error => error.code);
+		console.log(result);`], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+	const reply = await new Promise<string>(done => { let out = ""; second.stdout?.on("data", chunk => { out += chunk; if (out.includes("\n")) done(out); }); });
+	try {
+		assert.equal(held.trim(), "held");
+		assert.equal(reply.trim(), "CLI_BUSY", "A second CLI must not enter a lifecycle the first still holds.");
+		assert.equal(alive(first.pid!), true);
+	} finally { if (first.pid) await killTree(first.pid); if (second.pid && alive(second.pid)) await killTree(second.pid); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 });
 test("development controls refuse use without ACQUIT_DEV=1 before app access", async () => {
 	await fixture(async cli => {
