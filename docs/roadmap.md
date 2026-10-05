@@ -220,10 +220,12 @@ Then build the control CLI:
 
 Done when:
 
-- [ ] A `verify-<app>` skill exists with Launch, Doctor, Drive, Evidence, and Cleanup sections.
-- [ ] The generator ran the skill once end to end, and the evidence still exists after cleanup.
-- [ ] `features/README.md` lists at least one feature, and each listed feature has its own file.
-- [ ] The agent launched the app and showed you a screenshot or output from one feature.
+- [x] A `verify-<app>` skill exists with Launch, Doctor, Drive, Evidence, and Cleanup sections. (`.factory/skills/verify-acquit/SKILL.md`, plus Hard rules and Helpers.)
+- [x] The generator ran the skill once end to end, and the evidence still exists after cleanup. (Run `20261005-203304`: post, bid, accept, sandbox checkout; 26 files in `data/evidence/verify-acquit/20261005-203304/` after cleanup. Buyer approval skipped because `SANDBOX_BUYER_PASSWORD` is unset.)
+- [x] `features/README.md` lists at least one feature, and each listed feature has its own file. (Five: sign in, post a job, bid, post a job / accept a bid / fund escrow, cancel.)
+- [x] The agent launched the app and showed you a screenshot or output from one feature.
+
+Control CLI gap: `ledger --job` and `webhook replay --event` are not built. Webhooks return 501 until gf-feature PR 2, and the ledger is visible on the job page and `GET /api/jobs/:id`. Add both commands with PR 2.
 
 **Acquit end check.** `.factory/skills/verify-acquit/` exists, and its Feature Map lists "post a job, accept a bid, and fund escrow".
 
