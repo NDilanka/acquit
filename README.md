@@ -34,6 +34,20 @@ npm run dev
 
 Open http://localhost:5173 and sign in as `maya-client` (client) or `devon-ops` (operator). There are no passwords in the skeleton.
 
+## Control CLI
+
+For agents and scripts. Every command prints one JSON object, and every error has a `fix` field naming what to run instead.
+
+```
+npm run -s acquit -- --help
+npm run -s acquit -- start            # starts or reuses the API and web app
+npm run -s acquit -- status           # read-only health check
+npm run -s acquit -- seed-db --dry-run
+npm run -s acquit -- login --test-user maya-client --save
+npm run -s acquit -- screenshot --as maya-client --path /
+npm run -s acquit -- stop --dry-run
+```
+
 ## Check
 
 ```
