@@ -191,9 +191,9 @@ The verification skill needs an app it can launch. The first real action in the 
 
 Done when:
 
-- [ ] One documented command starts the app from a clean checkout. The command may assume prerequisites, such as a language runtime, when the README lists them.
-- [ ] One user action works end to end, and you saw it work.
-- [ ] Seed data and a test login exist, if the app needs them.
+- [x] One documented command starts the app from a clean checkout. The command may assume prerequisites, such as a language runtime, when the README lists them. (`npm run dev` after `npm install` and `npm run seed`; README lists Node 24 and the sandbox `.env`.)
+- [x] One user action works end to end, and you saw it work. (2026-10-05, browser pane: job `job_5f97b001-…` posted, bid, accepted, approved as the sandbox buyer, order `8NY77073EP758852B` captured; job page showed IN_PROGRESS, escrow HELD locked to devon-ops, ledger `HELD 420.00 USD`.)
+- [x] Seed data and a test login exist, if the app needs them. (`npm run seed`; dev sign-in picker for `maya-client` and `devon-ops`.)
 
 **Acquit end check.** One command on Windows starts the web app and the API. `maya-client` posts a 400.00 USD job, `devon-ops` bids, and `maya-client` accepts and pays 420.00 USD in the sandbox. The ledger shows one `HELD 420.00 USD` line, as in the Accept section of `docs/tutorial.md`.
 
