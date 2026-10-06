@@ -127,31 +127,30 @@ export type VerifierReport =
 /** The longest detail a report carries. The service truncates; the boundary truncates what it is handed. */
 export const FAILURE_DETAIL_CHARS = 300;
 
-/**
- * How much of a message the token shapes read. A refusal body reaches the verifier at up to 1 MiB,
- * and redacting all of it is work no output can need: only the first FAILURE_DETAIL_CHARS survive,
- * every replacement shortens text, so a token that starts before the 300-character cut must sit
- * inside this window to be seen whole. An App JWT is the largest shape, well under 2 KiB.
- */
-export const REDACTION_WINDOW_CHARS = 4_096;
-
 /** The token shapes GitHub prints in a refusal body: App, OAuth, fine-grained PAT, and the legacy v1 installation token. Copied server text never carries one onward. */
-const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+|\bv1\.[0-9a-fA-F]{40,}\b/g;
+const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+|v1\.[0-9a-fA-F]{40,}/g;
 
-/** Display text from a run: token shapes are redacted, control characters become spaces, and the text is bounded. */
+/**
+ * Display text from a run: token shapes are redacted, control characters become spaces, and the text
+ * is bounded. Every pass reads the whole text, and the JWT scan runs before the control-character
+ * replace so it sees the control characters that may split a leaked token, not the spaces they
+ * become. The final cut lands on a code point, so the text never ends on half a surrogate pair.
+ */
 export function boundedDetail(text: string): string {
-	return redactJwtShapes(text.slice(0, REDACTION_WINDOW_CHARS))
+	const clean = redactJwtShapes(text)
 		.replace(/[\u0000-\u001f\u007f]+/g, " ")
 		.replace(TOKEN_SHAPES, "[redacted]")
 		.replace(/(temp_clone_token"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[redacted]")
-		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
-		.slice(0, FAILURE_DETAIL_CHARS);
+		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]");
+	return trimToCodePoints(clean, FAILURE_DETAIL_CHARS);
 }
 
 const JWT_PREFIX = "eyJ";
 
+/** A base64url character, or a control character: a token copied from a body may carry a newline or a NUL inside it, and the scan must read through it instead of ending the token there. */
 function isJwtChar(code: number): boolean {
-	return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code === 45;
+	return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code === 45
+		|| code <= 0x1f || code === 0x7f;
 }
 
 /** The offset where the run of JWT characters starting at `from` ends. */
