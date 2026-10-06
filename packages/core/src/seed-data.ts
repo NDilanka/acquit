@@ -10,7 +10,12 @@ import type { DefinitionOfDone, Glob, HiddenCase } from "./verifier.ts";
 /** The frozen commit of the client repo, and the file whose 48 cases the judge extracts from it. */
 export const FROZEN_AT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 export const FROZEN_TEST_PATH = "tests/totals.test.ts";
-export const PROTECTED_PATHS: readonly Glob[] = ["tests/**", ".github/**", "package.json", "package-lock.json"] as Glob[];
+/**
+ * The paths a submission may not touch. `.gitattributes` is protected because the diff's binary
+ * marking and `git archive` both honor the submitted tree's attributes: a `-diff` line blanks the
+ * diff, and an `export-subst` line changes the bytes the subject runs.
+ */
+export const PROTECTED_PATHS: readonly Glob[] = ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as Glob[];
 
 export const ISSUE = {
 	repository: "maya-client/invoice-app",

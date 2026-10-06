@@ -63,8 +63,8 @@ export type RejectReason =
 	/** The diff is bigger than the screen's bound. Nothing starts: a screen in part is not a screen. */
 	| { readonly kind: "DIFF_TOO_LARGE"; readonly paths: number; readonly limit: number }
 	/**
-	 * The diff changes more source paths than the screen reads added text for. Nothing starts: a
-	 * screen in part is not a screen.
+	 * The diff changes more non-binary source paths than the screen reads added text for. Nothing
+	 * starts: a screen in part is not a screen.
 	 */
 	| { readonly kind: "SOURCE_PATHS_OVER_READ_BOUND"; readonly paths: number; readonly limit: number };
 
@@ -261,9 +261,10 @@ export function judgeHidden(
 export const MAX_DIFF_CHANGES = 4096;
 
 /**
- * The most changed source paths one screen reads added text for. The source adapter reads a patch
- * for at most this many, so a diff past the bound is refused by name rather than screened in part,
- * because a source path without its added lines is a path whose framework import the screen cannot see.
+ * The most changed non-binary source paths one screen reads added text for. The source adapter reads
+ * a patch for at most this many, so a diff past the bound is refused by name rather than screened in
+ * part, because a source path without its added lines is a path whose framework import the screen
+ * cannot see.
  */
 export const MAX_ADDED_TEXT_PATHS = 256;
 
@@ -283,9 +284,10 @@ export const MAX_ADDED_TEXT_PATHS = 256;
  *   is invisible to it, and it does not see a string built at runtime (`import("vit" + "est")`).
  * - It never reads a file git reports as binary, and it never runs the submitted tests.
  * - A diff past MAX_DIFF_CHANGES is refused by name, so a padded diff cannot hide a change behind
- *   the bound. A diff that changes more than MAX_ADDED_TEXT_PATHS source paths is refused by name
- *   too, because the source adapter reads added text for only that many. Below both bounds every
- *   changed path is screened, and every changed source path is screened on its added lines.
+ *   the bound. A diff that changes more than MAX_ADDED_TEXT_PATHS non-binary source paths is refused
+ *   by name too, because the source adapter reads added text for only that many. Below both bounds
+ *   every changed path is screened, and every changed non-binary source path is screened on its added
+ *   lines.
  * - The screen is a fast refusal for the obvious cheats. The frozen-suite extraction and the six
  *   hidden cases are the authority on behavior, and they hold the expected values.
  */

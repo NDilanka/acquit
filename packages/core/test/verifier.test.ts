@@ -246,7 +246,7 @@ const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const fixtureDefinition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
 	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
 	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(test => test.id),
-	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] as Glob[] };
+	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as Glob[] };
 
 test("the judge returns the measured verdict and reason on every invoice-app branch", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
 	const source = gitSource(FIXTURE!);

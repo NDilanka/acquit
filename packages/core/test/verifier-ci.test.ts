@@ -22,7 +22,7 @@ const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const definition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
 	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
 	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(c => c.id),
-	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] as never };
+	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
 
 const verifiedReport = { jobId: "job_ci_test", ordinal: 1, verdict: { result: "VERIFIED", runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
 	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426", pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },

@@ -28,7 +28,7 @@ const frozenTestSource = Array.from({ length: 48 }, (_, index) =>
 const definitionOfDone: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" },
 	frozenAt: frozenCommit, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
 	hiddenManifest: hiddenManifest(hiddenCases).digest, hiddenTests: hiddenCases.map(test => test.id),
-	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] as never };
+	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
 
 /** A real two-commit repository, so the diff and the materialized tree are the ones the judge builds. */
 function repositoryWith(moduleSource: string, extra?: (repo: string) => void): { readonly repo: string; readonly frozen: CommitSha; readonly head: CommitSha; readonly remove: () => void } {

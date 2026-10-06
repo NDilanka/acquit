@@ -19,7 +19,7 @@ function rejectedView(): JobProjection {
 	return {
 		id: "job_7Q2K" as JobId, title: "Totals round wrong for 3-decimal currencies", status: "IN_PROGRESS", phase: "READY",
 		budget: 40000, deliveryEndsAt: "2026-11-08T10:00:00.000Z", contract: { repository: "maya-client/invoice-app",
-			frozenAt, frozenTests: 48, hiddenTests: 6, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] },
+			frozenAt, frozenTests: 48, hiddenTests: 6, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] },
 		bids: { operators: [], house: null }, lockedTo: "devon-ops" as OperatorId, escrow: "HELD",
 		approveUrl: null, ledger: [], attempts: { used: 1, left: 2, last: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"],
 			history: [{ ordinal: 1, result: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"], sourceCommit: submitted,

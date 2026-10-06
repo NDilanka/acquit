@@ -53,7 +53,7 @@ export function gitSource(repoDir: string): JudgeSource {
 			const binary = parseNumstatBinary(run(["diff", "--numstat", "-z", "--find-renames", frozenAt, sourceCommit], "utf8") as string);
 			// Every changed path reaches the screen. The patch reads stop at MAX_ADDED_TEXT_PATHS
 			// source paths, and the screen refuses a diff past that bound by name, so no accepted diff
-			// holds a source path whose added lines went unread.
+			// holds a non-binary source path whose added lines went unread.
 			let reads = 0;
 			return { changes: changes.map(change => {
 				const isBinary = binary.has(change.path);
