@@ -10,8 +10,8 @@ import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, projectJob, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, Loaded, SystemJobCommand } from "./job.ts";
-import { GitHubAppNotConfigured } from "./github.ts";
-import type { WorkRepoPort } from "./github.ts";
+import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
+import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
@@ -63,9 +63,11 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 export type OutboxState =
 	| { readonly kind: "READY"; readonly runAt: Instant }
 	| { readonly kind: "LEASED"; readonly leaseUntil: Instant }
-	| { readonly kind: "UNCERTAIN"; readonly reconcileAt: Instant }
+	/** A retry can clear it. `attempt` counts the refusals this row has waited out and drives the backoff. */
+	| { readonly kind: "UNCERTAIN"; readonly reconcileAt: Instant; readonly attempt?: number }
 	| { readonly kind: "CONFIRMED"; readonly at: Instant }
-	| { readonly kind: "NEEDS_HUMAN"; readonly reason: string };
+	/** A person has to act. `reason` is the named refusal and `detail` its bounded text, so an operator can read both. */
+	| { readonly kind: "NEEDS_HUMAN"; readonly reason: string; readonly detail?: string };
 
 export type OutboxRow = {
 	readonly key: OperationKey;
@@ -220,7 +222,7 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 	if (!row) return "IDLE";
 	const effect = row.effect;
 	if (effect.kind === "START_VERIFIER") return dispatchVerifierStart(ports, row.key, effect, now);
-	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now);
+	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now, row.state);
 	if (effect.kind !== "CREATE_ORDER" && effect.kind !== "CAPTURE") {
 		await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "OUTSIDE_SKELETON" });
 		return "WORKED";
@@ -284,8 +286,44 @@ async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Ex
 	return "WORKED";
 }
 
+/** What the outbox does with one refusal from the GitHub App client. One table, one place to read. */
+export type GitHubDisposition = { readonly kind: "NEEDS_HUMAN" } | { readonly kind: "UNCERTAIN" };
+
+export const GITHUB_REFUSAL_DISPOSITIONS: Readonly<Record<GitHubFailureCode, GitHubDisposition>> = {
+	GITHUB_APP_KEY_INVALID: { kind: "NEEDS_HUMAN" },
+	GITHUB_INSTALLATION_MISSING: { kind: "NEEDS_HUMAN" },
+	GITHUB_PERMISSION_MISSING: { kind: "NEEDS_HUMAN" },
+	GITHUB_FORK_MISMATCH: { kind: "NEEDS_HUMAN" },
+	GITHUB_REF_CONFLICT: { kind: "NEEDS_HUMAN" },
+	GITHUB_COMMIT_ABSENT: { kind: "NEEDS_HUMAN" },
+	GITHUB_NOT_FOUND: { kind: "NEEDS_HUMAN" },
+	GITHUB_RESPONSE_INVALID: { kind: "NEEDS_HUMAN" },
+	GITHUB_REQUEST_INVALID: { kind: "NEEDS_HUMAN" },
+	GITHUB_RATE_LIMITED: { kind: "UNCERTAIN" },
+	GITHUB_TIMEOUT: { kind: "UNCERTAIN" },
+	GITHUB_NETWORK: { kind: "UNCERTAIN" },
+	// GITHUB_HTTP_ERROR is the status GitHub does not name. A 5xx is transient; every other status waits for a person.
+	GITHUB_HTTP_ERROR: { kind: "NEEDS_HUMAN" },
+};
+
+/** A transient refusal waits 5s, 10s, 20s, and so on, never past five minutes. */
+const GITHUB_BACKOFF_BASE_MS = 5_000;
+const GITHUB_BACKOFF_CAP_MS = 300_000;
+
+function githubDisposition(error: GitHubAppError): GitHubDisposition {
+	if (error.code === "GITHUB_HTTP_ERROR" && error.status !== null && error.status >= 500) return { kind: "UNCERTAIN" };
+	return GITHUB_REFUSAL_DISPOSITIONS[error.code];
+}
+
+/** The next reconcile time for a transient refusal, doubled per attempt and bounded. */
+function backoffFor(now: Instant, attempt: number): Instant {
+	const delay = Math.min(GITHUB_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1), GITHUB_BACKOFF_CAP_MS);
+	return instant(new Date(Date.parse(now) + delay).toISOString());
+}
+
 /** Pushes the frozen commit to the per-job work repository. No App means the row waits for a human, by name. */
-async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "CREATE_WORK_REPO" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "CREATE_WORK_REPO" }>,
+	now: Instant, previous: OutboxState): Promise<"IDLE" | "WORKED"> {
 	const job = await ports.store.readJob(effect.jobId);
 	// Work that never started needs no repository.
 	if (!job || job.state.status === "OPEN" || job.state.status === "CLOSED") {
@@ -296,6 +334,7 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
 		return "WORKED";
 	}
+	const attempt = (previous.kind === "UNCERTAIN" ? previous.attempt ?? 0 : 0) + 1;
 	try {
 		await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key));
 	} catch (error) {
@@ -303,7 +342,13 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
 			return "WORKED";
 		}
-		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		if (error instanceof GitHubAppError && githubDisposition(error).kind === "NEEDS_HUMAN") {
+			// The operator reads the code and the bounded detail off the row. A retry cannot clear this one.
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: error.code, detail: boundedDetail(error.message) });
+			return "WORKED";
+		}
+		// Transient, or a failure the client did not name: retry later, backing off as the attempts pile up.
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFor(now, attempt), attempt });
 		return "WORKED";
 	}
 	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
