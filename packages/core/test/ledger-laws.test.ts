@@ -123,6 +123,72 @@ test("checkLaws names the exact law on mutated and illegal books", () => {
 	assert.equal(checkLaws([held, refund]), "REFUNDED");
 });
 
+test("a stored fee component that is not a safe integer is refused, not read as a zero", () => {
+	const at = instant("2026-11-03T15:22:00Z");
+	const held = reduceLedger([], { kind: "Hold", gross: usd("420.00"), at });
+	if ("kind" in held) throw new Error("Hold refused");
+	const released: LedgerLine = { kind: "RELEASED", cents: usd("360.00"), at };
+	// Round four's false green verbatim: the checker read the null processor as a zero fee and
+	// null + 6000 coerced the split into 6000, so the sums conserved and it printed PAID.
+	const stored = [
+		{ kind: "HELD", cents: 42000 },
+		{ kind: "RELEASED", cents: 36000 },
+		{ kind: "FEE", cents: 6000, processor: null, acquit: 6000 },
+	];
+	const refusal = reduceLedger(held, { kind: "Release", operatorNet: 36000 as never, processorFee: null as never, platformFee: 6000 as never, at });
+	assert.deepEqual(refusal, { kind: "LAW_BREAK", law: "conservation" });
+	assert.deepEqual(checkLaws(stored as unknown as readonly LedgerLine[]), refusal);
+	const badValues: Array<[string, unknown]> = [["undefined", undefined], ['the string "0"', "0"], ["NaN", Number.NaN], ["negative", -1], ["fractional", 0.5]];
+	for (const [name, bad] of badValues) {
+		for (const fields of [{ processor: bad, acquit: 6000 }, { processor: 6000, acquit: bad }]) {
+			const book = [held[0], released, { kind: "FEE", cents: 6000, processor: fields.processor, acquit: fields.acquit, at }] as unknown as readonly LedgerLine[];
+			const verdict = checkLaws(book);
+			assert.deepEqual(verdict, { kind: "LAW_BREAK", law: "conservation" }, `a ${name} fee component must not be coerced`);
+			assert.deepEqual(verdict, reduceLedger(held, { kind: "Release", operatorNet: 36000 as never,
+				processorFee: fields.processor as never, platformFee: fields.acquit as never, at }), `a ${name} fee component`);
+		}
+	}
+});
+
+test("300 seeded stored payout books refuse every fuzzed fee component and agree with the reducer", () => {
+	const rand = mulberry32(20261103);
+	const at = instant("2026-11-03T15:22:00Z");
+	const badValues: readonly unknown[] = [undefined, null, "0", "6000", Number.NaN, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, true, {}];
+	let books = 0;
+	let mutations = 0;
+	for (let trial = 0; trial < 300; trial++) {
+		const heldCents = 1 + cents(rand, 100000);
+		const releasedCents = cents(rand, heldCents);
+		const share = heldCents - releasedCents;
+		// Two books in three put the whole fee on one side, so a null component is the only
+		// thing that could make the split look conserved.
+		const shape = cents(rand, 2);
+		const processor = shape === 0 ? 0 : shape === 1 ? share : cents(rand, share);
+		const acquit = share - processor;
+		const held: LedgerLine = { kind: "HELD", cents: heldCents, at };
+		const released: LedgerLine = { kind: "RELEASED", cents: releasedCents, at };
+		const fee = { cents: processor + acquit, processor, acquit };
+		assert.equal(checkLaws([held, released, { kind: "FEE", ...fee, at }] as unknown as readonly LedgerLine[]), "PAID");
+		books += 1;
+		const reduced = reduceLedger([], { kind: "Hold", gross: heldCents as never, at });
+		if ("kind" in reduced) throw new Error("Hold refused");
+		for (const field of ["cents", "processor", "acquit"] as const) {
+			for (const bad of badValues) {
+				const fuzzed = { ...fee, [field]: bad };
+				const verdict = checkLaws([held, released, { kind: "FEE", ...fuzzed, at }] as unknown as readonly LedgerLine[]);
+				assert.deepEqual(verdict, { kind: "LAW_BREAK", law: "conservation" }, `a ${String(bad)} ${field} must not be coerced`);
+				if (field !== "cents") {
+					assert.deepEqual(verdict, reduceLedger(reduced, { kind: "Release", operatorNet: releasedCents as never,
+						processorFee: fuzzed.processor as never, platformFee: fuzzed.acquit as never, at }), `a ${String(bad)} ${field}`);
+				}
+				mutations += 1;
+			}
+		}
+	}
+	assert.equal(books, 300);
+	assert.equal(mutations, 9000);
+});
+
 test("usd rejects negative, fractional-cent, and unsafe amounts", () => {
 	for (const bad of ["-1.00", "-0.01", "1.001", "0.005", "1e3", "abc", "1.", ".50", "1,000.00", "90071992547409.92"]) {
 		assert.throws(() => usd(bad), /Invalid|Unsafe/);
