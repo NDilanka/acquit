@@ -7,28 +7,17 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { digest } from "../core/src/effects.ts";
 import { instant } from "../core/src/ids.ts";
-import type { CommitSha, Digest, Instant, TestId } from "../core/src/ids.ts";
+import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
+import { FROZEN_TEST_PATH, HIDDEN_CASES, hiddenManifest } from "../core/src/seed-data.ts";
 import { decideVerdict, isSourcePath, judgeHidden, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
 import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
 
-/** The judge's own copy of the six hidden cases. This data never enters a submitted tree. */
-export const HIDDEN_CASES: readonly HiddenCase[] = [
-	{ id: "hidden:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 1.234 }], "KWD"], expected: "1.234" },
-	{ id: "hidden:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 2.345 }], "BHD"], expected: "2.345" },
-	{ id: "hidden:3" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 7.891 }], "OMR"], expected: "7.891" },
-	{ id: "hidden:4" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 4.567 }], "JOD"], expected: "4.567" },
-	{ id: "hidden:5" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 10 }, { amount: 0.625 }], "KWD"], expected: "10.625" },
-	{ id: "hidden:6" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 10.125 }], "JPY"], expected: "10" },
-];
-
-/** Binds the contract recorded at OpenJob to the cases this judge actually holds. */
-export function hiddenManifest(cases: readonly HiddenCase[] = HIDDEN_CASES): { readonly cases: readonly HiddenCase[]; readonly digest: Digest } {
-	return { cases, digest: digest(cases) as Digest };
-}
+// The judge holds the same declaration OpenJob stores: one source for the frozen commit, the frozen
+// case ids, and the hidden manifest. Re-exported for the harnesses and the perf probe.
+export { HIDDEN_CASES, hiddenManifest };
 
 /**
  * The frozen suite becomes judge data too, so a submitted test runner or config cannot change it.
@@ -152,12 +141,14 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	const manifest = hiddenManifest(deps.cases ?? HIDDEN_CASES);
 	const done = request.definitionOfDone;
 	if (done.hiddenManifest !== manifest.digest) return { kind: "RUN_FAILED", reason: "HIDDEN_MANIFEST_MISMATCH", timings: timingsOf(started, {}) };
+	if (!sameIds(manifest.cases.map(test => test.id), done.hiddenTests)) return { kind: "RUN_FAILED", reason: "HIDDEN_CASES_MISMATCH", timings: timingsOf(started, {}) };
 	let frozenCases: readonly HiddenCase[];
 	try {
-		frozenCases = invoiceFixtureFrozenCases(deps.source.readFile(done.frozenAt, deps.frozenTestPath ?? "tests/totals.test.ts"));
+		frozenCases = invoiceFixtureFrozenCases(deps.source.readFile(done.frozenAt, deps.frozenTestPath ?? FROZEN_TEST_PATH));
 	} catch (error) {
 		return { kind: "RUN_FAILED", reason: `FROZEN_CASES_UNREADABLE: ${message(error)}`, timings: timingsOf(started, {}) };
 	}
+	if (!sameIds(frozenCases.map(test => test.id), done.frozenTests)) return { kind: "RUN_FAILED", reason: "FROZEN_CASES_MISMATCH", timings: timingsOf(started, {}) };
 	const screenStart = performance.now();
 	const screen = screenDiff(deps.source.diff(done.frozenAt, request.sourceCommit), done);
 	const screenMs = performance.now() - screenStart;
@@ -217,6 +208,11 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 
 function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** A contract names the same ids in the same order as the judge's own declaration. */
+function sameIds(left: readonly TestId[], right: readonly TestId[]): boolean {
+	return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 function timingsOf(started: number, parts: Partial<JudgeTimings>): JudgeTimings {

@@ -583,7 +583,7 @@ test("the projection carries the attempt history, the pending run, and the froze
 	const pendingView = projectJob(started.next, devon, new Map());
 	assert.equal(pendingView.attempts.used, 1);
 	assert.deepEqual(pendingView.attempts.pending, { ordinal: 1, run: 1, runId: "run_submit_1", sourceCommit, submittedAt: now, runEndsAt: later });
-	assert.deepEqual(pendingView.contract, { repository: "maya-client/invoice-app", frozenAt: "a41c9e2", frozenTests: 48,
+	assert.deepEqual(pendingView.contract, { repository: "maya-client/invoice-app", frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4", frozenTests: 48,
 		hiddenTests: 6, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] });
 	const rejected = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId, verdict: rejection("run_submit_1") }, system);
 	if (typeof rejected === "string") throw new Error(rejected);
@@ -645,7 +645,7 @@ test("capture emits CREATE_WORK_REPO with the frozen commit the contract recorde
 		{ actor: { role: "SYSTEM", source: "PAYPAL" }, now, loaded: { kind: "NONE" } });
 	if (typeof plan === "string") throw new Error(plan);
 	assert.equal(plan.next.state.status, "IN_PROGRESS");
-	assert.deepEqual(plan.effects, [{ kind: "CREATE_WORK_REPO", jobId: row.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" }]);
+	assert.deepEqual(plan.effects, [{ kind: "CREATE_WORK_REPO", jobId: row.id, repository: "maya-client/invoice-app", frozenCommit: "a3b6ead29f4e367d1871e753b516cc9e832871e4" }]);
 });
 
 test("the outbox starts the run it reserved and provisions the work repo by request id", async () => {
