@@ -370,7 +370,15 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	const ensureBranch = async (repository: string, branch: string, commit: CommitSha, token: string): Promise<void> => {
 		const existing = await readRef(repository, branch, token);
 		if (existing === null) { await createRef(repository, branch, commit, token); return; }
-		if (existing !== commit) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${branch} at ${existing}, not ${commit}.`);
+		if (existing === commit) return;
+		// This branch is written only by the publisher, and a job's run is single-flight, so a ref at
+		// another commit is a previous publish that did not finish: the judged commit is the target
+		// state, and the retry after that failure converges instead of refusing the job forever.
+		const answer = await call(`Bearer ${token}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${branch}`, allow: [200, 422],
+			permission: "contents: write", body: { sha: commit, force: true } });
+		if (answer.status === 200) return;
+		// The 422 is the object missing from this repository: the caller's fallback tries the work fork.
+		throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: 422 });
 	};
 
 	/** Creates this job's fork. Answers "created" only when this call's 202 named the repository it asked for. */
