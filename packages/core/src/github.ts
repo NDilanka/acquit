@@ -10,6 +10,8 @@ export type GitHubAppConfig = {
 	/** The organization that holds one pushed work repository per job. */
 	readonly organization: string;
 	readonly apiBase: string;
+	/** Every request is bounded by this. A call that cannot answer in time refuses by name. */
+	readonly timeoutMs: number;
 };
 
 export type GitHubAppConfigInput = Partial<Omit<GitHubAppConfig, "apiBase">> & { readonly apiBase?: string };
@@ -63,7 +65,9 @@ export function parseGitHubAppConfig(input: GitHubAppConfigInput | undefined): G
 	const privateKey = input?.privateKey?.trim() ?? "";
 	const organization = input?.organization?.trim() ?? "";
 	if (!appId || !privateKey || !organization) return null;
-	return { appId, privateKey, organization, apiBase: input?.apiBase?.trim() || "https://api.github.com" };
+	const timeout = Number(input?.timeoutMs);
+	return { appId, privateKey, organization, apiBase: input?.apiBase?.trim() || "https://api.github.com",
+		timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000 };
 }
 
 export function missingGitHubNames(input: GitHubAppConfigInput | undefined): readonly string[] {
