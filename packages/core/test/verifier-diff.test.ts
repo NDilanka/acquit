@@ -7,13 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { CommitSha, Digest } from "../src/ids.ts";
+import { PROTECTED_PATHS } from "../src/seed-data.ts";
 import { screenDiff } from "../src/verifier.ts";
-import type { DefinitionOfDone, Glob, RejectReason } from "../src/verifier.ts";
+import type { DefinitionOfDone, RejectReason } from "../src/verifier.ts";
 import { gitSource } from "../../verifier/judge.ts";
 
-const protectedPaths = ["tests/**", ".github/**", "package.json", "package-lock.json"] as Glob[];
+// The shipped contract, so these tests screen against the list the judge uses.
 const definitionOfDone: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" },
-	frozenAt: "0".repeat(40) as CommitSha, frozenTests: [], hiddenManifest: "0".repeat(64) as Digest, hiddenTests: [], protectedPaths };
+	frozenAt: "0".repeat(40) as CommitSha, frozenTests: [], hiddenManifest: "0".repeat(64) as Digest, hiddenTests: [],
+	protectedPaths: PROTECTED_PATHS };
 
 function frozenRepository(): { readonly repo: string; readonly frozen: CommitSha; readonly remove: () => void } {
 	const repo = mkdtempSync(join(tmpdir(), "acquit-screen-"));
@@ -142,5 +144,42 @@ test("a diff with more source paths than the screen reads is refused by name", (
 		// The fixture reproduces the gap the refusal closes: the late source path's added lines are unread.
 		assert.equal(diff.changes.find(change => change.path === "zzz-evil.ts")?.addedText, "");
 		assert.deepEqual(screenDiff(diff, definitionOfDone), [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 301, limit: 256 }]);
+	} finally { fixture.remove(); }
+});
+
+test("a submitted .gitattributes cannot turn the diff's own attributes off", () => {
+	const fixture = frozenRepository();
+	try {
+		const source = gitSource(fixture.repo);
+		const head = commitFrom(fixture, "attributes-off", repo => {
+			writeFileSync(join(repo, ".gitattributes"), "*.ts -diff\n");
+			writeFileSync(join(repo, "zzz-late.ts"), 'import { expect } from "vitest";\nexport const late = 1;\n');
+		});
+		const diff = source.diff(fixture.frozen, head);
+		// The worktree carries the submitted attributes, so every .ts change is binary-marked and
+		// the late import's added lines are never read. The refusal names the file that did it.
+		const late = diff.changes.find(change => change.path === "zzz-late.ts");
+		assert.equal(late?.binary, true);
+		assert.equal(late?.addedText, "");
+		assert.deepEqual(screenDiff(diff, definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: ".gitattributes" }]);
+	} finally { fixture.remove(); }
+});
+
+test("a submitted .gitattributes cannot rewrite the tree the subject runs", () => {
+	const fixture = frozenRepository();
+	try {
+		const git = (args: readonly string[]) => {
+			const result = spawnSync("git", ["-C", fixture.repo, ...args], { encoding: "utf8" });
+			if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
+			return result.stdout.trim();
+		};
+		const head = commitFrom(fixture, "attributes-subst", repo => {
+			writeFileSync(join(repo, ".gitattributes"), "src/money.ts export-subst\n");
+			writeFileSync(join(repo, "src/money.ts"), 'export function formatTotal(): string { return "1"; }\n/*$Format:%B$*/\n');
+		});
+		// The diff reads the frozen worktree's attributes; git archive reads the submitted tree's.
+		git(["checkout", "-q", "--detach", fixture.frozen]);
+		const diff = gitSource(fixture.repo).diff(fixture.frozen, head);
+		assert.deepEqual(screenDiff(diff, definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: ".gitattributes" }]);
 	} finally { fixture.remove(); }
 });
