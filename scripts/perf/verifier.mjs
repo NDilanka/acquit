@@ -4,6 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -85,7 +86,7 @@ async function submitToVerdict(api, jobId) {
 	const before = await call(`/api/jobs/${jobId}`);
 	if (!before.ok) return { measured: false, blocked: "JOB_UNREADABLE", detail: `GET /api/jobs answered ${before.status}` };
 	const started = performance.now();
-	const posted = await call("/api/commands", { method: "POST", body: JSON.stringify({ key: `perf:${jobId}:${commit}`,
+	const posted = await call("/api/commands", { method: "POST", body: JSON.stringify({ key: randomUUID(),
 		command: { type: "Submit", jobId, sourceCommit: commit } }) });
 	if (!posted.ok) return { measured: false, blocked: "SUBMIT_REFUSED", detail: `POST /api/commands answered ${posted.status}` };
 	for (;;) {
@@ -93,8 +94,8 @@ async function submitToVerdict(api, jobId) {
 		const judged = view.attempts.history.find(attempt => attempt.sourceCommit === commit);
 		if (judged) return { measured: true, seconds: (performance.now() - started) / 1000, result: judged.result, samples: 1 };
 		if (!view.attempts.pending) return { measured: false, blocked: "VERDICT_MISSING", detail: `no verdict and no run for ${commit}` };
-		if (performance.now() - started > 120_000) return { measured: false, blocked: "VERIFIER_PORT_NOT_WIRED",
-			detail: "the run never reported; the callback route cannot apply a verdict until createAcquit builds Ports.verifier" };
+		if (performance.now() - started > 120_000) return { measured: false, blocked: "VERDICT_TIMEOUT",
+			detail: "the run never reported; no signed callback reached the API within 120 seconds" };
 		await new Promise(resolve => setTimeout(resolve, 500));
 	}
 }
