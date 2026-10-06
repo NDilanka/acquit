@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -22,9 +24,10 @@ import { quote } from "../src/paypal.ts";
 import { commercialSplit } from "../src/ledger.ts";
 import type { Verdict, VerifierRunRequest } from "../src/verifier.ts";
 import { SqliteStore } from "../src/store.ts";
+import { closeAcquit, createAcquit } from "../src/acquit.ts";
 import type { Actor, CommandOutcome } from "../src/acquit.ts";
 import { createFakeGitHubApp } from "../src/github.ts";
-import { createLocalVerifier } from "../../verifier/ci.ts";
+import { createLocalVerifier, createRemoteVerifier } from "../../verifier/ci.ts";
 import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { renderSubmission } from "../../acquit-cli/src/submit.ts";
@@ -157,6 +160,52 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 	assert.equal(attemptsOf(judged).phase, "READY");
 });
 
+test("createAcquit routes a signed callback through its injected port and accepts none without one", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-wire-test-"));
+	const verifier = { ciUrl: "https://ci.test", callbackSecret: secret };
+	const paypal = { apiBase: "https://api-m.sandbox.paypal.com" as const, webOrigin: "http://localhost:5243",
+		clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model };
+	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(parseJobId("job_7Q2K"), 1), sourceCommit: tamperCommit,
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now };
+	const signedReport = (jobId: JobId) => {
+		const body = JSON.stringify({ jobId, ordinal: 1, verdict });
+		return new Request("http://api.test/api/verifier/callback", { method: "POST",
+			headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body });
+	};
+	try {
+		const wiredUrl = join(root, "wired.db");
+		const store = new SqliteStore(wiredUrl);
+		const row = heldRow();
+		await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [],
+			outbox: [], acknowledge: null, delivery: null, request: null });
+		const plan = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit: tamperCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+		if (typeof plan === "string") throw new Error(plan);
+		await store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
+			credits: [], outbox: [], acknowledge: null, delivery: null, request: null });
+		store.close();
+		const service = createAcquit({ databaseUrl: wiredUrl, clock: { now: () => now }, paypal, verifier,
+			github: { appId: "", privateKey: "" }, verifierPort: createRemoteVerifier(verifier) });
+		try {
+			const applied = await service.handleVerifierCallback(signedReport(row.id));
+			assert.equal(applied.status, 200);
+			assert.deepEqual(await applied.json(), { ok: true, applied: true });
+			const read = await service.query(devon, { type: "Job", jobId: row.id });
+			if (read.kind !== "JOB") throw new Error("Expected a job result");
+			assert.equal(read.job.status, "IN_PROGRESS");
+			assert.equal(read.job.phase, "READY");
+			assert.equal(read.job.attempts.last, "REJECTED");
+			assert.deepEqual(read.job.attempts.reasons, ["PR modifies frozen test file tests/totals.test.ts"]);
+			assert.equal(read.job.attempts.left, 2);
+			assert.deepEqual(await (await service.handleVerifierCallback(signedReport(row.id))).json(), { ok: true, applied: false });
+		} finally { closeAcquit(service); }
+
+		const bare = createAcquit({ databaseUrl: join(root, "bare.db"), clock: { now: () => now }, paypal,
+			verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+		try { assert.equal((await bare.handleVerifierCallback(signedReport(parseJobId("job_7Q2K")))).status, 401); }
+		finally { closeAcquit(bare); }
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
 function attemptsOf(row: JobRow | null) {
 	assert.equal(row?.state.status, "IN_PROGRESS");
 	return (row!.state as Extract<JobRow["state"], { status: "IN_PROGRESS" }>).attempts;
@@ -165,5 +214,5 @@ function attemptsOf(row: JobRow | null) {
 function jobOf(outcome: CommandOutcome): JobProjection {
 	assert.notEqual(outcome.kind, "DENIED");
 	if (outcome.kind === "DENIED" || outcome.result.kind !== "JOB") throw new Error("Expected a job result");
-	return outcome.result.job as JobProjection;
+	return outcome.result.job;
 }

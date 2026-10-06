@@ -1,16 +1,19 @@
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
-import { confirmFunding, executeCommand, runDueTimers, runOutboxOnce } from "./effects.ts";
+import { confirmFunding, executeCommand, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
 import type { Ports } from "./effects.ts";
+import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobStatus, Receipt, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobProjection, JobStatus, Receipt, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
+import { unconfiguredVerifier } from "./verifier.ts";
+import type { VerifierPort } from "./verifier.ts";
 
 export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
 export { hours, instant, parseBidId, parseJobId, parseRequestKey } from "./ids.ts";
@@ -30,7 +33,7 @@ export type UserCommand = UserJobCommand | OperatorCommand;
 export type Failure = DomainFailure | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";
 
 export type PublicResult =
-	| { readonly kind: "JOB"; readonly job: JobView }
+	| { readonly kind: "JOB"; readonly job: JobProjection }
 	| { readonly kind: "BID"; readonly job: JobView; readonly bid: BidId; readonly creditsLeft: Credits }
 	| { readonly kind: "OPERATOR"; readonly operator: OperatorView }
 	| { readonly kind: "AGENT"; readonly agent: AgentId };
@@ -124,6 +127,8 @@ export type AcquitConfig = {
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
 	readonly github: { readonly appId: string; readonly privateKey: string };
+	/** The deployment injects the CI adapter. Without one, a start refuses by name and no callback is accepted. */
+	readonly verifierPort?: VerifierPort;
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
@@ -131,8 +136,9 @@ export function createAcquit(config: AcquitConfig): Acquit {
 	const store = new SqliteStore(config.databaseUrl, clock);
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
-		verifier: { start: unimplemented, parseCallback: unimplemented },
+		verifier: config.verifierPort ?? unconfiguredVerifier(),
 		github: { merge: unimplemented }, alerts: { raise: unimplemented },
+		workRepo: createGitHubApp(config.github),
 		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
@@ -171,7 +177,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			}
 		},
 		handlePayPalWebhook: async () => Response.json({ error: "NOT_IMPLEMENTED", detail: "Signed webhook ingestion is outside the local skeleton; use the checkout return route." }, { status: 501 }),
-		handleVerifierCallback: unimplemented,
+		handleVerifierCallback: request => ingestVerifierCallback(ports, request),
 		tick: () => {
 			if (!ticking) ticking = (async () => {
 				await runDueTimers(ports);
