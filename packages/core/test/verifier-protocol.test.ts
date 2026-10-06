@@ -122,6 +122,23 @@ test("a submitted tree that carries a symlink is rejected before the subject sta
 	} finally { fixture.remove(); rmSync(outside, { recursive: true, force: true }); }
 });
 
+test("a diff over the screen's bound is refused by name and the subject never starts", async () => {
+	const changes = Array.from({ length: 4097 }, (_, index) => ({ path: `src/file-${index}.ts`, status: "ADDED" as const,
+		from: null, binary: false, modeChanged: false, addedText: "" }));
+	const source: JudgeSource = { diff: () => ({ changes }), readFile: () => frozenTestSource,
+		materialize: () => { throw new Error("the submitted tree must not be materialized"); } };
+	const request: VerifierRunRequest = { runId: "run_large" as VerifierRunId, jobId: "job_large" as JobId, ordinal: 1,
+		sourceCommit: frozenCommit, definitionOfDone: { ...definitionOfDone, frozenAt: frozenCommit } };
+	const outcome = await runJudge(request, { source, subject: { variant: "CHILD_PROCESS",
+			run: async () => { throw new Error("the subject must not start"); } }, publisher: createFakeGitHubApp(), cases: hiddenCases });
+	assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+	if (outcome.kind !== "VERDICT") return;
+	assert.equal(outcome.verdict.result, "REJECTED");
+	if (outcome.verdict.result !== "REJECTED") return;
+	assert.deepEqual(outcome.verdict.reasons, [{ kind: "DIFF_TOO_LARGE", paths: 4097, limit: 4096 }]);
+	assert.equal(outcome.subject, null);
+});
+
 test("the bootstrap's frame limits are the judge's own limits", () => {
 	assert.deepEqual(BOOTSTRAP_LIMITS, { frameBytes: SUBJECT_FRAME_BYTES, maxCalls: 256, maxErrorChars: SUBJECT_ERROR_CHARS });
 });

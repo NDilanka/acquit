@@ -123,6 +123,17 @@ test("screenDiff reads a rename on both names and skips the added lines of a bin
 	assert.deepEqual(screenDiff(modeChanged, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }]);
 });
 
+test("screenDiff screens a diff at its bound and refuses a bigger one by name", () => {
+	const change = (path: string): DiffChange =>
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, addedText: "" });
+	const atLimit = Array.from({ length: 4095 }, (_, index) => change(`src/file-${index}.ts`));
+	atLimit.push(change("tests/totals.test.ts"));
+	assert.deepEqual(screenDiff({ changes: atLimit }, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);
+	const over = [...atLimit, change("src/one-more.ts")];
+	assert.deepEqual(screenDiff({ changes: over }, request.definitionOfDone),
+		[{ kind: "DIFF_TOO_LARGE", paths: 4097, limit: 4096 }]);
+});
+
 test("decideVerdict verifies only a clean run with a published pull request", () => {
 	const verdict = decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
 		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],

@@ -75,3 +75,25 @@ test("every protected-path change is screened, not only the added lines of a pat
 		});
 	} finally { fixture.remove(); }
 });
+
+test("a protected edit and a late source edit past 256 changed paths are still screened", () => {
+	const fixture = frozenRepository();
+	try {
+		const source = gitSource(fixture.repo);
+		const head = commitFrom(fixture, "padded", repo => {
+			writeFileSync(join(repo, "tests/totals.test.ts"), 'import { expect } from "vitest";\nexpect(2).toBe(2);\n');
+			for (let index = 0; index < 300; index++) {
+				const dir = join(repo, "aaa", String(index).padStart(3, "0"));
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(join(dir, "note.txt"), `padding ${index}\n`);
+			}
+			writeFileSync(join(repo, "zzz-late.ts"), 'import { expect } from "vitest";\nexport const late = 1;\n');
+		});
+		const diff = source.diff(fixture.frozen, head);
+		assert.equal(diff.changes.length, 302);
+		assert.deepEqual(screenDiff(diff, definitionOfDone), [
+			{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" },
+			{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "zzz-late.ts", symbol: "vitest" },
+		]);
+	} finally { fixture.remove(); }
+});
