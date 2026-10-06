@@ -122,6 +122,33 @@ test("a submitted tree that carries a symlink is rejected before the subject sta
 	} finally { fixture.remove(); rmSync(outside, { recursive: true, force: true }); }
 });
 
+test("a gitlink in the submitted tree is rejected before the subject starts", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	try {
+		const git = (args: readonly string[]) => {
+			const result = spawnSync("git", ["-C", fixture.repo, ...args], { encoding: "utf8" });
+			if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
+			return result.stdout.trim();
+		};
+		rmSync(join(fixture.repo, "src/money.ts"));
+		git(["update-index", "--add", "--cacheinfo", `160000,${"2".repeat(40)},src/money.ts`]);
+		git(["commit", "-qm", "gitlink"]);
+		const head = git(["rev-parse", "HEAD"]) as CommitSha;
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_gitlink" as VerifierRunId, jobId: "job_gitlink" as JobId, ordinal: 1,
+			sourceCommit: head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT") return;
+		assert.equal(outcome.verdict.result, "REJECTED");
+		if (outcome.verdict.result !== "REJECTED") return;
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TREE_GITLINK", path: "src/money.ts" }]);
+		assert.equal(outcome.subject, null);
+	} finally { fixture.remove(); }
+});
+
 test("a diff over the screen's bound is refused by name and the subject never starts", async () => {
 	const changes = Array.from({ length: 4097 }, (_, index) => ({ path: `src/file-${index}.ts`, status: "ADDED" as const,
 		from: null, binary: false, modeChanged: false, addedText: "" }));

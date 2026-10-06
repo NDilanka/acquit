@@ -76,6 +76,34 @@ test("every protected-path change is screened, not only the added lines of a pat
 	} finally { fixture.remove(); }
 });
 
+test("a gitlink in the submitted tree is refused by name, like a symlink", () => {
+	const fixture = frozenRepository();
+	try {
+		const git = (args: readonly string[]) => {
+			const result = spawnSync("git", ["-C", fixture.repo, ...args], { encoding: "utf8" });
+			if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
+			return result.stdout.trim();
+		};
+		const gitlink = (branch: string, path: string): CommitSha => {
+			git(["checkout", "-q", "-B", branch, fixture.frozen]);
+			rmSync(join(fixture.repo, path), { recursive: true, force: true });
+			git(["update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},${path}`]);
+			git(["commit", "-qm", branch]);
+			return git(["rev-parse", "HEAD"]) as CommitSha;
+		};
+		const source = gitSource(fixture.repo);
+		const added = gitlink("gitlink-added", "vendor/lib");
+		assert.deepEqual(screenDiff(source.diff(fixture.frozen, added), definitionOfDone), [{ kind: "TREE_GITLINK", path: "vendor/lib" }]);
+		const swapped = gitlink("gitlink-swapped", "src/money.ts");
+		assert.deepEqual(screenDiff(source.diff(fixture.frozen, swapped), definitionOfDone), [{ kind: "TREE_GITLINK", path: "src/money.ts" }]);
+		const protectedLink = gitlink("gitlink-protected", "tests/sub");
+		assert.deepEqual(screenDiff(source.diff(fixture.frozen, protectedLink), definitionOfDone), [
+			{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/sub" },
+			{ kind: "TREE_GITLINK", path: "tests/sub" },
+		]);
+	} finally { fixture.remove(); }
+});
+
 test("a protected edit and a late source edit past 256 changed paths are still screened", () => {
 	const fixture = frozenRepository();
 	try {
