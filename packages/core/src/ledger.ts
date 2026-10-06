@@ -129,8 +129,13 @@ export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFU
 			case "RELEASED": {
 				const next = lines[index + 1];
 				fee = next?.kind === "FEE" ? next : undefined;
-				move = { kind: "Release", operatorNet: line.cents, processorFee: fee?.processor ?? 0 as UsdCents,
-					platformFee: fee?.acquit ?? 0 as UsdCents, at: line.at };
+				// The stored fee is untrusted JSON: the reducer gets exactly what was stored, so its own
+				// safe-integer check names the law. Zeros never stand in for a stored component, because
+				// a null read as a zero fee satisfies the sum and coerces in the split check instead of
+				// failing. They stand in only for a missing FEE line, which is an order break itself.
+				move = fee
+					? { kind: "Release", operatorNet: line.cents, processorFee: fee.processor, platformFee: fee.acquit, at: line.at }
+					: { kind: "Release", operatorNet: line.cents, processorFee: 0 as UsdCents, platformFee: 0 as UsdCents, at: line.at };
 				break;
 			}
 			default: return breakLaw("order");

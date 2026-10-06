@@ -165,8 +165,8 @@ test("300 seeded stored payout books refuse every fuzzed fee component and agree
 		const shape = cents(rand, 2);
 		const processor = shape === 0 ? 0 : shape === 1 ? share : cents(rand, share);
 		const acquit = share - processor;
-		const held: LedgerLine = { kind: "HELD", cents: heldCents, at };
-		const released: LedgerLine = { kind: "RELEASED", cents: releasedCents, at };
+		const held: LedgerLine = { kind: "HELD", cents: heldCents as never, at };
+		const released: LedgerLine = { kind: "RELEASED", cents: releasedCents as never, at };
 		const fee = { cents: processor + acquit, processor, acquit };
 		assert.equal(checkLaws([held, released, { kind: "FEE", ...fee, at }] as unknown as readonly LedgerLine[]), "PAID");
 		books += 1;
