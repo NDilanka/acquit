@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -127,6 +127,54 @@ test("the run boundary refuses an unsigned, wrongly signed, stale, or replayed r
 	assert.equal(record.callback, "UNDELIVERABLE");
 	assert.equal(sources, 1);
 	await service.close();
+});
+
+test("the callback route authenticates the bytes it was posted, not a re-encoding", { timeout: 60_000 }, async () => {
+	const apiPort = await freePort();
+	let log = "";
+	const dir = await mkdtemp(join(tmpdir(), "acquit-callback-bytes-"));
+	const databasePath = join(dir, "acquit.db");
+	const store = new SqliteStore(databasePath);
+	const row = heldRow();
+	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
+		acknowledge: null, delivery: null, request: null });
+	store.close();
+	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
+		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
+			ACQUIT_DEV: "1", ACQUIT_VERIFIER_SUBJECT: "child", PAYPAL_CLIENT_ID: "test-client", PAYPAL_CLIENT_SECRET: "test-secret",
+			ACQUIT_VERIFIER_CI_URL: "http://127.0.0.1:1", ACQUIT_VERIFIER_RUN_SECRET: runSecret, ACQUIT_VERIFIER_CALLBACK_SECRET: callbackSecret,
+			ACQUIT_GITHUB_APP_ID: "", ACQUIT_GITHUB_APP_PRIVATE_KEY: "", ACQUIT_GITHUB_APP_ORG: "" } });
+	api.stdout?.on("data", (chunk: Buffer) => { log += String(chunk); });
+	api.stderr?.on("data", (chunk: Buffer) => { log += String(chunk); });
+	try {
+		const base = `http://127.0.0.1:${apiPort}`;
+		await waitFor(async () => (await fetch(`${base}/api/users`)).ok, 20_000, () => log);
+		const login = await fetch(`${base}/api/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ handle: "devon-ops" }) });
+		const token = (await login.json() as { token: string }).token;
+		const submit = await fetch(`${base}/api/commands`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+			body: JSON.stringify({ key: randomUUID(), command: { type: "Submit", jobId: row.id, sourceCommit: honestCommit } }) });
+		assert.equal(submit.status, 200);
+		const verdict = { result: "VERIFIED", runId: "run_7Q2K_1", sourceCommit: honestCommit, mergeCommit: honestCommit,
+			pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
+			reportDigest: "f".repeat(64), at: "2026-10-06T12:00:00.000Z" };
+		// The service signs the exact bytes it posts, so valid JSON that is not the canonical
+		// stringification of itself must still authenticate.
+		const spaced = `{ "jobId": "job_7Q2K", "ordinal": 1, "report": ${JSON.stringify({ kind: "VERDICT", verdict })} }`;
+		const sign = (body: string) => `sha256=${createHmac("sha256", callbackSecret).update(body).digest("hex")}`;
+		const tampered = spaced.replace('"ordinal": 1', '"ordinal": 1 ');
+		const refused = await fetch(`${base}/api/verifier/callback`, { method: "POST",
+			headers: { "content-type": "application/json", "x-acquit-signature": sign(spaced) }, body: tampered });
+		assert.equal(refused.status, 401);
+		const accepted = await fetch(`${base}/api/verifier/callback`, { method: "POST",
+			headers: { "content-type": "application/json", "x-acquit-signature": sign(spaced) }, body: spaced });
+		assert.equal(accepted.status, 200);
+		assert.deepEqual(await accepted.json(), { ok: true, applied: true });
+		await waitFor(async () => (await jobView(base, token, row.id))?.status === "VERIFIED", 10_000, () => log);
+	} finally {
+		api.kill("SIGTERM");
+		await once(api, "exit");
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
 });
 
 test("a source failure's detail is bounded and stripped of token shapes before it is reported", async () => {
