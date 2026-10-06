@@ -1,11 +1,12 @@
 // The per-run mirror. The judge reads commits with plain git, so the service hands it a local bare
 // repository holding both: the submitted commit from the job's work repo, and the frozen commit from
-// the work repo (its base) or, failing that, from the client repo. The installation token rides in the
-// mirror's own config file, written 0600 for the fetch and restored after it: git ignores
-// `http.<url>.extraHeader` from a global config file, and the token never reaches a URL or argv.
+// the work repo (its base) or, failing that, from the client repo. Each run gets its own mkdtemp
+// mirror, removed when the run ends. The installation token rides in the fetch child's own environment
+// config, as Basic for `x-access-token`: git ignores `http.<url>.extraHeader` from a global config
+// file, and the token reaches no URL, no argv, and no file, so a killed service leaves none behind.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workRepoName } from "../core/src/github.ts";
@@ -81,9 +82,9 @@ export function createRunSource(options: RunSourceOptions): (request: VerifierRu
 		async function fetchCommit(cwd: string, repository: string, commit: CommitSha, code: SourceFailureCode): Promise<void> {
 			const owner = repository.split("/")[0];
 			const token = await options.tokenFor(owner);
-			const result = withToken(cwd, token, () => git(["-C", cwd, "-c", "credential.helper=", "-c", "protocol.version=2", "fetch", "--no-tags", "--quiet",
+			const result = git(["-C", cwd, "-c", "credential.helper=", "-c", "protocol.version=2", "fetch", "--no-tags", "--quiet",
 				`https://github.com/${repository}.git`, commit],
-			{ PATH: process.env.PATH ?? "", HOME: cwd, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" }));
+			{ PATH: process.env.PATH ?? "", HOME: cwd, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", ...credentialEnv(token) });
 			if (result.status !== 0) throw new SourceUnavailable(code, `${repository} ${commit.slice(0, 12)}: ${tail(result.stderr)}`);
 		}
 	};
@@ -95,16 +96,15 @@ function defaultGit(args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: 
 	return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-/** Adds the token to the mirror's own config for one call, then puts the file back byte for byte. */
-function withToken<T>(cwd: string, token: string, call: () => T): T {
-	const configPath = join(cwd, "config");
-	const original = readFileSync(configPath, "utf8");
-	// GitHub's git endpoint takes the installation token as a Basic user, not as a bearer token.
+/**
+ * The credential for one git child, as that child's own environment config. GitHub's git endpoint
+ * takes the installation token as a Basic user, not as a bearer token, and environment config is
+ * command-line config for that process: it never touches a file and dies with the fetch.
+ */
+function credentialEnv(token: string): NodeJS.ProcessEnv {
 	const credential = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-	appendFileSync(configPath, `\n[http "https://github.com/"]\n\textraHeader = Authorization: Basic ${credential}\n`);
-	chmodSync(configPath, 0o600);
-	try { return call(); }
-	finally { writeFileSync(configPath, original, { mode: 0o600 }); }
+	return { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraHeader",
+		GIT_CONFIG_VALUE_0: `Authorization: Basic ${credential}` };
 }
 
 function tail(text: string): string {

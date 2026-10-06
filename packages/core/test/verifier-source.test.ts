@@ -81,20 +81,24 @@ test("the mirror fetches both commits with the token in the child's git config, 
 
 test("each run gets its own mirror directory, and the run removes it", async () => {
 	// The real default makeDir and removeDir: mkdtemp per run, deleted when the run ends.
-	const seen: string[] = [];
-	const git: RunSourceOptions["git"] = args => { if (args[0] === "-C") seen.push(args[1]); return { status: 0, stdout: "", stderr: "" }; };
+	const dirs: string[] = [];
+	const git: RunSourceOptions["git"] = args => {
+		if (args[0] === "-C" && !dirs.includes(args[1])) dirs.push(args[1]);
+		return { status: 0, stdout: "", stderr: "" };
+	};
 	const source = createRunSource({ organization: "acquit-forks", tokenFor: async () => token, git });
 	const first = await source(request());
 	const second = await source(request());
-	assert.notEqual(seen[0], seen[1], "two runs must never share a mirror");
-	assert.match(seen[0], /acquit-mirror-run_source_1-/);
-	assert.match(seen[1], /acquit-mirror-run_source_1-/);
-	assert.equal(existsSync(seen[0]) && existsSync(seen[1]), true);
+	assert.equal(dirs.length, 2);
+	assert.notEqual(dirs[0], dirs[1], "two runs must never share a mirror");
+	assert.match(dirs[0], /acquit-mirror-run_source_1-/);
+	assert.match(dirs[1], /acquit-mirror-run_source_1-/);
+	assert.equal(existsSync(dirs[0]) && existsSync(dirs[1]), true);
 	first.remove();
-	assert.equal(existsSync(seen[0]), false, "the first run's mirror is gone");
-	assert.equal(existsSync(seen[1]), true, "the second run's mirror is untouched");
+	assert.equal(existsSync(dirs[0]), false, "the first run's mirror is gone");
+	assert.equal(existsSync(dirs[1]), true, "the second run's mirror is untouched");
 	second.remove();
-	assert.equal(existsSync(seen[1]), false);
+	assert.equal(existsSync(dirs[1]), false);
 });
 
 test("a fetch that fails names the commit and the repository it could not read", async () => {
