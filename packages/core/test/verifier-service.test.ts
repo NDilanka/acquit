@@ -229,6 +229,8 @@ test("a rejection with hundreds of protected paths still ends the job REJECTED",
 		assert.equal(view?.attempts.last, "REJECTED");
 		assert.deepEqual(view?.attempts.history.map(attempt => [attempt.ordinal, attempt.result]), [[1, "REJECTED"]]);
 		assert.ok((view?.attempts.reasons.length ?? 0) > 0 && (view?.attempts.reasons.length ?? 0) < 600);
+		assert.deepEqual(view?.attempts.history.map(attempt => attempt.reasonsTruncated), [584]);
+		assert.equal(renderSubmission(view!, () => "devon-ops").includes("\tand 584 more reasons not shown"), true);
 	} finally {
 		api.kill("SIGTERM");
 		await once(api, "exit");
