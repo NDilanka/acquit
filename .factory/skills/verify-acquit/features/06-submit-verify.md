@@ -100,18 +100,34 @@ Preconditions:
 - A run that ends without a verdict posts its signed callback at once, so the job leaves VERIFYING and
   charges no attempt. The attempt carries a named failure: `PUBLISH_FAILED` (the judgment was clean and
   the pull request or check run could not be made), `SOURCE_UNAVAILABLE`, `SUBJECT_UNSTARTABLE`,
-  `SUBJECT_KILLED` (the subject process or container was stopped from outside the run: the child
-  launcher reads the signal the judge did not send, and the Docker launcher asks the daemon for the
-  container's kill event, because an exit code of 137 looks the same for a `docker kill` and a
-  submission's own `process.exit(137)`), `CONTRACT_MISMATCH`, or `RUN_DEADLINE_EXCEEDED`. The CLI
-  prints `RUN_FAILED: <name>: <detail>` and the operator resubmits; the publisher reuses the branch,
-  the pull request, and the check run it already made. `GET /runs/<runId>` on the verifier reports the
-  same outcome plus the timings of each step, which is how a late verdict is explained rather than
-  guessed at.
+  `SUBJECT_KILLED`, `CONTRACT_MISMATCH`, or `RUN_DEADLINE_EXCEEDED`. The CLI prints
+  `RUN_FAILED: <name>: <detail>` and the operator resubmits; the publisher reuses the branch, the pull
+  request, and the check run it already made. `GET /runs/<runId>` on the verifier reports the same
+  outcome plus the timings of each step, which is how a late verdict is explained rather than guessed
+  at. A publish of a commit the client repository has never seen waits, bounded, for the client
+  repository to take it before opening the pull request there: GitHub exposes a fresh fork commit to
+  the rest of the fork network only after a delay, and no token this App holds can open a
+  cross-repository pull request (the client installation is refused 422 `head invalid`, the fork
+  owner's installation 403 by the base repository). A commit the client repository never takes is
+  refused with GitHub's own text.
+- `SUBJECT_KILLED` is the subject stopped from outside the run. The child launcher reads the signal the
+  judge did not send; the child-mode submission runs as the same user and can signal itself, so a
+  self-signal reads as external too, which is why that launcher is the dev-only path. The Docker
+  launcher asks the daemon for the container's kill event, because an exit code of 137 looks the same
+  for a `docker kill` and a submission's own `process.exit(137)`; the query names the container by the
+  id the client wrote for `--cidfile` (falling back to the run's unique name), and its window closes
+  two seconds after the client exits because the daemon logs the kill 300-800 ms late. When the daemon
+  cannot answer that query at all, the run is `SUBJECT_KILLED` too, with a detail saying the daemon
+  could not report how the subject ended: the submission cannot stop the daemon, so the attempt slot
+  returns. A kill event that carries no signal attribute still reports an external kill, named "an
+  external signal".
 - A container that hits its memory cap is OOM-killed by the kernel: that is the submission's fault and
   stays a REJECTED verdict with a `MEMORY_LIMIT` subject fault, never `SUBJECT_KILLED`. A container
   the judge stops itself (its deadline or a frame limit) stays a verdict fault too; the launcher
-  removes that container by name so a client killed mid-run cannot leave it behind.
+  removes that container by name whether the client died by a signal or the judge stopped it, so a
+  run's own container cannot be left behind. A judge process that dies between the container's start
+  and that removal can still leave a container up: an operator lists them with
+  `docker ps -a --filter name=acquit-subject-` and removes them with `docker rm --force <name>`.
 - The plain child-process subject is the unit-test path only. The API and `acquit` refuse it with
   `SUBJECT_CHILD_REFUSED` unless `ACQUIT_DEV=1`, and live lanes run the Docker subject, which mounts
   only the submitted tree and a minimal bootstrap and has no network.
