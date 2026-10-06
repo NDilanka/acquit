@@ -100,8 +100,8 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		const segments = segmentsOf(path);
 		const repository = segments.length >= 3 ? `${segments[1]}/${segments[2]}` : "";
 		if (auth === "app" && method === "GET" && url.pathname === "/app/installations") {
-			return json(response, 200, { total_count: options.installations.length,
-				installations: options.installations.map(item => ({ id: item.id, account: { login: item.account, type: "Organization" } })) });
+			// Real GitHub answers this one with a bare array, pinned by the r10 live smoke.
+			return json(response, 200, options.installations.map(item => ({ id: item.id, account: { login: item.account, type: "Organization" } })));
 		}
 		if (auth === "app" && method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)) {
 			const token = `ghs_${randomBytes(20).toString("hex")}`;

@@ -203,8 +203,9 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 			const found: { id: number; account: string }[] = [];
 			for (let page = 1; page <= 10; page++) {
 				const answer = await appCall({ method: "GET", path: `/app/installations?per_page=100&page=${page}`, allow: [200] });
-				const items = (answer.body as { installations?: unknown })?.installations;
-				if (!Array.isArray(items)) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", "GET /app/installations answered without an installation list.");
+				// The list endpoint answers with a bare array; the live smoke pinned that against real GitHub.
+				const items = answer.body;
+				if (!Array.isArray(items)) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", "GET /app/installations answered without a list of installations.");
 				for (const item of items) {
 					const id = (item as { id?: unknown }).id;
 					const account = textOf((item as { account?: unknown }).account, "login");
