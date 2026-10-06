@@ -626,7 +626,7 @@ test("a verified run opens the client review window with the attempt history int
 	const view = projectJob(verified.next, devon, new Map());
 	assert.equal(view.pullRequest, 13);
 	assert.equal(view.phase, "AWAITING_CLIENT");
-	assert.deepEqual(view.attempts.history, [{ ordinal: 1, result: "VERIFIED", reasons: [], sourceCommit, at: now,
+	assert.deepEqual(view.attempts.history, [{ ordinal: 1, result: "VERIFIED", reasons: [], reasonsTruncated: 0, sourceCommit, at: now,
 		frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, pullRequest: 13 }]);
 	assert.equal(view.attempts.last, "VERIFIED");
 	assert.equal(view.attempts.left, 2);
@@ -649,7 +649,7 @@ test("the projection carries the attempt history, the pending run, and the froze
 	assert.equal(judged.attempts.last, "REJECTED");
 	assert.deepEqual(judged.attempts.reasons, ["PR modifies frozen test file tests/totals.test.ts"]);
 	assert.deepEqual(judged.attempts.history, [{ ordinal: 1, result: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"],
-		sourceCommit, at: now, frozen: null, hidden: null, pullRequest: null }]);
+		reasonsTruncated: 0, sourceCommit, at: now, frozen: null, hidden: null, pullRequest: null }]);
 });
 
 test("a stored contract without a frozen definition of done parses to null and projects without one", async () => {

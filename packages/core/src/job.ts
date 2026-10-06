@@ -762,6 +762,8 @@ export type AttemptView = {
 	readonly ordinal: Ordinal;
 	readonly result: "REJECTED" | "VERIFIED";
 	readonly reasons: readonly string[];
+	/** How many reasons the callback's bound dropped from the end of the list. */
+	readonly reasonsTruncated: number;
 	readonly sourceCommit: CommitSha;
 	readonly at: Instant;
 	readonly frozen: TestTally | null;
@@ -801,9 +803,9 @@ export type JobProjection = JobView & {
 function attemptView(record: AttemptRecord): AttemptView {
 	const verdict = record.verdict;
 	return verdict.result === "VERIFIED"
-		? { ordinal: record.ordinal, result: "VERIFIED", reasons: [], sourceCommit: verdict.sourceCommit, at: verdict.at,
+		? { ordinal: record.ordinal, result: "VERIFIED", reasons: [], reasonsTruncated: 0, sourceCommit: verdict.sourceCommit, at: verdict.at,
 			frozen: verdict.frozen, hidden: verdict.hidden, pullRequest: verdict.pullRequest }
-		: { ordinal: record.ordinal, result: "REJECTED", reasons: verdict.reasons.map(describeRejectReason),
+		: { ordinal: record.ordinal, result: "REJECTED", reasons: verdict.reasons.map(describeRejectReason), reasonsTruncated: verdict.reasonsTruncated,
 			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: null, hidden: null, pullRequest: null };
 }
 

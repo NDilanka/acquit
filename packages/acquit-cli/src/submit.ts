@@ -95,6 +95,7 @@ export function renderSubmission(view: JobProjection, handleOf: (operatorId: str
 	const lines = [`Submitted ${view.id} (attempt ${attempt.ordinal} of ${total})`, `Verifier result: ${attempt.result}`];
 	if (attempt.result === "REJECTED") {
 		for (const reason of attempt.reasons) lines.push(`\t${reason}`);
+		if (attempt.reasonsTruncated > 0) lines.push(`\tand ${attempt.reasonsTruncated} more reasons not shown`);
 		lines.push(`Job status: ${view.status}`);
 		const locked = view.lockedTo ? handleOf(view.lockedTo) ?? view.lockedTo : null;
 		lines.push(locked ? `Escrow: ${view.escrow}, locked to ${locked}` : `Escrow: ${view.escrow}`);
