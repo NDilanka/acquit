@@ -129,6 +129,41 @@ test("the run boundary refuses an unsigned, wrongly signed, stale, or replayed r
 	await service.close();
 });
 
+test("a source failure's detail is bounded and stripped of token shapes before it is reported", async () => {
+	const leaked = "ghs_SYNTHETIC_INSTALLATION_TOKEN";
+	const deliveries: string[] = [];
+	const target = createServer((request, response) => {
+		void (async () => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+			deliveries.push(Buffer.concat(chunks).toString("utf8"));
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify({ ok: true, applied: true }));
+		})();
+	});
+	await new Promise<void>(resolve => target.listen(0, "127.0.0.1", () => resolve()));
+	const port = (target.address() as AddressInfo).port;
+	const service = createVerifierService({ runSecret, callback: { url: `http://127.0.0.1:${port}/api/verifier/callback`, secret: callbackSecret },
+		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
+		source: async () => { throw new Error(`SUBMITTED_COMMIT_UNFETCHABLE: https://x-access-token:${leaked}@github.com/acquit-forks/invoice-app-7Q2K.git`); },
+		log: () => {} });
+	try {
+		assert.equal((await service.handle(signed(JSON.stringify(runRequest("run_svc_redact"))))).status, 202);
+		await service.whenIdle();
+		const record = service.runs.get("run_svc_redact" as VerifierRunId)!;
+		assert.match(record.refusal ?? "", /^SOURCE_UNAVAILABLE: /);
+		assert.equal(record.refusal?.includes(leaked), false);
+		assert.ok((record.refusal?.length ?? 0) <= 300, `refusal is ${record.refusal?.length} characters`);
+		assert.equal(deliveries.length, 1);
+		assert.equal(deliveries[0]!.includes(leaked), false);
+		const view = JSON.stringify(await (await service.handle(new Request("http://verifier.test/runs/run_svc_redact"))).json());
+		assert.equal(view.includes(leaked), false);
+	} finally {
+		await service.close();
+		await new Promise<void>(resolve => target.close(() => resolve()));
+	}
+});
+
 test("a duplicate run id is accepted once and judged once", { skip: fixtureSkip }, async () => {
 	let sources = 0;
 	const service = serviceFor({ callbackUrl: "http://127.0.0.1:1/callback",

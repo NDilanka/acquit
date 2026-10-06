@@ -330,6 +330,32 @@ test("one installation token per owner is minted and reused for later calls", as
 	assert.equal(stub.state.requests.filter(request => request.method === "GET" && request.path.startsWith("/app/installations")).length, 1);
 });
 
+test("the port mints an installation token for a caller outside its own operations", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const token = await port.installationToken(CLIENT_OWNER);
+	assert.equal(stub.state.mints.some(mint => mint.token === token && mint.owner === CLIENT_OWNER), true);
+	assert.equal(await port.installationToken(CLIENT_OWNER), token);
+	assert.equal(stub.state.mints.length, 1);
+});
+
+test("a rate-limited mint is named and its copied text carries no token shape", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	stub.refuse({ method: "POST", path: "/app/installations/41/access_tokens", status: 403,
+		message: "You have exceeded a secondary rate limit. Token ghs_SYNTHETIC_INSTALLATION_TOKEN was included.",
+		headers: { "x-ratelimit-remaining": "0" } });
+	const failure = await refusal(port.installationToken(CLIENT_OWNER));
+	assert.equal(failure.code, "GITHUB_RATE_LIMITED");
+	assert.equal(failure.detail.includes("ghs_SYNTHETIC_INSTALLATION_TOKEN"), false);
+	assert.match(failure.detail, /\[redacted\]/);
+});
+
+test("the fake port mints a token for the unit path", async () => {
+	const port = createFakeGitHubApp();
+	assert.equal(await port.installationToken(CLIENT_OWNER), await port.installationToken(CLIENT_OWNER));
+});
+
 test("the work repo is the client repo's fork with main at the frozen commit", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
