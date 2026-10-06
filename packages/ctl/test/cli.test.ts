@@ -48,6 +48,16 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 	}
 }
+test("the lane fixture allocates its three ports together so they can never repeat", async () => {
+	// unusedPort() closes each listener before the next call, and the kernel reuses a just-closed
+	// ephemeral port (measured: 3 duplicate triples in 5,000). start refuses duplicate ports by name,
+	// so the fixture would hand it a lane that cannot start. All three listeners are held open at
+	// once instead, which makes the ports distinct by construction.
+	const three = await unusedPorts(3);
+	assert.equal(new Set(three).size, 3);
+	const many = await unusedPorts(200);
+	assert.equal(new Set(many).size, 200);
+});
 test("top-level help lists every command, flags, envelope, and exits successfully", async () => {
 	await fixture(async cli => {
 		const result = cli(["--help"]);
