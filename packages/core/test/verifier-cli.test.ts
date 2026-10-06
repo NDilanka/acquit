@@ -1,7 +1,9 @@
 // The CLI prints what docs/tutorial.md shows, character for character, from a fixed API reply.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { CommitSha, JobId, OperatorId } from "../src/ids.ts";
 import type { JobProjection } from "../src/job.ts";
 import { CliError } from "../../acquit-cli/src/client.ts";
@@ -137,6 +139,21 @@ test("the handle the block prints comes from the API, never from the id", () => 
 	assert.equal(renderSubmission(rejectedView(), () => "devon-ops"), renderSubmission(rejectedView(), () => "devon-ops"));
 	assert.match(renderSubmission(rejectedView(), () => "someone-else"), /Escrow: HELD, locked to someone-else/);
 	assert.match(renderSubmission(rejectedView(), () => null), /Escrow: HELD, locked to devon-ops/);
+});
+
+test("the real CLI prints the child-subject refusal by name and exits 1 without a stack", () => {
+	const cli = fileURLToPath(new URL("../../acquit-cli/src/main.ts", import.meta.url));
+	const submit = (subject: string) => spawnSync(process.execPath, [cli, "submit", "job_7Q2K"],
+		{ encoding: "utf8", env: { ...process.env, ACQUIT_VERIFIER_SUBJECT: subject, ACQUIT_DEV: "0" } });
+	const child = submit("child");
+	assert.equal(child.status, 1);
+	assert.equal(child.stdout, "");
+	assert.match(child.stderr, /^acquit: SUBJECT_CHILD_REFUSED: The child-process subject is the unit-test path only\./);
+	assert.equal(child.stderr.trimEnd().split("\n").length, 1);
+	const unknown = submit("chroot");
+	assert.equal(unknown.status, 1);
+	assert.match(unknown.stderr, /^acquit: SUBJECT_CHILD_REFUSED: Unknown subject chroot\./);
+	assert.equal(unknown.stderr.trimEnd().split("\n").length, 1);
 });
 
 test("main prints usage, refuses an unknown command, and reports a refusal without a stack", async () => {
