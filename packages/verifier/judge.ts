@@ -10,7 +10,7 @@ import { performance } from "node:perf_hooks";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
 import { FROZEN_TEST_PATH, HIDDEN_CASES, hiddenManifest } from "../core/src/seed-data.ts";
-import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
+import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, rejectReasons, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
 import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, RunFailureName, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
@@ -217,6 +217,13 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	const compareMs = performance.now() - compareStart;
 	if (faults.length) {
 		return { kind: "VERDICT", verdict: decideVerdict(request, faults, frozen, hiddenJudged, null, clock.now()),
+			subject: subjectRun, timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs, compareMs }) };
+	}
+	// The test outcome decides the run before anything reaches the client's repository: a submission
+	// whose tests fail or are missing is REJECTED with nothing published for it. Only a clean outcome
+	// asks the publisher for a pull request, and only a clean outcome can be VERIFIED.
+	if (rejectReasons(request, [], frozen, hiddenJudged).length) {
+		return { kind: "VERDICT", verdict: decideVerdict(request, [], frozen, hiddenJudged, null, clock.now()),
 			subject: subjectRun, timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs, compareMs }) };
 	}
 	const publishStart = performance.now();

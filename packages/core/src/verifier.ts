@@ -535,19 +535,19 @@ function starMatch(pattern: string, segment: string): boolean {
 	return true;
 }
 
-/** Fail closed. VERIFIED needs a clean screen, all frozen ids passed, all hidden ids passed, and a published PR. */
-export function decideVerdict(
+/**
+ * Every reason a completed judgment carries, screen first. An empty list means the run is a clean
+ * pass: every frozen id passed and every hidden id passed, so it is the one outcome that may publish.
+ */
+export function rejectReasons(
 	request: VerifierRunRequest,
 	screen: readonly RejectReason[],
 	frozen: FrozenRun,
 	hidden: ReturnType<typeof judgeHidden>,
-	built: { readonly mergeCommit: CommitSha; readonly pullRequest: number } | null,
-	at: Instant,
-): Verdict {
+): readonly RejectReason[] {
 	const reasons: RejectReason[] = [...screen];
 	// A screen hit decides the run on its own: the subject never starts, so a missing test is not a finding.
-	if (reasons.length) return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
-		reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
+	if (reasons.length) return reasons;
 	const frozenMissing: TestId[] = [];
 	const frozenFailed: TestId[] = [];
 	for (const id of request.definitionOfDone.frozenTests) {
@@ -559,6 +559,19 @@ export function decideVerdict(
 	if (frozenMissing.length) reasons.push({ kind: "TESTS_MISSING", suite: "frozen", missing: frozenMissing });
 	if (hidden.failed.length) reasons.push({ kind: "TESTS_FAILED", suite: "hidden", failed: hidden.failed });
 	if (hidden.missing.length) reasons.push({ kind: "TESTS_MISSING", suite: "hidden", missing: hidden.missing });
+	return reasons;
+}
+
+/** Fail closed. VERIFIED needs a clean screen, all frozen ids passed, all hidden ids passed, and a published PR. */
+export function decideVerdict(
+	request: VerifierRunRequest,
+	screen: readonly RejectReason[],
+	frozen: FrozenRun,
+	hidden: ReturnType<typeof judgeHidden>,
+	built: { readonly mergeCommit: CommitSha; readonly pullRequest: number } | null,
+	at: Instant,
+): Verdict {
+	const reasons = rejectReasons(request, screen, frozen, hidden);
 	if (reasons.length) {
 		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
 			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
