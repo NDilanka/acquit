@@ -37,6 +37,8 @@ Write-Output $stamp
 
 Use the printed stamp in every later command. Shell variables do not survive separate Droid Execute calls. Replace `RUN_STAMP` below with that value.
 
+A launcher killed inside Windows/libuv's `CREATE_SUSPENDED` window can leave a child that never ran the preload; no automatic kill authority survives. `ctl status` reports nonce-matching, wholly suspended candidates with unproven recorded ownership and an exact manual recovery command, but never kills them: independently confirm ownership before using that command.
+
 Run this command through Droid Execute with `fireAndForget:true`. Do not launch through a foreground Execute call. On Windows that call can terminate the detached app when it exits.
 
 ```powershell

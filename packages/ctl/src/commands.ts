@@ -7,6 +7,7 @@ import { atomicJson, clearState, counts, envKeys, locked, readState } from "./st
 import type { Context, RunState } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
 import { browserExecutable } from "./executables.ts";
+import { suspendedRecovery } from "./suspended.ts";
 
 const urls = (api: number, web: number) => ({ api: `http://localhost:${api}`, web: `http://localhost:${web}` });
 async function devPost(ctx: Context, path: string, body: unknown): Promise<Result> {
@@ -145,7 +146,8 @@ export async function status(_parsed: Parsed, ctx: Context): Promise<Result> {
 	const database = { path, exists: existsSync(path), seeded: rows.operators > 0, counts: { operators: rows.operators, jobs: rows.jobs } };
 	return { healthy: Boolean(run?.api.nonce && run.web.nonce && pids.api.alive && pids.web.alive && probe.apiReady && probe.webReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
 		runFile: ctx.stateFile, run, pids, ports: { api: { port: ports.api, open: probe.apiPort }, web: { port: ports.web, open: probe.webPort } },
-		reachability: { api: probe.apiReady, web: probe.webReady }, urls: urls(ports.api, ports.web), database, env: { fileExists: existsSync(resolve(ctx.root, ".env")), requiredKeys: keys } };
+		reachability: { api: probe.apiReady, web: probe.webReady }, urls: urls(ports.api, ports.web), database, env: { fileExists: existsSync(resolve(ctx.root, ".env")), requiredKeys: keys },
+		suspendedRecovery: await suspendedRecovery(run, ctx.root) };
 }
 export async function seedDb(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (parsed["dry-run"]) {
