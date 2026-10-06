@@ -20,7 +20,9 @@ stays with the client on a rejection, and a clean run opens the pull request.
 ## How to get to it (user POV)
 
 - Fund a job to HELD and accept Devon's bid. The job shows IN_PROGRESS with escrow HELD.
-- In a work directory checked out at the commit to submit, run `acquit submit <job>`.
+- In a work directory checked out at the commit to submit, run `acquit submit <job>`. The job's work
+  repo is created shortly after funding, so a submit before it exists is refused by name
+  (`WORK_REPO_NOT_READY`) and works about 30 seconds later.
 
 ## Driving it with agent-browser
 

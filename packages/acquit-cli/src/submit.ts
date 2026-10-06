@@ -80,7 +80,17 @@ export function localHead(dir: string): CommitSha {
 export function pushHead(dir: string, remote: string, jobId: string): void {
 	const branch = verifiedBranch(jobId as JobId);
 	const result = spawnSync("git", ["-C", dir, "push", remote, `HEAD:refs/heads/${branch}`], { encoding: "utf8", timeout: 120_000 });
-	if (result.status !== 0) throw new CliError("PUSH_REFUSED", `git push to ${remote} failed. ${tail(result.stderr)}`.trim());
+	if (result.status !== 0) throw pushError(remote, result.stderr);
+}
+
+/** The refusal a failed push produces: GitHub's 404 names the work repo funding has not created yet. */
+export function pushError(remote: string, stderr: string | null): CliError {
+	const detail = tail(stderr);
+	if (/Repository not found/i.test(detail)) {
+		return new CliError("WORK_REPO_NOT_READY", `The work repository ${remote} does not exist yet. `
+			+ "It is created shortly after funding; rerun this command in about 30 seconds.");
+	}
+	return new CliError("PUSH_REFUSED", `git push to ${remote} failed. ${detail}`.trim());
 }
 
 function tail(text: string | null): string {
