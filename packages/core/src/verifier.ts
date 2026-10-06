@@ -247,6 +247,19 @@ export function judgeHidden(
  * Rejects protected-path edits and any source file that imports vitest, expect, or node:test.
  * A change is judged by its status, so a deletion, a rename, a mode change, and a binary swap all
  * reach this screen even though a unified patch carries no added line for them.
+ *
+ * What this screen claims, and what it does not:
+ * - It reads git's status record for every changed path, and the added lines of a path whose
+ *   extension is in `isSourcePath`. A protected path is refused by name under every status:
+ *   add, modify, delete, rename (both the old and the new name), mode change, and type change.
+ * - It refuses a literal mention of a test framework in an added line of a source file.
+ * - It does not read non-source files. A JSON, YAML, lockfile, or config change is screened for its
+ *   path only: `vitest.config.ts` trips the screen because a protected glob names it, never because
+ *   of what it says. It does not resolve module graphs, so a re-exported or aliased framework import
+ *   is invisible to it, and it does not see a string built at runtime (`import("vit" + "est")`).
+ * - It never reads a file git reports as binary, and it never runs the submitted tests.
+ * - The screen is a fast refusal for the obvious cheats. The frozen-suite extraction and the six
+ *   hidden cases are the authority on behavior, and they hold the expected values.
  */
 export function screenDiff(diff: DiffSummary, done: DefinitionOfDone): readonly RejectReason[] {
 	const reasons: RejectReason[] = [];

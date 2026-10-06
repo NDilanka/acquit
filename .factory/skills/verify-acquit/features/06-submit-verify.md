@@ -52,8 +52,21 @@ Preconditions:
 
 ## Gotchas
 
+- The lexical screen claims exactly two things: a protected path is refused by name under every git
+  status (add, modify, delete, rename on both names, mode change, type change), and an added line of a
+  source file that literally mentions `vitest`, `expect(`, or `node:test` is refused. It does not read
+  non-source files (a `vitest.config.ts` change trips it only if a protected glob names the path), it
+  does not resolve module graphs (a re-exported or aliased framework import is invisible), it does not
+  see a string built at runtime (`import("vit" + "est")`), it never reads a binary diff, and it never
+  runs the submitted tests. The hidden suite, not the screen, is what refuses a wrong implementation.
 - The subject never sees an expected value. If a hidden expected value appears in the subject's input
   log, that is a failure of the run, not a passing test.
+- A module inside the subject process shares the subject's stdin and stdout, so it can read the run
+  nonce and write frames of its own. What it cannot reach is an expected value: the 48 frozen values
+  are in the submitted tree by construction, and the six hidden values exist only in the judge. A
+  forged transcript therefore has to answer the hidden cases correctly, which is the same thing as
+  fixing the code. The judge refuses any frame that does not echo the run nonce, and the duplicate-id
+  rule refuses a forged reply that races the bootstrap.
 - A missing or malformed reply counts as missing, and a duplicate id invalidates that id for the whole
   run. A first-reply-wins transcript must never verify.
 - A rejection keeps escrow HELD. It is not a refund, and the deadline is untouched.
