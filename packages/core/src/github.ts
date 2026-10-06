@@ -108,7 +108,7 @@ export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({})
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
 
 /** An RS256 App JWT. `iat` is backdated a minute for clock skew and `exp` stays under GitHub's ten-minute cap. */
-export function appJwt(appId: string, privateKey: string, nowMs: number): string {
+function appJwt(appId: string, privateKey: string, nowMs: number): string {
 	let key;
 	try { key = createPrivateKey({ key: privateKey, format: "pem" }); }
 	catch { throw new GitHubAppError("GITHUB_APP_KEY_INVALID", "ACQUIT_GITHUB_APP_PRIVATE_KEY does not parse as a PEM private key."); }
@@ -131,6 +131,9 @@ type Call = { readonly method: string; readonly path: string; readonly body?: un
 
 /** One token per owner, refreshed shortly before GitHub expires it. */
 const REFRESH_MARGIN_MS = 60_000;
+
+/** The work repository's branch, held at the frozen commit the submitter starts from. */
+const WORK_REPO_BRANCH = "main";
 
 function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	const tokens = new Map<string, { readonly token: string; readonly expiresAtMs: number }>();
@@ -298,16 +301,16 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const orgToken = await tokenFor(parsed.organization);
 		const found = await call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
 		const fresh = found.status === 404 ? await forkWorkRepo(repository, name, source, orgToken) : false;
-		const existing = await readRef(repository, "main", orgToken);
-		if (existing === null) await createRef(repository, "main", request.frozenCommit, orgToken);
+		const existing = await readRef(repository, WORK_REPO_BRANCH, orgToken);
+		if (existing === null) await createRef(repository, WORK_REPO_BRANCH, request.frozenCommit, orgToken);
 		else if (existing !== request.frozenCommit) {
 			// A fresh fork's main follows the client's head. Only a repository this call created is moved;
 			// an existing one is refused by name, because moving it would rewrite state this call did not make.
-			if (!fresh) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has main at ${existing}, not the frozen commit ${request.frozenCommit}.`);
-			await call(`Bearer ${orgToken}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/main`, allow: [200],
+			if (!fresh) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${WORK_REPO_BRANCH} at ${existing}, not the frozen commit ${request.frozenCommit}.`);
+			await call(`Bearer ${orgToken}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${WORK_REPO_BRANCH}`, allow: [200],
 				permission: "contents: write", body: { sha: request.frozenCommit, force: true } });
 		}
-		return { repository, remote: `https://github.com/${repository}.git`, branch: "main", commit: request.frozenCommit };
+		return { repository, remote: `https://github.com/${repository}.git`, branch: WORK_REPO_BRANCH, commit: request.frozenCommit };
 	};
 
 	const findOrOpenPullRequest = async (request: PublishRequest, branch: string, headOwner: string, clientToken: string): Promise<number> => {
