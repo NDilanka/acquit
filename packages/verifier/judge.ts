@@ -10,8 +10,8 @@ import { performance } from "node:perf_hooks";
 import { digest } from "../core/src/effects.ts";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, TestId } from "../core/src/ids.ts";
-import { decideVerdict, judgeHidden, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
-import type { DiffSummary, FrozenRun, HiddenCase, RejectReason, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
+import { decideVerdict, isSourcePath, judgeHidden, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
+import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
 
@@ -57,7 +57,18 @@ export function gitSource(repoDir: string): JudgeSource {
 		return result.stdout as string | Buffer;
 	};
 	return {
-		diff: (frozenAt, sourceCommit) => parseUnifiedDiff(run(["diff", "--no-renames", frozenAt, sourceCommit], "utf8") as string),
+		// The screen is built from git's status and numstat records, never from the patch's +++ lines:
+		// a deletion, a rename, a mode change, and a binary swap have no added line to key off.
+		diff(frozenAt, sourceCommit) {
+			const changes = parseRawDiff(run(["diff", "--raw", "-z", "--find-renames", frozenAt, sourceCommit], "utf8") as string);
+			const binary = parseNumstatBinary(run(["diff", "--numstat", "-z", "--find-renames", frozenAt, sourceCommit], "utf8") as string);
+			return { changes: changes.slice(0, MAX_DIFF_PATHS).map(change => ({ ...change, binary: binary.has(change.path),
+				addedText: binary.has(change.path) || !isSourcePath(change.path) ? "" : addedLines(frozenAt, sourceCommit, change.path) })) };
+			function addedLines(frozen: CommitSha, submitted: CommitSha, path: string): string {
+				const patch = run(["diff", "--no-color", "--unified=0", frozen, submitted, "--", path], "utf8") as string;
+				return patch.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n");
+			}
+		},
 		readFile: (commit, path) => run(["show", `${commit}:${path}`], "utf8") as string,
 		materialize(commit) {
 			const path = join(tmpdir(), `acquit-tree-${commit.slice(0, 12)}-${process.pid}-${Date.now()}`);
@@ -69,22 +80,53 @@ export function gitSource(repoDir: string): JudgeSource {
 	};
 }
 
-/** Added lines only: context lines of a diff never reach the screen. */
-export function parseUnifiedDiff(text: string): DiffSummary {
-	const changed = new Map<string, string[]>();
-	let current: string | null = null;
-	for (const line of text.split("\n")) {
-		if (line.startsWith("diff --git ")) { current = null; continue; }
-		if (line.startsWith("+++ ")) {
-			const path = line.slice(4).trim();
-			current = path === "/dev/null" ? null : path.replace(/^b\//, "");
-			if (current && !changed.has(current)) changed.set(current, []);
-			continue;
-		}
-		if (!current || !line.startsWith("+")) continue;
-		changed.get(current)!.push(line.slice(1));
+/** A diff with more paths than this refuses to read added text; the status screen still covers every path. */
+const MAX_DIFF_PATHS = 256;
+
+/** `git diff --raw -z`: one header per change, then its path, or the old and the new path of a rename. */
+function parseRawDiff(text: string): readonly Omit<DiffChange, "binary" | "addedText">[] {
+	const tokens = text.split("\0");
+	const changes: { path: string; status: DiffChange["status"]; from: string | null; modeChanged: boolean }[] = [];
+	for (let index = 0; index < tokens.length;) {
+		const header = tokens[index++];
+		if (!header.startsWith(":")) continue;
+		const fields = header.slice(1).split(" ");
+		const [oldMode, newMode, , , status] = fields;
+		const first = tokens[index++];
+		const renamed = status.startsWith("R") || status.startsWith("C");
+		const path = renamed ? tokens[index++] : first;
+		if (path === undefined) break;
+		changes.push({ path, status: statusOf(status), from: renamed ? first : null, modeChanged: oldMode !== newMode });
 	}
-	return { changed: [...changed].map(([path, lines]) => ({ path, addedText: lines.join("\n") })) };
+	return changes;
+}
+
+function statusOf(status: string): DiffChange["status"] {
+	switch (status[0]) {
+		case "A": return "ADDED";
+		case "C": return "COPIED";
+		case "D": return "DELETED";
+		case "R": return "RENAMED";
+		case "T": return "TYPE_CHANGED";
+		default: return "MODIFIED";
+	}
+}
+
+/** `git diff --numstat -z`: `-\t-\tpath` is binary; a rename writes an empty path, then both names. */
+function parseNumstatBinary(text: string): ReadonlySet<string> {
+	const tokens = text.split("\0");
+	const binary = new Set<string>();
+	for (let index = 0; index < tokens.length;) {
+		const record = tokens[index++];
+		if (!record) continue;
+		const [added, , ...rest] = record.split("\t");
+		const path = rest.join("\t");
+		if (path) { if (added === "-") binary.add(path); continue; }
+		const to = tokens[index + 1];
+		index += 2;
+		if (to !== undefined && added === "-") binary.add(to);
+	}
+	return binary;
 }
 
 export type JudgeTimings = { readonly screenMs: number; readonly subjectMs: number; readonly compareMs: number; readonly publishMs: number; readonly wallMs: number };

@@ -107,7 +107,19 @@ export type SubjectFrame =
 	| { readonly kind: "reply"; readonly nonce: string; readonly id: TestId; readonly ok: true; readonly value: JsonValue }
 	| { readonly kind: "reply"; readonly nonce: string; readonly id: TestId; readonly ok: false; readonly error: string };
 
-export type DiffSummary = { readonly changed: readonly { readonly path: string; readonly addedText: string }[] };
+/** One changed path, in git's own terms. A rename or a copy carries both names. */
+export type DiffChange = {
+	readonly path: string;
+	readonly status: "ADDED" | "MODIFIED" | "DELETED" | "RENAMED" | "COPIED" | "TYPE_CHANGED";
+	/** The pre-image path of a rename or a copy; null for every other status. */
+	readonly from: string | null;
+	/** Git reads the content as binary, so no added source line can be screened from it. */
+	readonly binary: boolean;
+	readonly modeChanged: boolean;
+	readonly addedText: string;
+};
+
+export type DiffSummary = { readonly changes: readonly DiffChange[] };
 
 export type FrozenRun = { readonly results: ReadonlyMap<TestId, "passed" | "failed" | "skipped"> };
 
@@ -229,19 +241,27 @@ export function judgeHidden(
 	return { tally: { expected: cases.length, passed: cases.length - failed.length - missing.length }, failed, missing };
 }
 
-/** Rejects protected-path edits and any source file that imports vitest, expect, or node:test. */
+/**
+ * Rejects protected-path edits and any source file that imports vitest, expect, or node:test.
+ * A change is judged by its status, so a deletion, a rename, a mode change, and a binary swap all
+ * reach this screen even though a unified patch carries no added line for them.
+ */
 export function screenDiff(diff: DiffSummary, done: DefinitionOfDone): readonly RejectReason[] {
 	const reasons: RejectReason[] = [];
-	for (const change of diff.changed) {
-		if (done.protectedPaths.some(glob => matchesGlob(glob, change.path))) reasons.push({ kind: "PROTECTED_PATH_MODIFIED", path: change.path });
-		if (!isSourcePath(change.path)) continue;
+	for (const change of diff.changes) {
+		// A rename touches two names: the frozen path it left and the path it occupies now.
+		const touched = change.from === null ? [change.path] : [change.from, change.path];
+		const hit = touched.find(path => done.protectedPaths.some(glob => matchesGlob(glob, path)));
+		if (hit) reasons.push({ kind: "PROTECTED_PATH_MODIFIED", path: hit });
+		if (change.binary || !isSourcePath(change.path)) continue;
 		const symbol = testFrameworkSymbol(change.addedText);
 		if (symbol) reasons.push({ kind: "TEST_FRAMEWORK_IN_SOURCE", path: change.path, symbol });
 	}
 	return reasons;
 }
 
-const isSourcePath = (path: string) => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(path);
+/** The extensions the lexical screen reads. Everything else is screened for protected paths only. */
+export const isSourcePath = (path: string): boolean => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(path);
 
 /** A lexical screen, not a parser. It reads added lines, so context lines of a diff never trip it. */
 function testFrameworkSymbol(addedText: string): string | null {

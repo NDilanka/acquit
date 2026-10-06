@@ -8,7 +8,7 @@ import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
 import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
 import { decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../src/verifier.ts";
-import type { DefinitionOfDone, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
+import type { DefinitionOfDone, DiffChange, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
 
@@ -88,23 +88,39 @@ test("matchesGlob treats ** as any depth and * as one segment", () => {
 });
 
 test("screenDiff names the protected file, the framework import, and a config swap", () => {
-	const diff: DiffSummary = { changed: [
-		{ path: "tests/totals.test.ts", addedText: "expect(formatTotal([{ amount: 10.125 }], 'KWD')).toBe('10.13');" },
-		{ path: "src/money.ts", addedText: "import { expect } from 'vitest';\nexpect.extend({ toBe() { return { pass: true }; } });" },
+	const change = (path: string, addedText: string, rest: Partial<DiffChange> = {}): DiffChange =>
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, addedText, ...rest });
+	const diff: DiffSummary = { changes: [
+		change("tests/totals.test.ts", "expect(formatTotal([{ amount: 10.125 }], 'KWD')).toBe('10.13');"),
+		change("src/money.ts", "import { expect } from 'vitest';\nexpect.extend({ toBe() { return { pass: true }; } });"),
 	]};
 	assert.deepEqual(screenDiff(diff, request.definitionOfDone), [
 		{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" },
 		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/money.ts", symbol: "vitest" },
 	]);
-	const configSwap: DiffSummary = { changed: [
-		{ path: "ci/setup.ts", addedText: "import { vi } from 'vitest';\nvi.stubGlobal('__ACQUIT_TESTS_DISABLED__', true);" },
-		{ path: "vitest.config.ts", addedText: "  test: { include: ['ci/smoke.test.ts'], maxWorkers: 1 }" },
-		{ path: "package.json", addedText: '  "test": "node -e \\"process.exit(0)\\""' },
+	const configSwap: DiffSummary = { changes: [
+		change("ci/setup.ts", "import { vi } from 'vitest';\nvi.stubGlobal('__ACQUIT_TESTS_DISABLED__', true);"),
+		change("vitest.config.ts", "  test: { include: ['ci/smoke.test.ts'], maxWorkers: 1 }"),
+		change("package.json", '  "test": "node -e \\"process.exit(0)\\""'),
 	]};
 	assert.deepEqual(screenDiff(configSwap, request.definitionOfDone), [
 		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "ci/setup.ts", symbol: "vitest" },
 		{ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" },
 	]);
+});
+
+test("screenDiff reads a rename on both names and skips the added lines of a binary change", () => {
+	const renamed: DiffSummary = { changes: [{ path: "src/renamed.ts", status: "RENAMED", from: "tests/totals.test.ts",
+		binary: false, modeChanged: false, addedText: "import { expect } from 'vitest';" }] };
+	assert.deepEqual(screenDiff(renamed, request.definitionOfDone), [
+		{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" },
+		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/renamed.ts", symbol: "vitest" },
+	]);
+	const binary: DiffSummary = { changes: [{ path: "src/money.ts", status: "MODIFIED", from: null, binary: true, modeChanged: false,
+		addedText: "import { expect } from 'vitest';" }] };
+	assert.deepEqual(screenDiff(binary, request.definitionOfDone), []);
+	const modeChanged: DiffSummary = { changes: [{ path: "package.json", status: "MODIFIED", from: null, binary: false, modeChanged: true, addedText: "" }] };
+	assert.deepEqual(screenDiff(modeChanged, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }]);
 });
 
 test("decideVerdict verifies only a clean run with a published pull request", () => {

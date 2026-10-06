@@ -6,13 +6,14 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { CommitSha } from "../src/ids.ts";
+import type { CommitSha, Digest } from "../src/ids.ts";
 import { screenDiff } from "../src/verifier.ts";
-import type { DefinitionOfDone, RejectReason } from "../src/verifier.ts";
+import type { DefinitionOfDone, Glob, RejectReason } from "../src/verifier.ts";
 import { gitSource } from "../../verifier/judge.ts";
 
-const protectedPaths: DefinitionOfDone["protectedPaths"] = ["tests/**", ".github/**", "package.json", "package-lock.json"];
-const definitionOfDone = { protectedPaths } as DefinitionOfDone;
+const protectedPaths = ["tests/**", ".github/**", "package.json", "package-lock.json"] as Glob[];
+const definitionOfDone: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" },
+	frozenAt: "0".repeat(40) as CommitSha, frozenTests: [], hiddenManifest: "0".repeat(64) as Digest, hiddenTests: [], protectedPaths };
 
 function frozenRepository(): { readonly repo: string; readonly frozen: CommitSha; readonly remove: () => void } {
 	const repo = mkdtempSync(join(tmpdir(), "acquit-screen-"));
