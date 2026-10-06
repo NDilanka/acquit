@@ -5,13 +5,15 @@ import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha } from "../../../packages/core/src/ids.ts";
+import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, devEnabled, verifierEnv, webOrigin } from "./config.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
 const clock = { now: () => instant(new Date(Date.now() + clockOffset).toISOString()) };
 const baseSettings = config();
-const settings = { ...baseSettings, clock, paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
+const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? createRemoteVerifier(verifierEnv) : undefined,
+	paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
 const db = new DatabaseSync(settings.databaseUrl);
 const port = Number(process.env.PORT ?? 4310);
@@ -134,19 +136,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	if (url.pathname === "/api/verifier/callback" && method === "POST") {
 		// The CI is not a browser session. The port authenticates the signed body, or nothing is applied.
-		if (!verifierEnv.callbackSecret) { json(res, 503, { error: "VERIFIER_CI_NOT_CONFIGURED",
-			detail: "Set ACQUIT_VERIFIER_CALLBACK_SECRET (and ACQUIT_VERIFIER_CI_URL) to accept a report." }); return; }
-		try {
-			const response = await acquit.handleVerifierCallback(new Request(`http://localhost:${port}${url.pathname}`, { method: "POST",
-				headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-				body: JSON.stringify(await body(req)) }));
-			json(res, response.status, await response.json());
-		} catch {
-			// The service port is not wired yet; refuse by name instead of answering 500.
-			json(res, 503, { error: "VERIFIER_PORT_NOT_WIRED",
-				detail: "The verifier port is not wired into createAcquit; see data/evidence/f3-r1-build/acquit-ts-wiring.patch." });
-		}
-		return;
+		const missing = [!verifierEnv.ciUrl ? "ACQUIT_VERIFIER_CI_URL" : null, !verifierEnv.callbackSecret ? "ACQUIT_VERIFIER_CALLBACK_SECRET" : null]
+			.filter((name): name is string => name !== null);
+		if (missing.length) { json(res, 503, { error: "VERIFIER_CI_NOT_CONFIGURED",
+			detail: `Set ${missing.join(" and ")} to accept a report.` }); return; }
+		const response = await acquit.handleVerifierCallback(new Request(`http://localhost:${port}${url.pathname}`, { method: "POST",
+			headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+			body: JSON.stringify(await body(req)) }));
+		json(res, response.status, await response.json()); return;
 	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
