@@ -155,6 +155,12 @@ test("the Docker subject mounts only the submitted tree and the minimal bootstra
 	assert.equal(args[args.indexOf("--network") + 1], "none");
 });
 
+test("a mount source that would add a field is refused by name", () => {
+	const unsafe = (error: unknown) => (error as { code?: string }).code === "MOUNT_PATH_UNSAFE";
+	assert.throws(() => dockerArgs("/tmp/tree,target=/etc", "node:24-bookworm-slim"), unsafe);
+	assert.throws(() => dockerArgs("/tmp/tree", "node:24-bookworm-slim", "/tmp/bootstrap.ts,readonly=false"), unsafe);
+});
+
 test("the product refuses the unit-test subject without the test/dev flag", () => {
 	assert.equal(subjectFor({ subject: "docker", dev: false }).variant, "DOCKER");
 	assert.equal(subjectFor({ subject: "child", dev: true }).variant, "CHILD_PROCESS");
