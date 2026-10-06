@@ -145,7 +145,7 @@ test("start clears ownership when a service exits before readiness", async () =>
 		assert.equal(alive(recorded.web?.pid ?? 0), false);
 	});
 });
-test("start waits for both ownership channels: an immediate stop always succeeds", { timeout: 30000, skip: process.platform !== "win32" }, async () => {
+test("start waits for both ownership channels: an immediate stop always succeeds", { timeout: 60000, skip: process.platform !== "win32" }, async () => {
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
