@@ -13,7 +13,7 @@ import { admitStartedSide, probeSide, withProbeCleanup } from "./ledger-sides.mj
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const { values } = parseArgs({ options: { requests: { type: "string", default: "200" }, trunk: { type: "string" } } });
 const requests = Number(values.requests);
-assert(Number.isSafeInteger(requests) && requests >= 200 && requests % 20 === 0, "Use at least 200 requests in rounds of 20.");
+assert(Number.isSafeInteger(requests) && requests >= 200 && requests % 40 === 0, "Use at least 200 requests in a multiple of 40, so trunk and head each sample the same number of 20-request rounds.");
 const evidence = resolve(root, process.env.ACQUIT_PERF_EVIDENCE_DIR ?? "data/evidence/self-proof-f1/perf");
 const trunk = resolve(root, values.trunk ?? "data/perf/ledger-trunk");
 async function npmCli() {
