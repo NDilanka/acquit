@@ -13,6 +13,12 @@ import { laneSlot, lockName } from "../src/state.ts";
 import { start, stop } from "../src/commands.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
+/** A lane spawns three services. The marker stands in for the verifier: it answers on its own port. */
+const verifierMarker = `import { createServer } from "node:http"; createServer((_q,r)=>r.end("ok")).listen(Number(process.env.ACQUIT_VERIFIER_PORT), "127.0.0.1");`;
+async function plantVerifier(root: string): Promise<void> {
+	await mkdir(resolve(root, "packages/verifier"), { recursive: true });
+	await writeFile(resolve(root, "packages/verifier/server.ts"), verifierMarker);
+}
 async function unusedPort(): Promise<number> {
 	const server = createServer();
 	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -26,11 +32,11 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 		await cp(source, resolve(root, "packages/ctl/src"), { recursive: true });
 		await cp(fileURLToPath(new URL("../../core/src", import.meta.url)), resolve(root, "packages/core/src"), { recursive: true });
 		await writeFile(resolve(root, "package.json"), '{"type":"module"}');
-		const [api, web] = [await unusedPort(), await unusedPort()];
+		const [api, web, verifier] = [await unusedPort(), await unusedPort(), await unusedPort()];
 		const cli = (args: string[]) => {
 			const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], {
 				cwd: root, encoding: "utf8", timeout: 30_000,
-				env: { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), DATABASE_PATH: resolve(root, "test.db") },
+				env: { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), ACQUIT_VERIFIER_PORT: String(verifier), DATABASE_PATH: resolve(root, "test.db") },
 			});
 			assert.equal(result.error, undefined);
 			return { code: result.status, stdout: result.stdout };
@@ -228,10 +234,10 @@ test("ledger --all --check refuses a missing or jobless database instead of pass
 	});
 });
 test("lane zero is the default slot; positive lanes isolate all resources", () => {
-	assert.deepEqual(laneSlot(), { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" });
+	assert.deepEqual(laneSlot(), { apiPort: 4310, webPort: 5173, verifierPort: 4311, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" });
 	assert.deepEqual(laneSlot(0), laneSlot());
-	for (const [n, apiPort, webPort] of [[1, 4320, 5183], [10, 4410, 5273]]) {
-		assert.deepEqual(laneSlot(n), { apiPort, webPort, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` });
+	for (const [n, apiPort, webPort, verifierPort] of [[1, 4320, 5183, 4321], [10, 4410, 5273, 4411]]) {
+		assert.deepEqual(laneSlot(n), { apiPort, webPort, verifierPort, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` });
 	}
 	for (const n of [-1, 1.5, NaN, 6037]) assert.throws(() => laneSlot(n));
 });
@@ -239,16 +245,17 @@ test("a service that dies before readiness releases both spawned handles and cle
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		await plantVerifier(root);
 		const marker = `import { createServer } from "node:http"; const port = Number(process.env.WEB_PORT && process.argv.some(arg => arg === "--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
-			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
+			apiPort: await unusedPort(), webPort: await unusedPort(), verifierPort: await unusedPort(), browserSession: "test" };
 		const original = await readFile(resolve(root, "apps/api/src/server.ts"), "utf8");
 		await writeFile(resolve(root, "apps/api/src/server.ts"), "process.exit(1);");
 		await assert.rejects(start({ timeout: "5" }, ctx),
-			(error: any) => error.code === "PROCESS_FAILED" && /exited before both endpoints answered/.test(error.message));
+			(error: any) => error.code === "PROCESS_FAILED" && /exited before every endpoint answered/.test(error.message));
 		await writeFile(resolve(root, "apps/api/src/server.ts"), original);
 		assert.equal(existsSync(ctx.stateFile), false);
 		assert.equal(existsSync(resolve(dir, "operation.lock")), false);
@@ -306,20 +313,49 @@ test("ownership still holds when the proof channel's directory path contains whi
 		} finally { await releaseSpawned(owned).catch(() => {}); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 	}
 });
+test("a lane starts the verifier beside the app, records it, and stop releases all three", { timeout: 40000 }, async () => {
+	await fixture(async (cli, root) => {
+		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
+		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		await plantVerifier(root);
+		const marker = `import { createServer } from "node:http"; const port = Number(process.env.WEB_PORT && process.argv.some(arg => arg === "--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
+		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
+		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
+		const started = JSON.parse(cli(["start", "--timeout", "20"]).stdout);
+		assert.equal(started.ok, true);
+		assert.equal(typeof started.data.pids.verifier, "number");
+		const state = JSON.parse(readFileSync(resolve(root, "data/ctl/run.json"), "utf8"));
+		assert.match(state.verifier.nonce ?? "", /^[0-9a-f]{32}$/);
+		assert.equal(started.data.urls.verifier, `http://localhost:${state.verifier.port}`);
+		assert.equal(state.logs.verifier, resolve(root, "data/ctl/verifier.log"));
+		// The verifier answers on its own port, and status reads that port rather than the API's.
+		const report = JSON.parse(cli(["status"]).stdout);
+		assert.equal(report.data.reachability.verifier, true);
+		assert.equal(report.data.ports.verifier.port, state.verifier.port);
+		assert.equal(report.data.pids.verifier.alive, true);
+		assert.equal(report.data.run.verifier.nonce, state.verifier.nonce);
+		const stopped = JSON.parse(cli(["stop"]).stdout);
+		assert.equal(stopped.data.stopped, true);
+		assert.deepEqual(stopped.data.pids.sort(), [state.api.pid, state.verifier.pid, state.web.pid].sort());
+		assert.equal(alive(state.verifier.pid), false);
+		assert.equal(existsSync(resolve(root, "data/ctl/run.json")), false);
+	});
+});
 test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		await plantVerifier(root);
 		const marker = `import { createServer } from "node:http"; const port = Number(process.env.WEB_PORT && process.argv.some(arg => arg === "--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
-			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
+			apiPort: await unusedPort(), webPort: await unusedPort(), verifierPort: await unusedPort(), browserSession: "test" };
 		// Attach rejection handling immediately; startup may fail during polling.
 		const running = start({ timeout: "5" }, ctx).then(() => null, error => error);
 		const deadline = Date.now() + 4000;
-		let recorded: { api: { pid: number; nonce?: string }; web?: { pid: number } } = { api: { pid: 0 } };
+		let recorded: { api: { pid: number; nonce?: string }; web?: { pid: number }; verifier?: { pid: number } } = { api: { pid: 0 } };
 		while (recorded.api.pid === 0 && Date.now() < deadline) {
 			await sleep(20);
 			if (existsSync(ctx.stateFile)) recorded = JSON.parse(readFileSync(ctx.stateFile, "utf8"));
@@ -329,20 +365,22 @@ test("start clears ownership when a service exits before readiness", async () =>
 		const failure = await running;
 		assert(failure, "start must fail once its service is killed");
 		assert.equal(failure.code, "PROCESS_FAILED");
-		assert.match(failure.message, /exited before both endpoints answered/);
+		assert.match(failure.message, /exited before every endpoint answered/);
 		assert.equal(existsSync(ctx.stateFile), false);
 		assert.equal(alive(recorded.web?.pid ?? 0), false);
+		assert.equal(alive(recorded.verifier?.pid ?? 0), false);
 	});
 });
 test("start waits for both ownership channels: an immediate stop always succeeds", { timeout: 60000, skip: process.platform !== "win32" }, async () => {
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
 		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		await plantVerifier(root);
 		const marker = `import { createServer } from "node:http"; const port = Number(process.argv.includes("--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
-		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: await unusedPort(), webPort: await unusedPort(), verifierPort: await unusedPort(), browserSession: "test" };
 		for (let round = 0; round < 3; round++) {
 			try {
 				const result = await start({ timeout: "5" }, ctx);
@@ -443,10 +481,11 @@ test("status is unhealthy on unused ports and never creates the database or stat
 		assert.equal(report.command, "status");
 		assert.equal(report.data.healthy, false);
 		assert.equal(report.data.run, null);
-		assert.deepEqual(report.data.pids, { api: { pid: null, alive: false }, web: { pid: null, alive: false } });
+		assert.deepEqual(report.data.pids, { api: { pid: null, alive: false }, web: { pid: null, alive: false }, verifier: { pid: null, alive: false } });
 		assert.equal(report.data.ports.api.open, false);
 		assert.equal(report.data.ports.web.open, false);
-		assert.deepEqual(report.data.reachability, { api: false, web: false });
+		assert.equal(report.data.ports.verifier.open, false);
+		assert.deepEqual(report.data.reachability, { api: false, web: false, verifier: false });
 		assert.deepEqual(report.data.database.counts, { operators: 0, jobs: 0 });
 		assert.equal(report.data.database.exists, false);
 		assert.equal(existsSync(resolve(root, "test.db")), false);

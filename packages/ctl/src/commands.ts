@@ -1,17 +1,21 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
 import type { StoredBookRaw } from "../../core/src/job.ts";
 import { alive, captured, childListener, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs } from "./state.ts";
-import type { Context, RunState } from "./state.ts";
+import type { Context, RunState, ServiceRecord } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
 import { browserExecutable } from "./executables.ts";
 import { suspendedRecovery } from "./suspended.ts";
 
-const urls = (api: number, web: number) => ({ api: `http://localhost:${api}`, web: `http://localhost:${web}` });
+const urls = (api: number, web: number, verifier?: number) => ({ api: `http://localhost:${api}`, web: `http://localhost:${web}`,
+	...(verifier === undefined ? {} : { verifier: `http://localhost:${verifier}` }) });
+/** Every service this run file records. A file written before the verifier joined the lane has two. */
+const services = (state: RunState): ServiceRecord[] => [state.api, state.web, ...(state.verifier ? [state.verifier] : [])];
 async function devPost(ctx: Context, path: string, body: unknown): Promise<Result> {
 	if (process.env.ACQUIT_DEV !== "1") throw new CliError("DEV_DISABLED", "Development controls are disabled.", "Set ACQUIT_DEV=1 for the API start and this ctl command.");
 	const ports = await app(ctx);
@@ -110,42 +114,46 @@ export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);
 	return devPost(ctx, "fund-mode", { mode: parsed.mode });
 }
-async function probes(api: number, web: number) {
-	const [apiPort, webPort, apiReady, webReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/users`), reachable(`http://127.0.0.1:${web}/`)]);
-	return { apiPort, webPort, apiReady, webReady };
+async function probes(api: number, web: number, verifier?: number) {
+	const [apiPort, webPort, apiReady, webReady, verifierReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/users`), reachable(`http://127.0.0.1:${web}/`),
+		verifier === undefined ? Promise.resolve(true) : reachable(`http://127.0.0.1:${verifier}/healthz`)]);
+	return { apiPort, webPort, apiReady, webReady, verifierReady };
 }
 async function stopOwned(state: RunState): Promise<void> {
 	// A dead record authorizes nothing, including the cleanup of its live sibling.
 	// Otherwise a forged dead PID lets stop kill a service it never proved and
 	// then fail on the port that sibling still holds. Two dead records kill
 	// nothing, so they may still be cleared.
-	const live = [state.api, state.web].filter(service => alive(service.pid));
+	const live = services(state).filter(service => alive(service.pid));
 	for (const service of live) await requireOwned(service);
 	for (const service of live) { await requireOwned(service); await killTree(service.pid); }
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
-		if (!(await portOpen(state.api.port)) && !(await portOpen(state.web.port))) return;
+		const ports = await Promise.all(services(state).map(service => portOpen(service.port)));
+		if (ports.every(open => !open)) return;
 		await sleep(150);
 	}
 	throw new CliError("STOP_TIMEOUT", "Owned process trees were stopped, but their ports did not close.", "Inspect data/ctl/run.json and the listening ports. Stop any remaining process yourself, then retry npm run -s ctl -- stop.");
 }
 async function runData(state: RunState, alreadyRunning: boolean): Promise<Result> {
 	const rows = await counts(state.databasePath);
-	return { alreadyRunning, urls: urls(state.api.port, state.web.port), pids: { api: state.api.pid, web: state.web.pid }, logs: state.logs,
+	return { alreadyRunning, urls: urls(state.api.port, state.web.port, state.verifier?.port), pids: { api: state.api.pid, web: state.web.pid,
+		...(state.verifier ? { verifier: state.verifier.pid } : {}) }, logs: state.logs,
 		databasePath: state.databasePath, seeded: rows.operators > 0, ...(rows.operators === 0 ? { hint: "Run npm run -s ctl -- seed-db --yes." } : {}) };
 }
 // Record the listener inode and start time of a just-spawned service from that
 // child's own /proc entries, before it is trusted with a kill. A record without
 // them can never authorize a stop, so publish them as soon as the child binds.
-async function recordListener(ctx: Context, state: RunState, role: "api" | "web"): Promise<void> {
+async function recordListener(ctx: Context, state: RunState, role: "api" | "web" | "verifier"): Promise<void> {
 	if (process.platform === "win32") return;
 	const service = state[role];
+	if (!service) throw new CliError("INVALID_STATE", `The ${role} service has no run-file record to verify.`, `Inspect ${ctx.stateFile}, then retry npm run -s ctl -- start.`);
 	const proof = await childListener(service.pid, service.socketPath!, 10_000);
 	if (!proof) {
 		// A dead child is reported by the readiness loop below with the exit.
 		if (!alive(service.pid)) return;
 		throw new CliError("PROCESS_FAILED", `The ${role} service never published an ownership listener this CLI could verify.`,
-			`Inspect ${state.logs[role]} and PID ${service.pid} locally, then retry npm run -s ctl -- start. Never adopt an unverified PID.`);
+			`Inspect ${state.logs[role] ?? "its log"} and PID ${service.pid} locally, then retry npm run -s ctl -- start. Never adopt an unverified PID.`);
 	}
 	service.startTime = proof.startTime;
 	service.listenerInode = proof.listenerInode;
@@ -154,30 +162,41 @@ async function recordListener(ctx: Context, state: RunState, role: "api" | "web"
 export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	const timeout = Number(parsed.timeout);
 	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600) throw new CliError("INVALID_ARGUMENT", "--timeout must be between 0 and 600 seconds, excluding zero.", "Run npm run -s ctl -- start --timeout 30.", 2);
-	if (ctx.apiPort === ctx.webPort) throw new CliError("PORT_IN_USE", "API and web ports must differ.", "Set PORT=4310 and WEB_PORT=5173, or choose two unused ports.");
+	if (new Set([ctx.apiPort, ctx.webPort, ctx.verifierPort]).size !== 3) throw new CliError("PORT_IN_USE", "API, web, and verifier ports must differ.", "Set PORT=4310, WEB_PORT=5173, and ACQUIT_VERIFIER_PORT=4311, or choose three unused ports.");
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
 		if (previous) {
-			for (const service of [previous.api, previous.web]) await requireOwned(service);
-			const probe = await probes(previous.api.port, previous.web.port);
-			if (alive(previous.api.pid) && alive(previous.web.pid) && probe.apiReady && probe.webReady) return runData(previous, true);
-			for (const service of [previous.api, previous.web]) if (!alive(service.pid) && await portOpen(service.port)) {
-				throw new CliError("PORT_IN_USE", `Port ${service.port} is open but its recorded PID is dead.`, `Stop the process on port ${service.port} yourself, or set PORT and WEB_PORT to unused ports and remove the stale ${ctx.stateFile}.`);
+			for (const service of services(previous)) await requireOwned(service);
+			const probe = await probes(previous.api.port, previous.web.port, previous.verifier?.port);
+			if (services(previous).every(service => alive(service.pid)) && probe.apiReady && probe.webReady && probe.verifierReady) return runData(previous, true);
+			for (const service of services(previous)) if (!alive(service.pid) && await portOpen(service.port)) {
+				throw new CliError("PORT_IN_USE", `Port ${service.port} is open but its recorded PID is dead.`, `Stop the process on port ${service.port} yourself, or set PORT, WEB_PORT, and ACQUIT_VERIFIER_PORT to unused ports and remove the stale ${ctx.stateFile}.`);
 			}
 			await stopOwned(previous);
 			await clearState(ctx);
 		}
-		for (const [name, port] of [["PORT", ctx.apiPort], ["WEB_PORT", ctx.webPort]] as const) if (await portOpen(port)) {
+		for (const [name, port] of [["PORT", ctx.apiPort], ["WEB_PORT", ctx.webPort], ["ACQUIT_VERIFIER_PORT", ctx.verifierPort]] as const) if (await portOpen(port)) {
 			throw new CliError("PORT_IN_USE", `Port ${port} is already in use by a process this CLI does not own.`, `Stop that process yourself, or set ${name} to an unused port, then run npm run -s ctl -- start.`);
 		}
 		const vite = resolve(ctx.root, "apps/web/node_modules/vite/bin/vite.js");
 		if (!existsSync(vite)) throw new CliError("PROCESS_FAILED", "The web app's Vite dependency is missing.", "Run npm install from the repository root, then npm run -s ctl -- start.");
 		await mkdir(dirname(ctx.databasePath), { recursive: true });
+		// The lane's own secrets, one pair per start. They are handed to the two
+		// children that must agree on them and are never written to the run file,
+		// which status prints. A lane that wants stable secrets sets them in .env.
+		const runSecret = process.env.ACQUIT_VERIFIER_RUN_SECRET?.trim() || randomBytes(32).toString("hex");
+		const callbackSecret = process.env.ACQUIT_VERIFIER_CALLBACK_SECRET?.trim() || randomBytes(32).toString("hex");
+		const verifierEnv = { ACQUIT_VERIFIER_PORT: String(ctx.verifierPort), ACQUIT_VERIFIER_RUN_SECRET: runSecret,
+			ACQUIT_VERIFIER_CALLBACK_SECRET: callbackSecret, ACQUIT_VERIFIER_CALLBACK_URL: `http://127.0.0.1:${ctx.apiPort}/api/verifier/callback` };
+		const verifierRecord: ServiceRecord = { pid: 0, port: ctx.verifierPort, nonce: ownershipNonce() };
 		const state: RunState = { api: { pid: 0, port: ctx.apiPort, nonce: ownershipNonce() }, web: { pid: 0, port: ctx.webPort, nonce: ownershipNonce() },
-			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log") }, startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
+			verifier: verifierRecord,
+			logs: { api: resolve(ctx.dir, "api.log"), web: resolve(ctx.dir, "web.log"), verifier: resolve(ctx.dir, "verifier.log") },
+			startedAt: new Date().toISOString(), databasePath: ctx.databasePath };
 		if (process.platform !== "win32") {
 			state.api.socketPath = resolve(ctx.dir, `own-${state.api.nonce}.sock`);
 			state.web.socketPath = resolve(ctx.dir, `own-${state.web.nonce}.sock`);
+			verifierRecord.socketPath = resolve(ctx.dir, `own-${verifierRecord.nonce}.sock`);
 		}
 		const children: ChildProcess[] = [];
 		try {
@@ -186,6 +205,8 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			await atomicJson(ctx.stateFile, state);
 			const api = await detached("apps/api/src/server.ts", state.api.nonce!, ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
 				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath,
+				ACQUIT_VERIFIER_CI_URL: `http://127.0.0.1:${ctx.verifierPort}`,
+				ACQUIT_VERIFIER_RUN_SECRET: runSecret, ACQUIT_VERIFIER_CALLBACK_SECRET: callbackSecret,
 				ACQUIT_OWNERSHIP_RECORD: ctx.stateFile, ACQUIT_OWNERSHIP_ROLE: "api" }, state.logs.api, [], state.api.socketPath);
 			children.push(api);
 			state.api.pid = api.pid!;
@@ -199,17 +220,25 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			state.web.pid = web.pid!;
 			await atomicJson(ctx.stateFile, state);
 			await recordListener(ctx, state, "web");
+			const verifier = await detached("packages/verifier/server.ts", verifierRecord.nonce!, ctx.root,
+				{ ...process.env, ...verifierEnv, ACQUIT_OWNERSHIP_RECORD: ctx.stateFile, ACQUIT_OWNERSHIP_ROLE: "verifier" },
+				state.logs.verifier!, [], verifierRecord.socketPath);
+			children.push(verifier);
+			verifierRecord.pid = verifier.pid!;
+			await atomicJson(ctx.stateFile, state);
+			await recordListener(ctx, state, "verifier");
 			const deadline = Date.now() + timeout * 1000;
 			while (Date.now() < deadline) {
-				const probe = await probes(ctx.apiPort, ctx.webPort);
-				if (!alive(state.api.pid) || !alive(state.web.pid)) throw new CliError("PROCESS_FAILED", "A spawned service exited before both endpoints answered.", "Inspect the service logs, then retry start.");
-				if (probe.apiReady && probe.webReady && (await Promise.all([
+				const probe = await probes(ctx.apiPort, ctx.webPort, ctx.verifierPort);
+				if (services(state).some(service => !alive(service.pid))) throw new CliError("PROCESS_FAILED", "A spawned service exited before every endpoint answered.", "Inspect the service logs, then retry start.");
+				if (probe.apiReady && probe.webReady && probe.verifierReady && (await Promise.all([
 					ownershipReady(api, state.api.nonce!, state.api.socketPath),
 					ownershipReady(web, state.web.nonce!, state.web.socketPath),
+					ownershipReady(verifier, verifierRecord.nonce!, verifierRecord.socketPath),
 				])).every(Boolean)) return await runData(state, false);
 				await sleep(200);
 			}
-			throw new CliError("START_TIMEOUT", `The app did not become ready within ${timeout}s. Last log lines are in ${state.logs.api} and ${state.logs.web}.`,
+			throw new CliError("START_TIMEOUT", `The app did not become ready within ${timeout}s. Last log lines are in ${state.logs.api}, ${state.logs.web}, and ${state.logs.verifier}.`,
 				`Inspect the last lines of those logs locally without sharing configuration values. Check .env key names with npm run -s ctl -- status, then npm run -s ctl -- start --timeout 60.`);
 		} catch (error) {
 			// Release handles we spawned, not unverified run-file PIDs. Cleanup must
@@ -224,7 +253,7 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 	return locked(ctx, async () => {
 		const state = await readState(ctx);
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
-		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
+		const wouldKill = services(state).filter(service => alive(service.pid));
 		if (parsed["dry-run"]) {
 			for (const service of wouldKill) await requireOwned(service);
 			return { stopped: false, wouldKill, run: state };
@@ -239,16 +268,19 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 }
 export async function status(_parsed: Parsed, ctx: Context): Promise<Result> {
 	const run = await readState(ctx);
-	const ports = { api: run?.api.port ?? ctx.apiPort, web: run?.web.port ?? ctx.webPort };
-	const probe = await probes(ports.api, ports.web);
-	const pids = { api: { pid: run?.api.pid ?? null, alive: alive(run?.api.pid ?? 0) }, web: { pid: run?.web.pid ?? null, alive: alive(run?.web.pid ?? 0) } };
+	const ports = { api: run?.api.port ?? ctx.apiPort, web: run?.web.port ?? ctx.webPort, verifier: run?.verifier?.port ?? ctx.verifierPort };
+	const probe = await probes(ports.api, ports.web, ports.verifier);
+	const pids = { api: { pid: run?.api.pid ?? null, alive: alive(run?.api.pid ?? 0) }, web: { pid: run?.web.pid ?? null, alive: alive(run?.web.pid ?? 0) },
+		verifier: { pid: run?.verifier?.pid ?? null, alive: alive(run?.verifier?.pid ?? 0) } };
 	const keys = envKeys(ctx);
 	const path = run?.databasePath ?? ctx.databasePath;
 	const rows = await counts(path);
 	const database = { path, exists: existsSync(path), seeded: rows.operators > 0, counts: { operators: rows.operators, jobs: rows.jobs } };
-	return { healthy: Boolean(run?.api.nonce && run.web.nonce && pids.api.alive && pids.web.alive && probe.apiReady && probe.webReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
-		runFile: ctx.stateFile, run, pids, ports: { api: { port: ports.api, open: probe.apiPort }, web: { port: ports.web, open: probe.webPort } },
-		reachability: { api: probe.apiReady, web: probe.webReady }, urls: urls(ports.api, ports.web), database, env: { fileExists: existsSync(resolve(ctx.root, ".env")), requiredKeys: keys },
+	return { healthy: Boolean(run?.api.nonce && run.web.nonce && run.verifier?.nonce && pids.api.alive && pids.web.alive && pids.verifier.alive
+		&& probe.apiReady && probe.webReady && probe.verifierReady && database.exists && database.seeded && Object.values(keys).every(key => key.configured)),
+		runFile: ctx.stateFile, run, pids, ports: { api: { port: ports.api, open: probe.apiPort }, web: { port: ports.web, open: probe.webPort },
+			verifier: { port: ports.verifier, open: await portOpen(ports.verifier) } },
+		reachability: { api: probe.apiReady, web: probe.webReady, verifier: probe.verifierReady }, urls: urls(ports.api, ports.web, ports.verifier), database, env: { fileExists: existsSync(resolve(ctx.root, ".env")), requiredKeys: keys },
 		suspendedRecovery: await suspendedRecovery(run, ctx.root) };
 }
 export async function seedDb(parsed: Parsed, ctx: Context): Promise<Result> {
