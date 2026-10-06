@@ -3,13 +3,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { powershell } from "./process.ts";
 
-export async function browserListenerPorts(ownDaemonPid: number, cwd: string): Promise<number[]> {
+export async function browserListenerPorts(ownDaemonPid: number, cwd: string, inspect = powershell): Promise<number[]> {
 	if (!Number.isSafeInteger(ownDaemonPid) || ownDaemonPid < 0) throw new Error("Invalid browser daemon PID.");
 	// Native dashboard workers do not include "dashboard" in their argv.
 	// Any other agent-browser listener is unsafe, regardless of argv/namespace.
 	// Both enumerations must succeed: failure is not evidence of absence.
-	const script = `$ErrorActionPreference="Stop"; $ids=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq "agent-browser.exe" -and $_.ProcessId -ne ${ownDaemonPid} } | ForEach-Object ProcessId); $ports=@(Get-NetTCPConnection -State Listen | Where-Object { $_.OwningProcess -in $ids } | ForEach-Object LocalPort); ConvertTo-Json -Compress -InputObject $ports`;
-	const result = await powershell(["-Command", script], cwd);
+	const script = `$ErrorActionPreference="Stop"; $ids=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -ilike "agent-browser*" -and $_.ProcessId -ne ${ownDaemonPid} } | ForEach-Object ProcessId); $ports=@(Get-NetTCPConnection -State Listen | Where-Object { $_.OwningProcess -in $ids } | ForEach-Object LocalPort); ConvertTo-Json -Compress -InputObject $ports`;
+	const result = await inspect(["-Command", script], cwd);
 	const ports: unknown = JSON.parse(result.stdout);
 	if (!Array.isArray(ports) || !ports.every(port => Number.isSafeInteger(port) && port > 0 && port <= 65535)) throw new Error("Could not verify dashboard absence; approval refused.");
 	return ports;
