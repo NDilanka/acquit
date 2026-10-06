@@ -52,13 +52,18 @@ Preconditions:
 
 ## Gotchas
 
-- The lexical screen claims exactly two things: a protected path is refused by name under every git
-  status (add, modify, delete, rename on both names, mode change, type change), and an added line of a
-  source file that literally mentions `vitest`, `expect(`, or `node:test` is refused. It does not read
-  non-source files (a `vitest.config.ts` change trips it only if a protected glob names the path), it
-  does not resolve module graphs (a re-exported or aliased framework import is invisible), it does not
-  see a string built at runtime (`import("vit" + "est")`), it never reads a binary diff, and it never
-  runs the submitted tests. The hidden suite, not the screen, is what refuses a wrong implementation.
+- The lexical screen claims exactly three things: a protected path is refused by name under every git
+  status (add, modify, delete, rename on both names, mode change, type change), an added line of a
+  source file that literally mentions `vitest`, `expect(`, or `node:test` is refused, and a diff past
+  4096 changed paths is refused by name (`DIFF_TOO_LARGE`) rather than screened in part.
+- Below that bound every changed path is screened. Only the added-text reads are bounded, at 256 source
+  paths, so a source file deeper in a very large diff is judged on its path and on the frozen and
+  hidden suites, not on its added lines.
+- It does not read non-source files (a `vitest.config.ts` change trips it only if a protected glob
+  names the path), it does not resolve module graphs (a re-exported or aliased framework import is
+  invisible), it does not see a string built at runtime (`import("vit" + "est")`), it never reads a
+  binary diff, and it never runs the submitted tests. The hidden suite, not the screen, is what
+  refuses a wrong implementation.
 - The subject never sees an expected value. If a hidden expected value appears in the subject's input
   log, that is a failure of the run, not a passing test.
 - A module inside the subject process shares the subject's stdin and stdout, so it can read the run

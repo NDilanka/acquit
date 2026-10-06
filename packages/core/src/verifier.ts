@@ -57,7 +57,9 @@ export type RejectReason =
 	| { readonly kind: "SUBJECT_FAULT"; readonly detail: string }
 	| { readonly kind: "SUBJECT_REPLY_MALFORMED" }
 	/** The submitted tree points outside itself. Nothing starts: a link is not a source file. */
-	| { readonly kind: "TREE_SYMLINK"; readonly path: string };
+	| { readonly kind: "TREE_SYMLINK"; readonly path: string }
+	/** The diff is bigger than the screen's bound. Nothing starts: a screen in part is not a screen. */
+	| { readonly kind: "DIFF_TOO_LARGE"; readonly paths: number; readonly limit: number };
 
 /** The only verifier type job.ts sees. */
 export type Verdict =
@@ -244,6 +246,12 @@ export function judgeHidden(
 }
 
 /**
+ * The most changed paths one screen accepts. A tree past this is refused by name rather than
+ * screened in part: the bound exists so a submitted tree cannot make the screen read unbounded work.
+ */
+export const MAX_DIFF_CHANGES = 4096;
+
+/**
  * Rejects protected-path edits and any source file that imports vitest, expect, or node:test.
  * A change is judged by its status, so a deletion, a rename, a mode change, and a binary swap all
  * reach this screen even though a unified patch carries no added line for them.
@@ -258,10 +266,13 @@ export function judgeHidden(
  *   of what it says. It does not resolve module graphs, so a re-exported or aliased framework import
  *   is invisible to it, and it does not see a string built at runtime (`import("vit" + "est")`).
  * - It never reads a file git reports as binary, and it never runs the submitted tests.
+ * - A diff past MAX_DIFF_CHANGES is refused by name. Below it every path is screened; only the
+ *   added-text reads are bounded, so a path deep in a large diff is still judged on its status.
  * - The screen is a fast refusal for the obvious cheats. The frozen-suite extraction and the six
  *   hidden cases are the authority on behavior, and they hold the expected values.
  */
 export function screenDiff(diff: DiffSummary, done: DefinitionOfDone): readonly RejectReason[] {
+	if (diff.changes.length > MAX_DIFF_CHANGES) return [{ kind: "DIFF_TOO_LARGE", paths: diff.changes.length, limit: MAX_DIFF_CHANGES }];
 	const reasons: RejectReason[] = [];
 	for (const change of diff.changes) {
 		// A rename touches two names: the frozen path it left and the path it occupies now.
@@ -373,6 +384,8 @@ export function describeRejectReason(reason: RejectReason): string {
 			return "The subject reply was malformed";
 		case "TREE_SYMLINK":
 			return `PR makes ${reason.path} a symlink, which points outside the submitted tree`;
+		case "DIFF_TOO_LARGE":
+			return `The submitted tree changes ${reason.paths} paths, over the ${reason.limit}-path screen limit`;
 	}
 }
 

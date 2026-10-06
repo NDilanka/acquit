@@ -147,8 +147,17 @@ function parseRejectReason(value: unknown): RejectReason | null {
 		case "SUBJECT_FAULT": return nonEmptyString(reason.detail) ? { kind: reason.kind, detail: reason.detail as string } : null;
 		case "SUBJECT_REPLY_MALFORMED": return { kind: reason.kind };
 		case "TREE_SYMLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
+		case "DIFF_TOO_LARGE": {
+			const paths = positiveCount(reason.paths);
+			const limit = positiveCount(reason.limit);
+			return paths !== null && limit !== null ? { kind: reason.kind, paths, limit } : null;
+		}
 		default: return null;
 	}
+}
+
+function positiveCount(value: unknown): number | null {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function nonEmptyString(value: unknown): string | null {
