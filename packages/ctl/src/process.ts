@@ -176,6 +176,11 @@ async function challenge(nonce: string, socketPath?: string): Promise<OwnerAnswe
 	proof.release();
 	return proof.answer;
 }
+// This proof prevents accidental kills: a stale run file, a recycled PID, or
+// another lane's process must never be signalled. It does not defend against a
+// same-uid adversary, who can already kill(2) the victim directly; a forged
+// channel, such as an SCM_RIGHTS handoff of the listener and its accepted
+// connection, grants no authority that process did not already have.
 export async function ownedProcess(pid: number, nonce: string | null, socketPath?: string, proof?: ListenerProof | null): Promise<boolean> {
 	if (!nonce || !alive(pid)) return false;
 	try {

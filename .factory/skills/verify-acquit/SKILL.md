@@ -60,6 +60,8 @@ The lane commands are the same as above. Translate the shell and the port check.
 - Prove a stop freed the lane ports with `ss -ltn '( sport = 4380 or sport = 5243 )'`. An empty table means both ports closed.
 - A stop requires the socket path, the listener inode, and the process start time recorded next to each PID. A legacy run file without them is refused with `PID_MISMATCH`, and nothing is killed.
 - A stop need not leave `own-<nonce>.sock` files behind: a service that closes the preload's socket as it exits unlinks the path it bound, and a graceful lane stop leaves only the web's file. Any file that does survive a stop names the stopped run's nonce; each start binds a fresh nonce-named path, so leftovers are inert.
+- The ownership proof prevents accidents, not a same-uid adversary: a stale run file, a reused PID, or another lane's process must never be signalled, but a process running as this user can already `kill(2)` the recorded PID directly, so a forged proof channel adds no authority.
+- `CLI_BUSY` on Linux names the abstract lock `@acquit-lock-<hash>`; the kernel frees that name when the holder exits, so a killed CLI leaves no lock to clear.
 
 Inspect the proposed reset, then reset only this run's verification database. Seeding invalidates all development sessions. Log in only after seeding.
 
