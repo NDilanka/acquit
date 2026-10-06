@@ -473,6 +473,38 @@ test("an existing verified branch at another commit is moved to the judged commi
 	assert.equal(stub.state.checks.at(0)?.head_sha, SUBMITTED);
 });
 
+test("a branch move refused for any other reason is a refusal, never a fork fallback", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	await port.createWorkRepo(workRepoRequest, "req-1");
+	// The branch exists at another commit, so the publisher moves it. GitHub refuses the move for a
+	// reason of its own; only the object missing means the fork can carry the commit instead.
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, HEAD);
+	stub.refuse({ method: "PATCH", path: `/repos/${CLIENT}/git/refs/heads/acquit/${JOB}`, status: 422,
+		message: "Update is not a fast forward" });
+	const failure = await refusal(port.publishVerified(publishRequest, "req-2"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.equal(failure.status, 422);
+	assert.match(failure.detail, /not a fast forward/);
+	assert.equal(stub.state.refs.has(`${WORK_REPO}:acquit/${JOB}`), false);
+	assert.deepEqual(stub.state.pulls, []);
+});
+
+test("a 409 on the branch move is a refusal with GitHub's message, never a fork fallback", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	await port.createWorkRepo(workRepoRequest, "req-1");
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, HEAD);
+	stub.refuse({ method: "PATCH", path: `/repos/${CLIENT}/git/refs/heads/acquit/${JOB}`, status: 409,
+		message: "Git Repository is empty." });
+	const failure = await refusal(port.publishVerified(publishRequest, "req-2"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.equal(failure.status, 409);
+	assert.match(failure.detail, /Git Repository is empty/);
+	assert.equal(stub.state.refs.has(`${WORK_REPO}:acquit/${JOB}`), false);
+	assert.deepEqual(stub.state.pulls, []);
+});
+
 test("a later clean commit moves the branch the previous publish made and adopts its pull request", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
