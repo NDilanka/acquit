@@ -24,16 +24,21 @@ export class GitHubAppNotConfigured extends Error {
 
 /** Every refusal the App client makes. The code is the name an operator acts on. */
 export type GitHubFailureCode =
+	// Permanent: a person or a fix clears it before a retry can work.
 	| "GITHUB_APP_KEY_INVALID"
 	| "GITHUB_INSTALLATION_MISSING"
 	| "GITHUB_PERMISSION_MISSING"
+	| "GITHUB_FORK_MISMATCH"
+	| "GITHUB_REF_CONFLICT"
+	| "GITHUB_COMMIT_ABSENT"
+	| "GITHUB_NOT_FOUND"
+	| "GITHUB_RESPONSE_INVALID"
+	| "GITHUB_REQUEST_INVALID"
+	// Transient: the same call can succeed later.
 	| "GITHUB_RATE_LIMITED"
 	| "GITHUB_TIMEOUT"
 	| "GITHUB_NETWORK"
-	| "GITHUB_NOT_FOUND"
-	| "GITHUB_COMMIT_ABSENT"
-	| "GITHUB_REF_CONFLICT"
-	| "GITHUB_RESPONSE_INVALID"
+	// GitHub's catch-all. A 5xx is transient; every other status is permanent.
 	| "GITHUB_HTTP_ERROR";
 
 export class GitHubAppError extends Error {
@@ -107,6 +112,37 @@ export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({})
 
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
 
+/** A response body larger than this is refused instead of buffered. */
+const MAX_BODY_BYTES = 1_048_576;
+
+/** Server text copied into a refusal is bounded to this, so one answer cannot flood a log or an operator's screen. */
+const MAX_DETAIL_CHARS = 300;
+
+const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+/g;
+
+/** Bounds and redacts anything a server said. Every refusal that copies server text goes through this. */
+export function boundedDetail(text: string): string {
+	const clean = text
+		.replace(TOKEN_SHAPES, "[redacted]")
+		.replace(/(temp_clone_token"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[redacted]")
+		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]");
+	return clean.length > MAX_DETAIL_CHARS ? `${clean.slice(0, MAX_DETAIL_CHARS)}...` : clean;
+}
+
+/** Strict shapes for every caller-supplied name before it enters a URL. */
+const OWNER_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+const BRANCH_NAME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+
+function invalid(what: string, value: string): never {
+	throw new GitHubAppError("GITHUB_REQUEST_INVALID", `${what} "${value.slice(0, 60)}" is not a name this client will put in a URL.`);
+}
+
+const checkedOwner = (owner: string): string => OWNER_NAME.test(owner) ? owner : invalid("The owner", owner);
+const checkedRepositoryName = (name: string): string => REPOSITORY_NAME.test(name) ? name : invalid("The repository name", name);
+const checkedCommit = (commit: CommitSha): CommitSha => COMMIT_SHA.test(commit) ? commit : invalid("The commit", commit);
+
 /** An RS256 App JWT. `iat` is backdated a minute for clock skew and `exp` stays under GitHub's ten-minute cap. */
 function appJwt(appId: string, privateKey: string, nowMs: number): string {
 	let key;
@@ -125,9 +161,38 @@ export function createGitHubApp(config: GitHubAppConfigInput | undefined): GitHu
 	return appClient(parsed);
 }
 
-type Answer = { readonly status: number; readonly body: unknown };
+type Answer = { readonly status: number; readonly body: unknown; readonly headers: Headers };
 type Call = { readonly method: string; readonly path: string; readonly body?: unknown;
 	readonly allow: readonly number[]; readonly permission?: string };
+
+/** Reads a response body, refusing one larger than the cap instead of buffering it. */
+async function readBounded(response: Response, spec: Call): Promise<string> {
+	const reader = response.body?.getReader();
+	if (reader === undefined) return "";
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > MAX_BODY_BYTES) {
+			await reader.cancel().catch(() => undefined);
+			throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `${spec.method} ${spec.path} answered with more than ${MAX_BODY_BYTES} bytes.`);
+		}
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks).toString("utf8");
+}
+
+/** The durable ownership marker for a job's work repository: a fork of exactly this source, under exactly this name. */
+function isOurWorkRepo(record: unknown, repository: string, source: string): boolean {
+	const shape = record as { full_name?: unknown; fork?: unknown; parent?: unknown } | null;
+	if (shape === null || typeof shape !== "object") return false;
+	if (String(shape.full_name ?? "").toLowerCase() !== repository.toLowerCase()) return false;
+	if (shape.fork !== true) return false;
+	const parent = (shape.parent as { full_name?: unknown } | null | undefined)?.full_name;
+	return String(parent ?? "").toLowerCase() === source.toLowerCase();
+}
 
 /** One token per owner, refreshed shortly before GitHub expires it. */
 const REFRESH_MARGIN_MS = 60_000;
@@ -152,13 +217,14 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		return found;
 	};
 	const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-	const said = (body: unknown): string => textOf(body, "message") ?? "";
+	/** Server text, bounded and redacted before it is copied anywhere. */
+	const said = (body: unknown): string => boundedDetail(textOf(body, "message") ?? "");
 
 	const refusal = (status: number, body: unknown, headers: Headers, spec: Call): GitHubAppError => {
 		const detail = `${spec.method} ${spec.path} answered ${status}${said(body) ? `: ${said(body)}` : "."}`;
 		const accepted = (headers.get("x-accepted-github-permissions") ?? "").split(",").map(item => item.trim()).filter(Boolean);
 		const permission = accepted[0] ?? spec.permission ?? null;
-		const missing = permission === null ? "" : ` Missing permission: ${permission}.`;
+		const missing = permission === null ? "" : ` Missing permission: ${boundedDetail(permission)}.`;
 		if (status === 403 || status === 429) {
 			const reset = Number(headers.get("x-ratelimit-reset"));
 			if (status === 429 || headers.get("x-ratelimit-remaining") === "0" || /rate limit/i.test(said(body))) {
@@ -173,7 +239,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	};
 
 	const call = async (authorization: string, spec: Call): Promise<Answer> => {
-		let response: Response;
+		let response: Response | null = null;
 		let text: string;
 		try {
 			response = await fetch(`${parsed.apiBase}${spec.path}`, {
@@ -182,13 +248,16 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 					"user-agent": `acquit-verifier/${parsed.appId}`, ...(spec.body === undefined ? {} : { "content-type": "application/json" }) },
 				body: spec.body === undefined ? undefined : JSON.stringify(spec.body),
 				signal: AbortSignal.timeout(parsed.timeoutMs),
+				redirect: "error",
 			});
-			text = await response.text();
+			text = await readBounded(response, spec);
 		} catch (error) {
+			if (error instanceof GitHubAppError) throw error;
 			if (error instanceof Error && error.name === "TimeoutError") {
 				throw new GitHubAppError("GITHUB_TIMEOUT", `${spec.method} ${spec.path} timed out after ${parsed.timeoutMs} ms.`);
 			}
-			throw new GitHubAppError("GITHUB_NETWORK", `${spec.method} ${spec.path} could not reach ${parsed.apiBase}: ${messageOf(error)}`);
+			const where = response === null ? `could not reach ${parsed.apiBase}` : `answered ${response.status} with a body that could not be read`;
+			throw new GitHubAppError("GITHUB_NETWORK", `${spec.method} ${spec.path} ${where}: ${boundedDetail(messageOf(error))}`);
 		}
 		let body: unknown = null;
 		if (text.trim() !== "") {
@@ -196,7 +265,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 			catch { throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `${spec.method} ${spec.path} answered ${response.status} with a body that is not JSON.`, { status: response.status }); }
 		}
 		if (!spec.allow.includes(response.status)) throw refusal(response.status, body, response.headers, spec);
-		return { status: response.status, body };
+		return { status: response.status, body, headers: response.headers };
 	};
 
 	const appCall = (spec: Call): Promise<Answer> => call(`Bearer ${appJwt(parsed.appId, parsed.privateKey, Date.now())}`, spec);
@@ -206,7 +275,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 			const found: { id: number; account: string }[] = [];
 			for (let page = 1; page <= 10; page++) {
 				const answer = await appCall({ method: "GET", path: `/app/installations?per_page=100&page=${page}`, allow: [200] });
-				// The list endpoint answers with a bare array; the live smoke pinned that against real GitHub.
+				// GET /app/installations answers with a bare array, never a wrapper object.
 				const items = answer.body;
 				if (!Array.isArray(items)) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", "GET /app/installations answered without a list of installations.");
 				for (const item of items) {
@@ -231,6 +300,8 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 			const list = await installationsOf();
 			const installation = list.find(item => item.account.toLowerCase() === owner.toLowerCase());
 			if (installation === undefined) {
+				// The operator can install the App while this process runs, so the next call re-reads the list.
+				installations = null;
 				throw new GitHubAppError("GITHUB_INSTALLATION_MISSING", `The App has no installation on ${owner}. Install the App on ${owner} before this call.`);
 			}
 			const answer = await appCall({ method: "POST", path: `/app/installations/${installation.id}/access_tokens`, allow: [201] });
@@ -246,25 +317,29 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 
 	const splitRepository = (repository: string): { readonly owner: string; readonly name: string } => {
 		const [owner, name, ...rest] = repository.split("/");
-		if (!owner || !name || rest.length > 0) throw new Error(`${repository} is not an owner/name repository.`);
-		return { owner, name };
+		if (rest.length > 0 || owner === undefined || name === undefined) invalid("The repository", repository);
+		return { owner: checkedOwner(owner), name: checkedRepositoryName(name) };
 	};
 
 	const readRef = async (repository: string, branch: string, token: string): Promise<string | null> => {
 		const answer = await call(`Bearer ${token}`, { method: "GET", path: `/repos/${repository}/git/ref/heads/${branch}`,
-			allow: [200, 404], permission: "contents: read" });
-		if (answer.status === 404) return null;
+			allow: [200, 404, 409], permission: "contents: read" });
+		// 404 is a ref that is not there; 409 is "Git Repository is empty.", so there is no ref to compare either.
+		if (answer.status !== 200) return null;
 		const sha = textOf((answer.body as { object?: unknown })?.object, "sha");
 		if (sha === null) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `The ref ${branch} on ${repository} carried no object sha.`);
 		return sha;
 	};
 
 	const createRef = async (repository: string, branch: string, commit: CommitSha, token: string): Promise<void> => {
-		const answer = await call(`Bearer ${token}`, { method: "POST", path: `/repos/${repository}/git/refs`, allow: [201, 422],
+		const answer = await call(`Bearer ${token}`, { method: "POST", path: `/repos/${repository}/git/refs`, allow: [201, 409, 422],
 			permission: "contents: write", body: { ref: `refs/heads/${branch}`, sha: commit } });
-		if (answer.status === 422) {
-			throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: 422 });
-		}
+		if (answer.status === 201) return;
+		// Either a concurrent writer won the ref or the object is not in this repository. The ref read decides.
+		const existing = await readRef(repository, branch, token);
+		if (existing === commit) return;
+		if (existing !== null) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${branch} at ${existing}, not ${commit}.`, { status: answer.status });
+		throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: answer.status });
 	};
 
 	const ensureBranch = async (repository: string, branch: string, commit: CommitSha, token: string): Promise<void> => {
@@ -273,45 +348,57 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		if (existing !== commit) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${branch} at ${existing}, not ${commit}.`);
 	};
 
-	const forkWorkRepo = async (repository: string, name: string, source: { readonly owner: string; readonly name: string }, orgToken: string): Promise<boolean> => {
-		// The target org's installation makes the fork: GitHub checks administration on the org plus the
-		// App's read access to the source, and it refuses the source installation's token. The r10 live
-		// probe pinned both answers: 202 with the org token, 403 administration=write with the source one.
-		const answer = await call(`Bearer ${orgToken}`, { method: "POST", path: `/repos/${source.owner}/${source.name}/forks`,
-			allow: [200, 202, 422], permission: "administration: write", body: { organization: parsed.organization, name, default_branch_only: false } });
-		// 202 is a fork this call made; 200 is a fork that already existed, which this call must not rewrite.
-		if (answer.status === 200) return false;
-		if (answer.status === 422) {
-			// A concurrent attempt won the name. Adopt the repository and leave its refs alone.
-			const again = await call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
-			if (again.status === 200) return false;
-			throw new GitHubAppError("GITHUB_HTTP_ERROR", `POST /repos/${source.owner}/${source.name}/forks answered 422: ${said(answer.body) || "the name is taken"}.`, { status: 422 });
+	/** Creates this job's fork. Answers "created" only when this call's 202 named the repository it asked for. */
+	const forkWorkRepo = async (organization: string, repository: string, name: string,
+		source: { readonly owner: string; readonly name: string }, orgToken: string): Promise<"created" | "existed"> => {
+		// The target org's installation makes the fork: GitHub checks administration on the org plus the App's
+		// read access to the source, and it refuses the source installation's token.
+		const spec: Call = { method: "POST", path: `/repos/${source.owner}/${source.name}/forks`, allow: [202, 403, 422],
+			permission: "administration: write", body: { organization, name, default_branch_only: false } };
+		const answer = await call(`Bearer ${orgToken}`, spec);
+		if (answer.status === 202) {
+			const created = textOf(answer.body, "full_name");
+			if (created === null) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `POST ${spec.path} answered 202 without a repository name.`, { status: 202 });
+			if (created.toLowerCase() !== repository.toLowerCase()) {
+				// GitHub ignored the requested name. This client never renames a repository it did not name itself.
+				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `The fork answered ${created}, not ${repository}. Nothing was renamed or moved.`, { status: 202 });
+			}
+			return "created";
 		}
-		const created = textOf(answer.body, "full_name");
-		if (created === null || created.toLowerCase() === repository.toLowerCase()) return true;
-		// GitHub ignored the requested name. Rename before anyone works in the wrong repository.
-		await call(`Bearer ${orgToken}`, { method: "PATCH", path: `/repos/${created}`, allow: [200], permission: "administration: write", body: { name } });
-		return true;
+		// A taken name is GitHub's "already exists" answer. The repository at the name decides what happens next.
+		if (/already exists/i.test(said(answer.body))) return "existed";
+		if (answer.status === 403) throw refusal(403, answer.body, answer.headers, spec);
+		throw new GitHubAppError("GITHUB_HTTP_ERROR", `POST ${spec.path} answered 422: ${said(answer.body) || "the fork was refused"}.`, { status: 422 });
 	};
 
 	const createWorkRepo = async (request: WorkRepoRequest): Promise<WorkRepo> => {
+		const organization = checkedOwner(parsed.organization);
 		const source = splitRepository(request.repository);
+		const commit = checkedCommit(request.frozenCommit);
 		const name = workRepoName(request.repository, request.jobId);
-		const repository = `${parsed.organization}/${name}`;
+		const repository = `${organization}/${name}`;
 		// The org installation answers for everything inside the org, so its absence refuses before any write.
-		const orgToken = await tokenFor(parsed.organization);
-		const found = await call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
-		const fresh = found.status === 404 ? await forkWorkRepo(repository, name, source, orgToken) : false;
-		const existing = await readRef(repository, WORK_REPO_BRANCH, orgToken);
-		if (existing === null) await createRef(repository, WORK_REPO_BRANCH, request.frozenCommit, orgToken);
-		else if (existing !== request.frozenCommit) {
-			// A fresh fork's main follows the client's head. Only a repository this call created is moved;
-			// an existing one is refused by name, because moving it would rewrite state this call did not make.
-			if (!fresh) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${WORK_REPO_BRANCH} at ${existing}, not the frozen commit ${request.frozenCommit}.`);
-			await call(`Bearer ${orgToken}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${WORK_REPO_BRANCH}`, allow: [200],
-				permission: "contents: write", body: { sha: request.frozenCommit, force: true } });
+		const orgToken = await tokenFor(organization);
+		const readRepo = () => call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
+		const found = await readRepo();
+		const outcome = found.status === 200 ? "existed" : await forkWorkRepo(organization, repository, name, source, orgToken);
+		if (outcome === "existed") {
+			// Adopt the repository only when it carries the ownership marker: the exact fork parent plus the
+			// job-unique name. A repository this client did not create is never moved, and never written to.
+			const record = found.status === 200 ? found.body : (await readRepo()).body;
+			if (!isOurWorkRepo(record, repository, request.repository)) {
+				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this job creates. Nothing was moved.`);
+			}
 		}
-		return { repository, remote: `https://github.com/${repository}.git`, branch: WORK_REPO_BRANCH, commit: request.frozenCommit };
+		const existing = await readRef(repository, WORK_REPO_BRANCH, orgToken);
+		if (existing === null) await createRef(repository, WORK_REPO_BRANCH, commit, orgToken);
+		else if (existing !== commit) {
+			// This repository is the job's own fork, so the frozen commit is its target state: a retry after a
+			// failed move converges here instead of refusing the repository this client created.
+			await call(`Bearer ${orgToken}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${WORK_REPO_BRANCH}`, allow: [200],
+				permission: "contents: write", body: { sha: commit, force: true } });
+		}
+		return { repository, remote: `https://github.com/${repository}.git`, branch: WORK_REPO_BRANCH, commit };
 	};
 
 	const findOrOpenPullRequest = async (request: PublishRequest, branch: string, headOwner: string, clientToken: string): Promise<number> => {
@@ -339,49 +426,49 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	};
 
 	const findOrPostCheckRun = async (repository: string, commit: CommitSha, name: string, token: string, jobId: JobId): Promise<string | null> => {
-		const list = async (): Promise<{ name?: unknown; html_url?: unknown }[]> => {
+		const list = async (): Promise<{ name?: unknown; external_id?: unknown; html_url?: unknown }[]> => {
 			const answer = await call(`Bearer ${token}`, { method: "GET",
 				path: `/repos/${repository}/commits/${commit}/check-runs?check_name=${encodeURIComponent(name)}&per_page=100`,
 				allow: [200], permission: "checks: read" });
 			const runs = (answer.body as { check_runs?: unknown })?.check_runs;
 			if (!Array.isArray(runs)) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `GET check runs on ${repository} answered without a list.`);
-			return runs as { name?: unknown; html_url?: unknown }[];
+			return runs as { name?: unknown; external_id?: unknown; html_url?: unknown }[];
 		};
-		const found = (await list()).find(run => run.name === name);
+		// GitHub keeps more than one run per name, so the job's external id is what makes this idempotent.
+		const found = (await list()).find(run => run.name === name && run.external_id === jobId);
 		if (found !== undefined) return textOf(found, "html_url");
-		const created = await call(`Bearer ${token}`, { method: "POST", path: `/repos/${repository}/check-runs`, allow: [201, 422],
-			permission: "checks: write", body: { name, head_sha: commit, status: "completed", conclusion: "success",
+		const created = await call(`Bearer ${token}`, { method: "POST", path: `/repos/${repository}/check-runs`, allow: [201],
+			permission: "checks: write", body: { name, head_sha: commit, external_id: jobId, status: "completed", conclusion: "success",
 				output: { title: name, summary: `Acquit verified ${jobId} at ${commit}.` } } });
-		if (created.status === 201) return textOf(created.body, "html_url");
-		// A concurrent publish created the run: adopt it instead of posting a second one.
-		const again = (await list()).find(run => run.name === name);
-		if (again !== undefined) return textOf(again, "html_url");
-		throw new GitHubAppError("GITHUB_HTTP_ERROR", `POST check runs on ${repository} answered 422 with no run named ${name}.`, { status: 422 });
+		return textOf(created.body, "html_url");
 	};
 
 	const publishVerified = async (request: PublishRequest): Promise<PublishedPullRequest> => {
+		const organization = checkedOwner(parsed.organization);
 		const client = splitRepository(request.repository);
+		const commit = checkedCommit(request.sourceCommit);
 		const branch = verifiedBranch(request.jobId);
 		const clientToken = await tokenFor(client.owner);
 		let headOwner = client.owner;
 		let headRepository = request.repository;
 		try {
-			await ensureBranch(request.repository, branch, request.sourceCommit, clientToken);
+			await ensureBranch(request.repository, branch, commit, clientToken);
 		} catch (error) {
 			if (!(error instanceof GitHubAppError) || error.code !== "GITHUB_COMMIT_ABSENT") throw error;
 			// The commit was pushed to the job's work fork: branch it there and open the pull request from the fork.
-			headOwner = parsed.organization;
-			headRepository = `${parsed.organization}/${workRepoName(request.repository, request.jobId)}`;
-			await ensureBranch(headRepository, branch, request.sourceCommit, await tokenFor(headOwner));
+			headOwner = organization;
+			headRepository = `${organization}/${workRepoName(request.repository, request.jobId)}`;
+			await ensureBranch(headRepository, branch, commit, await tokenFor(headOwner));
 		}
 		const headToken = headOwner === client.owner ? clientToken : await tokenFor(headOwner);
 		const pullRequest = await findOrOpenPullRequest(request, branch, headOwner, clientToken);
-		const checkRunUrl = await findOrPostCheckRun(headRepository, request.sourceCommit, request.checkName, headToken, request.jobId);
-		return { repository: request.repository, pullRequest, mergeCommit: request.sourceCommit, checkRunUrl };
+		const checkRunUrl = await findOrPostCheckRun(headRepository, commit, request.checkName, headToken, request.jobId);
+		return { repository: request.repository, pullRequest, mergeCommit: commit, checkRunUrl };
 	};
 
 	// The port carries a request id. Every operation above is idempotent on the repository, ref, pull,
-	// and check name, which is what GitHub gives this client to reconcile with, so nothing else is needed.
+	// and the check run's external id, which is what GitHub gives this client to reconcile with, so
+	// nothing else is needed.
 	return {
 		async createWorkRepo(request) { return createWorkRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
@@ -430,10 +517,12 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 /** `invoice-app` plus the job id, so ten lanes never collide on one repository name. */
 export function workRepoName(repository: string, jobId: JobId): string {
 	const name = repository.split("/").at(-1) ?? repository;
-	return `${name}-${jobId.replace(/^job_/, "")}`;
+	const full = `${name}-${jobId.replace(/^job_/, "")}`;
+	return REPOSITORY_NAME.test(full) ? full : invalid("The work repository name", full);
 }
 
 /** The branch the verified tree is pushed to on the client repository. */
 export function verifiedBranch(jobId: JobId): string {
-	return `acquit/${jobId}`;
+	const branch = `acquit/${jobId}`;
+	return BRANCH_NAME.test(branch) ? branch : invalid("The verified branch", branch);
 }

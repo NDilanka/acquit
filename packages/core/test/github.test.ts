@@ -365,14 +365,16 @@ test("a verified commit the client repo does not have becomes a fork pull reques
 	assert.equal(published.mergeCommit, SUBMITTED);
 });
 
-test("an existing ref at another commit is refused and never moved", async t => {
+test("an existing verified branch at another commit is refused and never moved", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
-	await port.createWorkRepo(workRepoRequest, "req-1");
-	const failure = await refusal(port.createWorkRepo({ ...workRepoRequest, frozenCommit: SUBMITTED as CommitSha }, "req-2"));
+	// Another writer already owns the client repository's acquit/<job> branch at a different commit.
+	stub.state.commits.get(CLIENT)?.add(SUBMITTED);
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, HEAD);
+	const failure = await refusal(port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-1"));
 	assert.equal(failure.code, "GITHUB_REF_CONFLICT");
-	assert.match(failure.detail, new RegExp(FROZEN));
-	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), FROZEN);
+	assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), HEAD);
+	assert.deepEqual(stub.state.pulls, []);
 });
 
 test("an org without the App refuses by name before any write", async t => {
@@ -461,6 +463,12 @@ function plant(stub: Stub, repository: string, options: { readonly forkOf: strin
 	if (options.main !== null) stub.state.refs.set(`${repository}:main`, options.main);
 }
 
+/** Every mutation a refusal must never make: a rename, a delete, or a ref write. */
+const repoMutations = (stub: Stub): string[] => stub.state.requests
+	.filter(request => request.method === "PATCH" || request.method === "DELETE" ||
+		(request.method === "POST" && /\/git\/refs$/.test(request.path)))
+	.map(request => `${request.method} ${request.path}`);
+
 test("a fork GitHub names differently is refused by name and never renamed", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
@@ -471,7 +479,7 @@ test("a fork GitHub names differently is refused by name and never renamed", asy
 	assert.match(failure.detail, new RegExp(other));
 	assert.equal(stub.state.repos.has(WORK_REPO), false);
 	assert.equal(stub.state.repos.has(other), true);
-	assert.equal(stub.state.requests.some(request => request.method === "PATCH"), false);
+	assert.deepEqual(repoMutations(stub), []);
 });
 
 test("a fork this client created converges after its ref move failed", async t => {
@@ -494,7 +502,7 @@ test("a repository this client did not create is refused by name and never moved
 	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
 	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
 	assert.equal(stub.state.refs.has(`${WORK_REPO}:main`), false);
-	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+	assert.deepEqual(repoMutations(stub), []);
 });
 
 test("a fork of another repository at the job's name is refused by name and never moved", async t => {
@@ -504,7 +512,7 @@ test("a fork of another repository at the job's name is refused by name and neve
 	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
 	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
 	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), HEAD);
-	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+	assert.deepEqual(repoMutations(stub), []);
 });
 
 test("a fork refused with 403 name-exists goes through the same ownership and ref checks", async t => {
@@ -525,7 +533,7 @@ test("a 403 name-exists on a repository this client did not create is not a perm
 	stub.refuse({ method: "GET", path: `/repos/${WORK_REPO}`, status: 404, message: "Not Found", once: true });
 	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
 	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
-	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+	assert.deepEqual(repoMutations(stub), []);
 });
 
 test("a duplicate-ref 422 adopts the ref and never opens a second pull request", async t => {
@@ -603,7 +611,7 @@ test("server text copied into an error is bounded and stripped of token shapes",
 	t.after(close);
 	const token = `ghs_${"a".repeat(36)}`;
 	stub.refuse({ method: "GET", path: "/app/installations", status: 500,
-		message: `${"z".repeat(4_000)} ${token} temp_clone_token=${token} Bearer ${token}` });
+		message: `${token} temp_clone_token=${token} Bearer ${token} ${"z".repeat(4_000)}` });
 	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
 	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
 	assert.ok(failure.detail.length < 400, `detail is ${failure.detail.length} characters`);
@@ -647,5 +655,5 @@ test("a fork that answers 200 is not read as an adoption", async t => {
 	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
 	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
 	assert.equal(failure.status, 200);
-	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+	assert.deepEqual(repoMutations(stub), []);
 });
