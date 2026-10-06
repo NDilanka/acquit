@@ -270,8 +270,9 @@ export const MAX_DIFF_CHANGES = 4096;
  *   of what it says. It does not resolve module graphs, so a re-exported or aliased framework import
  *   is invisible to it, and it does not see a string built at runtime (`import("vit" + "est")`).
  * - It never reads a file git reports as binary, and it never runs the submitted tests.
- * - A diff past MAX_DIFF_CHANGES is refused by name. Below it every path is screened; only the
- *   added-text reads are bounded, so a path deep in a large diff is still judged on its status.
+ * - A diff past MAX_DIFF_CHANGES is refused by name, so a padded diff cannot hide a change behind
+ *   the bound. Below it every path is screened; the patch reads the source adapter performs are
+ *   bounded separately, so a path deep in a large diff is still judged on its status.
  * - The screen is a fast refusal for the obvious cheats. The frozen-suite extraction and the six
  *   hidden cases are the authority on behavior, and they hold the expected values.
  */
