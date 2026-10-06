@@ -69,18 +69,24 @@ interface UnixSocket {
 	connected: boolean;
 }
 // /proc/net/unix rows: address, refcount, protocol, flags, type, state, inode, path.
-// The path stays on a row after the socket file is unlinked, so a stale row can
-// never be the proof by itself.
+// The kernel pads the inode column and separates it from the path with exactly
+// one space, then prints the bound path untouched: the remainder of the row is
+// the path, byte for byte. Rejoining whitespace-separated fields with a single
+// space instead would collapse a tab or a space run inside a path, so a
+// lookalike path would compare equal to the recorded one. The path stays on a
+// row after the socket file is unlinked, so a stale row can never be the proof
+// by itself.
+const unixRow = /^\S+\s+\S+\s+\S+\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+) (.*)$/;
 function unixSockets(): UnixSocket[] {
 	const sockets: UnixSocket[] = [];
 	let table: string;
 	try { table = readFileSync("/proc/net/unix", "utf8"); } catch { return sockets; }
 	for (const line of table.split("\n").slice(1)) {
-		const fields = line.trim().split(/\s+/);
-		const inode = Number(fields[6]);
-		if (fields.length > 7 && Number.isSafeInteger(inode) && fields[4] === "0001") {
-			sockets.push({ inode, path: fields.slice(7).join(" "), listening: fields[3] === "00010000", connected: fields[5] === "03" });
-		}
+		const row = unixRow.exec(line);
+		if (!row) continue;
+		const inode = Number(row[4]);
+		if (row[2] !== "0001" || !Number.isSafeInteger(inode) || row[5].length === 0) continue;
+		sockets.push({ inode, path: row[5], listening: row[1] === "00010000", connected: row[3] === "03" });
 	}
 	return sockets;
 }
@@ -283,16 +289,38 @@ function processGroupLeader(pid: number): boolean | null {
 	const fields = processFields(pid);
 	return fields ? Number(fields[2]) === pid : null;
 }
-async function waitForDeath(pid: number, ms: number): Promise<boolean> {
-	const deadline = Date.now() + ms;
-	while (Date.now() < deadline) {
-		if (!alive(pid)) return true;
-		await sleep(25);
+function groupMembers(pid: number): boolean {
+	// A process group outlives its leader: the group id is a reference held by
+	// every member, so the kernel does not hand that number to a new group while
+	// one is still alive. A reaped or zombie leader therefore still names exactly
+	// the group its descendants live in. Without /proc the question cannot be
+	// answered, and a dead PID must never signal a group a reused PID may lead.
+	let entries: string[];
+	try { entries = readdirSync("/proc"); } catch { return false; }
+	for (const entry of entries) {
+		if (!/^\d+$/.test(entry)) continue;
+		const member = Number(entry);
+		if (member === process.pid || !alive(member)) continue;
+		if (processFields(member)?.[2] === String(pid)) return true;
 	}
-	return !alive(pid);
+	return false;
+}
+async function waitForTree(pid: number, ms: number): Promise<boolean> {
+	// The leader is not the tree: a member that ignores SIGTERM keeps the group,
+	// and a call that reports success must not leave it behind.
+	const deadline = Date.now() + ms;
+	for (;;) {
+		if (!alive(pid) && !groupMembers(pid)) return true;
+		if (Date.now() >= deadline) return false;
+		await sleep(50);
+	}
 }
 export async function killTree(pid: number): Promise<void> {
-	if (!alive(pid)) return;
+	// alive() is false for a zombie, but a zombie holds its process group until
+	// it is reaped: the group is still there to signal, and the base commit
+	// killed the descendants of one. Only a dead PID with nothing left in its
+	// group is a no-op.
+	if (!alive(pid) && !(process.platform !== "win32" && groupMembers(pid))) return;
 	if (pid === process.pid) throw new CliError("INVALID_STATE", "The ownership file refers to this CLI process.", "Inspect data/ctl/run.json and remove the invalid record.");
 	if (process.platform === "win32") {
 		const result = await captured(windowsExecutable("taskkill.exe"), ["/pid", String(pid), "/t", "/f"], process.cwd(), helperEnvironment());
@@ -307,12 +335,21 @@ export async function killTree(pid: number): Promise<void> {
 		if (processGroupLeader(pid) !== false) {
 			try { process.kill(-pid, name); return; } catch {}
 		}
-		process.kill(pid, name);
+		try { process.kill(pid, name); } catch (error) {
+			// ESRCH means the target vanished between the liveness check and the
+			// call: the tree is gone, and the wait below decides. Anything else is
+			// a real refusal (EPERM and friends) and must be named, so main.ts
+			// reports a stop failure instead of mapping a raw errno to IO_FAILED.
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ESRCH") return;
+			throw new CliError("PROCESS_FAILED", `Could not stop owned PID ${pid}: the ${name} signal was refused (${code ?? "unknown"}).`,
+				`Inspect PID ${pid} and data/ctl/run.json locally, then retry npm run -s ctl -- stop.`);
+		}
 	};
 	signal("SIGTERM");
-	if (!await waitForDeath(pid, 5000)) {
-		try { signal("SIGKILL"); } catch {}
-		if (!await waitForDeath(pid, 3000)) throw new CliError("PROCESS_FAILED", `Could not stop owned PID ${pid}.`, `Run kill -KILL ${pid}, then npm run -s ctl -- stop.`);
+	if (!await waitForTree(pid, 5000)) {
+		signal("SIGKILL");
+		if (!await waitForTree(pid, 3000)) throw new CliError("PROCESS_FAILED", `Could not stop owned PID ${pid}.`, `Run kill -KILL ${pid}, then npm run -s ctl -- stop.`);
 	}
 }
 export async function detached(script: string, nonce: string, cwd: string, env: NodeJS.ProcessEnv, log: string, extra: string[] = [], socketPath?: string): Promise<ChildProcess> {
