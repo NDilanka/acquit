@@ -17,8 +17,11 @@ export const FROZEN_TEST_PATH = "tests/totals.test.ts";
  */
 export const PROTECTED_PATHS: readonly Glob[] = ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as Glob[];
 
+/** The demo repository. A deployment that names ACQUIT_CLIENT_REPOSITORY replaces it; every test and doc keeps it. */
+export const DEMO_CLIENT_REPOSITORY = "maya-client/invoice-app";
+
 export const ISSUE = {
-	repository: "maya-client/invoice-app",
+	repository: DEMO_CLIENT_REPOSITORY,
 	// The page shows the short form of the same commit the contract freezes.
 	issues: [{ number: 12, title: "Totals round wrong for 3-decimal currencies", suite: { commit: FROZEN_AT.slice(0, 7), visible: 48, hidden: 6 } }],
 } as const;
@@ -39,8 +42,9 @@ export function hiddenManifest(cases: readonly HiddenCase[] = HIDDEN_CASES): { r
 	return { cases, digest: createHash("sha256").update(JSON.stringify(cases)).digest("hex") as Digest };
 }
 
-export function frozenDefinition(): DefinitionOfDone {
-	return { issue: { repository: ISSUE.repository, number: 12, title: ISSUE.issues[0].title },
+/** The contract OpenJob freezes, naming the deployment's client repository rather than a constant. */
+export function frozenDefinition(repository: string = ISSUE.repository): DefinitionOfDone {
+	return { issue: { repository, number: 12, title: ISSUE.issues[0].title },
 		frozenAt: FROZEN_AT,
 		frozenTests: Array.from({ length: 48 }, (_, i) => `frozen:${i + 1}` as TestId),
 		hiddenTests: HIDDEN_CASES.map(test => test.id),

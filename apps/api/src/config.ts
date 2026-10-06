@@ -6,7 +6,7 @@ import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
-import { apiVerifierEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
+import { apiVerifierEnv, clientRepositoryEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
@@ -30,10 +30,15 @@ export const verifierEnv = apiVerifierEnv();
  */
 assertSubjectAllowed(verifierSubjectEnv(process.env));
 export const githubEnv = githubAppEnv();
+/**
+ * The client repository every job's contract names. The deployment sets ACQUIT_CLIENT_REPOSITORY to the
+ * repository its App is installed on; absent, the demo fixture is used and the tutorial's text holds.
+ */
+export const clientRepository = clientRepositoryEnv();
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
-	return { databaseUrl: databasePath, paypal: {
+	return { databaseUrl: databasePath, clientRepository, paypal: {
 		webOrigin,
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,

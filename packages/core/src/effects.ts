@@ -115,6 +115,8 @@ export interface Store {
 export type Ports = {
 	readonly fundingMode?: () => "checkout" | "card";
 	readonly feeModel: ProcessorFeeModel;
+	/** The deployment's client repository: the one OpenJob accepts and freezes into the contract. */
+	readonly clientRepository: string;
 	readonly store: Store;
 	readonly paypal: PayPal;
 	readonly verifier: VerifierPort;
@@ -143,9 +145,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
 		if (command.type === "OpenJob") {
-			if (command.repository !== ISSUE.repository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
+			if (command.repository !== ports.clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
 			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, contract: {
-				definitionOfDone: frozenDefinition(), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+				definitionOfDone: frozenDefinition(ports.clientRepository), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
 			const operator = await ports.store.readOperator(actor.operatorId);

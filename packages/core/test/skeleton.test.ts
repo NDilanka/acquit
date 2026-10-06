@@ -67,7 +67,7 @@ function fixture() {
 		platformFee: usd("44.85"), sellerNet: usd("360.00"), capturedAt: now,
 	};
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clock: { now: () => currentNow }, verifier: { start: unimplemented, parseCallback: unimplemented },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => currentNow }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal: {
 			dispatch: async call => {
 				dispatches++;
@@ -100,7 +100,7 @@ test("createAcquit uses its injected Clock to expire checkout after three hours"
 	const databaseUrl = join(root, "clock.db");
 	const f = fixture();
 	let currentNow = now;
-	const service = createAcquit({ databaseUrl, clock: { now: () => currentNow },
+	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", clock: { now: () => currentNow },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243",
 			clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -168,7 +168,7 @@ test("sandbox card funding passes through the real order and CaptureCompleted ed
 		reads++;
 		return Response.json(wire);
 	};
-	const service = createAcquit({ databaseUrl, clock: { now: () => now }, paypal: {
+	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, paypal: {
 		apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5253", clientId: "test", secret: "test",
 		webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => "card",
 	}, verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -464,7 +464,8 @@ const system = { actor: { role: "SYSTEM", source: "VERIFIER" } as const, now, lo
 const verdictReport = (verdict: Verdict): VerifierReport => ({ kind: "VERDICT", verdict });
 const runFailure = (runId: string, reason = "PUBLISH_FAILED: no App installation on maya-client", source = sourceCommit): RunFailure =>
 	({ runId: runId as VerifierRunId, sourceCommit: source, reason, at: now });
-const failureReport = (runId: string, reason?: string): VerifierReport => ({ kind: "RUN_FAILED", failure: runFailure(runId, reason) });
+const failureReport = (runId: string, reason?: string, source?: CommitSha): VerifierReport =>
+	({ kind: "RUN_FAILED", failure: runFailure(runId, reason, source) });
 
 test("Submit reserves attempt 1 with a deterministic run and emits START_VERIFIER", () => {
 	const row = heldRow();

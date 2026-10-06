@@ -77,7 +77,7 @@ test("Submit on the tamper-test commit prints the tutorial's REJECTED block, the
 	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
 		clock: { now: () => now }, callbackSecret: secret, onVerdict: (request, verdict) => deliver(request, verdict) });
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clock: { now: () => now }, verifier, github: { merge: unimplemented },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, verifier, github: { merge: unimplemented },
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented } };
 	deliver = async (request, verdict) => {
 		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report: { kind: "VERDICT", verdict } });
@@ -133,7 +133,7 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
 		clock: { now: () => now }, callbackSecret: secret });
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clock: { now: () => now }, verifier, github: { merge: unimplemented },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, verifier, github: { merge: unimplemented },
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented } };
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(row.id, 1), sourceCommit: tamperCommit,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now };
@@ -183,7 +183,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 		await store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: [], outbox: [], acknowledge: null, delivery: null, request: null });
 		store.close();
-		const service = createAcquit({ databaseUrl: wiredUrl, clock: { now: () => now }, paypal, verifier,
+		const service = createAcquit({ databaseUrl: wiredUrl, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, paypal, verifier,
 			github: { appId: "", privateKey: "", organization: "" }, verifierPort: createRemoteVerifier(verifier) });
 		try {
 			const applied = await service.handleVerifierCallback(signedReport(row.id));
@@ -199,7 +199,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 			assert.deepEqual(await (await service.handleVerifierCallback(signedReport(row.id))).json(), { ok: true, applied: false });
 		} finally { closeAcquit(service); }
 
-		const bare = createAcquit({ databaseUrl: join(root, "bare.db"), clock: { now: () => now }, paypal,
+		const bare = createAcquit({ databaseUrl: join(root, "bare.db"), clientRepository: "maya-client/invoice-app", clock: { now: () => now }, paypal,
 			verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
 		try { assert.equal((await bare.handleVerifierCallback(signedReport(parseJobId("job_7Q2K")))).status, 401); }
 		finally { closeAcquit(bare); }

@@ -6,7 +6,7 @@ import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBid
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha } from "../../../packages/core/src/ids.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, devEnabled, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, devEnabled, verifierEnv, webOrigin } from "./config.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
@@ -148,7 +148,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
-	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [ISSUE] }); return; }
+	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [{ ...ISSUE, repository: clientRepository }] }); return; }
 	if (url.pathname === "/api/commands" && method === "POST") {
 		let parsed: { key: ReturnType<typeof parseRequestKey>; command: UserCommand };
 		try {

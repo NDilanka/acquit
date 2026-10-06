@@ -4,6 +4,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseClientRepository } from "../core/src/github.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const envPath = resolve(root, ".env");
@@ -17,6 +18,7 @@ export const VERIFIER_NAMES = {
 	port: "ACQUIT_VERIFIER_PORT",
 	concurrency: "ACQUIT_VERIFIER_CONCURRENCY",
 	runDeadlineMs: "ACQUIT_VERIFIER_RUN_DEADLINE_MS",
+	clientRepository: "ACQUIT_CLIENT_REPOSITORY",
 } as const;
 export type VerifierKey = keyof typeof VERIFIER_NAMES;
 
@@ -91,4 +93,9 @@ export function serviceConfig(env: NodeJS.ProcessEnv = process.env): VerifierSer
 export function githubAppEnv(env: NodeJS.ProcessEnv = process.env): { readonly appId: string; readonly privateKey: string; readonly organization: string; readonly apiBase?: string } {
 	return { appId: env.ACQUIT_GITHUB_APP_ID?.trim() ?? "", privateKey: env.ACQUIT_GITHUB_APP_PRIVATE_KEY?.trim() ?? "",
 		organization: env.ACQUIT_GITHUB_APP_ORG?.trim() ?? "", apiBase: env.ACQUIT_GITHUB_API_BASE?.trim() };
+}
+
+/** The API reads the client repository here; the verifier service reads it from the contract it is handed. */
+export function clientRepositoryEnv(env: NodeJS.ProcessEnv = process.env): string {
+	return parseClientRepository(verifierValue("clientRepository", env));
 }

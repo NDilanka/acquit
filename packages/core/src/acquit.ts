@@ -123,6 +123,8 @@ export interface Clock {
 
 export type AcquitConfig = {
 	readonly databaseUrl: string;
+	/** The repository a job's contract names. Parsed from ACQUIT_CLIENT_REPOSITORY at the deployment boundary. */
+	readonly clientRepository: string;
 	readonly clock?: Clock;
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
@@ -137,6 +139,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 	const store = new SqliteStore(config.databaseUrl, clock);
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
+		clientRepository: config.clientRepository,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
 		github: { merge: unimplemented }, alerts: { raise: unimplemented },
 		workRepo: createGitHubApp(config.github),

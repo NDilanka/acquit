@@ -4,6 +4,7 @@
 
 import { createPrivateKey, createSign } from "node:crypto";
 import type { CommitSha, JobId } from "./ids.ts";
+import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 
 export type GitHubAppConfig = {
 	readonly appId: string;
@@ -152,6 +153,21 @@ const checkedOwner = (owner: unknown): string => typeof owner === "string" && OW
 const checkedRepositoryName = (name: unknown): string => typeof name === "string" && REPOSITORY_NAME.test(name) ? name : invalid("The repository name", name);
 const checkedCommit = (commit: unknown): CommitSha => typeof commit === "string" && COMMIT_SHA.test(commit) ? commit as CommitSha : invalid("The commit", commit);
 const checkedCheckName = (name: unknown): string => typeof name === "string" && name.trim().length > 0 ? name : invalid("The check name", name);
+
+/**
+ * The deployment's client repository, read at the config boundary. OpenJob freezes it into the
+ * contract, and the work-repo fork, the judge, and the publisher read it from there. Absent means the
+ * demo fixture; a malformed value refuses by the name an operator set, never by its own text.
+ */
+export function parseClientRepository(value: string | undefined): string {
+	const text = value?.trim() ?? "";
+	if (!text) return DEMO_CLIENT_REPOSITORY;
+	const [owner, name, ...rest] = text.split("/");
+	if (rest.length > 0 || owner === undefined || name === undefined || !OWNER_NAME.test(owner) || !REPOSITORY_NAME.test(name)) {
+		throw new Error(`Invalid configuration: ACQUIT_CLIENT_REPOSITORY. Give an owner/repo such as ${DEMO_CLIENT_REPOSITORY}.`);
+	}
+	return `${owner}/${name}`;
+}
 
 /** An RS256 App JWT. `iat` is backdated a minute for clock skew and `exp` stays under GitHub's ten-minute cap. */
 function appJwt(appId: string, privateKey: string, nowMs: number): string {
