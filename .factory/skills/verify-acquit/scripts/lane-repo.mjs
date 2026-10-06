@@ -1,7 +1,8 @@
 // Prepares one lane's work directory from the invoice-app fixture:
-//   node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> <branch> [--template <dir>] [--force]
+//   node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> <branch> [--template <dir>] [--force] [--jobs <jobId>]
 // It clones the template (so the lane can never disturb the fixture), checks out the branch, and
-// prints the exact submit command for that lane's API port.
+// prints the exact submit command for that lane's API port. With --jobs the command also carries
+// --remote <the job's work repo>, so the lane's HEAD is pushed to GitHub before the run starts.
 //
 // The client repo a lane's job names is the deployment's client repository, `ACQUIT_CLIENT_REPOSITORY`
 // (default `maya-client/invoice-app`). It must exist on GitHub and carry the frozen commit as its
@@ -17,8 +18,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { laneSlot } from "../../../../packages/ctl/src/state.ts";
-import { createGitHubApp } from "../../../../packages/core/src/github.ts";
-import { githubAppEnv } from "../../../../packages/verifier/config.ts";
+import { createGitHubApp, workRepoName } from "../../../../packages/core/src/github.ts";
+import { clientRepositoryEnv, githubAppEnv } from "../../../../packages/verifier/config.ts";
 
 const root = fileURLToPath(new URL("../../../..", import.meta.url));
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -45,12 +46,17 @@ assert.equal(checked.status, 0, `Checkout failed: ${checked.stderr?.trim()}`);
 const head = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
 const frozen = spawnSync("git", ["-C", template, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
 const owner = values.owner ?? process.env.ACQUIT_LANE_REPO_OWNER ?? null;
-const clientRepo = owner === null ? null : `${owner}/${values.repo ?? `invoice-app-lane-${lane}`}`;
+const contractRepo = clientRepositoryEnv();
+const clientRepo = owner === null ? contractRepo : `${owner}/${values.repo ?? `invoice-app-lane-${lane}`}`;
 const creation = values.create ? await ensureClientRepo(clientRepo, frozen, template) : null;
+// The job's work repo is a fork of the contract repository under the App's organization, named after
+// the job. With --jobs the printed command pushes the lane's HEAD straight to it.
+const organization = githubAppEnv().organization ?? "acquit-forks";
+const workRemote = values.jobs === undefined ? null : `https://github.com/${organization}/${workRepoName(contractRepo, values.jobs)}.git`;
 const slot = laneSlot(lane);
 console.log(JSON.stringify({ lane, branch, repo, head, frozen, apiPort: slot.apiPort, webPort: slot.webPort, verifierPort: slot.verifierPort,
-	clientRepo, creation,
-	cli: `node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${repo} --api http://127.0.0.1:${slot.apiPort}` }));
+	clientRepo, creation, workRemote,
+	cli: `node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${repo} --remote ${workRemote ?? "<work repo URL>"} --api http://127.0.0.1:${slot.apiPort}` }));
 
 /** Creates the lane's client repo with the frozen commit as main, and reports whether the App can see it. */
 async function ensureClientRepo(fullName, frozenCommit, templateDir) {

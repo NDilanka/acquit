@@ -270,8 +270,13 @@ try {
 		await capture("01-signin");
 		await signIn("maya-client");
 		await browser("open", `${webUrl}/jobs/new`);
-		await browser("wait", "--text", "#12 Totals round wrong for 3-decimal currencies");
-		await browser("select", "select:has(option[value='maya-client/invoice-app#12'])", "maya-client/invoice-app#12");
+		// The form lists the deployment's client repository, not the demo literal.
+		const [listing] = (await api("/api/repos", "maya-client")).repos;
+		assert(listing?.issues?.length > 0, "The deployment's client repository has no issues to post.");
+		const issue = listing.issues[0];
+		const option = `${listing.repository}#${issue.number}`;
+		await browser("wait", "--text", `#${issue.number} ${issue.title}`);
+		await browser("select", `select:has(option[value='${option}'])`, option);
 		await browser("find", "label", "Budget (USD)", "fill", "400");
 		await browser("select", "select:has(option[value='7'])", "7");
 		await capture("02-post-form");

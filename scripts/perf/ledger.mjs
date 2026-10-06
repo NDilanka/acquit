@@ -70,7 +70,9 @@ async function ready(label, cwd) {
 	// Card funding is the documented ACQUIT_DEV path: the sandbox order completes without buyer approval.
 	const mode = await fetch(`http://127.0.0.1:${side.api}/api/dev/fund-mode`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ mode: "card" }) });
 	assert.equal(mode.ok, true, `${label} could not select card funding.`);
-	const opened = await command({ type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000,
+	const repos = await (await fetch(`http://127.0.0.1:${side.api}/api/repos`, { headers: { Authorization: `Bearer ${token}` } })).json();
+	const [{ repository, issues }] = repos.repos;
+	const opened = await command({ type: "OpenJob", repository, issueNumber: issues[0].number, budget: 40000,
 		deliveryEndsAt: new Date(Date.now() + 7 * 86400000).toISOString() });
 	const jobId = opened.job.id;
 	const view = await (await fetch(`http://127.0.0.1:${side.api}/api/jobs/${jobId}`, { headers: { Authorization: `Bearer ${token}` } })).json();

@@ -30,7 +30,11 @@ Preconditions:
   `maya-client` for the job page.
 - Prepare the work directory for this lane:
   `node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> tamper-test` prints the repository
-  path, its HEAD, and the exact CLI command for that lane's API port. Use its `--force` to reset.
+  path, its HEAD, and the exact CLI command for that lane's API port. Use its `--force` to reset. With
+  `--jobs <jobId>` the printed command also carries `--remote <the job's work repo>`; submit pushes
+  the lane's HEAD there before it starts the run.
+- The form and the contract name the deployment's client repository (`ACQUIT_CLIENT_REPOSITORY`; the
+  demo default is `maya-client/invoice-app`). This doc writes `<client repo>` for it.
 - `ACQUIT_TOKEN` holds Devon's session token. Never print it.
 
 - **Reject a tampered test.** Run the printed `acquit submit` command with `--dir <lane repo>`. Require
@@ -43,7 +47,7 @@ Preconditions:
 - **Verify the honest fix.** Reset the lane repo to `fix-honest` (`lane-repo.mjs <lane> fix-honest
   --force`) and submit again. Require `Verifier result: VERIFIED`, `Frozen tests: 48 passed`,
   `Hidden tests: 6 passed`, `Required tests: 54 completed, 0 skipped or missing`,
-  `Pull request opened: maya-client/invoice-app#<n>`, and `Client review window: 72 hours`. Save
+  `Pull request opened: <client repo>#<n>`, and `Client review window: 72 hours`. Save
   `verified-pr.png`.
 - **Confirm the pull request.** The client repository has the branch and the PR, and the `Acquit
   verifier` check is green. The PR body names the frozen commit and the tallies.
