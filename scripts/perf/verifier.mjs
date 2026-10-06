@@ -1,41 +1,69 @@
 // Perf probe for F3. One warm-up, then `--runs` rounds alternating fix-honest and tamper-test.
-// It records the judge's wall time per run and, when an API and a token are supplied, the seconds
-// from `acquit submit` to the printed verdict. Rules: warm judge median <= 10s, submit <= 120s.
+// It records the judge's wall time per run and, when an API and a job are supplied, the seconds from
+// `acquit submit` to the verdict the CLI prints. Rules: warm judge median <= 10s, submit <= 120s.
+//
+// The probe exits 0 only when every metric it was asked for was measured. A missing Docker subject,
+// a missing job, a missing token, or a CLI that cannot print a verdict is reported as `blocked` in
+// `verifier.json` and exits 1: a judge-only number is not a pass for the end-to-end rule.
+//
+//   node scripts/perf/verifier.mjs --runs 5 --api http://127.0.0.1:4310 --job job_7Q2K
+//   node scripts/perf/verifier.mjs --runs 5 --subject child --dev        (unit path, judge only)
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createFakeGitHubApp } from "../../packages/core/src/github.ts";
 import { instant } from "../../packages/core/src/ids.ts";
+import { frozenDefinition } from "../../packages/core/src/seed-data.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../packages/verifier/judge.ts";
-import { childProcessSubject, dockerReachable, dockerSubject, DockerUnavailable } from "../../packages/verifier/subject.ts";
+import { childProcessSubject, dockerReachable, dockerSubject } from "../../packages/verifier/subject.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const { values } = parseArgs({ options: {
-	runs: { type: "string", default: "5" }, fixture: { type: "string" }, subject: { type: "string", default: "child" },
-	api: { type: "string" }, job: { type: "string" }, evidence: { type: "string", default: "data/evidence/f3-r1-build/perf" },
+	runs: { type: "string", default: "5" }, fixture: { type: "string" }, subject: { type: "string", default: "docker" },
+	dev: { type: "boolean", default: false }, api: { type: "string" }, job: { type: "string" },
+	evidence: { type: "string", default: "data/evidence/f3-r1-build/perf" },
 } });
 const runs = Number(values.runs);
 assert(Number.isSafeInteger(runs) && runs >= 5, "Use at least five runs.");
 const fixture = resolve(values.fixture ?? process.env.ACQUIT_VERIFIER_FIXTURE ?? resolve(root, "../../acquit/scratch/verifier/invoice-app"));
-assert(existsSync(resolve(fixture, ".git")), `No invoice-app fixture at ${fixture}. Set --fixture or ACQUIT_VERIFIER_FIXTURE.`);
+const evidence = resolve(root, values.evidence);
 const branches = ["fix-honest", "tamper-test"];
+const expected = { "fix-honest": "VERIFIED", "tamper-test": "REJECTED" };
+
+/** One report, one reason, and a nonzero exit. Nothing below the block is measured. */
+async function blocked(reason, detail) {
+	const report = { runs, subject: values.subject, devPath: values.subject === "child", fixture, blocked: reason, detail,
+		judge: null, submit: null, judgePassed: false, submitMeasured: false, passed: false, rules: { judgeMedianMs: 10_000, submitMedianMs: 120_000 },
+		node: process.version };
+	await mkdir(evidence, { recursive: true });
+	await writeFile(resolve(evidence, "verifier.json"), JSON.stringify(report, null, 2) + "\n");
+	console.log(JSON.stringify(report));
+	process.exit(1);
+}
+
+assert(existsSync(resolve(fixture, ".git")), `No invoice-app fixture at ${fixture}. Set --fixture or ACQUIT_VERIFIER_FIXTURE.`);
+// The product subject is the Docker one. The child-process subject is the unit path, and asking for
+// it is an explicit acknowledgement that the number does not come from the product path.
+if (values.subject === "docker" && !dockerReachable()) {
+	await blocked("DOCKER_UNAVAILABLE", "The Docker subject is unreachable. Start Docker, or pass --subject child --dev for the unit path.");
+}
+if (values.subject === "child" && !values.dev) {
+	await blocked("CHILD_SUBJECT_NEEDS_DEV", "The child-process subject is the unit-test path. Pass --dev to acknowledge that.");
+}
+const definition = frozenDefinition();
 const manifest = hiddenManifest();
-const definition = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
-	frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4", frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}`),
-	hiddenManifest: manifest.digest, hiddenTests: manifest.cases.map(test => test.id),
-	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] };
 const head = branch => spawnSync("git", ["-C", fixture, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim();
-if (values.subject === "docker" && !dockerReachable()) throw new DockerUnavailable();
+assert.equal(spawnSync("git", ["-C", fixture, "cat-file", "-e", `${definition.frozenAt}^{commit}`]).status, 0,
+	`The fixture does not carry the contract's frozen commit ${definition.frozenAt}.`);
 const subject = values.subject === "docker" ? dockerSubject() : childProcessSubject();
 const source = gitSource(fixture);
 const samples = { "fix-honest": [], "tamper-test": [] };
-const expected = { "fix-honest": "VERIFIED", "tamper-test": "REJECTED" };
 
 async function one(branch, warm) {
 	const started = performance.now();
@@ -60,42 +88,44 @@ const median = values => {
 	return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 };
 const judgeMedian = { "fix-honest": median(samples["fix-honest"]), "tamper-test": median(samples["tamper-test"]) };
-
-let submit = { measured: false };
-if (values.api) {
-	submit = await submitToVerdict(values.api, values.job);
-}
-
-const report = { runs, subject: values.subject, fixture, judge: { samples, medianMs: judgeMedian, worstMs: Math.max(...Object.values(samples).flat()) },
-	rules: { judgeMedianMs: 10_000, submitMedianMs: 120_000 }, judgePassed: Math.max(...Object.values(judgeMedian)) <= 10_000,
+const judgePassed = Math.max(...Object.values(judgeMedian)) <= 10_000;
+const submit = values.api ? await submitToVerdict(values.api, values.job) : { measured: false, blocked: "NOT_REQUESTED",
+	detail: "Pass --api and --job to time the CLI's submit-to-verdict path." };
+const report = { runs, subject: values.subject, devPath: values.subject === "child", fixture,
+	judge: { samples, medianMs: judgeMedian, worstMs: Math.max(...Object.values(samples).flat()) },
+	rules: { judgeMedianMs: 10_000, submitMedianMs: 120_000 }, judgePassed, submit, submitMeasured: submit.measured === true,
+	passed: judgePassed && submit.measured === true, blocked: submit.measured === true ? null : submit.blocked ?? "SUBMIT_UNMEASURED",
 	prototypeChildProcessMedianMs: 623, trunkBaseline: "trunk has no verifier; the metric cannot be produced there",
-	submit, node: process.version };
-const evidence = resolve(root, values.evidence);
+	node: process.version };
 await mkdir(evidence, { recursive: true });
 await writeFile(resolve(evidence, "verifier.json"), JSON.stringify(report, null, 2) + "\n");
 console.log(JSON.stringify(report));
-if (!report.judgePassed) process.exitCode = 1;
+if (!report.passed) process.exitCode = 1;
 
-/** The end-to-end metric needs an API whose verdict path is wired; report the block by name when it is not. */
+/**
+ * The end-to-end metric is the CLI's own printed verdict: a throwaway checkout of the honest branch,
+ * `acquit submit` with the session token on stdin, and the seconds until the block is printed.
+ */
 async function submitToVerdict(api, jobId) {
 	const token = process.env.ACQUIT_TOKEN;
-	if (!jobId || !token) return { measured: false, blocked: "AUTH_REQUIRED", detail: "Set --job and ACQUIT_TOKEN to time the end-to-end path." };
-	const branch = "fix-honest";
-	const commit = head(branch);
-	const call = (path, init) => fetch(new URL(path, api), { ...init, headers: { "content-type": "application/json", cookie: `acquit_session=${token}` } });
-	const before = await call(`/api/jobs/${jobId}`);
-	if (!before.ok) return { measured: false, blocked: "JOB_UNREADABLE", detail: `GET /api/jobs answered ${before.status}` };
-	const started = performance.now();
-	const posted = await call("/api/commands", { method: "POST", body: JSON.stringify({ key: randomUUID(),
-		command: { type: "Submit", jobId, sourceCommit: commit } }) });
-	if (!posted.ok) return { measured: false, blocked: "SUBMIT_REFUSED", detail: `POST /api/commands answered ${posted.status}` };
-	for (;;) {
-		const view = (await (await call(`/api/jobs/${jobId}`)).json()).job;
-		const judged = view.attempts.history.find(attempt => attempt.sourceCommit === commit);
-		if (judged) return { measured: true, seconds: (performance.now() - started) / 1000, result: judged.result, samples: 1 };
-		if (!view.attempts.pending) return { measured: false, blocked: "VERDICT_MISSING", detail: `no verdict and no run for ${commit}` };
-		if (performance.now() - started > 120_000) return { measured: false, blocked: "VERDICT_TIMEOUT",
-			detail: "the run never reported; no signed callback reached the API within 120 seconds" };
-		await new Promise(resolve => setTimeout(resolve, 500));
-	}
+	if (!jobId) return { measured: false, blocked: "JOB_REQUIRED", detail: "Pass --job <id> to time the end-to-end path." };
+	if (!token) return { measured: false, blocked: "AUTH_REQUIRED", detail: "Set ACQUIT_TOKEN to the operator's session token." };
+	const work = mkdtempSync(join(tmpdir(), "acquit-perf-work-"));
+	try {
+		const clone = spawnSync("git", ["clone", "--quiet", "--branch", "fix-honest", fixture, work], { encoding: "utf8", timeout: 60_000 });
+		if (clone.status !== 0) return { measured: false, blocked: "CLONE_FAILED", detail: tail(clone.stderr) };
+		const started = performance.now();
+		const cli = spawnSync(process.execPath, [resolve(root, "packages/acquit-cli/src/main.ts"), "submit", jobId,
+			"--dir", work, "--api", api, "--timeout", "120", "--token"],
+			{ encoding: "utf8", input: `${token}\n`, timeout: 180_000, env: { ...process.env, ACQUIT_TOKEN: "" } });
+		const seconds = (performance.now() - started) / 1000;
+		const result = String(cli.stdout ?? "").match(/^Verifier result: (\w+)$/m)?.[1] ?? null;
+		if (cli.status !== 0 || result === null) return { measured: false, blocked: `CLI_EXIT_${cli.status}`,
+			detail: tail(cli.stderr), seconds };
+		return { measured: true, seconds, result, samples: 1 };
+	} finally { rmSync(work, { recursive: true, force: true }); }
+}
+
+function tail(text) {
+	return String(text ?? "").trim().split("\n").slice(-3).join(" ").slice(0, 300);
 }
