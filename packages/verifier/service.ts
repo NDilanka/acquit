@@ -253,6 +253,8 @@ function runView(record: RunRecord): Record<string, unknown> {
 	return { runId: record.request.runId, jobId: record.request.jobId, ordinal: record.request.ordinal,
 		phase: record.phase, acceptedAt: record.acceptedAt, startedAt: record.startedAt, finishedAt: record.finishedAt,
 		refusal: record.refusal, callback: record.callback,
+		// Where the wall time went: the screen, the subject, the comparison, and the publisher, each its own step.
+		timings: record.outcome === null ? null : record.outcome.timings,
 		outcome: record.outcome === null ? null : record.outcome.kind === "VERDICT"
 			? { kind: "VERDICT", result: record.outcome.verdict.result, reasons: record.outcome.verdict.result === "REJECTED" ? record.outcome.verdict.reasons : [],
 				pullRequest: record.outcome.verdict.result === "VERIFIED" ? record.outcome.verdict.pullRequest : null }
