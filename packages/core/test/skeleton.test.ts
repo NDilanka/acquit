@@ -728,7 +728,7 @@ function githubEffect(fail: () => never) {
 }
 
 const githubRefusal = (code: GitHubFailureCode, status?: number) => (): never => {
-	throw new GitHubAppError(code, `audit probe ${code}: ${"x".repeat(900)}`, status === undefined ? {} : { status });
+	throw new GitHubAppError(code, `a server said ${code}: ${"x".repeat(900)}`, status === undefined ? {} : { status });
 };
 
 test("a permanent App refusal parks the effect for a human, with the code and the bounded detail", async () => {
@@ -784,7 +784,7 @@ test("an unnamed HTTP status is transient only when it is a 5xx", async () => {
 		const state = refused.state();
 		assert.equal(state.kind, "NEEDS_HUMAN");
 		assert.equal(state.reason, "GITHUB_HTTP_ERROR");
-		assert.match(state.detail ?? "", /audit probe/);
+		assert.match(state.detail ?? "", /a server said/);
 	} finally { refused.store.close(); refused.base.store.close(); }
 });
 

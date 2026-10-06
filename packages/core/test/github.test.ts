@@ -438,7 +438,7 @@ test("a private key that is not a PEM refuses by name before any dial", async t 
 	assert.ok(Date.now() - started < 1_000);
 });
 
-// The round-11 findings. Each test drives the wire the audits found and pins what the client owes.
+// The wire this client owes: what it refuses, what it adopts, and what it must never move.
 
 /** A second listener that records whether a redirected request arrives. */
 async function withThief(): Promise<{ url: string; seen: string[]; close: () => Promise<void> }> {
