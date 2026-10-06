@@ -202,10 +202,13 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 		tree?.remove();
 	}
 	// A subject the judge did not stop itself — the process signalled from outside, or the container
-	// killed with `docker kill` — is infrastructure, not the submission. The run ends without a
-	// verdict so the job returns the attempt slot, and nothing is published for a run no one judged.
-	if (subjectRun.killedBy !== null) {
-		return { kind: "RUN_FAILED", failure: { name: "SUBJECT_KILLED", detail: `the subject was killed externally (${subjectRun.killedBy})` },
+	// killed with `docker kill` — is infrastructure, not the submission. A launcher that could not get
+	// the daemon to say how an abnormal exit ended is the same: the submission cannot stop the daemon.
+	// The run ends without a verdict so the job returns the attempt slot, and nothing is published.
+	if (subjectRun.killedBy !== null || subjectRun.faults.includes("SUBJECT_KILL_UNREPORTED")) {
+		const detail = subjectRun.killedBy !== null ? `the subject was killed externally (${subjectRun.killedBy})`
+			: "the subject was killed outside the run, and the daemon could not report how it ended";
+		return { kind: "RUN_FAILED", failure: { name: "SUBJECT_KILLED", detail },
 			timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs }) };
 	}
 	const compareStart = performance.now();
