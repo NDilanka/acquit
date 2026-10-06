@@ -154,17 +154,18 @@ export async function counts(path: string): Promise<Record<string, number>> {
 	} catch { throw new CliError("DATABASE_UNREADABLE", "The configured SQLite database could not be read.", `Check file access to ${path}, then run npm run -s ctl -- status.`); }
 	finally { db?.close(); }
 }
-/** Every stored job row, read-only, without the API's per-actor listing filter. */
-export async function readStoredJobs(path: string): Promise<JobRow[]> {
-	if (!existsSync(path)) return [];
+export type StoredJobs = { readonly available: boolean; readonly rows: JobRow[] };
+/** Every stored job row, read-only, without the API's per-actor listing filter. available is false when the file or its jobs table is absent. */
+export async function readStoredJobs(path: string): Promise<StoredJobs> {
+	if (!existsSync(path)) return { available: false, rows: [] };
 	const { DatabaseSync } = await import("node:sqlite");
 	let db;
 	try {
 		db = new DatabaseSync(path, { readOnly: true });
 		db.exec("PRAGMA busy_timeout = 5000");
 		const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => String(row.name)));
-		if (!tables.has("jobs")) return [];
-		return db.prepare("SELECT json FROM jobs ORDER BY rowid").all().map(row => JSON.parse(String(row.json)) as JobRow);
+		if (!tables.has("jobs")) return { available: false, rows: [] };
+		return { available: true, rows: db.prepare("SELECT json FROM jobs ORDER BY rowid").all().map(row => JSON.parse(String(row.json)) as JobRow) };
 	} catch { throw new CliError("DATABASE_UNREADABLE", "The configured SQLite database could not be read.", `Check file access to ${path}, then run npm run -s ctl -- status.`); }
 	finally { db?.close(); }
 }

@@ -142,6 +142,28 @@ test("ledger --job reports missing and malformed ids as JOB_NOT_FOUND without an
 		}
 	});
 });
+test("ledger --all --check refuses a missing or jobless database instead of passing vacuously", async () => {
+	await fixture(async (cli, root) => {
+		const database = resolve(root, "test.db");
+		const refused = () => {
+			const failed = cli(["ledger", "--all", "--check"]);
+			assert.equal(failed.code, 1);
+			const failure = JSON.parse(failed.stdout);
+			assert.equal(failure.error.code, "DATABASE_NOT_FOUND");
+			assert.equal(failure.error.message, `No jobs table to check at ${database}.`);
+			assert.match(failure.error.fix, /ledger --all --check/);
+		};
+		refused();
+		const { DatabaseSync } = await import("node:sqlite");
+		new DatabaseSync(database).close();
+		refused();
+		// Without --check the plan keeps jobs and the plain listing unchanged.
+		assert.deepEqual(JSON.parse(cli(["jobs"]).stdout).data.jobs, []);
+		const listing = cli(["ledger", "--all"]);
+		assert.equal(listing.code, 0);
+		assert.equal(listing.stdout, "");
+	});
+});
 test("lane zero is the default slot; positive lanes isolate all resources", () => {
 	assert.deepEqual(laneSlot(), { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" });
 	assert.deepEqual(laneSlot(0), laneSlot());

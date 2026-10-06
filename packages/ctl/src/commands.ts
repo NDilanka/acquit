@@ -60,7 +60,11 @@ export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
 	const missing = () => new CliError("JOB_NOT_FOUND", `No job has id ${String(parsed.job)}.`, "Run npm run -s ctl -- jobs, or check the id.");
 	if (!parsed.all && !/^job_[A-Za-z0-9_-]{4,80}$/.test(String(parsed.job))) throw missing();
 	// Local inspection must include other clients' non-OPEN books, unlike the actor-filtered API.
-	const rows = await readStoredJobs(ctx.databasePath);
+	const { available, rows } = await readStoredJobs(ctx.databasePath);
+	// A --check with nothing to read would pass for that reason alone, so refuse it instead.
+	if (parsed.all && parsed.check && !available) throw new CliError("DATABASE_NOT_FOUND",
+		`No jobs table to check at ${ctx.databasePath}.`,
+		"Start this lane's app once so it creates the database, or set DATABASE_PATH to a lane database that has run, then retry npm run -s ctl -- ledger --all --check.");
 	const selected = parsed.all ? rows : rows.filter(row => row.id === parsed.job);
 	if (!parsed.all && selected.length === 0) throw missing();
 	// Ledger-only modules must not add parsing/import work to H0's CLI boot path.
@@ -78,7 +82,7 @@ export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
 		jobs: reports.map((report, index) => ({ id: jobs[index].id, laws: report.laws, law: report.law, ledger: report.lines })) };
 }
 export async function jobList(_parsed: Parsed, ctx: Context): Promise<Result> {
-	const rows = await readStoredJobs(ctx.databasePath);
+	const { rows } = await readStoredJobs(ctx.databasePath);
 	return { jobs: rows.map(row => ({ id: row.id, status: row.state.status })) };
 }
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
