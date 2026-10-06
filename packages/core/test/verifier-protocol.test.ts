@@ -893,16 +893,22 @@ test("without the id file the daemon's events fall back to the run's unique name
 	}
 });
 
-test("the event query covers the lag between the kill and the daemon's event", async () => {
+test("the postmortem waits the kill lag out before it closes the event window", async () => {
 	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
 	const shim = dockerShim({ runExit: 137, events: "kill|9\n" });
 	try {
+		const started = Date.now();
 		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
 		assert.equal(run.killedBy, "SIGKILL");
+		// The deadline had passed by the end of the lag wait. The child was already gone, so it must not
+		// add a fault to the run while the postmortem answers.
+		assert.equal(run.faults.includes("TIMEOUT"), false, JSON.stringify(run.faults));
 		const events = shim.invocations().find(call => call[0] === "events");
 		const until = Date.parse(events?.[events.indexOf("--until") + 1] ?? "");
-		// The live daemon logs the kill 300-800 ms after it happens: the window must close later than now.
-		assert.ok(Number.isFinite(until) && until - Date.now() > 1_000, `--until must cover the lag, saw ${until}`);
+		// The live daemon logs the kill 300-800 ms after it happens. The lag is waited out before the
+		// query starts, so the window's bound is already in the past and the query cannot block on it.
+		assert.ok(Number.isFinite(until) && until <= Date.now(), `--until must be a past bound, saw ${until}`);
+		assert.ok(Date.now() - started >= 1_000, "the kill lag must be waited out before the query");
 	} finally {
 		shim.remove();
 		rmSync(tree, { recursive: true, force: true });

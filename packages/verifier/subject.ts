@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 import { asSubjectFrame, SUBJECT_FRAME_BYTES } from "../core/src/verifier.ts";
 import type { SubjectCall } from "../core/src/verifier.ts";
 
@@ -179,8 +180,12 @@ function removeContainer(name: string): void {
 
 /** How long after the close the daemon's event window stays open: the live daemon logs a kill 300-800 ms late. */
 const EVENT_LAG_MS = 2_000;
-/** Bounded so a missing or wedged daemon can never hold a request open; comfortably above the window. */
-const EVENT_QUERY_TIMEOUT_MS = 5_000;
+/**
+ * How long the query may run before it counts as a daemon that could not answer. The lag is waited
+ * out before the query starts and its `--until` bound is then in the past, so this timeout only
+ * ever covers a wedged or failed daemon, never the lag itself.
+ */
+const EVENT_QUERY_TIMEOUT_MS = 10_000;
 
 /**
  * What became of a container whose client exited abnormally, when the judge did not stop the client
@@ -190,13 +195,16 @@ const EVENT_QUERY_TIMEOUT_MS = 5_000;
  * Only an abnormal exit reaches here, and the events outlive the container `--rm` removes.
  *
  * The query names the container by the id the client wrote when it is there, so no other container's
- * event can match, and by the run's unique name otherwise. `--until` closes EVENT_LAG_MS after the
- * close instead of at it, because a kill logged late would otherwise fall outside the window; the
- * command blocks until that bound, well inside EVENT_QUERY_TIMEOUT_MS. A query that fails says so:
- * `reported` false is a daemon that could not answer, never a daemon that answered "no kill".
+ * event can match, and by the run's unique name otherwise. EVENT_LAG_MS is waited out here, on the
+ * event loop, and the query then closes its window at `now`: a past bound returns the events already
+ * logged without blocking. Running `docker events --until` at a future bound instead would block for
+ * the lag, and under load that wait could exceed the spawn timeout and read as a daemon that could
+ * not answer, naming a submission's own exit as a kill. A query that fails says so: `reported` false
+ * is a daemon that could not answer, never a daemon that answered "no kill".
  */
-function containerPostmortem(name: string, cidFile: string, since: string): { readonly killedBy: string | null; readonly oom: boolean; readonly reported: boolean } {
-	const until = new Date(Date.now() + EVENT_LAG_MS).toISOString();
+async function containerPostmortem(name: string, cidFile: string, since: string): Promise<{ readonly killedBy: string | null; readonly oom: boolean; readonly reported: boolean }> {
+	await sleep(EVENT_LAG_MS);
+	const until = new Date().toISOString();
 	const result = spawnSync("docker", ["events", "--filter", `container=${containerFilter(name, cidFile)}`, "--since", since, "--until", until,
 		"--format", "{{.Action}}|{{.Actor.Attributes.signal}}"], { encoding: "utf8", timeout: EVENT_QUERY_TIMEOUT_MS });
 	if (result.error !== undefined || result.status !== 0 || typeof result.stdout !== "string") return { killedBy: null, oom: false, reported: false };
@@ -248,7 +256,7 @@ type SpawnPlan = {
 	/** The launcher's own cleanup for a client that died by signal: its work may outlive it. */
 	readonly remove?: () => void;
 	/** Asked after an abnormal exit the judge did not cause; absent for launchers whose command dies with its work. */
-	readonly postmortem?: () => { readonly killedBy: string | null; readonly oom: boolean; readonly reported: boolean };
+	readonly postmortem?: () => Promise<{ readonly killedBy: string | null; readonly oom: boolean; readonly reported: boolean }>;
 };
 
 function spawnSubject(plan: SpawnPlan): Promise<SubjectRun> {
@@ -306,14 +314,17 @@ function spawnSubject(plan: SpawnPlan): Promise<SubjectRun> {
 			if (Buffer.byteLength(stderr) + Buffer.byteLength(chunk) > SUBJECT_STDERR_BYTES) { faults.add("STDERR_LIMIT"); stop(); return; }
 			stderr += chunk;
 		});
-		child.on("close", (code, signal) => {
+		child.on("close", async (code, signal) => {
+			// The child is gone, so the deadline can only add a fault to a run that already ended; and it
+			// must not fire while the postmortem waits out the daemon's event lag.
+			clearTimeout(timer);
 			// A signal the judge did not send came from outside the run. In child mode the submitted
 			// code can signal itself too; that is the dev-only path, and it reports as external as well,
 			// because with the same user and no container there is nothing that could tell them apart.
 			let killedBy: string | null = signal !== null && !judgeKilled ? signal : null;
 			let oom = false;
 			if (plan.postmortem !== undefined && killedBy === null && !judgeKilled && code !== 0) {
-				const found = plan.postmortem();
+				const found = await plan.postmortem();
 				killedBy = found.killedBy;
 				oom = found.oom;
 				// A daemon that could not answer has not said "no kill". The submission cannot stop the
