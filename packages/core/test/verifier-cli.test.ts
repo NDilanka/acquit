@@ -6,6 +6,7 @@ import type { CommitSha, JobId, OperatorId } from "../src/ids.ts";
 import type { JobProjection } from "../src/job.ts";
 import { CliError } from "../../acquit-cli/src/client.ts";
 import type { ApiClient } from "../../acquit-cli/src/client.ts";
+import { main } from "../../acquit-cli/src/main.ts";
 import { localHead, parseSubmitArgs, renderSubmission, runSubmit } from "../../acquit-cli/src/submit.ts";
 
 const frozenAt = "a41c9e2" as CommitSha;
@@ -120,4 +121,21 @@ test("the handle the block prints comes from the API, never from the id", () => 
 	assert.equal(renderSubmission(rejectedView(), () => "devon-ops"), renderSubmission(rejectedView(), () => "devon-ops"));
 	assert.match(renderSubmission(rejectedView(), () => "someone-else"), /Escrow: HELD, locked to someone-else/);
 	assert.match(renderSubmission(rejectedView(), () => null), /Escrow: HELD, locked to devon-ops/);
+});
+
+test("main prints usage, refuses an unknown command, and reports a refusal without a stack", async () => {
+	const lines: string[] = [];
+	const errors: string[] = [];
+	const original = { log: console.log, error: console.error };
+	console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+	console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+	try {
+		assert.equal(await main([], {}), 2);
+		assert.match(lines[0], /^acquit — work the job board/);
+		assert.equal(await main(["--help"], {}), 0);
+		assert.equal(await main(["diff", "job_7Q2K"], {}), 2);
+		assert.equal(await main(["submit", "job_7Q2K"], {}), 1);
+		assert.match(errors.at(-1) ?? "", /^acquit: AUTH_REQUIRED: /);
+		assert.equal(lines.some(line => line.includes("s3cret")), false);
+	} finally { console.log = original.log; console.error = original.error; }
 });
