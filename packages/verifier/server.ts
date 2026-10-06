@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
 import { githubAppEnv, serviceConfig } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
-import { createVerifierService } from "./service.ts";
+import { createVerifierService, BODY_LIMIT_BYTES } from "./service.ts";
 import type { VerifierService } from "./service.ts";
 import { assertSubjectAllowed, subjectFor, verifierSubjectEnv } from "./subject.ts";
 
@@ -33,8 +33,17 @@ export function createProductionService(): { readonly service: VerifierService; 
 export function createHttpShell(service: VerifierService, port: number): (request: IncomingMessage, response: ServerResponse) => void {
 	return (request, response) => {
 		void (async () => {
+			// The cap is enforced while reading: a body past it is answered and stopped, never buffered.
+			const declared = Number(request.headers["content-length"] ?? "");
+			if (Number.isFinite(declared) && declared > BODY_LIMIT_BYTES) { tooLarge(request, response); return; }
 			const chunks: Buffer[] = [];
-			for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+			let size = 0;
+			for await (const chunk of request) {
+				const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+				size += buffer.length;
+				if (size > BODY_LIMIT_BYTES) { tooLarge(request, response); return; }
+				chunks.push(buffer);
+			}
 			const body = Buffer.concat(chunks);
 			// A GET or HEAD carries no body, and Request refuses one.
 			const answer = await service.handle(new Request(`http://127.0.0.1:${port}${request.url ?? "/"}`, { method: request.method,
@@ -49,6 +58,13 @@ export function createHttpShell(service: VerifierService, port: number): (reques
 			response.end(JSON.stringify({ error: "INTERNAL_ERROR" }));
 		});
 	};
+}
+
+/** Answers 413 and stops the request once its declared or streamed size passes the cap. */
+function tooLarge(request: IncomingMessage, response: ServerResponse): void {
+	response.writeHead(413, { "content-type": "application/json", "cache-control": "no-store", connection: "close" });
+	response.end(JSON.stringify({ error: "RUN_BODY_TOO_LARGE" }));
+	response.once("finish", () => request.destroy());
 }
 
 async function main(): Promise<void> {

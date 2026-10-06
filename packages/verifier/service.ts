@@ -72,7 +72,8 @@ export interface VerifierService {
 const REPLAY_CACHE_MAX = 8_192;
 const CALLBACK_ATTEMPTS = 3;
 const CALLBACK_TIMEOUT_MS = 10_000;
-const BODY_LIMIT_BYTES = 262_144;
+/** A run request's body cap. The shell refuses past it while reading; the service checks again. */
+export const BODY_LIMIT_BYTES = 262_144;
 
 export function createVerifierService(deps: VerifierServiceDeps): VerifierService {
 	const clock = deps.clock ?? { now: () => instant(new Date().toISOString()) };
@@ -107,8 +108,11 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		}
 		if (url.pathname !== "/runs" || method !== "POST") return json(404, { error: "NOT_FOUND" });
 		if (closing) return refuse(503, "VERIFIER_SHUTTING_DOWN");
-		const raw = await request.text();
-		if (Buffer.byteLength(raw) > BODY_LIMIT_BYTES) return refuse(413, "RUN_BODY_TOO_LARGE");
+		// The cap is enforced while reading: a declared or streamed body past it never becomes a buffer.
+		const declared = Number(request.headers.get("content-length") ?? "");
+		if (Number.isFinite(declared) && declared > BODY_LIMIT_BYTES) return refuse(413, "RUN_BODY_TOO_LARGE");
+		const raw = await readBoundedText(request, BODY_LIMIT_BYTES);
+		if (raw === null) return refuse(413, "RUN_BODY_TOO_LARGE");
 		const timestamp = parseTimestamp(request.headers.get(RUN_TIMESTAMP_HEADER));
 		const nonce = parseNonce(request.headers.get(RUN_NONCE_HEADER));
 		const signature = parseSignatureHeader(request.headers.get(RUN_SIGNATURE_HEADER));
@@ -269,6 +273,25 @@ function json(status: number, value: unknown): Response {
 
 function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** Reads a request body, cancelling the stream once it passes the cap instead of buffering it. */
+async function readBoundedText(request: Request, max: number): Promise<string | null> {
+	const reader = request.body?.getReader();
+	if (reader === undefined) return "";
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > max) {
+			await reader.cancel().catch(() => undefined);
+			return null;
+		}
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks).toString("utf8");
 }
 
 /** Untrusted bytes become a typed run request here or not at all. */
