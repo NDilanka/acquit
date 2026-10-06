@@ -36,5 +36,6 @@ export function config(): AcquitConfig {
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,
 		feeModel: { version: "sandbox-349bps-plus-49-v1", rateBps: 349 as Bps, fixed: usd("0.49") },
-	}, verifier: verifierEnv, github: { appId: githubEnv.appId, privateKey: githubEnv.privateKey } };
+	}, verifier: verifierEnv, github: { appId: githubEnv.appId, privateKey: githubEnv.privateKey, organization: githubEnv.organization,
+		apiBase: githubEnv.apiBase } };
 }

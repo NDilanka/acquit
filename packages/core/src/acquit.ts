@@ -126,7 +126,8 @@ export type AcquitConfig = {
 	readonly clock?: Clock;
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
-	readonly github: { readonly appId: string; readonly privateKey: string };
+	/** The App is one operator item: app id, private key, and the organization that holds the work repos. */
+	readonly github: { readonly appId: string; readonly privateKey: string; readonly organization: string; readonly apiBase?: string };
 	/** The deployment injects the CI adapter. Without one, a start refuses by name and no callback is accepted. */
 	readonly verifierPort?: VerifierPort;
 };

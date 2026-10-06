@@ -184,7 +184,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 			credits: [], outbox: [], acknowledge: null, delivery: null, request: null });
 		store.close();
 		const service = createAcquit({ databaseUrl: wiredUrl, clock: { now: () => now }, paypal, verifier,
-			github: { appId: "", privateKey: "" }, verifierPort: createRemoteVerifier(verifier) });
+			github: { appId: "", privateKey: "", organization: "" }, verifierPort: createRemoteVerifier(verifier) });
 		try {
 			const applied = await service.handleVerifierCallback(signedReport(row.id));
 			assert.equal(applied.status, 200);
@@ -200,7 +200,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 		} finally { closeAcquit(service); }
 
 		const bare = createAcquit({ databaseUrl: join(root, "bare.db"), clock: { now: () => now }, paypal,
-			verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+			verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
 		try { assert.equal((await bare.handleVerifierCallback(signedReport(parseJobId("job_7Q2K")))).status, 401); }
 		finally { closeAcquit(bare); }
 	} finally { await rm(root, { recursive: true, force: true }); }

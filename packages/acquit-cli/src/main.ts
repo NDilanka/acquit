@@ -8,7 +8,9 @@ import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
 const USAGE = `acquit — work the job board from a terminal
 
 Usage:
-  acquit submit <job> [--dir .] [--remote <url>] [--api <url>] [--timeout <seconds>]
+  acquit submit <job> [--dir .] [--remote <url>] [--api <url>] [--token] [--timeout <seconds>]
+
+  --token reads the session token from stdin, so it never appears in the process table.
 
 Environment:
   ACQUIT_API    API origin (default http://127.0.0.1:4310)

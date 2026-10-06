@@ -101,7 +101,7 @@ test("createAcquit uses its injected Clock to expire checkout after three hours"
 	const service = createAcquit({ databaseUrl, clock: { now: () => currentNow },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243",
 			clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model },
-		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
 	const store = new SqliteStore(databaseUrl);
 	try {
 		const opened = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
@@ -169,7 +169,7 @@ test("sandbox card funding passes through the real order and CaptureCompleted ed
 	const service = createAcquit({ databaseUrl, clock: { now: () => now }, paypal: {
 		apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5253", clientId: "test", secret: "test",
 		webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => "card",
-	}, verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+	}, verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
 	try {
 		const opened = jobOf(await service.execute(maya, requestKey(), openCommand));
 		const bid = await service.execute(devon, requestKey(), { type: "PlaceBid", jobId: opened.id, price: usd("400.00"),

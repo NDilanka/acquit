@@ -51,6 +51,6 @@ function refusal(status: number, body: unknown): CliError {
 /** The session token never appears in an error message or a log line. */
 export function resolveToken(explicit: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
 	const token = explicit ?? env.ACQUIT_TOKEN;
-	if (!token) throw new CliError("AUTH_REQUIRED", "No session token. Pass --token or set ACQUIT_TOKEN, or run `acquit login`.");
+	if (!token) throw new CliError("AUTH_REQUIRED", "No session token. Set ACQUIT_TOKEN, pipe it to `acquit submit <job> --token`, or run `acquit login`.");
 	return token;
 }

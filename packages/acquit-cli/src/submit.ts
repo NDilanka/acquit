@@ -3,6 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { verifiedBranch } from "../../core/src/github.ts";
@@ -21,12 +22,13 @@ export type SubmitOptions = {
 
 const SHA = /^[0-9a-f]{7,40}$/;
 
-export function parseSubmitArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): SubmitOptions {
+export function parseSubmitArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env,
+	readStdin: () => string = readTokenFromStdin): SubmitOptions {
 	let jobId: string | null = null;
 	let dir = ".";
 	let remote: string | null = null;
 	let apiUrl = env.ACQUIT_API ?? "http://127.0.0.1:4310";
-	let token: string | null = null;
+	let tokenOnStdin = false;
 	let timeoutSeconds = 300;
 	for (let index = 0; index < argv.length; index++) {
 		const flag = argv[index];
@@ -38,15 +40,29 @@ export function parseSubmitArgs(argv: readonly string[], env: NodeJS.ProcessEnv 
 		if (flag === "--dir") dir = value();
 		else if (flag === "--remote") remote = value();
 		else if (flag === "--api") apiUrl = value();
-		else if (flag === "--token") token = value();
+		else if (flag === "--token") {
+			// A token on the command line is readable from the process table for the life of the
+			// command. The value is never echoed: it is not a token this process will use.
+			if (argv[index + 1] !== undefined && !argv[index + 1].startsWith("--")) {
+				throw new CliError("TOKEN_ON_ARGV", "The session token is visible to every user who can read the process table. "
+					+ "Pipe it to `acquit submit <job> --token` or set ACQUIT_TOKEN.");
+			}
+			tokenOnStdin = true;
+		}
 		else if (flag === "--timeout") timeoutSeconds = Number(value());
 		else if (flag.startsWith("--")) throw new CliError("USAGE", `Unknown flag ${flag}.`);
 		else if (jobId === null) jobId = flag;
 		else throw new CliError("USAGE", `Unexpected argument ${flag}.`);
 	}
-	if (jobId === null) throw new CliError("USAGE", "Usage: acquit submit <job> [--dir .] [--remote <url>] [--api <url>] [--timeout <seconds>]");
+	if (jobId === null) throw new CliError("USAGE", "Usage: acquit submit <job> [--dir .] [--remote <url>] [--api <url>] [--token] [--timeout <seconds>]");
 	if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1) throw new CliError("USAGE", "--timeout takes whole seconds.");
-	return { jobId, dir, remote, apiUrl, token: resolveToken(token ?? undefined, env), timeoutSeconds, pollMs: 500 };
+	return { jobId, dir, remote, apiUrl, token: resolveToken(tokenOnStdin ? readStdin().trim() || undefined : undefined, env),
+		timeoutSeconds, pollMs: 500 };
+}
+
+/** `--token` reads one line from stdin. The value never enters argv, a log line, or an error message. */
+function readTokenFromStdin(): string {
+	try { return readFileSync(0, "utf8"); } catch { return ""; }
 }
 
 /** The commit the operator is submitting. A dirty tree is the operator's business, not this command's. */

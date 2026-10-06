@@ -331,10 +331,12 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	const parsed = await ports.verifier.parseCallback(request);
 	if (!parsed) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
 	const job = await ports.store.readJob(parsed.jobId);
-	const waiting = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" &&
-		job.state.attempts.pending.runId === parsed.verdict.runId && job.state.attempts.pending.sourceCommit === parsed.verdict.sourceCommit;
+	const pending = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
+	const waiting = pending !== null && pending.runId === parsed.verdict.runId && pending.sourceCommit === parsed.verdict.sourceCommit;
 	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
 	if (!waiting) return Response.json({ ok: true, applied: false });
+	// The run id is right but the attempt number is not: the report contradicts the attempt it names.
+	if (pending.ordinal !== parsed.ordinal) return Response.json({ error: "ORDINAL_MISMATCH" }, { status: 409 });
 	try {
 		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, runId: parsed.verdict.runId, verdict: parsed.verdict },
 			null, `verifier:${parsed.verdict.runId}`);
