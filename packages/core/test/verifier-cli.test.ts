@@ -2,6 +2,9 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { CommitSha, JobId, OperatorId } from "../src/ids.ts";
@@ -124,6 +127,47 @@ test("a push refusal names both causes of a missing work repo and repeats no cre
 	assert.equal(escaped.code, "PUSH_REFUSED");
 	assert.equal(/[\u0000-\u001f\u007f]/.test(escaped.message), false, JSON.stringify(escaped.message));
 	assert.equal(escaped.message.includes("overwritten by the remote"), true, escaped.message);
+});
+
+test("a retry after a rejection pushes a sibling commit and the work repo ref ends at it", async () => {
+	const { pushHead } = await import("../../acquit-cli/src/submit.ts") as { pushHead?: (dir: string, remote: string, jobId: string) => void };
+	assert.equal(typeof pushHead, "function");
+	const root = mkdtempSync(join(tmpdir(), "acquit-push-sibling-"));
+	try {
+		const work = join(root, "work");
+		const remote = join(root, "invoice-app-7Q2K.git");
+		mkdirSync(work);
+		const git = (dir: string, args: readonly string[]) => {
+			const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+			if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
+			return result.stdout.trim();
+		};
+		git(root, ["init", "--bare", "--quiet", remote]);
+		git(work, ["init", "--quiet"]);
+		git(work, ["config", "user.email", "fixture@example.invalid"]);
+		git(work, ["config", "user.name", "fixture"]);
+		writeFileSync(join(work, "money.ts"), "const DECIMALS = 2;\n");
+		git(work, ["add", "-A"]);
+		git(work, ["commit", "--quiet", "-m", "frozen"]);
+		const frozen = git(work, ["rev-parse", "HEAD"]);
+		// Attempt 1 is the tamper. Attempt 2 is built from the frozen commit, so the two are siblings.
+		writeFileSync(join(work, "tests.ts"), "expect(1).toBe(2);\n");
+		git(work, ["add", "-A"]);
+		git(work, ["commit", "--quiet", "-m", "tamper"]);
+		const rejected = git(work, ["rev-parse", "HEAD"]);
+		pushHead!(work, remote, "job_7Q2K");
+		git(work, ["checkout", "--quiet", "--detach", frozen]);
+		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
+		git(work, ["add", "-A"]);
+		git(work, ["commit", "--quiet", "-m", "fix"]);
+		const fix = git(work, ["rev-parse", "HEAD"]);
+		pushHead!(work, remote, "job_7Q2K");
+		assert.equal(git(remote, ["rev-parse", "refs/heads/acquit/job_7Q2K"]), fix);
+		assert.equal(spawnSync("git", ["-C", remote, "cat-file", "-e", `${rejected}^{commit}`]).status, 0,
+			"the rejected commit must have reached the work repo");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("runSubmit polls until the submitted commit is judged and prints the block", async () => {
