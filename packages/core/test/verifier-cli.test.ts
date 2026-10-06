@@ -81,6 +81,15 @@ test("submit parses its flags, refuses unknown ones, and never prints a token", 
 	assert.throws(() => parseSubmitArgs([], { ACQUIT_TOKEN: "s3cret" }), (error: CliError) => error.code === "USAGE");
 });
 
+test("the session token never comes from argv: --token reads stdin and a value is refused", () => {
+	const canary = "canary-token-value";
+	assert.throws(() => parseSubmitArgs(["job_7Q2K", "--token", canary], { ACQUIT_TOKEN: "s3cret" }),
+		(error: CliError) => error.code === "TOKEN_ON_ARGV" && !error.message.includes(canary));
+	assert.equal(parseSubmitArgs(["job_7Q2K", "--token"], {}, () => `${canary}\n`).token, canary);
+	assert.equal(parseSubmitArgs(["job_7Q2K", "--token"], { ACQUIT_TOKEN: "s3cret" }, () => "stdin-token\n").token, "stdin-token");
+	assert.throws(() => parseSubmitArgs(["job_7Q2K", "--token"], {}, () => "\n"), (error: CliError) => error.code === "AUTH_REQUIRED");
+});
+
 test("localHead refuses a directory that is not a repository", () => {
 	assert.throws(() => localHead("/tmp"), (error: CliError) => error.code === "NOT_A_REPOSITORY");
 });

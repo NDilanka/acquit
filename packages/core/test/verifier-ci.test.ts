@@ -57,6 +57,8 @@ test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejecti
 	assert.deepEqual(parseVerdict(rejected)?.result, "REJECTED");
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOMETHING_ELSE" }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_SYMLINK", path: "src/money.ts" }] })?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_SYMLINK" }] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, at: "yesterday" }), null);
 	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, frozen: { expected: 48, passed: 49 } }), null);
 	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, pullRequest: 0 }), null);

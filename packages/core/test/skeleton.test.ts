@@ -695,6 +695,33 @@ test("an unconfigured work repo leaves the effect waiting for a human, never han
 	} finally { store.close(); base.store.close(); }
 });
 
+test("the verifier callback refuses a report whose ordinal is not the reserved attempt", async () => {
+	const store = new SqliteStore(":memory:");
+	const held = heldRow();
+	const reserved = applyJobCommand(held, { type: "Submit", jobId: held.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof reserved === "string") throw new Error(reserved);
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(reserved.next.id, reserved.next.version, JSON.stringify(reserved.next), later);
+	const base = fixture();
+	let report: { jobId: JobId; ordinal: 1 | 2 | 3; verdict: Verdict } | null = { jobId: held.id, ordinal: 3, verdict: rejection("run_submit_1") };
+	const ports: Ports = { ...base.ports, store,
+		verifier: { start: async () => {}, parseCallback: async () => report } };
+	const callback = () => new Request("http://localhost:4310/api/verifier/callback", { method: "POST" });
+	try {
+		const refused = await ingestVerifierCallback(ports, callback());
+		assert.equal(refused.status, 409);
+		assert.deepEqual(await refused.json(), { error: "ORDINAL_MISMATCH" });
+		const waiting = (await store.readJob(held.id))!.state as Extract<typeof held.state, { status: "IN_PROGRESS" }>;
+		assert.equal(waiting.attempts.phase, "VERIFYING");
+		assert.deepEqual(waiting.attempts.history, []);
+		// The report that names the reserved attempt still applies.
+		report = { jobId: held.id, ordinal: 1, verdict: rejection("run_submit_1") };
+		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
+		const judged = (await store.readJob(held.id))!.state as Extract<typeof held.state, { status: "IN_PROGRESS" }>;
+		assert.equal(judged.attempts.phase, "READY");
+		assert.equal(judged.attempts.history.length, 1);
+	} finally { store.close(); base.store.close(); }
+});
+
 test("the verifier callback refuses an unauthenticated report and applies a signed one", async () => {
 	const store = new SqliteStore(":memory:");
 	const held = heldRow();
