@@ -1,10 +1,10 @@
-// The per-run mirror's contract: the installation token stays out of argv and the environment, the
+// The per-run mirror's contract: the installation token stays out of argv and out of every file, the
 // submitted commit comes from the job's work repo, the frozen base falls back to the client repo, and
-// every failure is a named code. A live fetch found the bug this file now holds shut: git ignores
-// `http.<url>.extraHeader` from a global config file, so the token belongs in the mirror's own config.
+// every failure is a named code. The token rides in the fetch child's own git config, so a service
+// killed mid-fetch leaves no credential behind.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -46,7 +46,7 @@ function mirror() {
 	return { dir, original, remove: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-test("the mirror fetches both commits with the token in its own config, never in argv or the environment", async () => {
+test("the mirror fetches both commits with the token in the child's git config, never in argv or a file", async () => {
 	const { dir, original, remove } = mirror();
 	// The work repo carries the submitted commit but not the frozen base, so the mirror falls back to the client repo.
 	const { calls, git } = recorder({ dir, missing: [frozen],
@@ -64,15 +64,37 @@ test("the mirror fetches both commits with the token in its own config, never in
 			"https://github.com/acquit-forks/invoice-app-source.git", "https://github.com/maya-client/invoice-app.git"]);
 		for (const call of fetches) {
 			assert.equal(call.args.some(arg => arg.includes(token)), false, "the token must never reach argv");
-			assert.equal(Object.values(call.env).some(value => String(value).includes(token)), false, "the token must never reach the environment");
-			// GitHub's git endpoint takes the installation token as a Basic user, not as a bearer token.
-			const header = /Authorization: Basic ([A-Za-z0-9+/=]+)/.exec(call.config);
+			// GitHub's git endpoint takes the installation token as a Basic user, not as a bearer token,
+			// and git reads `http.<url>.extraHeader` from the child's own environment config.
+			assert.equal(call.env.GIT_CONFIG_COUNT, "1");
+			assert.equal(call.env.GIT_CONFIG_KEY_0, "http.https://github.com/.extraHeader");
+			const header = /Authorization: Basic ([A-Za-z0-9+/=]+)/.exec(String(call.env.GIT_CONFIG_VALUE_0));
 			assert(header, "the fetch must carry an Authorization header");
 			assert.equal(Buffer.from(header[1], "base64").toString("utf8"), `x-access-token:${token}`);
+			// The mirror's own config is untouched while the fetch runs, so a SIGKILL leaves no credential.
+			assert.equal(call.config, original);
 		}
-		// The mirror is handed to the judge without the token in it.
+		// The mirror is handed to the judge without the token anywhere in it.
 		assert.equal(readFileSync(join(dir, "config"), "utf8"), original);
 	} finally { remove(); }
+});
+
+test("each run gets its own mirror directory, and the run removes it", async () => {
+	// The real default makeDir and removeDir: mkdtemp per run, deleted when the run ends.
+	const seen: string[] = [];
+	const git: RunSourceOptions["git"] = args => { if (args[0] === "-C") seen.push(args[1]); return { status: 0, stdout: "", stderr: "" }; };
+	const source = createRunSource({ organization: "acquit-forks", tokenFor: async () => token, git });
+	const first = await source(request());
+	const second = await source(request());
+	assert.notEqual(seen[0], seen[1], "two runs must never share a mirror");
+	assert.match(seen[0], /acquit-mirror-run_source_1-/);
+	assert.match(seen[1], /acquit-mirror-run_source_1-/);
+	assert.equal(existsSync(seen[0]) && existsSync(seen[1]), true);
+	first.remove();
+	assert.equal(existsSync(seen[0]), false, "the first run's mirror is gone");
+	assert.equal(existsSync(seen[1]), true, "the second run's mirror is untouched");
+	second.remove();
+	assert.equal(existsSync(seen[1]), false);
 });
 
 test("a fetch that fails names the commit and the repository it could not read", async () => {
