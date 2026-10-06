@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -31,4 +32,17 @@ test("real ownership ignores planted cwd powershell.exe and helper environment e
 		if (child) await releaseSpawned(child);
 		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 	}
+});
+
+test("a real failing PATH pwsh falls back to absolute Windows PowerShell", { skip: process.platform !== "win32", timeout: 15000 }, async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-pwsh-fallback-"));
+	try {
+		await copyFile(process.execPath, resolve(root, "pwsh.exe"));
+		const module = new URL("../src/process.ts", import.meta.url).href;
+		const script = `import {powershell} from ${JSON.stringify(module)}; const r=await powershell(["-Command",'"fallback"'],process.cwd()); if(r.stdout.trim()!=="fallback")process.exit(1);`;
+		const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+			cwd: tmpdir(), env: { ...helperEnvironment(), PATH: root }, encoding: "utf8", timeout: 12000, stdio: ["ignore", "pipe", "ignore"],
+		});
+		assert.equal(result.status, 0, "The fake pwsh is Node (rejects -NoProfile); only the absolute fallback can pass.");
+	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });

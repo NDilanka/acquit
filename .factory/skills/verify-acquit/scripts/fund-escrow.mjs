@@ -6,8 +6,9 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
-import { captured as captureCommand, discarded, portOpen, powershell } from "../../../../packages/ctl/src/process.ts";
+import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
 import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
+import { dashboardPorts } from "../../../../packages/ctl/src/browser-safety.ts";
 import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -115,11 +116,7 @@ async function approve() {
 		const ports = [];
 		if (process.env.AGENT_BROWSER_DASHBOARD_PORT) ports.push(Number(process.env.AGENT_BROWSER_DASHBOARD_PORT));
 		if (process.platform === "win32") {
-			// Discover custom dashboard ports without emitting command lines/env.
-			const script = '$ids=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -like "agent-browser*" -and $_.CommandLine -match "dashboard" } | ForEach-Object ProcessId); $ports=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in $ids } | ForEach-Object LocalPort); ConvertTo-Json -Compress -InputObject $ports';
-			const result = await powershell(["-Command", script], root);
-			assert.equal(result.code, 0, "Could not verify dashboard absence; approval refused.");
-			ports.push(...JSON.parse(result.stdout));
+			ports.push(...await dashboardPorts(browserSession, root));
 		} else if (process.env.AGENT_BROWSER_DASHBOARD_PORT === undefined) {
 			throw new Error("Approval refused: custom dashboard ports can only be discovered on Windows. Set AGENT_BROWSER_DASHBOARD_PORT or close the dashboard.");
 		}
