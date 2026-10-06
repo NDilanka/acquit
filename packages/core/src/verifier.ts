@@ -98,9 +98,10 @@ export type JsonValue = null | boolean | number | string | readonly JsonValue[] 
 /**
  * Every way a run can end without a verdict. The name is what code branches on and what the job
  * shows; `detail` is display text. A publish that failed after a clean judgment is PUBLISH_FAILED,
- * not a verdict: nothing was published, so nothing can be approved.
+ * not a verdict: nothing was published, so nothing can be approved. A subject stopped from outside
+ * the run is SUBJECT_KILLED: the worker did not fail, and the submission was never judged.
  */
-export const RUN_FAILURE_NAMES = ["PUBLISH_FAILED", "SOURCE_UNAVAILABLE", "SUBJECT_UNSTARTABLE", "CONTRACT_MISMATCH", "RUN_DEADLINE_EXCEEDED"] as const;
+export const RUN_FAILURE_NAMES = ["PUBLISH_FAILED", "SOURCE_UNAVAILABLE", "SUBJECT_UNSTARTABLE", "SUBJECT_KILLED", "CONTRACT_MISMATCH", "RUN_DEADLINE_EXCEEDED"] as const;
 export type RunFailureName = (typeof RUN_FAILURE_NAMES)[number];
 
 export function isRunFailureName(value: unknown): value is RunFailureName {

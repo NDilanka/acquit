@@ -201,6 +201,13 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	} finally {
 		tree?.remove();
 	}
+	// A subject the judge did not stop itself — the process signalled from outside, or the container
+	// killed with `docker kill` — is infrastructure, not the submission. The run ends without a
+	// verdict so the job returns the attempt slot, and nothing is published for a run no one judged.
+	if (subjectRun.killedBy !== null) {
+		return { kind: "RUN_FAILED", failure: { name: "SUBJECT_KILLED", detail: `the subject was killed externally (${subjectRun.killedBy})` },
+			timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs }) };
+	}
 	const compareStart = performance.now();
 	const transcript = parseSubjectTranscript(subjectRun.stdout, subjectRun.nonce, calls);
 	const replies = transcript.replies;

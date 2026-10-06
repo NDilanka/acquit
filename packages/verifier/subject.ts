@@ -45,6 +45,8 @@ export type SubjectFault =
 	| "FRAME_LIMIT" | "UNTERMINATED_FRAME" | "SUBJECT_EXIT"
 	/** The subject never reported ready, or closed with cases still unanswered. */
 	| "SUBJECT_INCOMPLETE"
+	/** The container hit its memory cap. The submission's own doing, so a verdict fault, not a kill. */
+	| "MEMORY_LIMIT"
 	/** A frame addressed to this run did not follow the protocol. */
 	| "SUBJECT_FRAME_REJECTED";
 
@@ -58,6 +60,8 @@ export type SubjectRun = {
 	readonly stderr: string;
 	readonly exitCode: number | null;
 	readonly signal: string | null;
+	/** The signal that stopped the subject from outside the run; null when the run decided its own end. */
+	readonly killedBy: string | null;
 	readonly faults: readonly SubjectFault[];
 	readonly wallMs: number;
 };
@@ -108,9 +112,14 @@ export function dockerSubject(options: { readonly image?: string; readonly probe
 		async run(treeDir, calls, deadlineMs = DEFAULT_DEADLINE_MS) {
 			if (!(options.probe ?? dockerReachable)()) throw new DockerUnavailable("The Docker daemon is not running; the subject was not started.");
 			const staged = stageBootstrap();
+			const name = containerName();
+			// One second of slack so a start event cannot fall on the wrong side of the since boundary.
+			const since = new Date(Date.now() - 1_000).toISOString();
 			try {
-				return await spawnSubject({ variant: "DOCKER", command: "docker", args: dockerArgs(treeDir, image, staged.path),
-					cwd: treeDir, calls, deadlineMs });
+				return await spawnSubject({ variant: "DOCKER", command: "docker", args: dockerArgs(treeDir, image, name, staged.path),
+					cwd: treeDir, calls, deadlineMs,
+					remove: () => removeContainer(name),
+					postmortem: () => containerPostmortem(name, since) });
 			} finally {
 				staged.remove();
 			}
@@ -138,13 +147,46 @@ export function stageBootstrap(source = BOOTSTRAP_PATH): { readonly path: string
 }
 
 /** The container mounts the submitted tree and this one bootstrap file. The judge package is never inside. */
-export function dockerArgs(treeDir: string, image: string, bootstrap = BOOTSTRAP_PATH): readonly string[] {
-	return ["run", "--rm", "--network", "none", "-i", "--pull=never", "--read-only", "--cap-drop=ALL",
+export function dockerArgs(treeDir: string, image: string, name: string, bootstrap = BOOTSTRAP_PATH): readonly string[] {
+	return ["run", "--rm", "--name", name, "--network", "none", "-i", "--pull=never", "--read-only", "--cap-drop=ALL",
 		"--security-opt=no-new-privileges", "--pids-limit=64", "--memory=256m", "--cpus=1", "--user=65534:65534",
 		"--mount", `type=bind,${mountSource("tree", treeDir)},target=/tree,readonly`,
 		"--mount", `type=bind,${mountSource("bootstrap", bootstrap)},target=/runner/bootstrap.ts,readonly`,
 		"--workdir=/tree", image, "node", "--disable-warning=ExperimentalWarning", "--max-old-space-size=256",
 		"--v8-pool-size=1", "/runner/bootstrap.ts", "/tree"];
+}
+
+/** One name per run, so the launcher can filter the daemon's events by it and remove the container by it. */
+function containerName(): string {
+	return `acquit-subject-${process.pid}-${randomBytes(6).toString("hex")}`;
+}
+
+/** `--rm` covers every exit the container makes itself; this covers a client the judge stopped with the container still up. */
+function removeContainer(name: string): void {
+	spawnSync("docker", ["rm", "--force", name], { encoding: "utf8", timeout: 10_000 });
+}
+
+/**
+ * What became of a container whose client exited abnormally, when the judge did not stop the client
+ * itself. The exit code cannot answer it: an external `docker kill` and a submission's own
+ * `process.exit(137)` both leave `docker run` with 137, and the node process inside cannot be told
+ * apart by code. The daemon's events can: a kill signal logs `kill`, and the memory cap logs `oom`.
+ * Only an abnormal exit reaches here, and the events outlive the container `--rm` removes.
+ */
+function containerPostmortem(name: string, since: string): { readonly killedBy: string | null; readonly oom: boolean } {
+	const result = spawnSync("docker", ["events", "--filter", `container=${name}`, "--since", since, "--until", new Date().toISOString(),
+		"--format", "{{.Action}}|{{.Actor.Attributes.signal}}"], { encoding: "utf8", timeout: 5_000 });
+	if (result.status !== 0 || typeof result.stdout !== "string") return { killedBy: null, oom: false };
+	const lines = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+	const kill = lines.find(line => line.startsWith("kill|"));
+	if (kill !== undefined) return { killedBy: signalName(kill.slice("kill|".length)), oom: false };
+	return { killedBy: null, oom: lines.some(line => line.startsWith("oom|")) };
+}
+
+/** A Docker kill event's signal, named for the failure detail. */
+function signalName(signal: string): string {
+	const names: Record<string, string> = { "2": "SIGINT", "3": "SIGQUIT", "9": "SIGKILL", "15": "SIGTERM" };
+	return names[signal] ?? (signal ? `SIG${signal}` : "an external signal");
 }
 
 function mountSource(what: string, path: string): string {
@@ -170,6 +212,10 @@ type SpawnPlan = {
 	readonly cwd: string;
 	readonly calls: readonly SubjectCall[];
 	readonly deadlineMs: number;
+	/** The launcher's own cleanup for a client that died by signal: its work may outlive it. */
+	readonly remove?: () => void;
+	/** Asked after an abnormal exit the judge did not cause; absent for launchers whose command dies with its work. */
+	readonly postmortem?: () => { readonly killedBy: string | null; readonly oom: boolean };
 };
 
 function spawnSubject(plan: SpawnPlan): Promise<SubjectRun> {
@@ -183,18 +229,22 @@ function spawnSubject(plan: SpawnPlan): Promise<SubjectRun> {
 		let buffered = "";
 		let ready = false;
 		let sent = 0;
+		let judgeKilled = false;
 		const child = spawn(plan.command, [...plan.args], { cwd: plan.cwd, env: { PATH: process.env.PATH ?? "" }, stdio: ["pipe", "pipe", "pipe"] });
-		const finish = (exitCode: number | null, signal: string | null): void => {
+		/** A kill the judge sends is the judge's own step (its deadline or a limit), never an external kill. */
+		const stop = (): void => { judgeKilled = true; child.kill("SIGKILL"); };
+		const finish = (exitCode: number | null, signal: string | null, killedBy: string | null): void => {
 			clearTimeout(timer);
+			if (signal !== null) plan.remove?.();
 			if (buffered.length) faults.add("UNTERMINATED_FRAME");
-			resolveRun({ variant: plan.variant, nonce, ready, stdout, stderr, exitCode, signal, faults: [...faults], wallMs: performance.now() - started });
+			resolveRun({ variant: plan.variant, nonce, ready, stdout, stderr, exitCode, signal, killedBy, faults: [...faults], wallMs: performance.now() - started });
 		};
-		const timer = setTimeout(() => { faults.add("TIMEOUT"); child.kill("SIGKILL"); }, plan.deadlineMs);
-		child.on("error", error => { faults.add("SPAWN_ERROR"); stderr += String(error.message); finish(null, null); });
+		const timer = setTimeout(() => { faults.add("TIMEOUT"); stop(); }, plan.deadlineMs);
+		child.on("error", error => { faults.add("SPAWN_ERROR"); stderr += String(error.message); finish(null, null, null); });
 		child.stdin.on("error", () => faults.add("STDIN_ERROR"));
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => {
-			if (Buffer.byteLength(stdout) + Buffer.byteLength(chunk) > SUBJECT_STDOUT_BYTES) { faults.add("STDOUT_LIMIT"); child.kill("SIGKILL"); return; }
+			if (Buffer.byteLength(stdout) + Buffer.byteLength(chunk) > SUBJECT_STDOUT_BYTES) { faults.add("STDOUT_LIMIT"); stop(); return; }
 			stdout += chunk;
 			buffered += chunk;
 			let end = buffered.indexOf("\n");
@@ -214,16 +264,27 @@ function spawnSubject(plan: SpawnPlan): Promise<SubjectRun> {
 				buffered = buffered.slice(end + 1);
 				end = buffered.indexOf("\n");
 			}
-			if (Buffer.byteLength(buffered) > SUBJECT_FRAME_BYTES) { faults.add("FRAME_LIMIT"); child.kill("SIGKILL"); }
+			if (Buffer.byteLength(buffered) > SUBJECT_FRAME_BYTES) { faults.add("FRAME_LIMIT"); stop(); }
 		});
 		child.stderr.on("data", (chunk: string) => {
-			if (Buffer.byteLength(stderr) + Buffer.byteLength(chunk) > SUBJECT_STDERR_BYTES) { faults.add("STDERR_LIMIT"); child.kill("SIGKILL"); return; }
+			if (Buffer.byteLength(stderr) + Buffer.byteLength(chunk) > SUBJECT_STDERR_BYTES) { faults.add("STDERR_LIMIT"); stop(); return; }
 			stderr += chunk;
 		});
 		child.on("close", (code, signal) => {
+			// A signal the judge did not send came from outside the run. In child mode the submitted
+			// code can signal itself too; that is the dev-only path, and it reports as external as well,
+			// because with the same user and no container there is nothing that could tell them apart.
+			let killedBy: string | null = signal !== null && !judgeKilled ? signal : null;
+			let oom = false;
+			if (plan.postmortem !== undefined && killedBy === null && !judgeKilled && code !== 0) {
+				const found = plan.postmortem();
+				killedBy = found.killedBy;
+				oom = found.oom;
+			}
 			if (code !== 0) faults.add("SUBJECT_EXIT");
+			if (oom) faults.add("MEMORY_LIMIT");
 			if (!ready || answered.size < sent) faults.add("SUBJECT_INCOMPLETE");
-			finish(code, signal);
+			finish(code, signal, killedBy);
 		});
 		child.stdin.write(JSON.stringify({ kind: "load", nonce, modules: [...new Set(plan.calls.map(call => call.target.module))] }) + "\n");
 	});

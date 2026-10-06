@@ -100,10 +100,18 @@ Preconditions:
 - A run that ends without a verdict posts its signed callback at once, so the job leaves VERIFYING and
   charges no attempt. The attempt carries a named failure: `PUBLISH_FAILED` (the judgment was clean and
   the pull request or check run could not be made), `SOURCE_UNAVAILABLE`, `SUBJECT_UNSTARTABLE`,
-  `CONTRACT_MISMATCH`, or `RUN_DEADLINE_EXCEEDED`. The CLI prints `RUN_FAILED: <name>: <detail>` and
-  the operator resubmits; the publisher reuses the branch, the pull request, and the check run it
-  already made. `GET /runs/<runId>` on the verifier reports the same outcome plus the timings of each
-  step, which is how a late verdict is explained rather than guessed at.
+  `SUBJECT_KILLED` (the subject process or container was stopped from outside the run: the child
+  launcher reads the signal the judge did not send, and the Docker launcher asks the daemon for the
+  container's kill event, because an exit code of 137 looks the same for a `docker kill` and a
+  submission's own `process.exit(137)`), `CONTRACT_MISMATCH`, or `RUN_DEADLINE_EXCEEDED`. The CLI
+  prints `RUN_FAILED: <name>: <detail>` and the operator resubmits; the publisher reuses the branch,
+  the pull request, and the check run it already made. `GET /runs/<runId>` on the verifier reports the
+  same outcome plus the timings of each step, which is how a late verdict is explained rather than
+  guessed at.
+- A container that hits its memory cap is OOM-killed by the kernel: that is the submission's fault and
+  stays a REJECTED verdict with a `MEMORY_LIMIT` subject fault, never `SUBJECT_KILLED`. A container
+  the judge stops itself (its deadline or a frame limit) stays a verdict fault too; the launcher
+  removes that container by name so a client killed mid-run cannot leave it behind.
 - The plain child-process subject is the unit-test path only. The API and `acquit` refuse it with
   `SUBJECT_CHILD_REFUSED` unless `ACQUIT_DEV=1`, and live lanes run the Docker subject, which mounts
   only the submitted tree and a minimal bootstrap and has no network.

@@ -327,9 +327,10 @@ test("the bootstrap's frame limits are the judge's own limits", () => {
 });
 
 test("the Docker subject mounts only the submitted tree and the minimal bootstrap", () => {
-	const args = dockerArgs("/tmp/acquit-tree", "node:24-bookworm-slim", "/tmp/acquit-bootstrap.ts");
+	const args = dockerArgs("/tmp/acquit-tree", "node:24-bookworm-slim", "acquit-subject-test", "/tmp/acquit-bootstrap.ts");
 	const mounts = args.flatMap((arg, index) => arg === "--mount" ? [args[index + 1]] : []);
 	assert.equal(mounts.length, 2);
+	assert.equal(args[args.indexOf("--name") + 1], "acquit-subject-test");
 	assert.equal(mounts[0], "type=bind,source=/tmp/acquit-tree,target=/tree,readonly");
 	// The bootstrap path is pinned here: the default is where the checkout lives, so asserting on it
 	// would make this test pass or fail on the checkout's location, not on the mount list.
@@ -349,6 +350,8 @@ test("the Docker subject mounts a staged copy of the bootstrap, never the checko
 const { createHash } = require("node:crypto");
 const { readFileSync, statSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
+// The launcher asks the daemon for events after an abnormal exit; only the run call is under test.
+if (args[0] !== "run") process.exit(0);
 const mounts = args.filter((value, index) => args[index - 1] === "--mount");
 const source = mounts.find(mount => mount.includes("target=/runner/bootstrap.ts")).replace(/^type=bind,source=/, "").replace(/,target=.*$/, "");
 const bytes = readFileSync(source);
@@ -378,8 +381,8 @@ process.exit(2);
 
 test("a mount source that would add a field is refused by name", () => {
 	const unsafe = (error: unknown) => (error as { code?: string }).code === "MOUNT_PATH_UNSAFE";
-	assert.throws(() => dockerArgs("/tmp/tree,target=/etc", "node:24-bookworm-slim"), unsafe);
-	assert.throws(() => dockerArgs("/tmp/tree", "node:24-bookworm-slim", "/tmp/bootstrap.ts,readonly=false"), unsafe);
+	assert.throws(() => dockerArgs("/tmp/tree,target=/etc", "node:24-bookworm-slim", "acquit-subject-test"), unsafe);
+	assert.throws(() => dockerArgs("/tmp/tree", "node:24-bookworm-slim", "acquit-subject-test", "/tmp/bootstrap.ts,readonly=false"), unsafe);
 });
 
 test("the staged bootstrap is the trusted bytes under modes the container user can read", () => {
@@ -732,6 +735,24 @@ test("a Docker client the judge killed is removed by name so the container canno
 	} finally {
 		shim.remove();
 		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a real Docker container the judge stopped at its deadline is removed by name", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+	const fixture = repositoryWith(`export function formatTotal(): Promise<string> { return new Promise(() => {}); }\n`);
+	chmodSync(fixture.repo, 0o755);
+	let name: string | null = null;
+	try {
+		const call: SubjectCall = { id: "frozen:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [] };
+		const pending = dockerSubject().run(fixture.repo, [call], 5_000);
+		name = await waitForContainerMount(fixture.repo, 10_000);
+		const run = await pending;
+		assert.ok(run.faults.includes("TIMEOUT"), JSON.stringify(run.faults));
+		assert.equal(run.killedBy, null);
+		await waitFor(() => String(spawnSync("docker", ["ps", "-a", "--filter", `name=${name}`, "--format", "{{.Names}}"]).stdout ?? "").trim() === "", 10_000);
+	} finally {
+		if (name !== null) spawnSync("docker", ["rm", "--force", name]);
+		fixture.remove();
 	}
 });
 
