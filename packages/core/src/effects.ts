@@ -10,6 +10,8 @@ import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, projectJob, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, Loaded, SystemJobCommand } from "./job.ts";
+import { GitHubAppNotConfigured } from "./github.ts";
+import type { WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
@@ -114,6 +116,8 @@ export type Ports = {
 	readonly store: Store;
 	readonly paypal: PayPal;
 	readonly verifier: VerifierPort;
+	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
+	readonly workRepo?: WorkRepoPort;
 	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<"MERGED" | "UNKNOWN" | "CONFLICT"> };
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	readonly clock: { now(): Instant };
@@ -132,7 +136,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const previous = await ports.store.readRequest(actorKey, key);
 		if (previous) return previous.payloadDigest === payloadDigest ? { kind: "REPLAY", result: previous.result }
 			: { kind: "DENIED", reason: "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" };
-		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob"].includes(command.type)) throw new Error("not implemented");
+		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit"].includes(command.type)) throw new Error("not implemented");
 		const row = "jobId" in command ? await ports.store.readJob(command.jobId) : null;
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
@@ -215,6 +219,8 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 	const row = await ports.store.leaseEffect(now, instant(new Date(Date.parse(now) + 120_000).toISOString()), key);
 	if (!row) return "IDLE";
 	const effect = row.effect;
+	if (effect.kind === "START_VERIFIER") return dispatchVerifierStart(ports, row.key, effect, now);
+	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now);
 	if (effect.kind !== "CREATE_ORDER" && effect.kind !== "CAPTURE") {
 		await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "OUTSIDE_SKELETON" });
 		return "WORKED";
@@ -247,6 +253,57 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 	return "WORKED";
 }
 
+function backoffFrom(now: Instant): Instant {
+	return instant(new Date(Date.parse(now) + 5000).toISOString());
+}
+
+/** Starts the run the attempt reserved. A run that was already reported, or whose slot was returned, is not started again. */
+async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "START_VERIFIER" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+	const job = await ports.store.readJob(effect.jobId);
+	const waiting = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" &&
+		job.state.attempts.pending.runId === effect.attempt.runId;
+	if (!job || !waiting) {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	try {
+		await ports.verifier.start({ runId: effect.attempt.runId, jobId: job.id, ordinal: effect.attempt.ordinal,
+			sourceCommit: effect.attempt.sourceCommit, definitionOfDone: job.contract.definitionOfDone });
+	} catch {
+		// The run may or may not have started. It is never dispatched twice from here, and the run-end timer returns the slot.
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		return "WORKED";
+	}
+	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+	return "WORKED";
+}
+
+/** Pushes the frozen commit to the per-job work repository. No App means the row waits for a human, by name. */
+async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "CREATE_WORK_REPO" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+	const job = await ports.store.readJob(effect.jobId);
+	// Work that never started needs no repository.
+	if (!job || job.state.status === "OPEN" || job.state.status === "CLOSED") {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	if (!ports.workRepo) {
+		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+		return "WORKED";
+	}
+	try {
+		await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key));
+	} catch (error) {
+		if (error instanceof GitHubAppNotConfigured) {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+			return "WORKED";
+		}
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		return "WORKED";
+	}
+	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+	return "WORKED";
+}
+
 export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant): OutboxState {
 	switch (outcome.kind) {
 		case "UNKNOWN": case "PENDING": return { kind: "UNCERTAIN", reconcileAt: outcome.checkAt };
@@ -263,8 +320,18 @@ export function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Res
 	throw new Error("not implemented");
 }
 
-export function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {
-	throw new Error("not implemented");
+export async function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {
+	// The port authenticates the judge's signed report. Submitted-program output never reaches this path.
+	const parsed = await ports.verifier.parseCallback(request);
+	if (!parsed) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+	try {
+		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, runId: parsed.verdict.runId, verdict: parsed.verdict },
+			null, `verifier:${parsed.verdict.runId}`);
+	} catch {
+		// The job state is the guard: a report for a job that is not waiting on this run changes nothing.
+		return Response.json({ error: "REFUSED" }, { status: 409 });
+	}
+	return Response.json({ ok: true });
 }
 
 export async function runDueTimers(ports: Ports): Promise<number> {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
+import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
 import { decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectReplies, screenDiff, toSubjectCall, VerifierPublishMissing } from "../src/verifier.ts";
 import type { DefinitionOfDone, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 
@@ -132,4 +133,32 @@ test("describeRejectReason prints the tutorial's rejection line for a frozen tes
 	assert.equal(describeRejectReason({ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }), "PR modifies protected path package.json");
 	assert.equal(describeRejectReason({ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/money.ts", symbol: "vitest" }), "Submitted source src/money.ts imports vitest");
 	assert.equal(describeRejectReason({ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1" as TestId] }), "Hidden tests failed: hidden:1");
+});
+
+test("the GitHub App port refuses by name and never waits on a call it cannot make", async () => {
+	const absent = createGitHubApp({});
+	await assert.rejects(absent.createWorkRepo({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit }, "req-1"),
+		(error: unknown) => error instanceof GitHubAppNotConfigured && error.code === "GITHUB_APP_NOT_CONFIGURED");
+	await assert.rejects(absent.publishVerified({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-2"),
+		(error: unknown) => (error as { code?: string }).code === "GITHUB_APP_NOT_CONFIGURED");
+	assert.deepEqual(missingGitHubNames({ appId: "1" }), ["GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_ORG"]);
+	const present = createGitHubApp({ appId: "1", privateKey: "key", organization: "acquit-forks" });
+	await assert.rejects(present.createWorkRepo({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit }, "req-3"),
+		(error: unknown) => (error as { code?: string }).code === "GITHUB_APP_NOT_IMPLEMENTED");
+});
+
+test("the fake work repo is idempotent per job and keeps ten lanes off one repository name", async () => {
+	const app = createFakeGitHubApp();
+	const request = { jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit };
+	const created = await app.createWorkRepo(request, "req-1");
+	assert.deepEqual(created, { repository: "acquit-forks/invoice-app-7Q2K", remote: "https://github.com/acquit-forks/invoice-app-7Q2K.git", branch: "main", commit });
+	assert.deepEqual(await app.createWorkRepo(request, "req-2"), created);
+	const other = await app.createWorkRepo({ ...request, jobId: "job_8Z3P" as JobId }, "req-3");
+	assert.equal(other.repository, "acquit-forks/invoice-app-8Z3P");
+	const published = await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-4");
+	assert.deepEqual(published, { repository: "maya-client/invoice-app", pullRequest: 13, mergeCommit: commit,
+		checkRunUrl: "https://github.com/maya-client/invoice-app/runs/job_7Q2K" });
+	assert.equal((await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-5")).pullRequest, 13);
+	assert.deepEqual(app.calls.map(call => call.kind), ["CREATE_WORK_REPO", "CREATE_WORK_REPO", "CREATE_WORK_REPO", "PUBLISH_VERIFIED", "PUBLISH_VERIFIED"]);
+	assert.equal(verifiedBranch(request.jobId), "acquit/job_7Q2K");
 });

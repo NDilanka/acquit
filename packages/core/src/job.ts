@@ -260,6 +260,7 @@ export type JobRow<S extends JobState = JobState> = {
 export type JobEffect =
 	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly round: number; readonly payee: MerchantId; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
 	| { readonly kind: "CAPTURE"; readonly jobId: JobId; readonly round: number; readonly orderId: OrderId; readonly payee: MerchantId }
+	| { readonly kind: "CREATE_WORK_REPO"; readonly jobId: JobId; readonly repository: string; readonly frozenCommit: CommitSha }
 	| { readonly kind: "RELEASE"; readonly jobId: JobId; readonly captureId: CaptureId; readonly payee: MerchantId }
 	| { readonly kind: "REFUND"; readonly jobId: JobId; readonly captureId: CaptureId; readonly payee: MerchantId; readonly amount: UsdCents }
 	| { readonly kind: "START_VERIFIER"; readonly jobId: JobId; readonly attempt: PendingAttempt }
@@ -503,7 +504,9 @@ function transitionTable(): {
 			}
 			return { next: { ...row, version: (row.version + 1) as Version,
 				bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "ACCEPTED" } : b.status === "PENDING" ? { ...b, status: "NOT_SELECTED" } : b),
-				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0 } } }, credits: [], effects: [] };
+				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0 } } },
+				credits: [], effects: [{ kind: "CREATE_WORK_REPO", jobId: row.id,
+					repository: row.contract.definitionOfDone.issue.repository, frozenCommit: row.contract.definitionOfDone.frozenAt }] };
 		} },
 		Submit: { by: "OPERATOR", apply: (row, command, facts) => {
 			if (facts.actor.role !== "OPERATOR" || row.state.escrow.payee.operator !== facts.actor.operatorId) return "NOT_OWNER";

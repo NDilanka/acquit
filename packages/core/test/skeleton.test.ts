@@ -4,13 +4,13 @@ import { randomUUID } from "node:crypto";
 import { commercialSplit, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
-import { executeCommand, applySystemCommand, confirmFunding, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
+import { executeCommand, applySystemCommand, confirmFunding, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { Ports } from "../src/effects.ts";
 import { applyJobCommand, projectJob, TERMS, wakeAt } from "../src/job.ts";
-import type { JobRow } from "../src/job.ts";
+import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, CommitSha, Digest, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
-import type { Verdict, VerifierRunId } from "../src/verifier.ts";
+import type { Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
 import type { Bps, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
@@ -594,4 +594,90 @@ test("the projection carries the attempt history, the pending run, and the froze
 	assert.deepEqual(judged.attempts.reasons, ["PR modifies frozen test file tests/totals.test.ts"]);
 	assert.deepEqual(judged.attempts.history, [{ ordinal: 1, result: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"],
 		sourceCommit, at: now, frozen: null, hidden: null, pullRequest: null }]);
+});
+
+test("capture emits CREATE_WORK_REPO with the frozen commit the contract recorded", () => {
+	const row = heldRow();
+	const open: JobRow = { ...row, state: { status: "OPEN", phase: { kind: "FUNDING", round: 1, chosen: lockedPayee,
+		quote: quote(commercialSplit(usd("400.00")), model), checkoutEndsAt: instant("2026-10-06T15:00:00Z"),
+		checkout: { phase: "CAPTURING", orderId: "TESTORDER" as OrderId } } } };
+	const plan = applyJobCommand(open, { type: "CaptureCompleted", jobId: row.id,
+		capture: (row.state as Extract<typeof row.state, { status: "IN_PROGRESS" }>).escrow.capture },
+		{ actor: { role: "SYSTEM", source: "PAYPAL" }, now, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "IN_PROGRESS");
+	assert.deepEqual(plan.effects, [{ kind: "CREATE_WORK_REPO", jobId: row.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" }]);
+});
+
+test("the outbox starts the run it reserved and provisions the work repo by request id", async () => {
+	const store = new SqliteStore(":memory:");
+	const held = heldRow();
+	const reserved = applyJobCommand(held, { type: "Submit", jobId: held.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof reserved === "string") throw new Error(reserved);
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(reserved.next.id, reserved.next.version, JSON.stringify(reserved.next), later);
+	const starts: VerifierRunRequest[] = [];
+	const created: { jobId: string; repository: string; frozenCommit: string }[] = [];
+	const base = fixture();
+	const ports: Ports = { ...base.ports, store,
+		workRepo: { createWorkRepo: async request => { created.push({ jobId: request.jobId, repository: request.repository, frozenCommit: request.frozenCommit });
+			return { repository: "acquit-forks/invoice-app-submit", remote: "https://github.com/acquit-forks/invoice-app-submit.git", branch: "main", commit: request.frozenCommit }; } },
+		verifier: { start: async request => { starts.push(request); }, parseCallback: async () => null } };
+	const enqueue = (effect: JobEffect) => {
+		const key = operationKey(effect);
+		const state = { kind: "READY", runAt: now };
+		store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, JSON.stringify({ key, effect, payloadDigest: "d", state }), JSON.stringify(state), now);
+		return key;
+	};
+	try {
+		const startKey = enqueue(reserved.effects[0]);
+		assert.equal(await runOutboxOnce(ports, startKey), "WORKED");
+		assert.deepEqual(starts, [{ runId: "run_submit_1", jobId: held.id, ordinal: 1, sourceCommit, definitionOfDone: frozenDefinition() }]);
+		assert.equal(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(startKey)!.state)).kind, "CONFIRMED");
+		const repoKey = enqueue({ kind: "CREATE_WORK_REPO", jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" as CommitSha });
+		assert.equal(await runOutboxOnce(ports, repoKey), "WORKED");
+		assert.deepEqual(created, [{ jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" }]);
+		assert.equal(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(repoKey)!.state)).kind, "CONFIRMED");
+	} finally { store.close(); base.store.close(); }
+});
+
+test("an unconfigured work repo leaves the effect waiting for a human, never hanging", async () => {	const store = new SqliteStore(":memory:");
+	const row = heldRow();
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), later);
+	const base = fixture();
+	const ports: Ports = { ...base.ports, store };
+	const effect: JobEffect = { kind: "CREATE_WORK_REPO", jobId: row.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" as CommitSha };
+	const key = operationKey(effect);
+	const state = { kind: "READY", runAt: now };
+	store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, JSON.stringify({ key, effect, payloadDigest: "d", state }), JSON.stringify(state), now);
+	try {
+		assert.equal(await runOutboxOnce(ports, key), "WORKED");
+		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)),
+			{ kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+	} finally { store.close(); base.store.close(); }
+});
+
+test("the verifier callback refuses an unauthenticated report and applies a signed one", async () => {
+	const store = new SqliteStore(":memory:");
+	const held = heldRow();
+	const reserved = applyJobCommand(held, { type: "Submit", jobId: held.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof reserved === "string") throw new Error(reserved);
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(reserved.next.id, reserved.next.version, JSON.stringify(reserved.next), later);
+	const base = fixture();
+	let report: { jobId: JobId; ordinal: 1; verdict: Verdict } | null = null;
+	const ports: Ports = { ...base.ports, store,
+		verifier: { start: async () => {}, parseCallback: async () => report } };
+	const callback = () => new Request("http://localhost:4310/api/verifier/callback", { method: "POST" });
+	try {
+		assert.equal((await ingestVerifierCallback(ports, callback())).status, 401);
+		report = { jobId: held.id, ordinal: 1, verdict: rejection("run_submit_1") };
+		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
+		const after = await store.readJob(held.id);
+		assert.equal(after?.state.status, "IN_PROGRESS");
+		const attempts = (after!.state as Extract<typeof after.state, { status: "IN_PROGRESS" }>).attempts;
+		assert.equal(attempts.phase, "READY");
+		assert.deepEqual(attempts.history.map(record => record.verdict), [rejection("run_submit_1")]);
+		// A redelivery of the same run changes nothing: the pending slot is gone, so the edge is a no-op.
+		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
+		assert.deepEqual((await store.readJob(held.id))!.version, after!.version);
+	} finally { store.close(); base.store.close(); }
 });
