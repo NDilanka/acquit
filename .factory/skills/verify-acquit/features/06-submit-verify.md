@@ -8,7 +8,8 @@ stays with the client on a rejection, and a clean run opens the pull request.
 - `submit-reserve` records one attempt and dispatches exactly one verifier run.
 - `submit-reject-protected` rejects a diff that touches a frozen test or a protected path.
 - `submit-reject-hidden` rejects a run whose hidden cases fail.
-- `submit-reject-framework` rejects submitted source that imports a test framework.
+- `submit-reject-framework` rejects submitted source that imports a test framework, and refuses a diff
+  that changes more source paths than the screen reads.
 - `submit-verify` verifies a clean run, opens the pull request, and starts the 72 hour review window.
 - `submit-replay` answers a repeated request key with REPLAY and starts no second run.
 - `submit-denied` refuses a submission from an operator the job is not locked to.
@@ -52,13 +53,15 @@ Preconditions:
 
 ## Gotchas
 
-- The lexical screen claims exactly three things: a protected path is refused by name under every git
+- The lexical screen claims exactly four things: a protected path is refused by name under every git
   status (add, modify, delete, rename on both names, mode change, type change), an added line of a
-  source file that literally mentions `vitest`, `expect(`, or `node:test` is refused, and a diff past
-  4096 changed paths is refused by name (`DIFF_TOO_LARGE`) rather than screened in part.
-- Below that bound every changed path is screened. Only the added-text reads are bounded, at 256 source
-  paths, so a source file deeper in a very large diff is judged on its path and on the frozen and
-  hidden suites, not on its added lines.
+  source file that literally mentions `vitest`, `expect(`, or `node:test` is refused, a diff past
+  4096 changed paths is refused by name (`DIFF_TOO_LARGE`) rather than screened in part, and a diff
+  that changes more than 256 source paths is refused by name (`SOURCE_PATHS_OVER_READ_BOUND`)
+  because the screen reads added text for only that many.
+- Below both bounds every changed path is screened, and every changed source path is screened on its
+  added lines. A diff that changes more than 256 source paths is refused whole, so a framework import
+  deep in a large diff cannot go unread.
 - It does not read non-source files (a `vitest.config.ts` change trips it only if a protected glob
   names the path), it does not resolve module graphs (a re-exported or aliased framework import is
   invisible), it does not see a string built at runtime (`import("vit" + "est")`), it never reads a

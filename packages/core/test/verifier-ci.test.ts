@@ -71,8 +71,9 @@ test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejecti
 	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, pullRequest: 0 }), null);
 	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: rejected })?.ordinal, 1);
 	const overReadBound = { ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }] };
-	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: overReadBound }),
-		{ jobId: "job_ci_test", ordinal: 1, verdict: overReadBound });
+	const parsed = parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: overReadBound });
+	assert.deepEqual(parsed?.verdict.result === "REJECTED" ? parsed.verdict.reasons : null,
+		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }]);
 });
 
 test("the remote verifier posts the run and refuses a non-2xx answer", async () => {

@@ -61,7 +61,12 @@ export type RejectReason =
 	/** The submitted tree holds a gitlink. Nothing starts: a submodule is not a source file either. */
 	| { readonly kind: "TREE_GITLINK"; readonly path: string }
 	/** The diff is bigger than the screen's bound. Nothing starts: a screen in part is not a screen. */
-	| { readonly kind: "DIFF_TOO_LARGE"; readonly paths: number; readonly limit: number };
+	| { readonly kind: "DIFF_TOO_LARGE"; readonly paths: number; readonly limit: number }
+	/**
+	 * The diff changes more source paths than the screen reads added text for. Nothing starts: a
+	 * screen in part is not a screen.
+	 */
+	| { readonly kind: "SOURCE_PATHS_OVER_READ_BOUND"; readonly paths: number; readonly limit: number };
 
 /** The only verifier type job.ts sees. */
 export type Verdict =
@@ -256,6 +261,13 @@ export function judgeHidden(
 export const MAX_DIFF_CHANGES = 4096;
 
 /**
+ * The most changed source paths one screen reads added text for. The source adapter reads a patch
+ * for at most this many, so a diff past the bound is refused by name rather than screened in part,
+ * because a source path without its added lines is a path whose framework import the screen cannot see.
+ */
+export const MAX_ADDED_TEXT_PATHS = 256;
+
+/**
  * Rejects protected-path edits and any source file that imports vitest, expect, or node:test.
  * A change is judged by its status, so a deletion, a rename, a mode change, and a binary swap all
  * reach this screen even though a unified patch carries no added line for them.
@@ -271,13 +283,16 @@ export const MAX_DIFF_CHANGES = 4096;
  *   is invisible to it, and it does not see a string built at runtime (`import("vit" + "est")`).
  * - It never reads a file git reports as binary, and it never runs the submitted tests.
  * - A diff past MAX_DIFF_CHANGES is refused by name, so a padded diff cannot hide a change behind
- *   the bound. Below it every path is screened; the patch reads the source adapter performs are
- *   bounded separately, so a path deep in a large diff is still judged on its status.
+ *   the bound. A diff that changes more than MAX_ADDED_TEXT_PATHS source paths is refused by name
+ *   too, because the source adapter reads added text for only that many. Below both bounds every
+ *   changed path is screened, and every changed source path is screened on its added lines.
  * - The screen is a fast refusal for the obvious cheats. The frozen-suite extraction and the six
  *   hidden cases are the authority on behavior, and they hold the expected values.
  */
 export function screenDiff(diff: DiffSummary, done: DefinitionOfDone): readonly RejectReason[] {
 	if (diff.changes.length > MAX_DIFF_CHANGES) return [{ kind: "DIFF_TOO_LARGE", paths: diff.changes.length, limit: MAX_DIFF_CHANGES }];
+	const sourcePaths = diff.changes.filter(change => !change.binary && isSourcePath(change.path)).length;
+	if (sourcePaths > MAX_ADDED_TEXT_PATHS) return [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: sourcePaths, limit: MAX_ADDED_TEXT_PATHS }];
 	const reasons: RejectReason[] = [];
 	for (const change of diff.changes) {
 		// A rename touches two names: the frozen path it left and the path it occupies now.
@@ -396,6 +411,8 @@ export function describeRejectReason(reason: RejectReason): string {
 			return `PR makes ${reason.path} a submodule gitlink, which the subject cannot import`;
 		case "DIFF_TOO_LARGE":
 			return `The submitted tree changes ${reason.paths} paths, over the ${reason.limit}-path screen limit`;
+		case "SOURCE_PATHS_OVER_READ_BOUND":
+			return `The submitted tree changes ${reason.paths} source paths, over the ${reason.limit}-source-path read bound`;
 	}
 }
 

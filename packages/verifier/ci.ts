@@ -153,6 +153,11 @@ function parseRejectReason(value: unknown): RejectReason | null {
 			const limit = positiveCount(reason.limit);
 			return paths !== null && limit !== null ? { kind: reason.kind, paths, limit } : null;
 		}
+		case "SOURCE_PATHS_OVER_READ_BOUND": {
+			const paths = positiveCount(reason.paths);
+			const limit = positiveCount(reason.limit);
+			return paths !== null && limit !== null ? { kind: reason.kind, paths, limit } : null;
+		}
 		default: return null;
 	}
 }

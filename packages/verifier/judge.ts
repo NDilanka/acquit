@@ -10,7 +10,7 @@ import { performance } from "node:perf_hooks";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
 import { FROZEN_TEST_PATH, HIDDEN_CASES, hiddenManifest } from "../core/src/seed-data.ts";
-import { decideVerdict, isSourcePath, judgeHidden, MAX_DIFF_CHANGES, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
+import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
 import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
@@ -51,8 +51,9 @@ export function gitSource(repoDir: string): JudgeSource {
 		diff(frozenAt, sourceCommit) {
 			const changes = parseRawDiff(run(["diff", "--raw", "-z", "--find-renames", frozenAt, sourceCommit], "utf8") as string);
 			const binary = parseNumstatBinary(run(["diff", "--numstat", "-z", "--find-renames", frozenAt, sourceCommit], "utf8") as string);
-			// Every changed path reaches the screen; only the patch reads are bounded, and a diff past
-			// the screen's own bound reads none of them because the screen refuses it by name.
+			// Every changed path reaches the screen. The patch reads stop at MAX_ADDED_TEXT_PATHS
+			// source paths, and the screen refuses a diff past that bound by name, so no accepted diff
+			// holds a source path whose added lines went unread.
 			let reads = 0;
 			return { changes: changes.map(change => {
 				const isBinary = binary.has(change.path);
@@ -75,12 +76,6 @@ export function gitSource(repoDir: string): JudgeSource {
 		},
 	};
 }
-
-/**
- * How many changed source paths one run reads a patch for. The reads are bounded because each one is
- * a git process; the path screen covers every change of every accepted diff regardless.
- */
-const MAX_ADDED_TEXT_PATHS = 256;
 
 /** `git diff --raw -z`: one header per change, then its path, or the old and the new path of a rename. */
 function parseRawDiff(text: string): readonly Omit<DiffChange, "binary" | "addedText">[] {
