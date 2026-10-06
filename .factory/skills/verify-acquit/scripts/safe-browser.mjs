@@ -1,16 +1,22 @@
 // Batch values are visible to attached stream clients in agent-browser 0.37.1.
 // Approval must have no stream clients and must refuse a listening dashboard.
 export function credentialFill(selector, value) {
-	return { args: ["batch", "--bail"], input: JSON.stringify([["fill", selector, value]]) };
+	// In the same bail batch, immediately before EACH fill, including the
+	// password after an email fill. Never trust an earlier page observation.
+	return { args: ["batch", "--bail"], input: JSON.stringify([
+		["eval", `(${assertSandboxOrigin.toString()})()`], ["fill", selector, value],
+	]) };
+}
+export function assertSandboxOrigin() {
+	if (location.origin !== "https://www.sandbox.paypal.com") throw new Error("Credential fill refused outside the sandbox PayPal origin.");
+	return true;
 }
 export async function refuseDashboard(ports, isOpen) {
-	// A listening port is not enough. The dashboard answers a connect on
-	// 127.0.0.1; a port discovered only by its listener (including one bound on
-	// ::1) is refused unless that probe succeeds, which it cannot for ::1.
+	// Discovery itself proves a listener; probing IPv4 cannot disprove an
+	// IPv6-only (or otherwise non-loopback) discovered dashboard.
 	for (const port of new Set([4848, ...ports])) {
 		if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid dashboard port; approval refused.");
-		if (await isOpen(port) && !(await isOpen(port, "127.0.0.1"))) throw new Error("Approval refused: a dashboard port is listening but did not answer on 127.0.0.1. Close the dashboard and detach every stream client before approval.");
-		if (await isOpen(port, "127.0.0.1")) throw new Error("Approval refused: a dashboard port is listening. Close the dashboard and detach every stream client before approval.");
+		if (ports.includes(port) || await isOpen(port, "127.0.0.1") || await isOpen(port, "::1")) throw new Error("Approval refused: a dashboard port is listening. Close the dashboard and detach every stream client before approval.");
 	}
 }
 export const paypalControlSelectors = [
@@ -86,45 +92,64 @@ export function paypalPageProbe(selectors) {
 	};
 }
 const sandboxHost = String.raw`(?:[a-z0-9-]+\.)*sandbox\.paypal\.com(?![a-z0-9.-])`;
-function stripUrls(text) {
-	// Strip the query and fragment of every sandbox PayPal URL: any subdomain,
-	// schemeless, JSON-escaped slashes, and slash escapes. The match stops before
-	// a closing quote, so href='...' keeps its quote. Then decode to a fixed
-	// point and strip again, so nested percent-encoding cannot hide a token.
-	const clean = value => value
-		.replace(new RegExp(String.raw`(https?:(?:\\?\/){2}${sandboxHost}[^?\s"'<>]*)(?:[?#][^"'\s<>]*)`, "gi"), "$1?[redacted]")
-		.replace(new RegExp(String.raw`((?:^|[\s"'=])${sandboxHost}\/[^?\s"'<>]*)(?:[?#][^"'\s<>]*)`, "gi"), "$1?[redacted]")
-		.replace(/(\/paypal\/return)(?:[?#][^"'\s<>]*)/gi, "$1?[redacted]");
-	let current = text;
-	for (let i = 0; i < 4; i++) {
-		const stripped = clean(current);
-		const decoded = stripped
-			.replace(/\\u([0-9a-f]{4})/gi, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
-			.replace(/%[0-9a-f]{2}/gi, encoded => { try { return decodeURIComponent(encoded); } catch { return encoded; } });
-		if (decoded === current) return stripped;
-		current = decoded;
-	}
-	return clean(current);
-}
 export function redactor(secrets = []) {
-	const forms = [...new Set(secrets.filter(secret => typeof secret === "string" && secret).flatMap(secret => {
-		const html = secret.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-		const numeric = base => [...secret].map(char => `&#${base === 16 ? "x" : ""}${char.codePointAt(0).toString(base)};`).join("");
-		const escaped = JSON.stringify(secret).slice(1, -1);
-		const email = /^[^@\s]+@[^@\s]+$/.test(secret) ? [secret.toLowerCase()] : [];
-		return [secret, ...email, escaped, escaped.replace(/\\/g, "\\\\"), encodeURIComponent(secret), encodeURIComponent(secret).toLowerCase(),
-			encodeURI(secret), new URLSearchParams({ value: secret }).toString().slice(6), html, html.replaceAll("&#39;", "&apos;"),
-			html.replaceAll("&#39;", "&#x27;"), numeric(10), numeric(16),
-			secret.replace(/[&<>"']/g, char => `&#${char.codePointAt(0)};`),
-			secret.replace(/[&<>"']/g, char => `&#x${char.codePointAt(0).toString(16)};`),
-			secret.replace(/[&<>"']/g, char => `&#x${char.codePointAt(0).toString(16).toUpperCase()};`),
-			[...secret].map(char => `\\u${char.codePointAt(0).toString(16).padStart(4, "0")}`).join(""),
-			[...secret].map(char => `\\u${char.codePointAt(0).toString(16).padStart(4, "0").toUpperCase()}`).join(""),
-			secret.replace(/[<>&]/g, char => `\\u${char.codePointAt(0).toString(16).padStart(4, "0")}`)];
-	}))].sort((a, b) => b.length - a.length);
+	const patterns = [...new Set(secrets.filter(secret => typeof secret === "string" && secret))].map(secret =>
+		new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), /^[^@\s]+@[^@\s]+$/.test(secret) ? "gi" : "g"));
+	const urls = [
+		new RegExp(String.raw`https?:\/\/${sandboxHost}[^?#\s"'<>]*([?#][^"'\s<>]*)`, "gi"),
+		new RegExp(String.raw`(?:^|[\s"'=])${sandboxHost}(?:\/[^?#\s"'<>]*)?([?#][^"'\s<>]*)`, "gi"),
+		/\/paypal\/return([?#][^"'\s<>]*)/gi,
+	];
 	return value => {
-		let text = value == null ? "" : typeof value === "string" ? value : JSON.stringify(value) ?? "";
-		for (const form of forms) text = text.replaceAll(form, "[redacted]");
-		return stripUrls(text);
+		const original = value == null ? "" : typeof value === "string" ? value : JSON.stringify(value) ?? "";
+		let scratch = original;
+		let map = Array.from({ length: original.length }, (_, start) => ({ start, end: start + 1 }));
+		const hits = [];
+		const hit = (start, end, replacement) => hits.push({ start: map[start].start, end: map[end - 1].end, replacement });
+		// Decode only scratch text. Every decoded code unit keeps the ORIGINAL
+		// byte-range provenance; output is always sliced from original evidence.
+		for (;;) {
+			for (const pattern of patterns) for (const match of scratch.matchAll(pattern)) hit(match.index, match.index + match[0].length, "[redacted]");
+			for (const pattern of urls) for (const match of scratch.matchAll(pattern)) {
+				const query = match[1];
+				hit(match.index + match[0].length - query.length, match.index + match[0].length, "?[redacted]");
+			}
+			const escapes = /\\u([0-9a-f]{4})|\\(["\\/])|(?:%[0-9a-f]{2})+|&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);|\+/gi;
+			let next = "", nextMap = [], cursor = 0;
+			for (const match of scratch.matchAll(escapes)) {
+				let decoded = match[0];
+				if (match[1]) decoded = String.fromCharCode(Number.parseInt(match[1], 16));
+				else if (match[2]) decoded = match[2];
+				else if (decoded.startsWith("%")) { try { decoded = decodeURIComponent(decoded); } catch {} }
+				else if (decoded === "+") decoded = " ";
+				else {
+					const entity = decoded.slice(1, -1).toLowerCase();
+					if (entity.startsWith("#")) {
+						const point = Number.parseInt(entity.slice(entity.startsWith("#x") ? 2 : 1), entity.startsWith("#x") ? 16 : 10);
+						if (point <= 0x10ffff) decoded = String.fromCodePoint(point);
+					} else decoded = ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" })[entity] ?? decoded;
+				}
+				next += scratch.slice(cursor, match.index);
+				nextMap.push(...map.slice(cursor, match.index));
+				next += decoded;
+				if (decoded === match[0]) nextMap.push(...map.slice(match.index, match.index + match[0].length));
+				else for (let i = 0; i < decoded.length; i++) nextMap.push({ start: map[match.index].start, end: map[match.index + match[0].length - 1].end });
+				cursor = match.index + match[0].length;
+			}
+			next += scratch.slice(cursor);
+			nextMap.push(...map.slice(cursor));
+			if (next === scratch) break;
+			scratch = next; map = nextMap;
+		}
+		hits.sort((a, b) => a.start - b.start || b.end - a.end);
+		const merged = [];
+		for (const range of hits) {
+			const last = merged.at(-1);
+			if (last && range.start < last.end) last.end = Math.max(last.end, range.end);
+			else merged.push({ ...range });
+		}
+		let output = "", cursor = 0;
+		for (const range of merged) { output += original.slice(cursor, range.start) + range.replacement; cursor = range.end; }
+		return output + original.slice(cursor);
 	};
 }

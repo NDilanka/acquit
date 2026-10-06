@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:net";
+import { runInNewContext } from "node:vm";
+import { portOpen } from "../src/process.ts";
 // @ts-ignore Node executes the helper's native ESM.
 import { credentialFill, redactor, refuseDashboard, englishCheckoutUrl, paypalControlSelectors, paypalPageProbe, classifyCheckout } from "../../../.factory/skills/verify-acquit/scripts/safe-browser.mjs";
 
@@ -7,7 +10,12 @@ test("credential fills travel only through batch stdin, never eval or command ar
 	const command = credentialFill('input[type="password"]', 'synthetic-"password');
 	assert.deepEqual(command.args, ["batch", "--bail"]);
 	assert.equal(command.args.some((arg: string) => arg.includes("password")), false);
-	assert.deepEqual(JSON.parse(command.input), [["fill", 'input[type="password"]', 'synthetic-"password']]);
+	const batch = JSON.parse(command.input);
+	assert.deepEqual(batch[1], ["fill", 'input[type="password"]', 'synthetic-"password']);
+	assert.equal(runInNewContext(batch[0][1], { location: { origin: "https://www.sandbox.paypal.com" } }), true);
+	for (const origin of ["https://evil.test", "http://www.sandbox.paypal.com", "https://www.sandbox.paypal.com:444", "https://www.sandbox.paypal.com.evil.test"]) {
+		assert.throws(() => runInNewContext(batch[0][1], { location: { origin } }), /refused outside/);
+	}
 });
 test("action evidence redacts checkout query strings and escaped tokens", () => {
 	const redact = redactor(['synthetic-"secret']);
@@ -67,10 +75,27 @@ test("approval refuses default and custom dashboard listeners", async () => {
 	for (const active of [4848, 61234]) {
 		await assert.rejects(refuseDashboard([61234], async (port: number) => port === active), /dashboard port is listening/);
 	}
-	await refuseDashboard([61234], async () => false);
+	await refuseDashboard([], async () => false);
 	await assert.rejects(refuseDashboard([NaN], async () => false), /Invalid dashboard port/);
-	// A port that answers only off 127.0.0.1, such as ::1, cannot pass the probe.
-	await assert.rejects(refuseDashboard([61234], async (_port: number, host?: string) => host !== "127.0.0.1"), /did not answer on 127.0.0.1/);
+	const server = createServer(socket => socket.destroy());
+	try {
+		await new Promise<void>(resolve => server.listen(0, "::1", resolve));
+		const port = (server.address() as { port: number }).port;
+		assert.equal(await portOpen(port), false, "The real default probe cannot see an IPv6-only dashboard.");
+		assert.equal(await portOpen(port, "::1"), true);
+		await assert.rejects(refuseDashboard([port], portOpen), /dashboard port is listening/);
+	} finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+test("normalization never rebuilds a secret or changes unrelated encoded evidence", () => {
+	const redact = redactor(["Zq/Xy<9&Kp", "s3cretPass", "buyer.test@example.com"]);
+	for (const form of [
+		"Zq%2fXy%3c9%26Kp", "Zq%252FXy%253C9%2526Kp",
+		String.raw`Zq/Xy\u003C9&Kp`, String.raw`Zq\u002fXy<9&Kp`,
+		"%5A%71%2F%58%79%3C%39%26%4B%70", "%73%33cretPass",
+		"BUYER.TEST@EXAMPLE.COM", "BuYeR.TeSt@ExAmPlE.CoM",
+	]) assert.equal(redact(form), "[redacted]");
+	for (const ordinary of ["100%25 done", String.raw`unrelated \u003Ctag\u003E`, "ordinary%252ftext", "x&amp;y", "a+b"]) assert.equal(redact(ordinary), ordinary);
+	assert.equal(redact("100%25 done; Zq%252FXy%253C9%2526Kp; unchanged%2f"), "100%25 done; [redacted]; unchanged%2f");
 });
 test("checkout forces English while preserving the order and prefers structural PayPal controls", () => {
 	for (const host of ["sandbox.paypal.com", "www.sandbox.paypal.com"]) {
