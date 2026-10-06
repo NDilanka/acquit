@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createFakeGitHubApp } from "../src/github.ts";
+import type { PublisherPort, PublishRequest } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, JobId, TestId } from "../src/ids.ts";
 import { SUBJECT_ERROR_CHARS, SUBJECT_FRAME_BYTES, parseSubjectTranscript } from "../src/verifier.ts";
@@ -441,6 +442,54 @@ test("a call that never resolves dies at the deadline as a TIMEOUT fault", async
 		assert.deepEqual(outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail),
 			["TIMEOUT", "SUBJECT_EXIT", "SUBJECT_INCOMPLETE"]);
 		assert.ok(outcome.timings.wallMs >= 1_400, `wallMs ${outcome.timings.wallMs} should reach the deadline`);
+	} finally { fixture.remove(); }
+});
+
+test("a run whose hidden tests fail is REJECTED without ever asking the publisher", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_hidden_reject" as VerifierRunId, jobId: "job_hidden_reject" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const publishCalls: PublishRequest[] = [];
+		const publisher: PublisherPort = { publishVerified: async publishRequest => {
+			publishCalls.push(publishRequest);
+			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
+		} };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT") return;
+		assert.equal(outcome.verdict.result, "REJECTED");
+		if (outcome.verdict.result !== "REJECTED") return;
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1", "hidden:2"] }]);
+		assert.deepEqual(publishCalls, []);
+		assert.equal(outcome.timings.publishMs, 0);
+	} finally { fixture.remove(); }
+});
+
+test("a run whose hidden tests fail stays REJECTED even with a publisher that would refuse", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_hidden_refused" as VerifierRunId, jobId: "job_hidden_refused" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const publishCalls: PublishRequest[] = [];
+		const publisher: PublisherPort = { publishVerified: async publishRequest => {
+			publishCalls.push(publishRequest);
+			throw new Error("no App installation on maya-client/invoice-app");
+		} };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT") return;
+		assert.equal(outcome.verdict.result, "REJECTED");
+		if (outcome.verdict.result !== "REJECTED") return;
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1", "hidden:2"] }]);
+		assert.deepEqual(publishCalls, []);
+		assert.equal(outcome.timings.publishMs, 0);
 	} finally { fixture.remove(); }
 });
 
