@@ -37,6 +37,22 @@ test("the config boundary reads ACQUIT_CLIENT_REPOSITORY and refuses a malformed
 		(error: Error) => error.message.includes("ACQUIT_CLIENT_REPOSITORY") && !error.message.includes("not-a-repository"));
 });
 
+test("a factory with no client repository named opens the demo one, never nothing", async () => {
+	// A caller that omits the field must still get the demo repository the old code froze; an
+	// undefined repository would deny every OpenJob with NOT_FOUND.
+	const root = await mkdtemp(join(tmpdir(), "acquit-client-default-"));
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"),
+		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
+			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
+		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
+	try {
+		const committed = await service.execute(maya, parseRequestKey(randomUUID()),
+			{ type: "OpenJob", repository: demo, issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
+		assert.equal(committed.kind, "COMMITTED");
+		assert.equal(committed.kind === "COMMITTED" && committed.result.kind === "JOB" ? committed.result.job.contract?.repository : null, demo);
+	} finally { closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
 test("OpenJob freezes the deployment's repository and refuses any other", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-client-repo-"));
 	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), clientRepository: live,
