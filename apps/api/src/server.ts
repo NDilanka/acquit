@@ -4,7 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import { config, devEnabled, webOrigin } from "./config.ts";
+import type { CommitSha } from "../../../packages/core/src/ids.ts";
+import { config, devEnabled, verifierEnv, webOrigin } from "./config.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
@@ -63,6 +64,7 @@ function parseCommand(value: unknown): UserCommand {
 		OpenJob: ["type", "repository", "issueNumber", "budget", "deliveryEndsAt"],
 		PlaceBid: ["type", "jobId", "price", "eta", "agent", "pitch"],
 		AcceptBid: ["type", "jobId", "bidId"], CancelJob: ["type", "jobId"],
+		Submit: ["type", "jobId", "sourceCommit"],
 	};
 	const allowed = typeof command.type === "string" ? keys[command.type] : undefined;
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
@@ -75,6 +77,11 @@ function parseCommand(value: unknown): UserCommand {
 			agent: text(command.agent, "agent", 80) as AgentId, pitch: text(command.pitch, "pitch", 2000) };
 		case "AcceptBid": return { type: "AcceptBid", jobId: parseJobId(text(command.jobId, "job id")), bidId: parseBidId(text(command.bidId, "bid id")) };
 		case "CancelJob": return { type: "CancelJob", jobId: parseJobId(text(command.jobId, "job id")) };
+		case "Submit": {
+			const sourceCommit = text(command.sourceCommit, "source commit", 64);
+			if (!/^[0-9a-f]{7,64}$/.test(sourceCommit)) throw new BadBody("source commit must be a git object name");
+			return { type: "Submit", jobId: parseJobId(text(command.jobId, "job id")), sourceCommit: sourceCommit as CommitSha };
+		}
 		default: throw new BadBody("Unsupported command");
 	}
 }
@@ -125,6 +132,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		catch { redirect(res, `${path}?funding=retry`); }
 		return;
 	}
+	if (url.pathname === "/api/verifier/callback" && method === "POST") {
+		// The CI is not a browser session. The port authenticates the signed body, or nothing is applied.
+		if (!verifierEnv.callbackSecret) { json(res, 503, { error: "VERIFIER_CI_NOT_CONFIGURED",
+			detail: "Set ACQUIT_VERIFIER_CALLBACK_SECRET (and ACQUIT_VERIFIER_CI_URL) to accept a report." }); return; }
+		try {
+			const response = await acquit.handleVerifierCallback(new Request(`http://localhost:${port}${url.pathname}`, { method: "POST",
+				headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+				body: JSON.stringify(await body(req)) }));
+			json(res, response.status, await response.json());
+		} catch {
+			// The service port is not wired yet; refuse by name instead of answering 500.
+			json(res, 503, { error: "VERIFIER_PORT_NOT_WIRED",
+				detail: "The verifier port is not wired into createAcquit; see data/evidence/f3-r1-build/acquit-ts-wiring.patch." });
+		}
+		return;
+	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
@@ -163,7 +186,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -186,6 +209,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 function validJobId(raw: string): ReturnType<typeof parseJobId> {
 	try { return parseJobId(raw); } catch { throw new BadBody("Invalid job id"); }
+}
+/** Operator ids become handles here so the CLI never prints a bare id where a person's handle belongs. */
+function operatorHandles(): Record<string, string> {
+	const handles: Record<string, string> = {};
+	for (const row of db.prepare("SELECT id, json FROM operators").all()) {
+		const operator = JSON.parse(String(row.json)) as { handle?: string };
+		if (typeof operator.handle === "string") handles[String(row.id)] = operator.handle;
+	}
+	return handles;
 }
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {

@@ -17,6 +17,11 @@ export function required(name: string): string {
 	if (!value) throw new Error(`Missing configuration: ${name}`);
 	return value;
 }
+/** Empty names stay empty: a port that is not configured must fail fast by name, never wait. */
+const optional = (name: string): string => process.env[name]?.trim() ?? "";
+export const verifierEnv = { ciUrl: optional("ACQUIT_VERIFIER_CI_URL"), callbackSecret: optional("ACQUIT_VERIFIER_CALLBACK_SECRET") };
+export const githubEnv = { appId: optional("ACQUIT_GITHUB_APP_ID"), privateKey: optional("ACQUIT_GITHUB_APP_PRIVATE_KEY"),
+	organization: optional("ACQUIT_GITHUB_APP_ORG"), apiBase: optional("ACQUIT_GITHUB_API_BASE") };
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
@@ -25,5 +30,5 @@ export function config(): AcquitConfig {
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,
 		feeModel: { version: "sandbox-349bps-plus-49-v1", rateBps: 349 as Bps, fixed: usd("0.49") },
-	}, verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } };
+	}, verifier: verifierEnv, github: { appId: githubEnv.appId, privateKey: githubEnv.privateKey } };
 }
