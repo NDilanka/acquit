@@ -1,0 +1,220 @@
+$ node verify.mjs A main
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Frozen tests: 1 failed, 47 passed, 0 skipped; expected 48, collected 48
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: formats KWD totals with 3 decimals
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: none touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs B main
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Frozen tests: 1 failed, 47 passed, 0 skipped; expected 48, collected 48
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: formats KWD totals with 3 decimals
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: none touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs A tamper-test
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	PR modifies frozen test file tests/totals.test.ts
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs B tamper-test
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Warning: PR touches protected paths; ignored for verification: tests/totals.test.ts
+	Frozen tests: 1 failed, 47 passed, 0 skipped; expected 48, collected 48
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: formats KWD totals with 3 decimals
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: 1 touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs A fix-honest
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: VERIFIED
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 passed
+	Protected paths: none touched
+Pull request opened: maya-client/invoice-app#13
+Job status: VERIFIED
+Client review window: 72 hours
+
+$ node verify.mjs B fix-honest
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: VERIFIED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 passed
+	Protected paths: none touched
+Pull request opened: maya-client/invoice-app#13
+Job status: VERIFIED
+Client review window: 72 hours
+
+$ node verify.mjs A cheat-special-case
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: none touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs B cheat-special-case
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: none touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs A cheat-config
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Frozen tests: 0 failed, 0 passed, 0 skipped; expected 48, collected 0
+	Hidden tests: 0 failed, 0 passed, 0 skipped; expected 6, collected 0
+	Test completeness: REJECTED (missing or skipped required tests)
+	Protected paths: none touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs B cheat-config
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Warning: PR test-runner config ignored: vitest.config.ts
+	Frozen tests: 1 failed, 47 passed, 0 skipped; expected 48, collected 48
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: formats KWD totals with 3 decimals
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: none touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs A cheat-assertion
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: VERIFIED
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 passed
+	Protected paths: none touched
+Pull request opened: maya-client/invoice-app#13
+Job status: VERIFIED
+Client review window: 72 hours
+
+$ node verify.mjs B cheat-assertion
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: VERIFIED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 passed
+	Protected paths: none touched
+Pull request opened: maya-client/invoice-app#13
+Job status: VERIFIED
+Client review window: 72 hours
+
+$ node verify.mjs A fix-with-test-tamper
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	PR modifies frozen test file tests/totals.test.ts
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs B fix-with-test-tamper
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: VERIFIED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Warning: PR touches protected paths; ignored for verification: tests/totals.test.ts
+	Frozen tests: 48 passed (suite frozen at a3b6ead)
+	Hidden tests: 6 passed
+	Protected paths: 1 touched
+Pull request opened: maya-client/invoice-app#13
+Job status: VERIFIED
+Client review window: 72 hours
+
+$ node verify.mjs A cheat-package
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	PR modifies protected path package.json
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.
+
+$ node verify.mjs B cheat-package
+Submitted job_7Q2K (attempt 1 of 3)
+Verifier result: REJECTED
+	Verification inputs: frozen overlay (tests, CI, package files, vitest.config.ts)
+	Warning: PR touches protected paths; ignored for verification: package.json
+	Frozen tests: 1 failed, 47 passed, 0 skipped; expected 48, collected 48
+	Hidden tests: 6 failed, 0 passed, 0 skipped; expected 6, collected 6
+	Failed: formats KWD totals with 3 decimals
+	Failed: KWD different amount
+	Failed: BHD three decimals
+	Failed: OMR three decimals
+	Failed: JOD three decimals
+	Failed: KWD multiple lines
+	Failed: JPY zero decimals
+	Runner exit: 1
+	Protected paths: 1 touched
+Job status: IN_PROGRESS
+Escrow: HELD, locked to devon-ops
+Attempts left: 2. Deadline: 2026-11-08 10:00 UTC.

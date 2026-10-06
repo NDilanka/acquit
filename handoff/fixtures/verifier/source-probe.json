@@ -1,0 +1,5 @@
+{
+  "method": "Execute the committed function with only the Vitest import replaced by a no-op expect.extend adapter. Function body unchanged.",
+  "KWD": "10.13",
+  "BHD": "2.35"
+}

@@ -1,0 +1,22 @@
+Collected 2026-10-05T21:08:30.2518045+05:30
+Load is Windows CPU utilization, not a Unix load average.
+
+Name           : 11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz
+LoadPercentage : 80
+
+
+
+NumberOfLogicalProcessors : 12
+
+
+
+ProcessName         CPU
+-----------         ---
+factory-desktop 8800.33
+factory-desktop 6319.17
+droid           6232.44
+msedge          2176.92
+msedge          1690.27
+
+
+POST_BENCHMARK_CPU_LOAD_PERCENT=49

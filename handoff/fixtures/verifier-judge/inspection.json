@@ -1,0 +1,60 @@
+{
+  "samples": 32,
+  "calls": 1296,
+  "expectedFieldsOnWire": 0,
+  "infrastructureErrors": 0,
+  "naiveFirstWinsPassed": 54,
+  "forgedFrames": 108,
+  "hardenedInvalidIds": 54,
+  "profile": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214615782-14604-A-fix-honest\\CPU.20261005.210655.15924.0.001.cpuprofile",
+  "profileTop": [
+    {
+      "frame": "(program) @ ",
+      "ms": 59.568
+    },
+    {
+      "frame": "decimalsFor @ file:///D:/dev/Apps/unnamed/scratch/verifier-judge/trees/fix-honest/src/money.ts",
+      "ms": 36.318
+    },
+    {
+      "frame": "__require @ node:internal/deps/amaro/dist/index",
+      "ms": 19.197
+    },
+    {
+      "frame": "compileForInternalLoader @ node:internal/bootstrap/realm",
+      "ms": 14.816
+    },
+    {
+      "frame": "Module @ ",
+      "ms": 11.723
+    },
+    {
+      "frame": "wasm-function[92] @ wasm://wasm/009f676a",
+      "ms": 5.024
+    },
+    {
+      "frame": "wasm-function[63] @ wasm://wasm/009f676a",
+      "ms": 4.763
+    },
+    {
+      "frame": "(idle) @ ",
+      "ms": 4.64
+    },
+    {
+      "frame": "resolve @ node:path",
+      "ms": 3.373
+    },
+    {
+      "frame": "base64Write @ ",
+      "ms": 3.302
+    },
+    {
+      "frame": "writeBuffer @ ",
+      "ms": 3.25
+    },
+    {
+      "frame": "#cachedDefaultResolve @ node:internal/modules/esm/loader",
+      "ms": 3.159
+    }
+  ]
+}

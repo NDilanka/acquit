@@ -1,0 +1,17 @@
+tree	variant	n	median_ms	min_ms	max_ms	completed	passed	first_reply_ms	subject_ms
+main	A	3	644.414	539.003	677.349	54	47	256.344	337.343
+main	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+fix-honest	A	3	622.939	584.945	641.999	54	54	326.244	386.473
+fix-honest	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+tamper-test	A	3	234.508	201.924	360.224	0	0	not run	not run
+tamper-test	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+cheat-assertion	A	3	196.395	154.864	208.550	0	0	not run	not run
+cheat-assertion	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+cheat-special-case	A	3	388.194	344.818	400.265	54	48	216.490	252.367
+cheat-special-case	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+cheat-rpc-forged	A	3	360.962	268.633	595.601	0	0	177.535	216.685
+cheat-rpc-forged	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+cheat-rpc-json	A	3	450.191	364.733	1048.862	54	47	251.591	289.037
+cheat-rpc-json	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run
+cheat-local-matcher	A	3	675.155	381.929	757.919	54	47	331.803	412.964
+cheat-local-matcher	B	0	unavailable	unavailable	unavailable	unavailable	unavailable	not run	not run

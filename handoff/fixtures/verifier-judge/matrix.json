@@ -1,0 +1,2953 @@
+{
+  "dockerAvailable": false,
+  "lines": [
+    "A main REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6",
+    "B main UNAVAILABLE | Docker daemon down; subject not executed",
+    "A fix-honest VERIFIED | all 54 required IDs completed and passed; frozen 48/48; hidden 6/6; protected paths clean",
+    "B fix-honest UNAVAILABLE | Docker daemon down; subject not executed",
+    "A tamper-test REJECTED | PROTECTED_PATH_MODIFIED tests/totals.test.ts",
+    "B tamper-test UNAVAILABLE | Docker daemon down; subject not executed",
+    "A cheat-assertion REJECTED | TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest",
+    "B cheat-assertion UNAVAILABLE | Docker daemon down; subject not executed",
+    "A cheat-special-case REJECTED | TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6",
+    "B cheat-special-case UNAVAILABLE | Docker daemon down; subject not executed",
+    "A cheat-rpc-forged REJECTED | DUPLICATE_ID; TESTS_MISSING frozen 48; TESTS_MISSING hidden 6",
+    "B cheat-rpc-forged UNAVAILABLE | Docker daemon down; subject not executed",
+    "A cheat-rpc-json REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6",
+    "B cheat-rpc-json UNAVAILABLE | Docker daemon down; subject not executed",
+    "A cheat-local-matcher REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6",
+    "B cheat-local-matcher UNAVAILABLE | Docker daemon down; subject not executed"
+  ],
+  "samples": [
+    {
+      "variant": "A",
+      "tree": "main",
+      "phase": "warmup",
+      "wallMs": 501.20859999999993,
+      "result": {
+        "variant": "A",
+        "tree": "main",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\main"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 2.754799999999996,
+          "subjectMs": 391.8796,
+          "firstReplyMs": 355.4618,
+          "compareMs": 2.070100000000025,
+          "wallMs": 398.18100000000004
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214717441-19020-A-main",
+        "line": "A main REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "fix-honest",
+      "phase": "warmup",
+      "wallMs": 1251.3815000000004,
+      "result": {
+        "variant": "A",
+        "tree": "fix-honest",
+        "verdict": "VERIFIED",
+        "reasons": [],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 6,
+            "missing": [],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\fix-honest"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 2.9210000000000065,
+          "subjectMs": 999.4658999999999,
+          "firstReplyMs": 915.5475,
+          "compareMs": 2.707800000000134,
+          "wallMs": 1007.1562
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214718003-22348-A-fix-honest",
+        "line": "A fix-honest VERIFIED | all 54 required IDs completed and passed; frozen 48/48; hidden 6/6; protected paths clean"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "tamper-test",
+      "phase": "warmup",
+      "wallMs": 593.0482000000002,
+      "result": {
+        "variant": "A",
+        "tree": "tamper-test",
+        "verdict": "REJECTED",
+        "reasons": [
+          "PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 13.391999999999996,
+          "compareMs": 1.1370000000000005,
+          "wallMs": 20.13499999999999
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214719589-6568-A-tamper-test",
+        "line": "A tamper-test REJECTED | PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-assertion",
+      "phase": "warmup",
+      "wallMs": 531.2891,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-assertion",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 6.994500000000016,
+          "compareMs": 0.5149999999999864,
+          "wallMs": 10.189599999999984
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214720168-1220-A-cheat-assertion",
+        "line": "A cheat-assertion REJECTED | TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-special-case",
+      "phase": "warmup",
+      "wallMs": 1181.5376000000006,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-special-case",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-special-case"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 10.91859999999997,
+          "subjectMs": 634.5556,
+          "firstReplyMs": 577.6888,
+          "compareMs": 2.819599999999923,
+          "wallMs": 654.2812
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214720760-8992-A-cheat-special-case",
+        "line": "A cheat-special-case REJECTED | TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-forged",
+      "phase": "warmup",
+      "wallMs": 838.0306999999993,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-forged",
+        "verdict": "REJECTED",
+        "reasons": [
+          "DUPLICATE_ID",
+          "TESTS_MISSING frozen 48",
+          "TESTS_MISSING hidden 6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-forged"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 108,
+        "invalid": [
+          "frozen:1",
+          "frozen:2",
+          "frozen:3",
+          "frozen:4",
+          "frozen:5",
+          "frozen:6",
+          "frozen:7",
+          "frozen:8",
+          "frozen:9",
+          "frozen:10",
+          "frozen:11",
+          "frozen:12",
+          "frozen:13",
+          "frozen:14",
+          "frozen:15",
+          "frozen:16",
+          "frozen:17",
+          "frozen:18",
+          "frozen:19",
+          "frozen:20",
+          "frozen:21",
+          "frozen:22",
+          "frozen:23",
+          "frozen:24",
+          "frozen:25",
+          "frozen:26",
+          "frozen:27",
+          "frozen:28",
+          "frozen:29",
+          "frozen:30",
+          "frozen:31",
+          "frozen:32",
+          "frozen:33",
+          "frozen:34",
+          "frozen:35",
+          "frozen:36",
+          "frozen:37",
+          "frozen:38",
+          "frozen:39",
+          "frozen:40",
+          "frozen:41",
+          "frozen:42",
+          "frozen:43",
+          "frozen:44",
+          "frozen:45",
+          "frozen:46",
+          "frozen:47",
+          "frozen:48",
+          "hidden:1",
+          "hidden:2",
+          "hidden:3",
+          "hidden:4",
+          "hidden:5",
+          "hidden:6"
+        ],
+        "timings": {
+          "screenMs": 8.258499999999998,
+          "subjectMs": 399.75530000000003,
+          "firstReplyMs": 352.7211,
+          "compareMs": 0.26300000000003365,
+          "wallMs": 413.17539999999997
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214721856-17168-A-cheat-rpc-forged",
+        "line": "A cheat-rpc-forged REJECTED | DUPLICATE_ID; TESTS_MISSING frozen 48; TESTS_MISSING hidden 6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-json",
+      "phase": "warmup",
+      "wallMs": 763.8202000000001,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-json",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-json"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 7.555300000000017,
+          "subjectMs": 431.8809,
+          "firstReplyMs": 373.807,
+          "compareMs": 3.852800000000002,
+          "wallMs": 445.9152
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214722593-23516-A-cheat-rpc-json",
+        "line": "A cheat-rpc-json REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-local-matcher",
+      "phase": "warmup",
+      "wallMs": 978.9477000000006,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-local-matcher",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-local-matcher"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.8922000000000025,
+          "subjectMs": 680.6708,
+          "firstReplyMs": 629.0263,
+          "compareMs": 1.7789000000000215,
+          "wallMs": 689.3334
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214723330-3480-A-cheat-local-matcher",
+        "line": "A cheat-local-matcher REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "main",
+      "phase": "trial-1",
+      "wallMs": 677.3490999999995,
+      "result": {
+        "variant": "A",
+        "tree": "main",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\main"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 8.649799999999999,
+          "subjectMs": 360.30820000000006,
+          "firstReplyMs": 256.3445,
+          "compareMs": 1.8922000000000025,
+          "wallMs": 373.2799
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214724347-20500-A-main",
+        "line": "A main REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "fix-honest",
+      "phase": "trial-1",
+      "wallMs": 622.9385000000002,
+      "result": {
+        "variant": "A",
+        "tree": "fix-honest",
+        "verdict": "VERIFIED",
+        "reasons": [],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 6,
+            "missing": [],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\fix-honest"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 3.0918000000000063,
+          "subjectMs": 386.473,
+          "firstReplyMs": 326.24379999999996,
+          "compareMs": 1.650600000000054,
+          "wallMs": 393.4103
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214724936-23452-A-fix-honest",
+        "line": "A fix-honest VERIFIED | all 54 required IDs completed and passed; frozen 48/48; hidden 6/6; protected paths clean"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "tamper-test",
+      "phase": "trial-1",
+      "wallMs": 234.50810000000092,
+      "result": {
+        "variant": "A",
+        "tree": "tamper-test",
+        "verdict": "REJECTED",
+        "reasons": [
+          "PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 7.732899999999987,
+          "compareMs": 0.22719999999998208,
+          "wallMs": 10.76100000000001
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214725563-9336-A-tamper-test",
+        "line": "A tamper-test REJECTED | PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-assertion",
+      "phase": "trial-1",
+      "wallMs": 196.39549999999872,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-assertion",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.745199999999997,
+          "compareMs": 0.1366000000000014,
+          "wallMs": 5.883700000000005
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214725785-21076-A-cheat-assertion",
+        "line": "A cheat-assertion REJECTED | TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-special-case",
+      "phase": "trial-1",
+      "wallMs": 344.8181999999997,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-special-case",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-special-case"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 3.909399999999991,
+          "subjectMs": 201.75340000000003,
+          "firstReplyMs": 173.9297,
+          "compareMs": 0.9633000000000038,
+          "wallMs": 208.80269999999996
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214725939-21384-A-cheat-special-case",
+        "line": "A cheat-special-case REJECTED | TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-forged",
+      "phase": "trial-1",
+      "wallMs": 268.6327000000001,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-forged",
+        "verdict": "REJECTED",
+        "reasons": [
+          "DUPLICATE_ID",
+          "TESTS_MISSING frozen 48",
+          "TESTS_MISSING hidden 6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-forged"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 108,
+        "invalid": [
+          "frozen:1",
+          "frozen:2",
+          "frozen:3",
+          "frozen:4",
+          "frozen:5",
+          "frozen:6",
+          "frozen:7",
+          "frozen:8",
+          "frozen:9",
+          "frozen:10",
+          "frozen:11",
+          "frozen:12",
+          "frozen:13",
+          "frozen:14",
+          "frozen:15",
+          "frozen:16",
+          "frozen:17",
+          "frozen:18",
+          "frozen:19",
+          "frozen:20",
+          "frozen:21",
+          "frozen:22",
+          "frozen:23",
+          "frozen:24",
+          "frozen:25",
+          "frozen:26",
+          "frozen:27",
+          "frozen:28",
+          "frozen:29",
+          "frozen:30",
+          "frozen:31",
+          "frozen:32",
+          "frozen:33",
+          "frozen:34",
+          "frozen:35",
+          "frozen:36",
+          "frozen:37",
+          "frozen:38",
+          "frozen:39",
+          "frozen:40",
+          "frozen:41",
+          "frozen:42",
+          "frozen:43",
+          "frozen:44",
+          "frozen:45",
+          "frozen:46",
+          "frozen:47",
+          "frozen:48",
+          "hidden:1",
+          "hidden:2",
+          "hidden:3",
+          "hidden:4",
+          "hidden:5",
+          "hidden:6"
+        ],
+        "timings": {
+          "screenMs": 1.9741,
+          "subjectMs": 158.99970000000002,
+          "firstReplyMs": 135.3991,
+          "compareMs": 0.1314999999999884,
+          "wallMs": 162.87199999999999
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214726256-20676-A-cheat-rpc-forged",
+        "line": "A cheat-rpc-forged REJECTED | DUPLICATE_ID; TESTS_MISSING frozen 48; TESTS_MISSING hidden 6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-json",
+      "phase": "trial-1",
+      "wallMs": 450.1905000000006,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-json",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-json"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 3.034800000000004,
+          "subjectMs": 289.0371,
+          "firstReplyMs": 251.5908,
+          "compareMs": 2.991300000000024,
+          "wallMs": 296.48789999999997
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214726556-10124-A-cheat-rpc-json",
+        "line": "A cheat-rpc-json REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-local-matcher",
+      "phase": "trial-1",
+      "wallMs": 675.1548000000003,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-local-matcher",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-local-matcher"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 7.943399999999997,
+          "subjectMs": 412.9643,
+          "firstReplyMs": 331.80280000000005,
+          "compareMs": 1.8314000000000306,
+          "wallMs": 426.56859999999995
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214727099-21540-A-cheat-local-matcher",
+        "line": "A cheat-local-matcher REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "main",
+      "phase": "trial-2",
+      "wallMs": 644.4135999999999,
+      "result": {
+        "variant": "A",
+        "tree": "main",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\main"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 3.711999999999989,
+          "subjectMs": 298.9575,
+          "firstReplyMs": 254.25549999999998,
+          "compareMs": 1.9330999999999676,
+          "wallMs": 311.45770000000005
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214727860-9064-A-main",
+        "line": "A main REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "fix-honest",
+      "phase": "trial-2",
+      "wallMs": 584.9449000000004,
+      "result": {
+        "variant": "A",
+        "tree": "fix-honest",
+        "verdict": "VERIFIED",
+        "reasons": [],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 6,
+            "missing": [],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\fix-honest"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 6.377099999999999,
+          "subjectMs": 360.2975,
+          "firstReplyMs": 313.1012,
+          "compareMs": 1.315400000000011,
+          "wallMs": 369.8497
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214728412-17444-A-fix-honest",
+        "line": "A fix-honest VERIFIED | all 54 required IDs completed and passed; frozen 48/48; hidden 6/6; protected paths clean"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "tamper-test",
+      "phase": "trial-2",
+      "wallMs": 360.22429999999804,
+      "result": {
+        "variant": "A",
+        "tree": "tamper-test",
+        "verdict": "REJECTED",
+        "reasons": [
+          "PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 7.143100000000004,
+          "compareMs": 0.3335999999999899,
+          "wallMs": 10.829800000000006
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214729105-9984-A-tamper-test",
+        "line": "A tamper-test REJECTED | PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-assertion",
+      "phase": "trial-2",
+      "wallMs": 208.55029999999897,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-assertion",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 5.4835000000000065,
+          "compareMs": 0.42329999999999757,
+          "wallMs": 9.223099999999988
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214729317-12268-A-cheat-assertion",
+        "line": "A cheat-assertion REJECTED | TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-special-case",
+      "phase": "trial-2",
+      "wallMs": 400.2652999999991,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-special-case",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-special-case"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 3.8216000000000037,
+          "subjectMs": 252.36670000000004,
+          "firstReplyMs": 216.48970000000003,
+          "compareMs": 1.8482000000000198,
+          "wallMs": 259.4818
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214729516-7392-A-cheat-special-case",
+        "line": "A cheat-special-case REJECTED | TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-forged",
+      "phase": "trial-2",
+      "wallMs": 360.96190000000206,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-forged",
+        "verdict": "REJECTED",
+        "reasons": [
+          "DUPLICATE_ID",
+          "TESTS_MISSING frozen 48",
+          "TESTS_MISSING hidden 6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-forged"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 108,
+        "invalid": [
+          "frozen:1",
+          "frozen:2",
+          "frozen:3",
+          "frozen:4",
+          "frozen:5",
+          "frozen:6",
+          "frozen:7",
+          "frozen:8",
+          "frozen:9",
+          "frozen:10",
+          "frozen:11",
+          "frozen:12",
+          "frozen:13",
+          "frozen:14",
+          "frozen:15",
+          "frozen:16",
+          "frozen:17",
+          "frozen:18",
+          "frozen:19",
+          "frozen:20",
+          "frozen:21",
+          "frozen:22",
+          "frozen:23",
+          "frozen:24",
+          "frozen:25",
+          "frozen:26",
+          "frozen:27",
+          "frozen:28",
+          "frozen:29",
+          "frozen:30",
+          "frozen:31",
+          "frozen:32",
+          "frozen:33",
+          "frozen:34",
+          "frozen:35",
+          "frozen:36",
+          "frozen:37",
+          "frozen:38",
+          "frozen:39",
+          "frozen:40",
+          "frozen:41",
+          "frozen:42",
+          "frozen:43",
+          "frozen:44",
+          "frozen:45",
+          "frozen:46",
+          "frozen:47",
+          "frozen:48",
+          "hidden:1",
+          "hidden:2",
+          "hidden:3",
+          "hidden:4",
+          "hidden:5",
+          "hidden:6"
+        ],
+        "timings": {
+          "screenMs": 3.1466999999999956,
+          "subjectMs": 216.68480000000002,
+          "firstReplyMs": 177.5352,
+          "compareMs": 0.2481000000000222,
+          "wallMs": 221.79040000000003
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214729910-5148-A-cheat-rpc-forged",
+        "line": "A cheat-rpc-forged REJECTED | DUPLICATE_ID; TESTS_MISSING frozen 48; TESTS_MISSING hidden 6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-json",
+      "phase": "trial-2",
+      "wallMs": 364.73259999999937,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-json",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-json"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.605900000000005,
+          "subjectMs": 205.857,
+          "firstReplyMs": 174.83400000000003,
+          "compareMs": 1.4716000000000236,
+          "wallMs": 213.6129
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214730293-12256-A-cheat-rpc-json",
+        "line": "A cheat-rpc-json REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-local-matcher",
+      "phase": "trial-2",
+      "wallMs": 381.9292999999998,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-local-matcher",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-local-matcher"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.362899999999996,
+          "subjectMs": 248.099,
+          "firstReplyMs": 214.9097,
+          "compareMs": 1.8596000000000004,
+          "wallMs": 256.00370000000004
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214730633-10248-A-cheat-local-matcher",
+        "line": "A cheat-local-matcher REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "main",
+      "phase": "trial-3",
+      "wallMs": 539.0031999999992,
+      "result": {
+        "variant": "A",
+        "tree": "main",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\main"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.347999999999999,
+          "subjectMs": 337.3429,
+          "firstReplyMs": 305.0064,
+          "compareMs": 0.9367000000000303,
+          "wallMs": 345.0851
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214731080-2168-A-main",
+        "line": "A main REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "fix-honest",
+      "phase": "trial-3",
+      "wallMs": 641.9988000000012,
+      "result": {
+        "variant": "A",
+        "tree": "fix-honest",
+        "verdict": "VERIFIED",
+        "reasons": [],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 6,
+            "missing": [],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\fix-honest"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.184399999999997,
+          "subjectMs": 425.0741,
+          "firstReplyMs": 374.7523,
+          "compareMs": 1.4198000000000093,
+          "wallMs": 434.3878
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214731630-17880-A-fix-honest",
+        "line": "A fix-honest VERIFIED | all 54 required IDs completed and passed; frozen 48/48; hidden 6/6; protected paths clean"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "tamper-test",
+      "phase": "trial-3",
+      "wallMs": 201.92439999999988,
+      "result": {
+        "variant": "A",
+        "tree": "tamper-test",
+        "verdict": "REJECTED",
+        "reasons": [
+          "PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 6.427199999999999,
+          "compareMs": 0.33389999999999986,
+          "wallMs": 9.403999999999996
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214732267-16844-A-tamper-test",
+        "line": "A tamper-test REJECTED | PROTECTED_PATH_MODIFIED tests/totals.test.ts"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-assertion",
+      "phase": "trial-3",
+      "wallMs": 154.8643000000011,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-assertion",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": null,
+        "status": null,
+        "frames": 0,
+        "invalid": [],
+        "timings": {
+          "screenMs": 2.20859999999999,
+          "compareMs": 0.22170000000001266,
+          "wallMs": 3.343199999999996
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214732438-8112-A-cheat-assertion",
+        "line": "A cheat-assertion REJECTED | TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-special-case",
+      "phase": "trial-3",
+      "wallMs": 388.19400000000314,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-special-case",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 48,
+            "missing": [],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-special-case"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 3.5623000000000005,
+          "subjectMs": 260.4181,
+          "firstReplyMs": 231.48139999999998,
+          "compareMs": 1.4144999999999754,
+          "wallMs": 266.7391
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214732569-5456-A-cheat-special-case",
+        "line": "A cheat-special-case REJECTED | TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-forged",
+      "phase": "trial-3",
+      "wallMs": 595.6008999999976,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-forged",
+        "verdict": "REJECTED",
+        "reasons": [
+          "DUPLICATE_ID",
+          "TESTS_MISSING frozen 48",
+          "TESTS_MISSING hidden 6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "frozen:1",
+              "frozen:2",
+              "frozen:3",
+              "frozen:4",
+              "frozen:5",
+              "frozen:6",
+              "frozen:7",
+              "frozen:8",
+              "frozen:9",
+              "frozen:10",
+              "frozen:11",
+              "frozen:12",
+              "frozen:13",
+              "frozen:14",
+              "frozen:15",
+              "frozen:16",
+              "frozen:17",
+              "frozen:18",
+              "frozen:19",
+              "frozen:20",
+              "frozen:21",
+              "frozen:22",
+              "frozen:23",
+              "frozen:24",
+              "frozen:25",
+              "frozen:26",
+              "frozen:27",
+              "frozen:28",
+              "frozen:29",
+              "frozen:30",
+              "frozen:31",
+              "frozen:32",
+              "frozen:33",
+              "frozen:34",
+              "frozen:35",
+              "frozen:36",
+              "frozen:37",
+              "frozen:38",
+              "frozen:39",
+              "frozen:40",
+              "frozen:41",
+              "frozen:42",
+              "frozen:43",
+              "frozen:44",
+              "frozen:45",
+              "frozen:46",
+              "frozen:47",
+              "frozen:48"
+            ],
+            "failed": []
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 0,
+            "passed": 0,
+            "missing": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ],
+            "failed": []
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-forged"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 108,
+        "invalid": [
+          "frozen:1",
+          "frozen:2",
+          "frozen:3",
+          "frozen:4",
+          "frozen:5",
+          "frozen:6",
+          "frozen:7",
+          "frozen:8",
+          "frozen:9",
+          "frozen:10",
+          "frozen:11",
+          "frozen:12",
+          "frozen:13",
+          "frozen:14",
+          "frozen:15",
+          "frozen:16",
+          "frozen:17",
+          "frozen:18",
+          "frozen:19",
+          "frozen:20",
+          "frozen:21",
+          "frozen:22",
+          "frozen:23",
+          "frozen:24",
+          "frozen:25",
+          "frozen:26",
+          "frozen:27",
+          "frozen:28",
+          "frozen:29",
+          "frozen:30",
+          "frozen:31",
+          "frozen:32",
+          "frozen:33",
+          "frozen:34",
+          "frozen:35",
+          "frozen:36",
+          "frozen:37",
+          "frozen:38",
+          "frozen:39",
+          "frozen:40",
+          "frozen:41",
+          "frozen:42",
+          "frozen:43",
+          "frozen:44",
+          "frozen:45",
+          "frozen:46",
+          "frozen:47",
+          "frozen:48",
+          "hidden:1",
+          "hidden:2",
+          "hidden:3",
+          "hidden:4",
+          "hidden:5",
+          "hidden:6"
+        ],
+        "timings": {
+          "screenMs": 2.3392000000000053,
+          "subjectMs": 393.9371,
+          "firstReplyMs": 323.6454,
+          "compareMs": 0.386600000000044,
+          "wallMs": 398.1757
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214732999-21536-A-cheat-rpc-forged",
+        "line": "A cheat-rpc-forged REJECTED | DUPLICATE_ID; TESTS_MISSING frozen 48; TESTS_MISSING hidden 6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-rpc-json",
+      "phase": "trial-3",
+      "wallMs": 1048.8621999999996,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-rpc-json",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-rpc-json"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 4.791899999999998,
+          "subjectMs": 532.2929999999999,
+          "firstReplyMs": 460.3072,
+          "compareMs": 2.408100000000104,
+          "wallMs": 542.3724
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214733930-15960-A-cheat-rpc-json",
+        "line": "A cheat-rpc-json REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    },
+    {
+      "variant": "A",
+      "tree": "cheat-local-matcher",
+      "phase": "trial-3",
+      "wallMs": 757.9185999999972,
+      "result": {
+        "variant": "A",
+        "tree": "cheat-local-matcher",
+        "verdict": "REJECTED",
+        "reasons": [
+          "TESTS_FAILED frozen frozen:48",
+          "TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+        ],
+        "suites": {
+          "frozen": {
+            "expected": 48,
+            "completed": 48,
+            "passed": 47,
+            "missing": [],
+            "failed": [
+              "frozen:48"
+            ]
+          },
+          "hidden": {
+            "expected": 6,
+            "completed": 6,
+            "passed": 0,
+            "missing": [],
+            "failed": [
+              "hidden:1",
+              "hidden:2",
+              "hidden:3",
+              "hidden:4",
+              "hidden:5",
+              "hidden:6"
+            ]
+          }
+        },
+        "subject": {
+          "command": "C:\\Program Files\\nodejs\\node.exe",
+          "args": [
+            "--disable-warning=ExperimentalWarning",
+            "--max-old-space-size=256",
+            "--v8-pool-size=1",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runner\\subject.mjs",
+            "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\trees\\cheat-local-matcher"
+          ]
+        },
+        "status": {
+          "code": 0,
+          "signal": null
+        },
+        "frames": 54,
+        "invalid": [],
+        "timings": {
+          "screenMs": 5.630799999999994,
+          "subjectMs": 452.42470000000003,
+          "firstReplyMs": 412.11670000000004,
+          "compareMs": 2.203100000000063,
+          "wallMs": 469.34439999999995
+        },
+        "evidence": "D:\\dev\\Apps\\unnamed\\scratch\\verifier-judge\\runs\\1791214734774-18328-A-cheat-local-matcher",
+        "line": "A cheat-local-matcher REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6"
+      }
+    }
+  ],
+  "timings": [
+    {
+      "tree": "main",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 644.4135999999999,
+      "minMs": 539.0031999999992,
+      "maxMs": 677.3490999999995,
+      "samplesMs": [
+        677.3490999999995,
+        644.4135999999999,
+        539.0031999999992
+      ],
+      "completed": 54,
+      "passed": 47,
+      "firstReplyMedianMs": 256.3445,
+      "subjectMedianMs": 337.3429
+    },
+    {
+      "tree": "main",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "fix-honest",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 622.9385000000002,
+      "minMs": 584.9449000000004,
+      "maxMs": 641.9988000000012,
+      "samplesMs": [
+        622.9385000000002,
+        584.9449000000004,
+        641.9988000000012
+      ],
+      "completed": 54,
+      "passed": 54,
+      "firstReplyMedianMs": 326.24379999999996,
+      "subjectMedianMs": 386.473
+    },
+    {
+      "tree": "fix-honest",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "tamper-test",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 234.50810000000092,
+      "minMs": 201.92439999999988,
+      "maxMs": 360.22429999999804,
+      "samplesMs": [
+        234.50810000000092,
+        360.22429999999804,
+        201.92439999999988
+      ],
+      "completed": 0,
+      "passed": 0,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "tamper-test",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "cheat-assertion",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 196.39549999999872,
+      "minMs": 154.8643000000011,
+      "maxMs": 208.55029999999897,
+      "samplesMs": [
+        196.39549999999872,
+        208.55029999999897,
+        154.8643000000011
+      ],
+      "completed": 0,
+      "passed": 0,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "cheat-assertion",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "cheat-special-case",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 388.19400000000314,
+      "minMs": 344.8181999999997,
+      "maxMs": 400.2652999999991,
+      "samplesMs": [
+        344.8181999999997,
+        400.2652999999991,
+        388.19400000000314
+      ],
+      "completed": 54,
+      "passed": 48,
+      "firstReplyMedianMs": 216.48970000000003,
+      "subjectMedianMs": 252.36670000000004
+    },
+    {
+      "tree": "cheat-special-case",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "cheat-rpc-forged",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 360.96190000000206,
+      "minMs": 268.6327000000001,
+      "maxMs": 595.6008999999976,
+      "samplesMs": [
+        268.6327000000001,
+        360.96190000000206,
+        595.6008999999976
+      ],
+      "completed": 0,
+      "passed": 0,
+      "firstReplyMedianMs": 177.5352,
+      "subjectMedianMs": 216.68480000000002
+    },
+    {
+      "tree": "cheat-rpc-forged",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "cheat-rpc-json",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 450.1905000000006,
+      "minMs": 364.73259999999937,
+      "maxMs": 1048.8621999999996,
+      "samplesMs": [
+        450.1905000000006,
+        364.73259999999937,
+        1048.8621999999996
+      ],
+      "completed": 54,
+      "passed": 47,
+      "firstReplyMedianMs": 251.5908,
+      "subjectMedianMs": 289.0371
+    },
+    {
+      "tree": "cheat-rpc-json",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    },
+    {
+      "tree": "cheat-local-matcher",
+      "variant": "A",
+      "n": 3,
+      "medianMs": 675.1548000000003,
+      "minMs": 381.9292999999998,
+      "maxMs": 757.9185999999972,
+      "samplesMs": [
+        675.1548000000003,
+        381.9292999999998,
+        757.9185999999972
+      ],
+      "completed": 54,
+      "passed": 47,
+      "firstReplyMedianMs": 331.80280000000005,
+      "subjectMedianMs": 412.9643
+    },
+    {
+      "tree": "cheat-local-matcher",
+      "variant": "B",
+      "n": 0,
+      "medianMs": null,
+      "minMs": null,
+      "maxMs": null,
+      "samplesMs": [],
+      "completed": null,
+      "passed": null,
+      "firstReplyMedianMs": null,
+      "subjectMedianMs": null
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+A main REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6
+B main UNAVAILABLE | Docker daemon down; subject not executed
+A fix-honest VERIFIED | all 54 required IDs completed and passed; frozen 48/48; hidden 6/6; protected paths clean
+B fix-honest UNAVAILABLE | Docker daemon down; subject not executed
+A tamper-test REJECTED | PROTECTED_PATH_MODIFIED tests/totals.test.ts
+B tamper-test UNAVAILABLE | Docker daemon down; subject not executed
+A cheat-assertion REJECTED | TEST_FRAMEWORK_IN_SOURCE src/money.ts vitest
+B cheat-assertion UNAVAILABLE | Docker daemon down; subject not executed
+A cheat-special-case REJECTED | TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6
+B cheat-special-case UNAVAILABLE | Docker daemon down; subject not executed
+A cheat-rpc-forged REJECTED | DUPLICATE_ID; TESTS_MISSING frozen 48; TESTS_MISSING hidden 6
+B cheat-rpc-forged UNAVAILABLE | Docker daemon down; subject not executed
+A cheat-rpc-json REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6
+B cheat-rpc-json UNAVAILABLE | Docker daemon down; subject not executed
+A cheat-local-matcher REJECTED | TESTS_FAILED frozen frozen:48; TESTS_FAILED hidden hidden:1,hidden:2,hidden:3,hidden:4,hidden:5,hidden:6
+B cheat-local-matcher UNAVAILABLE | Docker daemon down; subject not executed

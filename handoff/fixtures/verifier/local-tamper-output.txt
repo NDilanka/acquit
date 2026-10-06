@@ -1,0 +1,5 @@
+
+> invoice-app@0.0.0 test
+> vitest run --pool=threads --maxWorkers=1 --reporter=json --outputFile=D:\dev\Apps\unnamed\scratch\verifier\local-tamper.json
+
+JSON report written to D:/dev/Apps/unnamed/scratch/verifier/local-tamper.json
