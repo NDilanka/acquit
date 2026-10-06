@@ -43,11 +43,13 @@ async function refusal(work: Promise<unknown>): Promise<Refusal> {
 	assert.fail("expected the call to refuse by name");
 }
 
-type StubRepo = { full_name: string; name: string; owner: string; default_branch: string; fork: boolean };
+type StubRepo = { full_name: string; name: string; owner: string; default_branch: string; fork: boolean;
+	parent: { full_name: string } | null };
 type StubPull = { number: number; head: string; branch: string; state: string; title: string; body: string };
-type StubCheck = { repo: string; id: number; name: string; head_sha: string; html_url: string };
+type StubCheck = { repo: string; id: number; name: string; head_sha: string; external_id: string | null; html_url: string };
 type StubRequest = { readonly method: string; readonly path: string; readonly authorization: string };
-type StubRefusal = { readonly method: string; readonly path: string; readonly status: number; readonly message: string; readonly headers: Record<string, string> };
+type StubRefusal = { readonly method: string; readonly path: string; readonly status: number; readonly message: string;
+	readonly headers: Record<string, string>; readonly once: boolean };
 
 type Stub = {
 	readonly url: string;
@@ -57,12 +59,17 @@ type Stub = {
 		readonly commits: Map<string, Set<string>>;
 		readonly pulls: StubPull[];
 		readonly checks: StubCheck[];
+		/** Mutable, like the operator installing the App while the process runs. */
+		readonly installations: { id: number; account: string }[];
 		readonly mints: { readonly owner: string; readonly token: string }[];
 		readonly requests: StubRequest[];
 		readonly forks: string[];
 	};
 	seed(repository: string, commits: readonly string[], refs: Record<string, string>): void;
-	refuse(refusal: { method: string; path: string; status: number; message?: string; headers?: Record<string, string> }): void;
+	refuse(refusal: { method: string; path: string; status: number; message?: string;
+		headers?: Record<string, string>; once?: boolean }): void;
+	/** The next fork answers 202 with this full_name instead of the requested one. */
+	forkAs(name: string | null): void;
 	hang(path: string): void;
 	close(): Promise<void>;
 };
@@ -71,10 +78,11 @@ type Stub = {
 async function createGitHubStub(options: { readonly appId: string; readonly publicKey: string;
 	readonly installations: readonly { readonly id: number; readonly account: string }[] }): Promise<Stub> {
 	const state = { repos: new Map<string, StubRepo>(), refs: new Map<string, string>(), commits: new Map<string, Set<string>>(),
-		pulls: [] as StubPull[], checks: [] as StubCheck[], mints: [] as { owner: string; token: string }[],
-		requests: [] as StubRequest[], forks: [] as string[] };
+		pulls: [] as StubPull[], checks: [] as StubCheck[], installations: [...options.installations],
+		mints: [] as { owner: string; token: string }[], requests: [] as StubRequest[], forks: [] as string[] };
 	const refusals: StubRefusal[] = [];
 	const hangs: string[] = [];
+	let forkAs: string | null = null;
 	const json = (response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void => {
 		response.writeHead(status, { "content-type": "application/json", ...headers });
 		response.end(JSON.stringify(body));
@@ -103,25 +111,27 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		const segments = segmentsOf(path);
 		const repository = segments.length >= 3 ? `${segments[1]}/${segments[2]}` : "";
 		if (auth.kind === "app" && method === "GET" && url.pathname === "/app/installations") {
-			// Real GitHub answers this one with a bare array, pinned by the r10 live smoke.
-			return json(response, 200, options.installations.map(item => ({ id: item.id, account: { login: item.account, type: "Organization" } })));
+			// GET /app/installations answers with a bare array.
+			return json(response, 200, state.installations.map(item => ({ id: item.id, account: { login: item.account, type: "Organization" } })));
 		}
 		if (auth.kind === "app" && method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)) {
 			const id = Number(url.pathname.split("/")[3]);
 			const token = `ghs_${randomBytes(20).toString("hex")}`;
-			state.mints.push({ owner: options.installations.find(item => item.id === id)?.account ?? "", token });
+			state.mints.push({ owner: state.installations.find(item => item.id === id)?.account ?? "", token });
 			return json(response, 201, { token, expires_at: new Date(Date.now() + 3_600_000).toISOString() });
 		}
 		if (method === "POST" && segments.length === 4 && segments[0] === "repos" && segments[3] === "forks") {
-			// GitHub refuses the source installation's token for a fork into the org; the r10 probe pinned it.
+			// The org installation makes the fork. The source installation's token is refused administration=write.
 			if (auth.kind !== "installation" || auth.owner !== ORG) {
 				return json(response, 403, { message: "Resource not accessible by integration" },
 					{ "x-accepted-github-permissions": "administration=write,contents=read" });
 			}
-			const target = `${String(body.organization)}/${String(body.name)}`;
-			if (state.repos.has(target)) return json(response, 422, { message: "Repository creation failed.",
-				errors: [{ message: "name already exists on this account" }] });
-			const created: StubRepo = { full_name: target, name: String(body.name), owner: String(body.organization), default_branch: "main", fork: true };
+			const requested = `${String(body.organization)}/${String(body.name)}`;
+			// A taken name answers 403 "Name already exists on this account", the live API's answer for a fork.
+			if (state.repos.has(requested)) return json(response, 403, { message: "Name already exists on this account" });
+			const target = forkAs ?? requested;
+			const created: StubRepo = { full_name: target, name: target.split("/")[1]!, owner: String(body.organization),
+				default_branch: "main", fork: true, parent: { full_name: repository } };
 			state.repos.set(target, created);
 			state.commits.set(target, new Set(state.commits.get(repository) ?? []));
 			state.refs.set(`${target}:main`, state.refs.get(`${repository}:main`) ?? "");
@@ -144,6 +154,8 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		}
 		const refHead = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/git\/ref\/heads\/(.+)$/);
 		if (method === "GET" && refHead) {
+			// A repository with no commits answers 409 "Git Repository is empty.", as the live API does.
+			if ((state.commits.get(repository)?.size ?? 0) === 0) return json(response, 409, { message: "Git Repository is empty." });
 			const sha = state.refs.get(`${repository}:${refHead[1]}`);
 			return sha === undefined ? json(response, 404, { message: "Not Found" })
 				: json(response, 200, { ref: `refs/heads/${refHead[1]}`, object: { sha, type: "commit" } });
@@ -187,12 +199,9 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			return json(response, 200, { total_count: items.length, check_runs: items });
 		}
 		if (method === "POST" && segments.length === 4 && segments[3] === "check-runs") {
-			const name = String(body.name);
-			const headSha = String(body.head_sha);
-			if (state.checks.some(run => run.repo === repository && run.name === name && run.head_sha === headSha)) {
-				return json(response, 422, { message: "Check run already exists" });
-			}
-			const run: StubCheck = { repo: repository, id: state.checks.length + 1, name, head_sha: headSha,
+			// GitHub keeps more than one run per name: the client's dedupe is the external id, not a 422.
+			const run: StubCheck = { repo: repository, id: state.checks.length + 1, name: String(body.name), head_sha: String(body.head_sha),
+				external_id: typeof body.external_id === "string" ? body.external_id : null,
 				html_url: `https://github.com/${repository}/runs/${state.checks.length + 1}` };
 			state.checks.push(run);
 			return json(response, 201, run);
@@ -208,7 +217,10 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			state.requests.push({ method: request.method ?? "", path, authorization });
 			if (hangs.some(prefix => path.startsWith(prefix))) return;
 			const refused = refusals.find(item => item.method === request.method && path.startsWith(item.path));
-			if (refused) return json(response, refused.status, { message: refused.message }, refused.headers);
+			if (refused) {
+				if (refused.once) refusals.splice(refusals.indexOf(refused), 1);
+				return json(response, refused.status, { message: refused.message }, refused.headers);
+			}
 			const auth = authorize(authorization);
 			if (auth === null) return json(response, 401, { message: "A JSON web token could not be decoded" });
 			const body = Buffer.concat(chunks).length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
@@ -221,12 +233,13 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		state,
 		seed(repository, commits, refs) {
 			state.repos.set(repository, { full_name: repository, name: repository.split("/")[1]!, owner: repository.split("/")[0]!,
-				default_branch: "main", fork: false });
+				default_branch: "main", fork: false, parent: null });
 			state.commits.set(repository, new Set(commits));
 			for (const [branch, sha] of Object.entries(refs)) state.refs.set(`${repository}:${branch}`, sha);
 		},
 		refuse(item) { refusals.push({ method: item.method, path: item.path, status: item.status,
-			message: item.message ?? "refused by the stub", headers: item.headers ?? {} }); },
+			message: item.message ?? "refused by the stub", headers: item.headers ?? {}, once: item.once ?? false }); },
+		forkAs(name) { forkAs = name; },
 		hang(prefix) { hangs.push(prefix); },
 		close: async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
 	};
@@ -421,4 +434,218 @@ test("a private key that is not a PEM refuses by name before any dial", async t 
 	assert.equal(failure.code, "GITHUB_APP_KEY_INVALID");
 	assert.match(failure.detail, /ACQUIT_GITHUB_APP_PRIVATE_KEY/);
 	assert.ok(Date.now() - started < 1_000);
+});
+
+// The round-11 findings. Each test drives the wire the audits found and pins what the client owes.
+
+/** A second listener that records whether a redirected request arrives. */
+async function withThief(): Promise<{ url: string; seen: string[]; close: () => Promise<void> }> {
+	const seen: string[] = [];
+	const server = createServer((request, response) => {
+		seen.push(request.url ?? "");
+		response.writeHead(200, { "content-type": "application/json" });
+		response.end("[]");
+	});
+	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+	return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/stolen`, seen,
+		close: async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+}
+
+/** Puts a repository at the computed work name that this client did not create, or a fork of some source. */
+function plant(stub: Stub, repository: string, options: { readonly forkOf: string | null;
+	readonly commits: readonly string[]; readonly main: string | null }): void {
+	const [owner, name] = repository.split("/") as [string, string];
+	stub.state.repos.set(repository, { full_name: repository, name, owner, default_branch: "main",
+		fork: options.forkOf !== null, parent: options.forkOf === null ? null : { full_name: options.forkOf } });
+	stub.state.commits.set(repository, new Set(options.commits));
+	if (options.main !== null) stub.state.refs.set(`${repository}:main`, options.main);
+}
+
+test("a fork GitHub names differently is refused by name and never renamed", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const other = `${ORG}/invoice-app-7Q2K-1`;
+	stub.forkAs(other);
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.match(failure.detail, new RegExp(other));
+	assert.equal(stub.state.repos.has(WORK_REPO), false);
+	assert.equal(stub.state.repos.has(other), true);
+	assert.equal(stub.state.requests.some(request => request.method === "PATCH"), false);
+});
+
+test("a fork this client created converges after its ref move failed", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	stub.refuse({ method: "PATCH", path: `/repos/${WORK_REPO}/git/refs/heads/main`, status: 500, message: "one transient failure", once: true });
+	const first = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(first.code, "GITHUB_HTTP_ERROR");
+	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), HEAD);
+	// The retry finds the fork this client made: main is moved to the frozen commit instead of refused.
+	const adopted = await port.createWorkRepo(workRepoRequest, "req-2");
+	assert.deepEqual(adopted, { repository: WORK_REPO, remote: `https://github.com/${WORK_REPO}.git`, branch: "main", commit: FROZEN });
+	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), FROZEN);
+});
+
+test("a repository this client did not create is refused by name and never moved", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, WORK_REPO, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.refs.has(`${WORK_REPO}:main`), false);
+	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+});
+
+test("a fork of another repository at the job's name is refused by name and never moved", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, WORK_REPO, { forkOf: "someone/else", commits: [FROZEN, HEAD], main: HEAD });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), HEAD);
+	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+});
+
+test("a fork refused with 403 name-exists goes through the same ownership and ref checks", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	// The concurrent attempt of this job won the name between this call's check and its fork.
+	plant(stub, WORK_REPO, { forkOf: CLIENT, commits: [FROZEN, HEAD], main: HEAD });
+	stub.refuse({ method: "GET", path: `/repos/${WORK_REPO}`, status: 404, message: "Not Found", once: true });
+	const adopted = await port.createWorkRepo(workRepoRequest, "req-1");
+	assert.equal(adopted.repository, WORK_REPO);
+	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), FROZEN);
+});
+
+test("a 403 name-exists on a repository this client did not create is not a permission refusal", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, WORK_REPO, { forkOf: null, commits: [], main: null });
+	stub.refuse({ method: "GET", path: `/repos/${WORK_REPO}`, status: 404, message: "Not Found", once: true });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
+});
+
+test("a duplicate-ref 422 adopts the ref and never opens a second pull request", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	await port.createWorkRepo(workRepoRequest, "req-1");
+	// The submitter pushed the verified commit to the work fork; the client repo has it too.
+	stub.state.commits.get(CLIENT)?.add(SUBMITTED);
+	stub.state.commits.get(WORK_REPO)?.add(SUBMITTED);
+	// The winner of the race already created the branch on the client repo and opened its pull request.
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, SUBMITTED);
+	stub.state.pulls.push({ number: 500, head: `${CLIENT_OWNER}:acquit/${JOB}`, branch: CLIENT, state: "open",
+		title: `Acquit verifier: ${JOB}`, body: "" });
+	// The loser read the ref before the winner created it, so its create answers the duplicate-ref 422.
+	stub.refuse({ method: "GET", path: `/repos/${CLIENT}/git/ref/heads/acquit/${JOB}`, status: 404, message: "Not Found", once: true });
+	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/git/refs`, status: 422, message: "Reference already exists", once: true });
+	const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");
+	assert.equal(published.pullRequest, 500);
+	assert.deepEqual(stub.state.pulls.map(pull => pull.number), [500]);
+	assert.equal(stub.state.checks.length, 1);
+	assert.equal(stub.state.checks.at(0)?.repo, CLIENT);
+});
+
+test("a duplicate-ref 409 adopts the ref the same way", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	await port.createWorkRepo(workRepoRequest, "req-1");
+	stub.state.commits.get(CLIENT)?.add(SUBMITTED);
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, SUBMITTED);
+	stub.state.pulls.push({ number: 500, head: `${CLIENT_OWNER}:acquit/${JOB}`, branch: CLIENT, state: "open",
+		title: `Acquit verifier: ${JOB}`, body: "" });
+	stub.refuse({ method: "GET", path: `/repos/${CLIENT}/git/ref/heads/acquit/${JOB}`, status: 404, message: "Not Found", once: true });
+	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/git/refs`, status: 409, message: "Reference already exists", once: true });
+	const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");
+	assert.equal(published.pullRequest, 500);
+	assert.deepEqual(stub.state.pulls.map(pull => pull.number), [500]);
+});
+
+test("check runs are deduped by the job's external id, so another job's run is not adopted", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	stub.state.checks.push({ repo: CLIENT, id: 1, name: CHECK_NAME, head_sha: FROZEN, external_id: OTHER_JOB,
+		html_url: `https://github.com/${CLIENT}/runs/1` });
+	const published = await port.publishVerified(publishRequest, "req-1");
+	assert.equal(stub.state.checks.length, 2);
+	assert.equal(stub.state.checks.at(1)?.external_id, JOB);
+	assert.equal(published.checkRunUrl, stub.state.checks.at(1)?.html_url);
+	assert.deepEqual(await port.publishVerified(publishRequest, "req-2"), published);
+	assert.equal(stub.state.checks.length, 2);
+});
+
+test("an installation added after INSTALLATION_MISSING is seen without a restart", async t => {
+	const stub = await createGitHubStub({ appId: APP_ID, publicKey, installations: [{ id: 41, account: CLIENT_OWNER }] });
+	t.after(() => stub.close());
+	stub.seed(CLIENT, [FROZEN, HEAD], { main: HEAD });
+	const port = createGitHubApp({ ...CONFIG, apiBase: stub.url });
+	const first = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(first.code, "GITHUB_INSTALLATION_MISSING");
+	stub.state.installations.push({ id: 42, account: ORG });
+	const adopted = await port.createWorkRepo(workRepoRequest, "req-2");
+	assert.equal(adopted.repository, WORK_REPO);
+});
+
+test("a response body over the cap is refused by name", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	stub.refuse({ method: "GET", path: "/app/installations", status: 200, message: "x".repeat(2 * 1024 * 1024) });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_RESPONSE_INVALID");
+	assert.match(failure.detail, /more than 1048576 bytes/);
+});
+
+test("server text copied into an error is bounded and stripped of token shapes", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const token = `ghs_${"a".repeat(36)}`;
+	stub.refuse({ method: "GET", path: "/app/installations", status: 500,
+		message: `${"z".repeat(4_000)} ${token} temp_clone_token=${token} Bearer ${token}` });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.ok(failure.detail.length < 400, `detail is ${failure.detail.length} characters`);
+	assert.equal(failure.detail.includes(token), false);
+	assert.match(failure.detail, /\[redacted\]/);
+});
+
+test("a redirect is refused instead of following the bearer header to another host", async t => {
+	const thief = await withThief();
+	t.after(thief.close);
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	stub.refuse({ method: "GET", path: "/app/installations", status: 302, message: "Found", headers: { location: thief.url } });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_NETWORK");
+	assert.deepEqual(thief.seen, []);
+});
+
+test("a caller-supplied name that could rewrite a URL is refused before any dial", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const cases: readonly { readonly what: string; readonly work: () => Promise<unknown> }[] = [
+		{ what: "owner traversal", work: () => port.createWorkRepo({ ...workRepoRequest, repository: "evil/../../other-org/target" }, "r") },
+		{ what: "query in the repository name", work: () => port.createWorkRepo({ ...workRepoRequest, repository: "owner/repo?admin=1" }, "r") },
+		{ what: "slash in the job id", work: () => port.createWorkRepo({ ...workRepoRequest, jobId: "job_7Q2K/../evil" as JobId }, "r") },
+		{ what: "short commit", work: () => port.createWorkRepo({ ...workRepoRequest, frozenCommit: "a3b6ead" as CommitSha }, "r") },
+		{ what: "commit with a query", work: () => port.publishVerified({ ...publishRequest, sourceCommit: "abc?ref=main" as CommitSha }, "r") },
+		{ what: "query in the job id", work: () => port.publishVerified({ ...publishRequest, jobId: "job_7Q2K?x=1" as JobId }, "r") },
+	];
+	for (const item of cases) {
+		const failure = await refusal(item.work());
+		assert.equal(failure.code, "GITHUB_REQUEST_INVALID", item.what);
+	}
+	assert.deepEqual(stub.state.requests, []);
+});
+
+test("a fork that answers 200 is not read as an adoption", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/forks`, status: 200, message: "the repository exists" });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.equal(failure.status, 200);
+	assert.equal(stub.state.requests.some(request => request.method !== "GET"), false);
 });

@@ -9,11 +9,13 @@ import type { Ports } from "../src/effects.ts";
 import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, CommitSha, Digest, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
 import type { Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
 import type { Bps, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
+import { GitHubAppError } from "../src/github.ts";
+import type { GitHubFailureCode } from "../src/github.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
@@ -693,6 +695,107 @@ test("an unconfigured work repo leaves the effect waiting for a human, never han
 		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)),
 			{ kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
 	} finally { store.close(); base.store.close(); }
+});
+
+// The GitHub refusal table. Every code the App client can raise lands in one disposition, and the
+// transient half retries on a backoff that grows to a bound instead of a flat five seconds.
+
+/** The disposition every code in `GitHubFailureCode` owes the outbox. */
+const PERMANENT_REFUSALS: readonly GitHubFailureCode[] = ["GITHUB_APP_KEY_INVALID", "GITHUB_INSTALLATION_MISSING",
+	"GITHUB_PERMISSION_MISSING", "GITHUB_FORK_MISMATCH", "GITHUB_REF_CONFLICT", "GITHUB_COMMIT_ABSENT", "GITHUB_NOT_FOUND",
+	"GITHUB_RESPONSE_INVALID", "GITHUB_REQUEST_INVALID"];
+const TRANSIENT_REFUSALS: readonly GitHubFailureCode[] = ["GITHUB_RATE_LIMITED", "GITHUB_TIMEOUT", "GITHUB_NETWORK"];
+
+type EffectState = { readonly kind: string; readonly reason?: string; readonly detail?: string;
+	readonly reconcileAt?: string; readonly attempt?: number };
+
+/** One CREATE_WORK_REPO row whose work-repo port refuses with the given failure. */
+function githubEffect(fail: () => never) {
+	const store = new SqliteStore(":memory:");
+	const row = heldRow();
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), later);
+	const base = fixture();
+	const effect: JobEffect = { kind: "CREATE_WORK_REPO", jobId: row.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" as CommitSha };
+	const key = operationKey(effect);
+	const state = { kind: "READY", runAt: now };
+	store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, JSON.stringify({ key, effect, payloadDigest: "d", state }), JSON.stringify(state), now);
+	let attempts = 0;
+	let current = now;
+	const ports: Ports = { ...base.ports, store, clock: { now: () => current },
+		workRepo: { createWorkRepo: async () => { attempts++; return fail(); } } };
+	return { store, base, ports, key, attempts: () => attempts, at: (value: Instant) => { current = value; },
+		state: (): EffectState => JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)) as EffectState };
+}
+
+const githubRefusal = (code: GitHubFailureCode, status?: number) => (): never => {
+	throw new GitHubAppError(code, `audit probe ${code}: ${"x".repeat(900)}`, status === undefined ? {} : { status });
+};
+
+test("a permanent App refusal parks the effect for a human, with the code and the bounded detail", async () => {
+	for (const code of PERMANENT_REFUSALS) {
+		const f = githubEffect(githubRefusal(code));
+		try {
+			assert.equal(await runOutboxOnce(f.ports, f.key), "WORKED");
+			const state = f.state();
+			assert.equal(state.kind, "NEEDS_HUMAN", code);
+			assert.equal(state.reason, code);
+			assert.equal(typeof state.detail, "string", code);
+			assert.ok((state.detail?.length ?? 0) <= 304, `${code} detail is ${state.detail?.length} characters`);
+			// A human has to act: the same row is not dispatched again.
+			f.at(instant("2026-10-06T13:00:00Z"));
+			assert.equal(await runOutboxOnce(f.ports, f.key), "IDLE");
+			assert.equal(f.attempts(), 1, code);
+		} finally { f.store.close(); f.base.store.close(); }
+	}
+});
+
+test("a transient App refusal stays uncertain with a backoff that grows to its bound", async () => {
+	for (const code of TRANSIENT_REFUSALS) {
+		const f = githubEffect(githubRefusal(code));
+		try {
+			const gaps: number[] = [];
+			let at = now;
+			for (let round = 0; round < 8; round++) {
+				f.at(at);
+				assert.equal(await runOutboxOnce(f.ports, f.key), "WORKED");
+				const state = f.state();
+				assert.equal(state.kind, "UNCERTAIN", `${code} at round ${round}`);
+				const due = Date.parse(state.reconcileAt!);
+				gaps.push(due - Date.parse(at));
+				at = new Date(due).toISOString() as Instant;
+			}
+			assert.deepEqual(gaps, [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000], code);
+			assert.equal(f.attempts(), 8, code);
+		} finally { f.store.close(); f.base.store.close(); }
+	}
+});
+
+test("an unnamed HTTP status is transient only when it is a 5xx", async () => {
+	const server = githubEffect(githubRefusal("GITHUB_HTTP_ERROR", 503));
+	try {
+		await runOutboxOnce(server.ports, server.key);
+		const state = server.state();
+		assert.equal(state.kind, "UNCERTAIN");
+		assert.equal(state.reconcileAt, instant("2026-10-06T12:00:05.000Z"));
+	} finally { server.store.close(); server.base.store.close(); }
+	const refused = githubEffect(githubRefusal("GITHUB_HTTP_ERROR", 422));
+	try {
+		await runOutboxOnce(refused.ports, refused.key);
+		const state = refused.state();
+		assert.equal(state.kind, "NEEDS_HUMAN");
+		assert.equal(state.reason, "GITHUB_HTTP_ERROR");
+		assert.match(state.detail ?? "", /audit probe/);
+	} finally { refused.store.close(); refused.base.store.close(); }
+});
+
+test("an error the App client did not name stays uncertain and retries on the backoff", async () => {
+	const f = githubEffect(() => { throw new Error("not a GitHubAppError"); });
+	try {
+		assert.equal(await runOutboxOnce(f.ports, f.key), "WORKED");
+		const state = f.state();
+		assert.equal(state.kind, "UNCERTAIN");
+		assert.equal(state.reconcileAt, instant("2026-10-06T12:00:05.000Z"));
+	} finally { f.store.close(); f.base.store.close(); }
 });
 
 test("the verifier callback refuses a report whose ordinal is not the reserved attempt", async () => {
