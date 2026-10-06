@@ -62,6 +62,7 @@ The lane commands are the same as above. Translate the shell and the port check.
 - A stop need not leave `own-<nonce>.sock` files behind: a service that closes the preload's socket as it exits unlinks the path it bound, and a graceful lane stop leaves only the web's file. Any file that does survive a stop names the stopped run's nonce; each start binds a fresh nonce-named path, so leftovers are inert.
 - The ownership proof prevents accidents, not a same-uid adversary: a stale run file, a reused PID, or another lane's process must never be signalled, but a process running as this user can already `kill(2)` the recorded PID directly, so a forged proof channel adds no authority.
 - `CLI_BUSY` on Linux names the abstract lock `@acquit-lock-<hash>`; the kernel frees that name when the holder exits, so a killed CLI leaves no lock to clear.
+- Removing a lane directory while a command runs reports `IO_FAILED`, so rerun the command.
 
 Inspect the proposed reset, then reset only this run's verification database. Seeding invalidates all development sessions. Log in only after seeding.
 
