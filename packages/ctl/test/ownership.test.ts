@@ -8,9 +8,18 @@ import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { alive, detached, ownedProcess, ownershipChannel, ownershipNonce, ownershipReady, releaseSpawned, sleep } from "../src/process.ts";
+import { alive, childListener, detached, ownedProcess, ownershipChannel, ownershipNonce, ownershipReady, releaseSpawned, sleep } from "../src/process.ts";
 import { stop } from "../src/commands.ts";
 import { atomicJson } from "../src/state.ts";
+
+// A losing sleep() in a race keeps the file's timer alive; the runner then
+// waits the full interval after the last test finished. Clear it on settle.
+async function first<T>(event: Promise<T>, ms: number, message: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([event, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })]);
+	} finally { if (timer) clearTimeout(timer); }
+}
 
 test("a real pipe squatter answering the victim pid cannot authorize stop; failed preload bind exits", { timeout: 20000, skip: process.platform !== "win32" }, async () => {
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-squatter-"));
@@ -21,7 +30,7 @@ test("a real pipe squatter answering the victim pid cannot authorize stop; faile
 		{ stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
 	let child;
 	try {
-		await Promise.race([once(squatter.stdout!, "data"), sleep(5000).then(() => { throw new Error("Squatter did not bind."); })]);
+		await first(once(squatter.stdout!, "data"), 5000, "Squatter did not bind.");
 		assert.equal(await ownedProcess(victim.pid!, nonce), false);
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, browserSession: "test" };
@@ -30,40 +39,6 @@ test("a real pipe squatter answering the victim pid cannot authorize stop; faile
 		await assert.rejects(stop({}, ctx), (error: any) => error.code === "PID_MISMATCH");
 		assert.equal(alive(victim.pid!), true, "The victim must survive the squatter's forged answer.");
 		child = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(()=>{},1000)"]);
-		const deadline = Date.now() + 3000;
-		while (child.exitCode === null && Date.now() < deadline) await sleep(20);
-		assert.equal(child.exitCode, 1, "The child must fail fast when it cannot bind its proof channel.");
-	} finally {
-		await releaseSpawned(victim);
-		await releaseSpawned(squatter);
-		squatter.stdout?.destroy();
-		if (child) await releaseSpawned(child);
-		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-	}
-});
-
-test("a Unix socket squatter answering the victim pid cannot authorize stop; failed preload bind exits", { timeout: 20000, skip: process.platform !== "linux" }, async () => {
-	const root = await mkdtemp(resolve(tmpdir(), "acquit-unix-squatter-"));
-	const nonce = ownershipNonce();
-	const socketPath = resolve(root, "own.sock");
-	const victim = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
-	const squatter = spawn(process.execPath, ["-e", `const {createServer}=require("node:net");
-		createServer(s=>{s.on("error",()=>{});s.on("data",()=>s.end("${victim.pid} 0\\n"));}).listen(${JSON.stringify(socketPath)},()=>console.log("held"));`],
-		{ stdio: ["ignore", "pipe", "ignore"] });
-	let child;
-	try {
-		await Promise.race([once(squatter.stdout!, "data"), sleep(5000).then(() => { throw new Error("Squatter did not bind."); })]);
-		// The squatter answers with the victim's pid, but it is the process
-		// holding the listening socket, so the answer is not kill authority.
-		assert.equal(await ownedProcess(victim.pid!, nonce, socketPath), false);
-		const dir = resolve(root, "data/ctl");
-		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, browserSession: "test" };
-		const { atomicJson } = await import("../src/state.ts");
-		await atomicJson(ctx.stateFile, { api: { pid: victim.pid, nonce, port: 4310, socketPath }, web: { pid: 0, nonce: ownershipNonce(), port: 5173 },
-			logs: { api: "", web: "" }, databasePath: ctx.databasePath, startedAt: "test" });
-		await assert.rejects(stop({}, ctx), (error: any) => error.code === "PID_MISMATCH");
-		assert.equal(alive(victim.pid!), true, "The victim must survive the squatter's forged answer.");
-		child = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(()=>{},1000)"], socketPath);
 		const deadline = Date.now() + 3000;
 		while (child.exitCode === null && Date.now() < deadline) await sleep(20);
 		assert.equal(child.exitCode, 1, "The child must fail fast when it cannot bind its proof channel.");
@@ -91,7 +66,7 @@ test("the real ownership server closes idle and oversized clients and does not k
 			await once(socket, "connect");
 			const closed = once(socket, "close");
 			if (input) socket.write(input);
-			await Promise.race([closed, sleep(2000).then(() => { throw new Error("Ownership client was not closed."); })]);
+			await first(closed, 2000, "Ownership client was not closed.");
 		}
 		const idle = createConnection(ownershipChannel(nonce));
 		sockets.push(idle);
@@ -111,11 +86,17 @@ test("the real ownership server closes idle and oversized clients and does not k
 // the victim's own /proc facts, then let another process answer the challenge.
 // stop must refuse with PID_MISMATCH and leave the victim running.
 const linux = { skip: process.platform !== "linux" };
+// The kernel pads the inode column and separates it from the path with exactly
+// one space, then prints the bound path untouched: columns 4-8 are flags, type,
+// state, inode, path. Joining fields with " " would read a tab or a space run
+// inside a path as a single separator.
+const unixRow = /^\S+\s+\S+\s+\S+\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+) (.*)$/;
 function listeningInodes(path: string): number[] {
 	return readFileSync("/proc/net/unix", "utf8").split("\n").slice(1).flatMap(line => {
-		const fields = line.trim().split(/\s+/);
-		const inode = Number(fields[6]);
-		return fields.length > 7 && fields[3] === "00010000" && Number.isSafeInteger(inode) && fields.slice(7).join(" ") === path ? [inode] : [];
+		const row = unixRow.exec(line);
+		if (!row) return [];
+		const inode = Number(row[4]);
+		return row[1] === "00010000" && Number.isSafeInteger(inode) && row[5] === path ? [inode] : [];
 	});
 }
 function socketInodesOf(pid: number): number[] {
@@ -137,7 +118,7 @@ function startTimeOf(pid: number): string {
 }
 async function spawnProbe(code: string, ...args: string[]): Promise<{ child: ChildProcess; message: string }> {
 	const child = spawn(process.execPath, ["-e", code, ...args], { stdio: ["ignore", "pipe", "ignore"] });
-	const [chunk] = await Promise.race([once(child.stdout!, "data"), sleep(4000).then(() => { throw new Error("Probe child did not become ready."); })]);
+	const [chunk] = await first(once(child.stdout!, "data"), 4000, "Probe child did not become ready.");
 	return { child, message: chunk.toString().trim() };
 }
 const plainListener = (path: string) => `require("node:net").createServer(s => { s.on("error", () => {}); s.on("data", () => s.end("unrelated\\n")); }).listen(${JSON.stringify(path)}, () => console.log("ready"));`;
@@ -245,4 +226,25 @@ test("stop refuses a record whose start time does not match the live PID, and ac
 		await recordRun(ctx, { ...record, startTime: startTimeOf(child.pid!) });
 		assert.deepEqual(await stop({}, ctx), { stopped: true, pids: [child.pid] });
 	} finally { await releaseProbes(root, [child]); }
+});
+test("stop keeps the recorded path's authority when a lookalike path differs only by whitespace", { timeout: 20000, ...linux }, async () => {
+	// /proc/net/unix prints the bound path byte for byte, so a path that differs
+	// only by a whitespace run is a different path: it must not prove the victim,
+	// and it must not make the victim's own recorded path stop proving it either.
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-lookalike-"));
+	const recorded = resolve(root, "v y.sock");
+	const lookalike = resolve(root, "v\ty.sock");
+	const nonce = ownershipNonce();
+	let victim: ChildProcess | undefined;
+	let twin: ChildProcess | undefined;
+	try {
+		victim = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], recorded);
+		const proof = await childListener(victim.pid!, recorded, 5000);
+		assert.ok(proof, "The recorded path must publish its proof.");
+		twin = (await spawnProbe(forgerListener(lookalike, victim.pid!))).child;
+		assert.equal(await ownedProcess(victim.pid!, nonce, lookalike, proof), false, "A lookalike path must never prove the victim.");
+		const ctx = probeContext(root, "lookalike", 64908, 64909);
+		await recordRun(ctx, { pid: victim.pid, nonce, port: 64908, socketPath: recorded, startTime: proof.startTime, listenerInode: proof.listenerInode });
+		assert.deepEqual(await stop({}, ctx), { stopped: true, pids: [victim.pid] });
+	} finally { await releaseProbes(root, [victim, twin]); }
 });

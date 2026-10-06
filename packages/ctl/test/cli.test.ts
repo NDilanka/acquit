@@ -284,23 +284,27 @@ test("the process proves itself: an owned child answers, a bystander with the no
 		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 	}
 });
-test("ownership still holds when the proof channel's directory path contains a space", async () => {
-	const root = await mkdtemp(resolve(tmpdir(), "acquit proof test "));
-	const nonce = ownershipNonce();
-	const socket = process.platform === "win32" ? undefined : resolve(root, "own.sock");
-	const owned = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], socket);
-	try {
-		const deadline = Date.now() + 3000;
-		let proved = false;
-		while (!proved && Date.now() < deadline) {
-			const proof = socket ? await childListener(owned.pid!, socket, 250) : null;
-			proved = await ownedProcess(owned.pid!, nonce, socket, proof);
-			await sleep(20);
-		}
-		assert.equal(proved, true);
-		await releaseSpawned(owned);
-		assert.equal(alive(owned.pid!), false);
-	} finally { await releaseSpawned(owned).catch(() => {}); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+test("ownership still holds when the proof channel's directory path contains whitespace", async () => {
+	// The recorded path is read back from /proc/net/unix at stop time, so any
+	// whitespace in it must survive the round trip byte for byte.
+	for (const [label, template] of [["one space", "acquit proof test "], ["two spaces", "acquit proof  test "], ["a tab", "acquit proof\ttest "]] as const) {
+		const root = await mkdtemp(resolve(tmpdir(), template));
+		const nonce = ownershipNonce();
+		const socket = process.platform === "win32" ? undefined : resolve(root, "own.sock");
+		const owned = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], socket);
+		try {
+			const deadline = Date.now() + 3000;
+			let proved = false;
+			while (!proved && Date.now() < deadline) {
+				const proof = socket ? await childListener(owned.pid!, socket, 250) : null;
+				proved = await ownedProcess(owned.pid!, nonce, socket, proof);
+				await sleep(20);
+			}
+			assert.equal(proved, true, `ownership must hold with ${label} in the proof channel's directory`);
+			await releaseSpawned(owned);
+			assert.equal(alive(owned.pid!), false);
+		} finally { await releaseSpawned(owned).catch(() => {}); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+	}
 });
 test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
