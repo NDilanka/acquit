@@ -51,6 +51,22 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 		assert.equal(command.stdout.includes("--path <value>  Same-origin route to capture. Default: /."), true);
 	});
 });
+test("CLI startup does not eagerly load F1's ledger or job modules", () => {
+	const main = new URL("../src/main.ts", import.meta.url).href;
+	const script = `
+		import { registerHooks } from "node:module";
+		registerHooks({ resolve(specifier, context, nextResolve) {
+			const resolved = nextResolve(specifier, context);
+			if (/\\/core\\/src\\/(ledger|job)\\.ts$/.test(resolved.url)) throw new Error("Ledger-only module loaded at startup");
+			return resolved;
+		} });
+		process.argv = [process.execPath, "main.ts", "--help"];
+		await import(${JSON.stringify(main)});
+	`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 30_000 });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /^ledger /m);
+});
 test("ledger --all covers every stored job and names the broken law with its evidence", async () => {
 	await fixture(async (cli, root) => {
 		const { DatabaseSync } = await import("node:sqlite");
@@ -87,6 +103,43 @@ test("ledger --all covers every stored job and names the broken law with its evi
 		assert.match(failure.error.fix, /job_broken/);
 		assert.match(failure.error.fix, /RELEASED/);
 		assert.match(failure.error.fix, /REFUND/);
+	});
+});
+test("ledger --job reads another client's HELD book and pins the tutorial text and API ledger", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const { projectJob } = await import("../../core/src/job.ts");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		const at = "2026-11-01T11:12:00.000Z";
+		const held = [{ kind: "HELD", cents: 42000, at }];
+		db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT)");
+		const row = { id: "job_7Q2K", version: 1, client: "other-client", title: "Fixture",
+			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z" },
+			bids: [{ id: "bid_test", operator: "devon-ops", agent: "ts-bugfixer", kind: "INDEPENDENT", price: 40000, status: "ACCEPTED" }],
+			state: { status: "IN_PROGRESS", escrow: { book: held, payee: { operator: "devon-ops" } }, attempts: { phase: "WORKING", history: [] } } };
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		db.close();
+		const text = cli(["ledger", "--job", row.id, "--check"]);
+		assert.equal(text.code, 0);
+		assert.equal(text.stdout, "2026-11-01 11:12  job_7Q2K  HELD  420.00 USD  client payment (400.00 job + 20.00 escrow fee)\nLaws: OK\n");
+		const json = cli(["ledger", "--job", row.id, "--json"]);
+		assert.equal(json.code, 0);
+		assert.deepEqual(JSON.parse(json.stdout).data.jobs, [{ id: row.id, laws: "OK", law: null, ledger: held }]);
+		// projectJob is the API's ledger projection; switching the owner must not change the stored array.
+		const mayaRow = { ...row, client: "maya-client" };
+		const apiJob = projectJob(mayaRow as never, { role: "CLIENT", clientId: "maya-client" as never }, new Map());
+		assert.deepEqual(JSON.parse(json.stdout).data.jobs[0].ledger, apiJob.ledger);
+	});
+});
+test("ledger --job reports missing and malformed ids as JOB_NOT_FOUND without an API", async () => {
+	await fixture(async cli => {
+		for (const id of ["job_missing", "nope", "", "job_a", `job_${"a".repeat(81)}`, "job_bad/id"]) {
+			const result = cli(["ledger", "--job", id]);
+			assert.equal(result.code, 1);
+			const failure = JSON.parse(result.stdout);
+			assert.equal(failure.error.code, "JOB_NOT_FOUND");
+			assert.match(failure.error.fix, /jobs, or check the id/);
+		}
 	});
 });
 test("lane zero is the default slot; positive lanes isolate all resources", () => {

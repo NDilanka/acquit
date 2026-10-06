@@ -163,6 +163,17 @@ Retain the verification database and evidence for inspection. Do not delete sess
 
 Use `/maintain-verification-skill` when routes, labels, CLI commands, or supported features change. Keep the feature map's entry points and proof rules aligned with the app.
 
+## F1 lane 2: OPEN with genuinely zero bids
+
+Use a **fresh, unseeded lane**, not a seeded wave slot. No product flag or stored-state edit is needed. The sign-in picker and issue #12 are available before seeding; the automatic House bid is refused with `NOT_FOUND` when its operator/agent has not been seeded. Opening the job itself still commits normally. Do not seed this lane until its empty-book proof is complete.
+
+1. Choose an unused lane (22 was verified). Set `ACQUIT_LANE=22` and `ACQUIT_DEV=1` for every ctl call. Run the Launch preflight, additionally refusing an existing `data/verify/lane-22/acquit.db`; never delete an old lane to make it fresh.
+2. Start through background Execute as in Launch and retain `launch.json`. **Skip seed-db**. Require `alreadyRunning:false`, the lane database path, both endpoint reachability flags, and `ctl status`'s `database.counts.operators:0`. `healthy:false` / `seeded:false` and the escrow doctor's seeded-data refusal are expected for this fixture only; do not use it for bidding, payment, or the regular seeded regression drives.
+3. Strip inherited `AGENT_BROWSER_*` and desktop attachment settings. Open the isolated lane browser at `http://localhost:5393`, sign in as `maya-client`, and open `/jobs/new`. Fill budget `400`, select deadline `7`, click **Open job**, then **Open job page**, following [Post a job](features/02-post-job.md). The usual House-bid requirement is replaced here by **0 waiting**, **No operator bids yet**, and **No House bid on this job**.
+4. Capture login output in memory and independently read `GET /api/jobs/<id>`. Require `status:OPEN`, `phase:BIDDING`, `bids.operators:[]`, `bids.house:null`, and `ledger:[]`. Save this sanitized response and `ledger-empty.png`.
+5. Run `node packages/ctl/src/main.ts ledger --job <id> --check`. Require exit 0 and exactly `No ledger lines` followed by `Laws: OK`. Run `ledger --all --check` too.
+6. Close only this lane's browser and stop only its recorded, ownership-verified app as in Cleanup. Retain the database and evidence. Seeding or moving the clock can change the fixture; do neither before verification.
+
 ## Development controls and lane waves
 
 Start the API with `ACQUIT_DEV=1` to enable `npm run ctl -- clock advance 4h` and `npm run ctl -- fund-mode card`. Without that flag, both controls refuse the call with a configuration hint. Card mode still creates a real DELAYED sandbox capture and feeds the normal CaptureCompleted edge. Set `ACQUIT_FUND_MODE=card` for the helper drive after you select card mode. Require HELD and 42000 cents instead of the checkout redirect. Return to checkout mode with `npm run ctl -- fund-mode checkout`. Both the clock offset and funding mode reset when the API restarts.

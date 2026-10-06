@@ -130,3 +130,18 @@ test("usd rejects negative, fractional-cent, and unsafe amounts", () => {
 	assert.equal(usd("0.00"), 0);
 	assert.equal(usd("9007199254740.91"), 900719925474091);
 });
+test("checkLaws reports the reducer's law at the first illegal move", () => {
+	const at = instant("2026-11-03T15:22:00Z");
+	const held = reduceLedger([], { kind: "Hold", gross: usd("420.00"), at });
+	if ("kind" in held) throw new Error("Hold refused");
+	const refunded = reduceLedger(held, { kind: "Refund", refunded: usd("420.00"), at });
+	if ("kind" in refunded) throw new Error("Refund refused");
+	const refund: LedgerLine = { kind: "REFUND", cents: usd("420.00"), at };
+	assert.deepEqual(checkLaws([refund]), reduceLedger([], { kind: "Refund", refunded: refund.cents, at }));
+	assert.deepEqual(checkLaws([...refunded, refund]), reduceLedger(refunded, { kind: "Refund", refunded: refund.cents, at }));
+	assert.deepEqual(checkLaws([...refunded, { ...refund, cents: usd("1.00") }]), { kind: "LAW_BREAK", law: "order" });
+	// A later duplicate release cannot override an earlier illegal refund.
+	const paid = reduceLedger(held, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at });
+	if ("kind" in paid) throw new Error("Release refused");
+	assert.deepEqual(checkLaws([...paid, refund, paid[1], paid[2]]), { kind: "LAW_BREAK", law: "refund_xor_payout" });
+});

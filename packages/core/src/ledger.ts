@@ -84,23 +84,6 @@ function breakLaw(law: LedgerLaw): LawBreak {
 	return { kind: "LAW_BREAK", law };
 }
 
-function sums(lines: readonly LedgerLine[]) {
-	let held = 0;
-	let released = 0;
-	let fee = 0;
-	let refund = 0;
-	let releaseCount = 0;
-	let refundCount = 0;
-	for (const line of lines) {
-		if (!cents(line.cents) || (line.kind === "FEE" && (!cents(line.processor) || !cents(line.acquit) || line.processor + line.acquit !== line.cents))) return null;
-		if (line.kind === "HELD") held += line.cents;
-		if (line.kind === "RELEASED") { released += line.cents; releaseCount += 1; }
-		if (line.kind === "FEE") fee += line.cents;
-		if (line.kind === "REFUND") { refund += line.cents; refundCount += 1; }
-	}
-	return { held, released, fee, refund, releaseCount, refundCount };
-}
-
 function reduceAny(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
 	if (book.length === 0 && move.kind === "Hold") {
 		if (!cents(move.gross) || move.gross <= 0) return breakLaw("conservation");
@@ -131,23 +114,34 @@ export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | L
 }
 
 export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFUNDED" | LawBreak {
-	const total = sums(lines);
-	if (!total) return breakLaw("conservation");
-	const noRefund = total.refundCount === 0 && total.refund === 0;
-	const noPayout = total.releaseCount === 0 && total.released === 0 && total.fee === 0;
-	// The reducer refuses a zero hold, so every reachable book is funded. Zero-value books break conservation too.
-	const funded = total.held > 0;
-	const paid = funded && noRefund && total.releaseCount === 1 && total.released + total.fee === total.held;
-	const refunded = funded && noPayout && total.refundCount === 1 && total.refund === total.held;
-	const open = noRefund && noPayout && (lines.length === 0 || funded);
-	if (total.releaseCount > 1) return breakLaw("one_release");
-	// A payout and a refund on one book is the disposition violation, whatever the sums say.
-	if (!noRefund && !noPayout) return breakLaw("refund_xor_payout");
-	if (!paid && !refunded && !open) return breakLaw("conservation");
-	if (lines.length === 0 || (lines.length === 1 && lines[0].kind === "HELD" && total.held > 0)) return "OPEN";
-	if (lines.length === 3 && lines[0].kind === "HELD" && lines[1].kind === "RELEASED" && lines[2].kind === "FEE") return "PAID";
-	if (lines.length === 2 && lines[0].kind === "HELD" && lines[1].kind === "REFUND") return "REFUNDED";
-	return breakLaw("order");
+	let book: EscrowBook = [];
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		let move: LedgerMove;
+		let fee: FeeLine | undefined;
+		switch (line.kind) {
+			case "HELD": move = { kind: "Hold", gross: line.cents, at: line.at }; break;
+			case "REFUND": move = { kind: "Refund", refunded: line.cents, at: line.at }; break;
+			case "RELEASED": {
+				const next = lines[index + 1];
+				fee = next?.kind === "FEE" ? next : undefined;
+				move = { kind: "Release", operatorNet: line.cents, processorFee: fee?.processor ?? 0 as UsdCents,
+					platformFee: fee?.acquit ?? 0 as UsdCents, at: line.at };
+				break;
+			}
+			default: return breakLaw("order");
+		}
+		// Stop at the first illegal move, with the reducer's precedence (not aggregate sums).
+		const nextBook: EscrowBook | LawBreak = reduceLedger(book, move);
+		if ("kind" in nextBook) return nextBook;
+		if (line.kind === "RELEASED") {
+			if (!fee) return breakLaw("order");
+			if (!cents(fee.cents) || fee.processor + fee.acquit !== fee.cents) return breakLaw("conservation");
+			index++;
+		}
+		book = nextBook;
+	}
+	return book.length === 3 ? "PAID" : book.length === 2 ? "REFUNDED" : "OPEN";
 }
 
 /** Commercial terms. Client pays 5% on top. Operator gives up 10%. Acquit's 15% covers PayPal's fee. */

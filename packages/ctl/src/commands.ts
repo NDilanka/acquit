@@ -1,9 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { checkLaws, lawText } from "../../core/src/ledger.ts";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
-import { storedBook } from "../../core/src/job.ts";
 import { alive, captured, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs } from "./state.ts";
@@ -33,14 +31,15 @@ export async function clockAdvance(parsed: Parsed, ctx: Context): Promise<Result
 }
 type LedgerLine = { kind: "HELD" | "RELEASED" | "FEE" | "REFUND"; cents: number; at: string; processor?: number; acquit?: number };
 type JobBody = { job: { id: string; ledger: LedgerLine[]; bids: { operators: { price: number; status: string }[]; house: { price: number; status: string } | null } } };
+type LedgerTools = Pick<typeof import("../../core/src/ledger.ts"), "checkLaws" | "lawText">;
 function money(cents: number): string {
 	return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
 }
-function lawCheck(lines: readonly LedgerLine[]): { laws: "OK" | "BROKEN"; law: LedgerLaw | null } {
+function lawCheck(lines: readonly LedgerLine[], { checkLaws }: LedgerTools): { laws: "OK" | "BROKEN"; law: LedgerLaw | null } {
 	const result = checkLaws(lines as unknown as readonly BookLine[]);
 	return typeof result === "string" ? { laws: "OK", law: null } : { laws: "BROKEN", law: result.law };
 }
-function ledgerText(job: JobBody["job"]): { text: string; laws: "OK" | "BROKEN"; law: LedgerLaw | null; lines: LedgerLine[] } {
+function ledgerText(job: JobBody["job"], tools: LedgerTools): { text: string; laws: "OK" | "BROKEN"; law: LedgerLaw | null; lines: LedgerLine[] } {
 	const price = [...job.bids.operators, job.bids.house].find(bid => bid && ["ACCEPTED", "CHOSEN"].includes(bid.status))?.price ?? null;
 	const note = (line: LedgerLine) => {
 		if (line.kind === "HELD") {
@@ -51,31 +50,28 @@ function ledgerText(job: JobBody["job"]): { text: string; laws: "OK" | "BROKEN";
 		if (line.kind === "FEE") return `fees (${money(line.processor ?? 0)} PayPal processing + ${money(line.acquit ?? 0)} Acquit)`;
 		return "refunded to client";
 	};
-	const rendered = job.ledger.map(line => `${line.at.slice(0, 16).replace("T", " ")}  ${job.id}  ${line.kind.padEnd(8)}  ${money(line.cents).padStart(6)} USD  ${note(line)}`);
-	const check = lawCheck(job.ledger);
-	const verdict = check.law === null ? "OK" : `BROKEN ${check.law} (${lawText(check.law)})`;
+	const rendered = job.ledger.map(line => `${line.at.slice(0, 16).replace("T", " ")}  ${job.id}  ${line.kind}  ${money(line.cents)} USD  ${note(line)}`);
+	const check = lawCheck(job.ledger, tools);
+	const verdict = check.law === null ? "OK" : `BROKEN ${check.law} (${tools.lawText(check.law)})`;
 	return { text: `${rendered.length ? rendered.join("\n") : "No ledger lines"}\nLaws: ${verdict}\n`, laws: check.laws, law: check.law, lines: job.ledger };
 }
 export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
-	if (Boolean(parsed.job) === Boolean(parsed.all)) throw new CliError("INVALID_ARGUMENT", "Name one job with --job or every job with --all.", "Run npm run -s ctl -- ledger --job <id>.", 2);
-	let jobs: JobBody["job"][];
-	if (parsed.all) {
-		// Read every stored job straight from the lane database: the API listing hides other clients' non-OPEN books.
-		jobs = (await readStoredJobs(ctx.databasePath)).map(row => ({ id: row.id, ledger: storedBook(row) as unknown as LedgerLine[],
-			bids: { operators: row.bids.filter(bid => bid.kind === "INDEPENDENT"), house: row.bids.find(bid => bid.kind === "HOUSE") ?? null } }));
-	} else {
-		const ports = await app(ctx);
-		const session = await login({ "test-user": "maya-client" }, ctx) as { token: string };
-		const response = await fetch(`http://127.0.0.1:${ports.api}/api/jobs/${encodeURIComponent(String(parsed.job))}`, { headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(5000) });
-		if (response.status === 404) throw new CliError("JOB_NOT_FOUND", `No job has id ${String(parsed.job)}.`, "Run npm run -s ctl -- jobs, or check the id.");
-		if (!response.ok) throw new CliError("PROCESS_FAILED", `The API returned HTTP ${response.status}.`, "Run npm run -s ctl -- status, then retry ledger.");
-		jobs = [((await response.json()) as JobBody).job];
-	}
-	const reports = jobs.map(ledgerText);
+	if ((parsed.job !== undefined) === Boolean(parsed.all)) throw new CliError("INVALID_ARGUMENT", "Name one job with --job or every job with --all.", "Run npm run -s ctl -- ledger --job <id>.", 2);
+	const missing = () => new CliError("JOB_NOT_FOUND", `No job has id ${String(parsed.job)}.`, "Run npm run -s ctl -- jobs, or check the id.");
+	if (!parsed.all && !/^job_[A-Za-z0-9_-]{4,80}$/.test(String(parsed.job))) throw missing();
+	// Local inspection must include other clients' non-OPEN books, unlike the actor-filtered API.
+	const rows = await readStoredJobs(ctx.databasePath);
+	const selected = parsed.all ? rows : rows.filter(row => row.id === parsed.job);
+	if (!parsed.all && selected.length === 0) throw missing();
+	// Ledger-only modules must not add parsing/import work to H0's CLI boot path.
+	const [tools, { storedBook }] = await Promise.all([import("../../core/src/ledger.ts"), import("../../core/src/job.ts")]);
+	const jobs: JobBody["job"][] = selected.map(row => ({ id: row.id, ledger: storedBook(row) as unknown as LedgerLine[],
+		bids: { operators: row.bids.filter(bid => bid.kind === "INDEPENDENT"), house: row.bids.find(bid => bid.kind === "HOUSE") ?? null } }));
+	const reports = jobs.map(job => ledgerText(job, tools));
 	const broken = reports.findIndex(report => report.laws !== "OK");
 	if (parsed.check && broken >= 0) {
 		const law = reports[broken].law ?? "order";
-		throw new CliError("LAW_BREAK", `${jobs[broken].id} breaks ${law} (${lawText(law)}).`,
+		throw new CliError("LAW_BREAK", `${jobs[broken].id} breaks ${law} (${tools.lawText(law)}).`,
 			`Inspect the stored book, then stop the lane before another money move.\n${jobs[broken].id}\n${reports[broken].text}`);
 	}
 	return { text: reports.map((report, index) => parsed.all ? `${jobs[index].id}\n${report.text}` : report.text).join(""),
