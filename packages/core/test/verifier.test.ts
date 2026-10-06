@@ -215,7 +215,7 @@ test("the GitHub App port refuses by name and never waits on a call it cannot ma
 	assert.deepEqual(missingGitHubNames({ appId: "1" }), ["GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_ORG"]);
 	const present = createGitHubApp({ appId: "1", privateKey: "key", organization: "acquit-forks" });
 	await assert.rejects(present.createWorkRepo({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit }, "req-3"),
-		(error: unknown) => (error as { code?: string }).code === "GITHUB_APP_NOT_IMPLEMENTED");
+		(error: unknown) => (error as { code?: string }).code === "GITHUB_APP_KEY_INVALID");
 });
 
 test("the fake work repo is idempotent per job and keeps ten lanes off one repository name", async () => {
