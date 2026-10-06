@@ -1,0 +1,7 @@
+{
+  "name": "@acquit/verifier",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./ci.ts" }
+}

@@ -2,7 +2,7 @@
   "name": "acquit",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/core"],
+  "workspaces": ["packages/core", "packages/verifier", "packages/acquit-cli"],
   "scripts": {
     "postinstall": "node scripts/install-web.mjs",
     "dev": "node scripts/dev.mjs",
