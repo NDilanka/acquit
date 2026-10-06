@@ -9,12 +9,18 @@
 // default branch. --owner <account> --create makes that repo (private, main = the template's main)
 // when `gh` is authenticated, and reports whether the App installation can see it. The printed
 // clientRepo is what the contract must name.
+//
+// The operator's stored git credential is read-only for the App's organization, so with --askpass
+// the script mints an App installation token for the work repo's organization and prints the submit
+// command with a 0700 askpass script (token in a 0600 file, or ACQUIT_LANE_GIT_TOKEN) and no global
+// git config. The token is valid for one hour and is never printed.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { laneSlot } from "../../../../packages/ctl/src/state.ts";
@@ -25,9 +31,11 @@ const root = fileURLToPath(new URL("../../../..", import.meta.url));
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
 	template: { type: "string" }, force: { type: "boolean", default: false }, jobs: { type: "string" },
 	owner: { type: "string" }, repo: { type: "string" }, create: { type: "boolean", default: false },
+	askpass: { type: "boolean", default: false },
 } });
 const [laneRaw, branch] = positionals;
 assert(laneRaw !== undefined && branch !== undefined, "Usage: lane-repo.mjs <lane> <branch> [--template <dir>] [--force]");
+assert(!values.askpass || values.jobs !== undefined, "--askpass needs --jobs <jobId>: without a job there is no work repo to push to.");
 const lane = Number(laneRaw);
 assert(Number.isSafeInteger(lane) && lane >= 0, "Lane must be a whole number.");
 const template = resolve(values.template ?? process.env.ACQUIT_VERIFIER_FIXTURE ?? resolve(root, "../../acquit/scratch/verifier/invoice-app"));
@@ -54,9 +62,28 @@ const creation = values.create ? await ensureClientRepo(clientRepo, frozen, temp
 const organization = githubAppEnv().organization ?? "acquit-forks";
 const workRemote = values.jobs === undefined ? null : `https://github.com/${organization}/${workRepoName(clientRepo, values.jobs)}.git`;
 const slot = laneSlot(lane);
+const credential = values.askpass ? await laneCredential(organization) : null;
+const prefix = credential === null ? "" : `GIT_ASKPASS=${credential.askpass} GIT_CONFIG_GLOBAL=/dev/null `;
 console.log(JSON.stringify({ lane, branch, repo, head, frozen, apiPort: slot.apiPort, webPort: slot.webPort, verifierPort: slot.verifierPort,
-	clientRepo, creation, workRemote,
-	cli: `node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${repo} --remote ${workRemote ?? "<work repo URL>"} --api http://127.0.0.1:${slot.apiPort}` }));
+	clientRepo, creation, workRemote, credential,
+	cli: `${prefix}node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${repo} --remote ${workRemote ?? "<work repo URL>"} --api http://127.0.0.1:${slot.apiPort}` }));
+
+/** One run's push credential: a fresh 0700 directory holding the 0700 askpass script and the 0600 file it reads. */
+async function laneCredential(organization) {
+	const token = await createGitHubApp(githubAppEnv()).installationToken(organization);
+	const dir = await mkdtemp(join(tmpdir(), "acquit-lane-askpass-"));
+	const tokenFile = join(dir, "token");
+	const askpass = join(dir, "askpass.sh");
+	await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
+	await writeFile(askpass, `#!/bin/sh
+if [ -n "$ACQUIT_LANE_GIT_TOKEN" ]; then token=$ACQUIT_LANE_GIT_TOKEN; else token=$(cat '${tokenFile}'); fi
+case "$1" in
+	*[Uu]sername*) printf '%s\\n' x-access-token ;;
+	*) printf '%s\\n' "$token" ;;
+esac
+`, { mode: 0o700 });
+	return { askpass, tokenFile, lifetimeMinutes: 60 };
+}
 
 /** Creates the lane's client repo with the frozen commit as main, and reports whether the App can see it. */
 async function ensureClientRepo(fullName, frozenCommit, templateDir) {
