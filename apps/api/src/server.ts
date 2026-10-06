@@ -37,6 +37,7 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 }
 function redirect(res: ServerResponse, path: string): void { res.writeHead(302, { Location: path, "Cache-Control": "no-store" }); res.end(); }
 class BadBody extends Error {}
+class TooLarge extends Error {}
 async function body(req: IncomingMessage): Promise<unknown> {
 	let size = 0;
 	const chunks: Buffer[] = [];
@@ -47,6 +48,28 @@ async function body(req: IncomingMessage): Promise<unknown> {
 		chunks.push(buffer);
 	}
 	try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; } catch { throw new BadBody("Expected a JSON body"); }
+}
+/**
+ * The verifier callback's own cap, above the largest bounded verdict the service posts. The bytes are
+ * read once and handed to the port unchanged: the signature is over what was posted, not a re-encoding.
+ */
+const CALLBACK_BODY_LIMIT_BYTES = 32_768;
+async function rawBody(req: IncomingMessage, max: number): Promise<string> {
+	const declared = Number(req.headers["content-length"] ?? "");
+	if (Number.isFinite(declared) && declared > max) throw new TooLarge("Request body too large");
+	let size = 0;
+	const chunks: Buffer[] = [];
+	for await (const chunk of req) {
+		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+		size += buffer.length;
+		if (size > max) {
+			// Stop reading, but leave the socket for the answer: the caller is told why, not reset.
+			req.pause();
+			throw new TooLarge("Request body too large");
+		}
+		chunks.push(buffer);
+	}
+	return Buffer.concat(chunks).toString("utf8");
 }
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadBody("Expected an object");
@@ -140,9 +163,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			.filter((name): name is string => name !== null);
 		if (missing.length) { json(res, 503, { error: "VERIFIER_CI_NOT_CONFIGURED",
 			detail: `Set ${missing.join(" and ")} to accept a report.` }); return; }
+		let raw: string;
+		try { raw = await rawBody(req, CALLBACK_BODY_LIMIT_BYTES); }
+		catch (error) {
+			if (error instanceof TooLarge) { json(res, 413, { error: "CALLBACK_BODY_TOO_LARGE" }); return; }
+			throw error;
+		}
 		const response = await acquit.handleVerifierCallback(new Request(`http://localhost:${port}${url.pathname}`, { method: "POST",
 			headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-			body: JSON.stringify(await body(req)) }));
+			body: raw }));
 		json(res, response.status, await response.json()); return;
 	}
 	const current = session(req);
