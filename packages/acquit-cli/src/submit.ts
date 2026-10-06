@@ -1,12 +1,11 @@
-// `acquit submit <job> [--dir .]`. One attempt: push the working directory's HEAD to the job's work
-// repository, ask the API to record the submission, then print the block docs/tutorial.md shows.
+// `acquit submit <job> [--dir .]`. One attempt: push the submitted commit to its own ref on the job's
+// work repository, ask the API to record the submission, then print the block docs/tutorial.md shows.
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { CommitSha, JobId } from "../../core/src/ids.ts";
+import type { CommitSha } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
-import { verifiedBranch } from "../../core/src/github.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient } from "./client.ts";
@@ -76,13 +75,18 @@ export function localHead(dir: string): CommitSha {
 	return head as CommitSha;
 }
 
-/** Pushing is the operator's own credential; the work repository is where the judge reads the commit. A
- * retry after a rejection is usually a sibling of the rejected commit, so the job-owned ref is force-updated:
- * the judge fetches by SHA, and the publisher's work-fork fallback reads the same ref, which then matches the
- * commit the run verified. */
-export function pushHead(dir: string, remote: string, jobId: string): void {
-	const branch = verifiedBranch(jobId as JobId);
-	const result = spawnSync("git", ["-C", dir, "push", remote, `+HEAD:refs/heads/${branch}`], { encoding: "utf8", timeout: 120_000 });
+/** The ref one submission lands on. The commit names the ref, so the name is the guard: a plain push
+ * can only agree with what is already there, and pushing the same commit twice is an up-to-date no-op. */
+export function submissionRef(commit: CommitSha): string {
+	return `refs/heads/submissions/${commit}`;
+}
+
+/** Pushing is the operator's own credential; the work repository is where the judge reads the commit.
+ * The CLI never writes the publisher's `acquit/<jobId>` branch: the publisher creates that ref itself at
+ * the judged commit, which is in the work repo because the submission ref carries it. A submission the
+ * API later denies (VERIFIER_PENDING, WRONG_STATE) therefore cannot move the open pull request's head. */
+export function pushHead(dir: string, remote: string, commit: CommitSha): void {
+	const result = spawnSync("git", ["-C", dir, "push", remote, `${commit}:${submissionRef(commit)}`], { encoding: "utf8", timeout: 120_000 });
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 
@@ -146,7 +150,7 @@ function hoursBetween(from: string, to: string): number {
 export type SubmitDeps = {
 	readonly client: ApiClient;
 	readonly head: (dir: string) => CommitSha;
-	readonly push: (dir: string, remote: string, jobId: string) => void;
+	readonly push: (dir: string, remote: string, commit: CommitSha) => void;
 	readonly sleep?: (ms: number) => Promise<void>;
 	readonly now?: () => number;
 };
@@ -154,7 +158,7 @@ export type SubmitDeps = {
 /** Records one submission and waits for its verdict. */
 export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promise<string> {
 	const sourceCommit = deps.head(options.dir);
-	if (options.remote) deps.push(options.dir, options.remote, options.jobId);
+	if (options.remote) deps.push(options.dir, options.remote, sourceCommit);
 	const before = await jobView(deps.client, options.jobId);
 	// A failure the job already carried for this commit belongs to an earlier run; only a new one ends this wait.
 	const previousFailure = before.job.attempts.failure?.runId ?? null;

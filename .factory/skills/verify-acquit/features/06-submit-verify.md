@@ -34,10 +34,11 @@ Preconditions:
 - Prepare the work directory for this lane:
   `node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> tamper-test` prints the repository
   path, its HEAD, and the exact CLI command for that lane's API port. Use its `--force` to reset. With
-  `--jobs <jobId>` the printed command also carries `--remote <the job's work repo>`; submit pushes
-  the lane's HEAD there before it starts the run. A retry force-updates that job-owned ref, so a second
-  attempt built as a sibling of the rejected commit still reaches the judge; the verifier reads the
-  commit by SHA, not the ref's history. With `--jobs <jobId> --askpass` lane-repo mints an
+  `--jobs <jobId>` the printed command also carries `--remote <the job's work repo>`; submit pushes the
+  lane's HEAD there as its own `refs/heads/submissions/<commit>` ref before it starts the run. A retry
+  names its own ref, so it never moves the publisher's `acquit/<jobId>` branch or the pull request that
+  branch heads; the verifier reads the commit by SHA, and the publisher creates `acquit/<jobId>` at the
+  judged commit itself. With `--jobs <jobId> --askpass` lane-repo mints an
   App installation token for the work repo's organization and prints the command with
   `ACQUIT_LANE_ASKPASS_TOKEN_FILE=<path> GIT_ASKPASS=<path> GIT_CONFIG_GLOBAL=/dev/null`, every path
   shell-quoted: the 0700 askpass script reads the token from the 0600 file the command names, in its
