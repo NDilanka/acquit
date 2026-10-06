@@ -1,7 +1,7 @@
 import { createServer } from "node:net";
 import type { Server } from "node:net";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { mkdir, chmod, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -135,6 +135,14 @@ export function lockLabel(dir: string): string {
 async function acquireLock(dir: string): Promise<Server> {
 	const name = lockName(dir);
 	const label = lockLabel(dir);
+	// The recovery follows what the lock is: the kernel owns an abstract name,
+	// a pipe is released by holder exit, and a socket file outlives a killed
+	// holder until someone deletes it.
+	const fix = process.platform === "linux"
+		? "Wait for that command to finish, then retry. The kernel frees this lock the moment its holder exits, so a killed CLI leaves nothing behind. Never delete a run file to bypass this lock."
+		: process.platform === "win32"
+			? `Wait for that command to finish, then retry. If stuck, inspect the process holding ${label} locally and close only that verified holder; process exit releases the pipe. Never delete a run file to bypass this lock.`
+			: `Wait for that command to finish, then retry. If stuck, this lock is the socket file ${label}; a killed holder leaves the file behind, so confirm no live holder, delete that file by hand, and retry. Never delete a run file to bypass this lock.`;
 	// One attempt. Retrying a busy name would paper over the race this lock
 	// exists to close: two CLIs must not both proceed, and the loser must fail
 	// now rather than wait out the winner and then act on a stale decision.
@@ -143,10 +151,7 @@ async function acquireLock(dir: string): Promise<Server> {
 		// so server.close cannot wait forever for an idle client.
 		const server = createServer(socket => socket.destroy());
 		const fail = (error: NodeJS.ErrnoException) => {
-			if (["EADDRINUSE", "EEXIST"].includes(error.code ?? "")) reject(new CliError("CLI_BUSY", `Another CLI lifecycle operation holds ${label}.`,
-				process.platform === "linux"
-					? "Wait for that command to finish, then retry. The kernel frees this lock the moment its holder exits, so a killed CLI leaves nothing behind. Never delete a run file to bypass this lock."
-					: `Wait for that command to finish, then retry. If stuck, inspect the process holding ${label} locally and close only that verified holder; process exit releases the pipe. Never delete a run file to bypass this lock.`));
+			if (["EADDRINUSE", "EEXIST"].includes(error.code ?? "")) reject(new CliError("CLI_BUSY", `Another CLI lifecycle operation holds ${label}.`, fix));
 			else reject(error);
 		};
 		server.once("error", fail);
@@ -158,7 +163,11 @@ export async function locked<T>(ctx: Context, run: () => Promise<T>): Promise<T>
 	// user can replace a socket file or squat the name.
 	await mkdir(ctx.dir, { recursive: true, mode: 0o700 });
 	await chmod(ctx.dir, 0o700);
-	const server = await acquireLock(ctx.dir);
+	// Two spellings of one lane directory, a symlinked path for example, must
+	// contend for one lock: name it after the path the kernel resolves. The
+	// mkdir above guarantees that path exists.
+	const dir = realpathSync(ctx.dir);
+	const server = await acquireLock(dir);
 	try { return await run(); }
 	finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 }
