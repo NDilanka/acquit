@@ -286,3 +286,16 @@ export interface VerifierPort {
 	/** Authenticates the judge's signed report. Submitted-program output is never a trusted input here. */
 	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly verdict: Verdict } | null>;
 }
+
+export class VerifierCiNotConfigured extends Error {
+	readonly code = "VERIFIER_CI_NOT_CONFIGURED";
+	constructor(detail = "No verifier CI URL is configured.") { super(detail); }
+}
+
+/** The default when a deployment injects no port. Every call refuses immediately, so nothing ever waits on a CI that is not there. */
+export function unconfiguredVerifier(detail?: string): VerifierPort {
+	return {
+		async start() { throw new VerifierCiNotConfigured(detail); },
+		async parseCallback() { return null; },
+	};
+}

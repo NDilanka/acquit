@@ -1,25 +1,14 @@
-// The two ways the core talks to a verifier: a remote CI service, or the local judge for the unit
-// path and development. Both authenticate the report before the core sees a verdict.
+// The two configured ways the core talks to a verifier: a remote CI service, or the local judge for
+// the unit path and development. Both authenticate the report before the core sees a verdict. A
+// deployment that configures neither gets the core's fail-fast port.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
+import { unconfiguredVerifier } from "../core/src/verifier.ts";
 import type { RejectReason, TestTally, Verdict, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
 import { runJudge } from "./judge.ts";
 import type { JudgeDeps, JudgeOutcome } from "./judge.ts";
-
-export class VerifierCiNotConfigured extends Error {
-	readonly code = "VERIFIER_CI_NOT_CONFIGURED";
-	constructor(detail = "No verifier CI URL is configured.") { super(detail); }
-}
-
-/** Every call refuses immediately, so an unwired deployment never holds a request open. */
-export function unconfiguredVerifier(detail?: string): VerifierPort {
-	return {
-		async start() { throw new VerifierCiNotConfigured(detail); },
-		async parseCallback() { return null; },
-	};
-}
 
 /**
  * The local judge behind the port. `start` runs the attempt and hands the verdict to `onVerdict`,

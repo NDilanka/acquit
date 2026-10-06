@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, JobId, TestId } from "../src/ids.ts";
+import { unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
 import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
-import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict, unconfiguredVerifier, VerifierCiNotConfigured } from "../../verifier/ci.ts";
+import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict } from "../../verifier/ci.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
 
