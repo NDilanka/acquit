@@ -2,6 +2,7 @@
 // repository, ask the API to record the submission, then print the block docs/tutorial.md shows.
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { verifiedBranch } from "../../core/src/github.ts";
@@ -115,7 +116,9 @@ export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promi
 	const sourceCommit = deps.head(options.dir);
 	if (options.remote) deps.push(options.dir, options.remote, options.jobId);
 	const before = await jobView(deps.client, options.jobId);
-	const answer = await deps.client.post("/api/commands", { key: `submit:${options.jobId}:${sourceCommit}`,
+	// One key per user intent, per docs/architecture/http.md. The API parses it as a UUID v4 and
+	// refuses any other shape, so a retry must reuse this string rather than mint a new one.
+	const answer = await deps.client.post("/api/commands", { key: randomUUID(),
 		command: { type: "Submit", jobId: options.jobId, sourceCommit } });
 	const outcome = outcomeOf(answer.body);
 	if (outcome?.kind === "DENIED") throw denial(outcome.reason ?? "DENIED", before.job, before.handles);

@@ -91,7 +91,9 @@ test("runSubmit polls until the submitted commit is judged and prints the block"
 		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, push: () => { throw new Error("no push expected"); }, sleep: async () => {} });
 	assert.match(printed, /Verifier result: VERIFIED/);
 	assert.match(printed, /Pull request opened: maya-client\/invoice-app#13/);
-	assert.deepEqual(calls[1], 'POST /api/commands {"key":"submit:job_7Q2K:a3b6ead29f4e367d1871e753b516cc9e832871e4","command":{"type":"Submit","jobId":"job_7Q2K","sourceCommit":"a3b6ead29f4e367d1871e753b516cc9e832871e4"}}');
+	const payload = JSON.parse(calls[1].slice("POST /api/commands ".length)) as { key: string; command: unknown };
+	assert.match(payload.key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+	assert.deepEqual(payload.command, { type: "Submit", jobId: "job_7Q2K", sourceCommit: submitted });
 	assert.equal(calls.filter(call => call.startsWith("GET /api/jobs/")).length, 2);
 });
 
