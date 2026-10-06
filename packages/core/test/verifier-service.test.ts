@@ -177,6 +177,66 @@ test("the callback route authenticates the bytes it was posted, not a re-encodin
 	}
 });
 
+test("a rejection with hundreds of protected paths still ends the job REJECTED", { skip: fixtureSkip, timeout: 90_000 }, async () => {
+	const apiPort = await freePort();
+	let log = "";
+	const changes = Array.from({ length: 600 }, (_, index) => ({ path: `.github/workflows/w${index}.yml`, status: "MODIFIED" as const,
+		from: null, modeChanged: false, gitlink: false, binary: false, addedText: "" }));
+	const wired = createVerifierService({ runSecret, callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
+		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
+		source: async () => ({ remove: () => {},
+			source: { readFile: (commit, path) => gitSource(FIXTURE!).readFile(commit, path), diff: () => ({ changes }),
+				materialize: () => { throw new Error("a screen refusal must not materialize the tree"); } } }),
+		log: line => { log += `[verifier] ${line}\n`; } });
+	const shell = await listen(wired);
+	const dir = await mkdtemp(join(tmpdir(), "acquit-service-many-reasons-"));
+	const databasePath = join(dir, "acquit.db");
+	const store = new SqliteStore(databasePath);
+	const row = heldRow();
+	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
+		acknowledge: null, delivery: null, request: null });
+	store.close();
+	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
+		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
+			ACQUIT_DEV: "1", ACQUIT_VERIFIER_SUBJECT: "child", PAYPAL_CLIENT_ID: "test-client", PAYPAL_CLIENT_SECRET: "test-secret",
+			ACQUIT_VERIFIER_CI_URL: `http://127.0.0.1:${shell.port}`, ACQUIT_VERIFIER_RUN_SECRET: runSecret, ACQUIT_VERIFIER_CALLBACK_SECRET: callbackSecret,
+			ACQUIT_GITHUB_APP_ID: "", ACQUIT_GITHUB_APP_PRIVATE_KEY: "", ACQUIT_GITHUB_APP_ORG: "" } });
+	api.stdout?.on("data", (chunk: Buffer) => { log += String(chunk); });
+	api.stderr?.on("data", (chunk: Buffer) => { log += String(chunk); });
+	try {
+		const base = `http://127.0.0.1:${apiPort}`;
+		await waitFor(async () => (await fetch(`${base}/api/users`)).ok, 20_000, () => log);
+		const login = await fetch(`${base}/api/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ handle: "devon-ops" }) });
+		const token = (await login.json() as { token: string }).token;
+		const submit = await fetch(`${base}/api/commands`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+			body: JSON.stringify({ key: randomUUID(), command: { type: "Submit", jobId: row.id, sourceCommit: honestCommit } }) });
+		assert.equal(submit.status, 200);
+		const runId = "run_7Q2K_1" as VerifierRunId;
+		await waitFor(async () => wired.runs.get(runId)?.phase === "FINISHED", 30_000, () => log);
+		const record = wired.runs.get(runId)!;
+		assert.equal(record.callback, "DELIVERED");
+		const verdict = record.outcome?.kind === "VERDICT" ? record.outcome.verdict : null;
+		assert.equal(verdict?.result, "REJECTED");
+		const bounded = verdict?.result === "REJECTED" ? verdict : null;
+		assert.equal(bounded?.reasonsTruncated, 600 - (bounded?.reasons.length ?? 0));
+		assert.ok((bounded?.reasons.length ?? 0) < 600, "the reasons must be capped to fit the callback");
+		await waitFor(async () => (await jobView(base, token, row.id))?.status === "IN_PROGRESS" && (await jobView(base, token, row.id))?.attempts.last === "REJECTED", 15_000, () => log);
+		const view = await jobView(base, token, row.id);
+		// A rejection charges the attempt exactly as any other rejection does.
+		assert.equal(view?.attempts.used, 1);
+		assert.equal(view?.attempts.left, 2);
+		assert.equal(view?.attempts.last, "REJECTED");
+		assert.deepEqual(view?.attempts.history.map(attempt => [attempt.ordinal, attempt.result]), [[1, "REJECTED"]]);
+		assert.ok((view?.attempts.reasons.length ?? 0) > 0 && (view?.attempts.reasons.length ?? 0) < 600);
+	} finally {
+		api.kill("SIGTERM");
+		await once(api, "exit");
+		await shell.close();
+		await wired.close();
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
 test("a source failure's detail is bounded and stripped of token shapes before it is reported", async () => {
 	const leaked = "ghs_SYNTHETIC_INSTALLATION_TOKEN";
 	const deliveries: string[] = [];
