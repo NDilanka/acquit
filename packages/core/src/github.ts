@@ -274,9 +274,10 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	};
 
 	const forkWorkRepo = async (repository: string, name: string, source: { readonly owner: string; readonly name: string }, orgToken: string): Promise<boolean> => {
-		// The source installation reads the client repository; the org installation answers inside the org.
-		const sourceToken = await tokenFor(source.owner);
-		const answer = await call(`Bearer ${sourceToken}`, { method: "POST", path: `/repos/${source.owner}/${source.name}/forks`,
+		// The target org's installation makes the fork: GitHub checks administration on the org plus the
+		// App's read access to the source, and it refuses the source installation's token. The r10 live
+		// probe pinned both answers: 202 with the org token, 403 administration=write with the source one.
+		const answer = await call(`Bearer ${orgToken}`, { method: "POST", path: `/repos/${source.owner}/${source.name}/forks`,
 			allow: [200, 202, 422], permission: "administration: write", body: { organization: parsed.organization, name, default_branch_only: false } });
 		// 202 is a fork this call made; 200 is a fork that already existed, which this call must not rewrite.
 		if (answer.status === 200) return false;

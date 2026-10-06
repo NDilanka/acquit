@@ -57,7 +57,7 @@ type Stub = {
 		readonly commits: Map<string, Set<string>>;
 		readonly pulls: StubPull[];
 		readonly checks: StubCheck[];
-		readonly mints: string[];
+		readonly mints: { readonly owner: string; readonly token: string }[];
 		readonly requests: StubRequest[];
 		readonly forks: string[];
 	};
@@ -71,7 +71,8 @@ type Stub = {
 async function createGitHubStub(options: { readonly appId: string; readonly publicKey: string;
 	readonly installations: readonly { readonly id: number; readonly account: string }[] }): Promise<Stub> {
 	const state = { repos: new Map<string, StubRepo>(), refs: new Map<string, string>(), commits: new Map<string, Set<string>>(),
-		pulls: [] as StubPull[], checks: [] as StubCheck[], mints: [] as string[], requests: [] as StubRequest[], forks: [] as string[] };
+		pulls: [] as StubPull[], checks: [] as StubCheck[], mints: [] as { owner: string; token: string }[],
+		requests: [] as StubRequest[], forks: [] as string[] };
 	const refusals: StubRefusal[] = [];
 	const hangs: string[] = [];
 	const json = (response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void => {
@@ -88,27 +89,35 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			return createVerify("RSA-SHA256").update(`${header}.${payload}`).verify(options.publicKey, Buffer.from(signature, "base64url"));
 		} catch { return false; }
 	};
-	const authorize = (authorization: string): "app" | "installation" | null => {
+	const authorize = (authorization: string): { readonly kind: "app" } | { readonly kind: "installation"; readonly owner: string } | null => {
 		if (!authorization.startsWith("Bearer ")) return null;
 		const value = authorization.slice("Bearer ".length);
-		if (value.split(".").length === 3) return verifyJwt(value) ? "app" : null;
-		return state.mints.includes(value) ? "installation" : null;
+		if (value.split(".").length === 3) return verifyJwt(value) ? { kind: "app" } : null;
+		const minted = state.mints.find(item => item.token === value);
+		return minted === undefined ? null : { kind: "installation", owner: minted.owner };
 	};
 	const segmentsOf = (path: string): string[] => path.split("?")[0]!.split("/").filter(Boolean);
-	const route = (method: string, path: string, body: Record<string, unknown>, auth: "app" | "installation", response: ServerResponse): void => {
+	const route = (method: string, path: string, body: Record<string, unknown>,
+		auth: { readonly kind: "app" } | { readonly kind: "installation"; readonly owner: string }, response: ServerResponse): void => {
 		const url = new URL(path, "http://stub");
 		const segments = segmentsOf(path);
 		const repository = segments.length >= 3 ? `${segments[1]}/${segments[2]}` : "";
-		if (auth === "app" && method === "GET" && url.pathname === "/app/installations") {
+		if (auth.kind === "app" && method === "GET" && url.pathname === "/app/installations") {
 			// Real GitHub answers this one with a bare array, pinned by the r10 live smoke.
 			return json(response, 200, options.installations.map(item => ({ id: item.id, account: { login: item.account, type: "Organization" } })));
 		}
-		if (auth === "app" && method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)) {
+		if (auth.kind === "app" && method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)) {
+			const id = Number(url.pathname.split("/")[3]);
 			const token = `ghs_${randomBytes(20).toString("hex")}`;
-			state.mints.push(token);
+			state.mints.push({ owner: options.installations.find(item => item.id === id)?.account ?? "", token });
 			return json(response, 201, { token, expires_at: new Date(Date.now() + 3_600_000).toISOString() });
 		}
 		if (method === "POST" && segments.length === 4 && segments[0] === "repos" && segments[3] === "forks") {
+			// GitHub refuses the source installation's token for a fork into the org; the r10 probe pinned it.
+			if (auth.kind !== "installation" || auth.owner !== ORG) {
+				return json(response, 403, { message: "Resource not accessible by integration" },
+					{ "x-accepted-github-permissions": "administration=write,contents=read" });
+			}
 			const target = `${String(body.organization)}/${String(body.name)}`;
 			if (state.repos.has(target)) return json(response, 422, { message: "Repository creation failed.",
 				errors: [{ message: "name already exists on this account" }] });
@@ -293,10 +302,10 @@ test("the installation token is a bearer header on every call and never a URL", 
 	assert.equal(stub.state.mints.length > 0, true);
 	for (const request of stub.state.requests) {
 		assert.match(request.authorization, /^Bearer \S+$/);
-		for (const token of stub.state.mints) assert.equal(request.path.includes(token), false, request.path);
+		for (const mint of stub.state.mints) assert.equal(request.path.includes(mint.token), false, request.path);
 	}
 	const installationCalls = stub.state.requests.filter(request => request.path.startsWith("/repos/"));
-	assert.ok(installationCalls.every(request => stub.state.mints.includes(request.authorization.slice("Bearer ".length))));
+	assert.ok(installationCalls.every(request => stub.state.mints.some(mint => mint.token === request.authorization.slice("Bearer ".length))));
 });
 
 test("one installation token per owner is minted and reused for later calls", async t => {
