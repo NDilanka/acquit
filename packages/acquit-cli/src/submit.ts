@@ -76,10 +76,13 @@ export function localHead(dir: string): CommitSha {
 	return head as CommitSha;
 }
 
-/** Pushing is the operator's own credential; the work repository is where the judge reads the commit. */
+/** Pushing is the operator's own credential; the work repository is where the judge reads the commit. A
+ * retry after a rejection is usually a sibling of the rejected commit, so the job-owned ref is force-updated:
+ * the judge fetches by SHA, and the publisher's work-fork fallback reads the same ref, which then matches the
+ * commit the run verified. */
 export function pushHead(dir: string, remote: string, jobId: string): void {
 	const branch = verifiedBranch(jobId as JobId);
-	const result = spawnSync("git", ["-C", dir, "push", remote, `HEAD:refs/heads/${branch}`], { encoding: "utf8", timeout: 120_000 });
+	const result = spawnSync("git", ["-C", dir, "push", remote, `+HEAD:refs/heads/${branch}`], { encoding: "utf8", timeout: 120_000 });
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 
