@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { ingestVerifierCallback, executeCommand } from "../src/effects.ts";
@@ -158,6 +159,46 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 	const judged = await store.readJob(row.id);
 	assert.deepEqual(attemptsOf(judged).history.map(attempt => [attempt.ordinal, attempt.verdict.result]), [[1, "REJECTED"]]);
 	assert.equal(attemptsOf(judged).phase, "READY");
+});
+
+test("a store locked past its busy timeout answers 503 so the report is retried, not lost", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-busy-callback-"));
+	const databasePath = join(root, "busy.db");
+	const store = new SqliteStore(databasePath);
+	const row = heldRow();
+	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
+		acknowledge: null, delivery: null, request: null });
+	const plan = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit: honestCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	await store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null, credits: [],
+		outbox: [], acknowledge: null, delivery: null, request: null });
+	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => now },
+		verifier: createRemoteVerifier({ ciUrl: "http://127.0.0.1:1", runSecret: secret, callbackSecret: secret }),
+		github: { merge: unimplemented }, alerts: { raise: async () => {} },
+		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented } };
+	const verdict: Verdict = { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: honestCommit, mergeCommit: honestCommit,
+		pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now };
+	const body = JSON.stringify({ jobId: row.id, ordinal: 1, report: { kind: "VERDICT", verdict } });
+	const callback = () => ingestVerifierCallback(ports, new Request("http://api.test/api/verifier/callback", { method: "POST",
+		headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body }));
+	const lock = new DatabaseSync(databasePath);
+	lock.exec("BEGIN IMMEDIATE");
+	try {
+		const refused = await callback();
+		assert.equal(refused.status, 503);
+		assert.deepEqual(await refused.json(), { error: "STORE_BUSY" });
+	} finally {
+		lock.exec("ROLLBACK");
+		lock.close();
+	}
+	// The service retries a 5xx, so the same signed report applies once the lock clears.
+	const applied = await callback();
+	assert.equal(applied.status, 200);
+	assert.deepEqual(await applied.json(), { ok: true, applied: true });
+	assert.equal((await store.readJob(row.id))?.state.status, "VERIFIED");
+	store.close();
+	await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
 test("createAcquit routes a signed callback through its injected port and accepts none without one", async () => {
