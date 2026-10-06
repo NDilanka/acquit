@@ -17,6 +17,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome } from "./paypal.ts";
 import { frozenDefinition, ISSUE } from "./seed-data.ts";
+import { isStoreBusy } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
 
 export type Effect = JobEffect | OperatorEffect;
@@ -389,8 +390,10 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	if (pending.ordinal !== parsed.ordinal) return Response.json({ error: "ORDINAL_MISMATCH" }, { status: 409 });
 	try {
 		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, report }, null, `verifier:${runId}`);
-	} catch {
+	} catch (error) {
 		// The job state is the guard: a report for a job that is not waiting on this run changes nothing.
+		// A busy store is transient, not a refusal: a 5xx makes the service retry the same report.
+		if (isStoreBusy(error)) return Response.json({ error: "STORE_BUSY" }, { status: 503 });
 		return Response.json({ error: "REFUSED" }, { status: 409 });
 	}
 	return Response.json({ ok: true, applied: true });

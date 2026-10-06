@@ -39,6 +39,15 @@ export function openDatabase(path: string): DatabaseSync {
 function parsed<T>(row: Record<string, unknown> | undefined): T | null {
 	return row ? JSON.parse(String(row.json)) as T : null;
 }
+/**
+ * A busy or locked database is transient: the same write succeeds once the lock clears. node:sqlite
+ * reports it as errcode 5 with a "database is locked" message once busy_timeout has passed.
+ */
+export function isStoreBusy(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if ((error as Error & { readonly errcode?: unknown }).errcode === 5) return true;
+	return /database is locked|database table is locked/i.test(error.message);
+}
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
 	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) } };
