@@ -2,7 +2,8 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -15,7 +16,7 @@ import type { DefinitionOfDone, HiddenCase, SubjectCall, VerifierRunRequest, Ver
 import { BOOTSTRAP_LIMITS } from "../../verifier/bootstrap.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
 import type { JudgeSource } from "../../verifier/judge.ts";
-import { ChildSubjectRefused, childProcessSubject, dockerArgs, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
+import { ChildSubjectRefused, childProcessSubject, dockerArgs, dockerSubject, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
 
 const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const hiddenCases: readonly HiddenCase[] = [
@@ -123,6 +124,73 @@ test("a submitted tree that carries a symlink is rejected before the subject sta
 	} finally { fixture.remove(); rmSync(outside, { recursive: true, force: true }); }
 });
 
+test("a submitted link to an outside directory is refused with nothing outside the tree chmodded", async () => {
+	const outside = mkdtempSync(join(tmpdir(), "acquit-outside-"));
+	mkdirSync(join(outside, "private"));
+	writeFileSync(join(outside, "id_rsa"), "PRIVATE KEY\n", { mode: 0o600 });
+	writeFileSync(join(outside, "private", "notes.txt"), "notes\n", { mode: 0o600 });
+	chmodSync(join(outside, "id_rsa"), 0o600);
+	chmodSync(join(outside, "private"), 0o700);
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
+		symlinkSync(outside, join(repo, "src/link"));
+	});
+	const modes = () => ({ victim: statSync(outside).mode & 0o777, privateDir: statSync(join(outside, "private")).mode & 0o777,
+		idRsa: statSync(join(outside, "id_rsa")).mode & 0o777, notes: statSync(join(outside, "private/notes.txt")).mode & 0o777 });
+	const before = modes();
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_dirlink" as VerifierRunId, jobId: "job_dirlink" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } } });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TREE_SYMLINK", path: "src/link" }]);
+		assert.equal(outcome.subject, null);
+		assert.deepEqual(modes(), before);
+	} finally { fixture.remove(); rmSync(outside, { recursive: true, force: true }); }
+});
+
+test("a link that loops back on the tree is refused before any walk can follow it", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
+		symlinkSync(".", join(repo, "src/self"));
+	});
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_cycle" as VerifierRunId, jobId: "job_cycle" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } } });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TREE_SYMLINK", path: "src/self" }]);
+		assert.equal(outcome.subject, null);
+	} finally { fixture.remove(); }
+});
+
+test("a link to a directory the runner cannot read is a TREE_SYMLINK rejection, not RUN_FAILED", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
+		symlinkSync("/root", join(repo, "src/rootlink"));
+	});
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_rootlink" as VerifierRunId, jobId: "job_rootlink" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } } });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TREE_SYMLINK", path: "src/rootlink" }]);
+		assert.equal(outcome.subject, null);
+	} finally { fixture.remove(); }
+});
+
 test("a gitlink in the submitted tree is rejected before the subject starts", async () => {
 	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
 	try {
@@ -208,6 +276,42 @@ test("the Docker subject mounts only the submitted tree and the minimal bootstra
 	assert.equal(args[args.indexOf("--network") + 1], "none");
 });
 
+test("the Docker subject mounts a staged copy of the bootstrap, never the checkout file", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	const shimDir = mkdtempSync(join(tmpdir(), "acquit-shim-"));
+	const recorded = join(shimDir, "docker-args.json");
+	const checkout = fileURLToPath(new URL("../../verifier/bootstrap.ts", import.meta.url));
+	writeFileSync(join(shimDir, "docker"), `#!/usr/bin/env node
+const { createHash } = require("node:crypto");
+const { readFileSync, statSync, writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const mounts = args.filter((value, index) => args[index - 1] === "--mount");
+const source = mounts.find(mount => mount.includes("target=/runner/bootstrap.ts")).replace(/^type=bind,source=/, "").replace(/,target=.*$/, "");
+const bytes = readFileSync(source);
+writeFileSync(${JSON.stringify(recorded)}, JSON.stringify({ args, source, mode: statSync(source).mode & 0o777, bytes: bytes.length,
+	sha256: createHash("sha256").update(bytes).digest("hex") }));
+process.exit(2);
+`, { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${shimDir}:${previousPath ?? ""}`;
+	try {
+		const run = await dockerSubject({ probe: () => true }).run(fixture.repo, [], 2_000);
+		assert.equal(run.variant, "DOCKER");
+		const observed = JSON.parse(readFileSync(recorded, "utf8")) as { args: readonly string[]; source: string; mode: number; bytes: number; sha256: string };
+		const trusted = readFileSync(checkout);
+		assert.equal(observed.source === checkout, false, `the mount must not be the checkout file ${checkout}`);
+		assert.match(observed.source, /[/\\]acquit-subject-[^/\\]+[/\\]bootstrap\.ts$/);
+		assert.equal(observed.mode, 0o444);
+		assert.equal(observed.bytes, trusted.length);
+		assert.equal(observed.sha256, createHash("sha256").update(trusted).digest("hex"));
+		assert.equal(observed.args[observed.args.indexOf("--mount") + 1], `type=bind,source=${fixture.repo},target=/tree,readonly`);
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+		fixture.remove();
+		rmSync(shimDir, { recursive: true, force: true });
+	}
+});
+
 test("a mount source that would add a field is refused by name", () => {
 	const unsafe = (error: unknown) => (error as { code?: string }).code === "MOUNT_PATH_UNSAFE";
 	assert.throws(() => dockerArgs("/tmp/tree,target=/etc", "node:24-bookworm-slim"), unsafe);
@@ -227,23 +331,90 @@ test("the staged bootstrap is the trusted bytes under modes the container user c
 	} finally { process.umask(previous); }
 });
 
-test("the materialized tree is readable by the subject whatever the umask", () => {
+test("stageBootstrap removes its work directory when the source cannot be read", () => {
+	const work = mkdtempSync(join(tmpdir(), "acquit-stage-"));
+	const unreadable = join(work, "bootstrap-unreadable.ts");
+	const previousTmpdir = process.env.TMPDIR;
+	process.env.TMPDIR = work;
+	try {
+		writeFileSync(unreadable, readFileSync(fileURLToPath(new URL("../../verifier/bootstrap.ts", import.meta.url))));
+		chmodSync(unreadable, 0o000);
+		assert.throws(() => stageBootstrap(unreadable), (error: NodeJS.ErrnoException) => error.code === "EACCES");
+		assert.deepEqual(readdirSync(work).filter(name => name.startsWith("acquit-subject-")), []);
+	} finally {
+		if (previousTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmpdir;
+		chmodSync(unreadable, 0o600);
+		rmSync(work, { recursive: true, force: true });
+	}
+});
+
+test("the tree handed to the subject is readable whatever the umask", async () => {
 	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
 		writeFileSync(join(repo, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
 	});
 	const previous = process.umask(0o077);
-	let tree: { readonly path: string; readonly remove: () => void } | null = null;
+	let modes: { root: number; src: number; money: number; script: number } | null = null;
+	let treePath: string | null = null;
 	try {
-		tree = gitSource(fixture.repo).materialize(fixture.head);
-	} finally { process.umask(previous); }
+		try {
+			const real = gitSource(fixture.repo);
+			const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+			const request: VerifierRunRequest = { runId: "run_modes" as VerifierRunId, jobId: "job_modes" as JobId, ordinal: 1,
+				sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+			await runJudge(request, { source, publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+				subject: { variant: "CHILD_PROCESS", run: async treeDir => {
+					treePath = treeDir;
+					modes = { root: statSync(treeDir).mode & 0o777, src: statSync(join(treeDir, "src")).mode & 0o777,
+						money: statSync(join(treeDir, "src/money.ts")).mode & 0o777, script: statSync(join(treeDir, "run.sh")).mode & 0o777 };
+					throw new Error("the run stops here");
+				} } });
+		} finally { process.umask(previous); }
+	} finally { fixture.remove(); }
+	assert.deepEqual(modes, { root: 0o755, src: 0o755, money: 0o644, script: 0o755 });
+	assert.ok(treePath !== null && !existsSync(treePath), `the tree ${treePath} must be removed`);
+});
+
+test("materialize removes its tree root when the archive or the extraction fails", () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	const work = mkdtempSync(join(tmpdir(), "acquit-materialize-"));
+	const previousTmpdir = process.env.TMPDIR;
+	process.env.TMPDIR = work;
+	const trees = () => readdirSync(work).filter(name => name.startsWith("acquit-tree-"));
 	try {
-		assert.ok(tree);
-		if (!tree) return;
-		assert.equal(statSync(tree.path).mode & 0o777, 0o755);
-		assert.equal(statSync(join(tree.path, "src")).mode & 0o777, 0o755);
-		assert.equal(statSync(join(tree.path, "src/money.ts")).mode & 0o777, 0o644);
-		assert.equal(statSync(join(tree.path, "run.sh")).mode & 0o777, 0o755);
-	} finally { tree?.remove(); fixture.remove(); }
+		assert.throws(() => gitSource(fixture.repo).materialize("0".repeat(40) as CommitSha));
+		assert.deepEqual(trees(), []);
+		const previousUmask = process.umask(0o222);
+		try {
+			assert.throws(() => gitSource(fixture.repo).materialize(fixture.head));
+		} finally { process.umask(previousUmask); }
+		assert.deepEqual(trees(), []);
+	} finally {
+		if (previousTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmpdir;
+		rmSync(work, { recursive: true, force: true });
+		fixture.remove();
+	}
+});
+
+test("a subject that cannot start still removes the materialized tree", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		let treePath: string | null = null;
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: commit => {
+			const tree = real.materialize(commit);
+			treePath = tree.path;
+			return tree;
+		} };
+		const request: VerifierRunRequest = { runId: "run_down" as VerifierRunId, jobId: "job_down" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, subject: dockerSubject({ probe: () => false }),
+			publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases });
+		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
+		if (outcome.kind !== "RUN_FAILED") return;
+		assert.match(outcome.reason, /^SUBJECT_UNSTARTABLE/);
+		assert.ok(treePath !== null, "the tree must have been materialized");
+		assert.ok(treePath !== null && !existsSync(treePath), `the tree ${treePath} must be removed`);
+	} finally { fixture.remove(); }
 });
 
 test("the product refuses the unit-test subject without the test/dev flag", () => {
