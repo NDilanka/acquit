@@ -121,9 +121,10 @@ test("the run boundary refuses an unsigned, wrongly signed, stale, or replayed r
 	assert.equal(service.runs.size, 1);
 	await service.whenIdle();
 	const record = service.runs.get("run_svc_boundary" as VerifierRunId)!;
-	// A source that never arrives is a named refusal, and it is not reported to the API as a verdict.
+	// A source that never arrives is a named refusal, and the service reports it to the API as RUN_FAILED.
 	assert.match(record.refusal ?? "", /^SOURCE_UNAVAILABLE: source must not be called$/);
-	assert.equal(record.callback, "NONE");
+	assert.equal(record.outcome, null);
+	assert.equal(record.callback, "UNDELIVERABLE");
 	assert.equal(sources, 1);
 	await service.close();
 });
@@ -208,6 +209,61 @@ test("the service judges a clean commit and posts a callback the real API applie
 	}
 });
 
+test("a source that never arrives posts a signed RUN_FAILED the real API applies at once", { timeout: 60_000 }, async () => {
+	const apiPort = await freePort();
+	let log = "";
+	const wired = createVerifierService({ runSecret, callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
+		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
+		source: async () => { throw new Error("SUBMITTED_COMMIT_UNFETCHABLE: acquit-forks/invoice-app-7Q2K 5cccb6651531: remote: Repository not found"); },
+		log: line => { log += `[verifier] ${line}\n`; } });
+	const shell = await listen(wired);
+	const dir = await mkdtemp(join(tmpdir(), "acquit-service-failed-"));
+	const databasePath = join(dir, "acquit.db");
+	const store = new SqliteStore(databasePath);
+	const row = heldRow();
+	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
+		acknowledge: null, delivery: null, request: null });
+	store.close();
+	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
+		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
+			ACQUIT_DEV: "1", ACQUIT_VERIFIER_SUBJECT: "child", PAYPAL_CLIENT_ID: "test-client", PAYPAL_CLIENT_SECRET: "test-secret",
+			ACQUIT_VERIFIER_CI_URL: `http://127.0.0.1:${shell.port}`, ACQUIT_VERIFIER_RUN_SECRET: runSecret, ACQUIT_VERIFIER_CALLBACK_SECRET: callbackSecret,
+			ACQUIT_GITHUB_APP_ID: "", ACQUIT_GITHUB_APP_PRIVATE_KEY: "", ACQUIT_GITHUB_APP_ORG: "" } });
+	api.stdout?.on("data", (chunk: Buffer) => { log += String(chunk); });
+	api.stderr?.on("data", (chunk: Buffer) => { log += String(chunk); });
+	try {
+		const base = `http://127.0.0.1:${apiPort}`;
+		await waitFor(async () => (await fetch(`${base}/api/users`)).ok, 20_000, () => log);
+		const login = await fetch(`${base}/api/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ handle: "devon-ops" }) });
+		const token = (await login.json() as { token: string }).token;
+		const submit = await fetch(`${base}/api/commands`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+			body: JSON.stringify({ key: randomUUID(), command: { type: "Submit", jobId: row.id, sourceCommit: honestCommit } }) });
+		assert.equal(submit.status, 200);
+		const runId = "run_7Q2K_1" as VerifierRunId;
+		await waitFor(async () => wired.runs.get(runId)?.phase === "FINISHED", 30_000, () => log);
+		const record = wired.runs.get(runId)!;
+		assert.equal(record.callback, "DELIVERED");
+		assert.equal(record.outcome, null);
+		assert.match(record.refusal ?? "", /^SOURCE_UNAVAILABLE: SUBMITTED_COMMIT_UNFETCHABLE/);
+		// The API applies it at once: the slot returns, no attempt is charged, and the reason is on the attempt.
+		await waitFor(async () => (await jobView(base, token, row.id))?.phase === "READY", 15_000, () => log);
+		const view = await jobView(base, token, row.id);
+		assert.equal(view?.status, "IN_PROGRESS");
+		assert.equal(view?.attempts.used, 0);
+		assert.equal(view?.attempts.left, 3);
+		assert.equal(view?.attempts.pending, null);
+		assert.equal(view?.attempts.failure?.runId, runId);
+		assert.equal(view?.attempts.failure?.sourceCommit, honestCommit);
+		assert.match(view?.attempts.failure?.reason ?? "", /^SOURCE_UNAVAILABLE: SUBMITTED_COMMIT_UNFETCHABLE/);
+	} finally {
+		api.kill("SIGTERM");
+		await once(api, "exit");
+		await shell.close();
+		await wired.close();
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
 test("the lane's HTTP shell answers a GET probe, a run lookup, and a refusal", async () => {
 	// The shell is the entrypoint a lane runs, so a GET must not be built with an empty body:
 	// Request refuses one, and the probe a lane gates readiness on would answer 500 forever.
@@ -278,7 +334,7 @@ function heldRow(): JobRow {
 			respondBy: instant("2027-10-09T12:00:00Z"), status: "ACCEPTED" }],
 		state: { status: "IN_PROGRESS", escrow: { payee: { bidId: "bid_submit" as never, operator: "devon-ops" as OperatorId, payee: merchant,
 			agent: "ts-bugfixer" as AgentId, price: usd("400.00"), eta: hours(48) }, quote: quote(commercialSplit(usd("400.00")), model),
-			capture, book, cutoffAt: instant("2027-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0 } } };
+			capture, book, cutoffAt: instant("2027-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } };
 }
 
 async function jobView(base: string, token: string, jobId: string): Promise<JobProjection | null> {

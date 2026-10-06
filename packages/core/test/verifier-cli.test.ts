@@ -135,6 +135,37 @@ test("a run that never reports ends in a named timeout, not a hang", async () =>
 		(error: CliError) => error.code === "VERIFIER_TIMEOUT" && error.message.includes("2026-11-08 09:42 UTC"));
 });
 
+test("a run that ends without a verdict prints its named reason instead of waiting for the deadline", async () => {
+	const clean = rejectedView();
+	const failed = { ...clean, attempts: { used: 0, left: 3, last: null, reasons: [], history: [], pending: null,
+		failure: { runId: "run_job_7Q2K_1", sourceCommit: submitted, reason: "PUBLISH_FAILED: no App installation on maya-client",
+			at: "2026-11-08T09:12:01.000Z" } } } as unknown as JobProjection;
+	let polls = 0;
+	const client: ApiClient = { baseUrl: "http://api.test",
+		async get() { polls++; return { job: polls === 1 ? clean : failed, handles: {} }; },
+		async post() { return { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
+	await assert.rejects(() => runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
+		timeoutSeconds: 180, pollMs: 1 }, { client, head: () => submitted, push: () => {}, sleep: async () => {} }),
+		(error: CliError) => error.code === "RUN_FAILED" && error.message === "PUBLISH_FAILED: no App installation on maya-client");
+	// One read before the Submit, one poll after it: the failure ends the wait, not the run deadline.
+	assert.equal(polls, 2);
+});
+
+test("a failure the job already carried for this commit does not stop the wait for the new run", async () => {
+	const stale = { ...rejectedView(), attempts: { used: 0, left: 3, last: null, reasons: [], history: [],
+		failure: { runId: "run_job_7Q2K_1", sourceCommit: submitted, reason: "SOURCE_UNAVAILABLE: gone", at: "2026-11-08T09:00:00.000Z" },
+		pending: { ordinal: 1, run: 2, runId: "run_job_7Q2K_2", sourceCommit: submitted, submittedAt: "2026-11-08T09:12:00.000Z",
+			runEndsAt: "2026-11-08T09:42:00.000Z" } } } as unknown as JobProjection;
+	let polls = 0;
+	const client: ApiClient = { baseUrl: "http://api.test",
+		async get() { polls++; return { job: polls === 1 ? stale : verifiedView(), handles: { "devon-ops": "devon-ops" } }; },
+		async post() { return { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
+	const printed = await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
+		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, push: () => {}, sleep: async () => {} });
+	assert.match(printed, /Verifier result: VERIFIED/);
+	assert.equal(polls, 2);
+});
+
 test("the handle the block prints comes from the API, never from the id", () => {
 	assert.equal(renderSubmission(rejectedView(), () => "devon-ops"), renderSubmission(rejectedView(), () => "devon-ops"));
 	assert.match(renderSubmission(rejectedView(), () => "someone-else"), /Escrow: HELD, locked to someone-else/);

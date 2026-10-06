@@ -10,7 +10,7 @@ import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } fr
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
-import type { Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
+import type { RunFailure, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
 import type { Bps, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
@@ -453,7 +453,7 @@ function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
 			agent: lockedPayee.agent, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
 			respondBy: instant("2026-10-09T12:00:00Z"), status: "ACCEPTED" }],
 		state: { status: "IN_PROGRESS", escrow: { payee: lockedPayee, quote: quote(commercialSplit(usd("400.00")), model), capture, book,
-			cutoffAt: instant("2026-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0 } } };
+			cutoffAt: instant("2026-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } };
 }
 const rejection = (runId: string, source = sourceCommit): Verdict => ({ result: "REJECTED", runId: runId as VerifierRunId,
 	sourceCommit: source, reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now });
@@ -461,6 +461,10 @@ const acceptance = (runId: string): Verdict => ({ result: "VERIFIED", runId: run
 	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha, pullRequest: 13,
 	frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now });
 const system = { actor: { role: "SYSTEM", source: "VERIFIER" } as const, now, loaded: { kind: "NONE" } as const };
+const verdictReport = (verdict: Verdict): VerifierReport => ({ kind: "VERDICT", verdict });
+const runFailure = (runId: string, reason = "PUBLISH_FAILED: no App installation on maya-client", source = sourceCommit): RunFailure =>
+	({ runId: runId as VerifierRunId, sourceCommit: source, reason, at: now });
+const failureReport = (runId: string, reason?: string): VerifierReport => ({ kind: "RUN_FAILED", failure: runFailure(runId, reason) });
 
 test("Submit reserves attempt 1 with a deterministic run and emits START_VERIFIER", () => {
 	const row = heldRow();
@@ -495,7 +499,7 @@ test("a rejection returns the job to READY with one attempt used, and the third 
 		const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
 		if (typeof started === "string") throw new Error(started);
 		const runId = `run_submit_${ordinal}`;
-		const finished = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: runId as VerifierRunId, verdict: rejection(runId) }, system);
+		const finished = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection(runId)) }, system);
 		if (typeof finished === "string") throw new Error(finished);
 		row = finished.next;
 		const attempts = (row.state as Extract<typeof row.state, { status: "IN_PROGRESS" }>).attempts;
@@ -505,7 +509,7 @@ test("a rejection returns the job to READY with one attempt used, and the third 
 	}
 	const third = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
 	if (typeof third === "string") throw new Error(third);
-	const exhausted = applyJobCommand(third.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_3" as VerifierRunId, verdict: rejection("run_submit_3") }, system);
+	const exhausted = applyJobCommand(third.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection("run_submit_3")) }, system);
 	if (typeof exhausted === "string") throw new Error(exhausted);
 	const attempts = (exhausted.next.state as Extract<typeof exhausted.next.state, { status: "IN_PROGRESS" }>).attempts;
 	assert.equal(attempts.phase, "REFUND_PENDING");
@@ -518,13 +522,59 @@ test("VerifierFinished ignores a run the job is not waiting for", () => {
 	const row = heldRow();
 	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
 	if (typeof started === "string") throw new Error(started);
-	const stale = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_9" as VerifierRunId, verdict: rejection("run_submit_9") }, system);
+	const stale = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection("run_submit_9")) }, system);
 	if (typeof stale === "string") throw new Error(stale);
 	assert.equal(stale.next.version, started.next.version);
-	const replay = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId,
-		verdict: rejection("run_submit_1", "f".repeat(40) as CommitSha) }, system);
+	const replay = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id,
+		report: verdictReport(rejection("run_submit_1", "f".repeat(40) as CommitSha)) }, system);
 	if (typeof replay === "string") throw new Error(replay);
 	assert.equal(replay.next.version, started.next.version);
+});
+
+test("a run that ends without a verdict returns the slot, records the reason, and charges no attempt", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const failed = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: failureReport("run_submit_1") }, system);
+	if (typeof failed === "string") throw new Error(failed);
+	assert.equal(failed.next.state.status, "IN_PROGRESS");
+	const attempts = (failed.next.state as Extract<typeof failed.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.equal(attempts.phase, "READY");
+	assert.deepEqual(attempts.history, []);
+	assert.deepEqual(attempts.failure, runFailure("run_submit_1"));
+	// The projection the CLI reads: no attempt used, the reason on the attempt, no pending run.
+	const view = projectJob(failed.next, devon, new Map());
+	assert.equal(view.attempts.used, 0);
+	assert.equal(view.attempts.left, 3);
+	assert.equal(view.attempts.pending, null);
+	assert.deepEqual(view.attempts.failure, runFailure("run_submit_1"));
+	// The next submission is attempt 1 again, with the next run id.
+	const again = applyJobCommand(failed.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof again === "string") throw new Error(again);
+	const next = (again.next.state as Extract<typeof again.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.deepEqual(next.phase === "VERIFYING" ? next.pending : null,
+		{ ordinal: 1, run: 2, runId: "run_submit_2", sourceCommit, submittedAt: now, runEndsAt: later });
+});
+
+test("a failure for a run the job is not waiting on is a no-op, and a judged attempt clears the reason", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const failed = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: failureReport("run_submit_1") }, system);
+	if (typeof failed === "string") throw new Error(failed);
+	for (const stale of [failureReport("run_submit_9"), failureReport("run_submit_1", "SOURCE_UNAVAILABLE", "f".repeat(40) as CommitSha)]) {
+		const untouched = applyJobCommand(failed.next, { type: "VerifierFinished", jobId: row.id, report: stale }, system);
+		if (typeof untouched === "string") throw new Error(untouched);
+		assert.equal(untouched.next.version, failed.next.version);
+	}
+	const resubmitted = applyJobCommand(failed.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof resubmitted === "string") throw new Error(resubmitted);
+	const judged = applyJobCommand(resubmitted.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection("run_submit_2")) }, system);
+	if (typeof judged === "string") throw new Error(judged);
+	const attempts = (judged.next.state as Extract<typeof judged.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.equal(attempts.phase, "READY");
+	assert.deepEqual(attempts.history.map(record => record.ordinal), [1]);
+	assert.equal(attempts.failure, null);
 });
 
 test("a timed-out run gives its slot back without using an attempt, and the next run gets a fresh run id", () => {
@@ -537,6 +587,9 @@ test("a timed-out run gives its slot back without using an attempt, and the next
 	const attempts = (timedOut.next.state as Extract<typeof timedOut.next.state, { status: "IN_PROGRESS" }>).attempts;
 	assert.equal(attempts.phase, "READY");
 	assert.deepEqual(attempts.history, []);
+	// A run that never reported is a run that ended without a verdict: the slot returns, the attempt
+	// count stays put, and the reason is on the attempt so the CLI can name it instead of waiting.
+	assert.deepEqual(attempts.failure, runFailure("run_submit_1", "RUN_DEADLINE_EXCEEDED"));
 	assert.deepEqual(timedOut.effects, []);
 	const resubmitted = applyJobCommand(timedOut.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now: later, loaded: { kind: "NONE" } });
 	if (typeof resubmitted === "string") throw new Error(resubmitted);
@@ -563,7 +616,7 @@ test("a verified run opens the client review window with the attempt history int
 	const row = heldRow();
 	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
 	if (typeof started === "string") throw new Error(started);
-	const verified = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId, verdict: acceptance("run_submit_1") }, system);
+	const verified = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(acceptance("run_submit_1")) }, system);
 	if (typeof verified === "string") throw new Error(verified);
 	assert.equal(verified.next.state.status, "VERIFIED");
 	const state = verified.next.state as Extract<typeof verified.next.state, { status: "VERIFIED" }>;
@@ -587,7 +640,7 @@ test("the projection carries the attempt history, the pending run, and the froze
 	assert.deepEqual(pendingView.attempts.pending, { ordinal: 1, run: 1, runId: "run_submit_1", sourceCommit, submittedAt: now, runEndsAt: later });
 	assert.deepEqual(pendingView.contract, { repository: "maya-client/invoice-app", frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4", frozenTests: 48,
 		hiddenTests: 6, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] });
-	const rejected = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId, verdict: rejection("run_submit_1") }, system);
+	const rejected = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection("run_submit_1")) }, system);
 	if (typeof rejected === "string") throw new Error(rejected);
 	const judged = projectJob(rejected.next, devon, new Map());
 	assert.equal(judged.attempts.pending, null);
@@ -805,7 +858,7 @@ test("the verifier callback refuses a report whose ordinal is not the reserved a
 	if (typeof reserved === "string") throw new Error(reserved);
 	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(reserved.next.id, reserved.next.version, JSON.stringify(reserved.next), later);
 	const base = fixture();
-	let report: { jobId: JobId; ordinal: 1 | 2 | 3; verdict: Verdict } | null = { jobId: held.id, ordinal: 3, verdict: rejection("run_submit_1") };
+	let report: { jobId: JobId; ordinal: 1 | 2 | 3; report: VerifierReport } | null = { jobId: held.id, ordinal: 3, report: verdictReport(rejection("run_submit_1")) };
 	const ports: Ports = { ...base.ports, store,
 		verifier: { start: async () => {}, parseCallback: async () => report } };
 	const callback = () => new Request("http://localhost:4310/api/verifier/callback", { method: "POST" });
@@ -817,7 +870,7 @@ test("the verifier callback refuses a report whose ordinal is not the reserved a
 		assert.equal(waiting.attempts.phase, "VERIFYING");
 		assert.deepEqual(waiting.attempts.history, []);
 		// The report that names the reserved attempt still applies.
-		report = { jobId: held.id, ordinal: 1, verdict: rejection("run_submit_1") };
+		report = { jobId: held.id, ordinal: 1, report: verdictReport(rejection("run_submit_1")) };
 		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
 		const judged = (await store.readJob(held.id))!.state as Extract<typeof held.state, { status: "IN_PROGRESS" }>;
 		assert.equal(judged.attempts.phase, "READY");
@@ -832,13 +885,13 @@ test("the verifier callback refuses an unauthenticated report and applies a sign
 	if (typeof reserved === "string") throw new Error(reserved);
 	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(reserved.next.id, reserved.next.version, JSON.stringify(reserved.next), later);
 	const base = fixture();
-	let report: { jobId: JobId; ordinal: 1; verdict: Verdict } | null = null;
+	let report: { jobId: JobId; ordinal: 1; report: VerifierReport } | null = null;
 	const ports: Ports = { ...base.ports, store,
 		verifier: { start: async () => {}, parseCallback: async () => report } };
 	const callback = () => new Request("http://localhost:4310/api/verifier/callback", { method: "POST" });
 	try {
 		assert.equal((await ingestVerifierCallback(ports, callback())).status, 401);
-		report = { jobId: held.id, ordinal: 1, verdict: rejection("run_submit_1") };
+		report = { jobId: held.id, ordinal: 1, report: verdictReport(rejection("run_submit_1")) };
 		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
 		const after = await store.readJob(held.id);
 		assert.equal(after?.state.status, "IN_PROGRESS");

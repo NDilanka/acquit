@@ -65,7 +65,7 @@ function heldRow(): JobRow {
 			respondBy: instant("2026-10-09T12:00:00Z"), status: "ACCEPTED" }],
 		state: { status: "IN_PROGRESS", escrow: { payee: { bidId: "bid_submit" as never, operator: "devon-ops" as OperatorId, payee: merchant,
 			agent: "ts-bugfixer" as AgentId, price: usd("400.00"), eta: hours(48) }, quote: quote(commercialSplit(usd("400.00")), model),
-			capture, book, cutoffAt: instant("2026-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0 } } };
+			capture, book, cutoffAt: instant("2026-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } };
 }
 
 test("Submit on the tamper-test commit prints the tutorial's REJECTED block, then the honest fix verifies", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
@@ -80,7 +80,7 @@ test("Submit on the tamper-test commit prints the tutorial's REJECTED block, the
 	const ports: Ports = { store, feeModel: model, clock: { now: () => now }, verifier, github: { merge: unimplemented },
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented } };
 	deliver = async (request, verdict) => {
-		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, verdict });
+		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report: { kind: "VERDICT", verdict } });
 		const signature = createHmac("sha256", secret).update(body).digest("hex");
 		const response = await ingestVerifierCallback(ports, new Request("http://api.test/api/verifier/callback", { method: "POST",
 			headers: { "x-acquit-signature": `sha256=${signature}` }, body }));
@@ -137,7 +137,7 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented } };
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(row.id, 1), sourceCommit: tamperCommit,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now };
-	const body = JSON.stringify({ jobId: row.id, ordinal: 1, verdict });
+	const body = JSON.stringify({ jobId: row.id, ordinal: 1, report: { kind: "VERDICT", verdict } });
 	const signed = () => new Request("http://api.test/api/verifier/callback", { method: "POST",
 		headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body });
 	const unsigned = new Request("http://api.test/api/verifier/callback", { method: "POST", body });
@@ -168,7 +168,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(parseJobId("job_7Q2K"), 1), sourceCommit: tamperCommit,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now };
 	const signedReport = (jobId: JobId) => {
-		const body = JSON.stringify({ jobId, ordinal: 1, verdict });
+		const body = JSON.stringify({ jobId, ordinal: 1, report: { kind: "VERDICT", verdict } });
 		return new Request("http://api.test/api/verifier/callback", { method: "POST",
 			headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body });
 	};

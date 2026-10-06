@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, JobId, TestId } from "../src/ids.ts";
-import { unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
+import { FAILURE_REASON_CHARS, unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
 import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict } from "../../verifier/ci.ts";
 import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "../../verifier/signing.ts";
@@ -25,9 +25,11 @@ const definition: DefinitionOfDone = { issue: { repository: "maya-client/invoice
 	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(c => c.id),
 	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
 
-const verifiedReport = { jobId: "job_ci_test", ordinal: 1, verdict: { result: "VERIFIED", runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
+const verifiedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: { result: "VERIFIED", runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
 	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426", pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
-	reportDigest: "a".repeat(64), at: instant("2026-10-06T12:00:00Z") } };
+	reportDigest: "a".repeat(64), at: instant("2026-10-06T12:00:00Z") } } };
+const failedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED", failure: { runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
+	reason: "PUBLISH_FAILED: no App installation on maya-client", at: instant("2026-10-06T12:00:00Z") } } };
 
 test("the unconfigured verifier refuses a start by name and never accepts a callback", async () => {
 	const port = unconfiguredVerifier();
@@ -48,10 +50,31 @@ test("the callback boundary accepts only a signed report and drops every unsigne
 	assert.equal(await port.parseCallback(signed(raw, "wrong-secret")), null);
 	assert.equal(await port.parseCallback(signed("{not json}")), null);
 	assert.deepEqual(await port.parseCallback(signed(raw)), verifiedReport);
+	assert.deepEqual(await port.parseCallback(signed(JSON.stringify(failedReport))), failedReport);
 	assert.deepEqual(await port.parseCallback(signed(JSON.stringify({ ...verifiedReport, ordinal: 4 }))), null);
 	assert.deepEqual(await port.parseCallback(signed(JSON.stringify({ ...verifiedReport, jobId: "not-a-job" }))), null);
-	const tampered = { ...verifiedReport, verdict: { ...verifiedReport.verdict, reportDigest: undefined } };
+	const tampered = { ...verifiedReport, report: { kind: "VERDICT", verdict: { ...verifiedReport.report.verdict, reportDigest: undefined } } };
 	assert.deepEqual(await port.parseCallback(signed(JSON.stringify(tampered))), null);
+});
+
+test("the callback boundary carries a run's named failure, bounded, or nothing", async () => {
+	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "s3cret", callbackSecret: "s3cret" });
+	const signed = (value: unknown) => {
+		const body = JSON.stringify(value);
+		return new Request("https://ci.test/callback", { method: "POST",
+			headers: { "x-acquit-signature": `sha256=${createHmac("sha256", "s3cret").update(body).digest("hex")}` }, body });
+	};
+	assert.deepEqual(await port.parseCallback(signed(failedReport)), failedReport);
+	// A report that carries neither a verdict nor a named failure is refused, not guessed at.
+	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED" } })), null);
+	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "SOMETHING_ELSE" } })), null);
+	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1 })), null);
+	const empty = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, reason: "  " } } };
+	assert.equal(await port.parseCallback(signed(empty)), null);
+	// The reason is display text: the boundary bounds it instead of refusing the report it cannot act on.
+	const long = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, reason: "x".repeat(5_000) } } };
+	const parsed = await port.parseCallback(signed(long));
+	assert.equal(parsed?.report.kind === "RUN_FAILED" ? parsed.report.failure.reason.length : 0, FAILURE_REASON_CHARS);
 });
 
 test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejection's named reason", () => {
@@ -70,12 +93,13 @@ test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejecti
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 0, limit: 256 }] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302 }] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, at: "yesterday" }), null);
-	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, frozen: { expected: 48, passed: 49 } }), null);
-	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, pullRequest: 0 }), null);
-	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: rejected })?.ordinal, 1);
+	assert.deepEqual(parseVerdict({ ...verifiedReport.report.verdict, frozen: { expected: 48, passed: 49 } }), null);
+	assert.deepEqual(parseVerdict({ ...verifiedReport.report.verdict, pullRequest: 0 }), null);
+	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: rejected } })?.ordinal, 1);
 	const overReadBound = { ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }] };
-	const parsed = parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: overReadBound });
-	assert.deepEqual(parsed?.verdict.result === "REJECTED" ? parsed.verdict.reasons : null,
+	const parsed = parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: overReadBound } });
+	const verdict = parsed?.report.kind === "VERDICT" ? parsed.report.verdict : null;
+	assert.deepEqual(verdict?.result === "REJECTED" ? verdict.reasons : null,
 		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }]);
 });
 
