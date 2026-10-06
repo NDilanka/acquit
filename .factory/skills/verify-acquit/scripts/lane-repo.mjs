@@ -17,8 +17,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { laneSlot } from "../../../../packages/ctl/src/state.ts";
+import { createGitHubApp } from "../../../../packages/core/src/github.ts";
 import { githubAppEnv } from "../../../../packages/verifier/config.ts";
-import { createInstallationTokens } from "../../../../packages/verifier/app-token.ts";
 
 const root = fileURLToPath(new URL("../../../..", import.meta.url));
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -69,7 +69,7 @@ async function ensureClientRepo(fullName, frozenCommit, templateDir) {
 	let access = "unknown";
 	try {
 		const github = githubAppEnv();
-		const token = await createInstallationTokens(github)(account);
+		const token = await createGitHubApp(github).installationToken(account);
 		const answer = await fetch(`${github.apiBase ?? "https://api.github.com"}/repos/${fullName}`,
 			{ headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "acquit-lane-repo" } });
 		access = answer.ok ? "visible" : `not visible (HTTP ${answer.status}): add ${fullName} to the App installation`;
@@ -79,7 +79,7 @@ async function ensureClientRepo(fullName, frozenCommit, templateDir) {
 
 /** Pushes the frozen commit as main with the App token in the environment's git config, never in a URL or argv. */
 async function pushMain(templateDir, fullName, frozenCommit) {
-	const token = await createInstallationTokens(githubAppEnv())(fullName.split("/")[0]);
+	const token = await createGitHubApp(githubAppEnv()).installationToken(fullName.split("/")[0]);
 	// git ignores `http.<url>.extraHeader` from a global config file, and GitHub's git endpoint takes
 	// the installation token as a Basic user, not as a bearer token.
 	const pushed = spawnSync("git", ["-C", templateDir, "-c", "credential.helper=", "push", "--quiet",

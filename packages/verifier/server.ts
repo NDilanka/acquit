@@ -8,7 +8,6 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
-import { createInstallationTokens } from "./app-token.ts";
 import { githubAppEnv, serviceConfig } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
 import { createVerifierService } from "./service.ts";
@@ -21,11 +20,12 @@ export function createProductionService(): { readonly service: VerifierService; 
 	const selection = verifierSubjectEnv();
 	assertSubjectAllowed(selection);
 	const github = githubAppEnv();
-	const tokens = createInstallationTokens(github);
+	// One client for the publisher and the source's tokens: one boundary, one token cache.
+	const app = createGitHubApp(github);
 	return { port: config.port, subject: selection.subject,
 		service: createVerifierService({ runSecret: config.runSecret, callback: { url: config.callbackUrl, secret: config.callbackSecret },
-			subject: subjectFor(selection), publisher: createGitHubApp(github),
-			source: createRunSource({ organization: github.organization ?? "", tokenFor: tokens }),
+			subject: subjectFor(selection), publisher: app,
+			source: createRunSource({ organization: github.organization ?? "", tokenFor: owner => app.installationToken(owner) }),
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };
 }
 

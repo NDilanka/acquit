@@ -5,6 +5,10 @@
 import { createPrivateKey, createSign } from "node:crypto";
 import type { CommitSha, JobId } from "./ids.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
+import { boundedDetail } from "./verifier.ts";
+
+// Every refusal that copies server text goes through the contract's one bounded, redacting helper.
+export { boundedDetail };
 
 export type GitHubAppConfig = {
 	readonly appId: string;
@@ -87,7 +91,15 @@ export interface PublisherPort {
 	publishVerified(request: PublishRequest, requestId: string): Promise<PublishedPullRequest>;
 }
 
-export interface GitHubAppPort extends WorkRepoPort, PublisherPort {}
+/**
+ * What a caller outside this client's own operations needs: one installation token per owner, minted
+ * with the same bounded, redacted, rate-limit-aware calls. The verifier's git fetch is that caller.
+ */
+export interface TokenPort {
+	installationToken(owner: string): Promise<string>;
+}
+
+export interface GitHubAppPort extends WorkRepoPort, PublisherPort, TokenPort {}
 
 /** Boundary parse. A partial config is not an error here; it selects the fail-fast adapter. */
 export function parseGitHubAppConfig(input: GitHubAppConfigInput | undefined): GitHubAppConfig | null {
@@ -108,27 +120,13 @@ export function missingGitHubNames(input: GitHubAppConfigInput | undefined): rea
 /** Every call refuses immediately. It never starts a request it cannot authenticate. */
 export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({}).join(", ")}.`): GitHubAppPort {
 	const fail = (): never => { throw new GitHubAppNotConfigured(detail); };
-	return { createWorkRepo: async () => fail(), publishVerified: async () => fail() };
+	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), installationToken: async () => fail() };
 }
 
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
 
 /** A response body larger than this is refused instead of buffered. */
 const MAX_BODY_BYTES = 1_048_576;
-
-/** Server text copied into a refusal is bounded to this, so one answer cannot flood a log or an operator's screen. */
-const MAX_DETAIL_CHARS = 300;
-
-const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+/g;
-
-/** Bounds and redacts anything a server said. Every refusal that copies server text goes through this. */
-export function boundedDetail(text: string): string {
-	const clean = text
-		.replace(TOKEN_SHAPES, "[redacted]")
-		.replace(/(temp_clone_token"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[redacted]")
-		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]");
-	return clean.length > MAX_DETAIL_CHARS ? `${clean.slice(0, MAX_DETAIL_CHARS)}...` : clean;
-}
 
 /** Strict shapes for every caller-supplied name before it enters a URL. */
 const OWNER_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
@@ -500,6 +498,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	return {
 		async createWorkRepo(request) { return createWorkRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
+		async installationToken(owner) { return tokenFor(checkedOwner(owner)); },
 	};
 }
 
@@ -520,6 +519,7 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 	let nextPullRequest = options.firstPullRequest ?? 13;
 	return {
 		calls, workRepos, pullRequests,
+		async installationToken(owner) { return `fake-installation-token-${checkedOwner(owner)}`; },
 		async createWorkRepo(request, requestId) {
 			calls.push({ kind: "CREATE_WORK_REPO", jobId: request.jobId, requestId });
 			const existing = workRepos.get(request.jobId);

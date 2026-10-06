@@ -124,9 +124,17 @@ export type VerifierReport =
 /** The longest detail a report carries. The service truncates; the boundary truncates what it is handed. */
 export const FAILURE_DETAIL_CHARS = 300;
 
-/** Display text from a run: control characters become spaces, and the text is bounded. */
+/** The token shapes GitHub prints in a refusal body. Copied server text never carries one onward. */
+const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+/g;
+
+/** Display text from a run: control characters become spaces, token shapes are redacted, and the text is bounded. */
 export function boundedDetail(text: string): string {
-	return text.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, FAILURE_DETAIL_CHARS);
+	return text
+		.replace(/[\u0000-\u001f\u007f]+/g, " ")
+		.replace(TOKEN_SHAPES, "[redacted]")
+		.replace(/(temp_clone_token"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[redacted]")
+		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+		.slice(0, FAILURE_DETAIL_CHARS);
 }
 
 /** The one line a client prints for a failure: its name, then its detail when it has one. */

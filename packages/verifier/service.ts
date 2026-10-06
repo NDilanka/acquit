@@ -172,13 +172,15 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 			built = await deps.source(record.request);
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
 				deadlineMs: deps.subjectDeadlineMs });
-			record.outcome = outcome;
-			if (outcome.kind === "VERDICT") record.callback = await deliver(record.request, { kind: "VERDICT", verdict: outcome.verdict });
+			// What the run view and the callback carry is bounded and redacted here, once, for every source.
+			record.outcome = outcome.kind === "VERDICT" ? outcome
+				: { ...outcome, failure: { ...outcome.failure, detail: boundedDetail(outcome.failure.detail) } };
+			if (record.outcome.kind === "VERDICT") record.callback = await deliver(record.request, { kind: "VERDICT", verdict: record.outcome.verdict });
 			else {
 				// A run that ends without a verdict reports it at once, so the job returns its slot instead of
 				// waiting out the run deadline for a callback that is never coming.
-				record.callback = await deliver(record.request, failureReport(record.request, outcome.failure.name, outcome.failure.detail));
-				log(`run ${runId} ended RUN_FAILED: ${outcome.failure.name}`);
+				record.callback = await deliver(record.request, failureReport(record.request, record.outcome.failure.name, record.outcome.failure.detail));
+				log(`run ${runId} ended RUN_FAILED: ${record.outcome.failure.name}`);
 			}
 		} catch (error) {
 			const refusal = recordRefusal(record, `SOURCE_UNAVAILABLE: ${message(error)}`);
@@ -226,10 +228,10 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		if (queue.length > 0 || running > 0) log(`shutdown left ${queue.length} queued and ${running} running`);
 	}
 
-	/** Records the named refusal and returns it. The run's phase becomes FINISHED once the callback is posted. */
+	/** Records the named refusal and returns it, bounded and redacted, so no step's raw text escapes by value. */
 	function recordRefusal(record: RunRecord, refusal: string): string {
-		record.refusal = refusal;
-		return refusal;
+		record.refusal = boundedDetail(refusal);
+		return record.refusal;
 	}
 
 	/** A refused request is logged by name, never by value, so a lane can see why a start did not take. */
