@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -392,7 +392,7 @@ test("two concurrent CLIs cannot both hold the lifecycle lock", async () => {
 	await mkdir(dir, { recursive: true });
 	const holder = `import { createServer } from "node:net";
 		const server = createServer();
-		server.listen(${JSON.stringify(lockName(dir))}, () => { console.log("held"); setInterval(() => {}, 1000); });`;
+		server.listen(${JSON.stringify(lockName(realpathSync(dir)))}, () => { console.log("held"); setInterval(() => {}, 1000); });`;
 	const first = spawn(process.execPath, ["--input-type=module", "-e", holder], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
 	try {
 		const [held] = await once(first.stdout!, "data", { signal: AbortSignal.timeout(5000) });

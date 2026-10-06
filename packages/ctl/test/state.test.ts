@@ -76,7 +76,7 @@ test("a held lock names itself and its recovery; idle clients cannot block lock 
 		await locked({ dir } as any, async () => {
 			await assert.rejects(locked({ dir } as any, async () => {}), (error: any) => error.code === "CLI_BUSY"
 				&& error.message === `Another CLI lifecycle operation holds ${expectedLockLabel(dir)}.` && error.fix.includes("Never delete a run file to bypass this lock."));
-			const socket = createConnection(lockName(dir));
+			const socket = createConnection(lockName(realpathSync(dir)));
 			socket.on("error", () => {});
 			await once(socket, "connect");
 			socket.destroy();
