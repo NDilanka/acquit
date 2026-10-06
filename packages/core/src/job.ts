@@ -27,7 +27,7 @@ import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
-import type { DefinitionOfDone, TestTally, Verdict, VerifierRunId } from "./verifier.ts";
+import type { DefinitionOfDone, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
 
 // Worst-case timeline from capture is delivery 14d, review 72h, dispute 48h, so day 19.
 // The cutoff at day 21 leaves a week to reconcile an uncertain settlement before PayPal's day 28.
@@ -163,8 +163,8 @@ export type PendingAttempt = {
 };
 
 export type AttemptProgress =
-	| { readonly phase: "READY"; readonly history: History; readonly runsStarted: number }
-	| { readonly phase: "VERIFYING"; readonly history: History; readonly runsStarted: number; readonly pending: PendingAttempt }
+	| { readonly phase: "READY"; readonly history: History; readonly runsStarted: number; readonly failure: RunFailure | null }
+	| { readonly phase: "VERIFYING"; readonly history: History; readonly runsStarted: number; readonly pending: PendingAttempt; readonly failure: RunFailure | null }
 	| { readonly phase: "REFUND_PENDING"; readonly history: History; readonly refund: RefundIntent };
 
 export type WorkState = {
@@ -332,7 +332,7 @@ function transitionTable(): {
 	BuyerApproved: Edge<Open, JobRef & { readonly orderId: OrderId }, Open, "SYSTEM">;
 	CaptureCompleted: Edge<Open, JobRef & { readonly capture: CaptureEvidence }, Open | Work, "SYSTEM">;
 	Submit: Edge<Work, JobRef & { readonly sourceCommit: CommitSha }, Work, "OPERATOR">;
-	VerifierFinished: Edge<Work, JobRef & { readonly runId: VerifierRunId; readonly verdict: Verdict }, Work | Verified, "SYSTEM">;
+	VerifierFinished: Edge<Work, JobRef & { readonly report: VerifierReport }, Work | Verified, "SYSTEM">;
 	Approve: Edge<Verified, JobRef & { readonly mergeCommit: CommitSha }, Verified, "CLIENT">;
 	Dispute: Edge<Verified, JobRef & { readonly mergeCommit: CommitSha; readonly reason: string }, Verified, "CLIENT">;
 	ResolveDispute: Edge<Verified, JobRef & { readonly verdict: "UPHOLD" | "REWORK" | "REFUND"; readonly note: string }, Verified | Work, "ARBITER">;
@@ -509,7 +509,7 @@ function transitionTable(): {
 			const done = storedDefinitionOfDone(row);
 			return { next: { ...row, version: (row.version + 1) as Version,
 				bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "ACCEPTED" } : b.status === "PENDING" ? { ...b, status: "NOT_SELECTED" } : b),
-				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0 } } },
+				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } },
 				credits: [], effects: done === null ? [] : [{ kind: "CREATE_WORK_REPO", jobId: row.id,
 					repository: done.issue.repository, frozenCommit: done.frozenAt }] };
 		} },
@@ -528,24 +528,36 @@ function transitionTable(): {
 			const pending: PendingAttempt = { ordinal, run, runId: verifierRunId(row.id, run), sourceCommit: command.sourceCommit,
 				submittedAt: facts.now, runEndsAt: instant(new Date(Date.parse(facts.now) + VERIFIER_RUN_MINUTES * 60_000).toISOString()) };
 			return { next: { ...row, version: (row.version + 1) as Version,
-				state: { ...row.state, attempts: { phase: "VERIFYING", history: attempts.history, runsStarted: run, pending } } },
+				state: { ...row.state, attempts: { phase: "VERIFYING", history: attempts.history, runsStarted: run, pending, failure: attempts.failure } } },
 				credits: [], effects: [{ kind: "START_VERIFIER", jobId: row.id, attempt: pending }] };
 		} },
 		VerifierFinished: { by: "SYSTEM", apply: (row, command, facts) => {
 			const attempts = row.state.attempts;
+			const report = command.report;
+			const runId = report.kind === "VERDICT" ? report.verdict.runId : report.failure.runId;
+			const sourceCommit = report.kind === "VERDICT" ? report.verdict.sourceCommit : report.failure.sourceCommit;
 			// An unmatched run is a no-op, so a redelivered callback cannot burn a second slot.
-			if (attempts.phase !== "VERIFYING" || attempts.pending.runId !== command.runId) return unchanged(row);
-			if (command.verdict.runId !== attempts.pending.runId || command.verdict.sourceCommit !== attempts.pending.sourceCommit) return unchanged(row);
+			if (attempts.phase !== "VERIFYING" || attempts.pending.runId !== runId || attempts.pending.sourceCommit !== sourceCommit) return unchanged(row);
+			if (report.kind === "RUN_FAILED") {
+				// A run that ended without a verdict is infrastructure, not the worker: the slot returns and the
+				// attempt count stays put. A publish that failed after a clean judgment lands here too. A verdict
+				// is not usable until it names a published commit, and the operator's resubmit re-judges the same
+				// tree while the publisher reuses the branch, the pull request, and the check run it already made.
+				return { next: { ...row, version: (row.version + 1) as Version,
+					state: { ...row.state, attempts: { phase: "READY", history: attempts.history, runsStarted: attempts.runsStarted,
+						failure: report.failure } } }, credits: [], effects: [] };
+			}
+			const verdict = report.verdict;
 			const ordinal = attempts.pending.ordinal;
-			if (command.verdict.result === "VERIFIED") {
-				const passed: PassedAttempt = { ordinal, verdict: command.verdict };
+			if (verdict.result === "VERIFIED") {
+				const passed: PassedAttempt = { ordinal, verdict };
 				const history = [...attempts.history, passed] as History;
 				return { next: { ...row, version: (row.version + 1) as Version,
 					state: { status: "VERIFIED", escrow: row.state.escrow, history, passed,
 						review: { phase: "AWAITING_CLIENT", endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
 						runsStarted: attempts.runsStarted } }, credits: [], effects: [] };
 			}
-			const rejected: RejectedAttempt = { ordinal, verdict: command.verdict };
+			const rejected: RejectedAttempt = { ordinal, verdict };
 			const history = [...attempts.history, rejected] as History;
 			if (ordinal === TERMS.maxAttempts) {
 				return { next: { ...row, version: (row.version + 1) as Version,
@@ -553,7 +565,7 @@ function transitionTable(): {
 					credits: [], effects: [refundIntent(row.id, row.state.escrow)] };
 			}
 			return { next: { ...row, version: (row.version + 1) as Version,
-				state: { ...row.state, attempts: { phase: "READY", history, runsStarted: attempts.runsStarted } } }, credits: [], effects: [] };
+				state: { ...row.state, attempts: { phase: "READY", history, runsStarted: attempts.runsStarted, failure: null } } }, credits: [], effects: [] };
 		} },
 		Approve: { by: "CLIENT", apply: unimplemented },
 		Dispute: { by: "CLIENT", apply: unimplemented },
@@ -566,8 +578,11 @@ function transitionTable(): {
 			if (row.state.status === "IN_PROGRESS") {
 				const attempts = row.state.attempts;
 				if (attempts.phase === "VERIFYING" && facts.now >= attempts.pending.runEndsAt) {
-					// A run that never reported gives its slot back before the deadline, and the attempt count stays put.
-					const gave = { ...row.state.attempts, phase: "READY" as const, history: attempts.history, runsStarted: attempts.runsStarted };
+					// A run that never reported ended without a verdict: the slot returns, the attempt count stays
+					// put, and the reason is recorded so the CLI names it instead of waiting out the deadline.
+					const failure: RunFailure = { runId: attempts.pending.runId, sourceCommit: attempts.pending.sourceCommit,
+						reason: "RUN_DEADLINE_EXCEEDED", at: facts.now };
+					const gave = { phase: "READY" as const, history: attempts.history, runsStarted: attempts.runsStarted, failure };
 					if (facts.now < row.contract.deliveryEndsAt) return { next: { ...row, version: (row.version + 1) as Version,
 						state: { ...row.state, attempts: gave } }, credits: [], effects: [] };
 					return { next: { ...row, version: (row.version + 1) as Version,
@@ -778,6 +793,8 @@ export type JobProjection = JobView & {
 	readonly attempts: JobView["attempts"] & {
 		readonly history: readonly AttemptView[];
 		readonly pending: PendingRunView | null;
+		/** The last run that ended without a verdict. It charged no attempt, so it is not in history. */
+		readonly failure: RunFailure | null;
 	};
 };
 
@@ -804,6 +821,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const history = state.status === "IN_PROGRESS" ? state.attempts.history
 		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
 	const pending = state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? state.attempts.pending : null;
+	const failure = state.status === "IN_PROGRESS" && state.attempts.phase !== "REFUND_PENDING" ? state.attempts.failure : null;
 	const used = history.length + (pending ? 1 : 0);
 	const judged = history.map(attemptView);
 	const done = storedDefinitionOfDone(row);
@@ -817,7 +835,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : held ? "HELD" : "NONE",
 		approveUrl: funding?.checkout.phase === "AWAITING_APPROVAL" && viewer.role === "CLIENT" && viewer.clientId === row.client ? funding.checkout.approveUrl : null,
 		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: judged.at(-1)?.result ?? null,
-			reasons: judged.at(-1)?.reasons ?? [], history: judged,
+			reasons: judged.at(-1)?.reasons ?? [], history: judged, failure,
 			pending: pending ? { ordinal: pending.ordinal, run: pending.run, runId: pending.runId, sourceCommit: pending.sourceCommit,
 				submittedAt: pending.submittedAt, runEndsAt: pending.runEndsAt } : null },
 		reviewEndsAt: state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT" ? state.review.endsAt : null,

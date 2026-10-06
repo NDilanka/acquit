@@ -379,14 +379,16 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	if (!parsed) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
 	const job = await ports.store.readJob(parsed.jobId);
 	const pending = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
-	const waiting = pending !== null && pending.runId === parsed.verdict.runId && pending.sourceCommit === parsed.verdict.sourceCommit;
+	const report = parsed.report;
+	const runId = report.kind === "VERDICT" ? report.verdict.runId : report.failure.runId;
+	const sourceCommit = report.kind === "VERDICT" ? report.verdict.sourceCommit : report.failure.sourceCommit;
+	const waiting = pending !== null && pending.runId === runId && pending.sourceCommit === sourceCommit;
 	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
 	if (!waiting) return Response.json({ ok: true, applied: false });
 	// The run id is right but the attempt number is not: the report contradicts the attempt it names.
 	if (pending.ordinal !== parsed.ordinal) return Response.json({ error: "ORDINAL_MISMATCH" }, { status: 409 });
 	try {
-		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, runId: parsed.verdict.runId, verdict: parsed.verdict },
-			null, `verifier:${parsed.verdict.runId}`);
+		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, report }, null, `verifier:${runId}`);
 	} catch {
 		// The job state is the guard: a report for a job that is not waiting on this run changes nothing.
 		return Response.json({ error: "REFUSED" }, { status: 409 });

@@ -5,8 +5,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
-import { unconfiguredVerifier } from "../core/src/verifier.ts";
-import type { RejectReason, TestTally, Verdict, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
+import { boundedReason, unconfiguredVerifier } from "../core/src/verifier.ts";
+import type { RejectReason, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
 import { randomBytes } from "node:crypto";
 import { runSignature, RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "./signing.ts";
 import { VERIFIER_NAMES } from "./config.ts";
@@ -99,13 +99,39 @@ function signatureMatches(body: string, header: string, secret: string): boolean
 }
 
 /** Untrusted bytes become a typed report here or not at all. */
-export function parseCallbackBody(value: unknown): { readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly verdict: Verdict } | null {
+export function parseCallbackBody(value: unknown): { readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport } | null {
 	if (!value || typeof value !== "object") return null;
 	const body = value as Record<string, unknown>;
 	const jobId = typeof body.jobId === "string" && /^job_[A-Za-z0-9_-]{4,80}$/.test(body.jobId) ? body.jobId as JobId : null;
 	const ordinal = body.ordinal === 1 || body.ordinal === 2 || body.ordinal === 3 ? body.ordinal : null;
-	const verdict = parseVerdict(body.verdict);
-	return jobId && ordinal && verdict ? { jobId, ordinal, verdict } : null;
+	const report = parseReport(body.report);
+	return jobId && ordinal && report ? { jobId, ordinal, report } : null;
+}
+
+/** A report is a verdict or a named failure. Anything else is refused rather than guessed at. */
+export function parseReport(value: unknown): VerifierReport | null {
+	if (!value || typeof value !== "object") return null;
+	const raw = value as Record<string, unknown>;
+	if (raw.kind === "VERDICT") {
+		const verdict = parseVerdict(raw.verdict);
+		return verdict === null ? null : { kind: "VERDICT", verdict };
+	}
+	if (raw.kind === "RUN_FAILED") {
+		const failure = parseRunFailure(raw.failure);
+		return failure === null ? null : { kind: "RUN_FAILED", failure };
+	}
+	return null;
+}
+
+export function parseRunFailure(value: unknown): RunFailure | null {
+	if (!value || typeof value !== "object") return null;
+	const raw = value as Record<string, unknown>;
+	const runId = nonEmptyString(raw.runId);
+	const sourceCommit = nonEmptyString(raw.sourceCommit);
+	const at = parseInstant(raw.at);
+	const reason = typeof raw.reason === "string" && raw.reason.trim().length > 0 ? raw.reason : null;
+	if (!runId || !sourceCommit || !at || reason === null) return null;
+	return { runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha, reason: boundedReason(reason), at };
 }
 
 export function parseVerdict(value: unknown): Verdict | null {

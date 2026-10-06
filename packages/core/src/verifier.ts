@@ -92,6 +92,30 @@ export type Verdict =
 
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
+/**
+ * A run that ended without a verdict. Infrastructure, not the worker: applying one returns the slot
+ * and charges no attempt. `reason` is a named code with bounded display text, never a secret.
+ */
+export type RunFailure = {
+	readonly runId: VerifierRunId;
+	readonly sourceCommit: CommitSha;
+	readonly reason: string;
+	readonly at: Instant;
+};
+
+/** How one run ended. The service posts exactly one of these as its signed callback. */
+export type VerifierReport =
+	| { readonly kind: "VERDICT"; readonly verdict: Verdict }
+	| { readonly kind: "RUN_FAILED"; readonly failure: RunFailure };
+
+/** The longest reason a report carries. The service truncates; the boundary truncates what it is handed. */
+export const FAILURE_REASON_CHARS = 300;
+
+/** Display text from a run: control characters become spaces, and the text is bounded. */
+export function boundedReason(text: string): string {
+	return text.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, FAILURE_REASON_CHARS);
+}
+
 export type HiddenCase = {
 	readonly id: TestId;
 	readonly target: { readonly module: string; readonly export: string };
@@ -422,7 +446,7 @@ export interface VerifierPort {
 	/** Starting the same runId twice reuses the first run. CI retries its own infrastructure within the run budget. */
 	start(request: VerifierRunRequest): Promise<void>;
 	/** Authenticates the judge's signed report. Submitted-program output is never a trusted input here. */
-	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly verdict: Verdict } | null>;
+	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport } | null>;
 }
 
 export class VerifierCiNotConfigured extends Error {

@@ -590,7 +590,7 @@ test("a timed-out run gives its slot back without using an attempt, and the next
 	assert.deepEqual(attempts.history, []);
 	// A run that never reported is a run that ended without a verdict: the slot returns, the attempt
 	// count stays put, and the reason is on the attempt so the CLI can name it instead of waiting.
-	assert.deepEqual(attempts.failure, runFailure("run_submit_1", "RUN_DEADLINE_EXCEEDED"));
+	assert.deepEqual(attempts.failure, { runId: "run_submit_1", sourceCommit, reason: "RUN_DEADLINE_EXCEEDED", at: later });
 	assert.deepEqual(timedOut.effects, []);
 	const resubmitted = applyJobCommand(timedOut.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now: later, loaded: { kind: "NONE" } });
 	if (typeof resubmitted === "string") throw new Error(resubmitted);
@@ -671,7 +671,7 @@ test("a stored contract without a frozen definition of done parses to null and p
 		assert.equal(view.budget, 40000);
 		assert.equal(view.deliveryEndsAt, "2026-10-13T12:00:00.000Z");
 		assert.deepEqual(view.ledger, [{ kind: "HELD", cents: 42000, at: now }]);
-		assert.deepEqual(view.attempts, { used: 0, left: 3, last: null, reasons: [], history: [], pending: null });
+		assert.deepEqual(view.attempts, { used: 0, left: 3, last: null, reasons: [], history: [], pending: null, failure: null });
 	} finally { store.close(); }
 });
 

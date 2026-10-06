@@ -13,7 +13,8 @@ import { createHmac } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import type { PublisherPort } from "../core/src/github.ts";
-import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
+import { boundedReason } from "../core/src/verifier.ts";
+import type { DefinitionOfDone, RunFailure, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { JudgeOutcome, JudgeSource } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { SubjectLauncher } from "./subject.ts";
@@ -157,7 +158,10 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		const record = runs.get(runId);
 		if (!record || record.phase !== "QUEUED") return;
 		if (Date.parse(clock.now()) - Date.parse(record.acceptedAt) > runDeadlineMs) {
-			finish(record, "RUN_DEADLINE_EXCEEDED");
+			const refusal = recordRefusal(record, "RUN_DEADLINE_EXCEEDED");
+			record.callback = await deliver(record.request, failureReport(record.request, refusal));
+			record.phase = "FINISHED";
+			record.finishedAt = clock.now();
 			log(`run ${runId} refused by name: RUN_DEADLINE_EXCEEDED`);
 			return;
 		}
@@ -169,11 +173,17 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
 				deadlineMs: deps.subjectDeadlineMs });
 			record.outcome = outcome;
-			if (outcome.kind === "VERDICT") record.callback = await deliver(record.request, outcome.verdict);
-			else log(`run ${runId} ended RUN_FAILED: ${outcome.reason}`);
+			if (outcome.kind === "VERDICT") record.callback = await deliver(record.request, { kind: "VERDICT", verdict: outcome.verdict });
+			else {
+				// A run that ends without a verdict reports it at once, so the job returns its slot instead of
+				// waiting out the run deadline for a callback that is never coming.
+				record.callback = await deliver(record.request, failureReport(record.request, outcome.reason));
+				log(`run ${runId} ended RUN_FAILED: ${outcome.reason}`);
+			}
 		} catch (error) {
-			finish(record, `SOURCE_UNAVAILABLE: ${message(error)}`);
-			log(`run ${runId} refused by name: ${record.refusal}`);
+			const refusal = recordRefusal(record, `SOURCE_UNAVAILABLE: ${message(error)}`);
+			record.callback = await deliver(record.request, failureReport(record.request, refusal));
+			log(`run ${runId} refused by name: ${refusal}`);
 		} finally {
 			try { built?.remove(); } catch { /* a tree that cannot be removed must not fail a run */ }
 			record.phase = "FINISHED";
@@ -181,8 +191,14 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		}
 	}
 
-	async function deliver(request: VerifierRunRequest, verdict: Verdict): Promise<CallbackState> {
-		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, verdict });
+	/** The service's half of the report contract: a named, bounded reason, never a value the run carried. */
+	function failureReport(request: VerifierRunRequest, reason: string): VerifierReport {
+		const failure: RunFailure = { runId: request.runId, sourceCommit: request.sourceCommit, reason: boundedReason(reason), at: clock.now() };
+		return { kind: "RUN_FAILED", failure };
+	}
+
+	async function deliver(request: VerifierRunRequest, report: VerifierReport): Promise<CallbackState> {
+		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report });
 		const headers = { "content-type": "application/json", "x-acquit-signature": `sha256=${callbackSignature(deps.callback.secret, body)}` };
 		for (let attempt = 1; attempt <= CALLBACK_ATTEMPTS; attempt++) {
 			try {
@@ -210,10 +226,10 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		if (queue.length > 0 || running > 0) log(`shutdown left ${queue.length} queued and ${running} running`);
 	}
 
-	function finish(record: RunRecord, refusal: string): void {
+	/** Records the named refusal and returns it. The run's phase becomes FINISHED once the callback is posted. */
+	function recordRefusal(record: RunRecord, refusal: string): string {
 		record.refusal = refusal;
-		record.phase = "FINISHED";
-		record.finishedAt = clock.now();
+		return refusal;
 	}
 
 	/** A refused request is logged by name, never by value, so a lane can see why a start did not take. */

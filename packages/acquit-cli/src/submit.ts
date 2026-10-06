@@ -134,6 +134,8 @@ export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promi
 	const sourceCommit = deps.head(options.dir);
 	if (options.remote) deps.push(options.dir, options.remote, options.jobId);
 	const before = await jobView(deps.client, options.jobId);
+	// A failure the job already carried for this commit belongs to an earlier run; only a new one ends this wait.
+	const previousFailure = before.job.attempts.failure?.runId ?? null;
 	// One key per user intent, per docs/architecture/http.md. The API parses it as a UUID v4 and
 	// refuses any other shape, so a retry must reuse this string rather than mint a new one.
 	const answer = await deps.client.post("/api/commands", { key: randomUUID(),
@@ -146,6 +148,11 @@ export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promi
 		const { job, handles } = await jobView(deps.client, options.jobId);
 		const judged = job.attempts.history.find(attempt => attempt.sourceCommit === sourceCommit);
 		if (judged) return renderSubmission(job, operatorId => handles.get(operatorId) ?? null);
+		const failure = job.attempts.failure;
+		// The service reports a run that ended without a verdict at once, with a named reason. Print it.
+		if (failure && failure.sourceCommit === sourceCommit && failure.runId !== previousFailure) {
+			throw new CliError("RUN_FAILED", failure.reason);
+		}
 		if (!job.attempts.pending) throw new CliError("VERDICT_MISSING", `Job ${job.id} is not waiting on a run and has no verdict for ${sourceCommit}.`);
 		if ((deps.now ?? Date.now)() >= deadline) {
 			throw new CliError("VERIFIER_TIMEOUT", `The run is still in flight; it ends at ${utcMinutes(job.attempts.pending.runEndsAt)}.`);

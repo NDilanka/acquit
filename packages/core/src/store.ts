@@ -6,6 +6,7 @@ import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
 import type { JobRow } from "./job.ts";
+import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
@@ -39,7 +40,11 @@ function parsed<T>(row: Record<string, unknown> | undefined): T | null {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	return { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) } };
+	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) } };
+	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
+	// A row written before a run could fail has no failure field. This read is the boundary that types it.
+	const failure = (parsed.state.attempts as { readonly failure?: RunFailure | null }).failure ?? null;
+	return { ...parsed, state: { ...parsed.state, attempts: { ...parsed.state.attempts, failure } } };
 }
 function due(state: OutboxState): string | null {
 	return state.kind === "READY" ? state.runAt : state.kind === "LEASED" ? state.leaseUntil : state.kind === "UNCERTAIN" ? state.reconcileAt : null;
