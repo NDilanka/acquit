@@ -6,7 +6,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { atomicJson, locked, lockName } from "../src/state.ts";
+import { atomicJson, locked, lockLabel, lockName } from "../src/state.ts";
 import { releaseSpawned, sleep } from "../src/process.ts";
 
 test("Windows lock names hash the entire canonical path, not a shared trailing suffix", { skip: process.platform !== "win32" }, () => {
@@ -14,12 +14,12 @@ test("Windows lock names hash the entire canonical path, not a shared trailing s
 	assert.notEqual(lockName(resolve("one", suffix)), lockName(resolve("two", suffix)));
 	assert.equal(lockName(resolve("ONE", suffix)), lockName(resolve("one", suffix)));
 });
-test("a squatted lock names its pipe and recovery; idle clients cannot block lock release", { timeout: 10000 }, async () => {
+test("a held lock names itself and its recovery; idle clients cannot block lock release", { timeout: 10000 }, async () => {
 	const dir = await mkdtemp(resolve(tmpdir(), "acquit-lock-recovery-"));
 	try {
 		await locked({ dir } as any, async () => {
 			await assert.rejects(locked({ dir } as any, async () => {}), (error: any) => error.code === "CLI_BUSY"
-				&& error.message.includes(lockName(dir)) && error.fix.includes("process exit releases"));
+				&& error.message.includes(lockLabel(dir)) && error.fix.includes("Never delete a run file to bypass this lock."));
 			const socket = createConnection(lockName(dir));
 			socket.on("error", () => {});
 			await once(socket, "connect");

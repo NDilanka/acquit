@@ -307,7 +307,10 @@ function groupMembers(pid: number): boolean {
 }
 async function waitForTree(pid: number, ms: number): Promise<boolean> {
 	// The leader is not the tree: a member that ignores SIGTERM keeps the group,
-	// and a call that reports success must not leave it behind.
+	// and a call that reports success must not leave a group member behind. The
+	// group is all this reaches: a descendant that leaves it (setsid or
+	// setpgid) is not signalled, and only a stop's recorded port can catch it.
+	// The shipped services do not daemonize a descendant.
 	const deadline = Date.now() + ms;
 	for (;;) {
 		if (!alive(pid) && !groupMembers(pid)) return true;
@@ -332,7 +335,14 @@ export async function killTree(pid: number): Promise<void> {
 	// A bare ChildProcess handle (a lock holder, a hand-spawned helper) has no
 	// group of its own: signal the process rather than throw and leak it.
 	const signal = (name: NodeJS.Signals) => {
-		if (processGroupLeader(pid) !== false) {
+		// A group signal reaches every process in the group whose id is the
+		// recorded pid. Only kernel state proves that group is that pid's own: a
+		// live leader (pgrp == pid), or a group that still holds members after
+		// its leader died. A live process whose pgrp is not itself leads no
+		// group, so only the unanswered case needs the member scan. Without any
+		// proof (no /proc) signal the recorded process alone.
+		const leader = processGroupLeader(pid);
+		if (leader === true || (leader === null && groupMembers(pid))) {
 			try { process.kill(-pid, name); return; } catch {}
 		}
 		try { process.kill(pid, name); } catch (error) {
