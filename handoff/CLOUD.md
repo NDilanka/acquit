@@ -7,12 +7,12 @@ This branch carries the gitignored state that the autopilot-stack session needs 
 From the repo root, run this once on a clone of `main`:
 
 ```
-bash <(git show origin/handoff/cloud:handoff/restore.sh)
+git fetch origin handoff/cloud && bash <(git show FETCH_HEAD:handoff/restore.sh)
 ```
 
 The script:
 
-- fetches every branch, including `stack/h0-lanes`, `stack/f1-ledger`, and `stack/f3-verifier`
+- widens a single-branch clone to fetch every branch, including `stack/h0-lanes`, `stack/f1-ledger`, and `stack/f3-verifier`
 - copies `trail/` into `data/trail/` and refuses to overwrite
 - restores the F3 fixtures into `scratch/verifier` and `scratch/verifier-judge`
 - clones `invoice-app` from its bundle with all 7 branches, reinstalls the vitest toolchain, and regenerates the judge trees

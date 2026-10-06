@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Restores the gitignored handoff state into a clone of acquit.
-# Usage: from the repo root on main, run: bash <(git show origin/handoff/cloud:handoff/restore.sh)
+# Usage: from the repo root on main, run:
+#   git fetch origin handoff/cloud && bash <(git show FETCH_HEAD:handoff/restore.sh)
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
-git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+# Cloud clones are single-branch; without this, stack branches can't track origin.
+git config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git fetch -q origin
 
 src="$(mktemp -d)"
 git archive origin/handoff/cloud handoff | tar -x -C "$src"
