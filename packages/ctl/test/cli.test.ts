@@ -28,21 +28,25 @@ async function unusedPort(): Promise<number> {
 }
 async function fixture(run: (cli: (args: string[]) => { code: number | null; stdout: string }, root: string) => Promise<void>): Promise<void> {
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-ctl-test-"));
+	const [api, web, verifier] = [await unusedPort(), await unusedPort(), await unusedPort()];
+	const env = { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), ACQUIT_VERIFIER_PORT: String(verifier), DATABASE_PATH: resolve(root, "test.db") };
+	const cli = (args: string[]) => {
+		const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], { cwd: root, encoding: "utf8", timeout: 30_000, env });
+		assert.equal(result.error, undefined);
+		return { code: result.status, stdout: result.stdout };
+	};
 	try {
 		await cp(source, resolve(root, "packages/ctl/src"), { recursive: true });
 		await cp(fileURLToPath(new URL("../../core/src", import.meta.url)), resolve(root, "packages/core/src"), { recursive: true });
 		await writeFile(resolve(root, "package.json"), '{"type":"module"}');
-		const [api, web, verifier] = [await unusedPort(), await unusedPort(), await unusedPort()];
-		const cli = (args: string[]) => {
-			const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], {
-				cwd: root, encoding: "utf8", timeout: 30_000,
-				env: { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), ACQUIT_VERIFIER_PORT: String(verifier), DATABASE_PATH: resolve(root, "test.db") },
-			});
-			assert.equal(result.error, undefined);
-			return { code: result.status, stdout: result.stdout };
-		};
 		await run(cli, root);
-	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+	} finally {
+		// A body that throws between start and its own stop leaves the lane's
+		// detached services with no owner. Stop proves ownership before it kills,
+		// and must not mask the body's failure with one of its own.
+		spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), "stop"], { cwd: root, encoding: "utf8", timeout: 30_000, env });
+		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	}
 }
 test("top-level help lists every command, flags, envelope, and exits successfully", async () => {
 	await fixture(async cli => {
