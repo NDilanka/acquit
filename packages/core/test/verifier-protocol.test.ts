@@ -166,6 +166,31 @@ test("a diff over the screen's bound is refused by name and the subject never st
 	assert.equal(outcome.subject, null);
 });
 
+test("a diff with more source paths than the screen reads is refused by name before the subject starts", async () => {
+	const honestModule = `export function formatTotal(amounts: readonly { amount: number }[]): string { return String(amounts[0].amount); }\n`;
+	const fixture = repositoryWith(honestModule, repo => {
+		mkdirSync(join(repo, "aaa"), { recursive: true });
+		for (let index = 0; index < 300; index++) {
+			writeFileSync(join(repo, "aaa", `pad-${String(index).padStart(3, "0")}.ts`), `export const pad${index} = ${index};\n`);
+		}
+		writeFileSync(join(repo, "zzz-evil.ts"), 'import { expect } from "vitest";\nexport const evil = 1;\n');
+	});
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_reads" as VerifierRunId, jobId: "job_reads" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT") return;
+		assert.equal(outcome.verdict.result, "REJECTED");
+		if (outcome.verdict.result !== "REJECTED") return;
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }]);
+		assert.equal(outcome.subject, null);
+	} finally { fixture.remove(); }
+});
+
 test("the bootstrap's frame limits are the judge's own limits", () => {
 	assert.deepEqual(BOOTSTRAP_LIMITS, { frameBytes: SUBJECT_FRAME_BYTES, maxCalls: 256, maxErrorChars: SUBJECT_ERROR_CHARS });
 });

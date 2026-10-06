@@ -127,11 +127,33 @@ test("screenDiff reads a rename on both names and skips the added lines of a bin
 test("screenDiff screens a diff at its bound and refuses a bigger one by name", () => {
 	const change = (path: string): DiffChange =>
 		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText: "" });
-	const atLimit = Array.from({ length: 4095 }, (_, index) => change(`src/file-${index}.ts`));
+	const atLimit = Array.from({ length: 4095 }, (_, index) => change(`pad/file-${index}.txt`));
 	atLimit.push(change("tests/totals.test.ts"));
 	assert.deepEqual(screenDiff({ changes: atLimit }, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);
-	const over = [...atLimit, change("src/one-more.ts")];
+	const over = [...atLimit, change("pad/one-more.txt")];
 	assert.deepEqual(screenDiff({ changes: over }, request.definitionOfDone),
+		[{ kind: "DIFF_TOO_LARGE", paths: 4097, limit: 4096 }]);
+});
+
+test("screenDiff refuses a diff with more source paths than the added-text reads", () => {
+	const change = (path: string, rest: Partial<DiffChange> = {}): DiffChange =>
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText: "", ...rest });
+	const atReadBound = Array.from({ length: 255 }, (_, index) => change(`src/file-${index}.ts`));
+	atReadBound.push(change("src/late.ts", { addedText: 'import { expect } from "vitest";' }));
+	assert.deepEqual(screenDiff({ changes: atReadBound }, request.definitionOfDone),
+		[{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/late.ts", symbol: "vitest" }]);
+	const overReadBound = [...atReadBound, change("src/one-more.ts")];
+	assert.deepEqual(screenDiff({ changes: overReadBound }, request.definitionOfDone),
+		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 257, limit: 256 }]);
+	// A binary source path is never read by either side, so it does not consume the bound.
+	const binaryPadded = [...Array.from({ length: 300 }, (_, index) => change(`src/bin-${index}.ts`, { binary: true })),
+		change("src/late.ts", { addedText: 'import { expect } from "vitest";' })];
+	assert.deepEqual(screenDiff({ changes: binaryPadded }, request.definitionOfDone),
+		[{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/late.ts", symbol: "vitest" }]);
+	// The changed-path bound decides first when both are over.
+	const huge = Array.from({ length: 4096 }, (_, index) => change(`src/file-${index}.ts`));
+	huge.push(change("src/one-more.ts"));
+	assert.deepEqual(screenDiff({ changes: huge }, request.definitionOfDone),
 		[{ kind: "DIFF_TOO_LARGE", paths: 4097, limit: 4096 }]);
 });
 
@@ -180,6 +202,8 @@ test("describeRejectReason prints the tutorial's rejection line for a frozen tes
 	assert.equal(describeRejectReason({ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }), "PR modifies protected path package.json");
 	assert.equal(describeRejectReason({ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/money.ts", symbol: "vitest" }), "Submitted source src/money.ts imports vitest");
 	assert.equal(describeRejectReason({ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1" as TestId] }), "Hidden tests failed: hidden:1");
+	assert.equal(describeRejectReason({ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }),
+		"The submitted tree changes 302 source paths, over the 256-source-path read bound");
 });
 
 test("the GitHub App port refuses by name and never waits on a call it cannot make", async () => {

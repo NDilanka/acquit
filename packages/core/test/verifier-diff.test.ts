@@ -125,3 +125,22 @@ test("a protected edit and a late source edit past 256 changed paths are still s
 		]);
 	} finally { fixture.remove(); }
 });
+
+test("a diff with more source paths than the screen reads is refused by name", () => {
+	const fixture = frozenRepository();
+	try {
+		const source = gitSource(fixture.repo);
+		const head = commitFrom(fixture, "source-padded", repo => {
+			mkdirSync(join(repo, "aaa"), { recursive: true });
+			for (let index = 0; index < 300; index++) {
+				writeFileSync(join(repo, "aaa", `pad-${String(index).padStart(3, "0")}.ts`), `export const pad${index} = ${index};\n`);
+			}
+			writeFileSync(join(repo, "zzz-evil.ts"), 'import { expect } from "vitest";\nexport const evil = 1;\n');
+		});
+		const diff = source.diff(fixture.frozen, head);
+		assert.equal(diff.changes.length, 301);
+		// The fixture reproduces the gap the refusal closes: the late source path's added lines are unread.
+		assert.equal(diff.changes.find(change => change.path === "zzz-evil.ts")?.addedText, "");
+		assert.deepEqual(screenDiff(diff, definitionOfDone), [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 301, limit: 256 }]);
+	} finally { fixture.remove(); }
+});

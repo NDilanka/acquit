@@ -63,10 +63,16 @@ test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejecti
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_GITLINK" }] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "DIFF_TOO_LARGE", paths: 5000, limit: 4096 }] })?.result, "REJECTED");
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "DIFF_TOO_LARGE", paths: 0, limit: 4096 }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }] })?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 0, limit: 256 }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302 }] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, at: "yesterday" }), null);
 	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, frozen: { expected: 48, passed: 49 } }), null);
 	assert.deepEqual(parseVerdict({ ...verifiedReport.verdict, pullRequest: 0 }), null);
 	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: rejected })?.ordinal, 1);
+	const overReadBound = { ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }] };
+	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, verdict: overReadBound }),
+		{ jobId: "job_ci_test", ordinal: 1, verdict: overReadBound });
 });
 
 test("the remote verifier posts the run and refuses a non-2xx answer", async () => {
