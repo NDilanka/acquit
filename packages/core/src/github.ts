@@ -455,7 +455,10 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		// A concurrent publish won the head: adopt the pull request it opened.
 		const again = await list();
 		if (again[0] !== undefined) return numberOf(again[0], "number");
-		throw new GitHubAppError("GITHUB_HTTP_ERROR", `POST pulls on ${request.repository} answered 422 with no pull request for ${head}.`, { status: 422 });
+		// Nothing adopted the head, so GitHub's own text is the only account of the refusal. A live
+		// PUBLISH_FAILED has to carry it: the status alone names no fixable cause.
+		throw new GitHubAppError("GITHUB_HTTP_ERROR",
+			`POST pulls on ${request.repository} answered 422${said(created.body) ? `: ${said(created.body)}` : ""} with no pull request for ${head}.`, { status: 422 });
 	};
 
 	const findOrPostCheckRun = async (repository: string, commit: CommitSha, name: string, token: string, jobId: JobId): Promise<string | null> => {
