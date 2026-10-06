@@ -4,6 +4,7 @@ import { closeSync, openSync } from "node:fs";
 import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
+import { helperEnvironment, powershellExecutables, windowsExecutable } from "./executables.ts";
 
 export type ErrorCode = "UNKNOWN_COMMAND" | "UNKNOWN_FLAG" | "INVALID_ARGUMENT" | "MISSING_ARGUMENT"
 	| "PORT_IN_USE" | "START_TIMEOUT" | "STOP_TIMEOUT" | "APP_NOT_RUNNING" | "UNKNOWN_TEST_USER"
@@ -63,7 +64,7 @@ export async function ownedProcess(pid: number, nonce: string | null, socketPath
 		// an unverified Unix reply as kill authority.
 		if (process.platform !== "win32") return false;
 		const helper = fileURLToPath(new URL("./ownership-peer.ps1", import.meta.url));
-		const result = await captured("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", helper, "-Nonce", nonce], process.cwd(), process.env, 10_000);
+		const result = await powershell(["-File", helper, "-Nonce", nonce], process.cwd(), 10_000);
 		const [peer, answer] = result.stdout.trim().split(" ").map(Number);
 		return result.code === 0 && peer === pid && answer === pid && alive(pid);
 	} catch { return false; }
@@ -114,6 +115,15 @@ export async function captured(executable: string, args: string[], cwd: string, 
 		child.once("exit", code => { finish(); resolve({ code: code ?? 1, stdout: Buffer.concat(chunks).toString("utf8") }); });
 	});
 }
+export async function powershell(args: string[], cwd: string, timeout = 30_000): Promise<{ code: number; stdout: string }> {
+	for (const executable of powershellExecutables()) {
+		try {
+			const result = await captured(executable, ["-NoProfile", "-NonInteractive", ...args], cwd, helperEnvironment(), timeout);
+			if (result.code === 0) return result;
+		} catch {}
+	}
+	throw new CliError("PROCESS_FAILED", "No PowerShell helper completed successfully.", "Install PowerShell 7 or enable Windows PowerShell. Ownership checks remain fail-closed.");
+}
 export async function discarded(executable: string, args: string[], cwd: string, env = process.env, timeout = 60_000, input?: string): Promise<number> {
 	// Credential output is never retained, even if this CLI dies.
 	return new Promise((resolve, reject) => {
@@ -134,7 +144,7 @@ export async function killTree(pid: number): Promise<void> {
 	if (!alive(pid)) return;
 	if (pid === process.pid) throw new CliError("INVALID_STATE", "The ownership file refers to this CLI process.", "Inspect data/ctl/run.json and remove the invalid record.");
 	if (process.platform === "win32") {
-		const result = await captured("taskkill", ["/pid", String(pid), "/t", "/f"], process.cwd());
+		const result = await captured(windowsExecutable("taskkill.exe"), ["/pid", String(pid), "/t", "/f"], process.cwd(), helperEnvironment());
 		if (result.code !== 0 && alive(pid)) throw new CliError("PROCESS_FAILED", `Could not stop owned PID ${pid}.`, `Run taskkill /pid ${pid} /t /f, then npm run -s ctl -- stop.`);
 	} else if (process.platform === "linux") {
 		// detached() passes detached:true, which makes the child a session and

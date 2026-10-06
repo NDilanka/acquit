@@ -6,7 +6,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
-import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
+import { captured as captureCommand, discarded, portOpen, powershell } from "../../../../packages/ctl/src/process.ts";
+import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
 import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -71,7 +72,7 @@ async function browser(...args) {
 	const command = args[0] === "wait" && !args.includes("--timeout") ? ["wait", "--timeout", "20000", ...args.slice(1)] : args;
 	let reply;
 	try {
-		reply = await captured("agent-browser", [
+		reply = await captured(browserExecutable(), [
 			"--config", join(evidence, "browser.json"), "--namespace", browserSession,
 			"--session", browserSession, "--json", ...command,
 		], browserEnv);
@@ -116,7 +117,7 @@ async function approve() {
 		if (process.platform === "win32") {
 			// Discover custom dashboard ports without emitting command lines/env.
 			const script = '$ids=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -like "agent-browser*" -and $_.CommandLine -match "dashboard" } | ForEach-Object ProcessId); $ports=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in $ids } | ForEach-Object LocalPort); ConvertTo-Json -Compress -InputObject $ports';
-			const result = await captureCommand("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], root, browserEnv, 30_000);
+			const result = await powershell(["-Command", script], root);
 			assert.equal(result.code, 0, "Could not verify dashboard absence; approval refused.");
 			ports.push(...JSON.parse(result.stdout));
 		} else if (process.env.AGENT_BROWSER_DASHBOARD_PORT === undefined) {
@@ -150,7 +151,7 @@ async function approve() {
 		if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
 		const command = credentialFill(selector, process.env[key]);
 		// Do not use browser(): its action journal must never receive credential input.
-		const code = await discarded("agent-browser", ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
+		const code = await discarded(browserExecutable(), ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
 			"--session", browserSession, "--json", ...command.args], root, browserEnv, 90_000, command.input);
 		// Withhold batch diagnostics, including echoed command input on failure.
 		assert.equal(code, 0, "Credential field could not be filled. No diagnostics saved.");

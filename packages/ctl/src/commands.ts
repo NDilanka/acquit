@@ -6,6 +6,7 @@ import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
+import { browserExecutable } from "./executables.ts";
 
 const urls = (api: number, web: number) => ({ api: `http://localhost:${api}`, web: `http://localhost:${web}` });
 async function devPost(ctx: Context, path: string, body: unknown): Promise<Result> {
@@ -205,7 +206,7 @@ export async function screenshot(parsed: Parsed, ctx: Context): Promise<Result> 
 		await atomicJson(browserConfig, { headed: false });
 		const browser = async (args: string[]) => {
 			let result;
-			try { result = await captured("agent-browser", ["--config", browserConfig, "--namespace", ctx.browserSession, "--session", ctx.browserSession, "--json", ...args], ctx.root, env); }
+			try { result = await captured(browserExecutable(), ["--config", browserConfig, "--namespace", ctx.browserSession, "--session", ctx.browserSession, "--json", ...args], ctx.root, env); }
 			catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new CliError("AGENT_BROWSER_MISSING", "agent-browser was not found on PATH.", "Install or update Factory Droid, then ensure agent-browser --help works in this shell.");
 				throw error;

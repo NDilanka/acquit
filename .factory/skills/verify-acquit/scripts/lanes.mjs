@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captured, sleep } from "../../../../packages/ctl/src/process.ts";
 import { atomicJson, context, laneSlot, locked } from "../../../../packages/ctl/src/state.ts";
+import { browserExecutable, helperEnvironment, windowsExecutable } from "../../../../packages/ctl/src/executables.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const managerDir = resolve(root, "data/ctl/lanes");
@@ -40,7 +41,7 @@ function browserEnvironment(n) {
 }
 async function browser(n, ...args) {
 	const session = laneSlot(n).browserSession;
-	const result = await captured("agent-browser", ["--config", resolve(managerDir, `browser-${n}.json`), "--namespace", session, "--session", session, "--json", ...args],
+	const result = await captured(browserExecutable(), ["--config", resolve(managerDir, `browser-${n}.json`), "--namespace", session, "--session", session, "--json", ...args],
 		root, browserEnvironment(n), 90_000);
 	assert.equal(result.code, 0, "The isolated headless browser failed.");
 	const reply = JSON.parse(result.stdout);
@@ -50,7 +51,7 @@ async function browser(n, ...args) {
 function processMemory(roots) {
 	if (process.platform === "win32") {
 		const script = `$rows=Get-CimInstance Win32_Process; $ids=[Collections.Generic.HashSet[int]]::new(); @(${roots.join(",")}) | ForEach-Object { [void]$ids.Add($_) }; do { $added=$false; foreach($r in $rows) { if($ids.Contains([int]$r.ParentProcessId) -and $ids.Add([int]$r.ProcessId)) { $added=$true } } } while($added); $bytes=0; foreach($id in $ids) { $p=Get-Process -Id $id -ErrorAction SilentlyContinue; if($p) { $bytes += $p.WorkingSet64 } }; $bytes`;
-		return Number(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 20_000 }).trim());
+		return Number(execFileSync(windowsExecutable("powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: helperEnvironment(), encoding: "utf8", windowsHide: true, timeout: 20_000 }).trim());
 	}
 	const rows = execFileSync("ps", ["-e", "-o", "pid=,ppid=,rss="], { encoding: "utf8" }).trim().split("\n").map(line => line.trim().split(/\s+/).map(Number));
 	const ids = new Set(roots);
