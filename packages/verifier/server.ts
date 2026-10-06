@@ -29,24 +29,32 @@ export function createProductionService(): { readonly service: VerifierService; 
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };
 }
 
-async function main(): Promise<void> {
-	const { service, port, subject } = createProductionService();
-	const missing = missingGitHubNames(githubAppEnv());
-	const server = createServer((request, response) => {
-		void route(request, response).catch(() => {
+/** The HTTP shell every lane runs: Node's request in, the service's Response out. */
+export function createHttpShell(service: VerifierService, port: number): (request: IncomingMessage, response: ServerResponse) => void {
+	return (request, response) => {
+		void (async () => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+			const body = Buffer.concat(chunks);
+			// A GET or HEAD carries no body, and Request refuses one.
+			const answer = await service.handle(new Request(`http://127.0.0.1:${port}${request.url ?? "/"}`, { method: request.method,
+				headers: Object.fromEntries(Object.entries(request.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+				...(body.length === 0 ? {} : { body }) }));
+			response.writeHead(answer.status, Object.fromEntries(answer.headers));
+			response.end(await answer.text());
+		})().catch(error => {
+			// The message names the fault; it never carries a request body or a secret.
+			console.error(`Verifier request failed: ${error instanceof Error ? error.message : String(error)}`);
 			if (!response.headersSent) response.writeHead(500, { "content-type": "application/json" });
 			response.end(JSON.stringify({ error: "INTERNAL_ERROR" }));
 		});
-	});
-	async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
-		const chunks: Buffer[] = [];
-		for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
-		const answer = await service.handle(new Request(`http://127.0.0.1:${port}${request.url ?? "/"}`, { method: request.method,
-			headers: Object.fromEntries(Object.entries(request.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-			body: Buffer.concat(chunks) }));
-		response.writeHead(answer.status, Object.fromEntries(answer.headers));
-		response.end(await answer.text());
-	}
+	};
+}
+
+async function main(): Promise<void> {
+	const { service, port, subject } = createProductionService();
+	const missing = missingGitHubNames(githubAppEnv());
+	const server = createServer(createHttpShell(service, port));
 	let stopping = false;
 	async function stop(): Promise<void> {
 		if (stopping) return;

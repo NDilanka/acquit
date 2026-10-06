@@ -27,6 +27,7 @@ import type { DefinitionOfDone, VerifierRunId, VerifierRunRequest } from "../src
 import { createVerifierService } from "../../verifier/service.ts";
 import type { VerifierService, VerifierServiceDeps } from "../../verifier/service.ts";
 import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
+import { createHttpShell } from "../../verifier/server.ts";
 import { dockerReachable, dockerSubject, subjectFor } from "../../verifier/subject.ts";
 import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER, runSignature } from "../../verifier/signing.ts";
 import { renderSubmission } from "../../acquit-cli/src/submit.ts";
@@ -204,6 +205,30 @@ test("the service judges a clean commit and posts a callback the real API applie
 		await shell.close();
 		await wired.close();
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
+test("the lane's HTTP shell answers a GET probe, a run lookup, and a refusal", async () => {
+	// The shell is the entrypoint a lane runs, so a GET must not be built with an empty body:
+	// Request refuses one, and the probe a lane gates readiness on would answer 500 forever.
+	const service = serviceFor({ callbackUrl: "http://127.0.0.1:1/callback", source: async () => { throw new Error("unused"); } });
+	const server = createServer(createHttpShell(service, 0));
+	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
+	const port = (server.address() as AddressInfo).port;
+	try {
+		const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+		assert.equal(health.status, 200);
+		assert.deepEqual(await health.json(), { ok: true, queued: 0, running: 0, runs: 0, phase: "READY" });
+		const missing = await fetch(`http://127.0.0.1:${port}/runs/run_absent`);
+		assert.equal(missing.status, 404);
+		assert.deepEqual(await missing.json(), { error: "RUN_NOT_FOUND" });
+		// An unsigned POST is refused by the boundary, not by the shell.
+		const refused = await fetch(`http://127.0.0.1:${port}/runs`, { method: "POST", body: "{}" });
+		assert.equal(refused.status, 401);
+		assert.deepEqual(await refused.json(), { error: "RUN_SIGNATURE_MISSING" });
+	} finally {
+		await new Promise<void>(resolve => server.close(() => resolve()));
+		await service.close();
 	}
 });
 
