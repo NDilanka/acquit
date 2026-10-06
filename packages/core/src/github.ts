@@ -3,6 +3,7 @@
 // App client once the operator provisions it. Nothing here ever waits on a network call it cannot make.
 
 import { createPrivateKey, createSign } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { CommitSha, JobId } from "./ids.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import { boundedDetail } from "./verifier.ts";
@@ -18,6 +19,14 @@ export type GitHubAppConfig = {
 	readonly apiBase: string;
 	/** Every request is bounded by this. A call that cannot answer in time refuses by name. */
 	readonly timeoutMs: number;
+	/**
+	 * How long a publish waits for the client repository to take a commit pushed to the job's fork.
+	 * GitHub exposes a fresh fork commit to the rest of the fork network only after a delay (live:
+	 * up to ~30 s), and until then the ref write answers "Object does not exist".
+	 */
+	readonly convergenceMs: number;
+	/** The gap between those attempts. */
+	readonly convergenceStepMs: number;
 };
 
 export type GitHubAppConfigInput = Partial<Omit<GitHubAppConfig, "apiBase">> & { readonly apiBase?: string };
@@ -108,8 +117,12 @@ export function parseGitHubAppConfig(input: GitHubAppConfigInput | undefined): G
 	const organization = input?.organization?.trim() ?? "";
 	if (!appId || !privateKey || !organization) return null;
 	const timeout = Number(input?.timeoutMs);
+	const convergence = Number(input?.convergenceMs);
+	const step = Number(input?.convergenceStepMs);
 	return { appId, privateKey, organization, apiBase: input?.apiBase?.trim() || "https://api.github.com",
-		timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000 };
+		timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000,
+		convergenceMs: Number.isFinite(convergence) && convergence >= 0 ? convergence : DEFAULT_CONVERGENCE_MS,
+		convergenceStepMs: Number.isFinite(step) && step > 0 ? step : DEFAULT_CONVERGENCE_STEP_MS };
 }
 
 export function missingGitHubNames(input: GitHubAppConfigInput | undefined): readonly string[] {
@@ -127,6 +140,10 @@ const base64url = (text: string): string => Buffer.from(text, "utf8").toString("
 
 /** A response body larger than this is refused instead of buffered. */
 const MAX_BODY_BYTES = 1_048_576;
+
+/** The live lag between a push to a fork and the fork network exposing the commit. */
+const DEFAULT_CONVERGENCE_MS = 45_000;
+const DEFAULT_CONVERGENCE_STEP_MS = 5_000;
 
 /** Strict shapes for every caller-supplied name before it enters a URL. */
 const OWNER_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
@@ -479,6 +496,31 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		return textOf(created.body, "html_url");
 	};
 
+	/**
+	 * Points the client repository's verified branch at the judged commit, waiting out GitHub's own
+	 * propagation. A commit the submitter pushed to the job's fork reaches the fork network's other
+	 * repositories only after the daemon has indexed the push; until then every ref write naming it
+	 * answers "Object does not exist". The client installation cannot create a cross-repository pull
+	 * request in that window either, because it cannot reach the fork (the live API answered 422
+	 * "Validation Failed: head invalid" for a minute, and the fork owner's installation 403 from the
+	 * base repository), so waiting is what converges. Bounded: a commit that never arrives answers
+	 * false and the caller falls back to the fork.
+	 */
+	const branchClientRepository = async (repository: string, branch: string, commit: CommitSha, token: string): Promise<boolean> => {
+		const deadline = Date.now() + parsed.convergenceMs;
+		for (;;) {
+			try {
+				await ensureBranch(repository, branch, commit, token);
+				return true;
+			} catch (error) {
+				if (!(error instanceof GitHubAppError) || error.code !== "GITHUB_COMMIT_ABSENT") throw error;
+				const remaining = deadline - Date.now();
+				if (remaining <= 0) return false;
+				await sleep(Math.min(parsed.convergenceStepMs, remaining));
+			}
+		}
+	};
+
 	const publishVerified = async (request: PublishRequest): Promise<PublishedPullRequest> => {
 		const organization = checkedOwner(parsed.organization);
 		const client = splitRepository(request.repository);
@@ -488,11 +530,9 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const clientToken = await tokenFor(client.owner);
 		let headOwner = client.owner;
 		let headRepository = request.repository;
-		try {
-			await ensureBranch(request.repository, branch, commit, clientToken);
-		} catch (error) {
-			if (!(error instanceof GitHubAppError) || error.code !== "GITHUB_COMMIT_ABSENT") throw error;
-			// The commit was pushed to the job's work fork: branch it there and open the pull request from the fork.
+		if (!await branchClientRepository(request.repository, branch, commit, clientToken)) {
+			// The commit is on the job's work fork and the client repository never took it: branch the
+			// fork and ask for the pull request from there. GitHub's refusal names the rule it applies.
 			headOwner = organization;
 			headRepository = `${organization}/${workRepoName(request.repository, request.jobId)}`;
 			await ensureBranch(headRepository, branch, commit, await tokenFor(headOwner));
