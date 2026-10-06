@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { verifiedBranch } from "../../core/src/github.ts";
-import { describeRunFailure } from "../../core/src/verifier.ts";
+import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient } from "./client.ts";
 
@@ -83,18 +83,25 @@ export function pushHead(dir: string, remote: string, jobId: string): void {
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 
-/** The refusal a failed push produces: GitHub's 404 names the work repo funding has not created yet. */
+/** The refusal a failed push produces. GitHub's 404 names both causes: no work repo yet, or a credential that cannot see it. */
 export function pushError(remote: string, stderr: string | null): CliError {
 	const detail = tail(stderr);
 	if (/Repository not found/i.test(detail)) {
-		return new CliError("WORK_REPO_NOT_READY", `The work repository ${remote} does not exist yet. `
-			+ "It is created shortly after funding; rerun this command in about 30 seconds.");
+		return new CliError("WORK_REPO_NOT_READY", `The work repository ${safeEcho(remote)} is not visible. `
+			+ "GitHub answers \"Repository not found\" both when funding has not created it yet (it is created shortly after funding, "
+			+ "so rerun this command in about 30 seconds) and when the credential cannot see the private repo (check the App installation on the org).");
 	}
-	return new CliError("PUSH_REFUSED", `git push to ${remote} failed. ${detail}`.trim());
+	return new CliError("PUSH_REFUSED", `git push to ${safeEcho(remote)} failed. ${detail}`.trim());
 }
 
+/** The last lines of a command's stderr, with any credential stripped and control characters gone. */
 function tail(text: string | null): string {
-	return (text ?? "").trim().split("\n").slice(-3).join(" ").slice(0, 400);
+	return safeEcho((text ?? "").trim().split("\n").slice(-3).join(" "));
+}
+
+/** Text safe to print: any URL loses its userinfo, and the core display boundary redacts and bounds the rest. */
+function safeEcho(text: string): string {
+	return boundedDetail(text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s]*@/g, "$1"));
 }
 
 /** The block docs/tutorial.md prints. Every value comes from the projection, never from this process. */
