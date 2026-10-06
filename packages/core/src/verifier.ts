@@ -55,7 +55,9 @@ export type RejectReason =
 	| { readonly kind: "TESTS_FAILED"; readonly suite: "frozen" | "hidden"; readonly failed: readonly TestId[] }
 	| { readonly kind: "TESTS_MISSING"; readonly suite: "frozen" | "hidden"; readonly missing: readonly TestId[] }
 	| { readonly kind: "SUBJECT_FAULT"; readonly detail: string }
-	| { readonly kind: "SUBJECT_REPLY_MALFORMED" };
+	| { readonly kind: "SUBJECT_REPLY_MALFORMED" }
+	/** The submitted tree points outside itself. Nothing starts: a link is not a source file. */
+	| { readonly kind: "TREE_SYMLINK"; readonly path: string };
 
 /** The only verifier type job.ts sees. */
 export type Verdict =
@@ -356,6 +358,8 @@ export function describeRejectReason(reason: RejectReason): string {
 			return `Subject run fault: ${reason.detail}`;
 		case "SUBJECT_REPLY_MALFORMED":
 			return "The subject reply was malformed";
+		case "TREE_SYMLINK":
+			return `PR makes ${reason.path} a symlink, which points outside the submitted tree`;
 	}
 }
 

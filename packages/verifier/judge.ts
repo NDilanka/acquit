@@ -3,9 +3,9 @@
 // { id, target, args } in and { id, ok, value } out. Comparison happens here, in the judge's runtime.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
@@ -162,6 +162,13 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	let subjectRun: SubjectRun;
 	try {
 		tree = deps.source.materialize(request.sourceCommit);
+		// A link is the one entry whose real path is not the tree's own path. Nothing starts for it.
+		const link = firstSymlink(tree.path);
+		if (link !== null) {
+			tree.remove();
+			return { kind: "VERDICT", verdict: decideVerdict(request, [{ kind: "TREE_SYMLINK", path: link }], { results: new Map() },
+				judgeHidden(manifest.cases, new Map()), null, clock.now()), subject: null, timings: timingsOf(started, { screenMs }) };
+		}
 		subjectRun = await deps.subject.run(tree.path, calls, deps.deadlineMs);
 	} catch (error) {
 		return { kind: "RUN_FAILED", reason: `SUBJECT_UNSTARTABLE: ${message(error)}`, timings: timingsOf(started, { screenMs }) };
@@ -213,6 +220,18 @@ function message(error: unknown): string {
 /** A contract names the same ids in the same order as the judge's own declaration. */
 function sameIds(left: readonly TestId[], right: readonly TestId[]): boolean {
 	return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+/**
+ * The first symlink in a materialized tree, in walk order, or null. Git materializes a link as a
+ * link, so this is the submission's own entry, and a directory link is caught by the same check.
+ * The bootstrap repeats the check per import; this one refuses the run before the subject starts.
+ */
+function firstSymlink(root: string): string | null {
+	for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
+		if (entry.isSymbolicLink()) return relative(root, join(entry.parentPath ?? root, entry.name));
+	}
+	return null;
 }
 
 function timingsOf(started: number, parts: Partial<JudgeTimings>): JudgeTimings {
