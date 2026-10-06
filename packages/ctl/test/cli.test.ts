@@ -341,6 +341,21 @@ test("a lane starts the verifier beside the app, records it, and stop releases a
 		assert.equal(existsSync(resolve(root, "data/ctl/run.json")), false);
 	});
 });
+test("a lane test that fails before stop still releases its services", async () => {
+	let pids: Record<string, number> = {};
+	await assert.rejects(fixture(async (cli, root) => {
+		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
+		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		await plantVerifier(root);
+		const marker = `import { createServer } from "node:http"; const port = Number(process.env.WEB_PORT && process.argv.some(arg => arg === "--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
+		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
+		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
+		const started = JSON.parse(cli(["start", "--timeout", "20"]).stdout);
+		pids = started.data.pids;
+		assert.fail("a lane test fails after start, before its stop");
+	}), /a lane test fails after start, before its stop/);
+	for (const [role, pid] of Object.entries(pids)) assert.equal(alive(pid), false, `the ${role} service must not outlive the fixture that started it`);
+});
 test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
 		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
