@@ -11,6 +11,7 @@ import type { CommitSha, JobId, TestId } from "../src/ids.ts";
 import { unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
 import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict } from "../../verifier/ci.ts";
+import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "../../verifier/signing.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
 
@@ -32,12 +33,14 @@ test("the unconfigured verifier refuses a start by name and never accepts a call
 	const port = unconfiguredVerifier();
 	await assert.rejects(() => port.start({} as VerifierRunRequest), (error: VerifierCiNotConfigured) => error.code === "VERIFIER_CI_NOT_CONFIGURED");
 	assert.equal(await port.parseCallback(new Request("https://ci.test/callback", { method: "POST", body: "{}" })), null);
-	const empty = createRemoteVerifier({ ciUrl: "  ", callbackSecret: "s3cret" });
+	const empty = createRemoteVerifier({ ciUrl: "  ", runSecret: "s3cret", callbackSecret: "s3cret" });
 	await assert.rejects(() => empty.start({} as VerifierRunRequest), (error: VerifierCiNotConfigured) => error.code === "VERIFIER_CI_NOT_CONFIGURED");
+	const unsigned = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "", callbackSecret: "s3cret" });
+	await assert.rejects(() => unsigned.start({} as VerifierRunRequest), (error: VerifierCiNotConfigured) => error.code === "VERIFIER_CI_NOT_CONFIGURED");
 });
 
 test("the callback boundary accepts only a signed report and drops every unsigned or malformed body", async () => {
-	const port = createRemoteVerifier({ ciUrl: "https://ci.test", callbackSecret: "s3cret" });
+	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "s3cret", callbackSecret: "s3cret" });
 	const signed = (body: string, secret = "s3cret") => new Request("https://ci.test/callback", { method: "POST",
 		headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body });
 	const raw = JSON.stringify(verifiedReport);
@@ -76,14 +79,23 @@ test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejecti
 		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }]);
 });
 
-test("the remote verifier posts the run and refuses a non-2xx answer", async () => {
-	const calls: string[] = [];
-	const port = createRemoteVerifier({ ciUrl: "https://ci.test", callbackSecret: "s3cret",
-		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => { calls.push(`${String(input)} ${String(init?.method)}`);
-			return new Response("", { status: 202 }); }) as typeof fetch });
+test("the remote verifier signs the run body with a timestamp and refuses a non-2xx answer", async () => {
+	const calls: { url: string; method: string; timestamp: string; nonce: string; signature: string; body: string }[] = [];
+	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "run-secret", callbackSecret: "s3cret", now: () => 1_760_000_000_000,
+		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const headers = new Headers(init?.headers);
+			calls.push({ url: String(input), method: String(init?.method), timestamp: headers.get(RUN_TIMESTAMP_HEADER) ?? "",
+				nonce: headers.get(RUN_NONCE_HEADER) ?? "", signature: headers.get(RUN_SIGNATURE_HEADER) ?? "", body: String(init?.body) });
+			return new Response("", { status: 202 });
+		}) as typeof fetch });
 	await port.start({ runId: "run_ci_3" } as VerifierRunRequest);
-	assert.deepEqual(calls, ["https://ci.test/runs POST"]);
-	const refusing = createRemoteVerifier({ ciUrl: "https://ci.test", callbackSecret: "s3cret",
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, "https://ci.test/runs");
+	assert.equal(calls[0].method, "POST");
+	assert.equal(calls[0].timestamp, "1760000000");
+	assert.match(calls[0].nonce, /^[0-9a-f]{32}$/);
+	assert.equal(calls[0].signature, `sha256=${createHmac("sha256", "run-secret").update(`1760000000.${calls[0].nonce}.${calls[0].body}`).digest("hex")}`);
+	const refusing = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "s3cret", callbackSecret: "s3cret",
 		fetch: (async () => new Response("nope", { status: 503 })) as typeof fetch });
 	await assert.rejects(() => refusing.start({ runId: "run_ci_4" } as VerifierRunRequest), /HTTP 503/);
 });

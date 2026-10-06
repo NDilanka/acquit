@@ -6,6 +6,7 @@ import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
+import { apiVerifierEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
@@ -18,16 +19,17 @@ export function required(name: string): string {
 	if (!value) throw new Error(`Missing configuration: ${name}`);
 	return value;
 }
-/** Empty names stay empty: a port that is not configured must fail fast by name, never wait. */
-const optional = (name: string): string => process.env[name]?.trim() ?? "";
-export const verifierEnv = { ciUrl: optional("ACQUIT_VERIFIER_CI_URL"), callbackSecret: optional("ACQUIT_VERIFIER_CALLBACK_SECRET") };
+/**
+ * The verifier names are read at the verifier package's one boundary. A configured CI URL without its
+ * secrets refuses at startup by name, before the API listens, instead of on the first submission.
+ */
+export const verifierEnv = apiVerifierEnv();
 /**
  * The product boundary: the API runs the Docker subject. Asking for the child-process subject without
  * ACQUIT_DEV=1 refuses at startup with SUBJECT_CHILD_REFUSED, before any request is served.
  */
 assertSubjectAllowed(verifierSubjectEnv(process.env));
-export const githubEnv = { appId: optional("ACQUIT_GITHUB_APP_ID"), privateKey: optional("ACQUIT_GITHUB_APP_PRIVATE_KEY"),
-	organization: optional("ACQUIT_GITHUB_APP_ORG"), apiBase: optional("ACQUIT_GITHUB_API_BASE") };
+export const githubEnv = githubAppEnv();
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
@@ -36,6 +38,5 @@ export function config(): AcquitConfig {
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,
 		feeModel: { version: "sandbox-349bps-plus-49-v1", rateBps: 349 as Bps, fixed: usd("0.49") },
-	}, verifier: verifierEnv, github: { appId: githubEnv.appId, privateKey: githubEnv.privateKey, organization: githubEnv.organization,
-		apiBase: githubEnv.apiBase } };
+	}, verifier: verifierEnv, github: githubEnv };
 }

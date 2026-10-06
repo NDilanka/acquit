@@ -162,7 +162,7 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 
 test("createAcquit routes a signed callback through its injected port and accepts none without one", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-wire-test-"));
-	const verifier = { ciUrl: "https://ci.test", callbackSecret: secret };
+	const verifier = { ciUrl: "https://ci.test", runSecret: secret, callbackSecret: secret };
 	const paypal = { apiBase: "https://api-m.sandbox.paypal.com" as const, webOrigin: "http://localhost:5243",
 		clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model };
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(parseJobId("job_7Q2K"), 1), sourceCommit: tamperCommit,

@@ -7,6 +7,9 @@ import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import { unconfiguredVerifier } from "../core/src/verifier.ts";
 import type { RejectReason, TestTally, Verdict, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
+import { randomBytes } from "node:crypto";
+import { runSignature, RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "./signing.ts";
+import { VERIFIER_NAMES } from "./config.ts";
 import { runJudge } from "./judge.ts";
 import type { JudgeDeps, JudgeOutcome } from "./judge.ts";
 
@@ -46,18 +49,32 @@ export function createLocalVerifier(options: JudgeDeps & {
 
 export type RemoteVerifierConfig = {
 	readonly ciUrl: string;
+	/**
+	 * Signs the run request over the raw body and a timestamp. Separate from the callback secret by
+	 * design: each direction then rotates alone, and a leaked callback secret cannot start a run.
+	 */
+	readonly runSecret: string;
 	readonly callbackSecret: string;
 	readonly fetch?: typeof globalThis.fetch;
+	/** Wall clock in milliseconds, injectable so a test can pin the signed timestamp. */
+	readonly now?: () => number;
 };
 
 export function createRemoteVerifier(config: RemoteVerifierConfig): VerifierPort {
 	const url = config.ciUrl.trim();
 	if (!url) return unconfiguredVerifier();
+	const runSecret = config.runSecret.trim();
+	if (!runSecret) return unconfiguredVerifier(`Set ${VERIFIER_NAMES.runSecret} to sign a run request.`);
 	const call = config.fetch ?? globalThis.fetch;
+	const now = config.now ?? Date.now;
 	return {
 		async start(request) {
-			const response = await call(new URL("/runs", url), { method: "POST", headers: { "content-type": "application/json" },
-				body: JSON.stringify(request) });
+			const body = JSON.stringify(request);
+			const timestamp = String(Math.floor(now() / 1000));
+			const nonce = randomBytes(16).toString("hex");
+			const response = await call(new URL("/runs", url), { method: "POST", headers: { "content-type": "application/json",
+				[RUN_TIMESTAMP_HEADER]: timestamp, [RUN_NONCE_HEADER]: nonce,
+				[RUN_SIGNATURE_HEADER]: `sha256=${runSignature(runSecret, timestamp, nonce, body)}` }, body });
 			if (!response.ok) throw new Error(`Verifier CI refused the run with HTTP ${response.status}`);
 		},
 		async parseCallback(request) {
