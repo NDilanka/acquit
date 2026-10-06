@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Actor, JobView } from "./acquit.ts";
 import { reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
-import { addHours, hours, parseBidId, parseJobId } from "./ids.ts";
+import { addHours, hours, instant, parseBidId, parseJobId } from "./ids.ts";
 import type {
 	AgentId,
 	BidId,
@@ -26,6 +26,7 @@ import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryE
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal.ts";
+import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
 import type { DefinitionOfDone, TestTally, Verdict, VerifierRunId } from "./verifier.ts";
 
 // Worst-case timeline from capture is delivery 14d, review 72h, dispute 48h, so day 19.
@@ -162,7 +163,7 @@ export type PendingAttempt = {
 
 export type AttemptProgress =
 	| { readonly phase: "READY"; readonly history: History; readonly runsStarted: number }
-	| { readonly phase: "VERIFYING"; readonly history: History; readonly pending: PendingAttempt }
+	| { readonly phase: "VERIFYING"; readonly history: History; readonly runsStarted: number; readonly pending: PendingAttempt }
 	| { readonly phase: "REFUND_PENDING"; readonly history: History; readonly refund: RefundIntent };
 
 export type WorkState = {
@@ -504,8 +505,46 @@ function transitionTable(): {
 				bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "ACCEPTED" } : b.status === "PENDING" ? { ...b, status: "NOT_SELECTED" } : b),
 				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0 } } }, credits: [], effects: [] };
 		} },
-		Submit: { by: "OPERATOR", apply: unimplemented },
-		VerifierFinished: { by: "SYSTEM", apply: unimplemented },
+		Submit: { by: "OPERATOR", apply: (row, command, facts) => {
+			if (facts.actor.role !== "OPERATOR" || row.state.escrow.payee.operator !== facts.actor.operatorId) return "NOT_OWNER";
+			const attempts = row.state.attempts;
+			if (attempts.phase === "REFUND_PENDING") return "WRONG_STATE";
+			// The same commit while a run is pending returns the pending attempt instead of starting a second run.
+			if (attempts.phase === "VERIFYING") return attempts.pending.sourceCommit === command.sourceCommit ? unchanged(row) : "VERIFIER_PENDING";
+			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
+			if (attempts.history.length >= TERMS.maxAttempts) return "ATTEMPTS_EXHAUSTED";
+			const ordinal = (attempts.history.length + 1) as Ordinal;
+			const run = attempts.runsStarted + 1;
+			const pending: PendingAttempt = { ordinal, run, runId: verifierRunId(row.id, run), sourceCommit: command.sourceCommit,
+				submittedAt: facts.now, runEndsAt: instant(new Date(Date.parse(facts.now) + VERIFIER_RUN_MINUTES * 60_000).toISOString()) };
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { ...row.state, attempts: { phase: "VERIFYING", history: attempts.history, runsStarted: run, pending } } },
+				credits: [], effects: [{ kind: "START_VERIFIER", jobId: row.id, attempt: pending }] };
+		} },
+		VerifierFinished: { by: "SYSTEM", apply: (row, command, facts) => {
+			const attempts = row.state.attempts;
+			// An unmatched run is a no-op, so a redelivered callback cannot burn a second slot.
+			if (attempts.phase !== "VERIFYING" || attempts.pending.runId !== command.runId) return unchanged(row);
+			if (command.verdict.runId !== attempts.pending.runId || command.verdict.sourceCommit !== attempts.pending.sourceCommit) return unchanged(row);
+			const ordinal = attempts.pending.ordinal;
+			if (command.verdict.result === "VERIFIED") {
+				const passed: PassedAttempt = { ordinal, verdict: command.verdict };
+				const history = [...attempts.history, passed] as History;
+				return { next: { ...row, version: (row.version + 1) as Version,
+					state: { status: "VERIFIED", escrow: row.state.escrow, history, passed,
+						review: { phase: "AWAITING_CLIENT", endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
+						runsStarted: attempts.runsStarted } }, credits: [], effects: [] };
+			}
+			const rejected: RejectedAttempt = { ordinal, verdict: command.verdict };
+			const history = [...attempts.history, rejected] as History;
+			if (ordinal === TERMS.maxAttempts) {
+				return { next: { ...row, version: (row.version + 1) as Version,
+					state: { ...row.state, attempts: { phase: "REFUND_PENDING", history, refund: { reason: "ATTEMPTS_EXHAUSTED", selectedAt: facts.now } } } },
+					credits: [], effects: [refundIntent(row.id, row.state.escrow)] };
+			}
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { ...row.state, attempts: { phase: "READY", history, runsStarted: attempts.runsStarted } } }, credits: [], effects: [] };
+		} },
 		Approve: { by: "CLIENT", apply: unimplemented },
 		Dispute: { by: "CLIENT", apply: unimplemented },
 		ResolveDispute: { by: "ARBITER", apply: unimplemented },
@@ -513,9 +552,27 @@ function transitionTable(): {
 		RefundSettled: { by: "SYSTEM", apply: unimplemented },
 		MergeFinished: { by: "SYSTEM", apply: unimplemented },
 		TimerDue: { by: "SYSTEM", apply: (row, command, facts) => {
+			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
+			if (row.state.status === "IN_PROGRESS") {
+				const attempts = row.state.attempts;
+				if (attempts.phase === "VERIFYING" && facts.now >= attempts.pending.runEndsAt) {
+					// A run that never reported gives its slot back before the deadline, and the attempt count stays put.
+					const gave = { ...row.state.attempts, phase: "READY" as const, history: attempts.history, runsStarted: attempts.runsStarted };
+					if (facts.now < row.contract.deliveryEndsAt) return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, attempts: gave } }, credits: [], effects: [] };
+					return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, attempts: { phase: "REFUND_PENDING", history: attempts.history, refund: { reason: "DELIVERY_DEADLINE", selectedAt: facts.now } } } },
+						credits: [], effects: [refundIntent(row.id, row.state.escrow)] };
+				}
+				if (attempts.phase === "READY" && facts.now >= row.contract.deliveryEndsAt) {
+					return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, attempts: { phase: "REFUND_PENDING", history: attempts.history, refund: { reason: "DELIVERY_DEADLINE", selectedAt: facts.now } } } },
+						credits: [], effects: [refundIntent(row.id, row.state.escrow)] };
+				}
+				return unchanged(row);
+			}
 			// Only pre-capture timers belong to this skeleton.
 			if (row.state.status !== "OPEN") return unchanged(row);
-			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
 			const phase = row.state.phase;
 			if (phase.kind === "FUNDING") {
 				if (["CAPTURING", "REFUND_PENDING"].includes(phase.checkout.phase)) return unchanged(row);
@@ -549,6 +606,16 @@ function unchanged<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
 	return { next: row, credits: [], effects: [] };
 }
 
+/** Deterministic per job and run, so a retried start reuses one run identity instead of stacking runs. */
+export function verifierRunId(jobId: JobId, run: number): VerifierRunId {
+	return `${jobId.replace(/^job_/, "run_")}_${run}` as VerifierRunId;
+}
+
+/** The refund a failed attempt selects. F2 settles it; the intent is durable from the transition itself. */
+function refundIntent(jobId: JobId, escrow: HeldEscrow): JobEffect {
+	return { kind: "REFUND", jobId, captureId: escrow.capture.captureId, payee: escrow.payee.payee, amount: escrow.capture.gross };
+}
+
 type TransitionTable = ReturnType<typeof transitionTable>;
 type PayloadOf<K extends keyof TransitionTable> = Parameters<TransitionTable[K]["apply"]>[1];
 type RoleOf<K extends keyof TransitionTable> = TransitionTable[K]["by"];
@@ -570,6 +637,14 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	if (!row || row.id !== command.jobId) return "NOT_FOUND";
 	if (facts.actor.role === "CLIENT" && row.client !== facts.actor.clientId) return "NOT_OWNER";
 	if (command.type === "CaptureCompleted" && row.state.status !== "OPEN") return unchanged(row);
+	if (command.type === "TimerDue") return table.TimerDue.apply(row, command, facts);
+	if (row.state.status === "IN_PROGRESS") {
+		switch (command.type) {
+			case "Submit": return table.Submit.apply(row as Work, command, facts);
+			case "VerifierFinished": return table.VerifierFinished.apply(row as Work, command, facts);
+			default: return "WRONG_STATE";
+		}
+	}
 	if (row.state.status !== "OPEN") return "WRONG_STATE";
 	const open = row as Open;
 	switch (command.type) {
@@ -580,14 +655,18 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 		case "FundingFailed": return table.FundingFailed.apply(open, command, facts);
 		case "BuyerApproved": return table.BuyerApproved.apply(open, command, facts);
 		case "CaptureCompleted": return table.CaptureCompleted.apply(open, command, facts);
-		case "TimerDue": return table.TimerDue.apply(open, command, facts);
-		default: throw new Error("not implemented");
+		default: return "WRONG_STATE";
 	}
 }
 
 /** The earliest instant at which TimerDue would change this row. Stored by the commit for the timer index. */
 export function wakeAt(row: JobRow): Instant | null {
-	// TODO min over: PENDING respondBy, checkoutEndsAt, deliveryEndsAt, runEndsAt, review endsAt, resolveBy, cutoffAt.
+	if (row.state.status === "IN_PROGRESS") {
+		// A pending disposition is settled by its own effect, not by the timer scan. A pending run changes the row
+		// when it ends, so that is its wake time: the delivery deadline alone cannot touch a VERIFYING row.
+		if (row.state.attempts.phase === "REFUND_PENDING") return null;
+		return row.state.attempts.phase === "VERIFYING" ? row.state.attempts.pending.runEndsAt : row.contract.deliveryEndsAt;
+	}
 	if (row.state.status !== "OPEN") return null;
 	const candidates = [row.contract.deliveryEndsAt];
 	if (row.state.phase.kind === "FUNDING") {
@@ -645,8 +724,55 @@ export function storedBookRaw(row: JobRow): StoredBookRaw {
 	return { kind: "UNREADABLE", why: "state.status is not a job status" };
 }
 
+/** One judged attempt, as the API projection and the operator CLI read it. */
+export type AttemptView = {
+	readonly ordinal: Ordinal;
+	readonly result: "REJECTED" | "VERIFIED";
+	readonly reasons: readonly string[];
+	readonly sourceCommit: CommitSha;
+	readonly at: Instant;
+	readonly frozen: TestTally | null;
+	readonly hidden: TestTally | null;
+	readonly pullRequest: number | null;
+};
+
+export type PendingRunView = {
+	readonly ordinal: Ordinal;
+	readonly run: number;
+	readonly runId: VerifierRunId;
+	readonly sourceCommit: CommitSha;
+	readonly submittedAt: Instant;
+	readonly runEndsAt: Instant;
+};
+
+export type ContractProjection = {
+	readonly repository: string;
+	readonly frozenAt: CommitSha;
+	readonly frozenTests: number;
+	readonly hiddenTests: number;
+	readonly protectedPaths: readonly string[];
+};
+
+/** The projection core adds on top of JobView. The web page and the CLI read it through the API JSON. */
+export type JobProjection = JobView & {
+	readonly contract: ContractProjection;
+	readonly attempts: JobView["attempts"] & {
+		readonly history: readonly AttemptView[];
+		readonly pending: PendingRunView | null;
+	};
+};
+
+function attemptView(record: AttemptRecord): AttemptView {
+	const verdict = record.verdict;
+	return verdict.result === "VERIFIED"
+		? { ordinal: record.ordinal, result: "VERIFIED", reasons: [], sourceCommit: verdict.sourceCommit, at: verdict.at,
+			frozen: verdict.frozen, hidden: verdict.hidden, pullRequest: verdict.pullRequest }
+		: { ordinal: record.ordinal, result: "REJECTED", reasons: verdict.reasons.map(describeRejectReason),
+			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: null, hidden: null, pullRequest: null };
+}
+
 /** Bidding shows proof first. After accept, the ledger spine leads. */
-export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobView {
+export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobProjection {
 	const ranked = rankBids(row.bids, paidReceipts);
 	const viewBid = (bid: Bid) => ({ id: bid.id, operator: bid.operator, handle: bid.handle,
 		label: bid.kind, price: bid.price, eta: bid.eta, agent: String(bid.agent), runner: bid.runner,
@@ -658,15 +784,23 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const ledger = storedBook(row);
 	const history = state.status === "IN_PROGRESS" ? state.attempts.history
 		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
-	const used = history.length + (state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? 1 : 0);
+	const pending = state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? state.attempts.pending : null;
+	const used = history.length + (pending ? 1 : 0);
+	const judged = history.map(attemptView);
+	const done = row.contract.definitionOfDone;
 	return { id: row.id, title: row.title, status: state.status,
 		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
 		budget: row.contract.budget, deliveryEndsAt: row.contract.deliveryEndsAt,
+		contract: { repository: done.issue.repository, frozenAt: done.frozenAt, frozenTests: done.frozenTests.length,
+			hiddenTests: done.hiddenTests.length, protectedPaths: done.protectedPaths.map(String) },
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
 		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : held ? "HELD" : "NONE",
 		approveUrl: funding?.checkout.phase === "AWAITING_APPROVAL" && viewer.role === "CLIENT" && viewer.clientId === row.client ? funding.checkout.approveUrl : null,
-		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: history.at(-1)?.verdict.result ?? null, reasons: [] },
+		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: judged.at(-1)?.result ?? null,
+			reasons: judged.at(-1)?.reasons ?? [], history: judged,
+			pending: pending ? { ordinal: pending.ordinal, run: pending.run, runId: pending.runId, sourceCommit: pending.sourceCommit,
+				submittedAt: pending.submittedAt, runEndsAt: pending.runEndsAt } : null },
 		reviewEndsAt: state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT" ? state.review.endsAt : null,
 		pullRequest: state.status === "VERIFIED" ? state.passed.verdict.pullRequest : state.status === "PAID" ? state.receipt.pullRequest : null,
 		receipt: state.status === "PAID" ? state.receipt : null };

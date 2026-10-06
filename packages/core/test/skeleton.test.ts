@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { commercialSplit, formatUsd, usd } from "../src/ledger.ts";
+import { commercialSplit, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { Ports } from "../src/effects.ts";
-import { applyJobCommand, TERMS } from "../src/job.ts";
+import { applyJobCommand, projectJob, TERMS, wakeAt } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
+import type { Verdict, VerifierRunId } from "../src/verifier.ts";
 import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
 import type { Bps, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
@@ -430,4 +431,167 @@ test("outbox acknowledgements use the store's injected clock", async () => {
 		await store.commit({ job: null, operator: null, credits: [], outbox: [], acknowledge: key, request: null, delivery: null });
 		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox").get()!.state)), { kind: "CONFIRMED", at: now });
 	} finally { store.close(); }
+});
+
+// The verifier path. The frozen commit and the hidden manifest are the fixture's, so the ids are literal.
+
+const sourceCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+const later = instant("2026-10-06T12:30:00Z");
+const lockedPayee = { bidId: parseBidId("bid_submit"), operator: "devon-ops" as OperatorId, payee: merchant,
+	agent: "ts-bugfixer" as AgentId, price: usd("400.00"), eta: hours(48) };
+function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
+	const capture = { orderId: "TESTORDER" as OrderId, captureId: "TESTCAPTURE" as CaptureId, payee: merchant,
+		disbursement: "DELAYED" as const, gross: usd("420.00"), processorFee: usd("15.15"), platformFee: usd("44.85"),
+		sellerNet: usd("360.00"), capturedAt: now };
+	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
+	if ("kind" in book) throw new Error(book.law);
+	return { id: parseJobId("job_submit"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
+		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition(), terms: TERMS },
+		bids: [{ id: lockedPayee.bidId, operator: lockedPayee.operator, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
+			agent: lockedPayee.agent, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
+			respondBy: instant("2026-10-09T12:00:00Z"), status: "ACCEPTED" }],
+		state: { status: "IN_PROGRESS", escrow: { payee: lockedPayee, quote: quote(commercialSplit(usd("400.00")), model), capture, book,
+			cutoffAt: instant("2026-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0 } } };
+}
+const rejection = (runId: string, source = sourceCommit): Verdict => ({ result: "REJECTED", runId: runId as VerifierRunId,
+	sourceCommit: source, reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now });
+const acceptance = (runId: string): Verdict => ({ result: "VERIFIED", runId: runId as VerifierRunId, sourceCommit,
+	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha, pullRequest: 13,
+	frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now });
+const system = { actor: { role: "SYSTEM", source: "VERIFIER" } as const, now, loaded: { kind: "NONE" } as const };
+
+test("Submit reserves attempt 1 with a deterministic run and emits START_VERIFIER", () => {
+	const row = heldRow();
+	const plan = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	const attempts = (plan.next.state as Extract<typeof plan.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.equal(attempts.phase, "VERIFYING");
+	assert.deepEqual(attempts.phase === "VERIFYING" ? attempts.pending : null,
+		{ ordinal: 1, run: 1, runId: "run_submit_1", sourceCommit, submittedAt: now, runEndsAt: later });
+	assert.deepEqual(plan.effects, [{ kind: "START_VERIFIER", jobId: row.id, attempt: { ordinal: 1, run: 1, runId: "run_submit_1",
+		sourceCommit, submittedAt: now, runEndsAt: later } }]);
+	assert.equal(wakeAt(plan.next), later);
+});
+
+test("a second Submit of the same commit while VERIFYING is a no-op, and a different commit is refused", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const again = applyJobCommand(started.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof again === "string") throw new Error(again);
+	assert.equal(again.next.version, started.next.version);
+	assert.deepEqual(again.effects, []);
+	assert.equal(applyJobCommand(started.next, { type: "Submit", jobId: row.id, sourceCommit: "f".repeat(40) as CommitSha },
+		{ actor: devon, now, loaded: { kind: "NONE" } }), "VERIFIER_PENDING");
+	assert.equal(applyJobCommand(heldRow(), { type: "Submit", jobId: "job_submit" as JobId, sourceCommit },
+		{ actor: { role: "OPERATOR", operatorId: "other-ops" as OperatorId }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
+});
+
+test("a rejection returns the job to READY with one attempt used, and the third rejection selects the refund", () => {
+	let row = heldRow();
+	for (const ordinal of [1, 2] as const) {
+		const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+		if (typeof started === "string") throw new Error(started);
+		const runId = `run_submit_${ordinal}`;
+		const finished = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: runId as VerifierRunId, verdict: rejection(runId) }, system);
+		if (typeof finished === "string") throw new Error(finished);
+		row = finished.next;
+		const attempts = (row.state as Extract<typeof row.state, { status: "IN_PROGRESS" }>).attempts;
+		assert.equal(attempts.phase, "READY");
+		assert.deepEqual(attempts.history.map(record => record.ordinal), Array.from({ length: ordinal }, (_, index) => index + 1));
+		assert.deepEqual(attempts.history.at(-1)!.verdict, rejection(runId));
+	}
+	const third = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof third === "string") throw new Error(third);
+	const exhausted = applyJobCommand(third.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_3" as VerifierRunId, verdict: rejection("run_submit_3") }, system);
+	if (typeof exhausted === "string") throw new Error(exhausted);
+	const attempts = (exhausted.next.state as Extract<typeof exhausted.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.equal(attempts.phase, "REFUND_PENDING");
+	assert.deepEqual(attempts.phase === "REFUND_PENDING" ? attempts.refund : null, { reason: "ATTEMPTS_EXHAUSTED", selectedAt: now });
+	assert.deepEqual(exhausted.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
+	assert.equal(wakeAt(exhausted.next), null);
+});
+
+test("VerifierFinished ignores a run the job is not waiting for", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const stale = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_9" as VerifierRunId, verdict: rejection("run_submit_9") }, system);
+	if (typeof stale === "string") throw new Error(stale);
+	assert.equal(stale.next.version, started.next.version);
+	const replay = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId,
+		verdict: rejection("run_submit_1", "f".repeat(40) as CommitSha) }, system);
+	if (typeof replay === "string") throw new Error(replay);
+	assert.equal(replay.next.version, started.next.version);
+});
+
+test("a timed-out run gives its slot back without using an attempt, and the next run gets a fresh run id", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const timedOut = applyJobCommand(started.next, { type: "TimerDue", jobId: row.id, expectedWakeAt: later },
+		{ actor: { role: "SYSTEM", source: "TIMER" }, now: later, loaded: { kind: "NONE" } });
+	if (typeof timedOut === "string") throw new Error(timedOut);
+	const attempts = (timedOut.next.state as Extract<typeof timedOut.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.equal(attempts.phase, "READY");
+	assert.deepEqual(attempts.history, []);
+	assert.deepEqual(timedOut.effects, []);
+	const resubmitted = applyJobCommand(timedOut.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now: later, loaded: { kind: "NONE" } });
+	if (typeof resubmitted === "string") throw new Error(resubmitted);
+	const next = (resubmitted.next.state as Extract<typeof resubmitted.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.deepEqual(next.phase === "VERIFYING" ? next.pending : null,
+		{ ordinal: 1, run: 2, runId: "run_submit_2", sourceCommit, submittedAt: later, runEndsAt: instant("2026-10-06T13:00:00Z") });
+});
+
+test("a timed-out run past the delivery deadline refunds instead of returning the slot", () => {
+	const row = heldRow(instant("2026-10-06T12:20:00Z"));
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	// The run's own end is the wake time; the delivery deadline alone cannot change a VERIFYING row.
+	assert.equal(wakeAt(started.next), later);
+	const due = applyJobCommand(started.next, { type: "TimerDue", jobId: row.id, expectedWakeAt: later },
+		{ actor: { role: "SYSTEM", source: "TIMER" }, now: later, loaded: { kind: "NONE" } });
+	if (typeof due === "string") throw new Error(due);
+	const attempts = (due.next.state as Extract<typeof due.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.deepEqual(attempts.phase === "REFUND_PENDING" ? attempts.refund : null, { reason: "DELIVERY_DEADLINE", selectedAt: later });
+	assert.deepEqual(due.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
+});
+
+test("a verified run opens the client review window with the attempt history intact", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const verified = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId, verdict: acceptance("run_submit_1") }, system);
+	if (typeof verified === "string") throw new Error(verified);
+	assert.equal(verified.next.state.status, "VERIFIED");
+	const state = verified.next.state as Extract<typeof verified.next.state, { status: "VERIFIED" }>;
+	assert.deepEqual(state.review, { phase: "AWAITING_CLIENT", endsAt: instant("2026-10-09T12:00:00Z") });
+	assert.equal(state.passed.ordinal, 1);
+	const view = projectJob(verified.next, devon, new Map());
+	assert.equal(view.pullRequest, 13);
+	assert.equal(view.phase, "AWAITING_CLIENT");
+	assert.deepEqual(view.attempts.history, [{ ordinal: 1, result: "VERIFIED", reasons: [], sourceCommit, at: now,
+		frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, pullRequest: 13 }]);
+	assert.equal(view.attempts.last, "VERIFIED");
+	assert.equal(view.attempts.left, 2);
+});
+
+test("the projection carries the attempt history, the pending run, and the frozen contract", () => {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const pendingView = projectJob(started.next, devon, new Map());
+	assert.equal(pendingView.attempts.used, 1);
+	assert.deepEqual(pendingView.attempts.pending, { ordinal: 1, run: 1, runId: "run_submit_1", sourceCommit, submittedAt: now, runEndsAt: later });
+	assert.deepEqual(pendingView.contract, { repository: "maya-client/invoice-app", frozenAt: "a41c9e2", frozenTests: 48,
+		hiddenTests: 6, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] });
+	const rejected = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, runId: "run_submit_1" as VerifierRunId, verdict: rejection("run_submit_1") }, system);
+	if (typeof rejected === "string") throw new Error(rejected);
+	const judged = projectJob(rejected.next, devon, new Map());
+	assert.equal(judged.attempts.pending, null);
+	assert.equal(judged.attempts.used, 1);
+	assert.equal(judged.attempts.last, "REJECTED");
+	assert.deepEqual(judged.attempts.reasons, ["PR modifies frozen test file tests/totals.test.ts"]);
+	assert.deepEqual(judged.attempts.history, [{ ordinal: 1, result: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"],
+		sourceCommit, at: now, frozen: null, hidden: null, pullRequest: null }]);
 });
