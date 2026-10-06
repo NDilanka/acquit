@@ -110,8 +110,22 @@ function percentPieces(run) {
 	return pieces;
 }
 export function redactor(secrets = []) {
-	const patterns = [...new Set(secrets.filter(secret => typeof secret === "string" && secret))].map(secret =>
-		new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), /^[^@\s]+@[^@\s]+$/.test(secret) ? "gi" : "g"));
+	const unique = [...new Set(secrets.filter(secret => typeof secret === "string" && secret))];
+	const patternFor = (form, secret) =>
+		new RegExp(form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), /^[^@\s]+@[^@\s]+$/.test(secret) ? "gi" : "g");
+	const patterns = unique.map(secret => patternFor(secret, secret));
+	// Match complete encodings against ORIGINAL text as well. Decoding all
+	// families together can destroy a literal +, %hh or &entity; inside a
+	// secret just as a JSON escape becomes recognizable.
+	const encodedPatterns = unique.flatMap(secret => {
+		const json = JSON.stringify(secret).slice(1, -1);
+		return [...new Set([secret, json, JSON.stringify(json).slice(1, -1)].flatMap(form => {
+			const percent = encodeURIComponent(form);
+			const html = form.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+			return [form, percent, percent.replace(/%[0-9A-F]{2}/g, code => code.toLowerCase()),
+				new URLSearchParams({ value: form }).toString().slice(6), html];
+		}))].map(form => patternFor(form, secret));
+	});
 	const urls = [
 		new RegExp(String.raw`https?:\/\/${sandboxHost}[^?#\s"'<>]*([?#][^"'\s<>]*)`, "gi"),
 		new RegExp(String.raw`(?:^|[\s"'=])${sandboxHost}(?:\/[^?#\s"'<>]*)?([?#][^"'\s<>]*)`, "gi"),
@@ -123,6 +137,7 @@ export function redactor(secrets = []) {
 		let map = Array.from({ length: original.length }, (_, start) => ({ start, end: start + 1 }));
 		const hits = [];
 		const hit = (start, end, replacement) => hits.push({ start: map[start].start, end: map[end - 1].end, replacement });
+		for (const pattern of encodedPatterns) for (const match of original.matchAll(pattern)) hit(match.index, match.index + match[0].length, "[redacted]");
 		// Decode only scratch text. Every decoded code unit keeps the ORIGINAL
 		// byte-range provenance; output is always sliced from original evidence.
 		for (;;) {

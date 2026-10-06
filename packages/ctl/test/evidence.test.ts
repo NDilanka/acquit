@@ -106,6 +106,22 @@ test("redaction decodes JSON control escapes, including nested encoding, without
 		assert.deepEqual(JSON.parse(redact({ field: secret, ordinary: "a\nb\tc" })), { field: "[redacted]", ordinary: "a\nb\tc" });
 	}
 });
+test("mixed escape families cannot destroy literal plus, percent or entity characters in secrets", () => {
+	const html = (value: string) => value.replace(/[&<>"']/g, char =>
+		({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+	for (const secret of ['Pa"ss+word9', 'Pa\\ss+word9', 'Pa"ss%41word9', 'Pa\\ss&amp;w9']) {
+		const redact = redactor([secret]);
+		const json = JSON.stringify(secret).slice(1, -1);
+		for (const form of [secret, json, JSON.stringify(json).slice(1, -1), encodeURIComponent(secret),
+			encodeURIComponent(json), encodeURIComponent(json).replace(/%[0-9A-F]{2}/g, code => code.toLowerCase()),
+			new URLSearchParams({ value: secret }).toString().slice(6), html(secret), html(json)]) {
+			assert.equal(redact(form), "[redacted]");
+			assert.equal(redact(`ordinary%252f\\n x&amp;y a+b | ${form} | %ff`),
+				"ordinary%252f\\n x&amp;y a+b | [redacted] | %ff", "Unrelated bytes must be preserved.");
+		}
+		assert.deepEqual(JSON.parse(redact({ field: secret })), { field: "[redacted]" });
+	}
+});
 test("invalid percent UTF-8 neighbors cannot hide encoded secrets and retain exact unrelated bytes", () => {
 	for (const secret of ["synthetic", "é/🚀", "synthetic\ncontrol"]) {
 		const redact = redactor([secret]);
