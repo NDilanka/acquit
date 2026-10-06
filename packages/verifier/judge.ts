@@ -3,7 +3,7 @@
 // { id, target, args } in and { id, ok, value } out. Comparison happens here, in the judge's runtime.
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -36,7 +36,12 @@ export function invoiceFixtureFrozenCases(source: string): readonly HiddenCase[]
 export interface JudgeSource {
 	diff(frozenAt: CommitSha, sourceCommit: CommitSha): DiffSummary;
 	readFile(commit: CommitSha, path: string): string;
-	materialize(commit: CommitSha): { readonly path: string; readonly remove: () => void };
+	/**
+	 * Extracts a commit into a fresh tree, opened to the subject's uid. A tree that holds a link is
+	 * returned un-opened, with the first link named, so the judge refuses the run before anything
+	 * runs and no chmod can land outside the tree. The bootstrap repeats the link check per import.
+	 */
+	materialize(commit: CommitSha): { readonly path: string; readonly link: string | null; readonly remove: () => void };
 }
 
 export function gitSource(repoDir: string): JudgeSource {
@@ -69,11 +74,19 @@ export function gitSource(repoDir: string): JudgeSource {
 		readFile: (commit, path) => run(["show", `${commit}:${path}`], "utf8") as string,
 		materialize(commit) {
 			const path = join(tmpdir(), `acquit-tree-${commit.slice(0, 12)}-${process.pid}-${Date.now()}`);
-			mkdirSync(path, { recursive: true });
-			const extract = spawnSync("tar", ["-xf", "-", "-C", path], { input: run(["archive", "--format=tar", commit], "buffer") as Buffer });
-			if (extract.status !== 0) throw new Error(`tar failed: ${String(extract.stderr).slice(0, 300)}`);
-			readableTree(path);
-			return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
+			try {
+				mkdirSync(path, { recursive: true });
+				const archive = run(["archive", "--format=tar", commit], "buffer") as Buffer;
+				const extract = spawnSync("tar", ["-xf", "-", "-C", path], { input: archive });
+				if (extract.status !== 0) throw new Error(`tar failed: ${String(extract.stderr).slice(0, 300)}`);
+				const entries = treeEntries(path);
+				const link = entries.find(entry => entry.kind === "symlink");
+				if (link === undefined) readableTree(path, entries);
+				return { path, link: link === undefined ? null : relative(path, link.path), remove: () => rmSync(path, { recursive: true, force: true }) };
+			} catch (error) {
+				rmSync(path, { recursive: true, force: true });
+				throw error;
+			}
 		},
 	};
 }
@@ -164,20 +177,21 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 			subject: null, timings: timingsOf(started, { screenMs }) };
 	}
 	const calls: readonly SubjectCall[] = [...frozenCases, ...manifest.cases].map(toSubjectCall);
-	let tree: { readonly path: string; readonly remove: () => void };
+	let tree: { readonly path: string; readonly link: string | null; readonly remove: () => void } | null = null;
 	let subjectRun: SubjectRun;
 	try {
 		tree = deps.source.materialize(request.sourceCommit);
-		// A link is the one entry whose real path is not the tree's own path. Nothing starts for it.
-		const link = firstSymlink(tree.path);
-		if (link !== null) {
-			tree.remove();
-			return { kind: "VERDICT", verdict: decideVerdict(request, [{ kind: "TREE_SYMLINK", path: link }], { results: new Map() },
+		// A link is the one entry whose real path is not the tree's own path. Nothing starts for it,
+		// and the tree came back un-opened: no chmod has touched a path outside it.
+		if (tree.link !== null) {
+			return { kind: "VERDICT", verdict: decideVerdict(request, [{ kind: "TREE_SYMLINK", path: tree.link }], { results: new Map() },
 				judgeHidden(manifest.cases, new Map()), null, clock.now()), subject: null, timings: timingsOf(started, { screenMs }) };
 		}
 		subjectRun = await deps.subject.run(tree.path, calls, deps.deadlineMs);
 	} catch (error) {
 		return { kind: "RUN_FAILED", reason: `SUBJECT_UNSTARTABLE: ${message(error)}`, timings: timingsOf(started, { screenMs }) };
+	} finally {
+		tree?.remove();
 	}
 	const compareStart = performance.now();
 	const transcript = parseSubjectTranscript(subjectRun.stdout, subjectRun.nonce, calls);
@@ -193,7 +207,6 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 		...subjectRun.faults.map(fault => ({ kind: "SUBJECT_FAULT", detail: fault } as const)),
 	];
 	const compareMs = performance.now() - compareStart;
-	tree.remove();
 	if (faults.length) {
 		return { kind: "VERDICT", verdict: decideVerdict(request, faults, frozen, hiddenJudged, null, clock.now()),
 			subject: subjectRun, timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs, compareMs }) };
@@ -228,29 +241,35 @@ function sameIds(left: readonly TestId[], right: readonly TestId[]): boolean {
 	return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
-/**
- * The first symlink in a materialized tree, in walk order, or null. Git materializes a link as a
- * link, so this is the submission's own entry, and a directory link is caught by the same check.
- * The bootstrap repeats the check per import; this one refuses the run before the subject starts.
- */
-function firstSymlink(root: string): string | null {
-	for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
-		if (entry.isSymbolicLink()) return relative(root, join(entry.parentPath ?? root, entry.name));
+type TreeEntry = { readonly path: string; readonly kind: "directory" | "file" | "symlink" };
+
+/** Every entry under root, without ever following a link: an explicit stack over each directory's own listing. */
+function treeEntries(root: string): readonly TreeEntry[] {
+	const entries: TreeEntry[] = [];
+	const pending = [root];
+	while (pending.length) {
+		const parent = pending.pop() as string;
+		for (const entry of readdirSync(parent, { withFileTypes: true })) {
+			const path = join(parent, entry.name);
+			if (entry.isSymbolicLink()) { entries.push({ path, kind: "symlink" }); continue; }
+			if (entry.isDirectory()) { entries.push({ path, kind: "directory" }); pending.push(path); continue; }
+			entries.push({ path, kind: "file" });
+		}
 	}
-	return null;
+	return entries;
 }
 
 /**
  * mkdir and tar both apply the process umask, so a runner under umask 077 materializes a tree that
  * the subject's uid 65534 cannot read. Every entry's mode is set explicitly instead: directories
- * 0755, files 0644, and an entry git recorded executable stays executable.
+ * 0755, files 0644, and an entry git recorded executable stays executable. The caller passes the
+ * entries of a tree that holds no link, and a link entry is skipped rather than followed.
  */
-function readableTree(root: string): void {
+function readableTree(root: string, entries: readonly TreeEntry[]): void {
 	chmodSync(root, 0o755);
-	for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
-		if (entry.isSymbolicLink()) continue;
-		const path = join(entry.parentPath ?? root, entry.name);
-		chmodSync(path, entry.isDirectory() ? 0o755 : (statSync(path).mode & 0o100 ? 0o755 : 0o644));
+	for (const entry of entries) {
+		if (entry.kind === "symlink") continue;
+		chmodSync(entry.path, entry.kind === "directory" ? 0o755 : (lstatSync(entry.path).mode & 0o100 ? 0o755 : 0o644));
 	}
 }
 

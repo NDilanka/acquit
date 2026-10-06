@@ -125,11 +125,16 @@ export function dockerSubject(options: { readonly image?: string; readonly probe
  */
 export function stageBootstrap(source = BOOTSTRAP_PATH): { readonly path: string; readonly remove: () => void } {
 	const work = subjectWorkDir();
-	chmodSync(work.path, 0o755);
-	const path = join(work.path, "bootstrap.ts");
-	writeFileSync(path, readFileSync(source));
-	chmodSync(path, 0o444);
-	return { path, remove: work.remove };
+	try {
+		chmodSync(work.path, 0o755);
+		const path = join(work.path, "bootstrap.ts");
+		writeFileSync(path, readFileSync(source));
+		chmodSync(path, 0o444);
+		return { path, remove: work.remove };
+	} catch (error) {
+		work.remove();
+		throw error;
+	}
 }
 
 /** The container mounts the submitted tree and this one bootstrap file. The judge package is never inside. */
