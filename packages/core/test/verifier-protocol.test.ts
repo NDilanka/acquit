@@ -266,11 +266,13 @@ test("the bootstrap's frame limits are the judge's own limits", () => {
 });
 
 test("the Docker subject mounts only the submitted tree and the minimal bootstrap", () => {
-	const args = dockerArgs("/tmp/acquit-tree", "node:24-bookworm-slim");
+	const args = dockerArgs("/tmp/acquit-tree", "node:24-bookworm-slim", "/tmp/acquit-bootstrap.ts");
 	const mounts = args.flatMap((arg, index) => arg === "--mount" ? [args[index + 1]] : []);
 	assert.equal(mounts.length, 2);
 	assert.equal(mounts[0], "type=bind,source=/tmp/acquit-tree,target=/tree,readonly");
-	assert.match(mounts[1], /^type=bind,source=.*\/bootstrap\.ts,target=\/runner\/bootstrap\.ts,readonly$/);
+	// The bootstrap path is pinned here: the default is where the checkout lives, so asserting on it
+	// would make this test pass or fail on the checkout's location, not on the mount list.
+	assert.equal(mounts[1], "type=bind,source=/tmp/acquit-bootstrap.ts,target=/runner/bootstrap.ts,readonly");
 	assert.equal(mounts.some(mount => /judge|packages\/core/.test(mount)), false);
 	assert.equal(args.includes("/runner/subject.ts"), false);
 	assert.equal(args.includes("--network"), true);
