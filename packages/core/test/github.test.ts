@@ -505,6 +505,24 @@ test("a 409 on the branch move is a refusal with GitHub's message, never a fork 
 	assert.deepEqual(stub.state.pulls, []);
 });
 
+test("a ref create refused for another reason refuses at once, never a fork fallback", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	// The verified branch does not exist yet, so the publisher creates it. GitHub refuses the create on
+	// a rule of its own — not the object-missing answer that means the fork can carry the commit. The
+	// refusal must reach the caller at once: waiting out the convergence budget and branching the fork
+	// would ask for a pull request GitHub refuses for that other reason.
+	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/git/refs`, status: 422, message: "Validation Failed" });
+	const failure = await refusal(port.publishVerified(publishRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.equal(failure.status, 422);
+	assert.match(failure.detail, /Validation Failed/);
+	// One create: the convergence loop must not retry an answer that is not the object missing.
+	assert.equal(stub.state.requests.filter(request => request.method === "POST" && request.path === `/repos/${CLIENT}/git/refs`).length, 1);
+	// No fork: only the absent-object answer branches.
+	assert.equal(stub.state.requests.some(request => request.path.startsWith(`/repos/${WORK_REPO}`)), false);
+});
+
 test("a later clean commit moves the branch the previous publish made and adopts its pull request", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
