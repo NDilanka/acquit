@@ -11,10 +11,9 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { laneSlot } from "../../../../packages/ctl/src/state.ts";
@@ -78,17 +77,17 @@ async function ensureClientRepo(fullName, frozenCommit, templateDir) {
 	return { created: seen.status !== 0, main: pushed, appAccess: access };
 }
 
-/** Pushes the frozen commit as main with the App token in a 0600 config header, never in the URL. */
+/** Pushes the frozen commit as main with the App token in the environment's git config, never in a URL or argv. */
 async function pushMain(templateDir, fullName, frozenCommit) {
-	const dir = mkdtempSync(join(tmpdir(), "acquit-lane-push-"));
-	const configPath = join(dir, "gitconfig");
-	try {
-		const token = await createInstallationTokens(githubAppEnv())(fullName.split("/")[0]);
-		writeFileSync(configPath, `[http "https://github.com/"]\n\textraHeader = Authorization: Bearer ${token}\n`, { mode: 0o600 });
-		const pushed = spawnSync("git", ["-C", templateDir, "-c", "credential.helper=", "push", "--quiet",
-			`https://github.com/${fullName}.git`, `${frozenCommit}:refs/heads/main`],
-			{ encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: configPath, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
-		assert.equal(pushed.status, 0, `Could not push main to ${fullName}: ${pushed.stderr?.trim()}`);
-		return frozenCommit;
-	} finally { rmSync(dir, { recursive: true, force: true }); }
+	const token = await createInstallationTokens(githubAppEnv())(fullName.split("/")[0]);
+	// git ignores `http.<url>.extraHeader` from a global config file, and GitHub's git endpoint takes
+	// the installation token as a Basic user, not as a bearer token.
+	const pushed = spawnSync("git", ["-C", templateDir, "-c", "credential.helper=", "push", "--quiet",
+		`https://github.com/${fullName}.git`, `${frozenCommit}:refs/heads/main`],
+		{ encoding: "utf8", env: { ...process.env, GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "http.https://github.com/.extraHeader",
+			GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`, "utf8").toString("base64")}`,
+			GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
+	assert.equal(pushed.status, 0, `Could not push main to ${fullName}: ${pushed.stderr?.trim()}`);
+	return frozenCommit;
 }
