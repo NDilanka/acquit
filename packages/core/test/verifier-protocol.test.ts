@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -211,6 +211,25 @@ test("a mount source that would add a field is refused by name", () => {
 	const unsafe = (error: unknown) => (error as { code?: string }).code === "MOUNT_PATH_UNSAFE";
 	assert.throws(() => dockerArgs("/tmp/tree,target=/etc", "node:24-bookworm-slim"), unsafe);
 	assert.throws(() => dockerArgs("/tmp/tree", "node:24-bookworm-slim", "/tmp/bootstrap.ts,readonly=false"), unsafe);
+});
+
+test("the materialized tree is readable by the subject whatever the umask", () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
+		writeFileSync(join(repo, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+	});
+	const previous = process.umask(0o077);
+	let tree: { readonly path: string; readonly remove: () => void } | null = null;
+	try {
+		tree = gitSource(fixture.repo).materialize(fixture.head);
+	} finally { process.umask(previous); }
+	try {
+		assert.ok(tree);
+		if (!tree) return;
+		assert.equal(statSync(tree.path).mode & 0o777, 0o755);
+		assert.equal(statSync(join(tree.path, "src")).mode & 0o777, 0o755);
+		assert.equal(statSync(join(tree.path, "src/money.ts")).mode & 0o777, 0o644);
+		assert.equal(statSync(join(tree.path, "run.sh")).mode & 0o777, 0o755);
+	} finally { tree?.remove(); fixture.remove(); }
 });
 
 test("the product refuses the unit-test subject without the test/dev flag", () => {
