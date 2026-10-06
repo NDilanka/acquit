@@ -72,6 +72,7 @@ function ledgerText(job: JobBody["job"], tools: LedgerTools): { text: string; la
 		: [`${job.id}  stored ${job.book.path} is not an array (${storedText(job.book.value)})`];
 	const check = lawCheck(raw, tools);
 	const verdict = check.law === null ? "OK" : `BROKEN ${check.law} (${tools.lawText(check.law)})`;
+	// The JSON ledger carries the stored value itself, so a machine reader sees the same corruption the check refused.
 	const ledger = job.book.kind === "NONE" ? [] : job.book.kind === "VALUE" ? job.book.value ?? null : null;
 	return { text: `${rendered.length ? rendered.join("\n") : "No ledger lines"}\nLaws: ${verdict}\n`, laws: check.laws, law: check.law, ledger };
 }

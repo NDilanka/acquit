@@ -614,11 +614,16 @@ export function storedBook(row: JobRow): readonly LedgerLine[] {
 	return held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
 }
 
-/** Where a stored row keeps its book and the raw parsed value exactly as stored, or NONE when the state cannot hold one yet, or UNREADABLE when the state shape is not recognized. The check path judges this value; storedBook above keeps the API projection's defaults for the same rows. */
+/** Where a stored row keeps its book and the raw parsed value exactly as stored. NONE means the state cannot hold one yet; UNREADABLE means the state shape is not recognized. The check path judges this value; storedBook above keeps the API projection's defaults for the same rows. */
 export type StoredBookRaw =
 	| { readonly kind: "NONE" }
-	| { readonly kind: "VALUE"; readonly path: string; readonly value: unknown }
+	| { readonly kind: "VALUE"; readonly path: "escrow.book" | "checkout.escrow.book" | "book"; readonly value: unknown }
 	| { readonly kind: "UNREADABLE"; readonly why: string };
+
+/** The book field of a holder that may be any parsed JSON value. */
+function bookAt(holder: unknown): unknown {
+	return holder !== null && typeof holder === "object" ? (holder as { readonly book?: unknown }).book : undefined;
+}
 
 export function storedBookRaw(row: JobRow): StoredBookRaw {
 	const state = row.state as unknown;
@@ -633,13 +638,9 @@ export function storedBookRaw(row: JobRow): StoredBookRaw {
 		if (checkout === null || typeof checkout !== "object") return { kind: "UNREADABLE", why: "OPEN FUNDING checkout is not an object" };
 		if (!["CREATING_ORDER", "AWAITING_APPROVAL", "CAPTURING", "REFUND_PENDING"].includes(String(checkout.phase))) return { kind: "UNREADABLE", why: "OPEN FUNDING checkout.phase is not a checkout phase" };
 		if (checkout.phase !== "REFUND_PENDING") return { kind: "NONE" };
-		const escrow = checkout.escrow as { readonly book?: unknown } | null | undefined;
-		return { kind: "VALUE", path: "checkout.escrow.book", value: escrow !== null && typeof escrow === "object" ? escrow.book : undefined };
+		return { kind: "VALUE", path: "checkout.escrow.book", value: bookAt(checkout.escrow) };
 	}
-	if (shape.status === "IN_PROGRESS" || shape.status === "VERIFIED") {
-		const escrow = shape.escrow as { readonly book?: unknown } | null | undefined;
-		return { kind: "VALUE", path: "escrow.book", value: escrow !== null && typeof escrow === "object" ? escrow.book : undefined };
-	}
+	if (shape.status === "IN_PROGRESS" || shape.status === "VERIFIED") return { kind: "VALUE", path: "escrow.book", value: bookAt(shape.escrow) };
 	if (shape.status === "PAID" || shape.status === "REFUNDED" || shape.status === "CLOSED") return { kind: "VALUE", path: "book", value: shape.book };
 	return { kind: "UNREADABLE", why: "state.status is not a job status" };
 }
