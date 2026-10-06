@@ -19,16 +19,17 @@ async function plantVerifier(root: string): Promise<void> {
 	await mkdir(resolve(root, "packages/verifier"), { recursive: true });
 	await writeFile(resolve(root, "packages/verifier/server.ts"), verifierMarker);
 }
-async function unusedPort(): Promise<number> {
-	const server = createServer();
-	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-	const port = (server.address() as { port: number }).port;
-	await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-	return port;
+/** Opens `count` listeners at once, so no freed port can be handed out twice, then closes them. */
+async function unusedPorts(count: number): Promise<number[]> {
+	const servers = Array.from({ length: count }, () => createServer());
+	await Promise.all(servers.map(server => new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))));
+	const ports = servers.map(server => (server.address() as { port: number }).port);
+	await Promise.all(servers.map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
+	return ports;
 }
 async function fixture(run: (cli: (args: string[]) => { code: number | null; stdout: string }, root: string) => Promise<void>): Promise<void> {
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-ctl-test-"));
-	const [api, web, verifier] = [await unusedPort(), await unusedPort(), await unusedPort()];
+	const [api, web, verifier] = await unusedPorts(3);
 	const env = { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: undefined, PORT: String(api), WEB_PORT: String(web), ACQUIT_VERIFIER_PORT: String(verifier), DATABASE_PATH: resolve(root, "test.db") };
 	const cli = (args: string[]) => {
 		const result = spawnSync(process.execPath, [resolve(root, "packages/ctl/src/main.ts"), ...args], { cwd: root, encoding: "utf8", timeout: 30_000, env });
@@ -264,8 +265,9 @@ test("a service that dies before readiness releases both spawned handles and cle
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
+		const [apiPort, webPort, verifierPort] = await unusedPorts(3);
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
-			apiPort: await unusedPort(), webPort: await unusedPort(), verifierPort: await unusedPort(), browserSession: "test" };
+			apiPort, webPort, verifierPort, browserSession: "test" };
 		const original = await readFile(resolve(root, "apps/api/src/server.ts"), "utf8");
 		await writeFile(resolve(root, "apps/api/src/server.ts"), "process.exit(1);");
 		await assert.rejects(start({ timeout: "5" }, ctx),
@@ -379,8 +381,9 @@ test("start clears ownership when a service exits before readiness", async () =>
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
+		const [apiPort, webPort, verifierPort] = await unusedPorts(3);
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
-			apiPort: await unusedPort(), webPort: await unusedPort(), verifierPort: await unusedPort(), browserSession: "test" };
+			apiPort, webPort, verifierPort, browserSession: "test" };
 		// Attach rejection handling immediately; startup may fail during polling.
 		const running = start({ timeout: "5" }, ctx).then(() => null, error => error);
 		const deadline = Date.now() + 4000;
@@ -409,7 +412,9 @@ test("start waits for both ownership channels: an immediate stop always succeeds
 		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
 		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
 		const dir = resolve(root, "data/ctl");
-		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: await unusedPort(), webPort: await unusedPort(), verifierPort: await unusedPort(), browserSession: "test" };
+		const [apiPort, webPort, verifierPort] = await unusedPorts(3);
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
+			apiPort, webPort, verifierPort, browserSession: "test" };
 		for (let round = 0; round < 3; round++) {
 			try {
 				const result = await start({ timeout: "5" }, ctx);
