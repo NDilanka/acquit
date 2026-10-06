@@ -1,7 +1,7 @@
 // The operator CLI. F3 owns `submit`; the rest of the tutorial's commands land with the runner.
 
 import { pathToFileURL } from "node:url";
-import { assertSubjectAllowed, verifierSubjectEnv } from "../../verifier/subject.ts";
+import { assertSubjectAllowed, ChildSubjectRefused, verifierSubjectEnv } from "../../verifier/subject.ts";
 import { apiClient, CliError } from "./client.ts";
 import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
 
@@ -28,8 +28,11 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
 		console.log(await runSubmit(options, { client, head: localHead, push: pushHead }));
 		return 0;
 	} catch (error) {
-		if (error instanceof CliError) { console.error(`acquit: ${error.code}: ${error.message}`); return 1; }
-		throw error;
+		// Every refusal this command can raise prints its own name on one line. A stack is for a bug.
+		const refusal = error instanceof CliError || error instanceof ChildSubjectRefused ? error : null;
+		if (!refusal) throw error;
+		console.error(`acquit: ${refusal.code}: ${refusal.message}`);
+		return 1;
 	}
 }
 
