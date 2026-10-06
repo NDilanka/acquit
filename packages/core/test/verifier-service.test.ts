@@ -185,6 +185,11 @@ test("the service judges a clean commit and posts a callback the real API applie
 		const record = wired.runs.get(runId)!;
 		assert.equal(record.callback, "DELIVERED");
 		assert.equal(record.outcome?.kind === "VERDICT" ? record.outcome.verdict.result : null, "VERIFIED");
+		// The run view explains the wall time: every step of the judge reports its own milliseconds.
+		const reported = await (await wired.handle(new Request(`http://verifier.test/runs/${runId}`))).json() as { timings?: Record<string, number> | null };
+		assert.ok(reported.timings !== null && reported.timings !== undefined, "the run view reports the run's timings");
+		assert.ok((reported.timings?.subjectMs ?? 0) > 0, `subjectMs ${reported.timings?.subjectMs} must bound a judged run`);
+		assert.ok((reported.timings?.wallMs ?? 0) >= (reported.timings?.subjectMs ?? 0), "the wall time covers the subject");
 		await waitFor(async () => (await jobView(base, token, row.id))?.status === "VERIFIED", 15_000, () => log);
 		const view = await jobView(base, token, row.id);
 		assert.equal(view?.pullRequest, 13);
