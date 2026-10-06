@@ -381,23 +381,33 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	};
 
 	const createRef = async (repository: string, branch: string, commit: CommitSha, token: string): Promise<void> => {
-		const answer = await call(`Bearer ${token}`, { method: "POST", path: `/repos/${repository}/git/refs`, allow: [201, 409, 422],
-			permission: "contents: write", body: { ref: `refs/heads/${branch}`, sha: commit } });
+		const spec: Call = { method: "POST", path: `/repos/${repository}/git/refs`, allow: [201, 409, 422],
+			permission: "contents: write", body: { ref: `refs/heads/${branch}`, sha: commit } };
+		const answer = await call(`Bearer ${token}`, spec);
 		if (answer.status === 201) return;
-		// Either a concurrent writer won the ref or the object is not in this repository. The ref read decides.
+		// Either a concurrent writer won the ref or the write was refused. The ref read decides which.
 		const existing = await readRef(repository, branch, token);
 		if (existing === commit) return;
 		if (existing !== null) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${branch} at ${existing}, not ${commit}.`, { status: answer.status });
-		throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: answer.status });
+		// As in the branch move above: only "Object does not exist" means this repository cannot carry
+		// the commit and the fork can. Any other 409/422 is a refusal on another rule, and reading it as
+		// an absent object would burn the convergence budget and then ask the fork for a pull request
+		// GitHub refuses for that other reason. GitHub's own text is the refusal.
+		if (saysObjectAbsent(answer.body)) {
+			throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: answer.status });
+		}
+		throw refusal(answer.status, answer.body, answer.headers, spec);
 	};
 
 	const ensureBranch = async (repository: string, branch: string, commit: CommitSha, token: string): Promise<void> => {
 		const existing = await readRef(repository, branch, token);
 		if (existing === null) { await createRef(repository, branch, commit, token); return; }
 		if (existing === commit) return;
-		// This branch is written only by the publisher, and a job's run is single-flight, so a ref at
-		// another commit is a previous publish that did not finish: the judged commit is the target
-		// state, and the retry after that failure converges instead of refusing the job forever.
+		// This branch is written only by the publisher. A run is single-flight only while it holds the
+		// job's slot: a run that outlives runEndsAt can still publish after the job reclaimed the slot,
+		// so a late write and the next run can race this ref. Either way a ref at another commit is a
+		// publish that did not finish: the judged commit is the target state, and the retry after that
+		// failure converges instead of refusing the job forever.
 		const spec: Call = { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${branch}`, allow: [200, 422],
 			permission: "contents: write", body: { sha: commit, force: true } };
 		const answer = await call(`Bearer ${token}`, spec);
