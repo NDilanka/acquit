@@ -53,17 +53,19 @@ Preconditions:
 
 ## Gotchas
 
-- The lexical screen claims exactly four things: a protected path is refused by name under every git
+- The lexical screen claims exactly five things: a protected path is refused by name under every git
   status (add, modify, delete, rename on both names, mode change, type change), an added line of a
   source file that literally mentions `vitest`, `expect(`, or `node:test` is refused, a diff past
-  4096 changed paths is refused by name (`DIFF_TOO_LARGE`) rather than screened in part, and a diff
+  4096 changed paths is refused by name (`DIFF_TOO_LARGE`) rather than screened in part, a diff
   that changes more than 256 source paths is refused by name (`SOURCE_PATHS_OVER_READ_BOUND`)
-  because the screen reads added text for only that many.
+  because the screen reads added text for only that many, and a tree that carries a submodule
+  gitlink is refused by name (`TREE_GITLINK`).
 - Below both bounds every changed path is screened, and every changed source path is screened on its
   added lines. A diff that changes more than 256 source paths is refused whole, so a framework import
   deep in a large diff cannot go unread.
-- It does not read non-source files (a `vitest.config.ts` change trips it only if a protected glob
-  names the path), it does not resolve module graphs (a re-exported or aliased framework import is
+- It does not read non-source files (a `.yml` workflow or `.json` fixture change trips it only if a
+  protected glob names the path; note `vitest.config.ts` ends in `.ts`, so its added lines are read
+  like any other source file), it does not resolve module graphs (a re-exported or aliased framework import is
   invisible), it does not see a string built at runtime (`import("vit" + "est")`), it never reads a
   binary diff, and it never runs the submitted tests. The hidden suite, not the screen, is what
   refuses a wrong implementation.
