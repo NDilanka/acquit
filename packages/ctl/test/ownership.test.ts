@@ -39,6 +39,40 @@ test("a real pipe squatter answering the victim pid cannot authorize stop; faile
 	}
 });
 
+test("a Unix socket squatter answering the victim pid cannot authorize stop; failed preload bind exits", { timeout: 20000, skip: process.platform !== "linux" }, async () => {
+	const root = await mkdtemp(resolve(tmpdir(), "acquit-unix-squatter-"));
+	const nonce = ownershipNonce();
+	const socketPath = resolve(root, "own.sock");
+	const victim = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
+	const squatter = spawn(process.execPath, ["-e", `const {createServer}=require("node:net");
+		createServer(s=>{s.on("error",()=>{});s.on("data",()=>s.end("${victim.pid} 0\\n"));}).listen(${JSON.stringify(socketPath)},()=>console.log("held"));`],
+		{ stdio: ["ignore", "pipe", "ignore"] });
+	let child;
+	try {
+		await Promise.race([once(squatter.stdout!, "data"), sleep(5000).then(() => { throw new Error("Squatter did not bind."); })]);
+		// The squatter answers with the victim's pid, but it is the process
+		// holding the listening socket, so the answer is not kill authority.
+		assert.equal(await ownedProcess(victim.pid!, nonce, socketPath), false);
+		const dir = resolve(root, "data/ctl");
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, browserSession: "test" };
+		const { atomicJson } = await import("../src/state.ts");
+		await atomicJson(ctx.stateFile, { api: { pid: victim.pid, nonce, port: 4310, socketPath }, web: { pid: 0, nonce: ownershipNonce(), port: 5173 },
+			logs: { api: "", web: "" }, databasePath: ctx.databasePath, startedAt: "test" });
+		await assert.rejects(stop({}, ctx), (error: any) => error.code === "PID_MISMATCH");
+		assert.equal(alive(victim.pid!), true, "The victim must survive the squatter's forged answer.");
+		child = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(()=>{},1000)"], socketPath);
+		const deadline = Date.now() + 3000;
+		while (child.exitCode === null && Date.now() < deadline) await sleep(20);
+		assert.equal(child.exitCode, 1, "The child must fail fast when it cannot bind its proof channel.");
+	} finally {
+		await releaseSpawned(victim);
+		await releaseSpawned(squatter);
+		squatter.stdout?.destroy();
+		if (child) await releaseSpawned(child);
+		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
 test("the real ownership server closes idle and oversized clients and does not keep a finished child alive", { timeout: 15000, skip: process.platform !== "win32" }, async () => {
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-pipe-limits-"));
 	const nonce = ownershipNonce();
