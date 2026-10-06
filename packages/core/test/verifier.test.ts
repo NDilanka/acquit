@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
 import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
-import { boundedDetail, boundedVerdict, decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../src/verifier.ts";
+import { boundedDetail, boundedVerdict, decideVerdict, describeRejectReason, FAILURE_DETAIL_CHARS, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../src/verifier.ts";
 import type { DefinitionOfDone, DiffChange, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
@@ -235,6 +235,42 @@ test("boundedDetail redacts a legacy installation token and a raw App JWT", () =
 		assert.equal(clean.includes(jwt), false, clean);
 		assert.match(clean, /\[redacted\]/);
 	}
+});
+
+test("boundedDetail redacts a token at the 300-char cut and finishes a 1 MiB message inside the cost bound", () => {
+	const jwt = `eyJ${"a".repeat(500)}.${"b".repeat(500)}.${"c".repeat(500)}`;
+	// The token starts at offset 299: a redaction that read only the first 300 characters would keep its head.
+	assert.equal(boundedDetail(`${"x".repeat(299)}${jwt} tail`), `${"x".repeat(299)}[`);
+	assert.equal(boundedDetail(`${"x".repeat(290)}${jwt}`), `${"x".repeat(290)}[redacted]`);
+	const message = "eyJ".repeat(Math.ceil(1_048_576 / 3));
+	const began = performance.now();
+	const clean = boundedDetail(message);
+	const elapsed = performance.now() - began;
+	assert.equal(Buffer.byteLength(clean, "utf8"), FAILURE_DETAIL_CHARS);
+	assert.ok(elapsed < 50, `boundedDetail took ${elapsed.toFixed(1)} ms on a 1 MiB message of repeated eyJ`);
+});
+
+test("bounding a verdict twice equals bounding it once", () => {
+	const reasons: RejectReason[] = Array.from({ length: 600 }, (_, index) => ({ kind: "PROTECTED_PATH_MODIFIED", path: `.github/workflows/w${index}.yml` }));
+	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit,
+		reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
+	const once = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
+	const twice = boundedVerdict(once);
+	assert.deepEqual(twice, once);
+	assert.equal(once.reasonsTruncated, 600 - VERDICT_REASONS_MAX);
+	// A count an earlier bound carried is added to, never reset.
+	const carried = boundedVerdict({ ...rejected, reasons: reasons.slice(0, 20) as [RejectReason, ...RejectReason[]], reasonsTruncated: 5 }) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(carried.reasonsTruncated, 5 + (20 - VERDICT_REASONS_MAX));
+});
+
+test("trimming a reason never splits a surrogate pair", () => {
+	const path = `${"a".repeat(199)}${"\u{1F600}".repeat(500)}`;
+	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit,
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path }], reasonsTruncated: 0, at };
+	const bounded = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
+	const trimmed = (bounded.reasons[0] as Extract<RejectReason, { kind: "PROTECTED_PATH_MODIFIED" }>).path;
+	assert.equal(trimmed, `${"a".repeat(199)}\u{1F600}`);
+	assert.equal([...trimmed].some(char => { const point = char.codePointAt(0)!; return point >= 0xd800 && point <= 0xdfff; }), false);
 });
 
 test("decideVerdict refuses to verify a passing run that was never published", () => {
