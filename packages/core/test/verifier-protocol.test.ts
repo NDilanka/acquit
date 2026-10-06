@@ -2,10 +2,11 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, JobId, TestId } from "../src/ids.ts";
@@ -14,7 +15,7 @@ import type { DefinitionOfDone, HiddenCase, SubjectCall, VerifierRunRequest, Ver
 import { BOOTSTRAP_LIMITS } from "../../verifier/bootstrap.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
 import type { JudgeSource } from "../../verifier/judge.ts";
-import { ChildSubjectRefused, childProcessSubject, dockerArgs, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
+import { ChildSubjectRefused, childProcessSubject, dockerArgs, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
 
 const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const hiddenCases: readonly HiddenCase[] = [
@@ -211,6 +212,19 @@ test("a mount source that would add a field is refused by name", () => {
 	const unsafe = (error: unknown) => (error as { code?: string }).code === "MOUNT_PATH_UNSAFE";
 	assert.throws(() => dockerArgs("/tmp/tree,target=/etc", "node:24-bookworm-slim"), unsafe);
 	assert.throws(() => dockerArgs("/tmp/tree", "node:24-bookworm-slim", "/tmp/bootstrap.ts,readonly=false"), unsafe);
+});
+
+test("the staged bootstrap is the trusted bytes under modes the container user can read", () => {
+	const previous = process.umask(0o077);
+	try {
+		const staged = stageBootstrap();
+		try {
+			assert.equal(statSync(staged.path).mode & 0o777, 0o444);
+			assert.equal(statSync(dirname(staged.path)).mode & 0o777, 0o755);
+			assert.deepEqual(readFileSync(staged.path), readFileSync(fileURLToPath(new URL("../../verifier/bootstrap.ts", import.meta.url))));
+		} finally { staged.remove(); }
+		assert.equal(existsSync(staged.path), false);
+	} finally { process.umask(previous); }
 });
 
 test("the materialized tree is readable by the subject whatever the umask", () => {

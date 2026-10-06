@@ -3,7 +3,7 @@
 // { id, target, args } in and { id, ok, value } out. Comparison happens here, in the judge's runtime.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -72,6 +72,7 @@ export function gitSource(repoDir: string): JudgeSource {
 			mkdirSync(path, { recursive: true });
 			const extract = spawnSync("tar", ["-xf", "-", "-C", path], { input: run(["archive", "--format=tar", commit], "buffer") as Buffer });
 			if (extract.status !== 0) throw new Error(`tar failed: ${String(extract.stderr).slice(0, 300)}`);
+			readableTree(path);
 			return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
 		},
 	};
@@ -237,6 +238,20 @@ function firstSymlink(root: string): string | null {
 		if (entry.isSymbolicLink()) return relative(root, join(entry.parentPath ?? root, entry.name));
 	}
 	return null;
+}
+
+/**
+ * mkdir and tar both apply the process umask, so a runner under umask 077 materializes a tree that
+ * the subject's uid 65534 cannot read. Every entry's mode is set explicitly instead: directories
+ * 0755, files 0644, and an entry git recorded executable stays executable.
+ */
+function readableTree(root: string): void {
+	chmodSync(root, 0o755);
+	for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
+		if (entry.isSymbolicLink()) continue;
+		const path = join(entry.parentPath ?? root, entry.name);
+		chmodSync(path, entry.isDirectory() ? 0o755 : (statSync(path).mode & 0o100 ? 0o755 : 0o644));
+	}
 }
 
 function timingsOf(started: number, parts: Partial<JudgeTimings>): JudgeTimings {

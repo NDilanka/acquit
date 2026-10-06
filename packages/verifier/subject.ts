@@ -11,9 +11,9 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { asSubjectFrame, SUBJECT_FRAME_BYTES } from "../core/src/verifier.ts";
@@ -97,6 +97,9 @@ export function childProcessSubject(): SubjectLauncher {
 	};
 }
 
+/** The trusted bootstrap. A run stages its own copy, so the mode of this file on the host never decides a verdict. */
+const BOOTSTRAP_PATH = fileURLToPath(new URL("./bootstrap.ts", import.meta.url));
+
 /** The product path. `--network none`, a read-only tree, no capabilities, and no host credentials. */
 export function dockerSubject(options: { readonly image?: string; readonly probe?: () => boolean } = {}): SubjectLauncher {
 	const image = options.image ?? process.env.VERIFIER_NODE_IMAGE ?? "node:24-bookworm-slim";
@@ -104,14 +107,33 @@ export function dockerSubject(options: { readonly image?: string; readonly probe
 		variant: "DOCKER",
 		async run(treeDir, calls, deadlineMs = DEFAULT_DEADLINE_MS) {
 			if (!(options.probe ?? dockerReachable)()) throw new DockerUnavailable("The Docker daemon is not running; the subject was not started.");
-			return await spawnSubject({ variant: "DOCKER", command: "docker", args: dockerArgs(treeDir, image),
-				cwd: treeDir, calls, deadlineMs });
+			const staged = stageBootstrap();
+			try {
+				return await spawnSubject({ variant: "DOCKER", command: "docker", args: dockerArgs(treeDir, image, staged.path),
+					cwd: treeDir, calls, deadlineMs });
+			} finally {
+				staged.remove();
+			}
 		},
 	};
 }
 
+/**
+ * Copies the trusted bootstrap into a per-run work directory with explicit modes. The container runs
+ * as uid 65534, so a checkout file the runner owns at 0600, or a mkdtemp directory under umask 077,
+ * would read as EACCES. Bytes are copied verbatim; only the copy is mounted.
+ */
+export function stageBootstrap(source = BOOTSTRAP_PATH): { readonly path: string; readonly remove: () => void } {
+	const work = subjectWorkDir();
+	chmodSync(work.path, 0o755);
+	const path = join(work.path, "bootstrap.ts");
+	writeFileSync(path, readFileSync(source));
+	chmodSync(path, 0o444);
+	return { path, remove: work.remove };
+}
+
 /** The container mounts the submitted tree and this one bootstrap file. The judge package is never inside. */
-export function dockerArgs(treeDir: string, image: string, bootstrap = fileURLToPath(new URL("./bootstrap.ts", import.meta.url))): readonly string[] {
+export function dockerArgs(treeDir: string, image: string, bootstrap = BOOTSTRAP_PATH): readonly string[] {
 	return ["run", "--rm", "--network", "none", "-i", "--pull=never", "--read-only", "--cap-drop=ALL",
 		"--security-opt=no-new-privileges", "--pids-limit=64", "--memory=256m", "--cpus=1", "--user=65534:65534",
 		"--mount", `type=bind,${mountSource("tree", treeDir)},target=/tree,readonly`,
