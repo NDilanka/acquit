@@ -6,7 +6,7 @@ import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { Ports } from "../src/effects.ts";
-import { applyJobCommand, projectJob, TERMS, wakeAt } from "../src/job.ts";
+import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, CommitSha, Digest, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
@@ -594,6 +594,45 @@ test("the projection carries the attempt history, the pending run, and the froze
 	assert.deepEqual(judged.attempts.reasons, ["PR modifies frozen test file tests/totals.test.ts"]);
 	assert.deepEqual(judged.attempts.history, [{ ordinal: 1, result: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"],
 		sourceCommit, at: now, frozen: null, hidden: null, pullRequest: null }]);
+});
+
+test("a stored contract without a frozen definition of done parses to null and projects without one", async () => {
+	const store = new SqliteStore(":memory:");
+	const frozen = heldRow();
+	try {
+		const stored = { ...frozen, contract: { budget: frozen.contract.budget, deliveryEndsAt: frozen.contract.deliveryEndsAt, terms: TERMS } };
+		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(frozen.id, frozen.version, JSON.stringify(stored), later);
+		const row = await store.readJob(frozen.id);
+		if (!row) throw new Error("Stored job missing");
+		assert.deepEqual(storedDefinitionOfDone(frozen), frozenDefinition());
+		assert.equal(storedDefinitionOfDone(row), null);
+		assert.equal(row.contract.definitionOfDone, null);
+		const view = projectJob(row, devon, new Map());
+		assert.equal(view.contract, null);
+		assert.equal(view.status, "IN_PROGRESS");
+		assert.equal(view.escrow, "HELD");
+		assert.equal(view.lockedTo, "devon-ops");
+		assert.equal(view.budget, 40000);
+		assert.equal(view.deliveryEndsAt, "2026-10-13T12:00:00.000Z");
+		assert.deepEqual(view.ledger, [{ kind: "HELD", cents: 42000, at: now }]);
+		assert.deepEqual(view.attempts, { used: 0, left: 3, last: null, reasons: [], history: [], pending: null });
+	} finally { store.close(); }
+});
+
+test("a row stored before the freeze refuses Submit by name and pushes no work repo on capture", () => {
+	const frozen = heldRow();
+	const row: JobRow = { ...frozen, contract: { ...frozen.contract, definitionOfDone: null } };
+	assert.equal(applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit },
+		{ actor: devon, now, loaded: { kind: "NONE" } }), "CONTRACT_NOT_FROZEN");
+	const open: JobRow = { ...row, state: { status: "OPEN", phase: { kind: "FUNDING", round: 1, chosen: lockedPayee,
+		quote: quote(commercialSplit(usd("400.00")), model), checkoutEndsAt: instant("2026-10-06T15:00:00Z"),
+		checkout: { phase: "CAPTURING", orderId: "TESTORDER" as OrderId } } } };
+	const plan = applyJobCommand(open, { type: "CaptureCompleted", jobId: row.id,
+		capture: (frozen.state as Extract<typeof frozen.state, { status: "IN_PROGRESS" }>).escrow.capture },
+		{ actor: { role: "SYSTEM", source: "PAYPAL" }, now, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "IN_PROGRESS");
+	assert.deepEqual(plan.effects, []);
 });
 
 test("capture emits CREATE_WORK_REPO with the frozen commit the contract recorded", () => {

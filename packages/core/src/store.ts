@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, RecordedRequest } from "./effects.ts";
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
+import { storedDefinitionOfDone } from "./job.ts";
 import type { JobRow } from "./job.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
@@ -36,6 +37,10 @@ export function openDatabase(path: string): DatabaseSync {
 function parsed<T>(row: Record<string, unknown> | undefined): T | null {
 	return row ? JSON.parse(String(row.json)) as T : null;
 }
+/** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
+function storedJob(row: JobRow): JobRow {
+	return { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) } };
+}
 function due(state: OutboxState): string | null {
 	return state.kind === "READY" ? state.runAt : state.kind === "LEASED" ? state.leaseUntil : state.kind === "UNCERTAIN" ? state.reconcileAt : null;
 }
@@ -43,7 +48,7 @@ export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
 	private readonly clock: Clock;
 	constructor(path: string, clock: Clock = { now: () => instant(new Date().toISOString()) }) { this.clock = clock; this.db = openDatabase(path); }
-	async readJob(id: JobId): Promise<JobRow | null> { return parsed(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)); }
+	async readJob(id: JobId): Promise<JobRow | null> { const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)); return row ? storedJob(row) : null; }
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
 	async readCredits(id: OperatorId): Promise<CreditAccount> {
@@ -59,7 +64,7 @@ export class SqliteStore implements Store {
 		this.db.prepare("UPDATE requests SET result = ? WHERE actor = ? AND key = ? AND digest = ?")
 			.run(JSON.stringify(request.result), request.actor, request.key, request.payloadDigest);
 	}
-	async listJobs(): Promise<readonly JobRow[]> { return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => JSON.parse(String(row.json)) as JobRow); }
+	async listJobs(): Promise<readonly JobRow[]> { return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => storedJob(JSON.parse(String(row.json)) as JobRow)); }
 	async listOperators(): Promise<readonly OperatorRow[]> { return this.db.prepare("SELECT json FROM operators").all().map(row => JSON.parse(String(row.json)) as OperatorRow); }
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));

@@ -84,11 +84,13 @@ export function renderSubmission(view: JobProjection, handleOf: (operatorId: str
 		lines.push(`Attempts left: ${view.attempts.left}. Deadline: ${utcMinutes(view.deliveryEndsAt)}.`);
 		return lines.join("\n");
 	}
-	lines.push(`\tFrozen tests: ${attempt.frozen?.passed ?? 0} passed (suite frozen at ${view.contract.frozenAt.slice(0, 7)})`);
+	const contract = view.contract;
+	if (contract === null) throw new CliError("CONTRACT_NOT_FROZEN", `Job ${view.id} has a verdict but no frozen contract to print.`);
+	lines.push(`\tFrozen tests: ${attempt.frozen?.passed ?? 0} passed (suite frozen at ${contract.frozenAt.slice(0, 7)})`);
 	lines.push(`\tHidden tests: ${attempt.hidden?.passed ?? 0} passed`);
 	lines.push(`\tRequired tests: ${(attempt.frozen?.expected ?? 0) + (attempt.hidden?.expected ?? 0)} completed, 0 skipped or missing`);
 	lines.push("\tProtected paths: none touched");
-	lines.push(`Pull request opened: ${view.contract.repository}#${attempt.pullRequest ?? 0}`);
+	lines.push(`Pull request opened: ${contract.repository}#${attempt.pullRequest ?? 0}`);
 	lines.push(`Job status: ${view.status}`);
 	lines.push(`Client review window: ${view.reviewEndsAt ? hoursBetween(attempt.at, view.reviewEndsAt) : 0} hours`);
 	return lines.join("\n");

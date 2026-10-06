@@ -43,7 +43,8 @@ export const TERMS = {
 } as const;
 
 export type AcceptanceContract = {
-	readonly definitionOfDone: DefinitionOfDone;
+	/** OpenJob freezes one. A row stored before F3 has none, so every read goes through storedDefinitionOfDone. */
+	readonly definitionOfDone: DefinitionOfDone | null;
 	readonly budget: UsdCents;
 	/** OpenJob rejects a deadline later than openedAt + 14 days. Capture is after open, so it also bounds capture age. */
 	readonly deliveryEndsAt: Instant;
@@ -280,6 +281,7 @@ export type DomainFailure =
 	| "NOT_FOUND"
 	| "NOT_OWNER"
 	| "WRONG_STATE"
+	| "CONTRACT_NOT_FROZEN"
 	| "ONBOARDING_REQUIRED"
 	| "PRICE_OVER_BUDGET"
 	| "ALREADY_BID"
@@ -502,14 +504,19 @@ function transitionTable(): {
 					state: { status: "OPEN", phase: { ...phase, checkout: { phase: "REFUND_PENDING", escrow, refund: { reason: "CAPTURE_MISMATCH", selectedAt: capture.capturedAt } } } } },
 					credits: [], effects: [{ kind: "REFUND", jobId: row.id, captureId: capture.captureId, payee: capture.payee, amount: capture.gross }] };
 			}
+			// A row stored before the freeze has no commit to push. It enters work with no repository, Submit refuses it
+			// by CONTRACT_NOT_FROZEN, and the delivery deadline returns the money.
+			const done = storedDefinitionOfDone(row);
 			return { next: { ...row, version: (row.version + 1) as Version,
 				bids: row.bids.map(b => b.id === phase.chosen.bidId ? { ...b, status: "ACCEPTED" } : b.status === "PENDING" ? { ...b, status: "NOT_SELECTED" } : b),
 				state: { status: "IN_PROGRESS", escrow, attempts: { phase: "READY", history: [], runsStarted: 0 } } },
-				credits: [], effects: [{ kind: "CREATE_WORK_REPO", jobId: row.id,
-					repository: row.contract.definitionOfDone.issue.repository, frozenCommit: row.contract.definitionOfDone.frozenAt }] };
+				credits: [], effects: done === null ? [] : [{ kind: "CREATE_WORK_REPO", jobId: row.id,
+					repository: done.issue.repository, frozenCommit: done.frozenAt }] };
 		} },
 		Submit: { by: "OPERATOR", apply: (row, command, facts) => {
 			if (facts.actor.role !== "OPERATOR" || row.state.escrow.payee.operator !== facts.actor.operatorId) return "NOT_OWNER";
+			// No frozen test list exists for a row stored before F3, so no run can be judged. Refuse by name.
+			if (storedDefinitionOfDone(row) === null) return "CONTRACT_NOT_FROZEN";
 			const attempts = row.state.attempts;
 			if (attempts.phase === "REFUND_PENDING") return "WRONG_STATE";
 			// The same commit while a run is pending returns the pending attempt instead of starting a second run.
@@ -696,6 +703,14 @@ export function storedBook(row: JobRow): readonly LedgerLine[] {
 	return held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
 }
 
+/** The definition of done a stored row carries, or null when the row was stored before F3 froze one. SqliteStore parses an absent field to the typed null; a raw row keeps it absent, so every reader comes through here. */
+export function storedDefinitionOfDone(row: JobRow): DefinitionOfDone | null {
+	const contract: unknown = row.contract;
+	if (contract === null || typeof contract !== "object") return null;
+	const done = (contract as { readonly definitionOfDone?: unknown }).definitionOfDone;
+	return done === null || done === undefined ? null : done as DefinitionOfDone;
+}
+
 /** Where a stored row keeps its book and the raw parsed value exactly as stored. NONE means the state cannot hold one yet; UNREADABLE means the state shape is not recognized. The check path judges this value; storedBook above keeps the API projection's defaults for the same rows. */
 export type StoredBookRaw =
 	| { readonly kind: "NONE" }
@@ -758,7 +773,8 @@ export type ContractProjection = {
 
 /** The projection core adds on top of JobView. The web page and the CLI read it through the API JSON. */
 export type JobProjection = JobView & {
-	readonly contract: ContractProjection;
+	/** Null when the row was stored before F3 froze a definition of done. */
+	readonly contract: ContractProjection | null;
 	readonly attempts: JobView["attempts"] & {
 		readonly history: readonly AttemptView[];
 		readonly pending: PendingRunView | null;
@@ -790,11 +806,11 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const pending = state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? state.attempts.pending : null;
 	const used = history.length + (pending ? 1 : 0);
 	const judged = history.map(attemptView);
-	const done = row.contract.definitionOfDone;
+	const done = storedDefinitionOfDone(row);
 	return { id: row.id, title: row.title, status: state.status,
 		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
 		budget: row.contract.budget, deliveryEndsAt: row.contract.deliveryEndsAt,
-		contract: { repository: done.issue.repository, frozenAt: done.frozenAt, frozenTests: done.frozenTests.length,
+		contract: done === null ? null : { repository: done.issue.repository, frozenAt: done.frozenAt, frozenTests: done.frozenTests.length,
 			hiddenTests: done.hiddenTests.length, protectedPaths: done.protectedPaths.map(String) },
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),

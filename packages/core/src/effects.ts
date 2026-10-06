@@ -266,9 +266,15 @@ async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Ex
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
 		return "WORKED";
 	}
+	const done = job.contract.definitionOfDone;
+	if (done === null) {
+		// A row stored before the freeze has no test list to judge against. Record it for a human instead of starting a run.
+		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "CONTRACT_NOT_FROZEN" });
+		return "WORKED";
+	}
 	try {
 		await ports.verifier.start({ runId: effect.attempt.runId, jobId: job.id, ordinal: effect.attempt.ordinal,
-			sourceCommit: effect.attempt.sourceCommit, definitionOfDone: job.contract.definitionOfDone });
+			sourceCommit: effect.attempt.sourceCommit, definitionOfDone: done });
 	} catch {
 		// The run may or may not have started. It is never dispatched twice from here, and the run-end timer returns the slot.
 		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });

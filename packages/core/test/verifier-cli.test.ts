@@ -66,6 +66,11 @@ test("the VERIFIED block matches docs/tutorial.md character for character", () =
 	].join("\n"));
 });
 
+test("the VERIFIED block refuses a projection with no frozen contract by name", () => {
+	assert.throws(() => renderSubmission({ ...verifiedView(), contract: null }, noHandles),
+		(error: CliError) => error.code === "CONTRACT_NOT_FROZEN");
+});
+
 test("submit parses its flags, refuses unknown ones, and never prints a token", () => {
 	const options = parseSubmitArgs(["job_7Q2K", "--dir", "/tmp/work", "--remote", "origin", "--timeout", "30"], { ACQUIT_TOKEN: "s3cret" });
 	assert.deepEqual({ jobId: options.jobId, dir: options.dir, remote: options.remote, timeoutSeconds: options.timeoutSeconds,
