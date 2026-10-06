@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { reachable, sleep } from "../src/process.ts";
+import { reachable, releaseSpawned, sleep } from "../src/process.ts";
 
 async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Promise<void> {
 	const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -22,7 +21,6 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Pr
 		...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
 		DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
 	} });
-	const exited = once(child, "exit");
 	try {
 		const deadline = Date.now() + 15_000;
 		const url = `http://127.0.0.1:${port}`;
@@ -33,8 +31,7 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Pr
 		}
 		await run(url);
 	} finally {
-		child.kill();
-		await exited;
+		await releaseSpawned(child);
 		await rm(dir, { recursive: true, force: true });
 	}
 }

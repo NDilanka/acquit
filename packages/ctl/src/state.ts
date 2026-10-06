@@ -1,10 +1,11 @@
 import { createServer } from "node:net";
 import type { Server } from "node:net";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync } from "node:fs";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CliError } from "./process.ts";
+import { CliError, sleep } from "./process.ts";
 
 export interface ServiceRecord {
 	pid: number;
@@ -64,12 +65,14 @@ export function context(): Context {
 }
 export async function readState(ctx: Context): Promise<RunState | null> {
 	let raw: string;
-	try { raw = await readFile(ctx.stateFile, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+	// Open/read/close in one turn: an async reader can hold a Windows handle
+	// without FILE_SHARE_DELETE across the next atomic rename.
+	try { raw = readFileSync(ctx.stateFile, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 	try {
 		const state = JSON.parse(raw) as RunState;
 		for (const service of [state.api, state.web]) {
-			// A nonce is the only kill authority. Legacy startTime records and
-			// interrupted files stay readable, but requireOwned must refuse them.
+			// The nonce locates a channel, never grants kill authority. Legacy
+			// records stay readable, but requireOwned must verify the kernel peer.
 			if (service && !/^[0-9a-f]{32}$/.test(service.nonce ?? "")) service.nonce = null;
 			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535) throw new Error();
 		}
@@ -82,16 +85,26 @@ export async function atomicJson(path: string, value: unknown, beforePublish?: (
 	const temp = `${path}.${process.pid}.tmp`;
 	try {
 		await writeFile(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-		if (beforePublish) {
-			beforePublish();
-			// No asynchronous filesystem/event-loop gap between guard and publish.
+		await retryFileOperation(() => {
+			beforePublish?.();
+			// Every retry re-runs the guard, synchronously adjacent to publish.
 			renameSync(temp, path);
-		} else await rename(temp, path);
+		});
 	}
 	finally { await unlink(temp).catch(() => {}); }
 }
 export async function clearState(ctx: Context): Promise<void> {
-	try { await unlink(ctx.stateFile); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	try { await retryFileOperation(() => unlink(ctx.stateFile)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+async function retryFileOperation(run: () => void | Promise<void>): Promise<void> {
+	const deadline = Date.now() + 2000;
+	for (;;) {
+		try { await run(); return; }
+		catch (error) {
+			if (!["EPERM", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "") || Date.now() >= deadline) throw error;
+			await sleep(25);
+		}
+	}
 }
 // The lock is an open exclusive handle: a pipe server on Windows, a filesystem
 // socket elsewhere. Two CLIs cannot both listen on the same name, so there is
@@ -100,7 +113,7 @@ export async function clearState(ctx: Context): Promise<void> {
 // derived from the lane directory so every CLI targeting that lane contends
 // for the same handle.
 export function lockName(dir: string): string {
-	if (process.platform === "win32") return `\\\\.\\pipe\\acquit-lock-${Buffer.from(dir).toString("hex").slice(-48)}`;
+	if (process.platform === "win32") return `\\\\.\\pipe\\acquit-lock-${createHash("sha256").update(resolve(dir).toLowerCase()).digest("hex")}`;
 	return resolve(dir, "operation.lock");
 }
 async function acquireLock(name: string): Promise<Server> {
@@ -108,9 +121,11 @@ async function acquireLock(name: string): Promise<Server> {
 	// exists to close: two CLIs must not both proceed, and the loser must fail
 	// now rather than wait out the winner and then act on a stale decision.
 	return new Promise((resolve, reject) => {
-		const server = createServer();
+		// A connection to the lock is not a lock holder. Close probes promptly
+		// so server.close cannot wait forever for an idle client.
+		const server = createServer(socket => socket.destroy());
 		const fail = (error: NodeJS.ErrnoException) => {
-			if (["EADDRINUSE", "EEXIST"].includes(error.code ?? "")) reject(new CliError("CLI_BUSY", "Another CLI lifecycle operation is in progress.", "Wait for that command to finish, then retry."));
+			if (["EADDRINUSE", "EEXIST"].includes(error.code ?? "")) reject(new CliError("CLI_BUSY", `Another CLI lifecycle operation holds ${name}.`, `Wait for that command to finish, then retry. If stuck, inspect the process holding ${name} locally and close only that verified holder; process exit releases the pipe. Never delete a run file to bypass this lock.`));
 			else reject(error);
 		};
 		server.once("error", fail);

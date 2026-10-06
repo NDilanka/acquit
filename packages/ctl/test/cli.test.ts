@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -9,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { alive, captured, detached, killTree, ownedProcess, ownershipNonce, releaseSpawned, requireOwned, sleep } from "../src/process.ts";
 import { laneSlot, lockName } from "../src/state.ts";
-import { start } from "../src/commands.ts";
+import { start, stop } from "../src/commands.ts";
 
 const source = fileURLToPath(new URL("../src", import.meta.url));
 async function unusedPort(): Promise<number> {
@@ -126,20 +127,41 @@ test("start clears ownership when a service exits before readiness", async () =>
 		const dir = resolve(root, "data/ctl");
 		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"),
 			apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
-		const running = start({ timeout: "5" }, ctx);
+		// Attach rejection handling immediately; startup may fail during polling.
+		const running = start({ timeout: "5" }, ctx).then(() => null, error => error);
 		const deadline = Date.now() + 4000;
 		let recorded: { api: { pid: number; nonce?: string }; web?: { pid: number } } = { api: { pid: 0 } };
 		while (recorded.api.pid === 0 && Date.now() < deadline) {
 			await sleep(20);
-			if (existsSync(ctx.stateFile)) recorded = JSON.parse(await readFile(ctx.stateFile, "utf8"));
+			if (existsSync(ctx.stateFile)) recorded = JSON.parse(readFileSync(ctx.stateFile, "utf8"));
 		}
 		assert.match(recorded.api.nonce ?? "", /^[0-9a-f]{32}$/);
 		await killTree(recorded.api.pid);
-		const failure = await running.then(() => null, error => error);
+		const failure = await running;
 		assert(failure, "start must fail once its service is killed");
-		assert(/exited before both endpoints answered|EPERM|EBUSY/.test(`${failure.code} ${failure.message}`), failure.message);
+		assert.equal(failure.code, "PROCESS_FAILED");
+		assert.match(failure.message, /exited before both endpoints answered/);
 		assert.equal(existsSync(ctx.stateFile), false);
 		assert.equal(alive(recorded.web?.pid ?? 0), false);
+	});
+});
+test("start waits for both ownership channels: an immediate stop always succeeds", { timeout: 30000, skip: process.platform !== "win32" }, async () => {
+	await fixture(async (_cli, root) => {
+		await mkdir(resolve(root, "apps/api/src"), { recursive: true });
+		await mkdir(resolve(root, "apps/web/node_modules/vite/bin"), { recursive: true });
+		const marker = `import { createServer } from "node:http"; const port = Number(process.argv.includes("--port") ? process.env.WEB_PORT : process.env.PORT); createServer((_q,r)=>r.end("ok")).listen(port, "127.0.0.1");`;
+		await writeFile(resolve(root, "apps/api/src/server.ts"), marker);
+		await writeFile(resolve(root, "apps/web/node_modules/vite/bin/vite.js"), marker);
+		const dir = resolve(root, "data/ctl");
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: await unusedPort(), webPort: await unusedPort(), browserSession: "test" };
+		for (let round = 0; round < 3; round++) {
+			try {
+				const result = await start({ timeout: "5" }, ctx);
+				assert.equal(result.alreadyRunning, false);
+				assert.equal((await stop({}, ctx)).stopped, true);
+				assert.equal(existsSync(ctx.stateFile), false);
+			} finally { if (existsSync(ctx.stateFile)) await stop({}, ctx); }
+		}
 	});
 });
 test("legacy and interrupted ownership records are readable but never authorize a live PID", async () => {
@@ -183,17 +205,16 @@ test("two concurrent CLIs cannot both hold the lifecycle lock", async () => {
 		const server = createServer();
 		server.listen(${JSON.stringify(lockName(dir))}, () => { console.log("held"); setInterval(() => {}, 1000); });`;
 	const first = spawn(process.execPath, ["--input-type=module", "-e", holder], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-	const held = await new Promise<string>(done => { let out = ""; first.stdout?.on("data", chunk => { out += chunk; if (out.includes("\n")) done(out); }); });
-	const second = spawn(process.execPath, ["--input-type=module", "-e",
-		`import { locked } from ${JSON.stringify(new URL("../src/state.ts", import.meta.url).href)};
-		const result = await locked({ dir: ${JSON.stringify(dir)} }, async () => "entered").catch(error => error.code);
-		console.log(result);`], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-	const reply = await new Promise<string>(done => { let out = ""; second.stdout?.on("data", chunk => { out += chunk; if (out.includes("\n")) done(out); }); });
 	try {
-		assert.equal(held.trim(), "held");
-		assert.equal(reply.trim(), "CLI_BUSY", "A second CLI must not enter a lifecycle the first still holds.");
+		const [held] = await once(first.stdout!, "data", { signal: AbortSignal.timeout(5000) });
+		const second = await captured(process.execPath, ["--input-type=module", "-e",
+			`import { locked } from ${JSON.stringify(new URL("../src/state.ts", import.meta.url).href)};
+			const result = await locked({ dir: ${JSON.stringify(dir)} }, async () => "entered").catch(error => error.code);
+			console.log(result);`], root, process.env, 5000);
+		assert.equal(held.toString().trim(), "held");
+		assert.equal(second.stdout.trim(), "CLI_BUSY", "A second CLI must not enter a lifecycle the first still holds.");
 		assert.equal(alive(first.pid!), true);
-	} finally { if (first.pid) await killTree(first.pid); if (second.pid && alive(second.pid)) await killTree(second.pid); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+	} finally { await releaseSpawned(first); first.stdout?.destroy(); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 });
 test("development controls refuse use without ACQUIT_DEV=1 before app access", async () => {
 	await fixture(async cli => {

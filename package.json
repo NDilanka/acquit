@@ -9,7 +9,7 @@
     "dev:api": "node apps/api/src/server.ts",
     "seed": "node scripts/seed.ts",
     "ctl": "node packages/ctl/src/main.ts",
-    "test": "node --test --test-concurrency=1 packages/core/test/*.test.ts packages/ctl/test/*.test.ts",
+    "test": "node --test --test-timeout=60000 --test-concurrency=1 packages/core/test/*.test.ts packages/ctl/test/*.test.ts",
     "typecheck": "tsc -p . --noEmit",
     "smoke": "node scripts/smoke.mjs"
   },

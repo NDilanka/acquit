@@ -25,10 +25,8 @@ export function alive(pid: number): boolean {
 	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 	try { process.kill(pid, 0); return true; } catch { return false; }
 }
-// The child proves itself. The nonce names a private channel the preload opens
-// inside the spawned process; stop connects and requires the answered pid to be
-// the recorded pid. No command line is ever read. A dead, reused, or bystander
-// process cannot answer a channel it does not hold.
+// A reply alone is NOT proof: a squatter can name another process's pid.
+// Stop verifies the kernel-reported server PID on the answering connection.
 export function ownershipNonce(): string {
 	return randomBytes(16).toString("hex");
 }
@@ -49,7 +47,7 @@ function challenge(nonce: string, socketPath?: string): Promise<{ pid: number; p
 		socket.setEncoding("utf8");
 		socket.setTimeout(1000, () => done(null));
 		socket.once("connect", () => socket.write("prove\n"));
-		socket.on("data", chunk => { buffer += chunk; });
+		socket.on("data", chunk => { buffer += chunk; if (Buffer.byteLength(buffer) > 256) done(null); });
 		socket.once("end", () => {
 			const [pid, ppid] = buffer.trim().split(" ").map(Number);
 			done(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(ppid) && ppid >= 0 ? { pid, ppid } : null);
@@ -59,11 +57,23 @@ function challenge(nonce: string, socketPath?: string): Promise<{ pid: number; p
 }
 export async function ownedProcess(pid: number, nonce: string | null, socketPath?: string): Promise<boolean> {
 	if (!nonce || !alive(pid)) return false;
+	try {
+		ownershipChannel(nonce);
+		// No portable SO_PEERCRED in Node's public API. Refuse rather than treat
+		// an unverified Unix reply as kill authority.
+		if (process.platform !== "win32") return false;
+		const helper = fileURLToPath(new URL("./ownership-peer.ps1", import.meta.url));
+		const result = await captured("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", helper, "-Nonce", nonce], process.cwd(), process.env, 10_000);
+		const [peer, answer] = result.stdout.trim().split(" ").map(Number);
+		return result.code === 0 && peer === pid && answer === pid && alive(pid);
+	} catch { return false; }
+}
+export async function ownershipReady(child: ChildProcess, nonce: string, socketPath?: string): Promise<boolean> {
+	// Readiness is not kill authority. The native handle from THIS invocation
+	// owns the child; the cheap challenge just waits for its preload to listen.
+	if (child.exitCode !== null || child.signalCode !== null || !child.pid) return false;
 	const answer = await challenge(nonce, socketPath);
-	// The answer is the process's own pid, read from inside it. Recheck liveness
-	// after the round trip: a dead PID cannot have answered, and a reused PID
-	// does not hold this channel.
-	return answer !== null && answer.pid === pid && alive(pid);
+	return answer?.pid === child.pid && alive(child.pid);
 }
 export async function requireOwned(service: { pid: number; nonce?: string | null }, socketPath?: string): Promise<void> {
 	if (!alive(service.pid)) return;
@@ -161,7 +171,22 @@ export async function releaseSpawned(child: ChildProcess): Promise<void> {
 	// detached() unrefs this handle. Waiting on a Promise alone does not keep
 	// Node alive long enough to observe exit and finish ownership cleanup.
 	child.ref();
-	const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
-	child.kill();
-	await exited;
+	try {
+		await new Promise<void>((resolve, reject) => {
+			const finish = (error?: Error) => {
+				clearTimeout(timer);
+				child.removeListener("exit", onExit);
+				child.removeListener("error", onError);
+				error ? reject(error) : resolve();
+			};
+			const onExit = () => finish();
+			const onError = (error: Error) => finish(error);
+			const timer = setTimeout(() => finish(new CliError("PROCESS_FAILED", "Spawned child cleanup did not exit within 5s.", "Inspect the retained run file; retry ctl stop after verifying ownership.")), 5000);
+			child.once("exit", onExit);
+			child.once("error", onError);
+			try {
+				if (!child.kill() && !alive(child.pid ?? 0)) finish();
+			} catch (error) { finish(error as Error); }
+		});
+	} finally { child.unref(); }
 }

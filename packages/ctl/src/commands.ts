@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { alive, captured, CliError, detached, killTree, ownershipNonce, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
+import { alive, captured, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
@@ -101,8 +101,11 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			const deadline = Date.now() + timeout * 1000;
 			while (Date.now() < deadline) {
 				const probe = await probes(ctx.apiPort, ctx.webPort);
-				if (probe.apiReady && probe.webReady) return await runData(state, false);
 				if (!alive(state.api.pid) || !alive(state.web.pid)) throw new CliError("PROCESS_FAILED", "A spawned service exited before both endpoints answered.", "Inspect the service logs, then retry start.");
+				if (probe.apiReady && probe.webReady && (await Promise.all([
+					ownershipReady(api, state.api.nonce!, state.api.socketPath),
+					ownershipReady(web, state.web.nonce!, state.web.socketPath),
+				])).every(Boolean)) return await runData(state, false);
 				await sleep(200);
 			}
 			throw new CliError("START_TIMEOUT", `The app did not become ready within ${timeout}s. Last log lines are in ${state.logs.api} and ${state.logs.web}.`,
