@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
 import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
-import { decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../src/verifier.ts";
+import { boundedVerdict, decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../src/verifier.ts";
 import type { DefinitionOfDone, DiffChange, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
@@ -188,6 +188,25 @@ test("decideVerdict rejects a skipped frozen id, a failed hidden id, and a scree
 		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
 	])), clean, at) as Extract<Verdict, { result: "REJECTED" }>;
 	assert.deepEqual(denied.reasons, [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);
+});
+
+test("boundedVerdict always fits the callback, even with a huge reason", () => {
+	const bytes = (reason: RejectReason): number => Buffer.byteLength(JSON.stringify(reason), "utf8");
+	const many: RejectReason[] = Array.from({ length: 600 }, (_, index) => ({ kind: "PROTECTED_PATH_MODIFIED", path: `.github/workflows/w${index}.yml` }));
+	const long = "z".repeat(200);
+	const failed: RejectReason = { kind: "TESTS_FAILED", suite: "frozen",
+		failed: Array.from({ length: 512 }, (_, index) => `frozen:${index}:${long}` as TestId) };
+	const verdict = decideVerdict(request, [...many, failed], passed(), judgeHidden(cases, new Map()), null, at) as Extract<Verdict, { result: "REJECTED" }>;
+	const bounded = boundedVerdict(verdict) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(bounded.reasons.length, VERDICT_REASONS_MAX);
+	assert.equal(bounded.reasonsTruncated, verdict.reasons.length - VERDICT_REASONS_MAX);
+	assert.equal(bounded.reasons.some(reason => bytes(reason) > VERDICT_REASON_BYTES_MAX), false);
+	const body = JSON.stringify({ jobId: "job_test", ordinal: 1, report: { kind: "VERDICT", verdict: bounded } });
+	assert.ok(Buffer.byteLength(body, "utf8") <= VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 1_024, `body is ${Buffer.byteLength(body)} bytes`);
+	// A single reason past the bound is trimmed, not dropped: the first ids are the ones a person acts on.
+	const alone = boundedVerdict({ ...verdict, reasons: [failed] } as Extract<Verdict, { result: "REJECTED" }>) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(alone.reasonsTruncated, 0);
+	assert.ok(bytes(alone.reasons[0]!) <= VERDICT_REASON_BYTES_MAX);
 });
 
 test("decideVerdict refuses to verify a passing run that was never published", () => {

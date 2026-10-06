@@ -456,7 +456,7 @@ function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
 			cutoffAt: instant("2026-10-27T12:00:00Z") }, attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } };
 }
 const rejection = (runId: string, source = sourceCommit): Verdict => ({ result: "REJECTED", runId: runId as VerifierRunId,
-	sourceCommit: source, reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], at: now });
+	sourceCommit: source, reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, at: now });
 const acceptance = (runId: string): Verdict => ({ result: "VERIFIED", runId: runId as VerifierRunId, sourceCommit,
 	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha, pullRequest: 13,
 	frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now });

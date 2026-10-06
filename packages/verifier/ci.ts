@@ -147,8 +147,12 @@ export function parseVerdict(value: unknown): Verdict | null {
 		if (!Array.isArray(raw.reasons) || raw.reasons.length === 0) return null;
 		const reasons = raw.reasons.map(parseRejectReason);
 		if (reasons.some(reason => reason === null)) return null;
+		// The count is part of the contract: a rejection that does not say how much it dropped is not readable.
+		const reasonsTruncated = typeof raw.reasonsTruncated === "number" && Number.isSafeInteger(raw.reasonsTruncated) && raw.reasonsTruncated >= 0
+			? raw.reasonsTruncated : null;
+		if (reasonsTruncated === null) return null;
 		return { result: "REJECTED", runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha,
-			reasons: reasons as [RejectReason, ...RejectReason[]], at };
+			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated, at };
 	}
 	if (raw.result !== "VERIFIED") return null;
 	const mergeCommit = nonEmptyString(raw.mergeCommit);

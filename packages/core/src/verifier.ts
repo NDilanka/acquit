@@ -86,7 +86,10 @@ export type Verdict =
 		readonly result: "REJECTED";
 		readonly runId: VerifierRunId;
 		readonly sourceCommit: CommitSha;
+		/** The first reasons, bounded so one rejection always fits the callback. */
 		readonly reasons: readonly [RejectReason, ...RejectReason[]];
+		/** How many reasons were dropped from the end to fit the callback's bound. */
+		readonly reasonsTruncated: number;
 		readonly at: Instant;
 	};
 
@@ -135,6 +138,48 @@ export function boundedDetail(text: string): string {
 		.replace(/(temp_clone_token"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[redacted]")
 		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
 		.slice(0, FAILURE_DETAIL_CHARS);
+}
+
+/** The most reasons one callback carries. Reasons past this are counted in reasonsTruncated. */
+export const VERDICT_REASONS_MAX = 16;
+/** One reason's serialized bound inside a callback. A list or path past it is trimmed to fit. */
+export const VERDICT_REASON_BYTES_MAX = 1_536;
+/** The longest single text field one reason keeps when it is trimmed. */
+const REASON_TEXT_CHARS = 200;
+
+/**
+ * Bounds a rejection so its callback body always fits: at most VERDICT_REASONS_MAX reasons, each
+ * within VERDICT_REASON_BYTES_MAX, with the dropped reasons counted. The judge's own verdicts are
+ * built here, so a caller can read reasonsTruncated as "the tail of the list is not shown".
+ */
+export function boundedVerdict(verdict: Verdict): Verdict {
+	if (verdict.result !== "REJECTED") return verdict;
+	const reasons = verdict.reasons.slice(0, VERDICT_REASONS_MAX).map(boundedReason) as [RejectReason, ...RejectReason[]];
+	return { ...verdict, reasons, reasonsTruncated: verdict.reasons.length - reasons.length };
+}
+
+function reasonBytes(reason: RejectReason): number {
+	return Buffer.byteLength(JSON.stringify(reason), "utf8");
+}
+
+function boundedReason(reason: RejectReason): RejectReason {
+	if (reasonBytes(reason) <= VERDICT_REASON_BYTES_MAX) return reason;
+	switch (reason.kind) {
+		case "TESTS_FAILED": return { ...reason, failed: shrinkIds(reason.failed, ids => reasonBytes({ ...reason, failed: ids }) <= VERDICT_REASON_BYTES_MAX) };
+		case "TESTS_MISSING": return { ...reason, missing: shrinkIds(reason.missing, ids => reasonBytes({ ...reason, missing: ids }) <= VERDICT_REASON_BYTES_MAX) };
+		case "PROTECTED_PATH_MODIFIED": return { ...reason, path: reason.path.slice(0, REASON_TEXT_CHARS) };
+		case "TEST_FRAMEWORK_IN_SOURCE": return { ...reason, path: reason.path.slice(0, REASON_TEXT_CHARS), symbol: reason.symbol.slice(0, REASON_TEXT_CHARS) };
+		case "SUBJECT_FAULT": return { ...reason, detail: boundedDetail(reason.detail) };
+		case "TREE_SYMLINK": case "TREE_GITLINK": return { ...reason, path: reason.path.slice(0, REASON_TEXT_CHARS) };
+		default: return reason;
+	}
+}
+
+/** Halves an id list until its reason fits. The first ids are the ones a person acts on. */
+function shrinkIds(ids: readonly TestId[], fits: (ids: readonly TestId[]) => boolean): readonly TestId[] {
+	let kept = ids;
+	while (kept.length > 1 && !fits(kept)) kept = kept.slice(0, Math.floor(kept.length / 2));
+	return kept.length === 1 && !fits(kept) ? [kept[0]!.slice(0, REASON_TEXT_CHARS) as TestId] : kept;
 }
 
 /** The one line a client prints for a failure: its name, then its detail when it has one. */
@@ -411,7 +456,7 @@ export function decideVerdict(
 	const reasons: RejectReason[] = [...screen];
 	// A screen hit decides the run on its own: the subject never starts, so a missing test is not a finding.
 	if (reasons.length) return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
-		reasons: reasons as [RejectReason, ...RejectReason[]], at };
+		reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
 	const frozenMissing: TestId[] = [];
 	const frozenFailed: TestId[] = [];
 	for (const id of request.definitionOfDone.frozenTests) {
@@ -425,7 +470,7 @@ export function decideVerdict(
 	if (hidden.missing.length) reasons.push({ kind: "TESTS_MISSING", suite: "hidden", missing: hidden.missing });
 	if (reasons.length) {
 		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
-			reasons: reasons as [RejectReason, ...RejectReason[]], at };
+			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
 	}
 	if (!built) throw new VerifierPublishMissing();
 	const frozenTally: TestTally = { expected: request.definitionOfDone.frozenTests.length, passed: request.definitionOfDone.frozenTests.length };

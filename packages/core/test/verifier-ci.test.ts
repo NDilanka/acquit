@@ -81,10 +81,11 @@ test("the callback boundary carries a run's named failure, bounded, or nothing",
 });
 
 test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejection's named reason", () => {
-	const rejected = { result: "REJECTED", runId: "run_ci_2", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z",
+	const rejected = { result: "REJECTED", runId: "run_ci_2", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z", reasonsTruncated: 0,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }, { kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }] };
 	assert.deepEqual(parseVerdict(rejected)?.result, "REJECTED");
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasonsTruncated: undefined }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOMETHING_ELSE" }] }), null);
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_SYMLINK", path: "src/money.ts" }] })?.result, "REJECTED");
 	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_SYMLINK" }] }), null);

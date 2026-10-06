@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha } from "../../../packages/core/src/ids.ts";
+import { VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, devEnabled, verifierEnv, webOrigin } from "./config.ts";
 
@@ -53,7 +54,7 @@ async function body(req: IncomingMessage): Promise<unknown> {
  * The verifier callback's own cap, above the largest bounded verdict the service posts. The bytes are
  * read once and handed to the port unchanged: the signature is over what was posted, not a re-encoding.
  */
-const CALLBACK_BODY_LIMIT_BYTES = 32_768;
+const CALLBACK_BODY_LIMIT_BYTES = VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096;
 async function rawBody(req: IncomingMessage, max: number): Promise<string> {
 	const declared = Number(req.headers["content-length"] ?? "");
 	if (Number.isFinite(declared) && declared > max) throw new TooLarge("Request body too large");
