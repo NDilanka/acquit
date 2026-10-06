@@ -90,6 +90,7 @@ Preconditions:
   whose run nothing starts. The route accepts only a body signed with the callback secret; an
   unsigned or malformed report is dropped, and a report for a run the job is not waiting on records
   nothing.
-- The job's contract names the client repository. Today `OpenJob` accepts only `maya-client/invoice-app`
-  (`packages/core/src/seed-data.ts`), so a lane whose client repo is another account cannot open a job
-  against it; the command is denied `NOT_FOUND` by name.
+- The job's contract names the deployment's client repository: `ACQUIT_CLIENT_REPOSITORY`, default
+  `maya-client/invoice-app`. `OpenJob` accepts only that repository and freezes it into the contract,
+  so a lane whose client repo is another account sets the variable and opens a job against it; any
+  other repository is denied `NOT_FOUND` by name.

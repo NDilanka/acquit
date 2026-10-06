@@ -3,11 +3,11 @@
 // It clones the template (so the lane can never disturb the fixture), checks out the branch, and
 // prints the exact submit command for that lane's API port.
 //
-// The client repo a lane's job names must exist on GitHub and carry the frozen commit as its default
-// branch. --owner <account> --create makes that repo (private, main = the template's main) when `gh`
-// is authenticated, and reports whether the App installation can see it. The API's contract still
-// names maya-client/invoice-app for every job, so a lane cannot open a job against its own repo
-// until that hardcode is replaced; the printed clientRepo is what the contract must name.
+// The client repo a lane's job names is the deployment's client repository, `ACQUIT_CLIENT_REPOSITORY`
+// (default `maya-client/invoice-app`). It must exist on GitHub and carry the frozen commit as its
+// default branch. --owner <account> --create makes that repo (private, main = the template's main)
+// when `gh` is authenticated, and reports whether the App installation can see it. The printed
+// clientRepo is what the contract must name.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
