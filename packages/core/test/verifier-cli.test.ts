@@ -107,6 +107,24 @@ test("a push to a work repo funding has not created yet is refused by name", asy
 	const other = pushError!("origin", "error: failed to push some refs to 'origin'");
 	assert.equal(other.code, "PUSH_REFUSED");
 });
+test("a push refusal names both causes of a missing work repo and repeats no credential", async () => {
+	const { pushError } = await import("../../acquit-cli/src/submit.ts") as { pushError?: (remote: string, stderr: string) => CliError };
+	assert.equal(typeof pushError, "function");
+	const token = `ghp_${"S".repeat(36)}`;
+	const remote = `https://x-access-token:${token}@github.com/acquit-forks/invoice-app-7Q2K.git`;
+	const missing = pushError!(remote, "remote: Repository not found.\nfatal: failed to push some refs");
+	assert.equal(missing.code, "WORK_REPO_NOT_READY");
+	assert.match(missing.message, /created shortly after funding/);
+	assert.match(missing.message, /about 30 seconds/);
+	assert.match(missing.message, /credential cannot see the private repo/);
+	assert.match(missing.message, /App installation on the org/);
+	assert.equal(missing.message.includes(token), false, missing.message);
+	assert.equal(missing.message.includes("x-access-token"), false, missing.message);
+	const escaped = pushError!("origin", "remote: \u001b[2K\u001b[1Goverwritten by the remote\nfatal: failed to push some refs to 'origin'");
+	assert.equal(escaped.code, "PUSH_REFUSED");
+	assert.equal(/[\u0000-\u001f\u007f]/.test(escaped.message), false, JSON.stringify(escaped.message));
+	assert.equal(escaped.message.includes("overwritten by the remote"), true, escaped.message);
+});
 
 test("runSubmit polls until the submitted commit is judged and prints the block", async () => {
 	const calls: string[] = [];
