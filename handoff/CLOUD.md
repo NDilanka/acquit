@@ -15,7 +15,7 @@ The script:
 - widens a single-branch clone to fetch every branch, including `stack/h0-lanes`, `stack/f1-ledger`, and `stack/f3-verifier`
 - copies `trail/` into `data/trail/` and refuses to overwrite
 - restores the F3 fixtures into `scratch/verifier` and `scratch/verifier-judge`
-- clones `invoice-app` from its bundle with all 7 branches, reinstalls the vitest toolchain, and regenerates the judge trees
+- clones `invoice-app` from its bundle with all 8 branches, reinstalls the vitest toolchain, and regenerates the judge trees
 - creates worktrees at `../acquit-worktrees/{h0,f1,f3}` and copies `.env` into each one if it exists
 
 Put `.env` in the repo root before or after you run the script. Its keys are listed in `README.md`, plus `SANDBOX_BUYER_PASSWORD`. The secrets are not on this branch.
