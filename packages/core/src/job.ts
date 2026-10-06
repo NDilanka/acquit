@@ -614,6 +614,36 @@ export function storedBook(row: JobRow): readonly LedgerLine[] {
 	return held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
 }
 
+/** Where a stored row keeps its book and the raw parsed value exactly as stored, or NONE when the state cannot hold one yet, or UNREADABLE when the state shape is not recognized. The check path judges this value; storedBook above keeps the API projection's defaults for the same rows. */
+export type StoredBookRaw =
+	| { readonly kind: "NONE" }
+	| { readonly kind: "VALUE"; readonly path: string; readonly value: unknown }
+	| { readonly kind: "UNREADABLE"; readonly why: string };
+
+export function storedBookRaw(row: JobRow): StoredBookRaw {
+	const state = row.state as unknown;
+	if (state === null || typeof state !== "object") return { kind: "UNREADABLE", why: "state is not an object" };
+	const shape = state as { readonly status?: unknown; readonly phase?: unknown; readonly escrow?: unknown; readonly book?: unknown };
+	if (shape.status === "OPEN") {
+		const phase = shape.phase as { readonly kind?: unknown; readonly checkout?: unknown } | null | undefined;
+		if (phase === null || typeof phase !== "object") return { kind: "UNREADABLE", why: "OPEN phase is not an object" };
+		if (phase.kind === "BIDDING") return { kind: "NONE" };
+		if (phase.kind !== "FUNDING") return { kind: "UNREADABLE", why: "OPEN phase.kind is not a phase kind" };
+		const checkout = phase.checkout as { readonly phase?: unknown; readonly escrow?: unknown } | null | undefined;
+		if (checkout === null || typeof checkout !== "object") return { kind: "UNREADABLE", why: "OPEN FUNDING checkout is not an object" };
+		if (!["CREATING_ORDER", "AWAITING_APPROVAL", "CAPTURING", "REFUND_PENDING"].includes(String(checkout.phase))) return { kind: "UNREADABLE", why: "OPEN FUNDING checkout.phase is not a checkout phase" };
+		if (checkout.phase !== "REFUND_PENDING") return { kind: "NONE" };
+		const escrow = checkout.escrow as { readonly book?: unknown } | null | undefined;
+		return { kind: "VALUE", path: "checkout.escrow.book", value: escrow !== null && typeof escrow === "object" ? escrow.book : undefined };
+	}
+	if (shape.status === "IN_PROGRESS" || shape.status === "VERIFIED") {
+		const escrow = shape.escrow as { readonly book?: unknown } | null | undefined;
+		return { kind: "VALUE", path: "escrow.book", value: escrow !== null && typeof escrow === "object" ? escrow.book : undefined };
+	}
+	if (shape.status === "PAID" || shape.status === "REFUNDED" || shape.status === "CLOSED") return { kind: "VALUE", path: "book", value: shape.book };
+	return { kind: "UNREADABLE", why: "state.status is not a job status" };
+}
+
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobView {
 	const ranked = rankBids(row.bids, paidReceipts);
