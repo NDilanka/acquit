@@ -170,8 +170,12 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		}
 		const refPatch = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/git\/refs\/heads\/(.+)$/);
 		if (method === "PATCH" && refPatch) {
-			state.refs.set(`${repository}:${refPatch[1]}`, String(body.sha));
-			return json(response, 200, { ref: `refs/heads/${refPatch[1]}`, object: { sha: String(body.sha) } });
+			const sha = String(body.sha);
+			// The live API refuses to point a ref at an object the repository does not have, as its create route does.
+			if (!state.commits.get(repository)?.has(sha)) return json(response, 422, { message: "Reference update failed.",
+				errors: [{ message: "Object does not exist" }] });
+			state.refs.set(`${repository}:${refPatch[1]}`, sha);
+			return json(response, 200, { ref: `refs/heads/${refPatch[1]}`, object: { sha, type: "commit" } });
 		}
 		if (method === "GET" && url.pathname.endsWith("/pulls")) {
 			const head = url.searchParams.get("head") ?? "";
@@ -391,16 +395,57 @@ test("a verified commit the client repo does not have becomes a fork pull reques
 	assert.equal(published.mergeCommit, SUBMITTED);
 });
 
-test("an existing verified branch at another commit is refused and never moved", async t => {
+test("an existing verified branch at another commit is moved to the judged commit", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
-	// Another writer already owns the client repository's acquit/<job> branch at a different commit.
+	// A publish that did not finish left the client repository's acquit/<job> branch at an earlier commit.
 	stub.state.commits.get(CLIENT)?.add(SUBMITTED);
 	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, HEAD);
-	const failure = await refusal(port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-1"));
-	assert.equal(failure.code, "GITHUB_REF_CONFLICT");
-	assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), HEAD);
-	assert.deepEqual(stub.state.pulls, []);
+	const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-1");
+	assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), SUBMITTED);
+	assert.equal(stub.state.pulls.at(0)?.head, `${CLIENT_OWNER}:acquit/${JOB}`);
+	assert.equal(published.pullRequest, stub.state.pulls.at(0)?.number);
+	assert.equal(published.mergeCommit, SUBMITTED);
+	assert.equal(stub.state.checks.at(0)?.head_sha, SUBMITTED);
+});
+
+test("a later clean commit moves the branch the previous publish made and adopts its pull request", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	// A previous publish left the branch, the pull request, and the check run at the first commit; the job
+	// is back at READY, and the operator's next clean commit is judged later.
+	const first = await port.publishVerified(publishRequest, "req-1");
+	stub.state.commits.get(CLIENT)?.add(SUBMITTED);
+	const second = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");
+	assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), SUBMITTED);
+	assert.deepEqual(stub.state.pulls.map(pull => pull.number), [first.pullRequest]);
+	assert.equal(second.pullRequest, first.pullRequest);
+	assert.equal(second.mergeCommit, SUBMITTED);
+	// The check run is per commit: the judged commit gets its own, keyed by the job's external id.
+	assert.equal(stub.state.checks.length, 2);
+	assert.equal(stub.state.checks.at(1)?.head_sha, SUBMITTED);
+	assert.equal(stub.state.checks.at(1)?.external_id, JOB);
+});
+
+test("a branch left on both repositories converges on the fork when the client repo lacks the commit", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	await port.createWorkRepo(workRepoRequest, "req-1");
+	// The previous publish left the branch on both repositories; the next clean commit is only on the work
+	// fork, so the client repo's ref update is refused with the object absent and the fork carries the branch.
+	stub.state.commits.get(WORK_REPO)?.add(SUBMITTED);
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, FROZEN);
+	stub.state.refs.set(`${WORK_REPO}:acquit/${JOB}`, FROZEN);
+	const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");
+	assert.equal(stub.state.requests.some(request => request.method === "PATCH" && request.path === `/repos/${CLIENT}/git/refs/heads/acquit/${JOB}`), true);
+	assert.equal(stub.state.requests.some(request => request.method === "PATCH" && request.path === `/repos/${WORK_REPO}/git/refs/heads/acquit/${JOB}`), true);
+	assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), FROZEN);
+	assert.equal(stub.state.refs.get(`${WORK_REPO}:acquit/${JOB}`), SUBMITTED);
+	assert.equal(stub.state.pulls.at(0)?.head, `${ORG}:acquit/${JOB}`);
+	assert.equal(published.pullRequest, stub.state.pulls.at(0)?.number);
+	assert.equal(published.mergeCommit, SUBMITTED);
+	assert.equal(stub.state.checks.at(0)?.repo, WORK_REPO);
+	assert.equal(stub.state.checks.at(0)?.head_sha, SUBMITTED);
 });
 
 test("an org without the App refuses by name before any write", async t => {
