@@ -260,6 +260,13 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 	/** Server text, bounded and redacted before it is copied anywhere. */
 	const said = (body: unknown): string => boundedDetail(textOf(body, "message") ?? "");
+	/** GitHub's wording for a ref write naming an object the repository does not have. */
+	const saysObjectAbsent = (body: unknown): boolean => {
+		const messages = [textOf(body, "message") ?? ""];
+		const errors = body !== null && typeof body === "object" ? (body as { errors?: unknown }).errors : undefined;
+		if (Array.isArray(errors)) for (const item of errors) messages.push(textOf(item, "message") ?? "");
+		return /object does not exist/i.test(messages.join(" "));
+	};
 
 	const refusal = (status: number, body: unknown, headers: Headers, spec: Call): GitHubAppError => {
 		const detail = `${spec.method} ${spec.path} answered ${status}${said(body) ? `: ${said(body)}` : "."}`;
@@ -391,11 +398,18 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		// This branch is written only by the publisher, and a job's run is single-flight, so a ref at
 		// another commit is a previous publish that did not finish: the judged commit is the target
 		// state, and the retry after that failure converges instead of refusing the job forever.
-		const answer = await call(`Bearer ${token}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${branch}`, allow: [200, 422],
-			permission: "contents: write", body: { sha: commit, force: true } });
+		const spec: Call = { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${branch}`, allow: [200, 422],
+			permission: "contents: write", body: { sha: commit, force: true } };
+		const answer = await call(`Bearer ${token}`, spec);
 		if (answer.status === 200) return;
-		// The 422 is the object missing from this repository: the caller's fallback tries the work fork.
-		throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: 422 });
+		// Only "Object does not exist" means the fork can carry the commit instead. Any other 422 is a
+		// refusal on another rule, and reading it as an absent object would branch the fork and ask for
+		// a pull request GitHub refuses for that other reason. A 409 is not allowed and refuses below.
+		if (saysObjectAbsent(answer.body)) {
+			throw new GitHubAppError("GITHUB_COMMIT_ABSENT",
+				`${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: 422 });
+		}
+		throw refusal(422, answer.body, answer.headers, spec);
 	};
 
 	/** Creates this job's fork. Answers "created" only when this call's 202 named the repository it asked for. */
