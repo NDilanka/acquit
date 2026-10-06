@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -31,7 +31,7 @@ const definitionOfDone: DefinitionOfDone = { issue: { repository: "maya-client/i
 	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] as never };
 
 /** A real two-commit repository, so the diff and the materialized tree are the ones the judge builds. */
-function repositoryWith(moduleSource: string): { readonly repo: string; readonly frozen: CommitSha; readonly head: CommitSha; readonly remove: () => void } {
+function repositoryWith(moduleSource: string, extra?: (repo: string) => void): { readonly repo: string; readonly frozen: CommitSha; readonly head: CommitSha; readonly remove: () => void } {
 	const repo = mkdtempSync(join(tmpdir(), "acquit-forge-"));
 	mkdirSync(join(repo, "src"), { recursive: true });
 	writeFileSync(join(repo, "README.md"), "fixture\n");
@@ -46,6 +46,7 @@ function repositoryWith(moduleSource: string): { readonly repo: string; readonly
 	git(["commit", "-qm", "frozen"]);
 	const frozen = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() as CommitSha;
 	writeFileSync(join(repo, "src/money.ts"), moduleSource);
+	extra?.(repo);
 	git(["add", "-A"]);
 	git(["commit", "-qm", "submitted"]);
 	return { repo, frozen, head: spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() as CommitSha,
@@ -96,6 +97,29 @@ test("a subject that never reports ready is incomplete, not a pass", async () =>
 		assert.equal(run.ready, false);
 		assert.deepEqual(run.faults, ["SUBJECT_INCOMPLETE"]);
 	} finally { fixture.remove(); }
+});
+
+test("a submitted tree that carries a symlink is rejected before the subject starts", async () => {
+	const outside = mkdtempSync(join(tmpdir(), "acquit-outside-"));
+	writeFileSync(join(outside, "module.ts"), `export function formatTotal(): string { return "outside"; }\n`);
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
+		rmSync(join(repo, "src/money.ts"));
+		symlinkSync(join(outside, "module.ts"), join(repo, "src/money.ts"));
+	});
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_symlink" as VerifierRunId, jobId: "job_symlink" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT");
+		if (outcome.kind !== "VERDICT") return;
+		assert.equal(outcome.verdict.result, "REJECTED");
+		if (outcome.verdict.result !== "REJECTED") return;
+		assert.deepEqual(outcome.verdict.reasons, [{ kind: "TREE_SYMLINK", path: "src/money.ts" }]);
+		assert.equal(outcome.subject, null);
+	} finally { fixture.remove(); rmSync(outside, { recursive: true, force: true }); }
 });
 
 test("the bootstrap's frame limits are the judge's own limits", () => {
