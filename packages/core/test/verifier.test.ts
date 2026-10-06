@@ -209,6 +209,21 @@ test("boundedVerdict always fits the callback, even with a huge reason", () => {
 	assert.ok(bytes(alone.reasons[0]!) <= VERDICT_REASON_BYTES_MAX);
 });
 
+test("boundedVerdict holds a reason whose text escapes past the character bound", () => {
+	const bytes = (reason: RejectReason): number => Buffer.byteLength(JSON.stringify(reason), "utf8");
+	// One control character serializes to six bytes, so 200 of them are 1,200 bytes per text field.
+	const control = "\u0001".repeat(200);
+	const reason: RejectReason = { kind: "TEST_FRAMEWORK_IN_SOURCE", path: control, symbol: control };
+	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit, at,
+		reasons: Array.from({ length: VERDICT_REASONS_MAX }, () => reason) as [RejectReason, ...RejectReason[]], reasonsTruncated: 0 };
+	const bounded = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(bounded.reasons.some(one => bytes(one) > VERDICT_REASON_BYTES_MAX), false);
+	const body = JSON.stringify({ jobId: "job_probe01", ordinal: 1, report: { kind: "VERDICT", verdict: bounded } });
+	// apps/api refuses a callback body past VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4,096.
+	assert.ok(Buffer.byteLength(body, "utf8") <= VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096,
+		`body is ${Buffer.byteLength(body, "utf8")} bytes`);
+});
+
 test("decideVerdict refuses to verify a passing run that was never published", () => {
 	assert.throws(() => decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
 		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],
