@@ -153,7 +153,7 @@ test("a submitted link to an outside directory is refused with nothing outside t
 	} finally { fixture.remove(); rmSync(outside, { recursive: true, force: true }); }
 });
 
-test("a link that loops back on the tree is refused before any walk can follow it", async () => {
+test("a link that loops back on the tree is refused by name and the subject never starts", async () => {
 	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`, repo => {
 		symlinkSync(".", join(repo, "src/self"));
 	});
