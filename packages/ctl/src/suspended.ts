@@ -1,4 +1,4 @@
-import { ownedProcess, powershell } from "./process.ts";
+import { ownedService, powershell } from "./process.ts";
 import { resolve } from "node:path";
 import type { RunState } from "./state.ts";
 
@@ -41,7 +41,7 @@ $rows=@(foreach($r in Get-CimInstance Win32_Process) {
 			const matches = rows.filter(row => row.nonce === service.nonce && Number.isSafeInteger(row.pid) && row.pid > 0
 				&& Array.isArray(row.threads) && allThreadsSuspended(row.threads));
 			if (!matches.length) continue;
-			const provenPid = service.pid > 0 && await ownedProcess(service.pid, service.nonce!, service.socketPath) ? service.pid : null;
+			const provenPid = service.pid > 0 && await ownedService(service) ? service.pid : null;
 			for (const row of matches.filter(row => row.pid !== provenPid)) candidates.push({
 				role, pid: row.pid, recordedPid: service.pid, nonce: service.nonce, createdAt: row.createdAt,
 				allThreadsSuspended: true, ownershipProven: false,

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { alive, captured, detached, killTree, ownedProcess, ownershipNonce, releaseSpawned, requireOwned, sleep } from "../src/process.ts";
+import { alive, captured, childListener, detached, killTree, ownedProcess, ownershipNonce, releaseSpawned, requireOwned, sleep } from "../src/process.ts";
 import { laneSlot, lockName } from "../src/state.ts";
 import { start, stop } from "../src/commands.ts";
 
@@ -267,10 +267,14 @@ test("the process proves itself: an owned child answers, a bystander with the no
 	try {
 		const deadline = Date.now() + 3000;
 		let proved = false;
-		while (!proved && Date.now() < deadline) { proved = await ownedProcess(owned.pid!, nonce, socket); await sleep(20); }
+		while (!proved && Date.now() < deadline) {
+			const proof = socket ? await childListener(owned.pid!, socket, 250) : null;
+			proved = await ownedProcess(owned.pid!, nonce, socket, proof);
+			await sleep(20);
+		}
 		assert.equal(proved, true, "The spawned child must answer the challenge with its own pid.");
 		assert.equal(await ownedProcess(bystander.pid!, nonce, socket), false, "A bystander with the nonce in argv must not answer.");
-		await assert.rejects(requireOwned({ pid: bystander.pid!, nonce }, socket), /did not answer the ownership challenge/);
+		await assert.rejects(requireOwned({ pid: bystander.pid!, nonce, socketPath: socket }), /did not answer the ownership challenge/);
 		assert.equal(alive(bystander.pid!), true);
 		await releaseSpawned(owned);
 		assert.equal(await ownedProcess(owned.pid!, nonce, socket), false, "A dead PID must not answer.");
@@ -288,7 +292,11 @@ test("ownership still holds when the proof channel's directory path contains a s
 	try {
 		const deadline = Date.now() + 3000;
 		let proved = false;
-		while (!proved && Date.now() < deadline) { proved = await ownedProcess(owned.pid!, nonce, socket); await sleep(20); }
+		while (!proved && Date.now() < deadline) {
+			const proof = socket ? await childListener(owned.pid!, socket, 250) : null;
+			proved = await ownedProcess(owned.pid!, nonce, socket, proof);
+			await sleep(20);
+		}
 		assert.equal(proved, true);
 		await releaseSpawned(owned);
 		assert.equal(alive(owned.pid!), false);

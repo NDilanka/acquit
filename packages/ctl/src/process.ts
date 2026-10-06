@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { closeSync, openSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -51,54 +51,126 @@ export function ownershipChannel(nonce: string): string {
 	if (!/^[0-9a-f]{32}$/.test(nonce)) throw new CliError("INVALID_STATE", "Refusing an ownership nonce that is not 32 hex characters.", "Retry start. Do not reuse a legacy run file.");
 	return process.platform === "win32" ? `\\\\.\\pipe\\acquit-${nonce}` : nonce;
 }
-// Node has no public SO_PEERCRED, so the Unix peer is proven from two kernel
-// tables: /proc/net/unix maps a bound path to the inode that names its listening
-// socket, and /proc/<pid>/fd shows which sockets a process holds. An answer is
-// kill authority only when the answering pid holds the listener it answered on.
-function listeningSocketInodes(path: string): Set<number> {
-	const inodes = new Set<number>();
+// Node has no public SO_PEERCRED, so the Unix peer is proven from kernel state
+// instead. A path string is not a credential: any process that can bind or share
+// the path can answer a challenge with another process's pid. start therefore
+// records, from the spawned child's own /proc entries, the inode of the listening
+// socket it bound and the child's start time; stop accepts an answer only when
+// that same pid still owns that exact listener, is still the same process, and
+// holds the accepted connection the answer arrived on.
+export interface ListenerProof {
+	startTime: string;
+	listenerInode: number;
+}
+interface UnixSocket {
+	inode: number;
+	path: string;
+	listening: boolean;
+	connected: boolean;
+}
+// /proc/net/unix rows: address, refcount, protocol, flags, type, state, inode, path.
+// The path stays on a row after the socket file is unlinked, so a stale row can
+// never be the proof by itself.
+function unixSockets(): UnixSocket[] {
+	const sockets: UnixSocket[] = [];
 	let table: string;
-	try { table = readFileSync("/proc/net/unix", "utf8"); } catch { return inodes; }
+	try { table = readFileSync("/proc/net/unix", "utf8"); } catch { return sockets; }
 	for (const line of table.split("\n").slice(1)) {
 		const fields = line.trim().split(/\s+/);
 		const inode = Number(fields[6]);
-		if (fields.length > 7 && Number.isSafeInteger(inode) && fields.slice(7).join(" ") === path) inodes.add(inode);
+		if (fields.length > 7 && Number.isSafeInteger(inode) && fields[4] === "0001") {
+			sockets.push({ inode, path: fields.slice(7).join(" "), listening: fields[3] === "00010000", connected: fields[5] === "03" });
+		}
 	}
-	return inodes;
+	return sockets;
 }
-function holdsSocket(pid: number, inodes: Set<number>): boolean {
-	if (!inodes.size) return false;
+function socketInodes(pid: number): Set<number> {
+	const inodes = new Set<number>();
 	let fds: string[];
-	try { fds = readdirSync(`/proc/${pid}/fd`); } catch { return false; }
+	try { fds = readdirSync(`/proc/${pid}/fd`); } catch { return inodes; }
 	for (const fd of fds) {
 		let target: string;
 		try { target = readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
-		for (const inode of inodes) if (target === `socket:[${inode}]`) return true;
+		if (target.startsWith("socket:[")) inodes.add(Number(target.slice(8, -1)));
 	}
-	return false;
+	return inodes;
+}
+function startTimeOf(pid: number): string | null {
+	// /proc/<pid>/stat field 22, the process start time in clock ticks.
+	return processFields(pid)?.[19] ?? null;
+}
+function listenerProof(service: { startTime?: string | null; listenerInode?: number | null }): ListenerProof | null {
+	const { startTime, listenerInode } = service;
+	if (typeof startTime !== "string" || startTime.length === 0) return null;
+	if (typeof listenerInode !== "number" || !Number.isSafeInteger(listenerInode) || listenerInode <= 0) return null;
+	return { startTime, listenerInode };
+}
+// The facts start records for one spawned service, read from that child's own
+// /proc entries once the preload has bound the proof socket.
+export async function childListener(pid: number, socketPath: string, timeout = 10_000): Promise<ListenerProof | null> {
+	const deadline = Date.now() + timeout;
+	for (;;) {
+		const startTime = startTimeOf(pid);
+		const held = socketInodes(pid);
+		const owned = unixSockets().filter(socket => socket.listening && socket.path === socketPath && held.has(socket.inode));
+		if (startTime && owned.length === 1) return { startTime, listenerInode: owned[0].inode };
+		if (!alive(pid) || Date.now() >= deadline) return null;
+		await sleep(25);
+	}
+}
+function ownsListener(pid: number, socketPath: string, proof: ListenerProof, held: Set<number>): boolean {
+	if (!held.has(proof.listenerInode)) return false;
+	if (startTimeOf(pid) !== proof.startTime) return false;
+	let target;
+	// lstat, never stat: a symlink planted at the recorded path hands the
+	// challenge to whatever the link points at.
+	try { target = lstatSync(socketPath); } catch { return false; }
+	if (target.isSymbolicLink() || !target.isSocket()) return false;
+	const listening = unixSockets().filter(socket => socket.listening && socket.path === socketPath);
+	return listening.length === 1 && listening[0].inode === proof.listenerInode;
 }
 const ownershipPreload = fileURLToPath(new URL("./ownership-preload.cjs", import.meta.url));
-function challenge(nonce: string, socketPath?: string): Promise<{ pid: number; ppid: number } | null> {
+type OwnerAnswer = { pid: number; ppid: number };
+function parseAnswer(text: string): OwnerAnswer | null {
+	const [pid, ppid] = text.trim().split(" ").map(Number);
+	return Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(ppid) && ppid >= 0 ? { pid, ppid } : null;
+}
+function ownerChannel(nonce: string, socketPath?: string): string | null {
+	try { return process.platform === "win32" ? ownershipChannel(nonce) : socketPath ?? ""; } catch { return null; }
+}
+// Resolves on the first complete reply and keeps the connection open: the caller
+// reads kernel state while the accepted socket still exists, then releases it.
+function askOwner(path: string): Promise<{ answer: OwnerAnswer | null; release: () => void }> {
 	return new Promise(resolve => {
-		let path: string;
-		try { path = process.platform === "win32" ? ownershipChannel(nonce) : socketPath ?? ""; }
-		catch { resolve(null); return; }
-		if (!path) { resolve(null); return; }
 		const socket = createConnection(path);
 		let buffer = "";
-		const done = (answer: { pid: number; ppid: number } | null) => { socket.destroy(); resolve(answer); };
+		let settled = false;
+		const done = (answer: OwnerAnswer | null) => {
+			if (settled) return;
+			settled = true;
+			resolve({ answer, release: () => socket.destroy() });
+		};
 		socket.setEncoding("utf8");
 		socket.setTimeout(1000, () => done(null));
 		socket.once("connect", () => socket.write("prove\n"));
-		socket.on("data", chunk => { buffer += chunk; if (Buffer.byteLength(buffer) > 256) done(null); });
-		socket.once("end", () => {
-			const [pid, ppid] = buffer.trim().split(" ").map(Number);
-			done(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(ppid) && ppid >= 0 ? { pid, ppid } : null);
+		socket.on("data", chunk => {
+			buffer += chunk;
+			if (Buffer.byteLength(buffer) > 256) { done(null); return; }
+			const line = buffer.indexOf("\n");
+			if (line >= 0) done(parseAnswer(buffer.slice(0, line)));
 		});
+		socket.once("end", () => done(parseAnswer(buffer)));
 		socket.once("error", () => done(null));
 	});
 }
-export async function ownedProcess(pid: number, nonce: string | null, socketPath?: string): Promise<boolean> {
+async function challenge(nonce: string, socketPath?: string): Promise<OwnerAnswer | null> {
+	const path = ownerChannel(nonce, socketPath);
+	if (!path) return null;
+	const proof = await askOwner(path);
+	proof.release();
+	return proof.answer;
+}
+export async function ownedProcess(pid: number, nonce: string | null, socketPath?: string, proof?: ListenerProof | null): Promise<boolean> {
 	if (!nonce || !alive(pid)) return false;
 	try {
 		ownershipChannel(nonce);
@@ -108,12 +180,31 @@ export async function ownedProcess(pid: number, nonce: string | null, socketPath
 			const [peer, answer] = result.stdout.trim().split(" ").map(Number);
 			return result.code === 0 && peer === pid && answer === pid && alive(pid);
 		}
-		// A legacy record without the channel's path proves nothing; neither
-		// does a reply from a pid that does not hold the listener it replied on.
-		if (process.platform !== "linux" || !socketPath) return false;
-		const answer = await challenge(nonce, socketPath);
-		return answer?.pid === pid && holdsSocket(pid, listeningSocketInodes(socketPath)) && alive(pid);
+		// A legacy record without the channel's path proves nothing; neither does
+		// one without the listener inode and start time the child's own /proc
+		// reported at start.
+		if (process.platform !== "linux" || !socketPath || !proof) return false;
+		const before = socketInodes(pid);
+		if (!ownsListener(pid, socketPath, proof, before)) return false;
+		const path = ownerChannel(nonce, socketPath);
+		if (!path) return false;
+		const reply = await askOwner(path);
+		try {
+			if (reply.answer?.pid !== pid) return false;
+			const after = socketInodes(pid);
+			// The answer must arrive on a connection the recorded process holds:
+			// its accepted socket is a new connected row at the recorded path
+			// inside that process's own fd table. A process that merely holds a
+			// duplicated listener fd, or one that forged the pid from elsewhere,
+			// never has this fd.
+			const accepted = unixSockets().filter(socket => socket.connected && socket.path === socketPath && after.has(socket.inode) && !before.has(socket.inode));
+			if (accepted.length !== 1) return false;
+			return ownsListener(pid, socketPath, proof, after) && alive(pid);
+		} finally { reply.release(); }
 	} catch { return false; }
+}
+export async function ownedService(service: { pid: number; nonce?: string | null; socketPath?: string; startTime?: string | null; listenerInode?: number | null }): Promise<boolean> {
+	return ownedProcess(service.pid, service.nonce ?? null, service.socketPath, listenerProof(service));
 }
 export async function ownershipReady(child: ChildProcess, nonce: string, socketPath?: string): Promise<boolean> {
 	// Readiness is not kill authority. The native handle from THIS invocation
@@ -122,10 +213,10 @@ export async function ownershipReady(child: ChildProcess, nonce: string, socketP
 	const answer = await challenge(nonce, socketPath);
 	return answer?.pid === child.pid && alive(child.pid);
 }
-export async function requireOwned(service: { pid: number; nonce?: string | null }, socketPath?: string): Promise<void> {
+export async function requireOwned(service: { pid: number; nonce?: string | null; socketPath?: string; startTime?: string | null; listenerInode?: number | null }): Promise<void> {
 	if (!alive(service.pid)) return;
-	if (await ownedProcess(service.pid, service.nonce ?? null, socketPath)) return;
-	throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: it did not answer the ownership challenge with its own pid (dead, reused, unrelated, or a legacy run file).`,
+	if (await ownedService(service)) return;
+	throw new CliError("PID_MISMATCH", `Refuse PID ${service.pid}: it did not answer the ownership challenge with its own pid and its recorded listener (dead, reused, unrelated, or a legacy run file).`,
 		`Inspect PID ${service.pid} and the run file locally. Stop it manually only after confirming ownership; then retry ctl stop to clear the stale record. Never adopt an unverified PID.`);
 }
 export function portOpen(port: number, host = "127.0.0.1"): Promise<boolean> {

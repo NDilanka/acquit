@@ -3,7 +3,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
 import type { StoredBookRaw } from "../../core/src/job.ts";
-import { alive, captured, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
+import { alive, captured, childListener, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
@@ -120,8 +120,8 @@ async function stopOwned(state: RunState): Promise<void> {
 	// then fail on the port that sibling still holds. Two dead records kill
 	// nothing, so they may still be cleared.
 	const live = [state.api, state.web].filter(service => alive(service.pid));
-	for (const service of live) await requireOwned(service, service.socketPath);
-	for (const service of live) { await requireOwned(service, service.socketPath); await killTree(service.pid); }
+	for (const service of live) await requireOwned(service);
+	for (const service of live) { await requireOwned(service); await killTree(service.pid); }
 	const deadline = Date.now() + 10_000;
 	while (Date.now() < deadline) {
 		if (!(await portOpen(state.api.port)) && !(await portOpen(state.web.port))) return;
@@ -134,6 +134,23 @@ async function runData(state: RunState, alreadyRunning: boolean): Promise<Result
 	return { alreadyRunning, urls: urls(state.api.port, state.web.port), pids: { api: state.api.pid, web: state.web.pid }, logs: state.logs,
 		databasePath: state.databasePath, seeded: rows.operators > 0, ...(rows.operators === 0 ? { hint: "Run npm run -s ctl -- seed-db --yes." } : {}) };
 }
+// Record the listener inode and start time of a just-spawned service from that
+// child's own /proc entries, before it is trusted with a kill. A record without
+// them can never authorize a stop, so publish them as soon as the child binds.
+async function recordListener(ctx: Context, state: RunState, role: "api" | "web"): Promise<void> {
+	if (process.platform === "win32") return;
+	const service = state[role];
+	const proof = await childListener(service.pid, service.socketPath!, 10_000);
+	if (!proof) {
+		// A dead child is reported by the readiness loop below with the exit.
+		if (!alive(service.pid)) return;
+		throw new CliError("PROCESS_FAILED", `The ${role} service never published an ownership listener this CLI could verify.`,
+			`Inspect ${state.logs[role]} and PID ${service.pid} locally, then retry npm run -s ctl -- start. Never adopt an unverified PID.`);
+	}
+	service.startTime = proof.startTime;
+	service.listenerInode = proof.listenerInode;
+	await atomicJson(ctx.stateFile, state);
+}
 export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	const timeout = Number(parsed.timeout);
 	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > 600) throw new CliError("INVALID_ARGUMENT", "--timeout must be between 0 and 600 seconds, excluding zero.", "Run npm run -s ctl -- start --timeout 30.", 2);
@@ -141,7 +158,7 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 	return locked(ctx, async () => {
 		const previous = await readState(ctx);
 		if (previous) {
-			for (const service of [previous.api, previous.web]) await requireOwned(service, service.socketPath);
+			for (const service of [previous.api, previous.web]) await requireOwned(service);
 			const probe = await probes(previous.api.port, previous.web.port);
 			if (alive(previous.api.pid) && alive(previous.web.pid) && probe.apiReady && probe.webReady) return runData(previous, true);
 			for (const service of [previous.api, previous.web]) if (!alive(service.pid) && await portOpen(service.port)) {
@@ -173,6 +190,7 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			children.push(api);
 			state.api.pid = api.pid!;
 			await atomicJson(ctx.stateFile, state);
+			await recordListener(ctx, state, "api");
 			const web = await detached(vite, state.web.nonce!, resolve(ctx.root, "apps/web"),
 				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}`,
 					ACQUIT_OWNERSHIP_RECORD: ctx.stateFile, ACQUIT_OWNERSHIP_ROLE: "web" }, state.logs.web,
@@ -180,6 +198,7 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			children.push(web);
 			state.web.pid = web.pid!;
 			await atomicJson(ctx.stateFile, state);
+			await recordListener(ctx, state, "web");
 			const deadline = Date.now() + timeout * 1000;
 			while (Date.now() < deadline) {
 				const probe = await probes(ctx.apiPort, ctx.webPort);
@@ -207,7 +226,7 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
 		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
 		if (parsed["dry-run"]) {
-			for (const service of wouldKill) await requireOwned(service, service.socketPath);
+			for (const service of wouldKill) await requireOwned(service);
 			return { stopped: false, wouldKill, run: state };
 		}
 		// stopOwned already proves EVERY live service before any kill and

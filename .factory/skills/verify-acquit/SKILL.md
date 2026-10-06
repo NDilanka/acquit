@@ -48,7 +48,7 @@ $env:ACQUIT_DEV='1'
 node packages/ctl/src/main.ts start --timeout 60 | Tee-Object -FilePath 'data/evidence/verify-acquit/RUN_STAMP/launch.json'
 ```
 
-Note the background PID and log path. Wait, then read `launch.json`. Require `ok:true`, `alreadyRunning:false`, the verification database path, and the expected URLs. The CLI reports ready only after both endpoints and both children's ownership channels answer. An answer alone is not kill authority. On Windows, stop checks the kernel pipe-server PID on the answering connection. On Linux, stop checks that the answering PID holds the listening socket at the socket path recorded in the run file, read from `/proc/net/unix` and `/proc/<pid>/fd`. Other platforms refuse run-file kills.
+Note the background PID and log path. Wait, then read `launch.json`. Require `ok:true`, `alreadyRunning:false`, the verification database path, and the expected URLs. The CLI reports ready only after both endpoints and both children's ownership channels answer. An answer alone is not kill authority. On Windows, stop checks the kernel pipe-server PID on the answering connection. On Linux, start records the listener inode and the process start time it reads from each child's own `/proc` entries, and stop requires that same PID, that start time, that exact inode as the only listener at the recorded socket path, and the accepted connection the answer arrived on in that process's own fd table. A path string is never the credential. Other platforms refuse run-file kills.
 
 ## Linux lanes
 
@@ -58,7 +58,7 @@ The lane commands are the same as above. Translate the shell and the port check.
 - PowerShell 7 is not needed. The control CLI uses only Node built-ins.
 - Launch through a background Execute call, as above. The app processes are detached and survive the call.
 - Prove a stop freed the lane ports with `ss -ltn '( sport = 4380 or sport = 5243 )'`. An empty table means both ports closed.
-- A stop requires the socket path recorded next to each PID. A legacy run file without one is refused with `PID_MISMATCH`, and nothing is killed.
+- A stop requires the socket path, the listener inode, and the process start time recorded next to each PID. A legacy run file without them is refused with `PID_MISMATCH`, and nothing is killed.
 - A stop leaves `own-<nonce>.sock` files in the lane's run directory. Each start binds a new nonce-named path, so the old files are inert.
 
 Inspect the proposed reset, then reset only this run's verification database. Seeding invalidates all development sessions. Log in only after seeding.

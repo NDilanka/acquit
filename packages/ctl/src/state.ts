@@ -2,7 +2,7 @@ import { createServer } from "node:net";
 import type { Server } from "node:net";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync } from "node:fs";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, chmod, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JobRow } from "../../core/src/job.ts";
@@ -19,6 +19,10 @@ export interface ServiceRecord {
 	// Unix proof channels are filesystem sockets. Windows derives the pipe name
 	// from the nonce, so this is absent there.
 	socketPath?: string;
+	// The listener inode and the process start time start read from the spawned
+	// child's own /proc entries. stop refuses to kill without them: a path
+	// string alone names no process.
+	listenerInode?: number | null;
 }
 export interface RunState {
 	api: ServiceRecord;
@@ -134,7 +138,10 @@ async function acquireLock(name: string): Promise<Server> {
 	});
 }
 export async function locked<T>(ctx: Context, run: () => Promise<T>): Promise<T> {
-	await mkdir(ctx.dir, { recursive: true });
+	// The ownership sockets live in this directory: keep it private so no other
+	// user can replace a socket file or squat the name.
+	await mkdir(ctx.dir, { recursive: true, mode: 0o700 });
+	await chmod(ctx.dir, 0o700);
 	const server = await acquireLock(lockName(ctx.dir));
 	try { return await run(); }
 	finally { await new Promise<void>(resolve => server.close(() => resolve())); }
