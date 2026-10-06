@@ -648,6 +648,25 @@ test("a caller-supplied name that could rewrite a URL is refused before any dial
 	assert.deepEqual(stub.state.requests, []);
 });
 
+test("a boundary value that is not a string is refused by name, not crashed on", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const cases: readonly { readonly what: string; readonly work: () => Promise<unknown> }[] = [
+		{ what: "missing repository", work: () => port.createWorkRepo({ ...workRepoRequest, repository: null as unknown as string }, "r") },
+		{ what: "object repository", work: () => port.createWorkRepo({ ...workRepoRequest, repository: {} as unknown as string }, "r") },
+		{ what: "missing job id", work: () => port.createWorkRepo({ ...workRepoRequest, jobId: null as unknown as JobId }, "r") },
+		{ what: "missing frozen commit", work: () => port.createWorkRepo({ ...workRepoRequest, frozenCommit: undefined as unknown as CommitSha }, "r") },
+		{ what: "numeric frozen commit", work: () => port.createWorkRepo({ ...workRepoRequest, frozenCommit: 42 as unknown as CommitSha }, "r") },
+		{ what: "missing source commit", work: () => port.publishVerified({ ...publishRequest, sourceCommit: null as unknown as CommitSha }, "r") },
+		{ what: "missing check name", work: () => port.publishVerified({ ...publishRequest, checkName: undefined as unknown as string }, "r") },
+	];
+	for (const item of cases) {
+		const failure = await refusal(item.work());
+		assert.equal(failure.code, "GITHUB_REQUEST_INVALID", item.what);
+	}
+	assert.deepEqual(stub.state.requests, []);
+});
+
 test("a fork that answers 200 is not read as an adoption", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);

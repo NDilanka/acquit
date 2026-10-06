@@ -135,13 +135,23 @@ const REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 const BRANCH_NAME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
-function invalid(what: string, value: string): never {
-	throw new GitHubAppError("GITHUB_REQUEST_INVALID", `${what} "${value.slice(0, 60)}" is not a name this client will put in a URL.`);
+function invalid(what: string, value: unknown): never {
+	// A caller can hand this client anything, including a value that is not a string at all: the refusal
+	// names what it got instead of throwing a TypeError from the middle of a URL.
+	const shown = describe(value).slice(0, 60);
+	throw new GitHubAppError("GITHUB_REQUEST_INVALID", `${what} "${shown}" is not a name this client will put in a URL.`);
 }
 
-const checkedOwner = (owner: string): string => OWNER_NAME.test(owner) ? owner : invalid("The owner", owner);
-const checkedRepositoryName = (name: string): string => REPOSITORY_NAME.test(name) ? name : invalid("The repository name", name);
-const checkedCommit = (commit: CommitSha): CommitSha => COMMIT_SHA.test(commit) ? commit : invalid("The commit", commit);
+/** Anything at all, as a short string. A value with no primitive form is named by its type instead of thrown. */
+function describe(value: unknown): string {
+	try { return typeof value === "string" ? value : JSON.stringify(value) ?? String(value); }
+	catch { return typeof value; }
+}
+
+const checkedOwner = (owner: unknown): string => typeof owner === "string" && OWNER_NAME.test(owner) ? owner : invalid("The owner", owner);
+const checkedRepositoryName = (name: unknown): string => typeof name === "string" && REPOSITORY_NAME.test(name) ? name : invalid("The repository name", name);
+const checkedCommit = (commit: unknown): CommitSha => typeof commit === "string" && COMMIT_SHA.test(commit) ? commit as CommitSha : invalid("The commit", commit);
+const checkedCheckName = (name: unknown): string => typeof name === "string" && name.trim().length > 0 ? name : invalid("The check name", name);
 
 /** An RS256 App JWT. `iat` is backdated a minute for clock skew and `exp` stays under GitHub's ten-minute cap. */
 function appJwt(appId: string, privateKey: string, nowMs: number): string {
@@ -315,7 +325,8 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		try { return await mint; } finally { minting.delete(owner); }
 	};
 
-	const splitRepository = (repository: string): { readonly owner: string; readonly name: string } => {
+	const splitRepository = (repository: unknown): { readonly owner: string; readonly name: string } => {
+		if (typeof repository !== "string") invalid("The repository", repository);
 		const [owner, name, ...rest] = repository.split("/");
 		if (rest.length > 0 || owner === undefined || name === undefined) invalid("The repository", repository);
 		return { owner: checkedOwner(owner), name: checkedRepositoryName(name) };
@@ -447,6 +458,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const organization = checkedOwner(parsed.organization);
 		const client = splitRepository(request.repository);
 		const commit = checkedCommit(request.sourceCommit);
+		const checkName = checkedCheckName(request.checkName);
 		const branch = verifiedBranch(request.jobId);
 		const clientToken = await tokenFor(client.owner);
 		let headOwner = client.owner;
@@ -462,7 +474,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		}
 		const headToken = headOwner === client.owner ? clientToken : await tokenFor(headOwner);
 		const pullRequest = await findOrOpenPullRequest(request, branch, headOwner, clientToken);
-		const checkRunUrl = await findOrPostCheckRun(headRepository, commit, request.checkName, headToken, request.jobId);
+		const checkRunUrl = await findOrPostCheckRun(headRepository, commit, checkName, headToken, request.jobId);
 		return { repository: request.repository, pullRequest, mergeCommit: commit, checkRunUrl };
 	};
 
@@ -516,6 +528,7 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 
 /** `invoice-app` plus the job id, so ten lanes never collide on one repository name. */
 export function workRepoName(repository: string, jobId: JobId): string {
+	if (typeof repository !== "string" || typeof jobId !== "string") invalid("The work repository name", `${describe(repository)}-${describe(jobId)}`);
 	const name = repository.split("/").at(-1) ?? repository;
 	const full = `${name}-${jobId.replace(/^job_/, "")}`;
 	return REPOSITORY_NAME.test(full) ? full : invalid("The work repository name", full);
@@ -523,6 +536,7 @@ export function workRepoName(repository: string, jobId: JobId): string {
 
 /** The branch the verified tree is pushed to on the client repository. */
 export function verifiedBranch(jobId: JobId): string {
+	if (typeof jobId !== "string") invalid("The verified branch", jobId);
 	const branch = `acquit/${jobId}`;
 	return BRANCH_NAME.test(branch) ? branch : invalid("The verified branch", branch);
 }
