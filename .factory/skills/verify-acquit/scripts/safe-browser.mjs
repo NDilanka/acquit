@@ -92,6 +92,23 @@ export function paypalPageProbe(selectors) {
 	};
 }
 const sandboxHost = String.raw`(?:[a-z0-9-]+\.)*sandbox\.paypal\.com(?![a-z0-9.-])`;
+function percentPieces(run) {
+	const pieces = [];
+	// Decode each valid UTF-8 scalar, leaving each invalid byte intact. Thus an
+	// invalid neighbor cannot veto decoding the rest of a maximal percent run.
+	for (let start = 0; start < run.length;) {
+		const byte = Number.parseInt(run.slice(start + 1, start + 3), 16);
+		const size = byte < 0x80 ? 1 : byte >= 0xc2 && byte <= 0xdf ? 2
+			: byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
+		let end = start + 3, decoded = run.slice(start, end);
+		if (size && start + size * 3 <= run.length) {
+			try { decoded = decodeURIComponent(run.slice(start, start + size * 3)); end = start + size * 3; } catch {}
+		}
+		pieces.push({ start, end, decoded });
+		start = end;
+	}
+	return pieces;
+}
 export function redactor(secrets = []) {
 	const patterns = [...new Set(secrets.filter(secret => typeof secret === "string" && secret))].map(secret =>
 		new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), /^[^@\s]+@[^@\s]+$/.test(secret) ? "gi" : "g"));
@@ -114,13 +131,24 @@ export function redactor(secrets = []) {
 				const query = match[1];
 				hit(match.index + match[0].length - query.length, match.index + match[0].length, "?[redacted]");
 			}
-			const escapes = /\\u([0-9a-f]{4})|\\(["\\/])|(?:%[0-9a-f]{2})+|&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);|\+/gi;
+			const escapes = /\\u([0-9a-f]{4})|\\(["\\/bfnrt])|(?:%[0-9a-f]{2})+|&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);|\+/gi;
 			let next = "", nextMap = [], cursor = 0;
 			for (const match of scratch.matchAll(escapes)) {
+				next += scratch.slice(cursor, match.index);
+				nextMap.push(...map.slice(cursor, match.index));
+				if (match[0].startsWith("%")) {
+					for (const piece of percentPieces(match[0])) {
+						const start = match.index + piece.start, end = match.index + piece.end;
+						next += piece.decoded;
+						if (piece.decoded === scratch.slice(start, end)) nextMap.push(...map.slice(start, end));
+						else for (let i = 0; i < piece.decoded.length; i++) nextMap.push({ start: map[start].start, end: map[end - 1].end });
+					}
+					cursor = match.index + match[0].length;
+					continue;
+				}
 				let decoded = match[0];
 				if (match[1]) decoded = String.fromCharCode(Number.parseInt(match[1], 16));
-				else if (match[2]) decoded = match[2];
-				else if (decoded.startsWith("%")) { try { decoded = decodeURIComponent(decoded); } catch {} }
+				else if (match[2]) decoded = ({ b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" })[match[2]] ?? match[2];
 				else if (decoded === "+") decoded = " ";
 				else {
 					const entity = decoded.slice(1, -1).toLowerCase();
@@ -129,8 +157,6 @@ export function redactor(secrets = []) {
 						if (point <= 0x10ffff) decoded = String.fromCodePoint(point);
 					} else decoded = ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" })[entity] ?? decoded;
 				}
-				next += scratch.slice(cursor, match.index);
-				nextMap.push(...map.slice(cursor, match.index));
 				next += decoded;
 				if (decoded === match[0]) nextMap.push(...map.slice(match.index, match.index + match[0].length));
 				else for (let i = 0; i < decoded.length; i++) nextMap.push({ start: map[match.index].start, end: map[match.index + match[0].length - 1].end });

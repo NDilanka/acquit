@@ -97,6 +97,27 @@ test("normalization never rebuilds a secret or changes unrelated encoded evidenc
 	for (const ordinary of ["100%25 done", String.raw`unrelated \u003Ctag\u003E`, "ordinary%252ftext", "x&amp;y", "a+b"]) assert.equal(redact(ordinary), ordinary);
 	assert.equal(redact("100%25 done; Zq%252FXy%253C9%2526Kp; unchanged%2f"), "100%25 done; [redacted]; unchanged%2f");
 });
+test("redaction decodes JSON control escapes, including nested encoding, without rewriting unrelated controls", () => {
+	for (const control of ["\n", "\t", "\r", "\b", "\f"]) {
+		const secret = `synthetic${control}control`;
+		const redact = redactor([secret]);
+		const escaped = JSON.stringify(secret).slice(1, -1);
+		for (const form of [escaped, encodeURIComponent(escaped), JSON.stringify(escaped).slice(1, -1)]) assert.equal(redact(form), "[redacted]");
+		assert.deepEqual(JSON.parse(redact({ field: secret, ordinary: "a\nb\tc" })), { field: "[redacted]", ordinary: "a\nb\tc" });
+	}
+});
+test("invalid percent UTF-8 neighbors cannot hide encoded secrets and retain exact unrelated bytes", () => {
+	for (const secret of ["synthetic", "é/🚀", "synthetic\ncontrol"]) {
+		const redact = redactor([secret]);
+		const encoded = [...Buffer.from(secret)].map(byte => `%${byte.toString(16).padStart(2, "0")}`).join("");
+		for (const invalid of ["%ff", "%80", "%c0%af", "%e2%82", "%ed%a0%80", "%f4%90%80%80"]) {
+			assert.equal(redact(`${invalid}${encoded}${invalid}`), `${invalid}[redacted]${invalid}`);
+			const nested = encodeURIComponent(`${invalid}${encoded}${invalid}`);
+			assert.equal(redact(nested), `${encodeURIComponent(invalid)}[redacted]${encodeURIComponent(invalid)}`);
+		}
+	}
+	assert.equal(redactor(["secret"])("%ff%41%42%43%80"), "%ff%41%42%43%80");
+});
 test("checkout forces English while preserving the order and prefers structural PayPal controls", () => {
 	for (const host of ["sandbox.paypal.com", "www.sandbox.paypal.com"]) {
 		const url = new URL(englishCheckoutUrl(`https://${host}/checkoutnow?token=synthetic&locale.x=si_LK`));
