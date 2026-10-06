@@ -36,10 +36,11 @@ Preconditions:
   `--jobs <jobId>` the printed command also carries `--remote <the job's work repo>`; submit pushes
   the lane's HEAD there before it starts the run. With `--jobs <jobId> --askpass` lane-repo mints an
   App installation token for the work repo's organization and prints the command with
-  `GIT_ASKPASS=<path> GIT_CONFIG_GLOBAL=/dev/null`: the 0700 askpass script reads the token from a
-  0600 file in its own `/tmp/acquit-lane-askpass-*` directory, or from `ACQUIT_LANE_GIT_TOKEN` when
-  set. The token is valid for one hour, and the directory is the operator's to delete. A worker in
-  production pushes with its own credential; the product CLI's push path is unchanged.
+  `ACQUIT_LANE_ASKPASS_TOKEN_FILE=<path> GIT_ASKPASS=<path> GIT_CONFIG_GLOBAL=/dev/null`, every path
+  shell-quoted: the 0700 askpass script reads the token from the 0600 file the command names, in its
+  own `/tmp/acquit-lane-askpass-*` directory, or from `ACQUIT_LANE_GIT_TOKEN` when set. The token is
+  valid for one hour, and the directory is the operator's to delete. A worker in production pushes
+  with its own credential; the product CLI's push path is unchanged.
 - The form and the contract name the deployment's client repository (`ACQUIT_CLIENT_REPOSITORY`; the
   demo default is `maya-client/invoice-app`). This doc writes `<client repo>` for it.
 - `ACQUIT_TOKEN` holds Devon's session token. Never print it.

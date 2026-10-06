@@ -12,8 +12,9 @@
 //
 // The operator's stored git credential is read-only for the App's organization, so with --askpass
 // the script mints an App installation token for the work repo's organization and prints the submit
-// command with a 0700 askpass script (token in a 0600 file, or ACQUIT_LANE_GIT_TOKEN) and no global
-// git config. The token is valid for one hour and is never printed.
+// command with a 0700 askpass script that reads the token from the 0600 file the command names in
+// ACQUIT_LANE_ASKPASS_TOKEN_FILE (or from ACQUIT_LANE_GIT_TOKEN) and no global git config. The
+// token is valid for one hour and is never printed.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -28,6 +29,9 @@ import { createGitHubApp, workRepoName } from "../../../../packages/core/src/git
 import { clientRepositoryEnv, githubAppEnv } from "../../../../packages/verifier/config.ts";
 
 const root = fileURLToPath(new URL("../../../..", import.meta.url));
+
+/** One path as one shell word, so the printed command never reads a path as shell syntax. */
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
 	template: { type: "string" }, force: { type: "boolean", default: false }, jobs: { type: "string" },
 	owner: { type: "string" }, repo: { type: "string" }, create: { type: "boolean", default: false },
@@ -63,10 +67,10 @@ const organization = githubAppEnv().organization ?? "acquit-forks";
 const workRemote = values.jobs === undefined ? null : `https://github.com/${organization}/${workRepoName(clientRepo, values.jobs)}.git`;
 const slot = laneSlot(lane);
 const credential = values.askpass ? await laneCredential(organization) : null;
-const prefix = credential === null ? "" : `GIT_ASKPASS=${credential.askpass} GIT_CONFIG_GLOBAL=/dev/null `;
+const prefix = credential === null ? "" : `ACQUIT_LANE_ASKPASS_TOKEN_FILE=${shellQuote(credential.tokenFile)} GIT_ASKPASS=${shellQuote(credential.askpass)} GIT_CONFIG_GLOBAL=/dev/null `;
 console.log(JSON.stringify({ lane, branch, repo, head, frozen, apiPort: slot.apiPort, webPort: slot.webPort, verifierPort: slot.verifierPort,
 	clientRepo, creation, workRemote, credential,
-	cli: `${prefix}node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${repo} --remote ${workRemote ?? "<work repo URL>"} --api http://127.0.0.1:${slot.apiPort}` }));
+	cli: `${prefix}node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${shellQuote(repo)} --remote ${shellQuote(workRemote ?? "<work repo URL>")} --api http://127.0.0.1:${slot.apiPort}` }));
 
 /** One run's push credential: a fresh 0700 directory holding the 0700 askpass script and the 0600 file it reads. */
 async function laneCredential(organization) {
@@ -75,8 +79,10 @@ async function laneCredential(organization) {
 	const tokenFile = join(dir, "token");
 	const askpass = join(dir, "askpass.sh");
 	await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
+	// The script is a constant: the token path arrives in the environment the printed command sets,
+	// so a path with a quote or a semicolon is data, never shell text.
 	await writeFile(askpass, `#!/bin/sh
-if [ -n "$ACQUIT_LANE_GIT_TOKEN" ]; then token=$ACQUIT_LANE_GIT_TOKEN; else token=$(cat '${tokenFile}'); fi
+if [ -n "$ACQUIT_LANE_GIT_TOKEN" ]; then token=$ACQUIT_LANE_GIT_TOKEN; else token=$(cat "$ACQUIT_LANE_ASKPASS_TOKEN_FILE"); fi
 case "$1" in
 	*[Uu]sername*) printf '%s\\n' x-access-token ;;
 	*) printf '%s\\n' "$token" ;;
