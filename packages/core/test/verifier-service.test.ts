@@ -107,6 +107,7 @@ test("the run boundary refuses an unsigned, wrongly signed, stale, or replayed r
 	assert.deepEqual(await (await service.handle(signed(body, { secret: "wrong-secret" }))).json(), { error: "RUN_SIGNATURE_MISMATCH" });
 	assert.deepEqual(await (await service.handle(signed(body, { timestamp: Math.floor(Date.now() / 1000) - 3_600 }))).json(), { error: "RUN_TIMESTAMP_STALE" });
 	assert.equal(service.runs.size, 0);
+	assert.equal(sources, 0);
 	const first = signed(body);
 	const accepted = await service.handle(first.clone());
 	assert.equal(accepted.status, 202);
@@ -118,8 +119,11 @@ test("the run boundary refuses an unsigned, wrongly signed, stale, or replayed r
 	assert.deepEqual(await replayed.json(), { error: "RUN_REPLAYED" });
 	assert.equal(service.runs.size, 1);
 	await service.whenIdle();
-	assert.equal(service.runs.get("run_svc_boundary" as VerifierRunId)?.callback, "UNDELIVERABLE");
-	assert.equal(sources, 0);
+	const record = service.runs.get("run_svc_boundary" as VerifierRunId)!;
+	// A source that never arrives is a named refusal, and it is not reported to the API as a verdict.
+	assert.match(record.refusal ?? "", /^SOURCE_UNAVAILABLE: source must not be called$/);
+	assert.equal(record.callback, "NONE");
+	assert.equal(sources, 1);
 	await service.close();
 });
 
