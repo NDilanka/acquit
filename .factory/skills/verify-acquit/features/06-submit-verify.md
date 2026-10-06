@@ -14,6 +14,7 @@ stays with the client on a rejection, and a clean run opens the pull request.
 - `submit-replay` answers a repeated request key with REPLAY and starts no second run.
 - `submit-denied` refuses a submission from an operator the job is not locked to.
 - `submit-timeout` returns the attempt slot when a run never reports, without burning the attempt.
+- `submit-run-failed` returns the attempt slot with a named reason when a run ends without a verdict.
 - `submit-exhausted` moves the job to REFUND_PENDING after the third rejection.
 
 ## How to get to it (user POV)
@@ -80,6 +81,13 @@ Preconditions:
 - A missing or malformed reply counts as missing, and a duplicate id invalidates that id for the whole
   run. A first-reply-wins transcript must never verify.
 - A rejection keeps escrow HELD. It is not a refund, and the deadline is untouched.
+- A run that ends without a verdict posts its signed callback at once, so the job leaves VERIFYING and
+  charges no attempt. The attempt carries a named failure: `PUBLISH_FAILED` (the judgment was clean and
+  the pull request or check run could not be made), `SOURCE_UNAVAILABLE`, `SUBJECT_UNSTARTABLE`,
+  `CONTRACT_MISMATCH`, or `RUN_DEADLINE_EXCEEDED`. The CLI prints `RUN_FAILED: <name>: <detail>` and
+  the operator resubmits; the publisher reuses the branch, the pull request, and the check run it
+  already made. `GET /runs/<runId>` on the verifier reports the same outcome plus the timings of each
+  step, which is how a late verdict is explained rather than guessed at.
 - The plain child-process subject is the unit-test path only. The API and `acquit` refuse it with
   `SUBJECT_CHILD_REFUSED` unless `ACQUIT_DEV=1`, and live lanes run the Docker subject, which mounts
   only the submitted tree and a minimal bootstrap and has no network.
