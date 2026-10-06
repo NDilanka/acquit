@@ -96,6 +96,18 @@ test("localHead refuses a directory that is not a repository", () => {
 	assert.throws(() => localHead("/tmp"), (error: CliError) => error.code === "NOT_A_REPOSITORY");
 });
 
+test("a push to a work repo funding has not created yet is refused by name", async () => {
+	const { pushError } = await import("../../acquit-cli/src/submit.ts") as { pushError?: (remote: string, stderr: string) => CliError };
+	assert.equal(typeof pushError, "function");
+	const missing = pushError!("https://github.com/acquit-forks/invoice-app-7Q2K.git",
+		"remote: Repository not found.\nfatal: repository 'https://github.com/acquit-forks/invoice-app-7Q2K.git/' not found");
+	assert.equal(missing.code, "WORK_REPO_NOT_READY");
+	assert.match(missing.message, /created shortly after funding/);
+	assert.match(missing.message, /about 30 seconds/);
+	const other = pushError!("origin", "error: failed to push some refs to 'origin'");
+	assert.equal(other.code, "PUSH_REFUSED");
+});
+
 test("runSubmit polls until the submitted commit is judged and prints the block", async () => {
 	const calls: string[] = [];
 	let polls = 0;
