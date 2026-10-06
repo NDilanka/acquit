@@ -395,6 +395,19 @@ test("a verified commit the client repo does not have becomes a fork pull reques
 	assert.equal(published.mergeCommit, SUBMITTED);
 });
 
+test("a 422 from the pull request POST carries GitHub's own message into the refusal", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	// GitHub explains a refused pull request in the body. The refusal has to carry that text: the
+	// operator acts on what the server said, not on this client's reading of the status alone.
+	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/pulls`, status: 422,
+		message: "Validation Failed", headers: {} });
+	const failure = await refusal(port.publishVerified(publishRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.equal(failure.status, 422);
+	assert.match(failure.detail, /Validation Failed/);
+});
+
 test("an existing verified branch at another commit is moved to the judged commit", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
