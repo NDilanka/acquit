@@ -128,8 +128,13 @@ export async function stop(parsed: Parsed, ctx: Context): Promise<Result> {
 		const state = await readState(ctx);
 		if (!state) return { stopped: false, reason: "not running", ...(parsed["dry-run"] ? { wouldKill: [] } : {}) };
 		const wouldKill = [state.api, state.web].filter(service => alive(service.pid));
-		for (const service of wouldKill) await requireOwned(service, service.socketPath);
-		if (parsed["dry-run"]) return { stopped: false, wouldKill, run: state };
+		if (parsed["dry-run"]) {
+			for (const service of wouldKill) await requireOwned(service, service.socketPath);
+			return { stopped: false, wouldKill, run: state };
+		}
+		// stopOwned already proves EVERY live service before any kill and
+		// rechecks each immediately before its kill. Avoid a third cold-helper
+		// pass here; dry-run still proves ownership without calling stopOwned.
 		await stopOwned(state);
 		await clearState(ctx);
 		return wouldKill.length ? { stopped: true, pids: wouldKill.map(service => service.pid) } : { stopped: false, reason: "not running" };
