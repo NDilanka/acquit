@@ -131,6 +131,69 @@ test("ledger --job reads another client's HELD book and pins the tutorial text a
 		assert.deepEqual(JSON.parse(json.stdout).data.jobs[0].ledger, apiJob.ledger);
 	});
 });
+test("ledger judges the stored book exactly as stored, never a projected empty one", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT)");
+		const insert = (id: string, state: unknown) => db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(id, JSON.stringify({ id, version: 1, client: "other-client", bids: [], state }));
+		const at = "2026-11-03T15:22:00.000Z";
+		const held = { kind: "HELD", cents: 42000, at };
+		// id, state, exact ledger text, law (null is OK), exact JSON ledger value.
+		const rows: Array<[string, unknown, string, "order" | null, unknown]> = [
+			["job_work_null", { status: "IN_PROGRESS", escrow: { book: null } },
+				"job_work_null  stored escrow.book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_work_omit", { status: "IN_PROGRESS", escrow: {} },
+				"job_work_omit  stored escrow.book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_work_noescrow", { status: "IN_PROGRESS" },
+				"job_work_noescrow  stored escrow.book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_verified_null", { status: "VERIFIED", escrow: { book: null } },
+				"job_verified_null  stored escrow.book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_refund_pending", { status: "OPEN", phase: { kind: "FUNDING", checkout: { phase: "REFUND_PENDING", escrow: { book: null } } } },
+				"job_refund_pending  stored checkout.escrow.book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_refund_noescrow", { status: "OPEN", phase: { kind: "FUNDING", checkout: { phase: "REFUND_PENDING" } } },
+				"job_refund_noescrow  stored checkout.escrow.book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_paid_omit", { status: "PAID" },
+				"job_paid_omit  stored book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_refunded_null", { status: "REFUNDED", book: null },
+				"job_refunded_null  stored book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_closed_null", { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: at, book: null },
+				"job_closed_null  stored book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_null_line", { status: "IN_PROGRESS", escrow: { book: [null] } },
+				"job_null_line  stored line 1 is not a ledger line (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", [null]],
+			["job_bad_status", { status: "WAT" },
+				"job_bad_status  stored state.status is not a job status; the book cannot be read\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_open_bidding", { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } }, "No ledger lines\nLaws: OK\n", null, []],
+			["job_closed_empty", { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: at, book: [] }, "No ledger lines\nLaws: OK\n", null, []],
+			["job_closed_held", { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: at, book: [held] },
+				"2026-11-03 15:22  job_closed_held  HELD  420.00 USD  client payment (400.00 job + 20.00 escrow fee)\nLaws: OK\n", null, [held]],
+		];
+		for (const [id, state] of rows) insert(id, state);
+		db.close();
+		const plain = cli(["ledger", "--job", rows[0][0]]);
+		assert.equal(plain.code, 0);
+		assert.equal(plain.stdout, rows[0][2]);
+		const open = cli(["ledger", "--job", "job_open_bidding", "--check"]);
+		assert.equal(open.code, 0);
+		assert.equal(open.stdout, "No ledger lines\nLaws: OK\n");
+		const listing = cli(["ledger", "--all"]);
+		assert.equal(listing.code, 0);
+		assert.equal(listing.stdout, rows.map(([id, , text]) => `${id}\n${text}`).join(""));
+		const json = cli(["ledger", "--all", "--json"]);
+		assert.equal(json.code, 0);
+		assert.deepEqual(JSON.parse(json.stdout).data.jobs,
+			rows.map(([id, , , law, ledger]) => ({ id, laws: law === null ? "OK" : "BROKEN", law, ledger })));
+		for (const [id, , text, law] of rows) {
+			if (law === null) continue;
+			const check = cli(["ledger", "--job", id, "--check"]);
+			assert.equal(check.code, 1);
+			const failure = JSON.parse(check.stdout);
+			assert.equal(failure.error.code, "LAW_BREAK");
+			assert.equal(failure.error.message, `${id} breaks ${law} (hold, then one disposition).`);
+			assert.equal(failure.error.fix, `Inspect the stored book, then stop the lane before another money move.\n${id}\n${text}`);
+		}
+	});
+});
 test("ledger --job reports missing and malformed ids as JOB_NOT_FOUND without an API", async () => {
 	await fixture(async cli => {
 		for (const id of ["job_missing", "nope", "", "job_a", `job_${"a".repeat(81)}`, "job_bad/id"]) {
