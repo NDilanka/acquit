@@ -162,16 +162,45 @@ function reasonBytes(reason: RejectReason): number {
 	return Buffer.byteLength(JSON.stringify(reason), "utf8");
 }
 
+/**
+ * Bounds one reason: an id list is halved to fit, then its text fields are trimmed until the
+ * serialized reason fits. JSON escaping turns one control character into six bytes, so the bound
+ * is measured on the serialized form, never on the character count a field was built from.
+ */
 function boundedReason(reason: RejectReason): RejectReason {
 	if (reasonBytes(reason) <= VERDICT_REASON_BYTES_MAX) return reason;
+	let bounded = shrinkReason(reason);
+	for (let keep = REASON_TEXT_CHARS; keep > 0 && reasonBytes(bounded) > VERDICT_REASON_BYTES_MAX; keep = Math.floor(keep / 2)) {
+		bounded = trimReasonText(bounded, keep);
+	}
+	return bounded;
+}
+
+/** Halves a failed or missing id list until it fits, and puts a fault's detail through the display boundary. */
+function shrinkReason(reason: RejectReason): RejectReason {
 	switch (reason.kind) {
 		case "TESTS_FAILED": return { ...reason, failed: shrinkIds(reason.failed, ids => reasonBytes({ ...reason, failed: ids }) <= VERDICT_REASON_BYTES_MAX) };
 		case "TESTS_MISSING": return { ...reason, missing: shrinkIds(reason.missing, ids => reasonBytes({ ...reason, missing: ids }) <= VERDICT_REASON_BYTES_MAX) };
-		case "PROTECTED_PATH_MODIFIED": return { ...reason, path: reason.path.slice(0, REASON_TEXT_CHARS) };
-		case "TEST_FRAMEWORK_IN_SOURCE": return { ...reason, path: reason.path.slice(0, REASON_TEXT_CHARS), symbol: reason.symbol.slice(0, REASON_TEXT_CHARS) };
 		case "SUBJECT_FAULT": return { ...reason, detail: boundedDetail(reason.detail) };
-		case "TREE_SYMLINK": case "TREE_GITLINK": return { ...reason, path: reason.path.slice(0, REASON_TEXT_CHARS) };
 		default: return reason;
+	}
+}
+
+/** Trims every text field one reason carries to `chars` characters. */
+function trimReasonText(reason: RejectReason, chars: number): RejectReason {
+	switch (reason.kind) {
+		case "PROTECTED_PATH_MODIFIED": case "TREE_SYMLINK": case "TREE_GITLINK":
+			return { ...reason, path: reason.path.slice(0, chars) };
+		case "TEST_FRAMEWORK_IN_SOURCE":
+			return { ...reason, path: reason.path.slice(0, chars), symbol: reason.symbol.slice(0, chars) };
+		case "SUBJECT_FAULT":
+			return { ...reason, detail: reason.detail.slice(0, chars) };
+		case "TESTS_FAILED":
+			return { ...reason, failed: reason.failed.map(id => id.slice(0, chars) as TestId) };
+		case "TESTS_MISSING":
+			return { ...reason, missing: reason.missing.map(id => id.slice(0, chars) as TestId) };
+		default:
+			return reason;
 	}
 }
 
