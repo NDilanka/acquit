@@ -28,6 +28,12 @@ export class DockerUnavailable extends Error {
 	constructor(detail = "The Docker daemon is not reachable.") { super(detail); }
 }
 
+/** A comma is the one character that adds a field to a `--mount` value. A path is not a field list. */
+export class MountPathUnsafe extends Error {
+	readonly code = "MOUNT_PATH_UNSAFE";
+	constructor(what: string, path: string) { super(`The ${what} path cannot be a Docker mount source: ${JSON.stringify(path)}`); }
+}
+
 /** The unit-test subject is refused outside an explicit test/dev run. It is not a security boundary. */
 export class ChildSubjectRefused extends Error {
 	readonly code = "SUBJECT_CHILD_REFUSED";
@@ -108,10 +114,15 @@ export function dockerSubject(options: { readonly image?: string; readonly probe
 export function dockerArgs(treeDir: string, image: string, bootstrap = fileURLToPath(new URL("./bootstrap.ts", import.meta.url))): readonly string[] {
 	return ["run", "--rm", "--network", "none", "-i", "--pull=never", "--read-only", "--cap-drop=ALL",
 		"--security-opt=no-new-privileges", "--pids-limit=64", "--memory=256m", "--cpus=1", "--user=65534:65534",
-		"--mount", `type=bind,source=${treeDir},target=/tree,readonly`,
-		"--mount", `type=bind,source=${bootstrap},target=/runner/bootstrap.ts,readonly`,
+		"--mount", `type=bind,${mountSource("tree", treeDir)},target=/tree,readonly`,
+		"--mount", `type=bind,${mountSource("bootstrap", bootstrap)},target=/runner/bootstrap.ts,readonly`,
 		"--workdir=/tree", image, "node", "--disable-warning=ExperimentalWarning", "--max-old-space-size=256",
 		"--v8-pool-size=1", "/runner/bootstrap.ts", "/tree"];
+}
+
+function mountSource(what: string, path: string): string {
+	if (path.includes(",")) throw new MountPathUnsafe(what, path);
+	return `source=${path}`;
 }
 
 /** Bounded so a missing or wedged daemon can never hold a request open. */
