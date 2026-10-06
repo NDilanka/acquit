@@ -50,9 +50,9 @@ const contractRepo = clientRepositoryEnv();
 const clientRepo = owner === null ? contractRepo : `${owner}/${values.repo ?? `invoice-app-lane-${lane}`}`;
 const creation = values.create ? await ensureClientRepo(clientRepo, frozen, template) : null;
 // The job's work repo is a fork of the contract repository under the App's organization, named after
-// the job. With --jobs the printed command pushes the lane's HEAD straight to it.
+// the job. The contract names the printed clientRepo, so the work repo is named from that repo.
 const organization = githubAppEnv().organization ?? "acquit-forks";
-const workRemote = values.jobs === undefined ? null : `https://github.com/${organization}/${workRepoName(contractRepo, values.jobs)}.git`;
+const workRemote = values.jobs === undefined ? null : `https://github.com/${organization}/${workRepoName(clientRepo, values.jobs)}.git`;
 const slot = laneSlot(lane);
 console.log(JSON.stringify({ lane, branch, repo, head, frozen, apiPort: slot.apiPort, webPort: slot.webPort, verifierPort: slot.verifierPort,
 	clientRepo, creation, workRemote,
