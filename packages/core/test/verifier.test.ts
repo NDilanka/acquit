@@ -89,7 +89,7 @@ test("matchesGlob treats ** as any depth and * as one segment", () => {
 
 test("screenDiff names the protected file, the framework import, and a config swap", () => {
 	const change = (path: string, addedText: string, rest: Partial<DiffChange> = {}): DiffChange =>
-		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, addedText, ...rest });
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText, ...rest });
 	const diff: DiffSummary = { changes: [
 		change("tests/totals.test.ts", "expect(formatTotal([{ amount: 10.125 }], 'KWD')).toBe('10.13');"),
 		change("src/money.ts", "import { expect } from 'vitest';\nexpect.extend({ toBe() { return { pass: true }; } });"),
@@ -111,21 +111,22 @@ test("screenDiff names the protected file, the framework import, and a config sw
 
 test("screenDiff reads a rename on both names and skips the added lines of a binary change", () => {
 	const renamed: DiffSummary = { changes: [{ path: "src/renamed.ts", status: "RENAMED", from: "tests/totals.test.ts",
-		binary: false, modeChanged: false, addedText: "import { expect } from 'vitest';" }] };
+		binary: false, modeChanged: false, gitlink: false, addedText: "import { expect } from 'vitest';" }] };
 	assert.deepEqual(screenDiff(renamed, request.definitionOfDone), [
 		{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" },
 		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/renamed.ts", symbol: "vitest" },
 	]);
 	const binary: DiffSummary = { changes: [{ path: "src/money.ts", status: "MODIFIED", from: null, binary: true, modeChanged: false,
-		addedText: "import { expect } from 'vitest';" }] };
+		gitlink: false, addedText: "import { expect } from 'vitest';" }] };
 	assert.deepEqual(screenDiff(binary, request.definitionOfDone), []);
-	const modeChanged: DiffSummary = { changes: [{ path: "package.json", status: "MODIFIED", from: null, binary: false, modeChanged: true, addedText: "" }] };
+	const modeChanged: DiffSummary = { changes: [{ path: "package.json", status: "MODIFIED", from: null, binary: false, modeChanged: true,
+		gitlink: false, addedText: "" }] };
 	assert.deepEqual(screenDiff(modeChanged, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }]);
 });
 
 test("screenDiff screens a diff at its bound and refuses a bigger one by name", () => {
 	const change = (path: string): DiffChange =>
-		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, addedText: "" });
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText: "" });
 	const atLimit = Array.from({ length: 4095 }, (_, index) => change(`src/file-${index}.ts`));
 	atLimit.push(change("tests/totals.test.ts"));
 	assert.deepEqual(screenDiff({ changes: atLimit }, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);

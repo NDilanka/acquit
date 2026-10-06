@@ -147,6 +147,7 @@ function parseRejectReason(value: unknown): RejectReason | null {
 		case "SUBJECT_FAULT": return nonEmptyString(reason.detail) ? { kind: reason.kind, detail: reason.detail as string } : null;
 		case "SUBJECT_REPLY_MALFORMED": return { kind: reason.kind };
 		case "TREE_SYMLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
+		case "TREE_GITLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
 		case "DIFF_TOO_LARGE": {
 			const paths = positiveCount(reason.paths);
 			const limit = positiveCount(reason.limit);

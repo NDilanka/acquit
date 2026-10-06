@@ -151,7 +151,7 @@ test("a gitlink in the submitted tree is rejected before the subject starts", as
 
 test("a diff over the screen's bound is refused by name and the subject never starts", async () => {
 	const changes = Array.from({ length: 4097 }, (_, index) => ({ path: `src/file-${index}.ts`, status: "ADDED" as const,
-		from: null, binary: false, modeChanged: false, addedText: "" }));
+		from: null, binary: false, modeChanged: false, gitlink: false, addedText: "" }));
 	const source: JudgeSource = { diff: () => ({ changes }), readFile: () => frozenTestSource,
 		materialize: () => { throw new Error("the submitted tree must not be materialized"); } };
 	const request: VerifierRunRequest = { runId: "run_large" as VerifierRunId, jobId: "job_large" as JobId, ordinal: 1,

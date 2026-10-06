@@ -58,6 +58,8 @@ export type RejectReason =
 	| { readonly kind: "SUBJECT_REPLY_MALFORMED" }
 	/** The submitted tree points outside itself. Nothing starts: a link is not a source file. */
 	| { readonly kind: "TREE_SYMLINK"; readonly path: string }
+	/** The submitted tree holds a gitlink. Nothing starts: a submodule is not a source file either. */
+	| { readonly kind: "TREE_GITLINK"; readonly path: string }
 	/** The diff is bigger than the screen's bound. Nothing starts: a screen in part is not a screen. */
 	| { readonly kind: "DIFF_TOO_LARGE"; readonly paths: number; readonly limit: number };
 
@@ -120,6 +122,8 @@ export type DiffChange = {
 	/** Git reads the content as binary, so no added source line can be screened from it. */
 	readonly binary: boolean;
 	readonly modeChanged: boolean;
+	/** The submitted tree holds a gitlink here: a submodule entry, which materializes as an empty directory. */
+	readonly gitlink: boolean;
 	readonly addedText: string;
 };
 
@@ -279,6 +283,9 @@ export function screenDiff(diff: DiffSummary, done: DefinitionOfDone): readonly 
 		const touched = change.from === null ? [change.path] : [change.from, change.path];
 		const hit = touched.find(path => done.protectedPaths.some(glob => matchesGlob(glob, path)));
 		if (hit) reasons.push({ kind: "PROTECTED_PATH_MODIFIED", path: hit });
+		// A gitlink materializes as an empty directory, so the symlink walk never names it. The mode
+		// in git's own status record does.
+		if (change.gitlink) reasons.push({ kind: "TREE_GITLINK", path: change.path });
 		if (change.binary || !isSourcePath(change.path)) continue;
 		const symbol = testFrameworkSymbol(change.addedText);
 		if (symbol) reasons.push({ kind: "TEST_FRAMEWORK_IN_SOURCE", path: change.path, symbol });
@@ -384,6 +391,8 @@ export function describeRejectReason(reason: RejectReason): string {
 			return "The subject reply was malformed";
 		case "TREE_SYMLINK":
 			return `PR makes ${reason.path} a symlink, which points outside the submitted tree`;
+		case "TREE_GITLINK":
+			return `PR makes ${reason.path} a submodule gitlink, which the subject cannot import`;
 		case "DIFF_TOO_LARGE":
 			return `The submitted tree changes ${reason.paths} paths, over the ${reason.limit}-path screen limit`;
 	}

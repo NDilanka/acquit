@@ -85,7 +85,7 @@ const MAX_ADDED_TEXT_PATHS = 256;
 /** `git diff --raw -z`: one header per change, then its path, or the old and the new path of a rename. */
 function parseRawDiff(text: string): readonly Omit<DiffChange, "binary" | "addedText">[] {
 	const tokens = text.split("\0");
-	const changes: { path: string; status: DiffChange["status"]; from: string | null; modeChanged: boolean }[] = [];
+	const changes: { path: string; status: DiffChange["status"]; from: string | null; modeChanged: boolean; gitlink: boolean }[] = [];
 	for (let index = 0; index < tokens.length;) {
 		const header = tokens[index++];
 		if (!header.startsWith(":")) continue;
@@ -95,7 +95,7 @@ function parseRawDiff(text: string): readonly Omit<DiffChange, "binary" | "added
 		const renamed = status.startsWith("R") || status.startsWith("C");
 		const path = renamed ? tokens[index++] : first;
 		if (path === undefined) break;
-		changes.push({ path, status: statusOf(status), from: renamed ? first : null, modeChanged: oldMode !== newMode });
+		changes.push({ path, status: statusOf(status), from: renamed ? first : null, modeChanged: oldMode !== newMode, gitlink: newMode === "160000" });
 	}
 	return changes;
 }
