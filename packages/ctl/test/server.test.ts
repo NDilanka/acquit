@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { reachable, releaseSpawned, sleep } from "../src/process.ts";
 
-async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Promise<void> {
+async function apiFixture(dev: boolean, run: (url: string, databasePath: string) => Promise<void>): Promise<void> {
 	const root = fileURLToPath(new URL("../../..", import.meta.url));
 	const dir = await mkdtemp(join(tmpdir(), "acquit-api-test-"));
 	const listener = createServer();
@@ -29,7 +29,7 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Pr
 			assert(Date.now() < deadline, "The isolated test API failed readiness.");
 			await sleep(50);
 		}
-		await run(url);
+		await run(url, join(dir, "acquit.db"));
 	} finally {
 		await releaseSpawned(child);
 		await rm(dir, { recursive: true, force: true });
@@ -74,5 +74,31 @@ test("development routes require the flag and the configured lane origin", async
 		assert.equal((await fetch(`${url}/api/me/credits`, { headers: { Authorization: `Bearer ${auth.token}` } })).status, 401);
 		assert.equal((await fetch(`${url}/api/dev/clock`, { method: "POST", headers: { Authorization: `Bearer ${freshAuth.token}` }, body: '{"advanceMs":1}' })).status, 200);
 		assert.equal((await fetch(`${url}/api/me/credits`, { headers: { Authorization: `Bearer ${freshAuth.token}` } })).status, 401);
+	});
+});
+test("a job stored before the frozen contract serves through GET /api/jobs/:id", async () => {
+	await apiFixture(false, async (url, databasePath) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const at = "2026-11-01T11:12:00.000Z";
+		const held = [{ kind: "HELD", cents: 42000, at }];
+		const row = { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture",
+			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z" },
+			bids: [{ id: "bid_test", operator: "devon-ops", agent: "ts-bugfixer", kind: "INDEPENDENT", price: 40000, status: "ACCEPTED" }],
+			state: { status: "IN_PROGRESS", escrow: { book: held, payee: { operator: "devon-ops" } }, attempts: { phase: "WORKING", history: [] } } };
+		const db = new DatabaseSync(databasePath);
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		db.close();
+		const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "maya-client" }) });
+		assert.equal(signedIn.status, 200);
+		const auth = await signedIn.json() as { token: string };
+		const response = await fetch(`${url}/api/jobs/${row.id}`, { headers: { Authorization: `Bearer ${auth.token}` } });
+		assert.equal(response.status, 200);
+		const { job } = await response.json() as { job: { id: string; status: string; escrow: string; contract: unknown; budget: number; ledger: unknown } };
+		assert.equal(job.id, row.id);
+		assert.equal(job.status, "IN_PROGRESS");
+		assert.equal(job.escrow, "HELD");
+		assert.equal(job.budget, 40000);
+		assert.equal(job.contract, null);
+		assert.deepEqual(job.ledger, held);
 	});
 });
