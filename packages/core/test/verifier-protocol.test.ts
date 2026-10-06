@@ -88,7 +88,7 @@ const SHIM_CONTAINER_ID = "c".repeat(64);
 
 /** A fake `docker` CLI: it records every invocation, answers `events` from a file, and exits as told. */
 function dockerShim(behavior: { readonly runExit: number; readonly events: string; readonly runHangs?: boolean;
-	readonly eventsExit?: number; readonly skipCidFile?: boolean; readonly runLeavesStdioMs?: number }): {
+	readonly eventsExit?: number; readonly eventsDelayMs?: number; readonly skipCidFile?: boolean; readonly runLeavesStdioMs?: number }): {
 	readonly dir: string;
 	readonly invocations: () => readonly (readonly string[])[];
 	readonly remove: () => void;
@@ -109,10 +109,12 @@ const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 if (args[0] === "events") {
-	process.stdout.write(readFileSync(${JSON.stringify(events)}, "utf8"));
-	process.exit(${behavior.eventsExit ?? 0});
+	setTimeout(() => {
+		process.stdout.write(readFileSync(${JSON.stringify(events)}, "utf8"));
+		process.exit(${behavior.eventsExit ?? 0});
+	}, ${behavior.eventsDelayMs ?? 0});
 }
-if (args[0] === "run") {
+else if (args[0] === "run") {
 	const cidfile = args.indexOf("--cidfile");
 	if (cidfile >= 0 && ${behavior.skipCidFile !== true}) writeFileSync(args[cidfile + 1], ${JSON.stringify(`${SHIM_CONTAINER_ID}\n`)});
 	${run}
@@ -794,6 +796,52 @@ test("a daemon that cannot report how the subject ended is a kill, not a submiss
 		shim.remove();
 		rmSync(tree, { recursive: true, force: true });
 	}
+});
+
+test("a daemon that answers the postmortem slowly is not a kill: the submission's own exit stays REJECTED", { timeout: 60_000 }, async () => {
+	const fixture = repositoryWith(`process.exit(137);\nexport function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_slow_postmortem" as VerifierRunId, jobId: "job_slow_postmortem" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		// The daemon answers the closed window after 5.5 s — slower than the query's old 5 s bound — and
+		// it answers no kill event. A slow answer is not a daemon that could not report: under load this
+		// answer must not turn the submission's own exit into a kill that returns the attempt slot.
+		const shim = dockerShim({ runExit: 137, events: "create|\nstart|\ndie|137\n", eventsDelayMs: 5_500 });
+		try {
+			const outcome = await withShimOnPath(shim.dir, () => runJudge(request, { source, publisher: createFakeGitHubApp(),
+				subject: dockerSubject({ probe: () => true }), clock: { now: () => instant("2026-10-06T13:30:00Z") },
+				deadlineMs: 20_000, cases: hiddenCases }));
+			assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+			if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
+			const faults = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);
+			assert.ok(faults.includes("SUBJECT_EXIT"), JSON.stringify(faults));
+			assert.equal(faults.includes("SUBJECT_KILL_UNREPORTED"), false, JSON.stringify(faults));
+		} finally { shim.remove(); }
+	} finally { fixture.remove(); }
+});
+
+test("a daemon whose postmortem query fails is a kill, and the attempt slot returns", { timeout: 60_000 }, async () => {
+	const fixture = repositoryWith(`process.exit(137);\nexport function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_failed_postmortem" as VerifierRunId, jobId: "job_failed_postmortem" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		// The query answers nonzero: the daemon could not say how the subject ended. The submission
+		// cannot stop the daemon, so this is infrastructure and the attempt slot returns.
+		const shim = dockerShim({ runExit: 137, events: "", eventsExit: 1 });
+		try {
+			const outcome = await withShimOnPath(shim.dir, () => runJudge(request, { source, publisher: createFakeGitHubApp(),
+				subject: dockerSubject({ probe: () => true }), clock: { now: () => instant("2026-10-06T13:30:00Z") },
+				deadlineMs: 20_000, cases: hiddenCases }));
+			assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
+			if (outcome.kind !== "RUN_FAILED") return;
+			assert.equal(outcome.failure.name, "SUBJECT_KILLED");
+			assert.match(outcome.failure.detail, /daemon could not report/);
+		} finally { shim.remove(); }
+	} finally { fixture.remove(); }
 });
 
 test("a kill event that carries no signal number still reports an external kill", async () => {
