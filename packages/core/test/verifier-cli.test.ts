@@ -129,8 +129,8 @@ test("a push refusal names both causes of a missing work repo and repeats no cre
 	assert.equal(escaped.message.includes("overwritten by the remote"), true, escaped.message);
 });
 
-test("a retry after a rejection pushes a sibling commit and the work repo ref ends at it", async () => {
-	const { pushHead } = await import("../../acquit-cli/src/submit.ts") as { pushHead?: (dir: string, remote: string, jobId: string) => void };
+test("each submission lands on its own commit-named ref and never moves the publisher's branch", async () => {
+	const { pushHead } = await import("../../acquit-cli/src/submit.ts") as { pushHead?: (dir: string, remote: string, commit: CommitSha) => void };
 	assert.equal(typeof pushHead, "function");
 	const root = mkdtempSync(join(tmpdir(), "acquit-push-sibling-"));
 	try {
@@ -150,19 +150,29 @@ test("a retry after a rejection pushes a sibling commit and the work repo ref en
 		git(work, ["add", "-A"]);
 		git(work, ["commit", "--quiet", "-m", "frozen"]);
 		const frozen = git(work, ["rev-parse", "HEAD"]);
+		// The work repo carries main at the frozen commit, as funding creates it. The publisher's
+		// branch already exists on top, as it would after a verified run. Both submissions below
+		// must leave it where it is.
+		git(work, ["push", "--quiet", remote, `${frozen}:refs/heads/main`]);
+		git(remote, ["update-ref", "refs/heads/acquit/job_7Q2K", frozen]);
 		// Attempt 1 is the tamper. Attempt 2 is built from the frozen commit, so the two are siblings.
 		writeFileSync(join(work, "tests.ts"), "expect(1).toBe(2);\n");
 		git(work, ["add", "-A"]);
 		git(work, ["commit", "--quiet", "-m", "tamper"]);
 		const rejected = git(work, ["rev-parse", "HEAD"]);
-		pushHead!(work, remote, "job_7Q2K");
+		pushHead!(work, remote, rejected as CommitSha);
 		git(work, ["checkout", "--quiet", "--detach", frozen]);
 		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
 		git(work, ["add", "-A"]);
 		git(work, ["commit", "--quiet", "-m", "fix"]);
 		const fix = git(work, ["rev-parse", "HEAD"]);
-		pushHead!(work, remote, "job_7Q2K");
-		assert.equal(git(remote, ["rev-parse", "refs/heads/acquit/job_7Q2K"]), fix);
+		pushHead!(work, remote, fix as CommitSha);
+		// The ref is content-addressed, so the same commit pushed twice is an up-to-date no-op.
+		pushHead!(work, remote, fix as CommitSha);
+		assert.equal(git(remote, ["rev-parse", `refs/heads/submissions/${rejected}`]), rejected);
+		assert.equal(git(remote, ["rev-parse", `refs/heads/submissions/${fix}`]), fix);
+		assert.equal(git(remote, ["rev-parse", "refs/heads/acquit/job_7Q2K"]), frozen,
+			"pushHead must neither create nor move the publisher's branch");
 		assert.equal(spawnSync("git", ["-C", remote, "cat-file", "-e", `${rejected}^{commit}`]).status, 0,
 			"the rejected commit must have reached the work repo");
 	} finally {
