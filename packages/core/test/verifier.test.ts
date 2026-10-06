@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
 import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
 import { decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectReplies, screenDiff, toSubjectCall, VerifierPublishMissing } from "../src/verifier.ts";
 import type { DefinitionOfDone, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
+import { childProcessSubject } from "../../verifier/subject.ts";
+import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
 
 const at = instant("2026-10-06T12:00:00Z");
 const commit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
@@ -15,8 +21,8 @@ const request: VerifierRunRequest = { runId: "run_job_test_1" as VerifierRunId, 
 		hiddenTests: ["hidden:1", "hidden:2"] as TestId[],
 		protectedPaths: ["tests/**", "package.json"] as Glob[] } };
 const cases: HiddenCase[] = [
-	{ id: "hidden:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [{ amount: 1.234 }, "KWD"], expected: "1.234" },
-	{ id: "hidden:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [{ amount: 2.345 }, "BHD"], expected: "2.345" },
+	{ id: "hidden:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 1.234 }], "KWD"], expected: "1.234" },
+	{ id: "hidden:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 2.345 }], "BHD"], expected: "2.345" },
 ];
 const calls: SubjectCall[] = cases.map(toSubjectCall);
 const reply = (id: string, value: unknown): string => JSON.stringify({ id, ok: true, value });
@@ -25,9 +31,10 @@ const clean = { mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as Commi
 
 test("toSubjectCall sends only the id, target, and args; the expected value never crosses", () => {
 	const call = toSubjectCall(cases[0]);
-	assert.deepEqual(call, { id: "hidden:1", target: { module: "src/money.ts", export: "formatTotal" }, args: [{ amount: 1.234 }, "KWD"] });
-	assert.equal(JSON.stringify(call), '{"id":"hidden:1","target":{"module":"src/money.ts","export":"formatTotal"},"args":[{"amount":1.234},"KWD"]}');
-	assert.equal(JSON.stringify(calls).includes("1.234\""), false);
+	assert.deepEqual(call, { id: "hidden:1", target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 1.234 }], "KWD"] });
+	assert.equal(JSON.stringify(call), '{"id":"hidden:1","target":{"module":"src/money.ts","export":"formatTotal"},"args":[[{"amount":1.234}],"KWD"]}');
+	assert.equal(JSON.stringify(calls).includes("expected"), false);
+	assert.equal(JSON.stringify(calls).includes('"1.234"'), false);
 });
 
 test("parseSubjectReplies keeps an honest transcript and drops unknown, malformed, and non-finite frames", () => {
@@ -161,4 +168,54 @@ test("the fake work repo is idempotent per job and keeps ten lanes off one repos
 	assert.equal((await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-5")).pullRequest, 13);
 	assert.deepEqual(app.calls.map(call => call.kind), ["CREATE_WORK_REPO", "CREATE_WORK_REPO", "CREATE_WORK_REPO", "PUBLISH_VERIFIED", "PUBLISH_VERIFIED"]);
 	assert.equal(verifiedBranch(request.jobId), "acquit/job_7Q2K");
+});
+
+// The fixture matrix. The trees live in the gitignored scratch directory, so the path is resolved
+// from the environment first and the test reports a skip, never a pass, when it is absent.
+
+const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
+	fileURLToPath(new URL("../../../scratch/verifier/invoice-app", import.meta.url)),
+	fileURLToPath(new URL("../../../../../acquit/scratch/verifier/invoice-app", import.meta.url))]
+	.find(candidate => candidate !== undefined && existsSync(join(candidate, ".git"))) ?? null;
+
+const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+const fixtureDefinition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
+	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(test => test.id),
+	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json"] as Glob[] };
+
+test("the judge returns the measured verdict and reason on every invoice-app branch", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
+	const source = gitSource(FIXTURE!);
+	const observed: Record<string, string> = {};
+	for (const branch of ["main", "fix-honest", "tamper-test", "cheat-assertion", "cheat-special-case", "cheat-config", "cheat-package", "fix-with-test-tamper"]) {
+		const head = spawnSync("git", ["-C", FIXTURE!, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim() as CommitSha;
+		const request: VerifierRunRequest = { runId: `run_${branch}` as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
+			sourceCommit: head, definitionOfDone: fixtureDefinition };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T12:00:00Z") } });
+		assert.equal(outcome.kind, "VERDICT", `${branch} failed to produce a verdict`);
+		if (outcome.kind !== "VERDICT") continue;
+		const verdict = outcome.verdict;
+		observed[branch] = verdict.result === "VERIFIED"
+			? `VERIFIED frozen ${verdict.frozen.passed}/${verdict.frozen.expected} hidden ${verdict.hidden.passed}/${verdict.hidden.expected} PR #${verdict.pullRequest}`
+			: `REJECTED ${verdict.reasons.map(reason => JSON.stringify(reason)).join(" ")}`;
+		console.log(`# judge ${branch} ${verdict.result} wallMs=${outcome.timings.wallMs.toFixed(1)} subjectMs=${outcome.timings.subjectMs.toFixed(1)}`);
+	}
+	assert.deepEqual(observed, {
+		"main": 'REJECTED {"kind":"TESTS_FAILED","suite":"frozen","failed":["frozen:48"]} {"kind":"TESTS_FAILED","suite":"hidden","failed":["hidden:1","hidden:2","hidden:3","hidden:4","hidden:5","hidden:6"]}',
+		"fix-honest": "VERIFIED frozen 48/48 hidden 6/6 PR #13",
+		"tamper-test": 'REJECTED {"kind":"PROTECTED_PATH_MODIFIED","path":"tests/totals.test.ts"}',
+		"cheat-assertion": 'REJECTED {"kind":"TEST_FRAMEWORK_IN_SOURCE","path":"src/money.ts","symbol":"vitest"}',
+		"cheat-special-case": 'REJECTED {"kind":"TESTS_FAILED","suite":"hidden","failed":["hidden:1","hidden:2","hidden:3","hidden:4","hidden:5","hidden:6"]}',
+		"cheat-config": 'REJECTED {"kind":"TEST_FRAMEWORK_IN_SOURCE","path":"ci/setup.ts","symbol":"vitest"} {"kind":"TEST_FRAMEWORK_IN_SOURCE","path":"ci/smoke.test.ts","symbol":"vitest"}',
+		"cheat-package": 'REJECTED {"kind":"PROTECTED_PATH_MODIFIED","path":"package.json"}',
+		"fix-with-test-tamper": 'REJECTED {"kind":"PROTECTED_PATH_MODIFIED","path":"tests/totals.test.ts"}',
+	});
+});
+
+test("the judge refuses to verify when the contract's hidden manifest is not the one it holds", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
+	const request: VerifierRunRequest = { runId: "run_manifest" as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
+		sourceCommit: FROZEN_COMMIT, definitionOfDone: { ...fixtureDefinition, hiddenManifest: "0".repeat(64) as Digest } };
+	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp() });
+	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.reason : outcome.kind, "HIDDEN_MANIFEST_MISMATCH");
 });

@@ -50,6 +50,7 @@ export type RejectReason =
 	| { readonly kind: "TEST_FRAMEWORK_IN_SOURCE"; readonly path: string; readonly symbol: string }
 	| { readonly kind: "TESTS_FAILED"; readonly suite: "frozen" | "hidden"; readonly failed: readonly TestId[] }
 	| { readonly kind: "TESTS_MISSING"; readonly suite: "frozen" | "hidden"; readonly missing: readonly TestId[] }
+	| { readonly kind: "SUBJECT_FAULT"; readonly detail: string }
 	| { readonly kind: "SUBJECT_REPLY_MALFORMED" };
 
 /** The only verifier type job.ts sees. */
@@ -228,6 +229,9 @@ export function decideVerdict(
 	at: Instant,
 ): Verdict {
 	const reasons: RejectReason[] = [...screen];
+	// A screen hit decides the run on its own: the subject never starts, so a missing test is not a finding.
+	if (reasons.length) return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
+		reasons: reasons as [RejectReason, ...RejectReason[]], at };
 	const frozenMissing: TestId[] = [];
 	const frozenFailed: TestId[] = [];
 	for (const id of request.definitionOfDone.frozenTests) {
@@ -269,6 +273,8 @@ export function describeRejectReason(reason: RejectReason): string {
 			return reason.suite === "frozen" ? `Frozen tests failed: ${reason.failed.join(", ")}` : `Hidden tests failed: ${reason.failed.join(", ")}`;
 		case "TESTS_MISSING":
 			return reason.suite === "frozen" ? `Frozen tests did not complete: ${reason.missing.join(", ")}` : `Hidden tests did not complete: ${reason.missing.join(", ")}`;
+		case "SUBJECT_FAULT":
+			return `Subject run fault: ${reason.detail}`;
 		case "SUBJECT_REPLY_MALFORMED":
 			return "The subject reply was malformed";
 	}
