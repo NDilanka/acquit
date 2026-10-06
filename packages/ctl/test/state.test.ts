@@ -41,7 +41,13 @@ test("a holder killed with SIGKILL does not wedge the next lifecycle operation",
 			holder.kill("SIGKILL");
 			if (holder.exitCode === null && holder.signalCode === null) await once(holder, "exit");
 			const result = await locked({ dir } as any, async () => "entered").catch((error: any) => error.code);
-			assert.equal(result, "entered", "A holder killed with SIGKILL must not leave a lock that blocks the next command.");
+			if (process.platform === "linux" || process.platform === "win32") {
+				assert.equal(result, "entered", "A lock whose holder died must not block the next command.");
+			} else {
+				// Elsewhere the lock is a socket file, and without /proc no later
+				// CLI can prove its holder is dead: it fails closed instead.
+				assert.equal(result, "CLI_BUSY", "A socket-file lock cannot be reclaimed safely, so the CLI must refuse.");
+			}
 		} finally { holder.kill("SIGKILL"); }
 	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
