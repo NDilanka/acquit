@@ -37,8 +37,8 @@ export function JobPage({ id }: { id: string }) {
     void load();
   }, [load]);
 
-  // Fast poll while waiting for the PayPal order; slow poll while bids may still arrive.
-  const polling = checkout !== null ? 1000 : job?.status === "OPEN" ? 4000 : null;
+  // Fast poll while waiting for the PayPal order; slow poll while bids may still arrive or a verdict is due.
+  const polling = checkout !== null ? 1000 : job?.status === "OPEN" || job?.phase === "VERIFYING" ? 4000 : null;
   useEffect(() => {
     if (polling === null) return;
     const t = window.setInterval(() => void load(), polling);
@@ -146,6 +146,7 @@ export function JobPage({ id }: { id: string }) {
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
+          {judgedStatuses.includes(job.status) && <Verifier job={job} />}
 
           {!isClient && job.status === "OPEN" && !funding && !job.bids.operators.some((b) => b.handle === user.handle) && (
             <div className="card pad">
@@ -340,13 +341,114 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
         {`Escrow: ${job.escrow}${locked && job.escrow === "HELD" ? `, locked to ${locked.handle}` : ""}`}
       </pre>
       {job.pullRequest !== null && <p>Pull request #{job.pullRequest}</p>}
-      {job.attempts.reasons.length > 0 && (
-        <ul className="reasons">
-          {job.attempts.reasons.map((r) => (
-            <li key={r}>{r}</li>
-          ))}
-        </ul>
+    </section>
+  );
+}
+
+type Tally = { readonly expected: number; readonly passed: number };
+
+type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readonly at: string } & (
+  | { readonly result: "REJECTED"; readonly reasons: readonly string[]; readonly reasonsTruncated: number }
+  | { readonly result: "VERIFIED"; readonly frozen: Tally; readonly hidden: Tally; readonly pullRequest: number }
+);
+
+type VerifierFields = {
+  readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
+  readonly attempts: {
+    readonly used: number;
+    readonly left: number;
+    readonly history: readonly Attempt[];
+    readonly pending: { readonly ordinal: number; readonly sourceCommit: string; readonly submittedAt: string; readonly runEndsAt: string } | null;
+    readonly failure: { readonly sourceCommit: string; readonly name: string; readonly detail: string; readonly at: string } | null;
+  };
+};
+
+const short = (sha: string) => sha.slice(0, 7);
+
+/** Only these statuses carry the attempt history in the job view; a PAID job's proof lives in its receipt. */
+const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
+
+function Verifier({ job }: { job: JobView }) {
+  // api-types.ts does not mirror the projection's history, pending, failure, or contract fields.
+  const { attempts, contract } = job as JobView & VerifierFields;
+  const total = attempts.used + attempts.left;
+  const { pending, failure, history } = attempts;
+  return (
+    <section className="card bids">
+      <div className="pad hd">
+        <h2>Verifier</h2>
+        <small className="muted">
+          {attempts.used} of {total} attempts used. A rejection keeps escrow held.
+        </small>
+      </div>
+      {failure && (
+        <div className="pad">
+          <div className="alert warn">
+            The run for commit <b className="mono">{short(failure.sourceCommit)}</b> ended without a verdict at {utc(failure.at)}:{" "}
+            <b className="mono">{failure.name}</b>
+            {failure.detail && `: ${failure.detail}`}. It did not use an attempt. Submit again.
+          </div>
+        </div>
       )}
+      {pending && (
+        <>
+          <div className="section-label">Attempt {pending.ordinal} of {total}</div>
+          <p className="pad">
+            Verification in progress for commit <b className="mono">{short(pending.sourceCommit)}</b>, submitted{" "}
+            {utc(pending.submittedAt)}. The run ends by {utc(pending.runEndsAt)}.
+          </p>
+        </>
+      )}
+      {history.length === 0 && !pending && <p className="pad muted">No attempt has been judged.</p>}
+      {history.map((a) => (
+        <div key={a.ordinal}>
+          <div className="section-label">Attempt {a.ordinal} of {total}</div>
+          <dl className="kvs pad">
+            <dt>Verifier result</dt>
+            <dd>
+              <span className={`pill ${a.result === "VERIFIED" ? "ok" : "held"}`}>{a.result}</span>
+            </dd>
+            <dt>Source commit</dt>
+            <dd className="mono">{short(a.sourceCommit)}</dd>
+            <dt>Judged</dt>
+            <dd className="num">{utc(a.at)}</dd>
+            {a.result === "REJECTED" ? (
+              <>
+                <dt>Reasons</dt>
+                <dd>
+                  <ul className="reasons">
+                    {a.reasons.map((r) => (
+                      <li key={r}>{r}</li>
+                    ))}
+                    {a.reasonsTruncated > 0 && <li className="muted">and {a.reasonsTruncated} more reasons not shown</li>}
+                  </ul>
+                </dd>
+              </>
+            ) : (
+              <>
+                <dt>Frozen tests</dt>
+                <dd className="num">
+                  {a.frozen.passed} passed{contract && ` (suite frozen at ${short(contract.frozenAt)})`}
+                </dd>
+                <dt>Hidden tests</dt>
+                <dd className="num">{a.hidden.passed} passed</dd>
+                <dt>Required tests</dt>
+                <dd className="num">{a.frozen.expected + a.hidden.expected} completed, 0 skipped or missing</dd>
+                <dt>Pull request</dt>
+                <dd>
+                  {contract ? (
+                    <a href={`https://github.com/${contract.repository}/pull/${a.pullRequest}`} target="_blank" rel="noreferrer">
+                      {contract.repository}#{a.pullRequest}
+                    </a>
+                  ) : (
+                    `#${a.pullRequest}`
+                  )}
+                </dd>
+              </>
+            )}
+          </dl>
+        </div>
+      ))}
     </section>
   );
 }
