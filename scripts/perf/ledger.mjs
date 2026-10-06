@@ -8,6 +8,7 @@ import { performance } from "node:perf_hooks";
 import { parseArgs } from "node:util";
 import { captured, portOpen } from "../../packages/ctl/src/process.ts";
 import { pathExecutable } from "../../packages/ctl/src/executables.ts";
+import { admitStartedSide, probeSide, withProbeCleanup } from "./ledger-sides.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const { values } = parseArgs({ options: { requests: { type: "string", default: "200" }, trunk: { type: "string" } } });
@@ -40,20 +41,20 @@ if (!existsSync(resolve(trunk, "package.json"))) {
 	assert.equal(installed.code, 0, "Could not install the baseline dependencies.");
 }
 
-const ports = { trunk: { api: 5610, web: 5673 }, head: { api: 5620, web: 5683 } };
-for (const side of Object.values(ports)) assert(!(await portOpen(side.api)) && !(await portOpen(side.web)), "Ledger probe ports are occupied.");
+const sides = { trunk: probeSide("trunk", trunk), head: probeSide("head", root) };
+for (const side of Object.values(sides)) assert(!(await portOpen(side.api)) && !(await portOpen(side.web)), `${side.label} probe ports are occupied.`);
 const samples = { trunk: [], head: [] };
 const failures = { trunk: 0, head: 0 };
 const running = [];
 
 async function ready(label, cwd) {
-	const side = ports[label];
+	const side = sides[label];
 	const cli = existsSync(resolve(cwd, "packages/ctl/src/main.ts")) ? "packages/ctl/src/main.ts" : "packages/cli/src/main.ts";
-	const env = { ...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: "1", PORT: String(side.api), WEB_PORT: String(side.web), DATABASE_PATH: `./data/verify/ledger-perf-${label}/acquit.db` };
-	await mkdir(resolve(cwd, `data/verify/ledger-perf-${label}`), { recursive: true });
+	const env = { ...process.env, ACQUIT_LANE: String(side.lane), ACQUIT_DEV: "1" };
 	const started = await captured(process.execPath, [cli, "start", "--timeout", "120"], cwd, env, 180_000);
 	assert.equal(started.code, 0, `${label} did not start.`);
-	running.push({ cwd, cli, env, api: side.api, web: side.web });
+	admitStartedSide(side, started.stdout);
+	running.push({ ...side, cwd, cli, env });
 	// Seed so the seeded operators and agents exist; the automatic house bid needs them.
 	const seeded = await captured(process.execPath, [cli, "seed-db", "--yes"], cwd, env, 120_000);
 	assert.equal(seeded.code, 0, `${label} did not seed.`);
@@ -98,7 +99,7 @@ async function round(label, state, measured = true) {
 	}
 }
 let measurementSeconds;
-try {
+await withProbeCleanup(async () => {
 	// Worktree/install, launch, seed, payment/capture, and CLI comparison are setup, never latency samples.
 	const states = { trunk: await ready("trunk", trunk), head: await ready("head", root) };
 	// Warm both sides with the same complete round before starting the measured GET-only phase.
@@ -107,13 +108,12 @@ try {
 	const measurementStart = performance.now();
 	for (let pass = 0; pass < requests / 20; pass++) await round(pass % 2 === 0 ? "trunk" : "head", states[pass % 2 === 0 ? "trunk" : "head"]);
 	measurementSeconds = (performance.now() - measurementStart) / 1000;
-} finally {
-	for (const side of running) {
-		const stopped = await captured(process.execPath, [side.cli, "stop"], side.cwd, side.env, 120_000);
-		assert.equal(stopped.code, 0, "Ledger probe cleanup failed.");
-	}
-	for (const side of running) assert(!(await portOpen(side.api)) && !(await portOpen(side.web)), "Ledger probe ports remained open.");
-}
+}, running, async side => {
+	const stopped = await captured(process.execPath, [side.cli, "stop"], side.cwd, side.env, 120_000);
+	const open = [];
+	for (const port of [side.api, side.web]) if (await portOpen(port)) open.push(port);
+	return { code: stopped.code, open };
+});
 const median = values => values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)];
 const range = label => samples[label].length ? [Math.min(...samples[label]), Math.max(...samples[label])] : [null, null];
 const propertyStart = performance.now();
