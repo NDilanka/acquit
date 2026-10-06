@@ -44,7 +44,6 @@ if (!existsSync(resolve(trunk, "package.json"))) {
 const sides = { trunk: probeSide("trunk", trunk), head: probeSide("head", root) };
 for (const side of Object.values(sides)) assert(!(await portOpen(side.api)) && !(await portOpen(side.web)), `${side.label} probe ports are occupied.`);
 const samples = { trunk: [], head: [] };
-const failures = { trunk: 0, head: 0 };
 const running = [];
 
 async function ready(label, cwd) {
@@ -121,8 +120,8 @@ const property = await captured(process.execPath, ["--test", "--test-concurrency
 const propertySeconds = (performance.now() - propertyStart) / 1000;
 const report = { requests, samplesPerSide: { trunk: samples.trunk.length, head: samples.head.length }, warmupPerSide: 20,
 	trunkMs: median(samples.trunk), headMs: median(samples.head), range: { trunk: range("trunk"), head: range("head") },
-	measurementSeconds, failures, propertySeconds, propertyExit: property.code };
+	measurementSeconds, propertySeconds, propertyExit: property.code };
 await writeFile(resolve(evidence, "ledger.json"), JSON.stringify(report, null, 2) + "\n");
 console.log(JSON.stringify(report));
-if (failures.trunk || failures.head || samples.trunk.length !== requests / 2 || samples.head.length !== requests / 2 ||
+if (samples.trunk.length !== requests / 2 || samples.head.length !== requests / 2 ||
 	report.headMs > report.trunkMs * 1.2 + 2 || property.code !== 0 || propertySeconds > 10) process.exit(1);
