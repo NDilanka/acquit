@@ -8,7 +8,7 @@ import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { alive, childListener, detached, ownedProcess, ownershipChannel, ownershipNonce, ownershipReady, releaseSpawned, sleep } from "../src/process.ts";
+import { alive, childListener, detached, killTree, ownedProcess, ownershipChannel, ownershipNonce, ownershipReady, releaseSpawned, sleep } from "../src/process.ts";
 import { stop } from "../src/commands.ts";
 import { atomicJson } from "../src/state.ts";
 
@@ -196,10 +196,12 @@ test("stop refuses a duplicated listener fd held by an idle process the record n
 		});
 	`;
 	let answering: ChildProcess | undefined;
+	let holder: number | undefined;
 	try {
 		const ready = await spawnProbe(fixture, path);
 		answering = ready.child;
 		const { holderPid } = JSON.parse(ready.message) as { answeringPid: number; holderPid: number };
+		holder = holderPid;
 		assert.equal(socketInodesOf(holderPid).includes(listenerInodeOf(answering.pid!, path)), true, "The idle holder must share the listener inode.");
 		const record = { pid: holderPid, nonce, port: 64904, socketPath: path, startTime: startTimeOf(holderPid), listenerInode: listenerInodeOf(holderPid, path) };
 		const ctx = probeContext(root, "duplicate", 64904, 64905);
@@ -207,7 +209,10 @@ test("stop refuses a duplicated listener fd held by an idle process the record n
 		await assert.rejects(stop({}, ctx), (error: any) => error.code === "PID_MISMATCH");
 		assert.equal(alive(holderPid), true, "An idle process holding a duplicated fd must survive.");
 		assert.equal(alive(answering.pid!), true);
-	} finally { await releaseProbes(root, [answering]); }
+	} finally {
+		if (holder) await killTree(holder).catch(() => {});
+		await releaseProbes(root, [answering]);
+	}
 });
 test("stop refuses a record whose start time does not match the live PID, and accepts the true one", { timeout: 20000, ...linux }, async () => {
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-starttime-"));

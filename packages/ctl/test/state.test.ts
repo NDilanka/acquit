@@ -28,6 +28,23 @@ test("a squatted lock names its pipe and recovery; idle clients cannot block loc
 		await locked({ dir } as any, async () => {});
 	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
+test("a holder killed with SIGKILL does not wedge the next lifecycle operation", { timeout: 20000 }, async () => {
+	const dir = await mkdtemp(resolve(tmpdir(), "acquit-lock-stale-"));
+	try {
+		const holder = spawn(process.execPath, ["--input-type=module", "-e",
+			`import { locked } from ${JSON.stringify(new URL("../src/state.ts", import.meta.url).href)};
+			await locked({ dir: ${JSON.stringify(dir)} }, async () => { console.log("held"); await new Promise(() => {}); });`],
+			{ stdio: ["ignore", "pipe", "ignore"] });
+		try {
+			const [held] = await once(holder.stdout!, "data", { signal: AbortSignal.timeout(5000) });
+			assert.equal(String(held).trim(), "held");
+			holder.kill("SIGKILL");
+			if (holder.exitCode === null && holder.signalCode === null) await once(holder, "exit");
+			const result = await locked({ dir } as any, async () => "entered").catch((error: any) => error.code);
+			assert.equal(result, "entered", "A holder killed with SIGKILL must not leave a lock that blocks the next command.");
+		} finally { holder.kill("SIGKILL"); }
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+});
 test("atomic replacement retries a real Windows non-delete-sharing reader and reruns the publish guard", { timeout: 20000, skip: process.platform !== "win32" }, async () => {
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-rename-"));
 	const path = resolve(root, "run.json");

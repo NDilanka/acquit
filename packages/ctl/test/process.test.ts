@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
@@ -78,6 +78,43 @@ test("killTree stops the group a reaped leader leaves behind", { timeout: 20000,
 		await killTree(leader.pid!);
 		assert.equal(alive(descendant), false, "A descendant must not outlive the group leader that the record names.");
 	} finally { try { process.kill(descendant, "SIGKILL"); } catch {} }
+});
+test("killTree without /proc signals the recorded process, never a group it cannot prove", { timeout: 20000, ...linux }, () => {
+	// A host with no /proc cannot answer whether the pid leads a group. The
+	// fixture stubs the platform and every /proc read process.ts makes, while
+	// both processes stay real: the signal path is the only thing simulated.
+	const script = `
+		import { registerHooks } from "node:module";
+		import { spawn } from "node:child_process";
+		import { once } from "node:events";
+		registerHooks({
+			resolve(specifier, context, nextResolve) {
+				if (specifier === "node:fs" && context.parentURL?.includes("/src/process.ts")) return { url: "stub:no-proc", shortCircuit: true };
+				return nextResolve(specifier, context);
+			},
+			load(url, context, nextLoad) {
+				if (url === "stub:no-proc") return { format: "module", shortCircuit: true, source: "import * as real from 'node:fs'; export default real.default ?? real; export * from 'node:fs'; const noProc = path => String(path).startsWith('/proc'); export const readFileSync = (path, ...rest) => { if (noProc(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return real.readFileSync(path, ...rest); }; export const readdirSync = (path, ...rest) => { if (noProc(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return real.readdirSync(path, ...rest); };" };
+				return nextLoad(url, context);
+			},
+		});
+		const { killTree, alive } = await import(${JSON.stringify(new URL("../src/process.ts", import.meta.url).href)});
+		Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+		const leader = spawn(process.execPath, ["-e", "const { spawn } = require('node:child_process'); const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); c.unref(); console.log(c.pid); setInterval(() => {}, 1000);"],
+			{ stdio: ["ignore", "pipe", "ignore"], detached: true });
+		const [chunk] = await once(leader.stdout, "data");
+		const descendant = Number(String(chunk).trim());
+		let error = null;
+		try { await killTree(leader.pid); } catch (caught) { error = caught.code ?? caught.message; }
+		const report = { leaderAlive: alive(leader.pid), descendantAlive: alive(descendant), error };
+		for (const pid of [descendant, leader.pid]) { try { process.kill(pid, "SIGKILL"); } catch {} }
+		console.log(JSON.stringify(report));
+	`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 20000 });
+	assert.equal(result.status, 0, result.stderr);
+	const report = JSON.parse(result.stdout.trim().split("\n").pop()!) as { leaderAlive: boolean; descendantAlive: boolean; error: string | null };
+	assert.equal(report.leaderAlive, false, "The recorded process itself must still be signalled.");
+	assert.equal(report.descendantAlive, true, "A group signal needs kernel proof; without /proc the leader's group member must survive.");
+	assert.equal(report.error, null, "Signalling only the recorded process must still finish cleanly.");
 });
 test("killTree escalates SIGKILL until a SIGTERM-ignoring group member is gone", { timeout: 30000, ...linux }, async () => {
 	const stubborn = `process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000);`;
