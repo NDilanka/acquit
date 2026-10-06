@@ -6,7 +6,7 @@ import { laneSlot } from "../../packages/ctl/src/state.ts";
  * out of the worktree's default slot, so a dev app already running in the same worktree
  * shares no state with the probe and can never be addressed or stopped by it.
  */
-export const probeLanes = { trunk: 61, head: 62 };
+const probeLanes = { trunk: 61, head: 62 };
 
 export function probeSide(label, root) {
 	const lane = laneSlot(probeLanes[label]);
@@ -30,7 +30,7 @@ export function admitStartedSide(side, stdout) {
 }
 
 /** Stop every tracked side and collect the problems, so one failed stop cannot skip another. */
-export async function stopProbeSides(sides, stopSide) {
+async function stopProbeSides(sides, stopSide) {
 	const problems = [];
 	for (const side of sides) {
 		try {
