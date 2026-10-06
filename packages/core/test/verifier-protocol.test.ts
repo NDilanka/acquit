@@ -17,7 +17,8 @@ import type { DefinitionOfDone, HiddenCase, SubjectCall, VerifierRunRequest, Ver
 import { BOOTSTRAP_LIMITS } from "../../verifier/bootstrap.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
 import type { JudgeSource } from "../../verifier/judge.ts";
-import { ChildSubjectRefused, childProcessSubject, dockerArgs, dockerSubject, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
+import { ChildSubjectRefused, childProcessSubject, dockerArgs, dockerReachable, dockerSubject, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
+import type { SubjectRun } from "../../verifier/subject.ts";
 
 const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const hiddenCases: readonly HiddenCase[] = [
@@ -54,6 +55,66 @@ function repositoryWith(moduleSource: string, extra?: (repo: string) => void): {
 	git(["commit", "-qm", "submitted"]);
 	return { repo, frozen, head: spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() as CommitSha,
 		remove: () => rmSync(repo, { recursive: true, force: true }) };
+}
+
+async function waitFor(condition: () => boolean, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() >= deadline) throw new Error(`Condition not met within ${timeoutMs} ms`);
+		await new Promise(resolve => setTimeout(resolve, 100));
+	}
+}
+
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+	await waitFor(() => existsSync(path), timeoutMs);
+}
+
+/** The one container this test's run created, found by its mount source so parallel lanes cannot confuse it. */
+async function waitForContainerMount(source: string, timeoutMs: number): Promise<string> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const listed = String(spawnSync("docker", ["ps", "--format", "{{.Names}}"], { encoding: "utf8" }).stdout ?? "");
+		for (const name of listed.split("\n").filter(candidate => candidate.startsWith("acquit-subject-"))) {
+			const mounts = String(spawnSync("docker", ["inspect", "--format", "{{json .Mounts}}", name], { encoding: "utf8" }).stdout ?? "");
+			if (mounts.includes(source)) return name;
+		}
+		if (Date.now() >= deadline) throw new Error(`No acquit-subject container mounted ${source} within ${timeoutMs} ms`);
+		await new Promise(resolve => setTimeout(resolve, 200));
+	}
+}
+
+/** A fake `docker` CLI: it records every invocation, answers `events` from a file, and exits as told. */
+function dockerShim(behavior: { readonly runExit: number; readonly events: string; readonly runHangs?: boolean }): {
+	readonly dir: string;
+	readonly invocations: () => readonly (readonly string[])[];
+	readonly remove: () => void;
+} {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-docker-shim-"));
+	const log = join(dir, "invocations.jsonl");
+	const events = join(dir, "events.txt");
+	writeFileSync(events, behavior.events);
+	writeFileSync(join(dir, "docker"), `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
+if (args[0] === "events") {
+	process.stdout.write(readFileSync(${JSON.stringify(events)}, "utf8"));
+	process.exit(0);
+}
+if (args[0] === "run") { ${behavior.runHangs === true ? "setTimeout(() => {}, 60000);" : `process.exit(${behavior.runExit});`} }
+else process.exit(0);
+`, { mode: 0o755 });
+	return { dir,
+		invocations: () => readFileSync(log, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as readonly string[]),
+		remove: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+async function withShimOnPath<T>(dir: string, body: () => Promise<T>): Promise<T> {
+	const previous = process.env.PATH;
+	process.env.PATH = `${dir}:${previous ?? ""}`;
+	try { return await body(); } finally {
+		if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous;
+	}
 }
 
 test("a complete forged transcript written before any input arrives is a fault, not a pass", async () => {
@@ -516,5 +577,209 @@ test("a thrown error is capped to one line and never enters the verdict", async 
 		assert.equal(outcome.verdict.result, "REJECTED");
 		assert.equal(JSON.stringify(outcome.verdict).includes(marker), false);
 		assert.equal(JSON.stringify(outcome.verdict).includes("x".repeat(200)), false);
+	} finally { fixture.remove(); }
+});
+
+test("an externally killed subject ends the run without a verdict and is never published", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_killed" as VerifierRunId, jobId: "job_killed" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const killed: SubjectRun = { variant: "CHILD_PROCESS", nonce: "0".repeat(32), ready: true, stdout: "", stderr: "",
+			exitCode: null, signal: "SIGKILL", killedBy: "SIGKILL", faults: ["SUBJECT_EXIT", "SUBJECT_INCOMPLETE"], wallMs: 42 };
+		const publishCalls: PublishRequest[] = [];
+		const publisher: PublisherPort = { publishVerified: async publishRequest => {
+			publishCalls.push(publishRequest);
+			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
+		} };
+		const outcome = await runJudge(request, { source, publisher, cases: hiddenCases,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, subject: { variant: "CHILD_PROCESS", run: async () => killed } });
+		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
+		if (outcome.kind !== "RUN_FAILED") return;
+		assert.equal(outcome.failure.name, "SUBJECT_KILLED");
+		assert.match(outcome.failure.detail, /SIGKILL/);
+		assert.deepEqual(publishCalls, []);
+	} finally { fixture.remove(); }
+});
+
+test("a subject that exits 137 on its own still burns an attempt as REJECTED SUBJECT_EXIT", async () => {
+	const fixture = repositoryWith(`process.exit(137);\nexport function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_self_137" as VerifierRunId, jobId: "job_self_137" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const publishCalls: PublishRequest[] = [];
+		const publisher: PublisherPort = { publishVerified: async publishRequest => {
+			publishCalls.push(publishRequest);
+			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
+		} };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
+		const faults = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);
+		assert.ok(faults.includes("SUBJECT_EXIT"), JSON.stringify(faults));
+		assert.deepEqual(publishCalls, []);
+	} finally { fixture.remove(); }
+});
+
+test("the child launcher reports a signal the judge did not send as an external kill", { skip: process.platform === "win32" ? "Signal names need a POSIX host." : false, timeout: 60_000 }, async () => {
+	const work = mkdtempSync(join(tmpdir(), "acquit-signal-"));
+	const pidPath = join(work, "subject.pid");
+	const calledPath = join(work, "subject.called");
+	const fixture = repositoryWith(`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(pidPath)}, String(process.pid));\nexport function formatTotal(): Promise<string> { writeFileSync(${JSON.stringify(calledPath)}, "1"); return new Promise(() => {}); }\n`);
+	try {
+		const call: SubjectCall = { id: "frozen:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [] };
+		const pending = childProcessSubject().run(fixture.repo, [call], 30_000);
+		await waitForFile(pidPath, 10_000);
+		const pid = Number(readFileSync(pidPath, "utf8"));
+		await waitForFile(calledPath, 10_000);
+		process.kill(pid, "SIGKILL");
+		const run = await pending;
+		assert.equal(run.signal, "SIGKILL");
+		assert.equal(run.killedBy, "SIGKILL");
+		assert.ok(run.faults.includes("SUBJECT_EXIT"), JSON.stringify(run.faults));
+	} finally {
+		try {
+			const pid = Number(readFileSync(pidPath, "utf8"));
+			if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, "SIGKILL");
+		} catch { /* the subject never started */ }
+		fixture.remove();
+		rmSync(work, { recursive: true, force: true });
+	}
+});
+
+test("the Docker launcher reads an external kill from the daemon's kill event, not from the exit code", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "create|\nstart|\nkill|9\ndie|137\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, "SIGKILL");
+		assert.ok(run.faults.includes("SUBJECT_EXIT"), JSON.stringify(run.faults));
+		const invoked = shim.invocations();
+		const launched = invoked.find(call => call[0] === "run");
+		assert.ok(launched !== undefined, JSON.stringify(invoked));
+		const name = launched[launched.indexOf("--name") + 1];
+		assert.match(name, /^acquit-subject-/);
+		const events = invoked.find(call => call[0] === "events");
+		assert.deepEqual(events?.slice(0, 3), ["events", "--filter", `container=${name}`]);
+		assert.ok(events?.includes("--since") === true && events?.includes("--until") === true, JSON.stringify(events));
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a Docker subject that exits 137 on its own stays a REJECTED attempt", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "create|\nstart|\ndie|137\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, null);
+		assert.ok(run.faults.includes("SUBJECT_EXIT"), JSON.stringify(run.faults));
+		assert.equal(run.faults.includes("MEMORY_LIMIT"), false, JSON.stringify(run.faults));
+		const events = shim.invocations().find(call => call[0] === "events");
+		assert.ok(events !== undefined, "an abnormal exit must ask the daemon what happened");
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("an OOM-killed Docker subject stays a verdict fault for the submission", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "create|\noom|\ndie|137\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, null);
+		assert.ok(run.faults.includes("MEMORY_LIMIT"), JSON.stringify(run.faults));
+		assert.ok(run.faults.includes("SUBJECT_EXIT"), JSON.stringify(run.faults));
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("the Docker launcher asks the daemon nothing when the subject exits cleanly", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 0, events: "create|\nstart|\ndie|0\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, null);
+		assert.deepEqual(shim.invocations().map(call => call[0]), ["run"]);
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a Docker client the judge killed is removed by name so the container cannot outlive the run", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 0, events: "", runHangs: true });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 500));
+		assert.ok(run.faults.includes("TIMEOUT"), JSON.stringify(run.faults));
+		assert.equal(run.killedBy, null);
+		const invoked = shim.invocations();
+		const launched = invoked.find(call => call[0] === "run");
+		assert.ok(launched !== undefined, JSON.stringify(invoked));
+		const name = launched[launched.indexOf("--name") + 1];
+		const removed = invoked.find(call => call[0] === "rm");
+		assert.deepEqual(removed, ["rm", "--force", name]);
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a real Docker subject killed from outside returns the run as an external kill with no container left", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+	const fixture = repositoryWith(`export function formatTotal(): Promise<string> { return new Promise(() => {}); }\n`);
+	chmodSync(fixture.repo, 0o755);
+	let name: string | null = null;
+	try {
+		const call: SubjectCall = { id: "frozen:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [] };
+		const pending = dockerSubject().run(fixture.repo, [call], 30_000);
+		name = await waitForContainerMount(fixture.repo, 20_000);
+		const killed = spawnSync("docker", ["kill", "--signal", "KILL", name]);
+		assert.equal(killed.status, 0, String(killed.stderr));
+		const run = await pending;
+		assert.equal(run.killedBy, "SIGKILL");
+		assert.equal(run.exitCode, 137);
+		await waitFor(() => String(spawnSync("docker", ["ps", "-a", "--filter", `name=${name}`, "--format", "{{.Names}}"]).stdout ?? "").trim() === "", 5_000);
+	} finally {
+		if (name !== null) spawnSync("docker", ["rm", "--force", name]);
+		fixture.remove();
+	}
+});
+
+test("a real Docker subject that exits 137 on its own stays a REJECTED attempt", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+	const fixture = repositoryWith(`process.exit(137);\nexport function formatTotal(): string { return "1"; }\n`);
+	chmodSync(fixture.repo, 0o755);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_docker_137" as VerifierRunId, jobId: "job_docker_137" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		const outcome = await runJudge(request, { source, subject: dockerSubject(), publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 20_000, cases: hiddenCases });
+		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
+		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
+		const faults = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);
+		assert.ok(faults.includes("SUBJECT_EXIT"), JSON.stringify(faults));
+	} finally { fixture.remove(); }
+});
+
+test("a real Docker subject killed by the memory cap stays a verdict fault", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { const held: Buffer[] = []; for (;;) held.push(Buffer.alloc(1 << 20)); }\n`);
+	chmodSync(fixture.repo, 0o755);
+	try {
+		const call: SubjectCall = { id: "frozen:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [] };
+		const run = await dockerSubject().run(fixture.repo, [call], 30_000);
+		assert.equal(run.killedBy, null);
+		assert.equal(run.exitCode, 137);
+		assert.ok(run.faults.includes("MEMORY_LIMIT"), JSON.stringify(run.faults));
 	} finally { fixture.remove(); }
 });

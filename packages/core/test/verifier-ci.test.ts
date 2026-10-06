@@ -65,6 +65,10 @@ test("the callback boundary carries a run's named failure, bounded, or nothing",
 			headers: { "x-acquit-signature": `sha256=${createHmac("sha256", "s3cret").update(body).digest("hex")}` }, body });
 	};
 	assert.deepEqual(await port.parseCallback(signed(failedReport)), failedReport);
+	// A subject stopped from outside is a named failure like any other, and the boundary carries it.
+	const killed = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure,
+		name: "SUBJECT_KILLED", detail: "the subject was killed externally (SIGKILL)" } } };
+	assert.deepEqual(await port.parseCallback(signed(killed)), killed);
 	// A report that carries neither a verdict nor a named failure is refused, not guessed at.
 	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED" } })), null);
 	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "SOMETHING_ELSE" } })), null);
