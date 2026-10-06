@@ -11,9 +11,9 @@ import type { DefinitionOfDone, Glob, HiddenCase } from "./verifier.ts";
 export const FROZEN_AT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 export const FROZEN_TEST_PATH = "tests/totals.test.ts";
 /**
- * The paths a submission may not touch. `.gitattributes` is protected because the diff's binary
- * marking and `git archive` both honor the submitted tree's attributes: a `-diff` line blanks the
- * diff, and an `export-subst` line changes the bytes the subject runs.
+ * The paths a submission may not touch. `.gitattributes` is protected because git reads attributes
+ * from the worktree or HEAD when diffing, and from the submitted tree in `git archive`: a `-diff`
+ * line blanks the diff, and an `export-subst` line changes the bytes the subject runs.
  */
 export const PROTECTED_PATHS: readonly Glob[] = ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as Glob[];
 

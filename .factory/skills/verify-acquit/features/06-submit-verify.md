@@ -55,7 +55,7 @@ Preconditions:
 
 - The lexical screen claims exactly five things: a protected path is refused by name under every git
   status (add, modify, delete, rename on both names, mode change, type change), an added line of a
-  source file that literally mentions `vitest`, `expect(`, or `node:test` is refused, a diff past
+  source file that imports a test framework (`vitest`, `expect`, `node:test`) is refused, a diff past
   4096 changed paths is refused by name (`DIFF_TOO_LARGE`) rather than screened in part, a diff
   that changes more than 256 non-binary source paths is refused by name (`SOURCE_PATHS_OVER_READ_BOUND`)
   because the screen reads added text for only that many, and a tree that carries a submodule
