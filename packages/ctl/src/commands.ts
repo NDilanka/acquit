@@ -88,12 +88,14 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			// run file that a later stop can reclaim; no post-spawn lookup is required.
 			await atomicJson(ctx.stateFile, state);
 			const api = await detached("apps/api/src/server.ts", state.api.nonce!, ctx.root, { ...process.env, PORT: String(ctx.apiPort), WEB_PORT: String(ctx.webPort),
-				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath }, state.logs.api, [], state.api.socketPath);
+				WEB_ORIGIN: `http://localhost:${ctx.webPort}`, DATABASE_PATH: ctx.databasePath,
+				ACQUIT_OWNERSHIP_RECORD: ctx.stateFile, ACQUIT_OWNERSHIP_ROLE: "api" }, state.logs.api, [], state.api.socketPath);
 			children.push(api);
 			state.api.pid = api.pid!;
 			await atomicJson(ctx.stateFile, state);
 			const web = await detached(vite, state.web.nonce!, resolve(ctx.root, "apps/web"),
-				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}` }, state.logs.web,
+				{ ...process.env, WEB_PORT: String(ctx.webPort), ACQUIT_API_URL: `http://127.0.0.1:${ctx.apiPort}`,
+					ACQUIT_OWNERSHIP_RECORD: ctx.stateFile, ACQUIT_OWNERSHIP_ROLE: "web" }, state.logs.web,
 				["--host", "127.0.0.1", "--port", String(ctx.webPort), "--strictPort"], state.web.socketPath);
 			children.push(web);
 			state.web.pid = web.pid!;
