@@ -83,8 +83,12 @@ async function waitForContainerMount(source: string, timeoutMs: number): Promise
 	}
 }
 
+/** The container id the shim writes for `--cidfile`, the way the docker client does at container start. */
+const SHIM_CONTAINER_ID = "c".repeat(64);
+
 /** A fake `docker` CLI: it records every invocation, answers `events` from a file, and exits as told. */
-function dockerShim(behavior: { readonly runExit: number; readonly events: string; readonly runHangs?: boolean }): {
+function dockerShim(behavior: { readonly runExit: number; readonly events: string; readonly runHangs?: boolean;
+	readonly eventsExit?: number; readonly skipCidFile?: boolean; readonly runLeavesStdioMs?: number }): {
 	readonly dir: string;
 	readonly invocations: () => readonly (readonly string[])[];
 	readonly remove: () => void;
@@ -93,15 +97,26 @@ function dockerShim(behavior: { readonly runExit: number; readonly events: strin
 	const log = join(dir, "invocations.jsonl");
 	const events = join(dir, "events.txt");
 	writeFileSync(events, behavior.events);
+	// The docker client writes the container id at start. The stdio case models the live close: the
+	// client exits 137 while a child of it keeps the pipes open, so close arrives with no signal after
+	// the judge has already stopped it.
+	const run = behavior.runHangs === true ? "setTimeout(() => {}, 60000);"
+		: behavior.runLeavesStdioMs === undefined ? `process.exit(${behavior.runExit});`
+		: `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, ${behavior.runLeavesStdioMs})"], { stdio: "inherit" });
+setTimeout(() => process.exit(${behavior.runExit}), 20);`;
 	writeFileSync(join(dir, "docker"), `#!/usr/bin/env node
-const { appendFileSync, readFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 if (args[0] === "events") {
 	process.stdout.write(readFileSync(${JSON.stringify(events)}, "utf8"));
-	process.exit(0);
+	process.exit(${behavior.eventsExit ?? 0});
 }
-if (args[0] === "run") { ${behavior.runHangs === true ? "setTimeout(() => {}, 60000);" : `process.exit(${behavior.runExit});`} }
+if (args[0] === "run") {
+	const cidfile = args.indexOf("--cidfile");
+	if (cidfile >= 0 && ${behavior.skipCidFile !== true}) writeFileSync(args[cidfile + 1], ${JSON.stringify(`${SHIM_CONTAINER_ID}\n`)});
+	${run}
+}
 else process.exit(0);
 `, { mode: 0o755 });
 	return { dir,
@@ -327,10 +342,12 @@ test("the bootstrap's frame limits are the judge's own limits", () => {
 });
 
 test("the Docker subject mounts only the submitted tree and the minimal bootstrap", () => {
-	const args = dockerArgs("/tmp/acquit-tree", "node:24-bookworm-slim", "acquit-subject-test", "/tmp/acquit-bootstrap.ts");
+	const args = dockerArgs("/tmp/acquit-tree", "node:24-bookworm-slim", "acquit-subject-test", "/tmp/acquit-bootstrap.ts", "/tmp/acquit-container.cid");
 	const mounts = args.flatMap((arg, index) => arg === "--mount" ? [args[index + 1]] : []);
 	assert.equal(mounts.length, 2);
 	assert.equal(args[args.indexOf("--name") + 1], "acquit-subject-test");
+	// The client writes the container's id here, and the postmortem filters the daemon's events by it.
+	assert.equal(args[args.indexOf("--cidfile") + 1], "/tmp/acquit-container.cid");
 	assert.equal(mounts[0], "type=bind,source=/tmp/acquit-tree,target=/tree,readonly");
 	// The bootstrap path is pinned here: the default is where the checkout lives, so asserting on it
 	// would make this test pass or fail on the checkout's location, not on the mount list.
@@ -629,6 +646,32 @@ test("a subject that exits 137 on its own still burns an attempt as REJECTED SUB
 	} finally { fixture.remove(); }
 });
 
+test("a subject the daemon could not report on is a kill, so the attempt slot returns", async () => {
+	const fixture = repositoryWith(`export function formatTotal(): string { return "1"; }\n`);
+	try {
+		const real = gitSource(fixture.repo);
+		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
+		const request: VerifierRunRequest = { runId: "run_unreported" as VerifierRunId, jobId: "job_unreported" as JobId, ordinal: 1,
+			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
+		// The Docker launcher asked the daemon how an abnormal exit ended and the query failed. The
+		// submission cannot stop the daemon, so this is infrastructure: no verdict, no attempt burned.
+		const unreported: SubjectRun = { variant: "DOCKER", nonce: "0".repeat(32), ready: true, stdout: "", stderr: "",
+			exitCode: 137, signal: null, killedBy: null, faults: ["SUBJECT_EXIT", "SUBJECT_KILL_UNREPORTED"], wallMs: 42 };
+		const publishCalls: PublishRequest[] = [];
+		const publisher: PublisherPort = { publishVerified: async publishRequest => {
+			publishCalls.push(publishRequest);
+			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
+		} };
+		const outcome = await runJudge(request, { source, publisher, cases: hiddenCases,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, subject: { variant: "DOCKER", run: async () => unreported } });
+		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
+		if (outcome.kind !== "RUN_FAILED") return;
+		assert.equal(outcome.failure.name, "SUBJECT_KILLED");
+		assert.match(outcome.failure.detail, /daemon could not report/);
+		assert.deepEqual(publishCalls, []);
+	} finally { fixture.remove(); }
+});
+
 test("the child launcher reports a signal the judge did not send as an external kill", { skip: process.platform === "win32" ? "Signal names need a POSIX host." : false, timeout: 60_000 }, async () => {
 	const work = mkdtempSync(join(tmpdir(), "acquit-signal-"));
 	const pidPath = join(work, "subject.pid");
@@ -668,7 +711,7 @@ test("the Docker launcher reads an external kill from the daemon's kill event, n
 		const name = launched[launched.indexOf("--name") + 1];
 		assert.match(name, /^acquit-subject-/);
 		const events = invoked.find(call => call[0] === "events");
-		assert.deepEqual(events?.slice(0, 3), ["events", "--filter", `container=${name}`]);
+		assert.deepEqual(events?.slice(0, 3), ["events", "--filter", `container=${SHIM_CONTAINER_ID}`]);
 		assert.ok(events?.includes("--since") === true && events?.includes("--until") === true, JSON.stringify(events));
 	} finally {
 		shim.remove();
@@ -730,6 +773,103 @@ test("a Docker client the judge killed is removed by name so the container canno
 		const launched = invoked.find(call => call[0] === "run");
 		assert.ok(launched !== undefined, JSON.stringify(invoked));
 		const name = launched[launched.indexOf("--name") + 1];
+		const removed = invoked.find(call => call[0] === "rm");
+		assert.deepEqual(removed, ["rm", "--force", name]);
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a daemon that cannot report how the subject ended is a kill, not a submission exit", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	// The events query fails: non-zero. A submission cannot stop the daemon, so this must not read as
+	// the subject's own 137 and reject it.
+	const shim = dockerShim({ runExit: 137, events: "", eventsExit: 1 });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, null);
+		assert.ok(run.faults.includes("SUBJECT_KILL_UNREPORTED"), JSON.stringify(run.faults));
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a kill event that carries no signal number still reports an external kill", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "create|\nkill|\ndie|137\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, "an external signal");
+		assert.equal(run.faults.includes("SUBJECT_KILL_UNREPORTED"), false, JSON.stringify(run.faults));
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("the daemon's events are filtered by the container id the client wrote, not by its name", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "kill|9\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, "SIGKILL");
+		const invoked = shim.invocations();
+		const launched = invoked.find(call => call[0] === "run");
+		assert.ok(launched !== undefined, JSON.stringify(invoked));
+		const cidFile = launched[launched.indexOf("--cidfile") + 1];
+		assert.match(cidFile ?? "", /[/\\]acquit-subject-[^/\\]+[/\\]container\.cid$/);
+		const events = invoked.find(call => call[0] === "events");
+		assert.deepEqual(events?.slice(0, 3), ["events", "--filter", `container=${SHIM_CONTAINER_ID}`]);
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("without the id file the daemon's events fall back to the run's unique name", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "kill|9\n", skipCidFile: true });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, "SIGKILL");
+		const invoked = shim.invocations();
+		const launched = invoked.find(call => call[0] === "run");
+		const name = launched?.[launched.indexOf("--name") + 1];
+		const events = invoked.find(call => call[0] === "events");
+		assert.deepEqual(events?.slice(0, 3), ["events", "--filter", `container=${name}`]);
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("the event query covers the lag between the kill and the daemon's event", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "kill|9\n" });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 2_000));
+		assert.equal(run.killedBy, "SIGKILL");
+		const events = shim.invocations().find(call => call[0] === "events");
+		const until = Date.parse(events?.[events.indexOf("--until") + 1] ?? "");
+		// The live daemon logs the kill 300-800 ms after it happens: the window must close later than now.
+		assert.ok(Number.isFinite(until) && until - Date.now() > 1_000, `--until must cover the lag, saw ${until}`);
+	} finally {
+		shim.remove();
+		rmSync(tree, { recursive: true, force: true });
+	}
+});
+
+test("a client the judge stopped is removed even when it exits 137 with no signal", async () => {
+	const tree = mkdtempSync(join(tmpdir(), "acquit-tree-"));
+	const shim = dockerShim({ runExit: 137, events: "", runLeavesStdioMs: 400 });
+	try {
+		const run = await withShimOnPath(shim.dir, () => dockerSubject({ probe: () => true }).run(tree, [], 100));
+		assert.ok(run.faults.includes("TIMEOUT"), JSON.stringify(run.faults));
+		const invoked = shim.invocations();
+		const launched = invoked.find(call => call[0] === "run");
+		const name = launched?.[launched.indexOf("--name") + 1];
 		const removed = invoked.find(call => call[0] === "rm");
 		assert.deepEqual(removed, ["rm", "--force", name]);
 	} finally {
