@@ -13,8 +13,8 @@ import { createHmac } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import type { PublisherPort } from "../core/src/github.ts";
-import { boundedReason } from "../core/src/verifier.ts";
-import type { DefinitionOfDone, RunFailure, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
+import { boundedDetail } from "../core/src/verifier.ts";
+import type { DefinitionOfDone, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { JudgeOutcome, JudgeSource } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { SubjectLauncher } from "./subject.ts";
@@ -159,7 +159,7 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		if (!record || record.phase !== "QUEUED") return;
 		if (Date.parse(clock.now()) - Date.parse(record.acceptedAt) > runDeadlineMs) {
 			const refusal = recordRefusal(record, "RUN_DEADLINE_EXCEEDED");
-			record.callback = await deliver(record.request, failureReport(record.request, refusal));
+			record.callback = await deliver(record.request, failureReport(record.request, "RUN_DEADLINE_EXCEEDED", ""));
 			record.phase = "FINISHED";
 			record.finishedAt = clock.now();
 			log(`run ${runId} refused by name: RUN_DEADLINE_EXCEEDED`);
@@ -177,12 +177,12 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 			else {
 				// A run that ends without a verdict reports it at once, so the job returns its slot instead of
 				// waiting out the run deadline for a callback that is never coming.
-				record.callback = await deliver(record.request, failureReport(record.request, outcome.reason));
-				log(`run ${runId} ended RUN_FAILED: ${outcome.reason}`);
+				record.callback = await deliver(record.request, failureReport(record.request, outcome.failure.name, outcome.failure.detail));
+				log(`run ${runId} ended RUN_FAILED: ${outcome.failure.name}`);
 			}
 		} catch (error) {
 			const refusal = recordRefusal(record, `SOURCE_UNAVAILABLE: ${message(error)}`);
-			record.callback = await deliver(record.request, failureReport(record.request, refusal));
+			record.callback = await deliver(record.request, failureReport(record.request, "SOURCE_UNAVAILABLE", message(error)));
 			log(`run ${runId} refused by name: ${refusal}`);
 		} finally {
 			try { built?.remove(); } catch { /* a tree that cannot be removed must not fail a run */ }
@@ -191,9 +191,9 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		}
 	}
 
-	/** The service's half of the report contract: a named, bounded reason, never a value the run carried. */
-	function failureReport(request: VerifierRunRequest, reason: string): VerifierReport {
-		const failure: RunFailure = { runId: request.runId, sourceCommit: request.sourceCommit, reason: boundedReason(reason), at: clock.now() };
+	/** The service's half of the report contract: a named step and bounded text, never a value the run carried. */
+	function failureReport(request: VerifierRunRequest, name: RunFailureName, detail: string): VerifierReport {
+		const failure: RunFailure = { runId: request.runId, sourceCommit: request.sourceCommit, name, detail: boundedDetail(detail), at: clock.now() };
 		return { kind: "RUN_FAILED", failure };
 	}
 
@@ -256,7 +256,7 @@ function runView(record: RunRecord): Record<string, unknown> {
 		outcome: record.outcome === null ? null : record.outcome.kind === "VERDICT"
 			? { kind: "VERDICT", result: record.outcome.verdict.result, reasons: record.outcome.verdict.result === "REJECTED" ? record.outcome.verdict.reasons : [],
 				pullRequest: record.outcome.verdict.result === "VERIFIED" ? record.outcome.verdict.pullRequest : null }
-			: { kind: "RUN_FAILED", reason: record.outcome.reason } };
+			: { kind: "RUN_FAILED", name: record.outcome.failure.name, detail: record.outcome.failure.detail } };
 }
 
 function json(status: number, value: unknown): Response {

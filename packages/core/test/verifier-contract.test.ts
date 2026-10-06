@@ -25,7 +25,7 @@ test("the contract OpenJob stores is one the judge accepts", { skip }, async () 
 		sourceCommit: head("fix-honest"), definitionOfDone: frozenDefinition() };
 	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(),
 		publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:40:00Z") } });
-	assert.equal(outcome.kind, "VERDICT", outcome.kind === "RUN_FAILED" ? outcome.reason : "");
+	assert.equal(outcome.kind, "VERDICT", outcome.kind === "RUN_FAILED" ? outcome.failure.name : "");
 	if (outcome.kind !== "VERDICT") return;
 	assert.equal(outcome.verdict.result, "VERIFIED");
 });
@@ -45,5 +45,5 @@ test("the judge refuses a contract whose frozen ids are not the ones it extracts
 		sourceCommit: head("fix-honest"), definitionOfDone: { ...frozenDefinition(),
 			frozenTests: Array.from({ length: 48 }, (_, index) => `visible_${index + 1}` as never) } };
 	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp() });
-	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.reason : outcome.kind, "FROZEN_CASES_MISMATCH");
+	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.failure : outcome.kind, { name: "CONTRACT_MISMATCH", detail: "FROZEN_CASES_MISMATCH" });
 });

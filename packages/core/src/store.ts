@@ -6,6 +6,7 @@ import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
 import type { JobRow } from "./job.ts";
+import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
@@ -43,8 +44,24 @@ function storedJob(row: JobRow): JobRow {
 	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) } };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
-	const failure = (parsed.state.attempts as { readonly failure?: RunFailure | null }).failure ?? null;
+	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
 	return { ...parsed, state: { ...parsed.state, attempts: { ...parsed.state.attempts, failure } } };
+}
+/**
+ * A row written before a failure carried its name stored one `reason` string. Split it here, at the
+ * read boundary, so nothing downstream has to read prose: the head names the step when the closed set
+ * knows it, and a step it does not name keeps its text under the contract-mismatch name.
+ */
+function storedFailure(value: unknown): RunFailure | null {
+	if (!value || typeof value !== "object") return null;
+	const raw = value as Record<string, unknown>;
+	if (isRunFailureName(raw.name) && typeof raw.detail === "string") return raw as unknown as RunFailure;
+	if (typeof raw.reason !== "string") return null;
+	const [head = "", ...rest] = raw.reason.split(": ");
+	const named = isRunFailureName(head)
+		? { name: head, detail: boundedDetail(rest.join(": ")) }
+		: { name: "CONTRACT_MISMATCH" as const, detail: boundedDetail(raw.reason) };
+	return { runId: raw.runId, sourceCommit: raw.sourceCommit, at: raw.at, ...named } as unknown as RunFailure;
 }
 function due(state: OutboxState): string | null {
 	return state.kind === "READY" ? state.runAt : state.kind === "LEASED" ? state.leaseUntil : state.kind === "UNCERTAIN" ? state.reconcileAt : null;

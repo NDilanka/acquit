@@ -254,7 +254,8 @@ test("a source that never arrives posts a signed RUN_FAILED the real API applies
 		assert.equal(view?.attempts.pending, null);
 		assert.equal(view?.attempts.failure?.runId, runId);
 		assert.equal(view?.attempts.failure?.sourceCommit, honestCommit);
-		assert.match(view?.attempts.failure?.reason ?? "", /^SOURCE_UNAVAILABLE: SUBMITTED_COMMIT_UNFETCHABLE/);
+		assert.equal(view?.attempts.failure?.name, "SOURCE_UNAVAILABLE");
+		assert.match(view?.attempts.failure?.detail ?? "", /^SUBMITTED_COMMIT_UNFETCHABLE/);
 	} finally {
 		api.kill("SIGTERM");
 		await once(api, "exit");

@@ -686,15 +686,16 @@ test("a failure stored before it carried a name reads back as the named shape", 
 		const row = await store.readJob(frozen.id);
 		if (!row) throw new Error("Stored job missing");
 		const attempts = (row.state as Extract<typeof row.state, { status: "IN_PROGRESS" }>).attempts;
-		assert.deepEqual(attempts.failure, { runId: "run_submit_1", sourceCommit, name: "PUBLISH_FAILED",
-			detail: "no App installation on maya-client", at: now });
+		assert.deepEqual(attempts.phase === "READY" ? attempts.failure : null, { runId: "run_submit_1", sourceCommit,
+			name: "PUBLISH_FAILED", detail: "no App installation on maya-client", at: now });
 		// A legacy reason the closed set does not name keeps its text under the contract-mismatch name.
-		store.db.prepare("UPDATE jobs SET row = ? WHERE id = ?").run(
+		store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(
 			JSON.stringify(stored({ runId: "run_submit_1", sourceCommit, reason: "HIDDEN_MANIFEST_MISMATCH", at: now })), frozen.id);
 		const read = await store.readJob(frozen.id);
-		const second = (read!.state as Extract<typeof read.state, { status: "IN_PROGRESS" }>).attempts;
-		assert.deepEqual(second.failure, { runId: "run_submit_1", sourceCommit, name: "CONTRACT_MISMATCH",
-			detail: "HIDDEN_MANIFEST_MISMATCH", at: now });
+		if (!read) throw new Error("Stored job missing");
+		const second = (read.state as Extract<typeof read.state, { status: "IN_PROGRESS" }>).attempts;
+		assert.deepEqual(second.phase === "READY" ? second.failure : null, { runId: "run_submit_1", sourceCommit,
+			name: "CONTRACT_MISMATCH", detail: "HIDDEN_MANIFEST_MISMATCH", at: now });
 	} finally { store.close(); }
 });
 

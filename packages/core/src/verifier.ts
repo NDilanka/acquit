@@ -93,13 +93,26 @@ export type Verdict =
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
 /**
+ * Every way a run can end without a verdict. The name is what code branches on and what the job
+ * shows; `detail` is display text. A publish that failed after a clean judgment is PUBLISH_FAILED,
+ * not a verdict: nothing was published, so nothing can be approved.
+ */
+export const RUN_FAILURE_NAMES = ["PUBLISH_FAILED", "SOURCE_UNAVAILABLE", "SUBJECT_UNSTARTABLE", "CONTRACT_MISMATCH", "RUN_DEADLINE_EXCEEDED"] as const;
+export type RunFailureName = (typeof RUN_FAILURE_NAMES)[number];
+
+export function isRunFailureName(value: unknown): value is RunFailureName {
+	return typeof value === "string" && (RUN_FAILURE_NAMES as readonly string[]).includes(value);
+}
+
+/**
  * A run that ended without a verdict. Infrastructure, not the worker: applying one returns the slot
- * and charges no attempt. `reason` is a named code with bounded display text, never a secret.
+ * and charges no attempt. `detail` is bounded display text from the step that failed, never a secret.
  */
 export type RunFailure = {
 	readonly runId: VerifierRunId;
 	readonly sourceCommit: CommitSha;
-	readonly reason: string;
+	readonly name: RunFailureName;
+	readonly detail: string;
 	readonly at: Instant;
 };
 
@@ -108,12 +121,17 @@ export type VerifierReport =
 	| { readonly kind: "VERDICT"; readonly verdict: Verdict }
 	| { readonly kind: "RUN_FAILED"; readonly failure: RunFailure };
 
-/** The longest reason a report carries. The service truncates; the boundary truncates what it is handed. */
-export const FAILURE_REASON_CHARS = 300;
+/** The longest detail a report carries. The service truncates; the boundary truncates what it is handed. */
+export const FAILURE_DETAIL_CHARS = 300;
 
 /** Display text from a run: control characters become spaces, and the text is bounded. */
-export function boundedReason(text: string): string {
-	return text.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, FAILURE_REASON_CHARS);
+export function boundedDetail(text: string): string {
+	return text.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, FAILURE_DETAIL_CHARS);
+}
+
+/** The one line a client prints for a failure: its name, then its detail when it has one. */
+export function describeRunFailure(failure: RunFailure): string {
+	return failure.detail ? `${failure.name}: ${failure.detail}` : failure.name;
 }
 
 export type HiddenCase = {

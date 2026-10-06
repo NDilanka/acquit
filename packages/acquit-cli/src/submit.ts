@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { verifiedBranch } from "../../core/src/github.ts";
+import { describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient } from "./client.ts";
 
@@ -149,9 +150,9 @@ export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promi
 		const judged = job.attempts.history.find(attempt => attempt.sourceCommit === sourceCommit);
 		if (judged) return renderSubmission(job, operatorId => handles.get(operatorId) ?? null);
 		const failure = job.attempts.failure;
-		// The service reports a run that ended without a verdict at once, with a named reason. Print it.
+		// The service reports a run that ended without a verdict at once, by name. Print it.
 		if (failure && failure.sourceCommit === sourceCommit && failure.runId !== previousFailure) {
-			throw new CliError("RUN_FAILED", failure.reason);
+			throw new CliError("RUN_FAILED", describeRunFailure(failure));
 		}
 		if (!job.attempts.pending) throw new CliError("VERDICT_MISSING", `Job ${job.id} is not waiting on a run and has no verdict for ${sourceCommit}.`);
 		if ((deps.now ?? Date.now)() >= deadline) {

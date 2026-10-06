@@ -281,5 +281,5 @@ test("the judge refuses to verify when the contract's hidden manifest is not the
 	const request: VerifierRunRequest = { runId: "run_manifest" as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
 		sourceCommit: FROZEN_COMMIT, definitionOfDone: { ...fixtureDefinition, hiddenManifest: "0".repeat(64) as Digest } };
 	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp() });
-	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.reason : outcome.kind, "HIDDEN_MANIFEST_MISMATCH");
+	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.failure : outcome.kind, { name: "CONTRACT_MISMATCH", detail: "HIDDEN_MANIFEST_MISMATCH" });
 });

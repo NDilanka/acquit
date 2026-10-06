@@ -5,7 +5,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
-import { boundedReason, unconfiguredVerifier } from "../core/src/verifier.ts";
+import { boundedDetail, isRunFailureName, unconfiguredVerifier } from "../core/src/verifier.ts";
 import type { RejectReason, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
 import { randomBytes } from "node:crypto";
 import { runSignature, RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "./signing.ts";
@@ -129,9 +129,11 @@ export function parseRunFailure(value: unknown): RunFailure | null {
 	const runId = nonEmptyString(raw.runId);
 	const sourceCommit = nonEmptyString(raw.sourceCommit);
 	const at = parseInstant(raw.at);
-	const reason = typeof raw.reason === "string" && raw.reason.trim().length > 0 ? raw.reason : null;
-	if (!runId || !sourceCommit || !at || reason === null) return null;
-	return { runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha, reason: boundedReason(reason), at };
+	// The name is a closed set: a name this build cannot act on is refused, never carried as text.
+	const name = isRunFailureName(raw.name) ? raw.name : null;
+	const detail = typeof raw.detail === "string" ? boundedDetail(raw.detail) : null;
+	if (!runId || !sourceCommit || !at || name === null || detail === null) return null;
+	return { runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha, name, detail, at };
 }
 
 export function parseVerdict(value: unknown): Verdict | null {

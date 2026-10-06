@@ -579,9 +579,9 @@ function transitionTable(): {
 				const attempts = row.state.attempts;
 				if (attempts.phase === "VERIFYING" && facts.now >= attempts.pending.runEndsAt) {
 					// A run that never reported ended without a verdict: the slot returns, the attempt count stays
-					// put, and the reason is recorded so the CLI names it instead of waiting out the deadline.
+					// put, and the job names the step so the CLI prints it instead of waiting out the deadline.
 					const failure: RunFailure = { runId: attempts.pending.runId, sourceCommit: attempts.pending.sourceCommit,
-						reason: "RUN_DEADLINE_EXCEEDED", at: facts.now };
+						name: "RUN_DEADLINE_EXCEEDED", detail: "", at: facts.now };
 					const gave = { phase: "READY" as const, history: attempts.history, runsStarted: attempts.runsStarted, failure };
 					if (facts.now < row.contract.deliveryEndsAt) return { next: { ...row, version: (row.version + 1) as Version,
 						state: { ...row.state, attempts: gave } }, credits: [], effects: [] };

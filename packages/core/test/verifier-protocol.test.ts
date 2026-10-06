@@ -411,7 +411,7 @@ test("a subject that cannot start still removes the materialized tree", async ()
 			publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases });
 		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
 		if (outcome.kind !== "RUN_FAILED") return;
-		assert.match(outcome.reason, /^SUBJECT_UNSTARTABLE/);
+		assert.equal(outcome.failure.name, "SUBJECT_UNSTARTABLE");
 		assert.ok(treePath !== null, "the tree must have been materialized");
 		assert.ok(treePath !== null && !existsSync(treePath), `the tree ${treePath} must be removed`);
 	} finally { fixture.remove(); }

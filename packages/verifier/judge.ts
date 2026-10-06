@@ -11,7 +11,7 @@ import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
 import { FROZEN_TEST_PATH, HIDDEN_CASES, hiddenManifest } from "../core/src/seed-data.ts";
 import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
-import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
+import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, RunFailureName, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
 
@@ -139,9 +139,17 @@ function parseNumstatBinary(text: string): ReadonlySet<string> {
 
 export type JudgeTimings = { readonly screenMs: number; readonly subjectMs: number; readonly compareMs: number; readonly publishMs: number; readonly wallMs: number };
 
+/** The named step that ended a run, with the bounded text that step produced. */
+export type JudgeFailure = { readonly name: RunFailureName; readonly detail: string };
+
 export type JudgeOutcome =
 	| { readonly kind: "VERDICT"; readonly verdict: Verdict; readonly subject: SubjectRun | null; readonly timings: JudgeTimings }
-	| { readonly kind: "RUN_FAILED"; readonly reason: string; readonly timings: JudgeTimings };
+	| { readonly kind: "RUN_FAILED"; readonly failure: JudgeFailure; readonly timings: JudgeTimings };
+
+/** A contract the judge cannot match to its own declaration is the deployment's fault, never the worker's. */
+function contractMismatch(code: string, detail = ""): JudgeFailure {
+	return { name: "CONTRACT_MISMATCH", detail: detail ? `${code}: ${detail}` : code };
+}
 
 export type JudgeDeps = {
 	readonly source: JudgeSource;
@@ -159,15 +167,15 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	const clock = deps.clock ?? { now: () => instant(new Date().toISOString()) };
 	const manifest = hiddenManifest(deps.cases ?? HIDDEN_CASES);
 	const done = request.definitionOfDone;
-	if (done.hiddenManifest !== manifest.digest) return { kind: "RUN_FAILED", reason: "HIDDEN_MANIFEST_MISMATCH", timings: timingsOf(started, {}) };
-	if (!sameIds(manifest.cases.map(test => test.id), done.hiddenTests)) return { kind: "RUN_FAILED", reason: "HIDDEN_CASES_MISMATCH", timings: timingsOf(started, {}) };
+	if (done.hiddenManifest !== manifest.digest) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_MANIFEST_MISMATCH"), timings: timingsOf(started, {}) };
+	if (!sameIds(manifest.cases.map(test => test.id), done.hiddenTests)) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_CASES_MISMATCH"), timings: timingsOf(started, {}) };
 	let frozenCases: readonly HiddenCase[];
 	try {
 		frozenCases = invoiceFixtureFrozenCases(deps.source.readFile(done.frozenAt, deps.frozenTestPath ?? FROZEN_TEST_PATH));
 	} catch (error) {
-		return { kind: "RUN_FAILED", reason: `FROZEN_CASES_UNREADABLE: ${message(error)}`, timings: timingsOf(started, {}) };
+		return { kind: "RUN_FAILED", failure: contractMismatch("FROZEN_CASES_UNREADABLE", message(error)), timings: timingsOf(started, {}) };
 	}
-	if (!sameIds(frozenCases.map(test => test.id), done.frozenTests)) return { kind: "RUN_FAILED", reason: "FROZEN_CASES_MISMATCH", timings: timingsOf(started, {}) };
+	if (!sameIds(frozenCases.map(test => test.id), done.frozenTests)) return { kind: "RUN_FAILED", failure: contractMismatch("FROZEN_CASES_MISMATCH"), timings: timingsOf(started, {}) };
 	const screenStart = performance.now();
 	const screen = screenDiff(deps.source.diff(done.frozenAt, request.sourceCommit), done);
 	const screenMs = performance.now() - screenStart;
@@ -189,7 +197,7 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 		}
 		subjectRun = await deps.subject.run(tree.path, calls, deps.deadlineMs);
 	} catch (error) {
-		return { kind: "RUN_FAILED", reason: `SUBJECT_UNSTARTABLE: ${message(error)}`, timings: timingsOf(started, { screenMs }) };
+		return { kind: "RUN_FAILED", failure: { name: "SUBJECT_UNSTARTABLE", detail: message(error) }, timings: timingsOf(started, { screenMs }) };
 	} finally {
 		tree?.remove();
 	}
@@ -218,7 +226,8 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 			sourceCommit: request.sourceCommit, checkName: "Acquit verifier" }, request.runId);
 		built = { mergeCommit: published.mergeCommit, pullRequest: published.pullRequest };
 	} catch (error) {
-		return { kind: "RUN_FAILED", reason: `PUBLISH_FAILED: ${message(error)}`,
+		// The judgment above was clean and the publisher refused: the run names publishing, not the worker.
+		return { kind: "RUN_FAILED", failure: { name: "PUBLISH_FAILED", detail: message(error) },
 			timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs, compareMs, publishMs: performance.now() - publishStart }) };
 	}
 	const publishMs = performance.now() - publishStart;
@@ -226,7 +235,7 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 		const verdict = decideVerdict(request, [], frozen, hiddenJudged, built, clock.now());
 		return { kind: "VERDICT", verdict, subject: subjectRun, timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs, compareMs, publishMs }) };
 	} catch (error) {
-		if (error instanceof VerifierPublishMissing) return { kind: "RUN_FAILED", reason: error.code,
+		if (error instanceof VerifierPublishMissing) return { kind: "RUN_FAILED", failure: { name: "PUBLISH_FAILED", detail: error.code },
 			timings: timingsOf(started, { screenMs, subjectMs: subjectRun.wallMs, compareMs, publishMs }) };
 		throw error;
 	}
