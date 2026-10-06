@@ -127,17 +127,73 @@ export type VerifierReport =
 /** The longest detail a report carries. The service truncates; the boundary truncates what it is handed. */
 export const FAILURE_DETAIL_CHARS = 300;
 
-/** The token shapes GitHub prints in a refusal body: App, OAuth, fine-grained PAT, the legacy v1 installation token, and an App JWT. Copied server text never carries one onward. */
-const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+|\bv1\.[0-9a-fA-F]{40,}\b|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+/**
+ * How much of a message the token shapes read. A refusal body reaches the verifier at up to 1 MiB,
+ * and redacting all of it is work no output can need: only the first FAILURE_DETAIL_CHARS survive,
+ * every replacement shortens text, so a token that starts before the 300-character cut must sit
+ * inside this window to be seen whole. An App JWT is the largest shape, well under 2 KiB.
+ */
+export const REDACTION_WINDOW_CHARS = 4_096;
 
-/** Display text from a run: control characters become spaces, token shapes are redacted, and the text is bounded. */
+/** The token shapes GitHub prints in a refusal body: App, OAuth, fine-grained PAT, and the legacy v1 installation token. Copied server text never carries one onward. */
+const TOKEN_SHAPES = /github_pat_[A-Za-z0-9_]+|gh[opsur]_[A-Za-z0-9_]+|\bv1\.[0-9a-fA-F]{40,}\b/g;
+
+/** Display text from a run: token shapes are redacted, control characters become spaces, and the text is bounded. */
 export function boundedDetail(text: string): string {
-	return text
+	return redactJwtShapes(text.slice(0, REDACTION_WINDOW_CHARS))
 		.replace(/[\u0000-\u001f\u007f]+/g, " ")
 		.replace(TOKEN_SHAPES, "[redacted]")
 		.replace(/(temp_clone_token"?\s*[:=]\s*"?)[^"\s,}]+/gi, "$1[redacted]")
 		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
 		.slice(0, FAILURE_DETAIL_CHARS);
+}
+
+const JWT_PREFIX = "eyJ";
+
+function isJwtChar(code: number): boolean {
+	return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95 || code === 45;
+}
+
+/** The offset where the run of JWT characters starting at `from` ends. */
+function runEnd(text: string, from: number): number {
+	let index = from;
+	while (index < text.length && isJwtChar(text.charCodeAt(index))) index++;
+	return index;
+}
+
+/** Where a JWT starting at `at` ends, or the offset a failed candidate resumes from. */
+type JwtScan = { readonly end: number } | { readonly resume: number };
+
+/** `eyJ`, then three non-empty base64url runs joined by dots. */
+function scanJwt(text: string, at: number): JwtScan {
+	const first = runEnd(text, at + JWT_PREFIX.length);
+	if (first === at + JWT_PREFIX.length || text[first] !== ".") return { resume: first };
+	const second = runEnd(text, first + 1);
+	if (second === first + 1 || text[second] !== ".") return { resume: second };
+	const third = runEnd(text, second + 1);
+	return third === second + 1 ? { resume: third } : { end: third };
+}
+
+/**
+ * Redacts App JWTs in one pass. A regex over a greedy run gives back one character at a time when
+ * the next character is not a dot, at every `eyJ` in the text, which is near-quadratic on repeated
+ * `eyJ`. This scan resumes past the run it already read, so no candidate is tested twice.
+ */
+function redactJwtShapes(text: string): string {
+	let clean = "";
+	let index = 0;
+	for (;;) {
+		const start = text.indexOf(JWT_PREFIX, index);
+		if (start === -1) return clean + text.slice(index);
+		const scan = scanJwt(text, start);
+		if ("resume" in scan) {
+			clean += text.slice(index, scan.resume);
+			index = scan.resume;
+			continue;
+		}
+		clean += `${text.slice(index, start)}[redacted]`;
+		index = scan.end;
+	}
 }
 
 /** The most reasons one callback carries. Reasons past this are counted in reasonsTruncated. */
@@ -155,7 +211,7 @@ const REASON_TEXT_CHARS = 200;
 export function boundedVerdict(verdict: Verdict): Verdict {
 	if (verdict.result !== "REJECTED") return verdict;
 	const reasons = verdict.reasons.slice(0, VERDICT_REASONS_MAX).map(boundedReason) as [RejectReason, ...RejectReason[]];
-	return { ...verdict, reasons, reasonsTruncated: verdict.reasons.length - reasons.length };
+	return { ...verdict, reasons, reasonsTruncated: verdict.reasonsTruncated + verdict.reasons.length - reasons.length };
 }
 
 function reasonBytes(reason: RejectReason): number {
@@ -186,19 +242,26 @@ function shrinkReason(reason: RejectReason): RejectReason {
 	}
 }
 
-/** Trims every text field one reason carries to `chars` characters. */
+/** At most `chars` code points of `text`, so a cut never leaves half of a surrogate pair. */
+function trimToCodePoints(text: string, chars: number): string {
+	let index = 0;
+	for (let kept = 0; kept < chars && index < text.length; kept++) index += text.codePointAt(index)! > 0xffff ? 2 : 1;
+	return text.slice(0, index);
+}
+
+/** Trims every text field one reason carries to `chars` code points. */
 function trimReasonText(reason: RejectReason, chars: number): RejectReason {
 	switch (reason.kind) {
 		case "PROTECTED_PATH_MODIFIED": case "TREE_SYMLINK": case "TREE_GITLINK":
-			return { ...reason, path: reason.path.slice(0, chars) };
+			return { ...reason, path: trimToCodePoints(reason.path, chars) };
 		case "TEST_FRAMEWORK_IN_SOURCE":
-			return { ...reason, path: reason.path.slice(0, chars), symbol: reason.symbol.slice(0, chars) };
+			return { ...reason, path: trimToCodePoints(reason.path, chars), symbol: trimToCodePoints(reason.symbol, chars) };
 		case "SUBJECT_FAULT":
-			return { ...reason, detail: reason.detail.slice(0, chars) };
+			return { ...reason, detail: trimToCodePoints(reason.detail, chars) };
 		case "TESTS_FAILED":
-			return { ...reason, failed: reason.failed.map(id => id.slice(0, chars) as TestId) };
+			return { ...reason, failed: reason.failed.map(id => trimToCodePoints(id, chars) as TestId) };
 		case "TESTS_MISSING":
-			return { ...reason, missing: reason.missing.map(id => id.slice(0, chars) as TestId) };
+			return { ...reason, missing: reason.missing.map(id => trimToCodePoints(id, chars) as TestId) };
 		default:
 			return reason;
 	}
@@ -208,7 +271,7 @@ function trimReasonText(reason: RejectReason, chars: number): RejectReason {
 function shrinkIds(ids: readonly TestId[], fits: (ids: readonly TestId[]) => boolean): readonly TestId[] {
 	let kept = ids;
 	while (kept.length > 1 && !fits(kept)) kept = kept.slice(0, Math.floor(kept.length / 2));
-	return kept.length === 1 && !fits(kept) ? [kept[0]!.slice(0, REASON_TEXT_CHARS) as TestId] : kept;
+	return kept.length === 1 && !fits(kept) ? [trimToCodePoints(kept[0]!, REASON_TEXT_CHARS) as TestId] : kept;
 }
 
 /** The one line a client prints for a failure: its name, then its detail when it has one. */
