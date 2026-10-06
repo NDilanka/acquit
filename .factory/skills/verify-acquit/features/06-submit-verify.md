@@ -83,6 +83,13 @@ Preconditions:
 - The plain child-process subject is the unit-test path only. The API and `acquit` refuse it with
   `SUBJECT_CHILD_REFUSED` unless `ACQUIT_DEV=1`, and live lanes run the Docker subject, which mounts
   only the submitted tree and a minimal bootstrap and has no network.
-- The verdict enters the state machine through the authenticated callback route. While
-  `createAcquit` still builds the H0 verifier stub, the route answers 503 `VERIFIER_PORT_NOT_WIRED`
-  and the live lanes cannot complete; see `data/evidence/f3-r1-build/acquit-ts-wiring.patch`.
+- The verdict enters the state machine through the authenticated callback route. The verifier service
+  is `packages/verifier/server.ts`; a lane starts it beside the API and the web app, and the API
+  reaches it only when `ACQUIT_VERIFIER_CI_URL` names it with the shared run and callback secrets.
+  With no CI URL the route answers 503 `VERIFIER_CI_NOT_CONFIGURED`, and `Submit` reserves an attempt
+  whose run nothing starts. The route accepts only a body signed with the callback secret; an
+  unsigned or malformed report is dropped, and a report for a run the job is not waiting on records
+  nothing.
+- The job's contract names the client repository. Today `OpenJob` accepts only `maya-client/invoice-app`
+  (`packages/core/src/seed-data.ts`), so a lane whose client repo is another account cannot open a job
+  against it; the command is denied `NOT_FOUND` by name.

@@ -2,19 +2,29 @@
 //   node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> <branch> [--template <dir>] [--force]
 // It clones the template (so the lane can never disturb the fixture), checks out the branch, and
 // prints the exact submit command for that lane's API port.
+//
+// The client repo a lane's job names must exist on GitHub and carry the frozen commit as its default
+// branch. --owner <account> --create makes that repo (private, main = the template's main) when `gh`
+// is authenticated, and reports whether the App installation can see it. The API's contract still
+// names maya-client/invoice-app for every job, so a lane cannot open a job against its own repo
+// until that hardcode is replaced; the printed clientRepo is what the contract must name.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { laneSlot } from "../../../../packages/ctl/src/state.ts";
+import { githubAppEnv } from "../../../../packages/verifier/config.ts";
+import { createInstallationTokens } from "../../../../packages/verifier/app-token.ts";
 
 const root = fileURLToPath(new URL("../../../..", import.meta.url));
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
 	template: { type: "string" }, force: { type: "boolean", default: false }, jobs: { type: "string" },
+	owner: { type: "string" }, repo: { type: "string" }, create: { type: "boolean", default: false },
 } });
 const [laneRaw, branch] = positionals;
 assert(laneRaw !== undefined && branch !== undefined, "Usage: lane-repo.mjs <lane> <branch> [--template <dir>] [--force]");
@@ -34,6 +44,51 @@ assert.equal(cloned.status, 0, `Clone failed: ${cloned.stderr?.trim()}`);
 const checked = spawnSync("git", ["-C", repo, "checkout", "--quiet", branch], { encoding: "utf8" });
 assert.equal(checked.status, 0, `Checkout failed: ${checked.stderr?.trim()}`);
 const head = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+const frozen = spawnSync("git", ["-C", template, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
+const owner = values.owner ?? process.env.ACQUIT_LANE_REPO_OWNER ?? null;
+const clientRepo = owner === null ? null : `${owner}/${values.repo ?? `invoice-app-lane-${lane}`}`;
+const creation = values.create ? await ensureClientRepo(clientRepo, frozen, template) : null;
 const slot = laneSlot(lane);
-console.log(JSON.stringify({ lane, branch, repo, head, apiPort: slot.apiPort, webPort: slot.webPort,
+console.log(JSON.stringify({ lane, branch, repo, head, frozen, apiPort: slot.apiPort, webPort: slot.webPort, verifierPort: slot.verifierPort,
+	clientRepo, creation,
 	cli: `node packages/acquit-cli/src/main.ts submit ${values.jobs ?? "JOB_ID"} --dir ${repo} --api http://127.0.0.1:${slot.apiPort}` }));
+
+/** Creates the lane's client repo with the frozen commit as main, and reports whether the App can see it. */
+async function ensureClientRepo(fullName, frozenCommit, templateDir) {
+	assert(fullName !== null, "--create needs --owner <account> (or ACQUIT_LANE_REPO_OWNER).");
+	const [account, name] = fullName.split("/");
+	const gh = (args) => spawnSync("gh", args, { encoding: "utf8" });
+	assert.equal(gh(["auth", "status"]).status, 0, "gh is not authenticated. Run gh auth login, or create the repo yourself and push main to it.");
+	const seen = gh(["api", `repos/${fullName}`, "--jq", ".private"]);
+	if (seen.status !== 0) {
+		const created = gh(["repo", "create", fullName, "--private", "--description", "Acquit lane client fixture"]);
+		assert.equal(created.status, 0, `Could not create ${fullName}: ${created.stderr?.trim()}`);
+	}
+	const pushed = await pushMain(templateDir, fullName, frozenCommit);
+	// A selected installation does not see a repo created after it was installed. The App is the
+	// verifier's own client, so ask it rather than assuming.
+	let access = "unknown";
+	try {
+		const github = githubAppEnv();
+		const token = await createInstallationTokens(github)(account);
+		const answer = await fetch(`${github.apiBase ?? "https://api.github.com"}/repos/${fullName}`,
+			{ headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "acquit-lane-repo" } });
+		access = answer.ok ? "visible" : `not visible (HTTP ${answer.status}): add ${fullName} to the App installation`;
+	} catch (error) { access = `unverified: ${error instanceof Error ? error.message : String(error)}`; }
+	return { created: seen.status !== 0, main: pushed, appAccess: access };
+}
+
+/** Pushes the frozen commit as main with the App token in a 0600 config header, never in the URL. */
+async function pushMain(templateDir, fullName, frozenCommit) {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-lane-push-"));
+	const configPath = join(dir, "gitconfig");
+	try {
+		const token = await createInstallationTokens(githubAppEnv())(fullName.split("/")[0]);
+		writeFileSync(configPath, `[http "https://github.com/"]\n\textraHeader = Authorization: Bearer ${token}\n`, { mode: 0o600 });
+		const pushed = spawnSync("git", ["-C", templateDir, "-c", "credential.helper=", "push", "--quiet",
+			`https://github.com/${fullName}.git`, `${frozenCommit}:refs/heads/main`],
+			{ encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: configPath, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
+		assert.equal(pushed.status, 0, `Could not push main to ${fullName}: ${pushed.stderr?.trim()}`);
+		return frozenCommit;
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+}
