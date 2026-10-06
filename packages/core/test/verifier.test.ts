@@ -249,6 +249,52 @@ test("boundedDetail redacts a token at the 300-char cut and finishes a 1 MiB mes
 	assert.equal(Buffer.byteLength(clean, "utf8"), FAILURE_DETAIL_CHARS);
 	assert.ok(elapsed < 50, `boundedDetail took ${elapsed.toFixed(1)} ms on a 1 MiB message of repeated eyJ`);
 });
+test("boundedDetail redacts a legacy installation token beside word characters", () => {
+	const legacy = `v1.${"d3adb33f5ec0ffee".repeat(3).slice(0, 40)}`;
+	assert.equal(boundedDetail(`pre${legacy}post`), "pre[redacted]post");
+	assert.equal(boundedDetail(`${"x".repeat(256)}${legacy} refused`), `${"x".repeat(256)}[redacted] refused`);
+});
+test("boundedDetail redacts a JWT that control characters break apart", () => {
+	const header = "eyJhbGciOiJSUzI1NiJ9";
+	const payload = "eyJzdWIiOiIxIn0";
+	const signature = "c2lnbmF0dXJlU0lH";
+	assert.equal(boundedDetail(`refused ${header}.${payload}\n.${signature} here`), "refused [redacted] here");
+	assert.equal(boundedDetail(`refused ${header.slice(0, 8)}\n${header.slice(8)}.${payload}.${signature}`), "refused [redacted]");
+	assert.equal(boundedDetail(`refused ${header}.${payload}.${signature.slice(0, 6)}\n${signature.slice(6)}`), "refused [redacted]");
+	assert.equal(boundedDetail(`refused ${header}.\n${payload}.\n${signature}`), "refused [redacted]");
+	assert.equal(boundedDetail(`refused ${header}.${payload}\u0000.${signature}`), "refused [redacted]");
+});
+test("boundedDetail redacts a JWT a compressed prefix pulls past the deleted window", () => {
+	const header = "eyJhbGciOiJSUzI1NiJ9";
+	const payload = "eyJzdWIiOiIxIn0";
+	const jwt = `${header}.${payload}.${"A".repeat(400)}`;
+	assert.equal(boundedDetail(`${"\u0001".repeat(4_090)}${jwt}`), " [redacted]");
+});
+test("boundedDetail cuts at 300 code points and never leaves half a surrogate pair", () => {
+	const emoji = "\u{1F600}";
+	const clean = boundedDetail(`${"a".repeat(299)}${emoji}b`);
+	assert.equal(clean, `${"a".repeat(299)}${emoji}`);
+	assert.equal(Buffer.from(clean, "utf8").toString("utf8"), clean);
+});
+test("boundedDetail bounds each adversarial 1 MiB body inside the cost bound", () => {
+	const mib = 1_048_576;
+	const bodies = [
+		["repeated eyJ", "eyJ".repeat(Math.ceil(mib / 3)).slice(0, mib)],
+		["repeated eyJ.", "eyJ.".repeat(Math.ceil(mib / 4)).slice(0, mib)],
+		["one v1 hex run", `v1.${"a".repeat(mib - 3)}`],
+	] as const;
+	for (const [name, body] of bodies) {
+		let best = Number.POSITIVE_INFINITY;
+		let kept = 0;
+		for (let run = 0; run < 3; run++) {
+			const began = performance.now();
+			kept = [...boundedDetail(body)].length;
+			best = Math.min(best, performance.now() - began);
+		}
+		assert.ok(best < 50, `${name} took ${best.toFixed(1)} ms`);
+		assert.ok(kept <= FAILURE_DETAIL_CHARS, `${name} kept ${kept} code points`);
+	}
+});
 
 test("bounding a verdict twice equals bounding it once", () => {
 	const reasons: RejectReason[] = Array.from({ length: 600 }, (_, index) => ({ kind: "PROTECTED_PATH_MODIFIED", path: `.github/workflows/w${index}.yml` }));

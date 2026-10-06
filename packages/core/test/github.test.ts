@@ -632,6 +632,16 @@ test("a response body over the cap is refused by name", async t => {
 	assert.match(failure.detail, /more than 1048576 bytes/);
 });
 
+test("a legacy token in a refusal body is redacted before the error copies it", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const legacy = `v1.${"d3adb33f5ec0ffee".repeat(3).slice(0, 40)}`;
+	stub.refuse({ method: "GET", path: `/repos/${WORK_REPO}`, status: 403, message: `${"x".repeat(256)}${legacy} refused` });
+	const failure = await refusal(port.createWorkRepo(workRepoRequest, "req-1"));
+	assert.equal(failure.code, "GITHUB_PERMISSION_MISSING");
+	assert.equal(failure.detail.startsWith(`GET /repos/${WORK_REPO} answered 403: ${"x".repeat(256)}[redacted] refused`), true, failure.detail);
+});
+
 test("server text copied into an error is bounded and stripped of token shapes", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
