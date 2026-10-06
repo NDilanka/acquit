@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, JobId, TestId } from "../src/ids.ts";
-import { FAILURE_REASON_CHARS, unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
+import { unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
 import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict } from "../../verifier/ci.ts";
 import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "../../verifier/signing.ts";
@@ -29,7 +29,7 @@ const verifiedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "VERD
 	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426", pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
 	reportDigest: "a".repeat(64), at: instant("2026-10-06T12:00:00Z") } } };
 const failedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED", failure: { runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
-	reason: "PUBLISH_FAILED: no App installation on maya-client", at: instant("2026-10-06T12:00:00Z") } } };
+	name: "PUBLISH_FAILED", detail: "no App installation on maya-client", at: instant("2026-10-06T12:00:00Z") } } };
 
 test("the unconfigured verifier refuses a start by name and never accepts a callback", async () => {
 	const port = unconfiguredVerifier();
@@ -69,12 +69,15 @@ test("the callback boundary carries a run's named failure, bounded, or nothing",
 	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED" } })), null);
 	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "SOMETHING_ELSE" } })), null);
 	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1 })), null);
-	const empty = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, reason: "  " } } };
-	assert.equal(await port.parseCallback(signed(empty)), null);
-	// The reason is display text: the boundary bounds it instead of refusing the report it cannot act on.
-	const long = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, reason: "x".repeat(5_000) } } };
+	// The name is a closed set. An unrecognized one is refused rather than carried as free text.
+	const unknown = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, name: "SOMETHING_ELSE" } } };
+	assert.equal(await port.parseCallback(signed(unknown)), null);
+	const unnamed = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, detail: 7 } } };
+	assert.equal(await port.parseCallback(signed(unnamed)), null);
+	// The detail is display text: the boundary bounds it instead of refusing the report it cannot act on.
+	const long = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, detail: "x".repeat(5_000) } } };
 	const parsed = await port.parseCallback(signed(long));
-	assert.equal(parsed?.report.kind === "RUN_FAILED" ? parsed.report.failure.reason.length : 0, FAILURE_REASON_CHARS);
+	assert.equal(parsed?.report.kind === "RUN_FAILED" ? parsed.report.failure.detail.length : 0, 300);
 });
 
 test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejection's named reason", () => {

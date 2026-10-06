@@ -10,7 +10,7 @@ import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } fr
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
-import type { RunFailure, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
+import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
 import type { Bps, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
@@ -462,10 +462,10 @@ const acceptance = (runId: string): Verdict => ({ result: "VERIFIED", runId: run
 	frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now });
 const system = { actor: { role: "SYSTEM", source: "VERIFIER" } as const, now, loaded: { kind: "NONE" } as const };
 const verdictReport = (verdict: Verdict): VerifierReport => ({ kind: "VERDICT", verdict });
-const runFailure = (runId: string, reason = "PUBLISH_FAILED: no App installation on maya-client", source = sourceCommit): RunFailure =>
-	({ runId: runId as VerifierRunId, sourceCommit: source, reason, at: now });
-const failureReport = (runId: string, reason?: string, source?: CommitSha): VerifierReport =>
-	({ kind: "RUN_FAILED", failure: runFailure(runId, reason, source) });
+const runFailure = (runId: string, name: RunFailureName = "PUBLISH_FAILED", detail = "no App installation on maya-client", source = sourceCommit): RunFailure =>
+	({ runId: runId as VerifierRunId, sourceCommit: source, name, detail, at: now });
+const failureReport = (runId: string, name?: RunFailureName, detail?: string, source?: CommitSha): VerifierReport =>
+	({ kind: "RUN_FAILED", failure: runFailure(runId, name, detail, source) });
 
 test("Submit reserves attempt 1 with a deterministic run and emits START_VERIFIER", () => {
 	const row = heldRow();
@@ -563,7 +563,7 @@ test("a failure for a run the job is not waiting on is a no-op, and a judged att
 	if (typeof started === "string") throw new Error(started);
 	const failed = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: failureReport("run_submit_1") }, system);
 	if (typeof failed === "string") throw new Error(failed);
-	for (const stale of [failureReport("run_submit_9"), failureReport("run_submit_1", "SOURCE_UNAVAILABLE", "f".repeat(40) as CommitSha)]) {
+	for (const stale of [failureReport("run_submit_9"), failureReport("run_submit_1", "SOURCE_UNAVAILABLE", "gone", "f".repeat(40) as CommitSha)]) {
 		const untouched = applyJobCommand(failed.next, { type: "VerifierFinished", jobId: row.id, report: stale }, system);
 		if (typeof untouched === "string") throw new Error(untouched);
 		assert.equal(untouched.next.version, failed.next.version);
@@ -589,8 +589,8 @@ test("a timed-out run gives its slot back without using an attempt, and the next
 	assert.equal(attempts.phase, "READY");
 	assert.deepEqual(attempts.history, []);
 	// A run that never reported is a run that ended without a verdict: the slot returns, the attempt
-	// count stays put, and the reason is on the attempt so the CLI can name it instead of waiting.
-	assert.deepEqual(attempts.failure, { runId: "run_submit_1", sourceCommit, reason: "RUN_DEADLINE_EXCEEDED", at: later });
+	// count stays put, and the job names the step so the CLI prints it instead of waiting.
+	assert.deepEqual(attempts.failure, { runId: "run_submit_1", sourceCommit, name: "RUN_DEADLINE_EXCEEDED", detail: "", at: later });
 	assert.deepEqual(timedOut.effects, []);
 	const resubmitted = applyJobCommand(timedOut.next, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now: later, loaded: { kind: "NONE" } });
 	if (typeof resubmitted === "string") throw new Error(resubmitted);
@@ -672,6 +672,29 @@ test("a stored contract without a frozen definition of done parses to null and p
 		assert.equal(view.deliveryEndsAt, "2026-10-13T12:00:00.000Z");
 		assert.deepEqual(view.ledger, [{ kind: "HELD", cents: 42000, at: now }]);
 		assert.deepEqual(view.attempts, { used: 0, left: 3, last: null, reasons: [], history: [], pending: null, failure: null });
+	} finally { store.close(); }
+});
+
+test("a failure stored before it carried a name reads back as the named shape", async () => {
+	const store = new SqliteStore(":memory:");
+	const frozen = heldRow();
+	try {
+		const stored = (failure: unknown): unknown => ({ ...frozen, state: { ...frozen.state,
+			attempts: { phase: "READY", history: [], runsStarted: 1, failure } } });
+		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(frozen.id, frozen.version,
+			JSON.stringify(stored({ runId: "run_submit_1", sourceCommit, reason: "PUBLISH_FAILED: no App installation on maya-client", at: now })), later);
+		const row = await store.readJob(frozen.id);
+		if (!row) throw new Error("Stored job missing");
+		const attempts = (row.state as Extract<typeof row.state, { status: "IN_PROGRESS" }>).attempts;
+		assert.deepEqual(attempts.failure, { runId: "run_submit_1", sourceCommit, name: "PUBLISH_FAILED",
+			detail: "no App installation on maya-client", at: now });
+		// A legacy reason the closed set does not name keeps its text under the contract-mismatch name.
+		store.db.prepare("UPDATE jobs SET row = ? WHERE id = ?").run(
+			JSON.stringify(stored({ runId: "run_submit_1", sourceCommit, reason: "HIDDEN_MANIFEST_MISMATCH", at: now })), frozen.id);
+		const read = await store.readJob(frozen.id);
+		const second = (read!.state as Extract<typeof read.state, { status: "IN_PROGRESS" }>).attempts;
+		assert.deepEqual(second.failure, { runId: "run_submit_1", sourceCommit, name: "CONTRACT_MISMATCH",
+			detail: "HIDDEN_MANIFEST_MISMATCH", at: now });
 	} finally { store.close(); }
 });
 

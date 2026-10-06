@@ -138,7 +138,7 @@ test("a run that never reports ends in a named timeout, not a hang", async () =>
 test("a run that ends without a verdict prints its named reason instead of waiting for the deadline", async () => {
 	const clean = rejectedView();
 	const failed = { ...clean, attempts: { used: 0, left: 3, last: null, reasons: [], history: [], pending: null,
-		failure: { runId: "run_job_7Q2K_1", sourceCommit: submitted, reason: "PUBLISH_FAILED: no App installation on maya-client",
+		failure: { runId: "run_job_7Q2K_1", sourceCommit: submitted, name: "PUBLISH_FAILED", detail: "no App installation on maya-client",
 			at: "2026-11-08T09:12:01.000Z" } } } as unknown as JobProjection;
 	let polls = 0;
 	const client: ApiClient = { baseUrl: "http://api.test",
@@ -153,7 +153,7 @@ test("a run that ends without a verdict prints its named reason instead of waiti
 
 test("a failure the job already carried for this commit does not stop the wait for the new run", async () => {
 	const stale = { ...rejectedView(), attempts: { used: 0, left: 3, last: null, reasons: [], history: [],
-		failure: { runId: "run_job_7Q2K_1", sourceCommit: submitted, reason: "SOURCE_UNAVAILABLE: gone", at: "2026-11-08T09:00:00.000Z" },
+		failure: { runId: "run_job_7Q2K_1", sourceCommit: submitted, name: "SOURCE_UNAVAILABLE", detail: "gone", at: "2026-11-08T09:00:00.000Z" },
 		pending: { ordinal: 1, run: 2, runId: "run_job_7Q2K_2", sourceCommit: submitted, submittedAt: "2026-11-08T09:12:00.000Z",
 			runEndsAt: "2026-11-08T09:42:00.000Z" } } } as unknown as JobProjection;
 	let polls = 0;
