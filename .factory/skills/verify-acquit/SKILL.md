@@ -59,7 +59,7 @@ The lane commands are the same as above. Translate the shell and the port check.
 - Launch through a background Execute call, as above. The app processes are detached and survive the call.
 - Prove a stop freed the lane ports with `ss -ltn '( sport = 4380 or sport = 5243 )'`. An empty table means both ports closed.
 - A stop requires the socket path, the listener inode, and the process start time recorded next to each PID. A legacy run file without them is refused with `PID_MISMATCH`, and nothing is killed.
-- A stop leaves `own-<nonce>.sock` files in the lane's run directory. Each start binds a new nonce-named path, so the old files are inert.
+- A stop need not leave `own-<nonce>.sock` files behind: a service that closes the preload's socket as it exits unlinks the path it bound, and a graceful lane stop leaves only the web's file. Any file that does survive a stop names the stopped run's nonce; each start binds a fresh nonce-named path, so leftovers are inert.
 
 Inspect the proposed reset, then reset only this run's verification database. Seeding invalidates all development sessions. Log in only after seeding.
 
