@@ -10,7 +10,7 @@ import { performance } from "node:perf_hooks";
 import { digest } from "../core/src/effects.ts";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, TestId } from "../core/src/ids.ts";
-import { decideVerdict, judgeHidden, parseSubjectReplies, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
+import { decideVerdict, judgeHidden, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
 import type { DiffSummary, FrozenRun, HiddenCase, RejectReason, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
@@ -134,13 +134,18 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 		return { kind: "RUN_FAILED", reason: `SUBJECT_UNSTARTABLE: ${message(error)}`, timings: timingsOf(started, { screenMs }) };
 	}
 	const compareStart = performance.now();
-	const replies = parseSubjectReplies(subjectRun.stdout, calls);
+	const transcript = parseSubjectTranscript(subjectRun.stdout, subjectRun.nonce, calls);
+	const replies = transcript.replies;
 	const frozenJudged = judgeHidden(frozenCases, replies);
 	const hiddenJudged = judgeHidden(manifest.cases, replies);
 	const results = new Map<TestId, "passed" | "failed">();
 	for (const test of frozenCases) if (!frozenJudged.missing.includes(test.id)) results.set(test.id, frozenJudged.failed.includes(test.id) ? "failed" : "passed");
 	const frozen: FrozenRun = { results };
-	const faults: RejectReason[] = subjectRun.faults.map(fault => ({ kind: "SUBJECT_FAULT", detail: fault }));
+	// A frame that claimed this run's channel without following the protocol is a fault, never a missing test.
+	const faults: RejectReason[] = [
+		...(transcript.refused ? [{ kind: "SUBJECT_FAULT", detail: "SUBJECT_FRAME_REJECTED" } as const] : []),
+		...subjectRun.faults.map(fault => ({ kind: "SUBJECT_FAULT", detail: fault } as const)),
+	];
 	const compareMs = performance.now() - compareStart;
 	tree.remove();
 	if (faults.length) {

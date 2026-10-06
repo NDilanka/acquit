@@ -5,6 +5,7 @@ import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
+import { subjectFor, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
@@ -20,6 +21,11 @@ export function required(name: string): string {
 /** Empty names stay empty: a port that is not configured must fail fast by name, never wait. */
 const optional = (name: string): string => process.env[name]?.trim() ?? "";
 export const verifierEnv = { ciUrl: optional("ACQUIT_VERIFIER_CI_URL"), callbackSecret: optional("ACQUIT_VERIFIER_CALLBACK_SECRET") };
+/**
+ * The product boundary: the API runs the Docker subject. Asking for the child-process subject without
+ * ACQUIT_DEV=1 refuses at startup with SUBJECT_CHILD_REFUSED, before any request is served.
+ */
+export const verifierSubject = subjectFor(verifierSubjectEnv(process.env));
 export const githubEnv = { appId: optional("ACQUIT_GITHUB_APP_ID"), privateKey: optional("ACQUIT_GITHUB_APP_PRIVATE_KEY"),
 	organization: optional("ACQUIT_GITHUB_APP_ORG"), apiBase: optional("ACQUIT_GITHUB_API_BASE") };
 export function config(): AcquitConfig {

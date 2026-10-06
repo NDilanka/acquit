@@ -7,12 +7,13 @@ import { fileURLToPath } from "node:url";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
 import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
-import { decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectReplies, screenDiff, toSubjectCall, VerifierPublishMissing } from "../src/verifier.ts";
+import { decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing } from "../src/verifier.ts";
 import type { DefinitionOfDone, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
 
 const at = instant("2026-10-06T12:00:00Z");
+const nonce = "4f6e2a1b8c3d5e7091a2b3c4d5e6f708";
 const commit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const request: VerifierRunRequest = { runId: "run_job_test_1" as VerifierRunId, jobId: "job_test" as JobId, ordinal: 1,
 	sourceCommit: commit, definitionOfDone: {
@@ -25,7 +26,7 @@ const cases: HiddenCase[] = [
 	{ id: "hidden:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 2.345 }], "BHD"], expected: "2.345" },
 ];
 const calls: SubjectCall[] = cases.map(toSubjectCall);
-const reply = (id: string, value: unknown): string => JSON.stringify({ id, ok: true, value });
+const reply = (id: string, value: unknown): string => JSON.stringify({ kind: "reply", nonce, id, ok: true, value });
 const passed = (...ids: string[]): FrozenRun => ({ results: new Map(ids.map(id => [id as TestId, "passed" as const])) });
 const clean = { mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha, pullRequest: 13 };
 
@@ -37,20 +38,31 @@ test("toSubjectCall sends only the id, target, and args; the expected value neve
 	assert.equal(JSON.stringify(calls).includes('"1.234"'), false);
 });
 
-test("parseSubjectReplies keeps an honest transcript and drops unknown, malformed, and non-finite frames", () => {
-	const stdout = [reply("hidden:1", "1.234"), reply("hidden:9", "forged"), "{not json}", '{"id":"hidden:2","ok":true,"value":1e999}', reply("hidden:2", "2.345"), ""].join("\n");
-	const replies = parseSubjectReplies(stdout, calls);
-	assert.deepEqual([...replies.keys()], ["hidden:1", "hidden:2"]);
-	assert.deepEqual(replies.get("hidden:1" as TestId), { id: "hidden:1", ok: true, value: "1.234" });
+test("parseSubjectTranscript keeps an honest transcript and refuses frames that are not this run's", () => {
+	const ready = JSON.stringify({ kind: "ready", nonce });
+	const stdout = [ready, reply("hidden:1", "1.234"), JSON.stringify({ kind: "reply", nonce: "another-run", id: "hidden:1", ok: true, value: "1.234" }),
+		reply("hidden:9", "forged"), "{not json}", '{"id":"hidden:2","ok":true,"value":1e999}', reply("hidden:2", "2.345"), ""].join("\n");
+	const transcript = parseSubjectTranscript(stdout, nonce, calls);
+	assert.equal(transcript.ready, true);
+	assert.deepEqual([...transcript.replies.keys()], ["hidden:1", "hidden:2"]);
+	assert.deepEqual(transcript.replies.get("hidden:1" as TestId), { id: "hidden:1", ok: true, value: "1.234" });
+	assert.equal(transcript.refused, 3);
+});
+
+test("a reply that arrives before the subject reports ready is refused, not counted", () => {
+	const transcript = parseSubjectTranscript([reply("hidden:1", "1.234"), JSON.stringify({ kind: "ready", nonce })].join("\n"), nonce, calls);
+	assert.equal(transcript.ready, true);
+	assert.equal(transcript.replies.size, 0);
+	assert.equal(transcript.refused, 1);
 });
 
 test("a duplicated id is invalidated for the whole run, so a forged first reply cannot win", () => {
-	const forgedFirst = [reply("hidden:1", "forged-before"), reply("hidden:1", "1.234"), reply("hidden:2", "2.345")].join("\n");
-	const first = parseSubjectReplies(forgedFirst, calls);
+	const forgedFirst = [JSON.stringify({ kind: "ready", nonce }), reply("hidden:1", "forged-before"), reply("hidden:1", "1.234"), reply("hidden:2", "2.345")].join("\n");
+	const first = parseSubjectTranscript(forgedFirst, nonce, calls).replies;
 	assert.equal(first.has("hidden:1" as TestId), false);
 	assert.equal(judgeHidden(cases, first).missing.length, 1);
-	const forgedLast = [reply("hidden:1", "1.234"), reply("hidden:2", "2.345"), reply("hidden:1", "1.234")].join("\n");
-	assert.equal(parseSubjectReplies(forgedLast, calls).has("hidden:1" as TestId), false);
+	const forgedLast = [JSON.stringify({ kind: "ready", nonce }), reply("hidden:1", "1.234"), reply("hidden:2", "2.345"), reply("hidden:1", "1.234")].join("\n");
+	assert.equal(parseSubjectTranscript(forgedLast, nonce, calls).replies.has("hidden:1" as TestId), false);
 });
 
 test("judgeHidden compares against the judge's literal expected value", () => {

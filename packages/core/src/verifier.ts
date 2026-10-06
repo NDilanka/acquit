@@ -4,6 +4,10 @@
 // So assertions never run in the process that loads submitted code. The judge holds every expected
 // value. The subject runs submitted code in a credential-free container, receives calls without
 // expected values, and returns raw results. A replaced matcher can only lie to itself.
+//
+// The subject cannot answer a case it has not been asked. It loads the submitted modules first, the
+// judge sends each case input only after that, and every frame carries the run's nonce, so a
+// transcript written before the inputs arrive is a fault instead of a pass.
 
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -87,9 +91,21 @@ export type HiddenCase = {
 /** Judge to subject. Has no expected field by construction. */
 export type SubjectCall = Omit<HiddenCase, "expected">;
 
+/** Judge to subject over stdin. `load` names the modules; a `call` carries one case's inputs. */
+export type SubjectRequest =
+	| { readonly kind: "load"; readonly nonce: string; readonly modules: readonly string[] }
+	| { readonly kind: "call"; readonly nonce: string; readonly id: TestId;
+		readonly target: { readonly module: string; readonly export: string }; readonly args: readonly JsonValue[] };
+
 export type SubjectReply =
 	| { readonly id: TestId; readonly ok: true; readonly value: JsonValue }
 	| { readonly id: TestId; readonly ok: false; readonly error: string };
+
+/** Subject to judge over stdout. Outputs only: the subject never returns a pass or a fail. */
+export type SubjectFrame =
+	| { readonly kind: "ready"; readonly nonce: string }
+	| { readonly kind: "reply"; readonly nonce: string; readonly id: TestId; readonly ok: true; readonly value: JsonValue }
+	| { readonly kind: "reply"; readonly nonce: string; readonly id: TestId; readonly ok: false; readonly error: string };
 
 export type DiffSummary = { readonly changed: readonly { readonly path: string; readonly addedText: string }[] };
 
@@ -107,40 +123,83 @@ export function toSubjectCall(hidden: HiddenCase): SubjectCall {
 	return { id: hidden.id, target: hidden.target, args: hidden.args };
 }
 
-/** Untrusted bytes. Unknown ids, duplicates, and unparsable lines are dropped, so they count as missing. */
-export function parseSubjectReplies(stdout: string, calls: readonly SubjectCall[]): ReadonlyMap<TestId, SubjectReply> {
-	const allowed = new Set(calls.map(call => call.id));
-	const accepted = new Map<TestId, SubjectReply>();
-	const invalid = new Set<TestId>();
-	for (const line of stdout.split("\n")) {
-		if (!line) continue;
-		if (Buffer.byteLength(line) > SUBJECT_FRAME_BYTES) continue;
-		let frame: unknown;
-		try { frame = JSON.parse(line) as unknown; } catch { continue; }
-		const reply = asSubjectReply(frame);
-		if (!reply || !allowed.has(reply.id)) continue;
-		// A duplicate permanently invalidates the id. Keeping the first reply would pass a forged transcript.
-		if (accepted.has(reply.id) || invalid.has(reply.id)) {
-			invalid.add(reply.id);
-			accepted.delete(reply.id);
-			continue;
-		}
-		accepted.set(reply.id, reply);
-	}
-	return accepted;
+/**
+ * One frame of the subject's stdout, or null. A frame that does not echo this run's nonce is not a
+ * frame of this run, however correct its value looks.
+ */
+export function asSubjectFrame(line: string, nonce: string): SubjectFrame | null {
+	if (!line || Buffer.byteLength(line) > SUBJECT_FRAME_BYTES) return null;
+	let value: unknown;
+	try { value = JSON.parse(line) as unknown; } catch { return null; }
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (record.nonce !== nonce) return null;
+	if (record.kind === "ready" && Object.keys(record).sort().join(",") === "kind,nonce") return { kind: "ready", nonce };
+	const reply = asSubjectReply(record);
+	if (!reply) return null;
+	return reply.ok ? { kind: "reply", nonce, id: reply.id, ok: true, value: reply.value }
+		: { kind: "reply", nonce, id: reply.id, ok: false, error: reply.error };
 }
 
-function asSubjectReply(frame: unknown): SubjectReply | null {
-	if (!frame || typeof frame !== "object" || Array.isArray(frame)) return null;
-	const record = frame as Record<string, unknown>;
+/**
+ * The untrusted transcript. Unknown ids and unparsable lines are dropped and count as missing. A
+ * duplicate id invalidates it for the whole run, and a protocol-shaped frame that fails the nonce
+ * or the shape is counted as refused, which is a fault rather than a pass.
+ */
+export function parseSubjectTranscript(stdout: string, nonce: string, calls: readonly SubjectCall[]): SubjectTranscript {
+	const allowed = new Set(calls.map(call => call.id));
+	const replies = new Map<TestId, SubjectReply>();
+	const invalid = new Set<TestId>();
+	let ready = false;
+	let refused = 0;
+	for (const line of stdout.split("\n")) {
+		if (!line) continue;
+		const frame = asSubjectFrame(line, nonce);
+		if (!frame) {
+			if (looksLikeFrame(line)) refused++;
+			continue;
+		}
+		if (frame.kind === "ready") { ready = true; continue; }
+		// No case input is written before `ready`, so a reply that precedes it is not this run's answer.
+		if (!ready) { refused++; continue; }
+		if (!allowed.has(frame.id)) { refused++; continue; }
+		if (replies.has(frame.id) || invalid.has(frame.id)) {
+			invalid.add(frame.id);
+			replies.delete(frame.id);
+			continue;
+		}
+		replies.set(frame.id, frame.ok ? { id: frame.id, ok: true, value: frame.value } : { id: frame.id, ok: false, error: frame.error });
+	}
+	return { ready, replies, refused };
+}
+
+export type SubjectTranscript = {
+	/** The subject loaded the submitted modules before the judge sent a case input. */
+	readonly ready: boolean;
+	readonly replies: ReadonlyMap<TestId, SubjectReply>;
+	/** Frames addressed to this run that did not follow the protocol. One is enough to fault the run. */
+	readonly refused: number;
+};
+
+/** A line that names this channel but is not a valid frame: a forged transcript, or a wrong-nonce reply. */
+function looksLikeFrame(line: string): boolean {
+	if (Buffer.byteLength(line) > SUBJECT_FRAME_BYTES) return false;
+	let value: unknown;
+	try { value = JSON.parse(line) as unknown; } catch { return false; }
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const record = value as Record<string, unknown>;
+	return typeof record.kind === "string" || typeof record.id === "string" || typeof record.nonce === "string";
+}
+
+function asSubjectReply(record: Record<string, unknown>): SubjectReply | null {
 	const keys = Object.keys(record).sort().join(",");
 	if (typeof record.id !== "string") return null;
 	if (record.ok === true) {
-		if (keys !== "id,ok,value" || !isBoundedJson(record.value)) return null;
+		if (keys !== "id,kind,nonce,ok,value" || !isBoundedJson(record.value)) return null;
 		return { id: record.id as TestId, ok: true, value: record.value as JsonValue };
 	}
 	if (record.ok === false) {
-		if (keys !== "error,id,ok" || typeof record.error !== "string" || record.error.length > SUBJECT_ERROR_CHARS) return null;
+		if (keys !== "error,id,kind,nonce,ok" || typeof record.error !== "string" || record.error.length > SUBJECT_ERROR_CHARS) return null;
 		return { id: record.id as TestId, ok: false, error: record.error };
 	}
 	return null;

@@ -1,6 +1,7 @@
 // The operator CLI. F3 owns `submit`; the rest of the tutorial's commands land with the runner.
 
 import { pathToFileURL } from "node:url";
+import { assertSubjectAllowed, verifierSubjectEnv } from "../../verifier/subject.ts";
 import { apiClient, CliError } from "./client.ts";
 import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
 
@@ -18,6 +19,8 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
 	if (!command || command === "--help" || command === "-h" || command === "help") { console.log(USAGE); return command ? 0 : 2; }
 	if (command !== "submit") { console.error(`acquit: unknown command ${command}\n\n${USAGE}`); return 2; }
 	try {
+		// The unit-test subject is never the product path, whatever this command was asked to do.
+		assertSubjectAllowed(verifierSubjectEnv(env));
 		const options = parseSubmitArgs(rest, env);
 		const client = apiClient({ baseUrl: options.apiUrl, token: options.token });
 		console.log(await runSubmit(options, { client, head: localHead, push: pushHead }));

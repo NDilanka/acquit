@@ -57,8 +57,9 @@ Preconditions:
 - A missing or malformed reply counts as missing, and a duplicate id invalidates that id for the whole
   run. A first-reply-wins transcript must never verify.
 - A rejection keeps escrow HELD. It is not a refund, and the deadline is untouched.
-- The plain child-process subject is the unit-test path only. Live lanes must run the Docker subject,
-  which has no network and a read-only mount.
+- The plain child-process subject is the unit-test path only. The API and `acquit` refuse it with
+  `SUBJECT_CHILD_REFUSED` unless `ACQUIT_DEV=1`, and live lanes run the Docker subject, which mounts
+  only the submitted tree and a minimal bootstrap and has no network.
 - The verdict enters the state machine through the authenticated callback route. While
   `createAcquit` still builds the H0 verifier stub, the route answers 503 `VERIFIER_PORT_NOT_WIRED`
   and the live lanes cannot complete; see `data/evidence/f3-r1-build/acquit-ts-wiring.patch`.
