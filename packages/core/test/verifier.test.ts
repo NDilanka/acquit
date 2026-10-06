@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
 import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
-import { boundedVerdict, decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../src/verifier.ts";
+import { boundedDetail, boundedVerdict, decideVerdict, describeRejectReason, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../src/verifier.ts";
 import type { DefinitionOfDone, DiffChange, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
@@ -222,6 +222,19 @@ test("boundedVerdict holds a reason whose text escapes past the character bound"
 	// apps/api refuses a callback body past VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4,096.
 	assert.ok(Buffer.byteLength(body, "utf8") <= VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096,
 		`body is ${Buffer.byteLength(body, "utf8")} bytes`);
+});
+
+test("boundedDetail redacts a legacy installation token and a raw App JWT", () => {
+	const legacy = `v1.${"0123456789abcdef".repeat(3).slice(0, 40)}`;
+	const jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDB9.c2lnbmF0dXJlLWhleA";
+	const cases = [`Token ${legacy} was refused.`, `Token ${jwt} was refused.`, `Authorization: Bearer ${jwt}`,
+		`fatal: unable to access 'https://x-access-token:${legacy}@github.com/acquit-forks/invoice-app-7Q2K.git/': 403`];
+	for (const text of cases) {
+		const clean = boundedDetail(text);
+		assert.equal(clean.includes(legacy), false, clean);
+		assert.equal(clean.includes(jwt), false, clean);
+		assert.match(clean, /\[redacted\]/);
+	}
 });
 
 test("decideVerdict refuses to verify a passing run that was never published", () => {
