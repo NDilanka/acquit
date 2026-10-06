@@ -145,3 +145,18 @@ test("checkLaws reports the reducer's law at the first illegal move", () => {
 	if ("kind" in paid) throw new Error("Release refused");
 	assert.deepEqual(checkLaws([...paid, refund, paid[1], paid[2]]), { kind: "LAW_BREAK", law: "refund_xor_payout" });
 });
+test("checkLaws refuses a line that is not a book entry instead of throwing", () => {
+	const broken = (lines: unknown): LawBreak => {
+		const result = checkLaws(lines as readonly LedgerLine[]);
+		assert.equal(typeof result, "object");
+		return result as LawBreak;
+	};
+	const at = instant("2026-11-03T15:22:00Z");
+	const held: LedgerLine = { kind: "HELD", cents: usd("420.00"), at };
+	assert.deepEqual(broken([null]), { kind: "LAW_BREAK", law: "order" });
+	assert.deepEqual(broken([held, null]), { kind: "LAW_BREAK", law: "order" });
+	assert.deepEqual(broken([undefined, held]), { kind: "LAW_BREAK", law: "order" });
+	assert.deepEqual(broken([42]), { kind: "LAW_BREAK", law: "order" });
+	assert.deepEqual(broken("HELD"), { kind: "LAW_BREAK", law: "order" });
+	assert.equal(checkLaws([held]), "OPEN");
+});

@@ -115,8 +115,12 @@ export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | L
 
 export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFUNDED" | LawBreak {
 	let book: EscrowBook = [];
+	// A stored book is parsed JSON, so the checker stays total: a line that is not a
+	// book entry is an illegal sequence, never a TypeError.
+	if (!Array.isArray(lines)) return breakLaw("order");
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
+		if (line === null || typeof line !== "object") return breakLaw("order");
 		let move: LedgerMove;
 		let fee: FeeLine | undefined;
 		switch (line.kind) {
