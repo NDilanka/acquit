@@ -9,6 +9,7 @@ import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -465,6 +466,33 @@ test("a publish that fails after a clean judgment posts a named RUN_FAILED the A
 		await shell.close();
 		await wired.close();
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
+test("the shell answers 413 on a declared over-cap body before it is read", async () => {
+	const service = serviceFor({ callbackUrl: "http://127.0.0.1:1/callback", source: async () => { throw new Error("unused"); } });
+	const server = createServer(createHttpShell(service, 0));
+	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
+	const port = (server.address() as AddressInfo).port;
+	try {
+		const answer = await new Promise<string>((resolve, reject) => {
+			const socket = connect(port, "127.0.0.1");
+			let seen = "";
+			socket.setTimeout(5_000, () => { socket.destroy(); reject(new Error(`no answer; saw ${JSON.stringify(seen.slice(0, 120))}`)); });
+			socket.on("connect", () => {
+				socket.write("POST /runs HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: application/json\r\ncontent-length: 10000000\r\n\r\n");
+				socket.write("x".repeat(4_096));
+			});
+			socket.on("data", chunk => {
+				seen += String(chunk);
+				if (seen.includes("\r\n\r\n")) { socket.destroy(); resolve(seen); }
+			});
+			socket.on("error", reject);
+		});
+		assert.match(answer, /^HTTP\/1\.1 413 /);
+	} finally {
+		await new Promise<void>(resolve => server.close(() => resolve()));
+		await service.close();
 	}
 });
 
