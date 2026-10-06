@@ -26,7 +26,8 @@ export function unconfiguredVerifier(detail?: string): VerifierPort {
  * which is how the unit path and the development app deliver VerifierFinished without a callback route.
  */
 export function createLocalVerifier(options: JudgeDeps & {
-	readonly onVerdict?: (jobId: JobId, verdict: Verdict) => Promise<void>;
+	readonly callbackSecret?: string;
+	readonly onVerdict?: (request: VerifierRunRequest, verdict: Verdict) => Promise<void>;
 }): VerifierPort & { readonly runs: ReadonlyMap<VerifierRunId, JudgeOutcome> } {
 	const runs = new Map<VerifierRunId, JudgeOutcome>();
 	const inFlight = new Map<VerifierRunId, Promise<void>>();
@@ -38,12 +39,19 @@ export function createLocalVerifier(options: JudgeDeps & {
 			const attempt = (async () => {
 				const outcome = await runJudge(request, options);
 				runs.set(request.runId, outcome);
-				if (outcome.kind === "VERDICT" && options.onVerdict) await options.onVerdict(request.jobId, outcome.verdict);
+				if (outcome.kind === "VERDICT" && options.onVerdict) await options.onVerdict(request, outcome.verdict);
 			})();
 			inFlight.set(request.runId, attempt);
 			await attempt;
 		},
-		async parseCallback() { return null; },
+		async parseCallback(request) {
+			// Without a secret the local judge is driven in process by onVerdict, and no body is trusted.
+			if (!options.callbackSecret) return null;
+			const raw = await request.text();
+			const header = request.headers.get("x-acquit-signature") ?? "";
+			if (!signatureMatches(raw, header, options.callbackSecret)) return null;
+			try { return parseCallbackBody(JSON.parse(raw) as unknown); } catch { return null; }
+		},
 	};
 }
 

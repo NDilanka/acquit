@@ -324,6 +324,11 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	// The port authenticates the judge's signed report. Submitted-program output never reaches this path.
 	const parsed = await ports.verifier.parseCallback(request);
 	if (!parsed) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+	const job = await ports.store.readJob(parsed.jobId);
+	const waiting = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" &&
+		job.state.attempts.pending.runId === parsed.verdict.runId && job.state.attempts.pending.sourceCommit === parsed.verdict.sourceCommit;
+	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
+	if (!waiting) return Response.json({ ok: true, applied: false });
 	try {
 		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, runId: parsed.verdict.runId, verdict: parsed.verdict },
 			null, `verifier:${parsed.verdict.runId}`);
@@ -331,7 +336,7 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 		// The job state is the guard: a report for a job that is not waiting on this run changes nothing.
 		return Response.json({ error: "REFUSED" }, { status: 409 });
 	}
-	return Response.json({ ok: true });
+	return Response.json({ ok: true, applied: true });
 }
 
 export async function runDueTimers(ports: Ports): Promise<number> {

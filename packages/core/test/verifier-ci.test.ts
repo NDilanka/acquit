@@ -77,7 +77,7 @@ test("the remote verifier posts the run and refuses a non-2xx answer", async () 
 test("the local verifier runs the judge once per run id and hands the verdict to its listener", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
 	const seen: Verdict[] = [];
 	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-		clock: { now: () => instant("2026-10-06T12:00:00Z") }, onVerdict: async (_jobId, verdict) => { seen.push(verdict); } });
+		clock: { now: () => instant("2026-10-06T12:00:00Z") }, onVerdict: async (_request, verdict) => { seen.push(verdict); } });
 	const head = spawnSync("git", ["-C", FIXTURE!, "rev-parse", "fix-honest^{commit}"], { encoding: "utf8" }).stdout.trim() as CommitSha;
 	const request: VerifierRunRequest = { runId: "run_ci_honest" as VerifierRunId, jobId: "job_ci_honest" as JobId, ordinal: 1,
 		sourceCommit: head, definitionOfDone: definition };
