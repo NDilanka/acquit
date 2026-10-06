@@ -16,7 +16,7 @@ const script = resolve(root, ".factory/skills/verify-acquit/scripts/lane-repo.mj
 test("the printed lane command names the deployment's repository and the job's work repo", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-lane-repo-"));
 	const template = join(dir, "template");
-	const laneDir = resolve(root, "../../acquit/scratch/verifier/invoice-app-lane-99");
+	const laneDirs = [98, 99].map(lane => resolve(root, `../../acquit/scratch/verifier/invoice-app-lane-${lane}`));
 	try {
 		await mkdir(template, { recursive: true });
 		const git = (args: string[]) => spawnSync("git", args, { encoding: "utf8", cwd: template });
@@ -30,8 +30,15 @@ test("the printed lane command names the deployment's repository and the job's w
 		const printed = JSON.parse(run.stdout) as { clientRepo: string; cli: string };
 		assert.equal(printed.clientRepo, "NDilanka/invoice-app");
 		assert.match(printed.cli, /--remote https:\/\/github\.com\/acquit-forks\/invoice-app-7Q2K\.git/);
+		// --owner changes the client repo the contract names, so the work repo is named from that repo.
+		const owned = spawnSync(process.execPath, [script, "98", "main", "--template", template, "--jobs", "job_7Q2K", "--owner", "probe-lanes"],
+			{ encoding: "utf8", cwd: root, env: { ...process.env, ACQUIT_CLIENT_REPOSITORY: "NDilanka/invoice-app", ACQUIT_GITHUB_APP_ORG: "acquit-forks" } });
+		assert.equal(owned.status, 0, owned.stderr);
+		const ownedPrinted = JSON.parse(owned.stdout) as { clientRepo: string; cli: string };
+		assert.equal(ownedPrinted.clientRepo, "probe-lanes/invoice-app-lane-98");
+		assert.match(ownedPrinted.cli, /--remote https:\/\/github\.com\/acquit-forks\/invoice-app-lane-98-7Q2K\.git/);
 	} finally {
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-		await rm(laneDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		for (const laneDir of laneDirs) await rm(laneDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 	}
 });
