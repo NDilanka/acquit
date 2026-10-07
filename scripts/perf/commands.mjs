@@ -2,6 +2,7 @@
 //
 //   node scripts/perf/commands.mjs --bids 100
 //   node scripts/perf/commands.mjs --bids 100 --trunk /tmp/acquit-perf-trunk --head .
+//   node scripts/perf/commands.mjs --bids 100 --clean
 //
 // The trunk worktree defaults to a short path outside the repo because the control CLI's ownership
 // proof is a Unix socket under <worktree>/data/ctl/lane-<n>/own-<nonce>.sock, and Linux caps that path
@@ -10,10 +11,11 @@
 // does not suit.
 //
 // The probe boots two isolated instances on separate lanes: one from a detached trunk worktree
-// (origin/main, created here when missing) and one from the head worktree. Each sample opens a job as
-// maya-client, times one PlaceBid as devon-ops, and cancels the job as maya-client. The cancel returns
-// the 10 credits, so every sample starts from the same 30-credit allowance and no PayPal call is ever
-// made. Rounds of 10 alternate trunk and head, and the trunk median is recorded first as the baseline.
+// (origin/main, fetched and checked out before every run, created here when missing) and one from the
+// head worktree. Each sample opens a job as maya-client, times one PlaceBid as devon-ops, and cancels
+// the job as maya-client. The cancel returns the 10 credits, so every sample starts from the same
+// 30-credit allowance and no PayPal call is ever made. Rounds of 10 alternate trunk and head, and the
+// trunk median is recorded first as the baseline.
 //
 // Then it reseeds the head lane, creates 200 open jobs through the API, and times `POST /api/dev/tick`
 // five times. Every seeded job is OPEN BIDDING with its House bid already placed, so `runDueTimers`
@@ -24,17 +26,19 @@
 //   it are untimed; they exist so credits recycle and the bid path stays comparable.
 //   tick: the seconds from POST /api/dev/tick to its response, on a fresh lane with 200 open jobs.
 //
-// Rules. Fail if the head PlaceBid median exceeds the trunk median by more than 20 percent. Fail if
-// the tick median exceeds 200 ms. A metric that cannot be measured is reported as `blocked` and exits 1.
+// Rules. Fail if the trunk baseline is the head commit: the probe cannot judge a build against itself.
+// Fail if the head PlaceBid median exceeds the trunk median by more than 20 percent. Fail if the tick
+// median exceeds 200 ms. A metric that cannot be measured is reported as `blocked` and exits 1.
 //
-// Cleanup. Both lanes are stopped; the trunk worktree stays in place for the next run. Nothing is
-// created on GitHub and no money moves.
+// Cleanup. Both lanes are stopped; the trunk worktree stays in place for the next run unless --clean
+// removes it and this run's lane data (the lane 0 database is never a probe lane and is never touched).
+// Nothing is created on GitHub and no money moves.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -56,6 +60,7 @@ const { values } = parseArgs({ options: {
 	"trunk-lane": { type: "string", default: "13" },
 	"head-lane": { type: "string", default: "14" },
 	evidence: { type: "string", default: "data/evidence/f4-r1/perf" },
+	clean: { type: "boolean", default: false },
 } });
 const bids = Number(values.bids);
 const jobs = Number(values.jobs);
@@ -72,8 +77,8 @@ const rounds = bids / 10;
 const evidence = resolve(root, values.evidence);
 const RULES = { headOverTrunkRatio: 1.2, tickMedianMs: 200 };
 
-const report = { bids, jobs, ticks, rounds, roundSize: 10, trunkDir, headDir, trunkLane, headLane, rules: RULES,
-	trunkHead: null, headHead: null, baseline: null, bidLatency: null, tick: null, cleanup: null, blocked: null, detail: null,
+const report = { bids, jobs, ticks, rounds, roundSize: 10, trunkDir, headDir, trunkLane, headLane, clean: values.clean, rules: RULES,
+	trunkBaseline: null, trunkHead: null, headHead: null, baseline: null, bidLatency: null, tick: null, cleanup: null, blocked: null, detail: null,
 	passed: false, node: process.version };
 const started = [];
 
@@ -107,22 +112,47 @@ async function preflight() {
 	assert(existsSync(resolve(headDir, "packages/ctl/src/main.ts")), `The head worktree at ${headDir} has no control CLI.`);
 	laneSocketFits("trunk", trunkDir, trunkLane);
 	laneSocketFits("head", headDir, headLane);
+	// The baseline is the current origin/main, never a stale checkout left in the worktree. The fetch is
+	// best effort: an offline machine falls back to the local main ref, and the report records which one ran.
+	report.trunkBaseline = fetchTrunkBaseline();
 	if (!existsSync(resolve(trunkDir, "package.json"))) {
 		assert(values.trunk === defaultTrunk, `The supplied trunk worktree ${trunkDir} is missing.`);
 		spawnSync("git", ["-C", root, "worktree", "prune"], { encoding: "utf8" });
-		const added = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunkDir, "origin/main"], { encoding: "utf8" });
+		const added = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunkDir, report.trunkBaseline.ref], { encoding: "utf8" });
 		assert.equal(added.status, 0, `Could not create the isolated trunk baseline: ${added.stderr}`);
-		await copyFile(resolve(root, ".env"), resolve(trunkDir, ".env"));
-		// The copy carries PayPal and GitHub keys; keep it owner-only outside the repo.
-		await chmod(resolve(trunkDir, ".env"), 0o600);
 		const cli = npmCli();
 		const installed = cli === null
 			? await captured("npm", ["install"], trunkDir, process.env, 300_000)
 			: await captured(process.execPath, [cli, "install"], trunkDir, process.env, 300_000);
 		assert.equal(installed.code, 0, `Could not install the baseline dependencies; run npm install in ${trunkDir}.`);
+	} else {
+		const checkedOut = spawnSync("git", ["-C", trunkDir, "checkout", "--detach", "--force", report.trunkBaseline.ref], { encoding: "utf8" });
+		assert.equal(checkedOut.status, 0, `Could not check out ${report.trunkBaseline.ref} in ${trunkDir}: ${checkedOut.stderr}`);
 	}
+	// The copy carries PayPal and GitHub keys; keep it owner-only on every run, not just the first.
+	if (!existsSync(resolve(trunkDir, ".env"))) await copyFile(resolve(root, ".env"), resolve(trunkDir, ".env"));
+	await chmod(resolve(trunkDir, ".env"), 0o600);
 	report.trunkHead = headOf(trunkDir);
 	report.headHead = headOf(headDir);
+	if (report.trunkHead !== null && report.trunkHead === report.headHead) {
+		throw new Blocked("TRUNK_EQUALS_HEAD",
+			`${report.trunkHead} is both the trunk baseline and the head, so the probe would compare a build against itself. Fetch a newer origin/main or point --head at the head worktree.`);
+	}
+}
+
+/**
+ * The ref the trunk worktree is pinned to: the fetched origin/main, or the local main when the fetch
+ * cannot authenticate. The detail never carries the remote URL, which may embed a credential.
+ */
+function fetchTrunkBaseline() {
+	const fetched = spawnSync("git", ["-C", root, "fetch", "origin", "main"],
+		{ encoding: "utf8", timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+	if (fetched.status === 0) return { ref: "origin/main", fetched: true, detail: null };
+	const local = spawnSync("git", ["-C", root, "rev-parse", "--verify", "--quiet", "main"], { encoding: "utf8" });
+	const last = String(fetched.stderr ?? fetched.error?.message ?? "").trim().split("\n").filter(line => line !== "").at(-1) ?? "";
+	const detail = last.replace(/https?:\/\/\S+/g, "<remote>").slice(0, 200) || `git fetch origin main exited with ${fetched.status}`;
+	if (local.status !== 0) throw new Blocked("NO_TRUNK_REF", `origin/main could not be fetched (${detail}) and the local main ref is missing.`);
+	return { ref: "main", fetched: false, detail };
 }
 
 function headOf(dir) {
@@ -163,12 +193,31 @@ async function boot(side, dir, lane) {
 }
 
 async function cleanup() {
-	const result = { lanesStopped: [], errors: [] };
+	const result = { lanesStopped: [], removed: [], errors: [] };
 	for (const instance of started.reverse()) {
 		try { await ctl(instance, "stop"); result.lanesStopped.push(`${instance.side} lane ${instance.lane}`); }
 		catch (error) { result.errors.push(`${instance.side}: ${error instanceof Error ? error.message : String(error)}`); }
 	}
+	if (values.clean) await removeArtifacts(result);
 	return result;
+}
+
+/**
+ * --clean: the throwaway baseline worktree and this run's lane data go away. The probe's lanes are
+ * never lane 0, so the real database and its run directory are never candidates for removal.
+ */
+async function removeArtifacts(result) {
+	const removed = spawnSync("git", ["-C", root, "worktree", "remove", "--force", trunkDir], { encoding: "utf8" });
+	if (removed.status === 0) result.removed.push(`trunk worktree ${trunkDir}`);
+	else if (existsSync(trunkDir)) result.errors.push(`trunk worktree: ${String(removed.stderr ?? "").trim().split("\n").at(-1) || `git worktree remove exited with ${removed.status}`}`);
+	spawnSync("git", ["-C", root, "worktree", "prune"], { encoding: "utf8" });
+	for (const [dir, lane] of [[headDir, headLane], [trunkDir, trunkLane]]) {
+		for (const path of [resolve(dir, laneSlot(lane).runDir), resolve(dir, "data/verify", `lane-${lane}`)]) {
+			if (!existsSync(path)) continue;
+			try { await rm(path, { recursive: true, force: true }); result.removed.push(path); }
+			catch (error) { result.errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
+		}
+	}
 }
 
 async function measure(trunk, head) {
