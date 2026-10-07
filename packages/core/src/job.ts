@@ -679,8 +679,11 @@ function transitionTable(): {
 				amount: refund.retainedProcessorFee }] : [];
 			const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
 				: row.state.status === "VERIFIED" || row.state.status === "REFUNDED" ? row.state.history : [];
+			// The arbiter's note survives the settlement when there was one; a deadline refund has none and
+			// the key stays absent, so a row read back from the store deep-equals the row that produced it.
 			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, title: row.title,
-				contract: row.contract, openedAt: row.openedAt, bids: row.bids, arbiterNote: row.arbiterNote,
+				contract: row.contract, openedAt: row.openedAt, bids: row.bids,
+				...(row.arbiterNote === undefined ? {} : { arbiterNote: row.arbiterNote }),
 				state: { status: "REFUNDED", payee: escrow.payee, book, reason: intent.reason, refund,
 					history, treasury } }, credits: [], effects };
 		} },
