@@ -84,7 +84,7 @@ type RecordingGit = GitRun & { readonly calls: { readonly args: readonly string[
 
 /** A git port that answers the handful of read commands run.ts makes and records every call. A clone
  * gets the one side effect prepareWorkRepo trusts: the `gitdir:` link `--separate-git-dir` writes. */
-function fakeGit(answers: { numstat?: string; untracked?: string; head?: string } = {}): RecordingGit {
+function fakeGit(answers: { numstat?: string; untracked?: string; head?: string; origin?: string } = {}): RecordingGit {
 	const calls: { args: readonly string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
 	const run: GitRun = (args, env) => {
 		calls.push({ args: [...args], env });
@@ -103,6 +103,7 @@ function fakeGit(answers: { numstat?: string; untracked?: string; head?: string 
 		if (line.includes("diff --numstat")) return { status: 0, stdout: answers.numstat ?? "", stderr: "" };
 		if (line.includes("ls-files")) return { status: 0, stdout: answers.untracked ?? "", stderr: "" };
 		if (line.includes("rev-parse HEAD")) return { status: 0, stdout: `${answers.head ?? "b".repeat(40)}\n`, stderr: "" };
+		if (line.includes("config --get remote.origin.url")) return { status: 0, stdout: `${answers.origin ?? ""}\n`, stderr: "" };
 		if (line.includes("config user.email")) return { status: 0, stdout: "", stderr: "" };
 		return { status: 0, stdout: "", stderr: "" };
 	};
@@ -951,6 +952,42 @@ test("worktree config the push reads refuses through pushWork and pushHead, and 
 	}
 });
 
+test("a rerun fetch refuses the planted worktree config before the scoped token reaches the server", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-rerun-fetch-"));
+	const remote = await selfSignedRemote(root);
+	const secret = makeSecretDir();
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		const canary = "ghs_CANARY_RERUN_FETCH";
+		const askpass = writeAskpass(secret.path, canary);
+		// The DeepSeek shape: the extension on, and a worktree config that rewrites origin to the
+		// self-signed server with verification git reads as false. A rerun's fetch reads that file.
+		assert.equal(git(["--git-dir", state, "config", "--local", "extensions.worktreeConfig", "true"]).status, 0);
+		writeFileSync(join(state, "config.worktree"),
+			`[url "${remote.url}"]\n\tinsteadOf = ${bare}\n[http "${remote.scope}"]\n\tsslVerify = false\n`);
+		// Control: the raw guarded fetch a rerun made before the scan, askpass in its env and no scan
+		// ahead of it. The canary arrives, so "no request" below is the refusal and not a dead server.
+		const mark = remote.requests().length;
+		spawnSync("git", ["--git-dir", state, "--work-tree", checkout.workTree, ...gitGuardArgs(env), "fetch", "--quiet", "--no-tags", "origin"],
+			{ encoding: "utf8", env: { ...env, ...askpass.env }, timeout: 30_000 });
+		assert.equal(carriedCanary(remote.requests().slice(mark), canary), true, "the self-signed server never saw the canary");
+		// The rerun fetch carries the scoped token, so it scans the same location first and refuses
+		// the plant before any request can leave.
+		const refused = remote.requests().length;
+		assert.throws(() => prepareWorkRepo(git, checkout, bare, frozen, env, askpass.env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("extensions.worktreeconfig"));
+		assert.equal(remote.requests().length, refused);
+	} finally {
+		remote.stop();
+		secret.remove();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a linked worktree's own config refuses a scoped push on the operator's checkout", async () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-linked-config-"));
 	const remote = await selfSignedRemote(root);
@@ -1489,6 +1526,54 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 		assert.equal(dockerLines.some(line => line.includes(`--name acquit-runner-job_7Q2K`)), true);
 		assert.equal(dockerLines.at(-1), "network rm acquit-runner-job_7Q2K-egress");
 		assert.equal(printed.join("\n").includes(tokenCanary) || printed.join("\n").includes(keyCanary), false);
+	} finally {
+		rmSync(work, { recursive: true, force: true });
+		rmSync(stateHome, { recursive: true, force: true });
+	}
+});
+
+test("in a full run, only clone, fetch, and push carry the askpass, each after the scan of its location", async () => {
+	const work = mkdtempSync(join(tmpdir(), "acquit-run-askpass-flow-"));
+	const stateHome = mkdtempSync(join(tmpdir(), "acquit-run-askpass-state-"));
+	try {
+		const git = fakeGit({ numstat: "", head: "c".repeat(40), origin: "https://github.com/acquit-forks/invoice-app-7q2k.git" });
+		const env = { PATH: process.env.PATH, XDG_STATE_HOME: stateHome };
+		const deps = { client: fakeClient(), provider: keyPort(keyCanary), docker: fakeDocker(), git, print: () => {}, now: () => 0, env };
+		const kindOf = (args: readonly string[]): string => args.includes("clone") ? "clone"
+			: args.includes("fetch") ? "fetch" : args.includes("push") ? "push" : "local";
+		const runs: (typeof git.calls)[] = [];
+		// A fresh run clones: the one token call with no git directory to scan yet.
+		let mark = git.calls.length;
+		await runRun(runOptions({ dir: work }), deps);
+		runs.push(git.calls.slice(mark));
+		// A rerun's first token call is the fetch of the state checkout, which has a directory to scan.
+		mark = git.calls.length;
+		await runRun(runOptions({ dir: work }), deps);
+		runs.push(git.calls.slice(mark));
+		const state = stateGitDir("job_7Q2K", env);
+		for (const [index, calls] of runs.entries()) {
+			// A local-only command never carries the CLI's askpass.
+			assert.deepEqual(calls.filter(call => call.env?.GIT_ASKPASS !== undefined).map(call => kindOf(call.args)),
+				index === 0 ? ["clone", "push"] : ["fetch", "push"]);
+			for (const [at, call] of calls.entries()) {
+				if (call.env?.GIT_ASKPASS === undefined || kindOf(call.args) === "clone") continue;
+				// Every token call but the fresh clone is preceded, in this same run, by the scan of
+				// the location that call names.
+				const gitDir = call.args[call.args.indexOf("--git-dir") + 1];
+				const workTree = call.args[call.args.indexOf("--work-tree") + 1];
+				const scanned = calls.slice(0, at).some(earlier => {
+					const text = earlier.args.join(" ");
+					return text.includes("config --list --show-scope") && text.includes(`--git-dir ${gitDir}`) && text.includes(`--work-tree ${workTree}`);
+				});
+				assert.equal(scanned, true, `no scan before ${call.args.join(" ")}`);
+			}
+			const clone = calls.find(call => kindOf(call.args) === "clone");
+			if (clone !== undefined) {
+				// The exempt clone is the fresh one only: a new CLI-created git directory and no template.
+				assert.equal(clone.args.join(" ").includes(`--separate-git-dir ${state}`), true, clone.args.join(" "));
+				assert.equal(clone.args.includes("--template="), true, clone.args.join(" "));
+			}
+		}
 	} finally {
 		rmSync(work, { recursive: true, force: true });
 		rmSync(stateHome, { recursive: true, force: true });
