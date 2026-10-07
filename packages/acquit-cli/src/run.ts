@@ -10,8 +10,7 @@
 // with no value. No secret is ever an argv word, a printed line, or a log line.
 
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { CommitSha } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
@@ -19,6 +18,7 @@ import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
 import { pushError, submissionRef } from "./submit.ts";
+import { childEnv, makeSecretDir, parseWorkRepo, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
 /** The image the tutorial names. The sandbox is the image plus the internal network and the proxy. */
 export const DEFAULT_RUNNER_IMAGE = "acquit/runner-node20";
@@ -181,14 +181,6 @@ function safeEcho(text: string): string {
 	return boundedDetail(text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s]*@/g, "$1").trim());
 }
 
-/** The environment a child gets: the operator's, minus the two secrets this CLI itself holds. */
-export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	const child = { ...env };
-	delete child.ACQUIT_TOKEN;
-	delete child.ACQUIT_PROVIDER_KEY;
-	return child;
-}
-
 /** The refusal a clone or fetch of a work repo funding has not created yet produces. */
 export function cloneError(url: string, stderr: string | null): CliError {
 	const detail = safeEcho((stderr ?? "").trim().split("\n").slice(-3).join(" "));
@@ -305,34 +297,6 @@ export function submissionCommit(git: GitRun, dir: string, frozen: CommitSha, me
 export function pushWork(git: GitRun, dir: string, url: string, commit: CommitSha, env: NodeJS.ProcessEnv): void {
 	const pushed = git(["-C", dir, "push", "--quiet", url, `${commit}:${submissionRef(commit)}`], env);
 	if (pushed.status !== 0) throw pushError(url, pushed.stderr);
-}
-
-// ---- the credential files ---------------------------------------------------------------------
-
-/** A mkdtemp directory that holds the two secret files for one run and is removed on every exit. */
-export function makeSecretDir(): { readonly path: string; readonly remove: () => void } {
-	const path = mkdtempSync(join(tmpdir(), "acquit-run-"));
-	return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
-}
-
-const ASKPASS_SCRIPT = `#!/bin/sh
-# The token is read from the 0600 file the environment names; this script holds no secret.
-case "$1" in
-	*[Uu]sername*) printf '%s\\n' x-access-token ;;
-	*) cat "$ACQUIT_RUN_TOKEN_FILE" ;;
-esac
-`;
-
-/** The git credential for one run: a constant 0700 askpass script plus the 0600 token file it reads. */
-export function writeAskpass(dir: string, token: string): { readonly env: NodeJS.ProcessEnv; readonly script: string; readonly tokenFile: string } {
-	const tokenFile = join(dir, "token");
-	const script = join(dir, "askpass.sh");
-	writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
-	chmodSync(tokenFile, 0o600);
-	writeFileSync(script, ASKPASS_SCRIPT, { mode: 0o700 });
-	chmodSync(script, 0o700);
-	return { tokenFile, script, env: { ACQUIT_RUN_TOKEN_FILE: tokenFile, GIT_ASKPASS: script,
-		GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } };
 }
 
 // ---- the sandbox ------------------------------------------------------------------------------
@@ -515,21 +479,6 @@ async function operatorId(client: ApiClient): Promise<string> {
 	const id = record.operator?.id;
 	if (typeof id !== "string" || id === "") throw new CliError("OPERATOR_REQUIRED", "This session is not an operator. Run `acquit login` as an operator account.");
 	return id;
-}
-
-/** The credential the API mints for this job's work repo. Neither value is ever printed. */
-export function parseWorkRepo(body: unknown): { readonly repository: string; readonly token: string } {
-	const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
-	const repository = typeof record.repository === "string" ? record.repository : "";
-	const token = typeof record.token === "string" ? record.token : "";
-	if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || token === "" || /[\r\n]/.test(token)) {
-		throw new CliError("WORK_REPO_TOKEN_MISSING", "The API answered without a usable work repo credential for this job.");
-	}
-	return { repository, token };
-}
-
-function workRepoUrl(repository: string): string {
-	return `https://github.com/${repository}.git`;
 }
 
 function resolveCommand(path: string): string {

@@ -11,10 +11,11 @@ import type { CommitSha, JobId, OperatorId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
-import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, makeSecretDir, networkConnectArgs,
+import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, networkConnectArgs,
 	networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, renderFinished, renderPreparing, renderRunning,
-	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, signalGuard, submissionCommit, writeAskpass } from "../src/run.ts";
+	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, signalGuard, submissionCommit } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
+import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
 const workRepo = "acquit-forks/invoice-app-7q2k";
@@ -388,6 +389,17 @@ test("the askpass script holds no token and the token file is 0600 and removed w
 		assert.equal(Object.values(askpass.env).some(value => String(value).includes(tokenCanary)), false);
 		assert.equal(askpass.env.GIT_ASKPASS, askpass.script);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a signal removes the secret directory before the process exits", () => {
+	const removed: string[] = [];
+	const exits: number[] = [];
+	const stop = secretGuard(() => removed.push("secret"), { exit: code => exits.push(code) });
+	try {
+		process.emit("SIGTERM");
+		assert.deepEqual(removed, ["secret"]);
+		assert.deepEqual(exits, [143]);
+	} finally { stop(); }
 });
 
 test("the sandbox creates its egress network, starts the proxy on it, and removes every object", async () => {

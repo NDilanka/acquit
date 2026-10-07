@@ -2,9 +2,9 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { CommitSha, JobId, OperatorId } from "../src/ids.ts";
@@ -16,6 +16,8 @@ import { localHead, parseSubmitArgs, renderSubmission, runSubmit } from "../../a
 
 const frozenAt = "a41c9e2" as CommitSha;
 const submitted = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+const workRepo = "acquit-forks/invoice-app-7Q2K";
+const workRepoToken = "ghs_CANARY_WORK_REPO_TOKEN";
 
 /** The projection the API answers with after attempt 1 on the tamper-test branch. */
 function rejectedView(): JobProjection {
@@ -187,24 +189,130 @@ test("runSubmit polls until the submitted commit is judged and prints the block"
 	const client: ApiClient = { baseUrl: "http://api.test",
 		async get(path) { calls.push(`GET ${path}`); polls++;
 			return { job: polls === 1 ? rejectedView() : verifiedView(), handles: { "devon-ops": "devon-ops" } }; },
-		async post(path, payload) { calls.push(`POST ${path} ${JSON.stringify(payload)}`); return { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
+		async post(path, payload) { calls.push(`POST ${path} ${JSON.stringify(payload)}`);
+			return path.endsWith("/work-repo-token")
+				? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+				: { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
 	const printed = await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
-		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, push: () => { throw new Error("no push expected"); }, sleep: async () => {} });
+		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, push: () => {}, sleep: async () => {} });
 	assert.match(printed, /Verifier result: VERIFIED/);
 	assert.match(printed, /Pull request opened: maya-client\/invoice-app#13/);
-	const payload = JSON.parse(calls[1].slice("POST /api/commands ".length)) as { key: string; command: unknown };
+	const payload = JSON.parse(calls[2].slice("POST /api/commands ".length)) as { key: string; command: unknown };
 	assert.match(payload.key, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 	assert.deepEqual(payload.command, { type: "Submit", jobId: "job_7Q2K", sourceCommit: submitted });
 	assert.equal(calls.filter(call => call.startsWith("GET /api/jobs/")).length, 2);
 });
 
+test("a submit pushes through the credential the API mints for the job's work repo", async () => {
+	const posts: string[] = [];
+	const pushes: { remote: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+	let tokenFile: string | null = null;
+	let tokenSeen = "";
+	const client: ApiClient = { baseUrl: "http://api.test",
+		async get() { return { job: rejectedView(), handles: {} }; },
+		async post(path) {
+			posts.push(path);
+			return path.endsWith("/work-repo-token")
+				? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+				: { status: 200, body: { outcome: { kind: "COMMITTED" } } };
+		} };
+	await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
+		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted,
+		push: (dir, remote, commit, env) => {
+			pushes.push({ remote, env });
+			tokenFile = String(env?.ACQUIT_RUN_TOKEN_FILE ?? "");
+			tokenSeen = readFileSync(tokenFile, "utf8").trim();
+		}, sleep: async () => {} });
+	assert.deepEqual(posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.equal(pushes.length, 1);
+	assert.equal(pushes[0].remote, "https://github.com/acquit-forks/invoice-app-7Q2K.git");
+	assert.equal(pushes[0].env?.GIT_ASKPASS !== undefined, true);
+	assert.equal(pushes[0].remote.includes(workRepoToken), false);
+	assert.equal(Object.values(pushes[0].env ?? {}).some(value => String(value).includes(workRepoToken)), false);
+	assert.equal(tokenSeen, workRepoToken);
+	assert.equal(tokenFile !== null && existsSync(dirname(tokenFile)), false, "the secret directory must be removed");
+});
+
+test("--remote origin that resolves to the job's work repo mints the same scoped credential", async () => {
+	const posts: string[] = [];
+	const pushes: string[] = [];
+	const client: ApiClient = { baseUrl: "http://api.test",
+		async get() { return { job: rejectedView(), handles: {} }; },
+		async post(path) {
+			posts.push(path);
+			return path.endsWith("/work-repo-token")
+				? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+				: { status: 200, body: { outcome: { kind: "COMMITTED" } } };
+		} };
+	await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: "origin", apiUrl: "http://api.test", token: "s3cret",
+		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted,
+		remoteUrl: () => "https://github.com/acquit-forks/invoice-app-7Q2K.git",
+		push: (dir, remote) => pushes.push(remote), sleep: async () => {} });
+	assert.deepEqual(posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.deepEqual(pushes, ["https://github.com/acquit-forks/invoice-app-7Q2K.git"]);
+});
+
+test("a remote that is not the job's work repo keeps the operator's own credential", async () => {
+	const run = async (remote: string, resolved: string | null) => {
+		const posts: string[] = [];
+		const pushes: string[] = [];
+		const client: ApiClient = { baseUrl: "http://api.test",
+			async get() { return { job: rejectedView(), handles: {} }; },
+			async post(path) {
+				posts.push(path);
+				return { status: 200, body: { outcome: { kind: "COMMITTED" } } };
+			} };
+		await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote, apiUrl: "http://api.test", token: "s3cret",
+			timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, remoteUrl: () => resolved,
+			push: (dir, named) => pushes.push(named), sleep: async () => {} });
+		return { posts, pushes };
+	};
+	// A named remote that resolves elsewhere, and a URL the operator named: neither mints.
+	const named = await run("origin", "https://github.com/maya-client/invoice-app.git");
+	assert.deepEqual(named.posts, ["/api/commands"]);
+	assert.deepEqual(named.pushes, ["origin"]);
+	const other = await run("https://github.com/someone/other.git", null);
+	assert.deepEqual(other.posts, ["/api/commands"]);
+	assert.deepEqual(other.pushes, ["https://github.com/someone/other.git"]);
+});
+
 test("a denied submit names the operator the job is locked to", async () => {
 	const client: ApiClient = { baseUrl: "http://api.test",
 		async get() { return { job: rejectedView(), handles: { "devon-ops": "devon-ops" } }; },
-		async post() { return { status: 409, body: { outcome: { kind: "DENIED", reason: "NOT_OWNER" } } }; } };
+		async post(path) { return path.endsWith("/work-repo-token")
+			? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+			: { status: 409, body: { outcome: { kind: "DENIED", reason: "NOT_OWNER" } } }; } };
 	await assert.rejects(() => runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
 		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, push: () => {} }),
 		(error: CliError) => error.code === "NOT_OWNER" && error.message.includes("locked to devon-ops"));
+});
+
+test("a mint refused to a stranger leaves the denial to the Submit command", async () => {
+	const run = async (remote: string | null) => {
+		const posts: string[] = [];
+		const pushes: string[] = [];
+		const client: ApiClient = { baseUrl: "http://api.test",
+			async get() { return { job: rejectedView(), handles: { "devon-ops": "devon-ops" } }; },
+			async post(path) {
+				posts.push(path);
+				if (path.endsWith("/work-repo-token")) throw new CliError("NOT_OWNER", "Job job_7Q2K is not locked to this operator.");
+				return { status: 409, body: { outcome: { kind: "DENIED", reason: "NOT_OWNER" } } };
+			} };
+		await assert.rejects(() => runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote, apiUrl: "http://api.test", token: "s3cret",
+			timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted,
+			remoteUrl: () => "https://github.com/acquit-forks/invoice-app-7Q2K.git",
+			push: (dir, named) => pushes.push(named) }),
+			(error: CliError) => error.code === "NOT_OWNER" && error.message.includes("locked to devon-ops"));
+		return { posts, pushes };
+	};
+	// The default push has nowhere to fall back to; a named work-repo remote falls back to the
+	// operator's own credential, which is what today's push did.
+	const fallback = await run(null);
+	assert.deepEqual(fallback.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.deepEqual(fallback.pushes, []);
+	const named = await run("origin");
+	assert.deepEqual(named.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.deepEqual(named.pushes, ["origin"]);
 });
 
 test("a run that never reports ends in a named timeout, not a hang", async () => {
@@ -214,7 +322,9 @@ test("a run that never reports ends in a named timeout, not a hang", async () =>
 		async get() { return { job: { ...view, attempts: { ...view.attempts, history: [],
 			pending: { ordinal: 1, run: 1, runId: "run_job_7Q2K_1", sourceCommit: submitted, submittedAt: "2026-11-08T09:12:00.000Z",
 				runEndsAt: "2026-11-08T09:42:00.000Z" } } }, handles: {} }; },
-		async post() { return { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
+		async post(path) { return path.endsWith("/work-repo-token")
+			? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+			: { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
 	await assert.rejects(() => runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
 		timeoutSeconds: 1, pollMs: 1 }, { client, head: () => submitted, push: () => {}, sleep: async () => { now += 2_000; }, now: () => now }),
 		(error: CliError) => error.code === "VERIFIER_TIMEOUT" && error.message.includes("2026-11-08 09:42 UTC"));
@@ -228,7 +338,9 @@ test("a run that ends without a verdict prints its named reason instead of waiti
 	let polls = 0;
 	const client: ApiClient = { baseUrl: "http://api.test",
 		async get() { polls++; return { job: polls === 1 ? clean : failed, handles: {} }; },
-		async post() { return { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
+		async post(path) { return path.endsWith("/work-repo-token")
+			? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+			: { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
 	await assert.rejects(() => runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
 		timeoutSeconds: 180, pollMs: 1 }, { client, head: () => submitted, push: () => {}, sleep: async () => {} }),
 		(error: CliError) => error.code === "RUN_FAILED" && error.message === "PUBLISH_FAILED: no App installation on maya-client");
@@ -244,7 +356,9 @@ test("a failure the job already carried for this commit does not stop the wait f
 	let polls = 0;
 	const client: ApiClient = { baseUrl: "http://api.test",
 		async get() { polls++; return { job: polls === 1 ? stale : verifiedView(), handles: { "devon-ops": "devon-ops" } }; },
-		async post() { return { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
+		async post(path) { return path.endsWith("/work-repo-token")
+			? { status: 200, body: { repository: workRepo, token: workRepoToken } }
+			: { status: 200, body: { outcome: { kind: "COMMITTED" } } }; } };
 	const printed = await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
 		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, push: () => {}, sleep: async () => {} });
 	assert.match(printed, /Verifier result: VERIFIED/);

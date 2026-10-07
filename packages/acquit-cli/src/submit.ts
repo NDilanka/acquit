@@ -9,6 +9,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
+import { childEnv, makeSecretDir, parseWorkRepo, remoteNamesWorkRepo, secretGuard, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
 export type SubmitOptions = {
 	readonly jobId: string;
@@ -82,12 +83,15 @@ export function submissionRef(commit: CommitSha): string {
 	return `refs/heads/submissions/${commit}`;
 }
 
-/** Pushing is the operator's own credential; the work repository is where the judge reads the commit.
- * The CLI never writes the publisher's `acquit/<jobId>` branch: the publisher creates that ref itself at
- * the judged commit, which is in the work repo because the submission ref carries it. A submission the
- * API later denies (VERIFIER_PENDING, WRONG_STATE) therefore cannot move the open pull request's head. */
-export function pushHead(dir: string, remote: string, commit: CommitSha): void {
-	const result = spawnSync("git", ["-C", dir, "push", remote, `${commit}:${submissionRef(commit)}`], { encoding: "utf8", timeout: 120_000 });
+/** Pushing into the job's work repo goes through the credential the API mints for that repo alone;
+ * a remote the operator names that is not that repo keeps the operator's own credential. The CLI
+ * never writes the publisher's `acquit/<jobId>` branch: the publisher creates that ref itself at
+ * the judged commit, which is in the work repo because the submission ref carries it. A submission
+ * the API later denies (VERIFIER_PENDING, WRONG_STATE) therefore cannot move the open pull request's
+ * head. */
+export function pushHead(dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv): void {
+	const result = spawnSync("git", ["-C", dir, "push", remote, `${commit}:${submissionRef(commit)}`],
+		{ encoding: "utf8", timeout: 120_000, env: { ...childEnv(process.env), ...env } });
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 
@@ -152,16 +156,71 @@ function hoursBetween(from: string, to: string): number {
 export type SubmitDeps = {
 	readonly client: ApiClient;
 	readonly head: (dir: string) => CommitSha;
-	readonly push: (dir: string, remote: string, commit: CommitSha) => void;
+	readonly push: (dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv) => void;
+	/** A `--remote` value resolved to the URL git would push to; null when git cannot resolve it. */
+	readonly remoteUrl?: (dir: string, remote: string) => string | null;
+	readonly makeSecretDir?: () => { readonly path: string; readonly remove: () => void };
 	readonly sleep?: (ms: number) => Promise<void>;
 	readonly now?: () => number;
 };
 
+/** The URL a `--remote` names: a configured remote resolves through git, anything else is itself. */
+function remoteUrl(dir: string, remote: string): string | null {
+	const result = spawnSync("git", ["-C", dir, "remote", "get-url", remote], { encoding: "utf8", timeout: 15_000 });
+	const url = result.stdout?.trim() ?? "";
+	return result.status === 0 && url !== "" ? url : null;
+}
+
+/**
+ * One submission's push. A push into the job's work repo goes through the credential the API mints
+ * for that repository: the default target when `--remote` is omitted, or a `--remote` that resolves
+ * to the work repo. A remote the operator named that is not the work repo is pushed with the
+ * operator's own credential.
+ */
+async function pushSubmission(options: SubmitOptions, view: JobProjection, commit: CommitSha, deps: SubmitDeps): Promise<void> {
+	let named: string | null = null;
+	if (options.remote !== null) {
+		const resolved = (deps.remoteUrl ?? remoteUrl)(options.dir, options.remote) ?? options.remote;
+		const repository = view.contract?.repository ?? null;
+		if (repository === null || !remoteNamesWorkRepo(resolved, repository, view.id)) {
+			deps.push(options.dir, options.remote, commit);
+			return;
+		}
+		named = options.remote;
+	} else if (view.contract === null) {
+		// No frozen contract names no work repo to push to; the Submit command answers the state.
+		return;
+	}
+	let credential: { readonly repository: string; readonly token: string };
+	try {
+		credential = parseWorkRepo((await deps.client.post(`/api/jobs/${encodeURIComponent(view.id)}/work-repo-token`, {})).body);
+	} catch (error) {
+		// The scoped credential belongs to the job's operator alone. A refused mint falls back to the
+		// operator's own credential, and the Submit command answers with the domain denial that names
+		// the operator the job is locked to.
+		if (error instanceof CliError && error.code === "NOT_OWNER") {
+			if (named !== null) deps.push(options.dir, named, commit);
+			return;
+		}
+		throw error;
+	}
+	const secret = (deps.makeSecretDir ?? makeSecretDir)();
+	// The guard is installed before the first secret lands on disk: a signal must not leave it behind.
+	const stop = secretGuard(() => secret.remove());
+	try {
+		const askpass = writeAskpass(secret.path, credential.token);
+		deps.push(options.dir, workRepoUrl(credential.repository), commit, askpass.env);
+	} finally {
+		stop();
+		secret.remove();
+	}
+}
+
 /** Records one submission and waits for its verdict. */
 export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promise<string> {
 	const sourceCommit = deps.head(options.dir);
-	if (options.remote) deps.push(options.dir, options.remote, sourceCommit);
 	const before = await jobView(deps.client, options.jobId);
+	await pushSubmission(options, before.job, sourceCommit, deps);
 	// A failure the job already carried for this commit belongs to an earlier run; only a new one ends this wait.
 	const previousFailure = before.job.attempts.failure?.runId ?? null;
 	// One key per user intent, per docs/architecture/http.md. The API parses it as a UUID v4 and
