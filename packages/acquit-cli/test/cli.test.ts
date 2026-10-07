@@ -365,13 +365,15 @@ test("diff prints the tutorial's patch from the judged commit, without git's ind
 		assert.equal(git("config", "user.email", "test@example.com").status, 0);
 		assert.equal(git("config", "user.name", "Test").status, 0);
 		await mkdir(join(dir, "tests"));
-		const filler = Array.from({ length: 17 }, (_, index) => `// line ${index + 1}`).join("\n");
-		const test = `${filler}\n\tit("formats KWD totals with 3 decimals", () => {\n\t\texpect(formatTotal(lines, "KWD")).toBe("10.125");\n\t});\n`;
+		// The client fixture's shape: the tamper commit changes only the expectation, at file line
+		// 147, under the function whose name git writes into the hunk header.
+		const filler = Array.from({ length: 144 }, (_, index) => `// line ${index + 1}`).join("\n");
+		const test = `${filler}\nfunction describeTotals() {\n  it('formats KWD totals with 3 decimals', () => {\n    expect(formatTotal([{ amount: 10.125 }], 'KWD')).toBe('10.125');\n  });\n}\n`;
 		await writeFile(join(dir, "tests", "totals.test.ts"), test);
 		assert.equal(git("add", ".").status, 0);
 		assert.equal(git("commit", "-qm", "frozen").status, 0);
 		const frozen = git("rev-parse", "HEAD").stdout.trim();
-		await writeFile(join(dir, "tests", "totals.test.ts"), test.replace("10.125", "10.13"));
+		await writeFile(join(dir, "tests", "totals.test.ts"), test.replace("toBe('10.125')", "toBe('10.13')"));
 		assert.equal(git("add", ".").status, 0);
 		assert.equal(git("commit", "-qm", "tamper").status, 0);
 		const tamper = git("rev-parse", "HEAD").stdout.trim();
