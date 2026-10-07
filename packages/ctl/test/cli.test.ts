@@ -638,6 +638,22 @@ test("webhook replay reposts the stored envelope and prints applied then the set
 		});
 	});
 });
+test("webhook replay prints a stored event id with the separators that end a line escaped", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		db.exec("CREATE TABLE webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL)");
+		db.prepare("INSERT INTO webhook_events VALUES (?, ?, ?, ?, ?, ?)").run("WH-1\n\u2028INJECT", "2026-11-01T11:12:00.000Z",
+			"PAYMENT.CAPTURE.COMPLETED", "capture", "5O190127TN364715T", "applied");
+		db.close();
+		await withWebhookStub(root, async port => {
+			const result = cli(["webhook", "replay", "--event", "WH-1\n\u2028INJECT"], { PORT: String(port) });
+			assert.equal(result.code, 0);
+			// One printed line: the id's newline and line separator are escaped, not printed raw.
+			assert.equal(result.stdout, "applied  WH-1\\n\\u2028INJECT\n");
+		});
+	});
+});
 test("webhook replay refuses an unknown id, a missing source, an unreadable record, and a crossed flag", async () => {
 	await fixture(async (cli, root) => {
 		const none = cli(["webhook", "replay", "--event", "WH-NOPE"]);
