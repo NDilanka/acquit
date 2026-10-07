@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,19 +8,42 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { reachable, releaseSpawned, sleep } from "../src/process.ts";
 
-async function apiFixture(dev: boolean, run: (url: string, databasePath: string) => Promise<void>): Promise<void> {
+/** A module the isolated API loads before anything else, so a test can stub the clock and the network. */
+const preload = (source: string) => `data:text/javascript,${encodeURIComponent(source)}`;
+/**
+ * The one network boundary of the isolated API. Every fetch the process makes is answered here and
+ * appended to the lane's log, so the suite never reaches PayPal and a test can read back what the
+ * release path asked for. Any other host is answered too, and so recorded, and the fixture fails on it.
+ */
+const fetchStub = `
+import { appendFileSync } from "node:fs";
+globalThis.fetch = async (input, init) => {
+	const url = String(input);
+	appendFileSync(process.env.STUB_FETCH_LOG, JSON.stringify({ method: init?.method ?? "GET", url }) + "\\n");
+	if (url.startsWith("https://api-m.sandbox.paypal.com/v1/oauth2/token")) return Response.json({ access_token: "isolated-test-token", expires_in: 300 });
+	return Response.json({ name: "RESOURCE_NOT_FOUND", debug_id: "isolated" }, { status: 404 });
+};
+`;
+type RecordedCall = { readonly method: string; readonly url: string };
+async function recordedCalls(path: string): Promise<readonly RecordedCall[]> {
+	try { return (await readFile(path, "utf8")).trim().split("\n").filter(line => line !== "").map(line => JSON.parse(line) as RecordedCall); }
+	catch { return []; }
+}
+async function apiFixture(dev: boolean, run: (url: string, databasePath: string, calls: () => Promise<readonly RecordedCall[]>) => Promise<void>): Promise<void> {
 	const root = fileURLToPath(new URL("../../..", import.meta.url));
 	const dir = await mkdtemp(join(tmpdir(), "acquit-api-test-"));
+	const log = join(dir, "fetch.log");
 	const listener = createServer();
 	await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
 	const port = (listener.address() as { port: number }).port;
 	await new Promise<void>(resolve => listener.close(() => resolve()));
-	// Inject a frozen wall clock before importing the server. No timing tolerance
-	// or one-sided assertion can accidentally accept an ignored offset.
-	const child = spawn(process.execPath, ["--import", "data:text/javascript,Date.now=()=>1760000000000", "apps/api/src/server.ts"], { cwd: root, stdio: "ignore", env: {
-		...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
-		DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
-	} });
+	// Inject a frozen wall clock and the stubbed network before importing the server. No timing tolerance
+	// or one-sided assertion can accidentally accept an ignored offset, and no delivery leaves the machine.
+	const child = spawn(process.execPath, ["--import", preload("Date.now=()=>1760000000000"), "--import", preload(fetchStub), "apps/api/src/server.ts"],
+		{ cwd: root, stdio: "ignore", env: {
+			...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
+			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test", STUB_FETCH_LOG: log,
+		} });
 	try {
 		const deadline = Date.now() + 15_000;
 		const url = `http://127.0.0.1:${port}`;
@@ -29,7 +52,12 @@ async function apiFixture(dev: boolean, run: (url: string, databasePath: string)
 			assert(Date.now() < deadline, "The isolated test API failed readiness.");
 			await sleep(50);
 		}
-		await run(url, join(dir, "acquit.db"));
+		await run(url, join(dir, "acquit.db"), () => recordedCalls(log));
+		// The process reached no host but the sandbox API. The stub answers anything, so a call to another
+		// host would still be recorded here and fail this check rather than silently reach the network.
+		const calls = await recordedCalls(log);
+		assert.equal(calls.every(call => call.url.startsWith("https://api-m.sandbox.paypal.com/")), true,
+			`The isolated test API reached ${calls.map(call => call.url).join(", ")}`);
 	} finally {
 		await releaseSpawned(child);
 		await rm(dir, { recursive: true, force: true });
@@ -103,7 +131,7 @@ test("a job stored before the frozen contract serves through GET /api/jobs/:id",
 	});
 });
 test("the Approve command releases for the client and is denied to the operator", async () => {
-	await apiFixture(false, async (url, databasePath) => {
+	await apiFixture(false, async (url, databasePath, calls) => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const at = "2026-11-01T11:12:00.000Z";
 		const mergeCommit = "5cccb66515313caed72e4af329a62fc011139426";
@@ -154,5 +182,9 @@ test("the Approve command releases for the client and is denied to the operator"
 		const { job } = await reread.json() as { job: { status: string; phase: string; mergeCommit: string | null } };
 		assert.equal(job.phase, "RELEASE_PENDING");
 		assert.equal(job.mergeCommit, mergeCommit);
+		// The release the approval selected went to the stubbed boundary and nowhere else: the token call,
+		// then the referenced payout for the held capture.
+		assert.deepEqual((await calls()).map(call => [call.method, new URL(call.url).pathname]),
+			[["POST", "/v1/oauth2/token"], ["POST", "/v1/payments/referenced-payouts-items"]]);
 	});
 });
