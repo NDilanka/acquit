@@ -3,12 +3,13 @@ import test from "node:test";
 
 type RunStartSample = { markerSeconds: number | null; exitCode: number | null; agentRan: boolean; timedOut: boolean; stderr: string };
 type RunStartBlocker = { reason: string; detail: string } | null;
-const { agentStarted, fundedJobOf, runStartBlocker, runStartVerdict } = await import(
+const { agentStarted, fundedJobOf, runStartBlocker, runStartVerdict, sweepTargets } = await import(
 	new URL("../../../scripts/perf/run-start.mjs", import.meta.url).href) as {
 	agentStarted: (line: string) => boolean;
 	fundedJobOf: (jobs: readonly unknown[], handle: string) => { id: string } | null;
 	runStartBlocker: (sample: RunStartSample) => RunStartBlocker;
 	runStartVerdict: (samples: readonly number[], ruleSeconds: number) => { samples: number[]; medianSeconds: number; maxSeconds: number; passed: boolean };
+	sweepTargets: (resources: { jobId: string | null; killed: boolean }) => readonly { kind: string; name: string; remove: readonly string[] }[];
 };
 
 const healthy = (overrides: Partial<RunStartSample> = {}): RunStartSample =>
@@ -62,6 +63,18 @@ test("a refusal before the marker blocks as RUN_START_FAILED and drops a credent
 test("a run that starts the agent but does not finish cleanly blocks as RUN_AGENT_FAILED", () => {
 	assert.equal(runStartBlocker(healthy({ exitCode: 1, stderr: "acquit: AGENT_FAILED: The agent exited 1.\n" }))?.reason, "RUN_AGENT_FAILED");
 	assert.equal(runStartBlocker(healthy({ agentRan: false }))?.reason, "RUN_AGENT_FAILED");
+});
+
+test("only a sample the probe killed leaves Docker objects to sweep", () => {
+	assert.deepEqual(sweepTargets({ jobId: "job_7Q2K", killed: false }), []);
+	assert.deepEqual(sweepTargets({ jobId: null, killed: true }), []);
+	assert.deepEqual(sweepTargets({ jobId: null, killed: false }), []);
+	const targets = sweepTargets({ jobId: "job_7Q2K", killed: true });
+	assert.deepEqual(targets.map(target => target.name), ["acquit-runner-job_7Q2K", "acquit-runner-job_7Q2K-proxy",
+		"acquit-runner-job_7Q2K-net", "acquit-runner-job_7Q2K-egress"]);
+	assert.deepEqual(targets.map(target => target.kind), ["container", "container", "network", "network"]);
+	assert.deepEqual(targets[0].remove, ["rm", "--force", "acquit-runner-job_7Q2K"]);
+	assert.deepEqual(targets[2].remove, ["network", "rm", "acquit-runner-job_7Q2K-net"]);
 });
 
 test("the verdict is the median of the samples against the rule, rounded for the report", () => {

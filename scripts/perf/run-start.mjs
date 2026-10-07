@@ -1,6 +1,7 @@
 // The pure pieces of the cli probe's runStart metric: which line is the agent start, which job a lane
-// can measure, why a sample is not a number, and what a set of samples decides. cli.mjs owns the
-// process, the Docker preconditions, and the report; these are the rules it reads.
+// can measure, why a sample is not a number, what a set of samples decides, and which Docker objects
+// a sample the probe killed leaves behind. cli.mjs owns the process, the Docker preconditions, and
+// the report; these are the rules it reads.
 
 /** One sample is a whole `acquit run`; a run that has not reached the agent start in this long is not
  * a slow number to keep waiting for. */
@@ -76,4 +77,19 @@ export function runStartVerdict(samples, ruleSeconds) {
 	const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 	const round = value => Math.round(value * 10) / 10;
 	return { samples: samples.map(round), medianSeconds: round(median), maxSeconds: round(Math.max(...samples)), passed: median <= ruleSeconds };
+}
+
+/**
+ * The Docker objects a sweep may remove. Only a sample the probe killed or timed out can leave the
+ * measured job's runner container, proxy, and networks behind: a sample left to finish runs the CLI's
+ * own cleanup, so a probe that killed nothing returns no targets and never touches Docker.
+ */
+export function sweepTargets({ jobId, killed }) {
+	if (jobId === null || !killed) return [];
+	return [
+		{ kind: "container", name: `acquit-runner-${jobId}`, remove: ["rm", "--force", `acquit-runner-${jobId}`] },
+		{ kind: "container", name: `acquit-runner-${jobId}-proxy`, remove: ["rm", "--force", `acquit-runner-${jobId}-proxy`] },
+		{ kind: "network", name: `acquit-runner-${jobId}-net`, remove: ["network", "rm", `acquit-runner-${jobId}-net`] },
+		{ kind: "network", name: `acquit-runner-${jobId}-egress`, remove: ["network", "rm", `acquit-runner-${jobId}-egress`] },
+	];
 }

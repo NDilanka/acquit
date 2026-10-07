@@ -66,7 +66,7 @@ import { parseArgs } from "node:util";
 import { captured, portOpen, reachable, sleep } from "../../packages/ctl/src/process.ts";
 import { laneSlot } from "../../packages/ctl/src/state.ts";
 import { dockerReachable } from "../../packages/verifier/subject.ts";
-import { agentStarted, fundedJobOf, RUN_SAMPLE_TIMEOUT_MS, runStartBlocker, runStartVerdict } from "./run-start.mjs";
+import { agentStarted, fundedJobOf, RUN_SAMPLE_TIMEOUT_MS, runStartBlocker, runStartVerdict, sweepTargets } from "./run-start.mjs";
 import { probePassed } from "./verdict.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -117,8 +117,8 @@ const started = [];
  * `removable` when --clean may remove it: the probe only ever removes one it created or verified.
  */
 const trunkState = { approved: false, created: false, registered: false, removable: false };
-/** What the runStart samples leave behind: the job they ran and the temp roots to remove. */
-const runStartResources = { jobId: null, tempRoots: [] };
+/** What the runStart samples leave behind: the job they ran, whether the probe killed a sample, and the temp roots to remove. */
+const runStartResources = { jobId: null, killed: false, tempRoots: [] };
 
 /** One report, one reason, and a nonzero exit. Cleanup below still runs. */
 class Blocked extends Error {
@@ -510,11 +510,13 @@ async function measureRunStart(instance, job, image, blocked) {
 	await writeFile(command, RUN_START_SCRIPT, { mode: 0o755 });
 	const context = { instance, job, image, temp, dir, command };
 	const warmup = await oneRunStart(context);
+	runStartResources.killed ||= warmup.killed;
 	const warmupBlocker = runStartBlocker({ ...warmup, agentRan: warmup.stdout.includes(RUN_START_SENTINEL) });
 	if (warmupBlocker !== null) return blocked(warmupBlocker.reason, `The warm-up run was not healthy: ${warmupBlocker.detail}`);
 	const samples = [];
 	for (let round = 0; round < rounds; round++) {
 		const run = await oneRunStart(context);
+		runStartResources.killed ||= run.killed;
 		const blocker = runStartBlocker({ ...run, agentRan: run.stdout.includes(RUN_START_SENTINEL) });
 		if (blocker !== null) return blocked(blocker.reason, `Sample ${round + 1} of ${rounds} was not healthy: ${blocker.detail}`);
 		samples.push(run.markerSeconds);
@@ -543,6 +545,7 @@ function oneRunStart({ instance, job, image, temp, dir, command }) {
 		let markerSeconds = null;
 		let agentRan = false;
 		let timedOut = false;
+		let killed = false;
 		let hard = null;
 		// Only complete lines are scanned while the process runs; the final pass reads the tail.
 		const scan = final => {
@@ -555,6 +558,7 @@ function oneRunStart({ instance, job, image, temp, dir, command }) {
 		};
 		const timer = setTimeout(() => {
 			timedOut = true;
+			killed = true;
 			child.kill("SIGTERM");
 			hard = setTimeout(() => child.kill("SIGKILL"), 10_000);
 		}, RUN_SAMPLE_TIMEOUT_MS);
@@ -562,7 +566,7 @@ function oneRunStart({ instance, job, image, temp, dir, command }) {
 			clearTimeout(timer);
 			if (hard !== null) clearTimeout(hard);
 			scan(true);
-			resolve({ markerSeconds, exitCode: code, agentRan, timedOut, stdout, stderr });
+			resolve({ markerSeconds, exitCode: code, agentRan, timedOut, killed, stdout, stderr });
 		};
 		child.stdout.on("data", chunk => { stdout += chunk.toString("utf8"); scan(false); });
 		child.stderr.on("data", chunk => { stderr += chunk.toString("utf8"); });
@@ -574,20 +578,15 @@ function oneRunStart({ instance, job, image, temp, dir, command }) {
 /**
  * The belt for the CLI's own cleanup. A sample the probe killed can leave the measured job's runner
  * container, proxy, and network behind, and the temp root holds the command script and the CLI's secret
- * directory. The names are per job, so this touches only the objects the probe's own runs made for that
- * job — the same leftovers the CLI itself removes before it starts.
+ * directory. Only a killed sample opens that belt: a sample left to finish cleans up after itself, so
+ * an idle probe never touches Docker. The names are per job, so this touches only the objects the
+ * probe's own runs made for that job — the same leftovers the CLI itself removes before it starts.
  */
 async function sweepRunStart() {
 	const removed = [];
 	const errors = [];
-	const jobId = runStartResources.jobId;
-	if (jobId !== null && dockerReachable()) {
-		const targets = [
-			{ kind: "container", name: `acquit-runner-${jobId}`, remove: ["rm", "--force", `acquit-runner-${jobId}`] },
-			{ kind: "container", name: `acquit-runner-${jobId}-proxy`, remove: ["rm", "--force", `acquit-runner-${jobId}-proxy`] },
-			{ kind: "network", name: `acquit-runner-${jobId}-net`, remove: ["network", "rm", `acquit-runner-${jobId}-net`] },
-			{ kind: "network", name: `acquit-runner-${jobId}-egress`, remove: ["network", "rm", `acquit-runner-${jobId}-egress`] },
-		];
+	const targets = sweepTargets({ jobId: runStartResources.jobId, killed: runStartResources.killed });
+	if (targets.length > 0 && dockerReachable()) {
 		for (const target of targets) {
 			if (spawnSync("docker", [target.kind, "inspect", target.name], { encoding: "utf8", timeout: 30_000 }).status !== 0) continue;
 			const gone = spawnSync("docker", target.remove, { encoding: "utf8", timeout: 60_000 });
