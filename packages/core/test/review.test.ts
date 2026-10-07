@@ -143,7 +143,9 @@ test("the arbiter refunding a dispute refunds ARBITER_REFUND through the existin
 test("the deadline refund serves DELIVERY_DEADLINE while pending and once settled", () => {
 	const row = heldRow();
 	assert.equal(projectJob(row, maya, new Map()).refundReason, null, "a job owing no refund serves none");
-	const due = applyJobCommand(row, { type: "TimerDue", jobId: row.id, expectedWakeAt: wakeAt(row) }, timerFacts(row.contract.deliveryEndsAt));
+	const deadline = row.contract.deliveryEndsAt;
+	assert.equal(wakeAt(row), deadline, "the delivery deadline is the work's next clock");
+	const due = applyJobCommand(row, { type: "TimerDue", jobId: row.id, expectedWakeAt: deadline }, timerFacts(deadline));
 	if (typeof due === "string") throw new Error(due);
 	const state = due.next.state as Extract<typeof due.next.state, { status: "IN_PROGRESS" }>;
 	assert.equal(state.attempts.phase, "REFUND_PENDING");

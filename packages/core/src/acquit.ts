@@ -6,7 +6,7 @@ import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, ReleaseIntent, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
@@ -95,6 +95,8 @@ export interface JobView {
 	readonly arbiterNote: string | null;
 	/** What selected the release, while it is pending and once the job is PAID. Null before any release. */
 	readonly releaseAuthority: ReleaseIntent["authority"] | null;
+	/** What selected the refund, while it is pending and once the job is REFUNDED. Null before any refund and on rows stored before the reason was recorded. */
+	readonly refundReason: RefundReason | null;
 	readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
 	/** Set while FUNDING with an order the buyer has not approved yet. */
 	readonly approveUrl: string | null;

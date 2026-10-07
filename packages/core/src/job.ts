@@ -113,7 +113,8 @@ export type RefundReason =
 	| "CAPTURE_CUTOFF"
 	| "CAPTURE_MISMATCH";
 
-export type RefundIntent = { readonly reason: RefundReason; readonly selectedAt: Instant };
+/** The reason a refund was selected. Null on a row stored before the reason was recorded; the store read types that absence. */
+export type RefundIntent = { readonly reason: RefundReason | null; readonly selectedAt: Instant };
 
 export type ReleaseIntent = {
 	readonly authority: "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "ARBITER_SLA_MISSED" | "CAPTURE_CUTOFF";
@@ -241,7 +242,8 @@ export type RefundedState = {
 	readonly status: "REFUNDED";
 	readonly payee: LockedBid;
 	readonly book: RefundedBook;
-	readonly reason: RefundReason;
+	/** The reason the refund selected. Null on a row stored before the reason was recorded; the store read types that absence. */
+	readonly reason: RefundReason | null;
 	readonly refund: RefundEvidence;
 	readonly history: History;
 	readonly treasury: readonly TreasuryEntry[];
@@ -1113,6 +1115,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
 	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow
 		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
+	const refund = refundIntentOf(row);
 	const ledger = storedBook(row);
 	const history = state.status === "IN_PROGRESS" ? state.attempts.history
 		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
@@ -1145,6 +1148,9 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
 			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,
+		// What selected the refund, while it is pending and after it settles. A row stored before the
+		// reason was recorded serves null, as does one that holds no refund at all.
+		refundReason: state.status === "REFUNDED" ? state.reason : (refund?.reason ?? null),
 		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : held ? "HELD" : "NONE",
 		approveUrl: funding?.checkout.phase === "AWAITING_APPROVAL" && viewer.role === "CLIENT" && viewer.clientId === row.client ? funding.checkout.approveUrl : null,
 		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: state.status === "PAID" ? "VERIFIED" : judged.at(-1)?.result ?? null,

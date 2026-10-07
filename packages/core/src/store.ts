@@ -5,7 +5,7 @@ import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, Recorde
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
-import type { JobRow, JobState, PaidState, ReleaseIntent } from "./job.ts";
+import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
@@ -56,7 +56,8 @@ export function isStoreBusy(error: unknown): boolean {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) }, state: storedPaid(storedMerge(row.state)) };
+	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
+		state: storedRefund(storedPaid(storedMerge(row.state))) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
 	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
@@ -81,6 +82,30 @@ function storedPaid(state: JobState): JobState {
 	if (state.status !== "PAID") return state;
 	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
 	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null };
+}
+/** The five reasons the domain records. Anything else in a row is not a reason this build knows. */
+const REFUND_REASONS = ["DELIVERY_DEADLINE", "ATTEMPTS_EXHAUSTED", "ARBITER_REFUND", "CAPTURE_CUTOFF", "CAPTURE_MISMATCH"] as const;
+function isRefundReason(value: unknown): value is RefundReason {
+	return typeof value === "string" && (REFUND_REASONS as readonly string[]).includes(value);
+}
+/**
+ * A refund row stored before the reason was recorded holds none, and a value outside the domain's
+ * five is not a stored fact either. This read types both absences as the typed null, on the settled
+ * row's reason and on the intent every REFUND_PENDING phase keeps.
+ */
+function storedRefund(state: JobState): JobState {
+	const reason = (value: unknown): RefundReason | null => isRefundReason(value) ? value : null;
+	if (state.status === "REFUNDED") return { ...state, reason: reason(state.reason) };
+	if (state.status === "IN_PROGRESS" && state.attempts.phase === "REFUND_PENDING") {
+		return { ...state, attempts: { ...state.attempts, refund: { ...state.attempts.refund, reason: reason(state.attempts.refund.reason) } } };
+	}
+	if (state.status === "VERIFIED" && state.review.phase === "REFUND_PENDING") {
+		return { ...state, review: { ...state.review, refund: { ...state.review.refund, reason: reason(state.review.refund.reason) } } };
+	}
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") {
+		return { ...state, phase: { ...state.phase, checkout: { ...state.phase.checkout, refund: { ...state.phase.checkout.refund, reason: reason(state.phase.checkout.refund.reason) } } } };
+	}
+	return state;
 }
 /**
  * A row written before a failure carried its name stored one `reason` string. Split it here, at the
