@@ -76,13 +76,48 @@ Clients see their own jobs and every OPEN job. A query refusal is `403` or `404`
 
 When capture completes the job is `IN_PROGRESS`, `escrow: "HELD"`, and `ledger` is `[{ kind: "HELD", cents: 42000, at }]`.
 
-Webhooks are not reachable on localhost, so the skeleton relies on the return route plus `POST /api/dev/tick` (fires `Acquit.tick`, dev only). `POST /paypal/webhook` exists and calls `handlePayPalWebhook`, for later.
+Webhooks are not reachable on localhost, so the skeleton relies on the return route plus `POST /api/dev/tick` (fires `Acquit.tick`, dev only). `POST /paypal/webhook` carries the same facts for a lost answer; it is documented below.
+
+## Webhooks
+
+`POST /paypal/webhook` hands the raw body to `handlePayPalWebhook` unchanged, capped at 65536 bytes (`413 { error: "WEBHOOK_BODY_TOO_LARGE" }` above it). PayPal cannot reach localhost and its event list returned nothing in the probe, so a local delivery is `npm run ctl -- webhook replay --event <recorded id>`, which reposts the bytes the route recorded, or `npm run ctl -- webhook replay --capture <id> [--new-event-id]`, which builds an envelope that names a real capture (a development control, `ACQUIT_DEV=1`).
+
+The route trusts nothing past the resource id. It parses the envelope at the boundary, re-reads that resource from PayPal, and routes the fact the read carries to the edge that owns it. Nothing in the event body is used as evidence, so a locally built envelope is a real test of the guard.
+
+| `resource_type` | `event_type` prefix | Re-read | Fact |
+|---|---|---|---|
+| `refund` | `PAYMENT.CAPTURE.REFUND` | `GET /v2/payments/refunds/<id>`, then the capture it names | `REFUND_COMPLETED` |
+| `capture` | `PAYMENT.CAPTURE.` | `GET /v2/payments/captures/<id>`, then its order when not refunded | `CAPTURE_COMPLETED` or `REFUND_COMPLETED` |
+| `referenced_payouts_item` | `PAYMENT.REFERENCED-PAYOUT` | `GET /v1/payments/referenced-payouts-items/<id>` | `RELEASE_COMPLETED` |
+| `payouts_item` | `PAYMENT.PAYOUTS-ITEM` | `GET /v1/payments/payouts-item/<id>`, then its batch | `REIMBURSEMENT_COMPLETED` |
+
+The refund family is read first because a refund event shares capture's `PAYMENT.CAPTURE.` prefix. An event family this deployment does not route is recorded and dropped with `200`.
+
+PayPal signs a delivery with its `paypal-transmission-*` headers. The probe could not verify a signature from a local lane (Appendix A), so the route does not read them: it takes only the resource id from the envelope, and the fact it commits comes from a live read of that resource with this deployment's own credentials. A forged envelope can therefore ask the route to re-read a real fact, which the delivery key and the job state turn into a no-op, and cannot invent one.
+
+The job state is the guard, not the event id. Each fact commits under its own delivery key (`webhook:<edge>:<jobId>:<anchor>`, the anchor being the capture, refund, order, or batch the fact settles), so a redelivery and the same fact under a new event id both reach the same no-op edge and change no version. `webhookOutcomeText` in `packages/core/src/effects.ts` is the one place these phrases are spelled.
+
+| Answer | When |
+|---|---|
+| `200 { ok: true, outcome: "applied", jobId, edge, changed }` | the re-read fact reached its edge; `changed` is false when the job already held it |
+| `200 { ok: true, outcome: "no-op, job already <STATUS>", jobId, status }` | the job has already moved past this fact |
+| `200 { ok: true, outcome: "no-op, event type not routed" }` | an event family this deployment does not route |
+| `200 { ok: true, outcome: "no-op, no job holds this resource" }` | no stored job names this resource |
+| `200 { ok: true, outcome: "no-op, PayPal has not settled this resource", jobId?, detail }` | the provider holds it in a state that is not a job fact |
+| `422 { error: "RESOURCE_UNKNOWN_TO_PROVIDER", outcome: "refused, PayPal does not know this capture", detail }` | the provider holds no such resource |
+| `422 { error: "PROVIDER_REFUSED", outcome: "refused, ..." }` | the provider refused the read |
+| `400 { error: "UNREADABLE_EVENT", outcome: "refused, unreadable event", detail }` | the body is not an event envelope |
+| `503 { error: "STORE_BUSY" }` | a transient store lock; PayPal's retry is safe |
+
+Every body the route receives is recorded in `webhook_events` (`id`, `received_at`, `body`, `outcome`) before the answer, keyed by PayPal's event id, or by the digest of a body that names none. A redelivery keeps the first body and outcome and moves `received_at`, so a replay reposts the body that was recorded for that id. `npm run ctl -- webhook replay` prints the outcome phrase, or the whole answer with `--json`.
 
 ## Settlement
 
 `Approve` (or the review window closing, or the day-21 capture-age cutoff for verified work) selects a release. The outbox pays the operator's merchant through PayPal's referenced payouts with the deterministic effect key as `PayPal-Request-Id`, re-reads the provider when an answer was lost, and applies `ReleaseSettled` with what the payout observed. The job then shows `status: "PAID"`, `escrow: "RELEASED"`, the three-line ledger (`HELD`, `RELEASED`, `FEE`), and a `receipt` with the frozen and hidden tallies and the paid amount. `GET /api/jobs/:id` serves the receipt as `job.receipt`; the merge of the verified pull request is a separate effect and `job.phase` stays `PAID` when it lands.
 
 A refund (delivery deadline, exhausted attempts, capture mismatch, or the cutoff on unverified work) shows `status: "REFUNDED"`, `escrow: "REFUNDED"`, and the two-line ledger (`HELD`, `REFUND`). The retained PayPal fee is a treasury line, and the platform pays it back to the operator's merchant as a Standard Payout whose `sender_batch_id` is the effect key. A settlement the provider has not confirmed at the day-21 cutoff raises `SETTLEMENT_UNCONFIRMED_AT_CUTOFF` instead of switching dispositions.
+
+A release or refund whose inline answer was lost settles from the webhook route's re-read of the payout item or refund, so the route is the recovery path for the same edges the outbox dispatches.
 
 ## Development controls
 
