@@ -4,7 +4,7 @@
 
 import { createHash } from "node:crypto";
 import type { CommandOutcome, Actor, PublicResult, UserCommand } from "./acquit.ts";
-import { creditWeek, reduceCredits } from "./credits.ts";
+import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
@@ -647,13 +647,15 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 
 export async function runDueTimers(ports: Ports): Promise<number> {
 	// TODO For each due row, apply TimerDue with the stored wakeAt. A stale wakeAt is a no-op.
-	// TODO Monday 00:00 UTC: Grant per operator, keyed grant:${week}, with paid receipts counted at the boundary.
 	const now = ports.clock.now();
 	const receipts = await ports.store.receiptCounts();
 	let changed = 0;
 	for (const operator of await ports.store.listOperators()) {
 		if (operator.kind === "HOUSE") continue;
 		const account = await ports.store.readCredits(operator.id);
+		// The grant is a Monday event. A tick any other day, or a week the account already holds a grant
+		// key for, appends nothing; a Monday the process missed is skipped rather than caught up.
+		if (!grantDue(account, now)) continue;
 		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts: receipts.get(operator.id) ?? 0, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;
 		const result = await ports.store.commit({ job: null, operator: null, credits: [{ expectedVersion: account.version, account: next }],

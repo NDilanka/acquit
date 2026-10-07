@@ -100,3 +100,24 @@ export function nextCreditGrant(at: Instant): Instant {
 	date.setUTCDate(date.getUTCDate() + 8 - (date.getUTCDay() || 7));
 	return date.toISOString() as Instant;
 }
+
+/** The last GRANT a stored account holds, or null when it holds none. */
+export function lastGrantAt(account: CreditAccount): Instant | null {
+	let last: Instant | null = null;
+	for (const line of account.lines) if (line.kind === "GRANT" && (last === null || line.at > last)) last = line.at;
+	return last;
+}
+
+/**
+ * Whether the tick owes this account the weekly grant now. The grant is a Monday event: a tick writes
+ * it on Monday 00:00 UTC and never mid-week, so a Monday the process was not up for is skipped, not
+ * caught up. An account holding no grant at all is the exception: it has no allowance to expire, so
+ * its first grant is due on the first tick that sees it, exactly as the seed creates a fresh operator.
+ * The current week's key being present makes every later tick in the week a no-op.
+ */
+export function grantDue(account: CreditAccount, now: Instant): boolean {
+	if (account.lines.some(line => line.kind === "GRANT" && line.key === `grant:${creditWeek(now)}`)) return false;
+	const last = lastGrantAt(account);
+	if (last === null) return true;
+	return now >= nextCreditGrant(last) && new Date(now).getUTCDay() === 1;
+}
