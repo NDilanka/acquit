@@ -17,6 +17,14 @@ const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? cre
 	paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
 const db = new DatabaseSync(settings.databaseUrl);
+// The CLI login exchange's one-time codes. The row never holds the code itself: the digest is the key,
+// so a leaked database file is not a set of live sign-in links. The token is minted at approval and
+// handed over exactly once.
+db.exec(`CREATE TABLE IF NOT EXISTS cli_codes (
+	digest TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+	handle TEXT, token TEXT, delivered_at TEXT)`);
+const CLI_CODE_TTL_MS = 10 * 60_000;
+const CLI_SESSION_TTL_MS = 7 * 86_400_000;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
 const user = (handle: string) => SEEDED_USERS.find(user => user.handle === handle);
@@ -35,6 +43,12 @@ function session(req: IncomingMessage) {
 function json(res: ServerResponse, status: number, value: unknown): void {
 	res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
 	res.end(JSON.stringify(value));
+}
+/** One browser or CLI session. The raw token is handed out once; the row keeps only its digest. */
+function mintSession(handle: string): string {
+	const token = randomBytes(32).toString("base64url");
+	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString());
+	return token;
 }
 function redirect(res: ServerResponse, path: string): void { res.writeHead(302, { Location: path, "Cache-Control": "no-store" }); res.end(); }
 class BadBody extends Error {}
@@ -145,8 +159,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (method === "POST") {
 			const selected = user(text(object(await body(req)).handle, "handle"));
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
-			const token = randomBytes(32).toString("base64url");
-			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), selected.handle, new Date(Date.parse(clock.now()) + 7 * 86400000).toISOString());
+			const token = mintSession(selected.handle);
 			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 			json(res, 200, { user: selected, token }); return;
 		}
@@ -199,6 +212,29 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			body: raw }));
 		json(res, response.status, await response.json()); return;
 	}
+	// The CLI login exchange. The CLI holds the code and polls with it; the browser holds the session
+	// and approves. Both routes are unauthenticated by design: the code is a 256-bit bearer secret with
+	// a ten-minute life, and the token is minted only when a signed-in browser approves it.
+	if (url.pathname === "/api/cli/codes" && method === "POST") {
+		const now = clock.now();
+		db.prepare("DELETE FROM cli_codes WHERE expires_at <= ?").run(now);
+		const code = randomBytes(32).toString("base64url");
+		const expiresAt = new Date(Date.parse(now) + CLI_CODE_TTL_MS).toISOString();
+		db.prepare("INSERT INTO cli_codes VALUES (?, ?, ?, NULL, NULL, NULL)").run(tokenDigest(code), now, expiresAt);
+		json(res, 201, { code, url: `${webOrigin}/cli?code=${encodeURIComponent(code)}`, expiresAt }); return;
+	}
+	if (url.pathname.startsWith("/api/cli/codes/") && method === "GET") {
+		const digest = tokenDigest(decodeURIComponent(url.pathname.slice("/api/cli/codes/".length)));
+		const row = db.prepare("SELECT handle, token, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
+		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
+		if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
+		if (row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
+		if (!row.handle) { json(res, 200, { status: "PENDING" }); return; }
+		// One delivery: the code cannot hand the same token over twice.
+		db.prepare("UPDATE cli_codes SET delivered_at = ? WHERE digest = ?").run(clock.now(), digest);
+		const selected = user(String(row.handle));
+		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
+	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
@@ -244,6 +280,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			{ type: "ResolveDispute", jobId: validJobId(text(input.jobId, "job id")), verdict, note: text(input.note, "note") });
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
 	}
+	if (url.pathname === "/api/cli/approve" && method === "POST") {
+		let code: string;
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "code")) throw new BadBody("Unsupported field");
+			code = text(input.code, "code", 200);
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const digest = tokenDigest(code);
+		const row = db.prepare("SELECT handle, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
+		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
+		if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
+		if (row.handle || row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
+		const token = mintSession(current.user.handle);
+		db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ?").run(current.user.handle, token, digest);
+		json(res, 200, { handle: current.user.handle, role: current.user.role }); return;
+	}
 	if (url.pathname === "/api/jobs" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
 		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
@@ -253,9 +305,57 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles() });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles(), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
+	}
+	if (url.pathname === "/api/me/onboarding" && method === "GET") {
+		// The merchant status the server already holds, so the CLI never talks to PayPal with a secret.
+		const result = await acquit.query(current.actor, { type: "Operator" });
+		if (result.kind !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const credits = await acquit.query(current.actor, { type: "Credits" });
+		json(res, 200, { onboarding: { handle: result.operator.handle, payouts: result.operator.payouts,
+			onboardingUrl: result.operator.onboardingUrl,
+			account: result.operator.payouts === "READY" ? "sandbox Business account (payouts enabled)" : null,
+			identityVerified: result.operator.payouts === "READY",
+			credits: credits.kind === "CREDITS" ? { ...credits.credits, paidReceipts: result.operator.paidReceipts } : null } }); return;
+	}
+	if (url.pathname === "/api/me/agents" && method === "POST") {
+		// The prompt itself never leaves the operator's machine: the row keeps only its digest.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		let agent: { name: string; runner: "claude-code" | "codex"; promptDigest: string; tools: readonly string[] };
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => !["name", "runner", "promptDigest", "tools"].includes(key))) throw new BadBody("Unsupported field");
+			const name = text(input.name, "agent name", 40);
+			if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new BadBody("Agent names are lowercase letters, digits, and dashes");
+			const runner = text(input.runner, "runner", 20);
+			if (runner !== "claude-code" && runner !== "codex") throw new BadBody("Runner must be claude-code or codex");
+			const promptDigest = text(input.promptDigest, "prompt digest", 64);
+			if (!/^[0-9a-f]{64}$/.test(promptDigest)) throw new BadBody("Prompt digest must be a SHA-256 hex digest");
+			if (!Array.isArray(input.tools) || input.tools.length > 16) throw new BadBody("Tools must be a list of at most 16 names");
+			agent = { name, runner, promptDigest, tools: input.tools.map(tool => text(tool, "tool", 40)) };
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		if (db.prepare("SELECT owner FROM agents WHERE id = ?").get(agent.name)) {
+			json(res, 409, { error: "AGENT_EXISTS", detail: `Agent ${agent.name} is already registered.` }); return;
+		}
+		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.user.handle,
+			JSON.stringify({ id: agent.name, owner: current.user.handle, name: agent.name, runner: agent.runner,
+				promptDigest: agent.promptDigest, tools: agent.tools }));
+		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
+	}
+	if (url.pathname === "/api/me/receipts" && method === "GET") {
+		// A receipt lives on its PAID job row, so the route reads the rows the operator was paid for.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const receipts: Record<string, unknown>[] = [];
+		for (const row of db.prepare("SELECT json FROM jobs").all()) {
+			const job = JSON.parse(String(row.json)) as { contract?: { definitionOfDone?: { issue?: { repository?: unknown } } };
+				state?: { status?: unknown; payee?: { operator?: unknown }; receipt?: Record<string, unknown> } };
+			if (job.state?.status !== "PAID" || job.state.payee?.operator !== current.actor.operatorId || !job.state.receipt) continue;
+			receipts.push({ ...job.state.receipt, repository: String(job.contract?.definitionOfDone?.issue?.repository ?? clientRepository) });
+		}
+		receipts.sort((left, right) => String(right.releasedAt).localeCompare(String(left.releasedAt)));
+		json(res, 200, { receipts, nextCursor: null }); return;
 	}
 	if (url.pathname === "/api/me/operator" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Operator" });
@@ -268,7 +368,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	if (url.pathname === "/api/me/credits" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Credits" });
-		if (result.kind === "CREDITS") json(res, 200, { credits: result.credits });
+		if (result.kind === "CREDITS") {
+			// paidReceipts lets the CLI spell the next week's allowance the way the tutorial does.
+			const counted = current.actor.role === "OPERATOR"
+				? db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(current.actor.operatorId) : undefined;
+			json(res, 200, { credits: { ...result.credits, paidReceipts: counted ? Number(counted.paid_receipts) : 0 } });
+		}
 		else json(res, 403, { error: "NOT_OWNER" });
 		return;
 	}
