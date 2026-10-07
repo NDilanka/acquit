@@ -278,9 +278,10 @@ const OWN_CONFIG: ConfigPolicy = {
 		// transport the guard already settled and can steer no transport, so the allow shapes refuse
 		// and an ordinary operator's `protocol.version` stays.
 		{ key: /^protocol\.(?:.+\.)?allow$/, verdict: "refuse" },
-		// `remote.<url>.vcs` hands a push that names that URL to `git-remote-<vcs>`: a remote helper
-		// is not a transport, so the command-line protocol guard never refuses it (on git 2.43 the
-		// push crashes instead of failing `transport 'ext' not allowed`).
+		// `remote.<url>.vcs` hands a push that names that URL to `git-remote-<vcs>`. Git checks the
+		// helper name against `protocol.*.allow`, so the guard refuses most names, but `vcs=https`
+		// passes it and a local per-protocol allow reopens any other. A helper key has no place on a
+		// push the CLI pins to https, so it refuses behind the allow rule above.
 		{ key: /^remote\..+\.vcs$/, verdict: "refuse" },
 		// `pushInsteadOf` rewrites a push to the URL the command names, exactly as `insteadOf` does.
 		{ key: /^url\..+\.(push)?insteadof$/, verdict: "refuse" },

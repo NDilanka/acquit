@@ -207,9 +207,10 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   `core.sshCommand`, `core.fsmonitor`, and any `credential.*` or `include*` family. A
   `protocol.allow` or `protocol.<name>.allow` override refuses too, because git prefers a
   per-protocol key from the checkout's own file to the command-line transport guard, so a local
-  `protocol.file.allow=always` reopens that transport for the scoped token; a `remote.<url>.vcs`
-  helper key refuses the same way, because it hands a push that names that URL to
-  `git-remote-<vcs>` instead of a transport the guard can settle. The refusal names the directory and
+  `protocol.file.allow=always` reopens that transport for the scoped token. A `remote.<url>.vcs`
+  helper key refuses as a second safeguard: it hands a push that names that URL to
+  `git-remote-<vcs>`, and git checks that name against the same allow keys, so `vcs=https` or a
+  helper a local allow reopens would still run. The refusal names the directory and
   its remedy. A rerun's fetch of the state checkout carries the token, so it is
   scanned the same way; the one call that runs without a scan is the fresh clone, which has no git
   directory to read yet, passes `--template=`, and clones under an env that hides the system and

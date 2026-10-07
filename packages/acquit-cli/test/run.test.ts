@@ -1032,10 +1032,10 @@ test("a remote.<url>.vcs helper key refuses an own checkout before the scoped pu
 		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
 		const location = { gitDir: join(own, ".git"), workTree: own };
 		const url = workRepoUrl(workRepo);
-		// `remote.<url>.vcs` hands a push that names that URL to `git-remote-<vcs>`: a helper is not
-		// a transport the command-line protocol guard can refuse, and the reviewer's reproducer left
-		// real git 2.43 crashing (exit 139) where the guard alone answers `transport 'ext' not
-		// allowed`. The scan refuses the key before the push names the URL.
+		// `remote.<url>.vcs` hands a push that names that URL to `git-remote-<vcs>`. The guard alone
+		// answers `transport 'ext' not allowed`, but `vcs=https` passes it and a local
+		// `protocol.ext.allow` reopens `ext` (git 2.43 then crashes, exit 139). The scan refuses the
+		// key before the push names the URL.
 		assert.equal(git(["-C", own, "config", "--local", `remote.${url}.vcs`, "ext"]).status, 0);
 		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", url), [`remote.${url}.vcs`.toLowerCase()]);
 		assert.throws(() => assertSafeScopedConfig(git, location, env, "own", url),
