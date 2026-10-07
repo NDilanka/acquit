@@ -68,11 +68,19 @@ function storedMerge(state: JobState): JobState {
 	const merge = state.merge as { readonly at: Instant; readonly sha?: CommitSha | null };
 	return { ...state, merge: { phase: "MERGED", at: merge.at, sha: merge.sha ?? null } };
 }
-/** A paid row stored before the release authority was recorded holds none. This read types that absence. */
+/** The five authorities the domain records. Anything else in a row is not an authority this build knows. */
+const RELEASE_AUTHORITIES = ["CLIENT_APPROVAL", "REVIEW_SILENCE", "ARBITER_UPHELD", "ARBITER_SLA_MISSED", "CAPTURE_CUTOFF"] as const;
+function isReleaseAuthority(value: unknown): value is ReleaseIntent["authority"] {
+	return typeof value === "string" && (RELEASE_AUTHORITIES as readonly string[]).includes(value);
+}
+/**
+ * A paid row stored before the release authority was recorded holds none, and a value outside the
+ * domain's five is not a stored fact either. This read types both absences as the typed null.
+ */
 function storedPaid(state: JobState): JobState {
 	if (state.status !== "PAID") return state;
-	const paid = state as PaidState & { readonly releaseAuthority?: ReleaseIntent["authority"] | null };
-	return { ...paid, releaseAuthority: paid.releaseAuthority ?? null };
+	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
+	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null };
 }
 /**
  * A row written before a failure carried its name stored one `reason` string. Split it here, at the
