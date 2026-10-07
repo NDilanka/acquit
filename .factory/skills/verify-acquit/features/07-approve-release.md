@@ -44,7 +44,7 @@ Preconditions:
 
 - **See the gate.** Open the verified job as `maya-client`. Require the Client review section, the
   judged commit, the pull request number, and the **Approve and release** button. As `devon-ops`, require
-  no approve control. `GET /api/jobs/<id>` serves `viewerCanApprove: true` only for the owning client.
+  no approve control. The page shows the control only when `job.viewerCanApprove` is true. `GET /api/jobs/<id>` serves `viewerCanApprove: true` only for the owning client.
 - **Approve and release.** Choose the button and confirm. Require the page to reach `Status: PAID` with
   the merged pull request, `Receipt rcpt_<id>`, and the ledger lines below. The page reloads the view
   after the command, so a refusal that means "another tab already approved" must not surface as an error.
@@ -60,7 +60,11 @@ Preconditions:
   `npm run -s ctl -- webhook replay --event <recorded id>`: require `no-op, job already PAID`, the same
   ledger, and no second payout item for the capture.
 - **Confirm the merge.** `job.merge` reaches `MERGED` and the disposable repo's `main` carries the merge
-  commit. A merge GitHub refuses parks as `NEEDS_HUMAN` with the reason instead of retrying.
+  commit. A merge GitHub refuses parks as `NEEDS_HUMAN` with the reason instead of retrying. The receipt
+  panel reads `Merge pending`, then `Merged <time> UTC: pull request #<n>, commit <judged short sha>`
+  without a reload (the page polls every 4 seconds while the merge is pending), or
+  `Needs a person: <reason>`. The commit is the judged tree, not GitHub's merge commit. Below it the
+  panel shows `Payout item <id>, capture <id>` from `job.release`.
 - **Clean up.** Reset the disposable repo, delete the job's work repo (`<org>/invoice-app-<tag>-<job id
   without job_>`), and stop the lane.
 
