@@ -3,6 +3,7 @@
 //   node scripts/perf/cli.mjs --rounds 5
 //   node scripts/perf/cli.mjs --rounds 5 --trunk /tmp/acquit-perf-trunk --head .
 //   node scripts/perf/cli.mjs --rounds 5 --clean
+//   ACQUIT_TOKEN=<lane session> node scripts/perf/cli.mjs --run-lane 16 --run-job job_<id>
 //
 // The trunk worktree defaults to a short path outside the repo because the control CLI's ownership
 // proof is a Unix socket under <worktree>/data/ctl/lane-<n>/own-<nonce>.sock, and Linux caps that path
@@ -20,6 +21,15 @@
 // The probe boots two isolated instances on separate lanes: one from a detached trunk worktree
 // (origin/main, fetched and checked out before every run, created here when missing) and one from the
 // head worktree. The head lane is seeded once, so its database holds the tutorial's open job.
+//
+// Live-lane run start. `--run-lane <n> --run-job <jobId>` measures only runStart, against a lane the
+// operator already has running (laneSlot(n)'s API port), and writes its report to
+// <evidence>/run-start.json so a full run's cli.json is not overwritten. Both flags together or
+// neither. The session token comes from ACQUIT_TOKEN in the environment, never argv, and the probe
+// neither boots, seeds, stops, nor otherwise touches that lane: it starts no lane and stops none, and
+// its sweep removes only the acquit-runner-<job> objects and temp roots its own samples made. Without
+// the flags the runStart metric keeps the seeded-head-lane path below and reports a blocked metric
+// when that lane holds no funded job.
 //
 // Metrics.
 //   help: the seconds one `acquit submit --help` process takes, trunk and head, on the same machine.
@@ -67,6 +77,8 @@ const { values } = parseArgs({ options: {
 	head: { type: "string", default: root },
 	"trunk-lane": { type: "string", default: "15" },
 	"head-lane": { type: "string", default: "16" },
+	"run-lane": { type: "string" },
+	"run-job": { type: "string" },
 	evidence: { type: "string", default: "data/evidence/f5-r1/perf" },
 	clean: { type: "boolean", default: false },
 } });
@@ -77,6 +89,13 @@ const trunkDir = resolve(root, values.trunk);
 const headDir = resolve(values.head);
 assert(Number.isSafeInteger(rounds) && rounds >= 1, "--rounds must be at least 1.");
 assert(trunkLane !== headLane && trunkLane >= 1 && headLane >= 1, "Use two distinct lanes of 1 or more: lane 0 is the real database.");
+// The live-lane mode measures runStart against a lane the operator runs; the pair is the mode switch.
+const runLane = values["run-lane"] === undefined ? null : Number(values["run-lane"]);
+const runJob = values["run-job"] ?? null;
+assert((runLane === null) === (runJob === null), "Pass both --run-lane and --run-job, or neither.");
+assert(runLane === null || (Number.isSafeInteger(runLane) && runLane >= 1),
+	"--run-lane must be 1 or more: lane 0 is the real database, which this probe never touches.");
+const runOnly = runLane !== null;
 const evidence = resolve(root, values.evidence);
 const RULES = { headOverTrunkRatio: 1.2, jobsListMs: 800, runStartSeconds: 30 };
 const RUN_START_METRIC = "acquit run from process start to agent start";
@@ -86,7 +105,8 @@ const RUN_START_SENTINEL = "acquit-perf-run-start-sentinel";
 // outside --dir, which every run checks out and cleans.
 const RUN_START_SCRIPT = `#!/bin/sh\necho ${RUN_START_SENTINEL}\nexit 0\n`;
 
-const report = { rounds, trunkDir, headDir, trunkLane, headLane, clean: values.clean, rules: RULES,
+const report = { rounds, trunkDir, headDir, trunkLane, headLane, clean: values.clean,
+	runOnly: runOnly ? { lane: runLane, jobId: runJob } : null, rules: RULES,
 	trunkBaseline: null, trunkHead: null, headHead: null, baseline: null, help: null, jobsList: null, runStart: null,
 	rounds_: [], cleanup: null, blocked: null, detail: null, passed: false, node: process.version };
 const started = [];
@@ -107,19 +127,26 @@ class Blocked extends Error {
 async function main() {
 	if (existsSync(resolve(root, ".env"))) process.loadEnvFile(resolve(root, ".env"));
 	try {
-		await preflight();
-		const trunk = await boot("trunk", trunkDir, trunkLane);
-		const head = await boot("head", headDir, headLane);
-		await measure(trunk, head);
+		if (runOnly) {
+			report.headHead = headOf(headDir);
+			report.runStart = await liveRunStart();
+		} else {
+			await preflight();
+			const trunk = await boot("trunk", trunkDir, trunkLane);
+			const head = await boot("head", headDir, headLane);
+			await measure(trunk, head);
+		}
 	} catch (error) {
 		report.blocked = error instanceof Blocked ? error.reason : "PROBE_FAILED";
 		report.detail = error instanceof Error ? error.message : String(error);
 	} finally {
 		report.cleanup = await cleanup();
 	}
-	report.passed = report.help?.passed === true && report.jobsList?.passed === true && report.runStart?.passed !== false;
+	report.passed = runOnly
+		? report.blocked === null && report.runStart?.passed !== false
+		: report.help?.passed === true && report.jobsList?.passed === true && report.runStart?.passed !== false;
 	await mkdir(evidence, { recursive: true });
-	await writeFile(resolve(evidence, "cli.json"), JSON.stringify(report, null, 2) + "\n");
+	await writeFile(resolve(evidence, runOnly ? "run-start.json" : "cli.json"), JSON.stringify(report, null, 2) + "\n");
 	console.log(JSON.stringify(report));
 }
 
@@ -374,8 +401,7 @@ function jobsList(instance) {
 async function runStart(instance) {
 	const probe = cli(instance, ["run", "--help"], { accept: () => true });
 	const registered = probe.code === 0;
-	const blocked = (reason, detail) => ({ status: "blocked", registered, metric: RUN_START_METRIC,
-		warmupSeconds: null, samples: null, medianSeconds: null, maxSeconds: null, reason, detail, rule: RUN_START_RULE, passed: null });
+	const blocked = runStartBlocked(registered);
 	if (!registered) return blocked("RUN_NOT_REGISTERED", "This build registers no `acquit run`, so there is no agent start to time.");
 	const jobs = await headJobs(instance);
 	const job = fundedJobOf(jobs, "devon-ops");
@@ -383,14 +409,77 @@ async function runStart(instance) {
 		return blocked("RUN_NEEDS_FUNDED_JOB",
 			`The seeded head lane holds no IN_PROGRESS job with HELD escrow locked to devon-ops (it serves ${jobs.length} job row${jobs.length === 1 ? "" : "s"}). `
 			+ "The seed opens no job, and funding one is feature 04's PayPal sandbox flow plus the GitHub App's work repo, which this probe does not drive: "
-			+ "nothing here touches GitHub and no money moves.");
+			+ "nothing here touches GitHub and no money moves. Pass --run-lane and --run-job to measure a funded job on a lane the operator runs instead.");
 	}
+	const preconditions = runStartPreconditions(blocked);
+	if (preconditions.image === undefined) return preconditions;
+	return measureRunStart(instance, job, preconditions.image, blocked);
+}
+
+/** The blocked answer for the runStart metric, shared by the seeded-lane and live-lane paths. */
+function runStartBlocked(registered) {
+	return (reason, detail) => ({ status: "blocked", registered, metric: RUN_START_METRIC,
+		warmupSeconds: null, samples: null, medianSeconds: null, maxSeconds: null, reason, detail, rule: RUN_START_RULE, passed: null });
+}
+
+/** Docker and the runner image, or the blocked answer naming what is missing. */
+function runStartPreconditions(blocked) {
 	if (!dockerReachable()) return blocked("RUN_DOCKER_UNAVAILABLE", "Docker is unreachable, so `acquit run` cannot start the runner sandbox.");
 	const image = process.env.ACQUIT_RUNNER_IMAGE?.trim() || "acquit/runner-node20";
 	if (!runnerImagePresent(image)) {
 		return blocked("RUN_IMAGE_MISSING", `The runner image ${image} is not in the local Docker store. Build it once: docker build -t ${image} packages/runner.`);
 	}
-	return measureRunStart(instance, job, image, blocked);
+	return { image };
+}
+
+/**
+ * The live-lane path (`--run-lane` and `--run-job`): measure runStart against a lane the operator
+ * already runs, with the session token from ACQUIT_TOKEN in the environment, never argv. The probe
+ * boots nothing, seeds nothing, stops nothing, and reads the lane through the same authenticated
+ * routes the operator's CLI uses. Every precondition it cannot meet is named as a blocked metric,
+ * never a fabricated number.
+ */
+async function liveRunStart() {
+	const slot = laneSlot(runLane);
+	const instance = { side: "live", dir: headDir, lane: runLane, slot, apiUrl: `http://127.0.0.1:${slot.apiPort}` };
+	const probe = cli(instance, ["run", "--help"], { accept: () => true });
+	const registered = probe.code === 0;
+	const blocked = runStartBlocked(registered);
+	if (!registered) return blocked("RUN_NOT_REGISTERED", "This build registers no `acquit run`, so there is no agent start to time.");
+	const token = process.env.ACQUIT_TOKEN?.trim() || null;
+	if (token === null) {
+		return blocked("RUN_TOKEN_MISSING",
+			`Set ACQUIT_TOKEN to the session token of the operator lane ${runLane} serves (the value \`acquit login\` stores) and rerun; the probe never takes a token in argv.`);
+	}
+	if (!(await reachable(`${instance.apiUrl}/api/users`))) {
+		return blocked("RUN_LANE_UNREACHABLE",
+			`No API answers at ${instance.apiUrl} for lane ${runLane}. The probe never boots or stops the lane it measures: start it with \`npm run ctl -- start --lane ${runLane}\` first.`);
+	}
+	let jobs;
+	try {
+		const response = await fetch(`${instance.apiUrl}/api/jobs`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
+		if (!response.ok) {
+			return blocked("RUN_TOKEN_REJECTED",
+				`GET /api/jobs on lane ${runLane} answered ${response.status}: the token in ACQUIT_TOKEN is not a live session on that lane.`);
+		}
+		const body = await response.json();
+		jobs = Array.isArray(body?.jobs) ? body.jobs : [];
+	} catch (error) {
+		return blocked("RUN_LANE_UNREACHABLE", `GET /api/jobs on lane ${runLane} failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	const job = jobs.find(candidate => candidate !== null && typeof candidate === "object" && candidate.id === runJob) ?? null;
+	if (job === null) {
+		return blocked("RUN_JOB_UNKNOWN",
+			`GET /api/jobs on lane ${runLane} answers no job ${runJob} this token can read (it serves ${jobs.length} job row${jobs.length === 1 ? "" : "s"}). Pass the id of the IN_PROGRESS job that lane's operator funded.`);
+	}
+	if (job.status !== "IN_PROGRESS" || job.escrow !== "HELD") {
+		return blocked("RUN_JOB_NOT_FUNDED",
+			`Job ${runJob} on lane ${runLane} is ${String(job.status)} with escrow ${String(job.escrow)}; the metric needs an IN_PROGRESS job whose escrow is HELD.`);
+	}
+	const preconditions = runStartPreconditions(blocked);
+	if (preconditions.image === undefined) return preconditions;
+	// `devon` is the one token oneRunStart hands the CLI process; here it is the operator's own.
+	return measureRunStart({ ...instance, devon: token }, job, preconditions.image, blocked);
 }
 
 /** Every job the probe's operator can read in the head lane, as the API's own job view. */

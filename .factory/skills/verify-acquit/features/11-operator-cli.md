@@ -157,13 +157,23 @@ lanes, seeds the head lane, and reports:
   `renderRunning` prints just before the sandbox starts, warm: one untimed warm-up that clones the
   job's fork, then one timed sample per round on the same `--dir`. It needs a funded IN_PROGRESS job
   locked to `devon-ops` in the head lane, Docker, and the `acquit/runner-node20` image. The seed opens
-  no job and this probe creates nothing on GitHub and moves no money, so a lane without one is
-  reported as blocked — `RUN_NEEDS_FUNDED_JOB`, `RUN_DOCKER_UNAVAILABLE`, `RUN_IMAGE_MISSING`,
+  no job (it does give `devon-ops` the `ts-bugfixer` agent, so the metric needs no agent created) and
+  this probe creates nothing on GitHub and moves no money, so a lane without one is reported as
+  blocked — `RUN_NEEDS_FUNDED_JOB`, `RUN_DOCKER_UNAVAILABLE`, `RUN_IMAGE_MISSING`,
   `RUN_WORK_REPO_NOT_READY`, `RUN_GITHUB_NOT_CONFIGURED`, `RUN_START_FAILED`, `RUN_AGENT_FAILED` —
   never as a number. A blocked metric does not fail the probe.
 
+`ACQUIT_TOKEN=<lane session> node scripts/perf/cli.mjs --run-lane 16 --run-job job_<id>` measures only
+`runStart`, against a lane the operator already runs: the probe boots, seeds, and stops nothing, reads
+`GET /api/jobs` with the token from `ACQUIT_TOKEN` (never argv), and writes `<evidence>/run-start.json`
+instead of `cli.json`. `--run-lane` must be 1 or more (lane 0 is the real database) and the pair is
+required together. Blockers it can meet alone: `RUN_TOKEN_MISSING`, `RUN_LANE_UNREACHABLE`,
+`RUN_TOKEN_REJECTED`, `RUN_JOB_UNKNOWN`, `RUN_JOB_NOT_FUNDED`. It sweeps only the
+`acquit-runner-<job>` objects and temp roots its own samples made.
+
 Rules: fail if the head `--help` median exceeds the trunk median by more than 20 percent, or if the
-`jobs list` median exceeds 800 ms, or if the warm run-start median exceeds 30 seconds.
+`jobs list` median exceeds 800 ms, or if the warm run-start median exceeds 30 seconds. A live-lane run
+is judged on the run-start rule alone.
 
 ## Gotchas
 
