@@ -1048,6 +1048,8 @@ test("ReleaseSettled builds the receipt, the paid book, and the merge from the o
 	assert.equal(state.receipt.attemptsUsed, 1);
 	assert.equal(state.receipt.paid, 36000);
 	assert.equal(state.receipt.releasedAt, later);
+	// The release evidence is kept on the row, so the payout item a lane reads back is the one observed.
+	assert.deepEqual(state.release, releaseEvidence());
 	assert.deepEqual(plan.effects, [{ kind: "MERGE", jobId: approved.id, pullRequest: 13, mergeCommit: approvedCommit,
 		repository: "maya-client/invoice-app" }]);
 	assert.equal(wakeAt(plan.next), null);
@@ -1056,6 +1058,34 @@ test("ReleaseSettled builds the receipt, the paid book, and the merge from the o
 	assert.equal(view.status, "PAID");
 	assert.equal(view.escrow, "RELEASED");
 	assert.deepEqual(view.receipt, state.receipt);
+	assert.deepEqual(view.release, state.release);
+	assert.equal(view.release?.payoutItemId, payoutItemId);
+	assert.equal(view.release?.captureId, "TESTCAPTURE");
+	assert.deepEqual(view.merge, { phase: "PENDING" });
+	assert.equal(view.client, "maya-client");
+	assert.equal(view.viewerCanApprove, false);
+	// A paid job serves the attempts its receipt used, not zero.
+	assert.equal(view.attempts.used, 1);
+	assert.equal(view.attempts.left, 2);
+	assert.equal(view.attempts.last, "VERIFIED");
+});
+
+test("the view gates Approve on ownership and serves the attempts a settled job used", () => {
+	const verified = verifiedRow();
+	assert.equal(projectJob(verified, maya, new Map()).viewerCanApprove, true);
+	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId }, new Map()).viewerCanApprove, false);
+	assert.equal(projectJob(verified, devon, new Map()).viewerCanApprove, false);
+	// The release is already selected, so there is nothing left to approve.
+	assert.equal(projectJob(approvedRow(), maya, new Map()).viewerCanApprove, false);
+	// A refunded job serves the attempts its history carries, and no merge or release.
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const refundedView = projectJob(refunded.next, maya, new Map());
+	assert.equal(refundedView.attempts.used, 3);
+	assert.equal(refundedView.attempts.left, 0);
+	assert.equal(refundedView.attempts.last, "REJECTED");
+	assert.equal(refundedView.merge, null);
+	assert.equal(refundedView.release, null);
 });
 
 test("a release that does not name the selected disposition is never applied", () => {
@@ -1308,16 +1338,20 @@ test("the merge effect finishes the paid job, and a conflict parks it for a huma
 	try {
 		const key = merged.enqueue(effect);
 		assert.equal(await runOutboxOnce(merged.ports, key), "WORKED");
-		const state = (await merged.row()).state as Extract<JobRow["state"], { status: "PAID" }>;
+		const row = await merged.row();
+		const state = row.state as Extract<JobRow["state"], { status: "PAID" }>;
 		assert.deepEqual(state.merge, { phase: "MERGED", at: now });
+		assert.deepEqual(projectJob(row, maya, new Map()).merge, { phase: "MERGED", at: now });
 		assert.equal(merged.effectState(key).kind, "CONFIRMED");
 	} finally { merged.store.close(); merged.base.store.close(); }
 	const conflicted = moneyHarness(paid, { merge: async () => "CONFLICT" });
 	try {
 		const key = conflicted.enqueue(effect);
 		assert.equal(await runOutboxOnce(conflicted.ports, key), "WORKED");
-		const state = (await conflicted.row()).state as Extract<JobRow["state"], { status: "PAID" }>;
+		const row = await conflicted.row();
+		const state = row.state as Extract<JobRow["state"], { status: "PAID" }>;
 		assert.deepEqual(state.merge, { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" });
+		assert.deepEqual(projectJob(row, maya, new Map()).merge, { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" });
 		assert.equal(conflicted.effectState(key).kind, "CONFIRMED");
 	} finally { conflicted.store.close(); conflicted.base.store.close(); }
 	const unknown = moneyHarness(paid, { merge: async () => "UNKNOWN" });
