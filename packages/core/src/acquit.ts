@@ -6,12 +6,12 @@ import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobEffect, JobProjection, JobStatus, Receipt, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
-import type { PayPalConfig } from "./paypal.ts";
+import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
 import { unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
@@ -82,7 +82,11 @@ export interface JobView {
 	readonly budget: UsdCents;
 	readonly deliveryEndsAt: Instant;
 	readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
+	/** The client that owns the job. The page gates Approve on this, not on the viewer's role. */
+	readonly client: ClientId;
 	readonly lockedTo: OperatorId | null;
+	/** The owning client's own gate: true exactly when this viewer is that client and the review is open. */
+	readonly viewerCanApprove: boolean;
 	readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
 	/** Set while FUNDING with an order the buyer has not approved yet. */
 	readonly approveUrl: string | null;
@@ -92,6 +96,10 @@ export interface JobView {
 	readonly pullRequest: number | null;
 	/** The tree the verifier judged. Approve names it, so a moved head cannot be approved by mistake. */
 	readonly mergeCommit: CommitSha | null;
+	/** The merge of the verified pull request, once the job is PAID. */
+	readonly merge: MergeProgress | null;
+	/** What the release observed: the referenced payout item that paid the operator. Served on a PAID job. */
+	readonly release: ReleaseEvidence | null;
 	readonly receipt: Receipt | null;
 }
 

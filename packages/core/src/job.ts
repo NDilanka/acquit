@@ -225,6 +225,8 @@ export type PaidState = {
 	readonly payee: LockedBid;
 	readonly book: PaidBook;
 	readonly receipt: Receipt;
+	/** The release the receipt was built from: the referenced payout item that paid the operator. */
+	readonly release: ReleaseEvidence;
 	readonly merge: MergeProgress;
 	readonly treasury: readonly TreasuryEntry[];
 };
@@ -609,7 +611,7 @@ function transitionTable(): {
 			// The money is already out. A shortfall cannot be unwound, so it is owed back and named.
 			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
 			return { next: { ...row, version: (row.version + 1) as Version,
-				state: { status: "PAID", payee: escrow.payee, book, receipt, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
+				state: { status: "PAID", payee: escrow.payee, book, receipt, release, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
 		} },
 		RefundSettled: { by: "SYSTEM", apply: (row, command) => {
 			const escrow = heldEscrowOf(row);
@@ -1052,7 +1054,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
 	const pending = state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? state.attempts.pending : null;
 	const failure = state.status === "IN_PROGRESS" && state.attempts.phase !== "REFUND_PENDING" ? state.attempts.failure : null;
-	const used = history.length + (pending ? 1 : 0);
+	// A settled job's attempts live in its receipt or its history, not in the in-flight counter.
+	const used = state.status === "PAID" ? state.receipt.attemptsUsed : history.length + (pending ? 1 : 0);
 	const judged = history.map(attemptView);
 	const done = storedDefinitionOfDone(row);
 	return { id: row.id, title: row.title, status: state.status,
@@ -1062,14 +1065,20 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 			hiddenTests: done.hiddenTests.length, protectedPaths: done.protectedPaths.map(String) },
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
+		client: row.client,
+		// The page gates Approve on this answer, not on the viewer's role. The edge is still the guard.
+		viewerCanApprove: viewer.role === "CLIENT" && viewer.clientId === row.client &&
+			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",
 		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : held ? "HELD" : "NONE",
 		approveUrl: funding?.checkout.phase === "AWAITING_APPROVAL" && viewer.role === "CLIENT" && viewer.clientId === row.client ? funding.checkout.approveUrl : null,
-		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: judged.at(-1)?.result ?? null,
-			reasons: judged.at(-1)?.reasons ?? [], history: judged, failure,
+		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: state.status === "PAID" ? "VERIFIED" : judged.at(-1)?.result ?? null,
+			reasons: state.status === "PAID" ? [] : judged.at(-1)?.reasons ?? [], history: judged, failure,
 			pending: pending ? { ordinal: pending.ordinal, run: pending.run, runId: pending.runId, sourceCommit: pending.sourceCommit,
 				submittedAt: pending.submittedAt, runEndsAt: pending.runEndsAt } : null },
 		reviewEndsAt: state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT" ? state.review.endsAt : null,
 		pullRequest: state.status === "VERIFIED" ? state.passed.verdict.pullRequest : state.status === "PAID" ? state.receipt.pullRequest : null,
 		mergeCommit: state.status === "VERIFIED" ? state.passed.verdict.mergeCommit : state.status === "PAID" ? state.receipt.mergeCommit : null,
+		merge: state.status === "PAID" ? state.merge : null,
+		release: state.status === "PAID" ? state.release : null,
 		receipt: state.status === "PAID" ? state.receipt : null };
 }
