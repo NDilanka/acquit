@@ -326,7 +326,7 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 - [ ] Lane 5. Run three rejected attempts. Save `three-rejects-refund.png`. Pass when the job ends REFUNDED with one sandbox refund for the capture.
 - [ ] Lane 6. Click **Approve and release** in two tabs at once. Save `approve-twice.png`. Pass when one release exists and the second tab shows PAID without an error.
 - [ ] Lane 7. Stop the API right after Approve commits, then start it again. Save `crash-reconcile.png`. Pass when the job reaches PAID with exactly one payout item for the capture.
-- [ ] Lane 8. Post a webhook whose event id PayPal does not know. Save `webhook-unknown.png`. Pass when the route answers 202 `{"received":true}`, the recorded outcome names the refusal, and no job changes version.
+- [ ] Lane 8. Post a webhook that names a capture PayPal does not know. Save `webhook-unknown.png`. Pass when the route answers 202 `{"received":true}`, the recorded outcome names the refusal, and no job changes version.
 - [ ] Lane 9. Sign in as `devon-ops` and try to approve. Save `approve-denied.png`. Pass when the API denies it and the page shows no Approve control for the operator.
 - [ ] Lane 10. After lane 1, read Devon's receipt through `GET /api/jobs/<id>`. Save `receipt.png`. Pass when it shows frozen tests 48/48, hidden tests 6/6, and attempts 2 of 3.
 
