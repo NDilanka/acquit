@@ -819,6 +819,118 @@ test("a planted sslCAInfo or sslCAPath refuses plain and URL-scoped", () => {
 });
 
 /**
+ * A self-signed HTTPS server in its own process that records every request's Authorization header and
+ * answers 401, so the push that dials it asks the CLI's askpass. pushWork and pushHead are
+ * synchronous, so an in-process server could never answer the git child they block on. `scope` is the
+ * URL subsection a planted key names; `cert` is the certificate a planted CA key would trust.
+ */
+async function selfSignedRemote(root: string): Promise<{ readonly url: string; readonly scope: string; readonly cert: string;
+	readonly requests: () => readonly { readonly authorization: string }[]; readonly stop: () => void }> {
+	const key = join(root, "key.pem");
+	const cert = join(root, "cert.pem");
+	const openssl = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert,
+		"-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { encoding: "utf8" });
+	assert.equal(openssl.status, 0, `openssl could not make the test certificate: ${openssl.stderr}`);
+	const log = join(root, "requests.log");
+	writeFileSync(log, "");
+	const child = spawn(process.execPath, ["--input-type=module", "-e",
+		"import { appendFileSync, readFileSync } from 'node:fs';\n"
+		+ "import { createServer } from 'node:https';\n"
+		+ `const server = createServer({ key: readFileSync(${JSON.stringify(key)}), cert: readFileSync(${JSON.stringify(cert)}) }, (request, response) => {\n`
+		+ `	appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url: request.url ?? "", authorization: request.headers.authorization ?? "" }) + "\\n");\n`
+		+ "	response.writeHead(401, { 'WWW-Authenticate': 'Basic realm=\"acquit-test\"' });\n"
+		+ "	response.end('no\\n');\n"
+		+ "});\n"
+		+ "server.listen(0, '127.0.0.1', () => console.log(server.address().port));\n"],
+		{ stdio: ["ignore", "pipe", "pipe"] });
+	const port = await new Promise<number>((resolve, reject) => {
+		let output = "";
+		child.stdout.on("data", (chunk: Buffer) => {
+			output += chunk.toString("utf8");
+			const first = output.split("\n")[0] ?? "";
+			if (/^\d+$/.test(first)) resolve(Number(first));
+		});
+		child.once("error", reject);
+		child.once("exit", code => reject(new Error(`the self-signed remote exited ${code}`)));
+	});
+	return {
+		url: `https://127.0.0.1:${port}/invoice-app-7q2k.git`,
+		scope: `https://127.0.0.1:${port}/`,
+		cert,
+		requests: () => readFileSync(log, "utf8").split("\n").filter(line => line !== "")
+			.map(line => JSON.parse(line) as { readonly authorization: string }),
+		stop: () => child.kill("SIGKILL"),
+	};
+}
+
+/** Whether a recorded request carried the canary in its basic auth, so a "no request" assertion is
+ * measured against a token that really does arrive when a push dials the server. */
+function carriedCanary(records: readonly { readonly authorization: string }[], canary: string): boolean {
+	return records.some(record => {
+		const encoded = record.authorization.replace(/^Basic\s+/i, "");
+		return encoded !== "" && Buffer.from(encoded, "base64").toString("utf8").includes(canary);
+	});
+}
+
+test("worktree config the push reads refuses through pushWork and pushHead, and no request leaves", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-worktree-config-"));
+	const remote = await selfSignedRemote(root);
+	const secret = makeSecretDir();
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedGitEnv({ ...process.env, XDG_STATE_HOME: join(root, "state-home") });
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		writeFileSync(join(checkout.workTree, "money.ts"), "const DECIMALS = 3;\n");
+		const commit = submissionCommit(git, checkout, frozen, "fix", env);
+		assert.notEqual(commit, null);
+		const canary = "ghs_CANARY_WORKTREE_CONFIG";
+		const askpass = writeAskpass(secret.path, canary);
+		const pushEnv = { ...env, ...askpass.env };
+		const pristine = readFileSync(join(state, "config"), "utf8");
+		const includeFile = join(root, "included-worktree.conf");
+		writeFileSync(includeFile, `[http "${remote.scope}"]\n\tsslVerify = false\n`);
+		const scoped = `http.${remote.scope}.sslverify`;
+		// Each shape is one DeepSeek reproduction: a key the CLI's own config file does not hold, in a
+		// file git reads for the push because the location names the work tree and the extension is on.
+		const shapes: readonly (readonly [string, string, string])[] = [
+			["URL-scoped false", `[http "${remote.scope}"]\n\tsslVerify = false\n`, scoped],
+			["URL-scoped empty", `[http "${remote.scope}"]\n\tsslVerify =\n`, scoped],
+			["URL-scoped sslCAInfo", `[http "${remote.scope}"]\n\tsslCAInfo = ${remote.cert}\n`, `http.${remote.scope}.sslcainfo`],
+			["include.path", `[include]\n\tpath = ${includeFile}\n`, "include.path"],
+			["plain false", "[http]\n\tsslVerify = false\n", "http.sslverify"],
+		];
+		for (const [name, plant, key] of shapes) {
+			// The state git directory is CLI-owned, so the extension itself is config the CLI did not
+			// write: it refuses even before a key in the file it enables is judged.
+			writeFileSync(join(state, "config"), pristine);
+			rmSync(join(state, "config.worktree"), { force: true });
+			assert.equal(git(["--git-dir", state, "config", "--local", "extensions.worktreeConfig", "true"]).status, 0, name);
+			writeFileSync(join(state, "config.worktree"), plant);
+			const mark = remote.requests().length;
+			assert.throws(() => pushWork(git, checkout, remote.url, commit!, pushEnv),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key), `${name}: pushWork`);
+			assert.throws(() => pushHead(checkout.workTree, remote.url, commit!, pushEnv, { gitDir: state, askpass: askpass.env }),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key), `${name}: pushHead`);
+			assert.equal(remote.requests().length, mark, `${name}: a request left the CLI`);
+		}
+		// The harness itself: a push that really dials the self-signed server sends the canary, so a
+		// "no request" above is the refusal and not a server nothing can reach.
+		writeFileSync(join(state, "config"), pristine);
+		rmSync(join(state, "config.worktree"), { force: true });
+		const mark = remote.requests().length;
+		spawnSync("git", ["--git-dir", state, "--work-tree", checkout.workTree, ...gitGuardArgs(env), "push", "--quiet",
+			remote.url, `${commit}:refs/heads/control`], { encoding: "utf8", env: { ...pushEnv, GIT_SSL_NO_VERIFY: "true" }, timeout: 30_000 });
+		assert.equal(carriedCanary(remote.requests().slice(mark), canary), true, "the self-signed server never saw the canary");
+	} finally {
+		remote.stop();
+		secret.remove();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
  * A remote in its own process that answers every request 401. pushHead is synchronous, so an
  * in-process server could never answer the git child it blocks on; this one names a host git dials
  * and never lets a push through, which is what makes git ask the configured credential source.
