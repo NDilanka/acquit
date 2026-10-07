@@ -280,13 +280,22 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 	/** Server text, bounded and redacted before it is copied anywhere. */
 	const said = (body: unknown): string => boundedDetail(textOf(body, "message") ?? "");
-	/** GitHub's wording for a ref write naming an object the repository does not have. */
-	const saysObjectAbsent = (body: unknown): boolean => {
+	/** GitHub's refusal text: the top-level message plus every entry's message. */
+	const refusalText = (body: unknown): string => {
 		const messages = [textOf(body, "message") ?? ""];
 		const errors = body !== null && typeof body === "object" ? (body as { errors?: unknown }).errors : undefined;
 		if (Array.isArray(errors)) for (const item of errors) messages.push(textOf(item, "message") ?? "");
-		return /object does not exist/i.test(messages.join(" "));
+		return messages.join(" ");
 	};
+	/** GitHub's wording for a ref write naming an object the repository does not have. */
+	const saysObjectAbsent = (body: unknown): boolean => /object does not exist/i.test(refusalText(body));
+	/**
+	 * The two texts a create answers while a fork's object has not reached the client repository yet:
+	 * "Object does not exist", and "Reference update failed" (measured live: the identical POST answered
+	 * 201 about two minutes later). Only the create reads the second text; the branch move keeps the
+	 * narrower match, because a move refused for any other reason is a refusal, never a fork fallback.
+	 */
+	const saysCreateNotYetVisible = (body: unknown): boolean => saysObjectAbsent(body) || /reference update failed/i.test(refusalText(body));
 
 	const refusal = (status: number, body: unknown, headers: Headers, spec: Call): GitHubAppError => {
 		const detail = `${spec.method} ${spec.path} answered ${status}${said(body) ? `: ${said(body)}` : "."}`;
@@ -409,11 +418,11 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const existing = await readRef(repository, branch, token);
 		if (existing === commit) return;
 		if (existing !== null) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${branch} at ${existing}, not ${commit}.`, { status: answer.status });
-		// As in the branch move above: only "Object does not exist" means this repository cannot carry
-		// the commit and the fork can. Any other 409/422 is a refusal on another rule, and reading it as
-		// an absent object would burn the convergence budget and then ask the fork for a pull request
-		// GitHub refuses for that other reason. GitHub's own text is the refusal.
-		if (saysObjectAbsent(answer.body)) {
+		// As in the branch move above: only the two texts a not-yet-propagated object produces mean this
+		// repository cannot carry the commit and the fork can. Any other 409/422 is a refusal on another
+		// rule, and reading it as an absent object would burn the convergence budget and then ask the fork
+		// for a pull request GitHub refuses for that other reason. GitHub's own text is the refusal.
+		if (saysCreateNotYetVisible(answer.body)) {
 			throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: answer.status });
 		}
 		throw refusal(answer.status, answer.body, answer.headers, spec);
