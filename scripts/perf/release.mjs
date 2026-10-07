@@ -1,7 +1,7 @@
 // Perf probe for F2: Approve to PAID, and the webhook route's own work.
 //
 //   node scripts/perf/release.mjs --jobs 5
-//   node scripts/perf/release.mjs --jobs 1 --lane 11 --keep-client-repo
+//   node scripts/perf/release.mjs --jobs 1 --lane 11
 //
 // Per job it resets the disposable client repo, funds a job by the dev card source, submits fix-honest
 // through the verifier, approves the judged commit, waits for PAID, waits for the merge, then delivers
@@ -23,10 +23,11 @@
 // Baseline. Trunk has no release or webhook route, so it cannot produce either metric. The nearest
 // comparable number is the probe's own PayPal read (the capture and its order), reported per job.
 //
-// Cleanup. The lane is stopped, every work repo the jobs created is deleted, the per-run askpass
-// directories are removed, and the disposable client repo is reset to the frozen commit (deleted with
-// --delete-client-repo). Merges target the disposable repo only: no job in this probe ever approves or
-// merges against the shared NDilanka/invoice-app fixture.
+// Cleanup. The lane is stopped, every work repo the jobs created is deleted with the installation token
+// of the owner that holds it, the per-run askpass directories are removed, and the disposable client
+// repo is reset to the frozen commit after each merging job and again at the end. Merges target the
+// disposable repo only: no job in this probe ever approves or merges against the shared
+// NDilanka/invoice-app fixture.
 //
 // The disposable repo is created and reset by the task's helper, `scratch/client-repo.mjs` in the main
 // checkout; pass --helper to name another copy.
@@ -56,8 +57,6 @@ const { values } = parseArgs({ options: {
 	"client-repo": { type: "string", default: "NDilanka/invoice-app-f2-perf" },
 	helper: { type: "string", default: "/home/factory-user/repos/acquit/scratch/client-repo.mjs" },
 	evidence: { type: "string", default: "data/evidence/f2-r4/perf" },
-	"keep-client-repo": { type: "boolean", default: false },
-	"delete-client-repo": { type: "boolean", default: false },
 } });
 const jobs = Number(values.jobs);
 const lane = Number(values.lane);
@@ -68,7 +67,6 @@ const [clientOwner, clientName] = clientRepo.split("/");
 const tag = /^invoice-app-([a-z0-9-]{1,30})$/.exec(clientName ?? "")?.[1];
 assert(clientOwner !== undefined && tag !== undefined,
 	"--client-repo must be <owner>/invoice-app-<tag>: that is the shape the disposable-repo helper creates and resets.");
-assert(!values["keep-client-repo"] || !values["delete-client-repo"], "Pass at most one of --keep-client-repo and --delete-client-repo.");
 const helper = String(values.helper);
 const evidence = resolve(root, values.evidence);
 const slot = laneSlot(lane);
@@ -353,7 +351,7 @@ async function waitFor(description, timeoutMs, probe, intervalMs = 400) {
 }
 
 async function waitForRepo(fullName, timeoutMs) {
-	const token = await appToken();
+	const token = await appToken(fullName.split("/")[0]);
 	const deadline = performance.now() + timeoutMs;
 	for (;;) {
 		const response = await fetch(`https://api.github.com/repos/${fullName}`, { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "acquit-release-perf" } });
@@ -365,10 +363,12 @@ async function waitForRepo(fullName, timeoutMs) {
 	}
 }
 
-async function appToken() {
-	return await createGitHubApp(githubAppEnv()).installationToken(githubAppEnv().organization);
+/** One token per owner. A token minted for one owner's installation never reaches another's repositories. */
+async function appToken(owner = githubAppEnv().organization) {
+	return await createGitHubApp(githubAppEnv()).installationToken(owner);
 }
 
+/** Resets the disposable repo to the frozen commit, and reports the state it left behind. */
 function resetClientRepo() {
 	const result = run(process.execPath, [`--env-file=${resolve(root, ".env")}`, helper, tag], { timeout: 180_000 });
 	assert.equal(result.code, 0, `The disposable-repo helper failed: ${tail(result.stderr)}`);
@@ -385,31 +385,29 @@ async function cleanup() {
 	for (const dir of created.askpassDirs) await rm(dir, { recursive: true, force: true }).catch(error => result.errors.push(`askpass: ${message(error)}`));
 	for (const fullName of created.workRepos) {
 		try {
-			const token = await appToken();
-			const response = await fetch(`https://api.github.com/repos/${fullName}`, { method: "DELETE", headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "acquit-release-perf" } });
-			await response.body?.cancel();
-			assert([204, 404].includes(response.status), `DELETE ${fullName} answered ${response.status}.`);
+			await deleteRepo(fullName);
 			result.workReposDeleted.push(fullName);
 		} catch (error) { result.errors.push(`${fullName}: ${message(error)}`); }
 	}
 	if (created.clientRepo) {
 		try {
-			const answer = resetOrDelete();
-			result.clientRepo = answer;
+			const answer = resetClientRepo();
+			result.clientRepo = `reset to ${answer.main}, installed ${answer.installed}, open pull requests ${answer.openPulls}`;
 		} catch (error) { result.errors.push(`client repo: ${message(error)}`); }
 	}
 	return result;
 }
 
-function resetOrDelete() {
-	if (!values["delete-client-repo"]) {
-		const answer = resetClientRepo();
-		return `reset to ${answer.main}, installed ${answer.installed}, open pull requests ${answer.openPulls}`;
-	}
-	const result = run(process.execPath, [`--env-file=${resolve(root, ".env")}`, helper, tag, "--delete"], { timeout: 120_000 });
-	assert.equal(result.code, 0, `The disposable-repo helper failed to delete: ${tail(result.stderr)}`);
-	const answer = JSON.parse(result.stdout);
-	return `deleted ${answer.repository}: ${answer.deleted}`;
+/**
+ * Deletes one repository with the installation token of the owner that holds it. The disposable-repo
+ * helper's own --delete needs a token scope the operator's PAT does not carry, so the App deletes the
+ * per-job work repos here; the client repo is reset rather than deleted, so a lane can reuse it.
+ */
+async function deleteRepo(fullName) {
+	const token = await appToken(fullName.split("/")[0]);
+	const response = await fetch(`https://api.github.com/repos/${fullName}`, { method: "DELETE", headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "user-agent": "acquit-release-perf" } });
+	await response.body?.cancel();
+	assert([204, 404].includes(response.status), `DELETE ${fullName} answered ${response.status}.`);
 }
 
 async function ctl(...args) {
