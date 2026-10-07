@@ -23,9 +23,7 @@ block below is asserted against `docs/tutorial.md` character for character by
   context. `cli-receipts` prints the operator's paid receipts and the next week's allowance.
 - `cli-submit-window` prints the client review window as what remains on the API's own clock
   (`GET /api/jobs/:id` answers `now`), not as what the local attempt recorded.
-- `cli-run` belongs to the F5 runner round: `main.ts` loads `run.ts` when the file is present and
-  registers whatever `runCommand` it exports, so neither owner edits the other's dispatch. Until then
-  `acquit run` is an unknown command (exit 2) and `--help` does not list it.
+- `cli-run` runs the agent in a network-limited sandbox. See **Run the agent in a sandbox** below.
 
 ## How to get to it (user POV)
 
@@ -73,6 +71,72 @@ Preconditions:
 - **Receipts.** After the client approves, run `acquit receipts`. Require the receipt line, the
   `Frozen tests 48/48, hidden tests 6/6, attempts 2 of 3` line, and
   `Weekly bid credits: 40 from Monday (30 + 10 for 1 receipt)`. Save `receipts.png`.
+
+## Run the agent in a sandbox
+
+As `devon-ops`, run the agent on a funded, locked job. `acquit run` asks the API for the job's
+work-repo credential, clones the fork, runs the agent in a network-limited container, commits what
+it changed, and pushes the commit to the work repo `acquit submit` reads.
+
+### Sub-features
+
+- `run-prepare` asks `POST /api/jobs/:id/work-repo-token` for a token scoped to the job's work repo
+  only, clones the work repo, and prints the tutorial's `Preparing sandbox for job_X` block.
+- `run-claude-code` runs Claude Code with the operator's key, read from the OS keychain that
+  `acquit operator init` filled.
+- `run-command` runs the script the operator names, mounted read-only at `/acquit/command.sh`.
+- `run-egress` keeps the container on an internal network whose only route out is the allowlisting
+  proxy: `registry.npmjs.org` and `api.anthropic.com` only.
+- `run-changed-files` counts added lines against the frozen commit and pushes the commit to
+  `refs/heads/submissions/<sha>`, the ref `acquit submit` expects.
+- `run-rerun` resets the fork to the frozen commit and prints the tutorial's reset block.
+- `run-cleanup` removes `acquit-runner-<job>`, `acquit-runner-<job>-proxy`, and
+  `acquit-runner-<job>-net` on every exit path, including a failed agent start.
+
+### Driving it from a lane
+
+Preconditions:
+- A funded IN_PROGRESS job from feature 04.
+- `devon-ops`'s session token in `ACQUIT_TOKEN`, or a stored `acquit login`.
+- The runner image, built once with `docker build -t acquit/runner-node20 packages/runner`.
+
+The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<lane API port>`.
+
+- **First run, command runner.** Write a script, kept outside `--dir`, that does three things:
+  - Edits `tests/totals.test.ts`, for example `printf '\texpect(2).toBe(2);\n' >> tests/totals.test.ts`.
+  - Probes `curl -sS --max-time 15 -o /dev/null https://example.com`, which must fail with
+    `CONNECT tunnel failed, response 403`.
+  - Probes `curl -sS --max-time 30 -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org/`,
+    which must print `200`.
+
+  Run `acquit run <job> --runner command --command <script> --dir <empty path>`. Require the
+  tutorial's first block and `Changed files: tests/totals.test.ts (1 line)`.
+- **No leftovers.** After every run, `docker ps -a --filter name=acquit-runner` and
+  `docker network ls --filter name=acquit-runner` must be empty.
+- **Re-run with an instruction.** Run again on the same job with `--instruction "..."` and a script
+  that fixes `src/money.ts`. Require the reset fork line, then `Changed files: src/money.ts (<n> lines)`.
+- **Submit what run pushed.** `acquit submit <job> --dir <the same --dir> --remote origin`. Run already
+  pushed the commit to its submission ref, so submit's push is an up-to-date no-op.
+- **claude-code.** Run `acquit run <job> --runner claude-code` with a stored key. Without a key, the
+  CLI refuses `PROVIDER_KEY_MISSING` before it starts anything.
+- **Strangers are refused.** A session that is not the job's locked operator gets
+  `403 { error: "NOT_OWNER" }` from the token route before any clone or container.
+
+### Gotchas
+
+- An existing `--dir` must be a git work tree whose `origin` is the work repo (`DIR_NOT_WORK_REPO`
+  otherwise), so a run never resets an unrelated checkout.
+- Every run checks out the frozen commit and runs `git clean -fd` first, so uncommitted work in
+  `--dir` is lost.
+- `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.
+- The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
+  repo. Rerun in about 30 seconds.
+- The work-repo token is never printed. The session token never comes from argv (`--token` reads
+  stdin), and both are stripped from the git and docker children's environments.
+- On Linux the provider key lives in the kernel user keyring, which a reboot clears. Run
+  `acquit operator init` again after a reboot.
+- The claude-code runner starts Claude Code with `--dangerously-skip-permissions`. The sandbox is the
+  boundary: a throwaway fork, an internal network, and the proxy allowlist.
 
 ## Perf
 
