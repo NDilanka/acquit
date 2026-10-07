@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { alive, captured, detached, killTree, ownedProcess, ownershipNonce, releaseSpawned, requireOwned, sleep } from "../src/process.ts";
+import { alive, captured, childListener, detached, killTree, ownedProcess, ownershipNonce, releaseSpawned, requireOwned, sleep } from "../src/process.ts";
 import { laneSlot, lockName } from "../src/state.ts";
 import { start, stop } from "../src/commands.ts";
 
@@ -267,10 +267,14 @@ test("the process proves itself: an owned child answers, a bystander with the no
 	try {
 		const deadline = Date.now() + 3000;
 		let proved = false;
-		while (!proved && Date.now() < deadline) { proved = await ownedProcess(owned.pid!, nonce, socket); await sleep(20); }
+		while (!proved && Date.now() < deadline) {
+			const proof = socket ? await childListener(owned.pid!, socket, 250) : null;
+			proved = await ownedProcess(owned.pid!, nonce, socket, proof);
+			await sleep(20);
+		}
 		assert.equal(proved, true, "The spawned child must answer the challenge with its own pid.");
 		assert.equal(await ownedProcess(bystander.pid!, nonce, socket), false, "A bystander with the nonce in argv must not answer.");
-		await assert.rejects(requireOwned({ pid: bystander.pid!, nonce }, socket), /did not answer the ownership challenge/);
+		await assert.rejects(requireOwned({ pid: bystander.pid!, nonce, socketPath: socket }), /did not answer the ownership challenge/);
 		assert.equal(alive(bystander.pid!), true);
 		await releaseSpawned(owned);
 		assert.equal(await ownedProcess(owned.pid!, nonce, socket), false, "A dead PID must not answer.");
@@ -280,19 +284,27 @@ test("the process proves itself: an owned child answers, a bystander with the no
 		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 	}
 });
-test("ownership still holds when the proof channel's directory path contains a space", async () => {
-	const root = await mkdtemp(resolve(tmpdir(), "acquit proof test "));
-	const nonce = ownershipNonce();
-	const socket = process.platform === "win32" ? undefined : resolve(root, "own.sock");
-	const owned = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], socket);
-	try {
-		const deadline = Date.now() + 3000;
-		let proved = false;
-		while (!proved && Date.now() < deadline) { proved = await ownedProcess(owned.pid!, nonce, socket); await sleep(20); }
-		assert.equal(proved, true);
-		await releaseSpawned(owned);
-		assert.equal(alive(owned.pid!), false);
-	} finally { await releaseSpawned(owned).catch(() => {}); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+test("ownership still holds when the proof channel's directory path contains whitespace", async () => {
+	// The recorded path is read back from /proc/net/unix at stop time, so any
+	// whitespace in it must survive the round trip byte for byte.
+	for (const [label, template] of [["one space", "acquit proof test "], ["two spaces", "acquit proof  test "], ["a tab", "acquit proof\ttest "]] as const) {
+		const root = await mkdtemp(resolve(tmpdir(), template));
+		const nonce = ownershipNonce();
+		const socket = process.platform === "win32" ? undefined : resolve(root, "own.sock");
+		const owned = await detached("-e", nonce, root, process.env, resolve(root, "child.log"), ["setInterval(() => {}, 1000)"], socket);
+		try {
+			const deadline = Date.now() + 3000;
+			let proved = false;
+			while (!proved && Date.now() < deadline) {
+				const proof = socket ? await childListener(owned.pid!, socket, 250) : null;
+				proved = await ownedProcess(owned.pid!, nonce, socket, proof);
+				await sleep(20);
+			}
+			assert.equal(proved, true, `ownership must hold with ${label} in the proof channel's directory`);
+			await releaseSpawned(owned);
+			assert.equal(alive(owned.pid!), false);
+		} finally { await releaseSpawned(owned).catch(() => {}); await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+	}
 });
 test("start clears ownership when a service exits before readiness", async () => {
 	await fixture(async (_cli, root) => {
@@ -380,7 +392,7 @@ test("two concurrent CLIs cannot both hold the lifecycle lock", async () => {
 	await mkdir(dir, { recursive: true });
 	const holder = `import { createServer } from "node:net";
 		const server = createServer();
-		server.listen(${JSON.stringify(lockName(dir))}, () => { console.log("held"); setInterval(() => {}, 1000); });`;
+		server.listen(${JSON.stringify(lockName(realpathSync(dir)))}, () => { console.log("held"); setInterval(() => {}, 1000); });`;
 	const first = spawn(process.execPath, ["--input-type=module", "-e", holder], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
 	try {
 		const [held] = await once(first.stdout!, "data", { signal: AbortSignal.timeout(5000) });

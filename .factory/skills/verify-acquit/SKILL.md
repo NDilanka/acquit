@@ -48,7 +48,21 @@ $env:ACQUIT_DEV='1'
 node packages/ctl/src/main.ts start --timeout 60 | Tee-Object -FilePath 'data/evidence/verify-acquit/RUN_STAMP/launch.json'
 ```
 
-Note the background PID and log path. Wait, then read `launch.json`. Require `ok:true`, `alreadyRunning:false`, the verification database path, and the expected URLs. The CLI reports ready only after both endpoints and both children's ownership pipes answer. On Windows, stop additionally checks the kernel pipe-server PID on the answering connection; an answer alone is not kill authority. Other platforms refuse run-file kills until a kernel-peer implementation is available.
+Note the background PID and log path. Wait, then read `launch.json`. Require `ok:true`, `alreadyRunning:false`, the verification database path, and the expected URLs. The CLI reports ready only after both endpoints and both children's ownership channels answer. An answer alone is not kill authority. On Windows, stop checks the kernel pipe-server PID on the answering connection. On Linux, start records the listener inode and the process start time it reads from each child's own `/proc` entries, and stop requires that same PID, that start time, that exact inode as the only listener at the recorded socket path, and the accepted connection the answer arrived on in that process's own fd table. A path string is never the credential. Other platforms refuse run-file kills.
+
+## Linux lanes
+
+The lane commands are the same as above. Translate the shell and the port check.
+
+- Export the lane instead of setting `$env`: `export ACQUIT_LANE=7`.
+- PowerShell 7 is not needed. The control CLI uses only Node built-ins.
+- Launch through a background Execute call, as above. The app processes are detached and survive the call.
+- Prove a stop freed the lane ports with `ss -ltn '( sport = 4380 or sport = 5243 )'`. An empty table means both ports closed.
+- A stop requires the socket path, the listener inode, and the process start time recorded next to each PID. A legacy run file without them is refused with `PID_MISMATCH`, and nothing is killed.
+- A stop need not leave `own-<nonce>.sock` files behind: a service that closes the preload's socket as it exits unlinks the path it bound, and a graceful lane stop leaves only the web's file. Any file that does survive a stop names the stopped run's nonce; each start binds a fresh nonce-named path, so leftovers are inert.
+- The ownership proof prevents accidents, not a same-uid adversary: a stale run file, a reused PID, or another lane's process must never be signalled, but a process running as this user can already `kill(2)` the recorded PID directly, so a forged proof channel adds no authority.
+- `CLI_BUSY` on Linux names the abstract lock `@acquit-lock-<hash>`; the kernel frees that name when the holder exits, so a killed CLI leaves no lock to clear.
+- Removing a lane directory while a command runs reports `IO_FAILED`, so rerun the command.
 
 Inspect the proposed reset, then reset only this run's verification database. Seeding invalidates all development sessions. Log in only after seeding.
 

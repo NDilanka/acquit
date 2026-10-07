@@ -38,6 +38,7 @@ if (record) {
 
 const server = createServer(socket => {
 	let buffer = "";
+	let answered = false;
 	socket.unref();
 	socket.setTimeout(1000, () => socket.destroy());
 	socket.setEncoding("utf8");
@@ -46,8 +47,14 @@ const server = createServer(socket => {
 		if (Buffer.byteLength(buffer) > 256) { socket.destroy(); return; }
 		if (!buffer.includes("\n")) return;
 		// Answer only the exact challenge. Anything else gets silence.
-		if (buffer.slice(0, buffer.indexOf("\n")) === "prove") socket.end(`${process.pid} ${process.ppid}\n`);
-		else socket.end();
+		if (answered || buffer.slice(0, buffer.indexOf("\n")) !== "prove") { socket.end(); return; }
+		answered = true;
+		const reply = `${process.pid} ${process.ppid}\n`;
+		// On Linux the caller checks, in this process's own fd table, that the
+		// answer arrived on a connection it holds. Keep the accepted socket open
+		// until the caller closes it; the timeout is the backstop.
+		if (process.platform === "linux") { socket.write(reply); socket.setTimeout(5000, () => socket.destroy()); }
+		else socket.end(reply);
 	});
 	socket.on("error", () => {});
 });
