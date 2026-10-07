@@ -24,7 +24,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { checkoutGitArgs, gitGuardArgs, hardenedGitEnv, recordedWorkTree, REMOTE_GIT_TIMEOUT_MS, scopedGit, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
+import { checkoutGitArgs, DEFAULT_FETCH_REFSPEC, gitGuardArgs, hardenedGitEnv, recordedWorkTree, REMOTE_GIT_TIMEOUT_MS, sameRemote, scopedGit, stateGitDir, stripGitEnv, tokenTransportArgs, writeWorkTreeMarker } from "./gitstate.ts";
 import type { JobCheckout } from "./gitstate.ts";
 import { PROVIDER_SPECS, storedProvider } from "./operator.ts";
 import type { Provider, ProviderPort } from "./operator.ts";
@@ -211,12 +211,6 @@ export function cloneError(url: string, stderr: string | null): CliError {
 	return new CliError("CLONE_FAILED", `git clone of ${safeEcho(url)} failed. ${detail}`.trim());
 }
 
-/** One remote spelling per repository, so a clone the operator already has is recognized. */
-function sameRemote(left: string, right: string): boolean {
-	const normalize = (value: string) => value.trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
-	return normalize(left) === normalize(right);
-}
-
 /** Every git command on a job's checkout names its state git directory and work tree explicitly:
  * discovery would follow the work tree's own .git, which the sandbox can write. */
 function jobGitArgs(checkout: JobCheckout, env: NodeJS.ProcessEnv, args: readonly string[]): readonly string[] {
@@ -334,14 +328,23 @@ export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string,
 			}
 			writeWorkTreeMarker(gitDir, resolve(workTree));
 		}
-		const origin = checkoutGit(git, checkout, env, ["config", "--get", "remote.origin.url"]).stdout.trim();
-		if (!sameRemote(origin, url)) {
-			throw new CliError("DIR_NOT_WORK_REPO", `${gitDir} tracks ${safeEcho(origin || "(no origin)")}, not ${safeEcho(url)}. `
+		// The origin must be exactly the one URL the CLI cloned. `--get-all` reads every value, so a
+		// lookalike first and the real URL last refuses here, before any request can leave; `--get`
+		// used to read only the last value while git's own fetch read the first.
+		const origins = checkoutGit(git, checkout, env, ["config", "--get-all", "remote.origin.url"]).stdout
+			.split("\n").map(value => value.trim()).filter(value => value !== "");
+		if (origins.length !== 1 || !sameRemote(origins[0], url)) {
+			throw new CliError("DIR_NOT_WORK_REPO", `${gitDir} tracks ${safeEcho(origins.join(", ") || "(no origin)")}, not ${safeEcho(url)}. `
 				+ "Remove the state git directory and pass a fresh --dir to clone afresh.");
 		}
 		// The rerun fetch carries the scoped token, so the scan of the same location runs first: a
-		// planted worktree config cannot steer the token to another host or off TLS.
-		const fetched = scopedGit(git, checkout, env, askpass, "state", ["fetch", "--quiet", "--no-tags", "origin"]);
+		// planted worktree config cannot steer the token to another host or off TLS. The fetch names
+		// the exact work-repo URL the CLI minted, never the `origin` remote git would resolve from
+		// config, and takes the refspec the clone wrote so the same refs update as before. The flag
+		// outranks a planted `.gitmodules` that turns on-demand recursion back on, so no child fetch
+		// runs in a work-tree submodule with the askpass in its environment.
+		const fetched = scopedGit(git, checkout, env, askpass, "state", url,
+			["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", url, DEFAULT_FETCH_REFSPEC]);
 		if (fetched.status !== 0) throw cloneError(url, fetched.stderr);
 	} else if (existsSync(workTree) && readdirSync(workTree).length > 0) {
 		throw new CliError("DIR_NOT_WORK_REPO", `${workTree} is not empty and no state git directory for this job exists. `
@@ -352,8 +355,9 @@ export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string,
 		// this branch runs only when the state git directory does not exist, so there is no config to
 		// read yet. `--template=` keeps the clone from inheriting a template the machine installed,
 		// and the env hides the system and global config every other source would come from. It is a
-		// remote call, so it names the shared remote bound rather than the probe's default.
-		const cloned = git([...gitGuardArgs(env), "clone", "--quiet", "--template=", "--separate-git-dir", gitDir, url, workTree],
+		// remote call, so it names the shared remote bound rather than the probe's default, and the
+		// URL it names is the one the CLI minted, so the transport is settled as https only.
+		const cloned = git([...gitGuardArgs(env), ...tokenTransportArgs(url), "clone", "--quiet", "--template=", "--separate-git-dir", gitDir, url, workTree],
 			{ ...env, ...askpass }, REMOTE_GIT_TIMEOUT_MS);
 		if (cloned.status !== 0) throw cloneError(url, cloned.stderr);
 		chmodSync(gitDir, 0o700);
@@ -446,8 +450,9 @@ export function pushWork(git: GitRun, checkout: JobCheckout, url: string, commit
 	env: NodeJS.ProcessEnv, askpass: NodeJS.ProcessEnv = {}): void {
 	// The state git directory is never exposed to the agent, but a push is one place the scoped token
 	// meets config. scopedGit scans that location with the push's own arguments and only then adds the
-	// askpass, so no key the CLI did not write can steer the token.
-	const pushed = scopedGit(git, checkout, env, askpass, "state", ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]);
+	// askpass, so no key the CLI did not write can steer the token. The push names the exact
+	// work-repo URL, never the `origin` remote git would resolve from config.
+	const pushed = scopedGit(git, checkout, env, askpass, "state", url, ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]);
 	if (pushed.status !== 0) throw pushError(url, pushed.stderr);
 }
 

@@ -121,7 +121,9 @@ export function submissionRef(commit: CommitSha): string {
  * `acquit run` cloned the checkout; null resolves the checkout's own git directory, never left to
  * discovery. `askpass` is the CLI's own credential script for the job's work repo: a push that
  * carries it goes through `scopedGit`, which scans the location's config first, so the token never
- * meets config the CLI did not write.
+ * meets config the CLI did not write. `remote` is the destination the push names — the work-repo URL
+ * the CLI minted, never a remote name git resolves from config — and the scan judges a state
+ * checkout's origin against it.
  */
 export type ScopedPush = { readonly gitDir: string | null; readonly askpass?: NodeJS.ProcessEnv };
 
@@ -157,12 +159,13 @@ export function pushHead(dir: string, remote: string, commit: CommitSha, env?: N
 	const location: GitLocation = { gitDir, workTree: dir };
 	const args = ["push", remote, `${commit}:${submissionRef(commit)}`];
 	// The scoped token must never meet config the CLI did not write: scopedGit scans this location
-	// first and adds the askpass only then, and names the scan's local bound and the push's remote one
-	// itself. An operator's own credential only meets the checkout the operator works in, so its
-	// config is theirs to keep and the hardened env runs the push alone, on the shared remote bound.
+	// first and adds the askpass only then, names the scan's local bound and the push's remote one
+	// itself, and judges the state checkout's origin against the URL the push names. An operator's own
+	// credential only meets the checkout the operator works in, so its config is theirs to keep and the
+	// hardened env runs the push alone, on the shared remote bound.
 	const result = askpass === undefined
 		? spawnSync("git", checkoutGitArgs(location, gitEnv, args), { encoding: "utf8", timeout: REMOTE_GIT_TIMEOUT_MS, env: gitEnv })
-		: scopedGit(gitProbe(gitEnv), location, gitEnv, askpass, stateGitDir !== null ? "state" : "own", args);
+		: scopedGit(gitProbe(gitEnv), location, gitEnv, askpass, stateGitDir !== null ? "state" : "own", remote, args);
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 

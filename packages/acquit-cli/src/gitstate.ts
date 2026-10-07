@@ -109,13 +109,37 @@ export function hardenedGitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Pro
 
 /**
  * The `-c` overrides that close config-driven code execution and credential sources on a job's
- * checkout: hooks and fsmonitor off, no credential helper, no ssh command. Command-line config
- * outranks the checkout's local config, and the CLI's own askpass still supplies the credential.
+ * checkout: hooks and fsmonitor off, no credential helper, no ssh command, and no submodule
+ * recursion of any kind. Command-line config outranks the checkout's local config and a planted
+ * `.gitmodules`, so no fetched or pushed tree can make git spawn a child git in the work tree, where
+ * the scoped askpass would ride along. The CLI's own askpass still supplies the credential.
  */
 export function gitGuardArgs(env: NodeJS.ProcessEnv = process.env): readonly string[] {
 	const root = ensureStateRoot(env);
 	return ["-c", `core.hooksPath=${emptyHooksDir(root)}`, "-c", "core.fsmonitor=false",
-		"-c", "credential.helper=", "-c", "core.sshCommand=", "-c", "http.sslVerify=true", "-c", "http.proxy="];
+		"-c", "credential.helper=", "-c", "core.sshCommand=", "-c", "http.sslVerify=true", "-c", "http.proxy=",
+		"-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false", "-c", "push.recurseSubmodules=no"];
+}
+
+/**
+ * The transport overrides a token call to an https destination gets: the CLI mints every work-repo
+ * URL on https, so a token call to one may use https and no other transport, whatever a scanned
+ * checkout's config says. A destination that is not an https URL (a local bare path in a test or a
+ * development fixture) keeps the default transports.
+ */
+export function tokenTransportArgs(destination: string): readonly string[] {
+	return /^https:\/\//i.test(destination) ? ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"] : [];
+}
+
+/**
+ * One remote spelling per repository: trim, drop trailing slashes and a `.git`, lowercase. The CLI
+ * clones the work repo and every token call names the same URL, so an exact comparison after this
+ * normalization is the origin check that matters; no host parsing is involved, because WHATWG's URL
+ * parser and git disagree about values like `http://github.com\@127.0.0.1/...`.
+ */
+export function sameRemote(left: string, right: string): boolean {
+	const normalize = (value: string) => value.trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+	return normalize(left) === normalize(right);
 }
 
 /**
@@ -188,16 +212,17 @@ type ConfigEntry = {
 type ConfigRule = {
 	readonly key: RegExp;
 	readonly verdict: "keep" | "refuse";
-	/** Whether this entry is one the rule acts on; every entry it matches when absent. */
-	readonly when?: (entry: ConfigEntry) => boolean;
+	/** Whether this entry is one the rule acts on; every entry it matches when absent. `sameKey` holds
+	 * every resolved entry that carries this exact key, so a rule can judge how many values git read. */
+	readonly when?: (entry: ConfigEntry, sameKey: readonly ConfigEntry[]) => boolean;
 };
 
 /** What a key no rule matches gets: a state checkout refuses it, an operator's own checkout keeps it. */
 type ConfigPolicy = { readonly unlisted: "keep" | "refuse"; readonly rules: readonly ConfigRule[] };
 
-/** The refspec a clone writes, and the one a state checkout's origin must keep: the rerun fetch names
- * `origin` and takes its refspec from here. */
-const DEFAULT_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
+/** The refspec a clone writes, and the one the rerun fetch names when it fetches the work-repo URL
+ * directly: the state policy keeps only this refspec, and the fetch and the policy share the string. */
+export const DEFAULT_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
 
 /**
  * The state policy: the CLI writes every byte of a state git directory's config, so the scan keeps
@@ -208,26 +233,33 @@ const DEFAULT_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
  * where the work tree cannot hold symlinks, the second where the filesystem folds case, the third
  * where it decomposes UTF-8, and `initialize_repository_version` writes the fourth for a clone that
  * is not sha1. A value that steers a scoped call is judged where the value matters.
+ *
+ * `remote.origin.url` keeps only when it is the one URL the CLI cloned and this token call names:
+ * the call never lets git resolve the destination from config, and the exact comparison keeps the
+ * checkout honest, so a lookalike value or a second value refuses instead of being read.
  */
-const STATE_CONFIG: ConfigPolicy = {
-	unlisted: "refuse",
-	rules: [
-		{ key: /^core\.repositoryformatversion$/, verdict: "keep" },
-		{ key: /^core\.filemode$/, verdict: "keep" },
-		{ key: /^core\.bare$/, verdict: "keep", when: entry => !entry.readsTrue() },
-		{ key: /^core\.logallrefupdates$/, verdict: "keep" },
-		{ key: /^core\.symlinks$/, verdict: "keep" },
-		{ key: /^core\.ignorecase$/, verdict: "keep" },
-		{ key: /^core\.precomposeunicode$/, verdict: "keep" },
-		{ key: /^extensions\.objectformat$/, verdict: "keep", when: entry => entry.value === "sha1" || entry.value === "sha256" },
-		{ key: /^remote\.origin\.url$/, verdict: "keep", when: entry => !remoteOffGithub(entry.value) },
-		{ key: /^remote\.origin\.fetch$/, verdict: "keep", when: entry => entry.value === DEFAULT_FETCH_REFSPEC },
-		{ key: /^branch\..+\.remote$/, verdict: "keep", when: entry => entry.value === "origin" },
-		{ key: /^branch\..+\.merge$/, verdict: "keep" },
-		{ key: /^user\.name$/, verdict: "keep" },
-		{ key: /^user\.email$/, verdict: "keep" },
-	],
-};
+function stateConfig(workRepoUrl: string): ConfigPolicy {
+	return {
+		unlisted: "refuse",
+		rules: [
+			{ key: /^core\.repositoryformatversion$/, verdict: "keep" },
+			{ key: /^core\.filemode$/, verdict: "keep" },
+			{ key: /^core\.bare$/, verdict: "keep", when: entry => !entry.readsTrue() },
+			{ key: /^core\.logallrefupdates$/, verdict: "keep" },
+			{ key: /^core\.symlinks$/, verdict: "keep" },
+			{ key: /^core\.ignorecase$/, verdict: "keep" },
+			{ key: /^core\.precomposeunicode$/, verdict: "keep" },
+			{ key: /^extensions\.objectformat$/, verdict: "keep", when: entry => entry.value === "sha1" || entry.value === "sha256" },
+			{ key: /^remote\.origin\.url$/, verdict: "keep",
+				when: (entry, sameKey) => sameKey.length === 1 && sameRemote(entry.value, workRepoUrl) },
+			{ key: /^remote\.origin\.fetch$/, verdict: "keep", when: entry => entry.value === DEFAULT_FETCH_REFSPEC },
+			{ key: /^branch\..+\.remote$/, verdict: "keep", when: entry => entry.value === "origin" },
+			{ key: /^branch\..+\.merge$/, verdict: "keep" },
+			{ key: /^user\.name$/, verdict: "keep" },
+			{ key: /^user\.email$/, verdict: "keep" },
+		],
+	};
+}
 
 /**
  * The own policy: the operator's own config is theirs, so only the keys that can steer a scoped call
@@ -260,10 +292,10 @@ const OWN_CONFIG: ConfigPolicy = {
 /** Whether a matching entry leaves the scoped token unsafe. A `keep` rule that does not act on a key
  * it matches, and a `refuse` rule that does, both leave it unsafe; a key no rule matches gets the
  * policy's own default. */
-function unsafeEntry(policy: ConfigPolicy, entry: ConfigEntry): boolean {
+function unsafeEntry(policy: ConfigPolicy, entry: ConfigEntry, sameKey: readonly ConfigEntry[]): boolean {
 	for (const rule of policy.rules) {
 		if (!rule.key.test(entry.key)) continue;
-		const acts = rule.when === undefined || rule.when(entry);
+		const acts = rule.when === undefined || rule.when(entry, sameKey);
 		return rule.verdict === "keep" ? !acts : acts;
 	}
 	return policy.unlisted === "refuse";
@@ -285,17 +317,21 @@ function urlNamed(key: string): boolean {
  * names the file each key came from: the CLI's own `-c` guard is skipped by scope, and a system or
  * global key refuses outright, because the CLI hides both files, so git naming either one means this
  * child is not the one the command uses and no key-by-key judgement of that file can be trusted.
+ *
+ * `workRepoUrl` is the exact URL this token call names, the one the CLI minted. The state policy
+ * judges the checkout's origin against it, so a value the CLI did not clone from refuses.
  */
-export function unsafeGitConfigKeys(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind): readonly string[] {
-	const policy = where === "state" ? STATE_CONFIG : OWN_CONFIG;
+export function unsafeGitConfigKeys(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind,
+	workRepoUrl: string): readonly string[] {
+	const policy = where === "state" ? stateConfig(workRepoUrl) : OWN_CONFIG;
 	const listed = git([...checkoutGitArgs(location, env, ["config", "--list", "--show-scope", "--no-includes", "-z"])], env, LOCAL_GIT_TIMEOUT_MS);
 	if (listed.status !== 0) {
 		throw new CliError("GIT_FAILED", `Reading the git config of the job's state directory failed. ${listed.stderr.trim().slice(0, 200)}`.trim());
 	}
-	const unsafe = new Set<string>();
 	// `--show-scope -z` writes `scope\0key\nvalue\0` per value and `scope\0key\0` for a key with no
 	// value, so the fields alternate and a value may hold newlines of its own.
 	const fields = listed.stdout.split("\0");
+	const entries: ConfigEntry[] = [];
 	for (let index = 0; index + 1 < fields.length; index += 2) {
 		const scope = fields[index].trim();
 		const record = fields[index + 1];
@@ -312,8 +348,15 @@ export function unsafeGitConfigKeys(git: GitProbe, location: GitLocation, env: N
 			throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to run git with the scoped token: git read ${scope} config for ${location.gitDir} (${key}) although the CLI hides `
 				+ "every config file but the checkout's own. Rerun with a clean environment: a GIT_CONFIG_* variable or a git wrapper is overriding the CLI's own.");
 		}
-		const entry: ConfigEntry = { key, value, readsTrue: () => gitReadsTrue(git, location, env, key) };
-		if (unsafeEntry(policy, entry)) unsafe.add(key.toLowerCase());
+		entries.push({ key, value, readsTrue: () => gitReadsTrue(git, location, env, key) });
+	}
+	// Every resolved value of a key, so a rule can judge multiplicity: the state origin must be
+	// exactly one value, whatever that value is.
+	const byKey = new Map<string, ConfigEntry[]>();
+	for (const entry of entries) byKey.set(entry.key, [...(byKey.get(entry.key) ?? []), entry]);
+	const unsafe = new Set<string>();
+	for (const entry of entries) {
+		if (unsafeEntry(policy, entry, byKey.get(entry.key) ?? [entry])) unsafe.add(entry.key.toLowerCase());
 	}
 	return [...unsafe].sort();
 }
@@ -330,29 +373,17 @@ function gitReadsTrue(git: GitProbe, location: GitLocation, env: NodeJS.ProcessE
 	return values.length > 0 && values.every(value => value === "true");
 }
 
-/** Whether a configured remote URL names a host that is not github.com. Only a github.com URL can be
- * the job's work repo; a local path names no host and carries no credential, so it is left alone.
- * An scp-like URL (`host:path`, with or without `user@`) names a host too. */
-function remoteOffGithub(value: string): boolean {
-	const scp = /^(?:[^/@\s]+@)?([^/:\s]+):([^/].*)?$/.exec(value);
-	let host = scp?.[1] ?? "";
-	if (scp === null) {
-		try { host = new URL(value).hostname; } catch { host = ""; }
-	}
-	if (host === "") return false;
-	const name = host.toLowerCase();
-	return name !== "github.com" && !name.endsWith(".github.com");
-}
-
 /** Which checkout a refused command was about: the CLI's own state git directory, or the operator's. */
 export type GitDirKind = "state" | "own";
 
 /** Refuses a git command that carries the CLI's scoped token when the location it reads holds config
  * the CLI did not write. The refusal names the git directory and the remedy that belongs to it: a
  * state directory is removed and cloned afresh on a fresh --dir, while a key in the operator's own
- * checkout is unset. */
-export function assertSafeScopedConfig(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind): void {
-	const unsafe = unsafeGitConfigKeys(git, location, env, where);
+ * checkout is unset. `workRepoUrl` is the URL this call names, which the state policy judges the
+ * checkout's origin against. */
+export function assertSafeScopedConfig(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind,
+	workRepoUrl: string): void {
+	const unsafe = unsafeGitConfigKeys(git, location, env, where, workRepoUrl);
 	if (unsafe.length === 0) return;
 	const remedy = where === "own"
 		? "Remove each key from that checkout (`git config --local --unset <key>`) and rerun."
@@ -369,12 +400,16 @@ export function assertSafeScopedConfig(git: GitProbe, location: GitLocation, env
  * Every remote-reaching command the scoped token drives goes through here; a local-only command runs
  * on the hardened env alone and never carries the askpass.
  *
+ * `workRepoUrl` is the exact URL the call names, the one the CLI minted: the scan judges the state
+ * checkout's origin against it, and an https URL settles the transport as https only. The args
+ * themselves name that URL, never a remote name git would resolve from config.
+ *
  * The bounds are the two this call knows apart: the scan reads files the machine already has and gets
  * `LOCAL_GIT_TIMEOUT_MS`, while the call that carries the token to a remote gets
  * `REMOTE_GIT_TIMEOUT_MS`. Both are named here, so no scoped call can inherit the scan's short bound.
  */
 export function scopedGit(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, askpass: NodeJS.ProcessEnv,
-	where: GitDirKind, args: readonly string[]): GitResult {
-	assertSafeScopedConfig(git, location, env, where);
-	return git(checkoutGitArgs(location, env, args), { ...env, ...askpass }, REMOTE_GIT_TIMEOUT_MS);
+	where: GitDirKind, workRepoUrl: string, args: readonly string[]): GitResult {
+	assertSafeScopedConfig(git, location, env, where, workRepoUrl);
+	return git(checkoutGitArgs(location, env, [...tokenTransportArgs(workRepoUrl), ...args]), { ...env, ...askpass }, REMOTE_GIT_TIMEOUT_MS);
 }
