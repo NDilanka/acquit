@@ -147,12 +147,17 @@ lanes, seeds the head lane, and reports:
   baseline. Trunk carries no per-command help, so it answers that argv with `USAGE: Unknown flag
   --help.` and exit 1; the work is the same and each side's exit codes are in the report.
 - `jobsList`: one `acquit jobs list` process against the seeded head lane, after one warm-up.
-- `runStart`: recorded as pending. The probe asks the CLI whether `run` is registered and reports
-  `RUN_NOT_REGISTERED` until the runner round lands it; it never fabricates a number and never fails a
-  round-1 probe for a command that build does not carry.
+- `runStart`: one `acquit run --runner command` process from start to the agent-start line
+  `renderRunning` prints just before the sandbox starts, warm: one untimed warm-up that clones the
+  job's fork, then one timed sample per round on the same `--dir`. It needs a funded IN_PROGRESS job
+  locked to `devon-ops` in the head lane, Docker, and the `acquit/runner-node20` image. The seed opens
+  no job and this probe creates nothing on GitHub and moves no money, so a lane without one is
+  reported as blocked — `RUN_NEEDS_FUNDED_JOB`, `RUN_DOCKER_UNAVAILABLE`, `RUN_IMAGE_MISSING`,
+  `RUN_WORK_REPO_NOT_READY`, `RUN_GITHUB_NOT_CONFIGURED`, `RUN_START_FAILED`, `RUN_AGENT_FAILED` —
+  never as a number. A blocked metric does not fail the probe.
 
 Rules: fail if the head `--help` median exceeds the trunk median by more than 20 percent, or if the
-`jobs list` median exceeds 800 ms. The warm run start must not exceed 30 seconds once `run` exists.
+`jobs list` median exceeds 800 ms, or if the warm run-start median exceeds 30 seconds.
 
 ## Gotchas
 

@@ -29,21 +29,25 @@
 //   jobsList: the seconds one `acquit jobs list` process takes against the seeded head lane, after one
 //   untimed warm-up. The command signs in the way the operator does: the token from `acquit login`,
 //   handed to the process in its environment, never in argv.
-//   runStart: `acquit run` from start to agent start. The runner owner lands packages/acquit-cli/src/
-//   run.ts in the F5 runner round; until this build registers the command the metric is recorded as
-//   pending and never fails the probe.
+//   runStart: `acquit run` from process start to the agent-start line renderRunning prints just
+//   before the sandbox starts, once warm: one untimed warm-up that clones the job's fork, then one
+//   timed sample per round on the same --dir. It needs a funded IN_PROGRESS job locked to devon-ops
+//   in the head lane, Docker, and the runner image. The seed opens no job, and this probe creates
+//   nothing on GitHub and moves no money, so a lane without one is reported as blocked
+//   (RUN_NEEDS_FUNDED_JOB, RUN_DOCKER_UNAVAILABLE, RUN_IMAGE_MISSING, RUN_WORK_REPO_NOT_READY,
+//   RUN_GITHUB_NOT_CONFIGURED), never as a fabricated number, and a blocked metric never fails.
 //
 // Rules. Fail if the head --help median exceeds the trunk median by more than 20 percent. Fail if the
-// jobs list median exceeds 800 ms. Fail if the warm run start exceeds 30 seconds, once run exists.
+// jobs list median exceeds 800 ms. Fail if the warm run start median exceeds 30 seconds.
 //
 // Cleanup. Both lanes are stopped; the trunk worktree stays in place for the next run unless --clean
 // removes it and this run's lane data (the lane 0 database is never a probe lane and is never touched).
 // Nothing is created on GitHub and no money moves.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { chmod, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -51,6 +55,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { captured, portOpen, reachable, sleep } from "../../packages/ctl/src/process.ts";
 import { laneSlot } from "../../packages/ctl/src/state.ts";
+import { dockerReachable } from "../../packages/verifier/subject.ts";
+import { agentStarted, fundedJobOf, RUN_SAMPLE_TIMEOUT_MS, runStartBlocker, runStartVerdict } from "./run-start.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 // A short default: see the ownership-socket note at the top of this file.
@@ -73,6 +79,12 @@ assert(Number.isSafeInteger(rounds) && rounds >= 1, "--rounds must be at least 1
 assert(trunkLane !== headLane && trunkLane >= 1 && headLane >= 1, "Use two distinct lanes of 1 or more: lane 0 is the real database.");
 const evidence = resolve(root, values.evidence);
 const RULES = { headOverTrunkRatio: 1.2, jobsListMs: 800, runStartSeconds: 30 };
+const RUN_START_METRIC = "acquit run from process start to agent start";
+const RUN_START_RULE = `the warm run start must not exceed ${RULES.runStartSeconds} seconds`;
+const RUN_START_SENTINEL = "acquit-perf-run-start-sentinel";
+// The agent a runStart sample executes: one sentinel line, no file changed, exit 0. The script lives
+// outside --dir, which every run checks out and cleans.
+const RUN_START_SCRIPT = `#!/bin/sh\necho ${RUN_START_SENTINEL}\nexit 0\n`;
 
 const report = { rounds, trunkDir, headDir, trunkLane, headLane, clean: values.clean, rules: RULES,
 	trunkBaseline: null, trunkHead: null, headHead: null, baseline: null, help: null, jobsList: null, runStart: null,
@@ -84,6 +96,8 @@ const started = [];
  * `removable` when --clean may remove it: the probe only ever removes one it created or verified.
  */
 const trunkState = { approved: false, created: false, registered: false, removable: false };
+/** What the runStart samples leave behind: the job they ran and the temp roots to remove. */
+const runStartResources = { jobId: null, tempRoots: [] };
 
 /** One report, one reason, and a nonzero exit. Cleanup below still runs. */
 class Blocked extends Error {
@@ -261,6 +275,9 @@ async function cleanup() {
 		try { await ctl(instance, "stop"); result.lanesStopped.push(`${instance.side} lane ${instance.lane}`); }
 		catch (error) { result.errors.push(`${instance.side}: ${error instanceof Error ? error.message : String(error)}`); }
 	}
+	const sweep = await sweepRunStart();
+	result.removed.push(...sweep.removed);
+	result.errors.push(...sweep.errors);
 	if (values.clean) await removeArtifacts(result);
 	return result;
 }
@@ -348,20 +365,152 @@ function jobsList(instance) {
 }
 
 /**
- * The runner round's metric. The probe asks the CLI whether this build registers `run` — an unknown
- * command exits 2, a registered one answers its usage with 0 — and records the measurement as pending
- * until the runner owner lands it. It never fabricates a number, and it never fails a round-1 probe for
- * a command that build does not carry.
+ * The runner's metric: `acquit run` from process start to the agent-start line renderRunning prints
+ * just before the sandbox starts. The probe asks the CLI whether this build registers `run` — an
+ * unknown command exits 2, a registered one answers its usage with 0 — then needs a funded job, Docker,
+ * and the runner image. A lane without them is reported as blocked with a reason, never as a number;
+ * only a measured median above the rule fails the probe.
  */
 async function runStart(instance) {
 	const probe = cli(instance, ["run", "--help"], { accept: () => true });
-	const registered = probe.status === 0;
-	return { status: "pending", registered, metric: "acquit run from start to agent start", samples: null, medianSeconds: null,
-		reason: registered ? "RUN_METRIC_OWNED_BY_RUNNER_ROUND" : "RUN_NOT_REGISTERED",
-		detail: registered
-			? "This build registers run, but the start-to-agent-start measurement belongs to the F5 runner round, which knows the runner's output contract."
-			: "This build carries no packages/acquit-cli/src/run.ts, so `acquit run` is not a command yet.",
-		rule: `the warm run start must not exceed ${RULES.runStartSeconds} seconds once run exists`, passed: null };
+	const registered = probe.code === 0;
+	const blocked = (reason, detail) => ({ status: "blocked", registered, metric: RUN_START_METRIC,
+		warmupSeconds: null, samples: null, medianSeconds: null, maxSeconds: null, reason, detail, rule: RUN_START_RULE, passed: null });
+	if (!registered) return blocked("RUN_NOT_REGISTERED", "This build registers no `acquit run`, so there is no agent start to time.");
+	const jobs = await headJobs(instance);
+	const job = fundedJobOf(jobs, "devon-ops");
+	if (job === null) {
+		return blocked("RUN_NEEDS_FUNDED_JOB",
+			`The seeded head lane holds no IN_PROGRESS job with HELD escrow locked to devon-ops (it serves ${jobs.length} job row${jobs.length === 1 ? "" : "s"}). `
+			+ "The seed opens no job, and funding one is feature 04's PayPal sandbox flow plus the GitHub App's work repo, which this probe does not drive: "
+			+ "nothing here touches GitHub and no money moves.");
+	}
+	if (!dockerReachable()) return blocked("RUN_DOCKER_UNAVAILABLE", "Docker is unreachable, so `acquit run` cannot start the runner sandbox.");
+	const image = process.env.ACQUIT_RUNNER_IMAGE?.trim() || "acquit/runner-node20";
+	if (!runnerImagePresent(image)) {
+		return blocked("RUN_IMAGE_MISSING", `The runner image ${image} is not in the local Docker store. Build it once: docker build -t ${image} packages/runner.`);
+	}
+	return measureRunStart(instance, job, image, blocked);
+}
+
+/** Every job the probe's operator can read in the head lane, as the API's own job view. */
+async function headJobs(instance) {
+	const response = await fetch(`${instance.apiUrl}/api/jobs`,
+		{ headers: { cookie: `acquit_session=${instance.devon}` }, signal: AbortSignal.timeout(15_000) });
+	assert(response.ok, `GET /api/jobs on the head lane answered ${response.status}.`);
+	const body = await response.json();
+	return Array.isArray(body?.jobs) ? body.jobs : [];
+}
+
+/** The runner image the CLI would start. A missing image is a precondition, not a measurement. */
+function runnerImagePresent(image) {
+	return spawnSync("docker", ["image", "inspect", image], { encoding: "utf8", timeout: 30_000 }).status === 0;
+}
+
+/**
+ * One untimed warm-up that clones the job's fork into --dir, then `rounds` timed samples that reuse it,
+ * so every sample is the warm second start the rule names. A sample that is not healthy stops the
+ * measurement: the blocker's reason is reported as blocked instead of a start time that never happened.
+ */
+async function measureRunStart(instance, job, image, blocked) {
+	const temp = await mkdtemp(join(tmpdir(), "acquit-perf-runstart-"));
+	runStartResources.jobId = job.id;
+	runStartResources.tempRoots.push(temp);
+	const dir = join(temp, "work");
+	const command = join(temp, "command.sh");
+	await mkdir(dir);
+	await writeFile(command, RUN_START_SCRIPT, { mode: 0o755 });
+	const context = { instance, job, image, temp, dir, command };
+	const warmup = await oneRunStart(context);
+	const warmupBlocker = runStartBlocker({ ...warmup, agentRan: warmup.stdout.includes(RUN_START_SENTINEL) });
+	if (warmupBlocker !== null) return blocked(warmupBlocker.reason, `The warm-up run was not healthy: ${warmupBlocker.detail}`);
+	const samples = [];
+	for (let round = 0; round < rounds; round++) {
+		const run = await oneRunStart(context);
+		const blocker = runStartBlocker({ ...run, agentRan: run.stdout.includes(RUN_START_SENTINEL) });
+		if (blocker !== null) return blocked(blocker.reason, `Sample ${round + 1} of ${rounds} was not healthy: ${blocker.detail}`);
+		samples.push(run.markerSeconds);
+		console.log(JSON.stringify({ runStartSample: round + 1, seconds: round1(run.markerSeconds) }));
+	}
+	const verdict = runStartVerdict(samples, RULES.runStartSeconds);
+	return { status: "measured", registered: true, metric: RUN_START_METRIC, warmupSeconds: round1(warmup.markerSeconds),
+		samples: verdict.samples, medianSeconds: verdict.medianSeconds, maxSeconds: verdict.maxSeconds, rule: RUN_START_RULE, passed: verdict.passed };
+}
+
+/**
+ * One `acquit run --runner command` process, timed from spawn to the first line that marks the agent
+ * start. The run is left to finish on its own so the CLI's own sandbox cleanup runs; TMPDIR scopes the
+ * CLI's 0600 secret directory into the probe's temp root, which the sweep below removes either way.
+ */
+function oneRunStart({ instance, job, image, temp, dir, command }) {
+	return new Promise(resolve => {
+		const began = performance.now();
+		const child = spawn(process.execPath, ["packages/acquit-cli/src/main.ts", "run", job.id, "--runner", "command",
+			"--command", command, "--dir", dir, "--api", instance.apiUrl],
+			{ cwd: instance.dir, env: { ...process.env, ACQUIT_TOKEN: instance.devon, ACQUIT_RUNNER_IMAGE: image,
+				ACQUIT_CLI_CONFIG: join(temp, "cli.json"), TMPDIR: temp }, stdio: ["ignore", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		let scanned = 0;
+		let markerSeconds = null;
+		let agentRan = false;
+		let timedOut = false;
+		let hard = null;
+		// Only complete lines are scanned while the process runs; the final pass reads the tail.
+		const scan = final => {
+			const lines = stdout.split("\n");
+			const complete = final ? lines.length : lines.length - 1;
+			for (; scanned < complete; scanned++) {
+				if (markerSeconds === null && agentStarted(lines[scanned])) markerSeconds = (performance.now() - began) / 1000;
+				if (lines[scanned].includes(RUN_START_SENTINEL)) agentRan = true;
+			}
+		};
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGTERM");
+			hard = setTimeout(() => child.kill("SIGKILL"), 10_000);
+		}, RUN_SAMPLE_TIMEOUT_MS);
+		const finish = code => {
+			clearTimeout(timer);
+			if (hard !== null) clearTimeout(hard);
+			scan(true);
+			resolve({ markerSeconds, exitCode: code, agentRan, timedOut, stdout, stderr });
+		};
+		child.stdout.on("data", chunk => { stdout += chunk.toString("utf8"); scan(false); });
+		child.stderr.on("data", chunk => { stderr += chunk.toString("utf8"); });
+		child.once("error", error => { stderr += `\n${error.message}`; finish(null); });
+		child.once("close", code => finish(code));
+	});
+}
+
+/**
+ * The belt for the CLI's own cleanup. A sample the probe killed can leave the measured job's runner
+ * container, proxy, and network behind, and the temp root holds the command script and the CLI's secret
+ * directory. The names are per job, so this touches only the objects the probe's own runs made for that
+ * job — the same leftovers the CLI itself removes before it starts.
+ */
+async function sweepRunStart() {
+	const removed = [];
+	const errors = [];
+	const jobId = runStartResources.jobId;
+	if (jobId !== null && dockerReachable()) {
+		const targets = [
+			{ kind: "container", name: `acquit-runner-${jobId}`, remove: ["rm", "--force", `acquit-runner-${jobId}`] },
+			{ kind: "container", name: `acquit-runner-${jobId}-proxy`, remove: ["rm", "--force", `acquit-runner-${jobId}-proxy`] },
+			{ kind: "network", name: `acquit-runner-${jobId}-net`, remove: ["network", "rm", `acquit-runner-${jobId}-net`] },
+		];
+		for (const target of targets) {
+			if (spawnSync("docker", [target.kind, "inspect", target.name], { encoding: "utf8", timeout: 30_000 }).status !== 0) continue;
+			const gone = spawnSync("docker", target.remove, { encoding: "utf8", timeout: 60_000 });
+			if (gone.status === 0) removed.push(`${target.kind} ${target.name}`);
+			else errors.push(`${target.kind} ${target.name}: ${String(gone.stderr ?? "").trim().split("\n").at(-1) || `docker exited ${gone.status}`}`);
+		}
+	}
+	for (const path of runStartResources.tempRoots.splice(0)) {
+		try { await rm(path, { recursive: true, force: true }); removed.push(path); }
+		catch (error) { errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
+	}
+	return { removed, errors };
 }
 
 async function seed(instance) {
