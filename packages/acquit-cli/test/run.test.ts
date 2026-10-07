@@ -754,6 +754,70 @@ test("URL-scoped and plain http config keys refuse a scoped push on a state chec
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("git decides which sslVerify spellings are false, so empty, 00, 0x0, and 0k refuse like false", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-sslverify-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		const config = (key: string, value: string): void => {
+			assert.equal(git(["--git-dir", state, "config", "--local", key, value]).status, 0, key);
+		};
+		const unset = (key: string): void => {
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", key]).status, 0, key);
+		};
+		// git reads each of these as boolean false, and the guard's own -c http.sslVerify=true loses
+		// to a URL-scoped key. A hand-written list of false spellings caught only the last one.
+		for (const value of ["", "00", "0x0", "0k", "false"]) {
+			config("http.sslVerify", value);
+			assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["http.sslverify"], JSON.stringify(value));
+			assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, process.env),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("http.sslverify"), JSON.stringify(value));
+			unset("http.sslVerify");
+		}
+		// The URL-scoped empty value is the same false, and no guard override outranks it.
+		config("http.https://evil.example/.sslVerify", "");
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["http.https://evil.example/.sslverify"]);
+		assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, process.env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("http.https://evil.example/.sslverify"));
+		unset("http.https://evil.example/.sslVerify");
+		// Every spelling git reads as true passes, and a key present with no value is true to git.
+		for (const value of ["true", "yes", "on", "1"]) {
+			config("http.sslVerify", value);
+			assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), [], value);
+			unset("http.sslVerify");
+		}
+		writeFileSync(join(state, "config"), `${readFileSync(join(state, "config"), "utf8")}\n[http]\n\tsslVerify\n`);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), []);
+		// git cannot read this one as a boolean at all, and an answer that is not true refuses.
+		config("http.sslVerify", "banana");
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["http.sslverify"]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a planted sslCAInfo or sslCAPath refuses plain and URL-scoped", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-sslca-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		// A planted CA bundle lets a forged certificate pass verification on the scoped push: the same
+		// precondition and outcome as sslVerify=false, so both names refuse in both shapes.
+		for (const key of ["http.sslCAInfo", "http.https://evil.example/.sslCAInfo", "http.sslCAPath", "http.https://evil.example/.sslCAPath"]) {
+			assert.equal(git(["--git-dir", state, "config", "--local", key, "/tmp/planted-ca"]).status, 0, key);
+			assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), [key.toLowerCase()], key);
+			assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, process.env),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", key]).status, 0, key);
+		}
+		// A config-file spelling git normalizes on read refuses the same way.
+		writeFileSync(join(state, "config"), `${readFileSync(join(state, "config"), "utf8")}\n[HTTP]\n\tSSLCaInfo = /tmp/planted-ca\n`);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["http.sslcainfo"]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 /**
  * A remote in its own process that answers every request 401. pushHead is synchronous, so an
  * in-process server could never answer the git child it blocks on; this one names a host git dials
