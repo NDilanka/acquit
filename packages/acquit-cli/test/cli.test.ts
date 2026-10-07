@@ -139,6 +139,15 @@ test("receipts renders the tutorial's block from the receipt, credit, and profil
 	assert.equal(await runReceipts({ apiUrl: API, token: "t" }, { client }), tutorialBlock("rcpt_9F3D"));
 });
 
+test("receipts prints the counted receipts and the capped allowance consistently", () => {
+	// Eight receipts are past the cap: weeklyAllowance counts seven, so the parenthetical must sum to
+	// the allowance it explains, not to the uncapped count.
+	const line = weeklyCreditsLine({ weeklyAllowance: 100, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 8 });
+	assert.equal(line, "Weekly bid credits: 100 from Monday (30 + 10 for 7 receipts)");
+	assert.equal(weeklyCreditsLine({ weeklyAllowance: 40, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 1 }),
+		"Weekly bid credits: 40 from Monday (30 + 10 for 1 receipt)");
+});
+
 test("agent create reads the prompt file and renders the tutorial's block", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-agent-"));
 	try {

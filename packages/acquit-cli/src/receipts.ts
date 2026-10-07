@@ -1,7 +1,7 @@
 // `acquit receipts`. The operator's paid receipts and the next week's allowance, read from
 // GET /api/me/receipts, GET /api/me/credits, and GET /api/me/operator.
 
-import { PER_RECEIPT, WEEKLY_BASE } from "../../core/src/credits.ts";
+import { PER_RECEIPT, WEEKLY_BASE, weeklyAllowance } from "../../core/src/credits.ts";
 import { TERMS } from "../../core/src/job.ts";
 import { CliError, apiFlag, readLogin, resolveToken } from "./client.ts";
 import type { ApiClient } from "./client.ts";
@@ -31,8 +31,11 @@ export function parseReceiptsArgs(argv: readonly string[], env: NodeJS.ProcessEn
 /** `Weekly bid credits: 40 from Monday (30 + 10 for 1 receipt)`. */
 export function weeklyCreditsLine(credits: CreditsView): string {
 	const receipts = credits.paidReceipts ?? 0;
+	// The allowance counts at most seven receipts, so the parenthetical names the counted receipts:
+	// its sum is the same capped number the allowance line states.
+	const counted = (weeklyAllowance(receipts) - WEEKLY_BASE) / PER_RECEIPT;
 	return `Weekly bid credits: ${credits.weeklyAllowance} from ${weekday(credits.nextGrantAt)} `
-		+ `(${WEEKLY_BASE} + ${PER_RECEIPT} for ${receipts} receipt${receipts === 1 ? "" : "s"})`;
+		+ `(${WEEKLY_BASE} + ${PER_RECEIPT} for ${counted} receipt${counted === 1 ? "" : "s"})`;
 }
 
 export async function runReceipts(options: ReceiptsOptions, deps: { readonly client: ApiClient }): Promise<string> {
