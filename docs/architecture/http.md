@@ -71,10 +71,11 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.
 
-## Work repo credentials (operator run)
+## Work repo credentials (operator run and submit)
 
-`acquit run` clones the job's work repo and pushes the agent's commit there, so it asks the API for
-the credential rather than reading a GitHub App key on the operator's machine.
+`acquit run` clones the job's work repo and pushes the agent's commit there, and `acquit submit`
+pushes a submitted commit there when the target is that repo, so both ask the API for the credential
+rather than reading a GitHub App key on the operator's machine.
 
 `POST /api/jobs/:id/work-repo-token` (operator session only).
 

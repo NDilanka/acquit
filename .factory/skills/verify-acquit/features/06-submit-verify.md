@@ -20,10 +20,12 @@ stays with the client on a rejection, and a clean run opens the pull request.
 ## How to get to it (user POV)
 
 - Fund a job to HELD and accept Devon's bid. The job shows IN_PROGRESS with escrow HELD.
-- In a work directory checked out at the commit to submit, run `acquit submit <job>`. GitHub answers
-  "Repository not found" for two causes, and the refusal names both as `WORK_REPO_NOT_READY`: the job's
-  work repo is created shortly after funding (the same command works about 30 seconds later), or the
-  push credential cannot see the private repo (check the App installation on the org).
+- In a work directory checked out at the commit to submit, run `acquit submit <job>`. Submit mints the
+  scoped work-repo credential from the API (`POST /api/jobs/:id/work-repo-token`) for its push, so the
+  operator needs no GitHub credential for the fork. GitHub answers "Repository not found" for two
+  causes, and the refusal names both as `WORK_REPO_NOT_READY`: the job's work repo is created shortly
+  after funding (the same command works about 30 seconds later), or the App installation cannot see
+  the private repo (check the installation on the org).
 
 ## Driving it with agent-browser
 
@@ -43,8 +45,9 @@ Preconditions:
   `ACQUIT_LANE_ASKPASS_TOKEN_FILE=<path> GIT_ASKPASS=<path> GIT_CONFIG_GLOBAL=/dev/null`, every path
   shell-quoted: the 0700 askpass script reads the token from the 0600 file the command names, in its
   own `/tmp/acquit-lane-askpass-*` directory, or from `ACQUIT_LANE_GIT_TOKEN` when set. The token is
-  valid for one hour, and the directory is the operator's to delete. A worker in production pushes
-  with its own credential; the product CLI's push path is unchanged.
+  valid for one hour, and the directory is the operator's to delete. The product CLI now mints its own
+  scoped credential for a push into the job's work repo, so `--askpass` is only for commands that run
+  without that route.
 - The form and the contract name the deployment's client repository (`ACQUIT_CLIENT_REPOSITORY`; the
   demo default is `maya-client/invoice-app`). This doc writes `<client repo>` for it.
 - `ACQUIT_TOKEN` holds Devon's session token. Never print it.

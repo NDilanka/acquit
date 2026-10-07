@@ -125,8 +125,12 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   `acquit-runner-<job>-egress` survives.
 - **Re-run with an instruction.** Run again on the same job with `--instruction "..."` and a script
   that fixes `src/money.ts`. Require the reset fork line, then `Changed files: src/money.ts (<n> lines)`.
-- **Submit what run pushed.** `acquit submit <job> --dir <the same --dir> --remote origin`. Run already
-  pushed the commit to its submission ref, so submit's push is an up-to-date no-op.
+- **Submit what run pushed.** `acquit submit <job> --dir <the same --dir>`. Submit mints the scoped
+  work-repo credential itself (`POST /api/jobs/:id/work-repo-token`) and pushes through an askpass
+  script in a 0600 temp dir it removes, so the operator needs no GitHub credential for the fork. The
+  push target is the job's work repo by default; `--remote origin` (or a `--remote` URL) that resolves
+  to the work repo takes the same path, and any other remote keeps the operator's own credential. Run
+  already pushed the commit to its submission ref, so submit's push is an up-to-date no-op.
 - **claude-code.** Run `acquit run <job> --runner claude-code` with a stored key. Without a key, the
   CLI refuses `PROVIDER_KEY_MISSING` before it starts anything.
 - **Strangers are refused.** A session that is not the job's locked operator gets
@@ -142,7 +146,9 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
 - The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
   repo. Rerun in about 30 seconds.
 - The work-repo token is never printed. The session token never comes from argv (`--token` reads
-  stdin), and both are stripped from the git and docker children's environments.
+  stdin), and both are stripped from the git and docker children's environments. `submit` mints the
+  same scoped token for a push into the job's work repo; a mint the API refuses to a stranger falls
+  back to the operator's own credential and lets `Submit` name the denial.
 - On Linux the provider key lives in the kernel user keyring, which a reboot clears. Run
   `acquit operator init` again after a reboot.
 - The claude-code runner starts Claude Code with `--dangerously-skip-permissions`. The sandbox is the
