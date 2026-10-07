@@ -1086,7 +1086,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 			hiddenTests: done.hiddenTests.length, protectedPaths: done.protectedPaths.map(String) },
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
-		client: row.client,
+		// The owning client is named only to its own session. Everyone else reads null.
+		client: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.client : null,
 		// The page gates Approve on this answer, not on the viewer's role. The edge is still the guard.
 		viewerCanApprove: viewer.role === "CLIENT" && viewer.clientId === row.client &&
 			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",

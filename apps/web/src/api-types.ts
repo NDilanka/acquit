@@ -67,8 +67,8 @@ export interface JobView {
   readonly budget: UsdCents;
   readonly deliveryEndsAt: Instant;
   readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
-  /** The owning client. */
-  readonly client: string;
+  /** The owning client, served to that client's own session only. Null for every other viewer. */
+  readonly client: string | null;
   readonly lockedTo: string | null;
   /** The server's answer: this viewer owns the job and the review awaits its approval. */
   readonly viewerCanApprove: boolean;

@@ -82,8 +82,8 @@ export interface JobView {
 	readonly budget: UsdCents;
 	readonly deliveryEndsAt: Instant;
 	readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
-	/** The client that owns the job. The page gates Approve on this, not on the viewer's role. */
-	readonly client: ClientId;
+	/** The client that owns the job, served to that client's own session and null to every other viewer. */
+	readonly client: ClientId | null;
 	readonly lockedTo: OperatorId | null;
 	/** The owning client's own gate: true exactly when this viewer is that client and the review is open. */
 	readonly viewerCanApprove: boolean;
