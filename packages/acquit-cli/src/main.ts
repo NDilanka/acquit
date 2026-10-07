@@ -193,12 +193,22 @@ function readHiddenLine(): Promise<string> {
 	});
 }
 
-/** Reads one line from stdin. The question is already on stdout; this only collects the value. */
-async function askQuestion(_question: string, secret: boolean): Promise<AskAnswer> {
-	// A cooked-mode terminal echoes a visible answer itself, so the caller must not write it again.
-	// Raw mode (the hidden key) puts nothing on the screen, and a pipe echoes nothing either.
-	if (secret) return { value: process.stdin.isTTY ? await readHiddenLine() : await readLine(), echoed: false };
-	return { value: await readLine(), echoed: process.stdin.isTTY === true };
+/** The two ends a typed answer's echo depends on: the reading end (a cooked terminal echoes what is
+ * typed there) and the screen (a redirected stdout never saw it). */
+type AskPorts = { readonly stdinIsTTY: boolean; readonly stdoutIsTTY: boolean };
+
+/**
+ * Reads one line from stdin. The question is already on stdout; this only collects the value.
+ * `ports` is the process's own ends unless a test injects them.
+ */
+export async function askQuestion(_question: string, secret: boolean,
+	ports: AskPorts = { stdinIsTTY: process.stdin.isTTY === true, stdoutIsTTY: process.stdout.isTTY === true }): Promise<AskAnswer> {
+	// A cooked-mode terminal echoes a visible answer itself only when both the reading end and the
+	// screen are terminals: raw mode (the hidden key) puts nothing on the screen, a pipe echoes
+	// nothing, and a redirected stdout never saw what the terminal showed. In every other case the
+	// caller still has to write the answer.
+	if (secret) return { value: ports.stdinIsTTY ? await readHiddenLine() : await readLine(), echoed: false };
+	return { value: await readLine(), echoed: ports.stdinIsTTY && ports.stdoutIsTTY };
 }
 
 /** The whole of stdin, for `--provider-key-stdin`. The value never enters argv. */

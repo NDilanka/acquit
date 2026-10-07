@@ -232,6 +232,28 @@ test("operator init rewrites the blank provider answer a cooked terminal echoed 
 	assert.equal(transcript, tutorialBlock("1/3 Payouts"));
 });
 
+test("askQuestion suppresses the echo only when both the reading end and the screen are terminals", () => {
+	// The readers use the real stdin, so each case is a child with one piped line; the injected flags
+	// are what the glue under test reads.
+	const askUrl = new URL("../src/main.ts", import.meta.url).href;
+	const answer = (ports: { readonly stdinIsTTY: boolean; readonly stdoutIsTTY: boolean } | null, input: string): unknown => {
+		const script = `import { askQuestion } from ${JSON.stringify(askUrl)};\n`
+			+ `console.log(JSON.stringify(await askQuestion("Provider (anthropic): ", false${ports === null ? "" : `, ${JSON.stringify(ports)}`})));`;
+		const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { input, encoding: "utf8", timeout: 30_000 });
+		assert.equal(child.status, 0, child.stderr);
+		return JSON.parse(child.stdout.trim());
+	};
+	// A piped answer echoes nothing, even onto a terminal screen.
+	assert.deepEqual(answer({ stdinIsTTY: false, stdoutIsTTY: true }, "anthropic\n"), { value: "anthropic", echoed: false });
+	// A terminal reading end with a redirected screen: the terminal echoed onto the screen, not into
+	// the redirected stdout, so the answer still has to be written.
+	assert.deepEqual(answer({ stdinIsTTY: true, stdoutIsTTY: false }, "anthropic\n"), { value: "anthropic", echoed: false });
+	// Both ends are terminals: the cooked terminal already put the typed line on the screen.
+	assert.deepEqual(answer({ stdinIsTTY: true, stdoutIsTTY: true }, "anthropic\n"), { value: "anthropic", echoed: true });
+	// The default reads the process's own ends, which under a pipe are not terminals.
+	assert.deepEqual(answer(null, "anthropic\n"), { value: "anthropic", echoed: false });
+});
+
 test("operator init refuses an OpenAI provider key no runner can use", async () => {
 	assert.throws(() => parseOperatorArgs(["init", "--provider", "openai"], { ACQUIT_TOKEN: "t" }),
 		(error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic key runs today.");
