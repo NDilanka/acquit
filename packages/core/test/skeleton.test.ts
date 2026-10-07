@@ -1168,6 +1168,24 @@ test("RefundSettled refunds the held book and owes the operator the fee PayPal k
 	assert.deepEqual(mismatch.effects, [{ kind: "ALERT", jobId: verified.id, reason: "SETTLEMENT_MISMATCH" }]);
 });
 
+test("a refund whose retained fee is not the capture's recorded fee is refused", () => {
+	// The retained fee is the capture's own paypal_fee, read back from the same capture the job recorded
+	// at capture. A refund that reports any other amount is a settlement this job never made.
+	const exhausted = exhaustedRow();
+	for (const [retained, why] of [[usd("14.15"), "less than the recorded fee"], [usd("15.16"), "more than the recorded fee"]] as const) {
+		const plan = applyJobCommand(exhausted, { type: "RefundSettled", jobId: exhausted.id, refund: refundEvidence(usd("420.00"), retained) }, system);
+		if (typeof plan === "string") throw new Error(`${why}: ${plan}`);
+		assert.equal(plan.refused, "SETTLEMENT_MISMATCH", why);
+		assert.equal(plan.next.state.status, "IN_PROGRESS", why);
+		assert.equal(plan.next.version, exhausted.version, why);
+		assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: exhausted.id, reason: "SETTLEMENT_MISMATCH" }], why);
+	}
+	// The recorded fee still settles, so the guard rejects only a fee the job never saw.
+	const settled = applyJobCommand(exhausted, { type: "RefundSettled", jobId: exhausted.id, refund: refundEvidence() }, system);
+	if (typeof settled === "string") throw new Error(settled);
+	assert.equal(settled.next.state.status, "REFUNDED");
+});
+
 test("ReimbursementSettled records the payout and its 0.25 fee once", () => {
 	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
 	if (typeof refunded === "string") throw new Error(refunded);
@@ -1425,6 +1443,26 @@ test("the refund settles from the provider and the retained fee goes back as a p
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
+test("a refund read back with a different retained fee parks the payout for a person", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted, { paypal: {
+		dispatch: async call => call.kind === "REFUND"
+			? { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence(usd("420.00"), usd("14.15")) } }
+			: (() => { throw new Error(`Unexpected ${call.kind}`); })() as never,
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "REFUND", jobId: exhausted.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(harness.effectState(key), { kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH",
+			detail: "PayPal answered REFUND_COMPLETED for capture TESTCAPTURE (refund REFUND1)" });
+		assert.equal((await harness.row()).state.status, "IN_PROGRESS");
+		// No reimbursement is enqueued for a refund the row never took.
+		assert.deepEqual(harness.effectKinds(), ["REFUND", "ALERT"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
 test("the merge effect finishes the paid job, and a conflict parks it for a human", async () => {
 	const released = applyJobCommand(approvedRow(), { type: "ReleaseSettled", jobId: "job_submit" as JobId, release: releaseEvidence() }, system);
 	if (typeof released === "string") throw new Error(released);
@@ -1600,6 +1638,26 @@ test("a webhook fact the row refuses is recorded as a refusal and leaves the job
 			.filter(effect => effect.kind === "ALERT");
 		assert.deepEqual(alerts.map(effect => effect.kind === "ALERT" ? effect.reason : null), ["SETTLEMENT_MISMATCH"]);
 	} finally { f.store.close(); }
+});
+
+test("a refund webhook whose retained fee the row never recorded is refused", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted);
+	try {
+		const refunding = await harness.row();
+		assert.equal(refunding.state.status === "IN_PROGRESS" ? refunding.state.attempts.phase : null, "REFUND_PENDING");
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", exhausted.id);
+		harness.base.read("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED",
+			refund: refundEvidence(usd("420.00"), usd("15.16")) } });
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-FEE-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-FEE-1"), "refused, the job did not take this settlement");
+		// The selected refund stands, and no REIMBURSE is enqueued for the fee the row did not settle.
+		assert.deepEqual(await harness.row(), refunding);
+		assert.deepEqual(harness.effectKinds(), ["ALERT"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
 test("a webhook whose resource PayPal does not know is refused and no job moves", async () => {
