@@ -44,7 +44,7 @@ try {
 				throw new CliError("MISSING_ARGUMENT", `--${flag.name} is required.`, `Run npm run -s ctl -- ${command.examples[0]}. See npm run -s ctl -- ${name} --help.`, 2);
 			}
 			const data = await command.run(parsed, context());
-			process.stdout.write(JSON.stringify({ ok: true, command: name, ...(parsed["dry-run"] ? { dryRun: true } : {}), data }) + "\n");
+			process.stdout.write(command.name === "ledger" && !parsed.json ? String(data.text) : JSON.stringify({ ok: true, command: name, ...(parsed["dry-run"] ? { dryRun: true } : {}), data }) + "\n");
 		}
 	}
 } catch (error) {

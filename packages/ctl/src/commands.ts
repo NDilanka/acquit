@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
+import type { StoredBookRaw } from "../../core/src/job.ts";
 import { alive, captured, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
-import { atomicJson, clearState, counts, envKeys, locked, readState } from "./state.ts";
+import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs } from "./state.ts";
 import type { Context, RunState } from "./state.ts";
 import type { Parsed, Result } from "./registry.ts";
 import { browserExecutable } from "./executables.ts";
@@ -27,6 +29,82 @@ export async function clockAdvance(parsed: Parsed, ctx: Context): Promise<Result
 	const advanceMs = match ? Number(match[1]) * units[match[2] as keyof typeof units] : NaN;
 	if (!Number.isSafeInteger(advanceMs) || advanceMs <= 0 || advanceMs > 365 * 86400000) throw new CliError("INVALID_ARGUMENT", "Use a positive duration of at most 365 days.", "Run npm run -s ctl -- clock advance 4h.", 2);
 	return devPost(ctx, "clock", { advanceMs });
+}
+type LedgerLine = { kind: "HELD" | "RELEASED" | "FEE" | "REFUND"; cents: number; at: string; processor?: number; acquit?: number };
+type JobBody = { job: { id: string; book: StoredBookRaw; bids: { operators: { price: number; status: string }[]; house: { price: number; status: string } | null } } };
+type LedgerTools = Pick<typeof import("../../core/src/ledger.ts"), "checkLaws" | "lawText">;
+const LINE_KINDS = ["HELD", "RELEASED", "FEE", "REFUND"];
+function money(cents: number): string {
+	return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+}
+/** How a raw stored value reads inside an operator-facing line: JSON for present values, a word for an absent one. */
+function storedText(value: unknown): string {
+	return value === undefined ? "missing" : JSON.stringify(value) ?? String(value);
+}
+function lawCheck(raw: unknown, { checkLaws }: LedgerTools): { laws: "OK" | "BROKEN"; law: LedgerLaw | null } {
+	// The checker is total over parsed JSON, so the raw stored value is judged exactly as stored.
+	const result = checkLaws(raw as unknown as readonly BookLine[]);
+	return typeof result === "string" ? { laws: "OK", law: null } : { laws: "BROKEN", law: result.law };
+}
+function ledgerText(job: JobBody["job"], tools: LedgerTools): { text: string; laws: "OK" | "BROKEN"; law: LedgerLaw | null; ledger: unknown } {
+	const price = [...job.bids.operators, job.bids.house].find(bid => bid && ["ACCEPTED", "CHOSEN"].includes(bid.status))?.price ?? null;
+	const note = (line: LedgerLine) => {
+		if (line.kind === "HELD") {
+			const jobPrice = price ?? Math.round((line.cents * 100) / 105);
+			return `client payment (${money(jobPrice)} job + ${money(line.cents - jobPrice)} escrow fee)`;
+		}
+		if (line.kind === "RELEASED") return `payout to operator (${money(line.cents)})`;
+		if (line.kind === "FEE") return `fees (${money(line.processor ?? 0)} PayPal processing + ${money(line.acquit ?? 0)} Acquit)`;
+		return "refunded to client";
+	};
+	const render = (entry: unknown, index: number): string => {
+		if (entry === null || typeof entry !== "object" || !LINE_KINDS.includes(String((entry as LedgerLine).kind))) {
+			return `${job.id}  stored line ${index + 1} is not a ledger line (${storedText(entry)})`;
+		}
+		const line = entry as LedgerLine;
+		const at = typeof line.at === "string" ? line.at.slice(0, 16).replace("T", " ") : storedText(line.at);
+		return `${at}  ${job.id}  ${line.kind}  ${money(line.cents)} USD  ${note(line)}`;
+	};
+	const raw = job.book.kind === "NONE" ? [] : job.book.kind === "VALUE" ? job.book.value : undefined;
+	const rendered = job.book.kind === "NONE" ? []
+		: job.book.kind === "UNREADABLE" ? [`${job.id}  stored ${job.book.why}; the book cannot be read`]
+		: Array.isArray(job.book.value) ? job.book.value.map(render)
+		: [`${job.id}  stored ${job.book.path} is not an array (${storedText(job.book.value)})`];
+	const check = lawCheck(raw, tools);
+	const verdict = check.law === null ? "OK" : `BROKEN ${check.law} (${tools.lawText(check.law)})`;
+	// The JSON ledger carries the stored value itself, so a machine reader sees the same corruption the check refused.
+	const ledger = job.book.kind === "NONE" ? [] : job.book.kind === "VALUE" ? job.book.value ?? null : null;
+	return { text: `${rendered.length ? rendered.join("\n") : "No ledger lines"}\nLaws: ${verdict}\n`, laws: check.laws, law: check.law, ledger };
+}
+export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
+	if ((parsed.job !== undefined) === Boolean(parsed.all)) throw new CliError("INVALID_ARGUMENT", "Name one job with --job or every job with --all.", "Run npm run -s ctl -- ledger --job <id>.", 2);
+	const missing = () => new CliError("JOB_NOT_FOUND", `No job has id ${String(parsed.job)}.`, "Run npm run -s ctl -- jobs, or check the id.");
+	if (!parsed.all && !/^job_[A-Za-z0-9_-]{4,80}$/.test(String(parsed.job))) throw missing();
+	// Local inspection must include other clients' non-OPEN books, unlike the actor-filtered API.
+	const { available, rows } = await readStoredJobs(ctx.databasePath);
+	// A --check with nothing to read would pass for that reason alone, so refuse it instead.
+	if (parsed.all && parsed.check && !available) throw new CliError("DATABASE_NOT_FOUND",
+		`No jobs table to check at ${ctx.databasePath}.`,
+		"Start this lane's app once so it creates the database, or set DATABASE_PATH to a lane database that has run, then retry npm run -s ctl -- ledger --all --check.");
+	const selected = parsed.all ? rows : rows.filter(row => row.id === parsed.job);
+	if (!parsed.all && selected.length === 0) throw missing();
+	// Ledger-only modules must not add parsing/import work to H0's CLI boot path.
+	const [tools, { storedBookRaw }] = await Promise.all([import("../../core/src/ledger.ts"), import("../../core/src/job.ts")]);
+	const jobs: JobBody["job"][] = selected.map(row => ({ id: row.id, book: storedBookRaw(row),
+		bids: { operators: row.bids.filter(bid => bid.kind === "INDEPENDENT"), house: row.bids.find(bid => bid.kind === "HOUSE") ?? null } }));
+	const reports = jobs.map(job => ledgerText(job, tools));
+	const broken = reports.findIndex(report => report.laws !== "OK");
+	if (parsed.check && broken >= 0) {
+		const law = reports[broken].law ?? "order";
+		throw new CliError("LAW_BREAK", `${jobs[broken].id} breaks ${law} (${tools.lawText(law)}).`,
+			`Inspect the stored book, then stop the lane before another money move.\n${jobs[broken].id}\n${reports[broken].text}`);
+	}
+	return { text: reports.map((report, index) => parsed.all ? `${jobs[index].id}\n${report.text}` : report.text).join(""),
+		jobs: reports.map((report, index) => ({ id: jobs[index].id, laws: report.laws, law: report.law, ledger: report.ledger })) };
+}
+export async function jobList(_parsed: Parsed, ctx: Context): Promise<Result> {
+	const { rows } = await readStoredJobs(ctx.databasePath);
+	return { jobs: rows.map(row => ({ id: row.id, status: row.state.status })) };
 }
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);

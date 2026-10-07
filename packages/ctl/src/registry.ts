@@ -1,4 +1,4 @@
-import { clockAdvance, fundMode, login, screenshot, seedDb, start, status, stop } from "./commands.ts";
+import { clockAdvance, fundMode, jobList, ledger, login, screenshot, seedDb, start, status, stop } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -37,6 +37,14 @@ export const registry: Command[] = [
 	{ name: "seed-db", summary: "Reset demo tables and invalidate all existing sessions.", usage: "seed-db [--dry-run] [--yes]",
 		flags: [{ name: "yes", type: "boolean", summary: "Confirm reset while an app is running.", default: false }],
 		examples: ["seed-db --dry-run", "seed-db --yes"], destructive: true, run: seedDb },
+	{ name: "ledger", summary: "Print stored ledger lines and check the three escrow laws.", usage: "ledger (--job <id> | --all) [--json] [--check]",
+		flags: [{ name: "job", type: "string", summary: "Job id to read." },
+			{ name: "all", type: "boolean", summary: "Read every stored job.", default: false },
+			{ name: "json", type: "boolean", summary: "Print the JSON envelope instead of ledger text.", default: false },
+			{ name: "check", type: "boolean", summary: "Exit nonzero when a book breaks a law.", default: false }],
+		examples: ["ledger --job job_7Q2K", "ledger --all --check"], destructive: false, run: ledger },
+	{ name: "jobs", summary: "List every stored job in the lane database.", usage: "jobs",
+		flags: [], examples: ["jobs"], destructive: false, run: jobList },
 	{ name: "login", summary: "Create a local development session for a seeded handle.", usage: "login --test-user <handle> [--save]",
 		flags: [{ name: "test-user", type: "string", summary: "Development handle from GET /api/users.", required: true },
 			{ name: "save", type: "boolean", summary: "Save the local token to data/ctl/sessions/<handle>.json.", default: false }],
@@ -66,6 +74,6 @@ export function help(command?: Command): string {
 		"\nExit codes: 0 success, 1 runtime failure, 2 usage error.",
 		'Success: {"ok":true,"command":"...","dryRun":true,"data":{...}} (dryRun only for dry runs).',
 		'Failure: {"ok":false,"command":"...","error":{"code":"...","message":"...","fix":"..."}}',
-		"Help is the only non-JSON stdout output.",
+		"Help and ledger output without --json are the only non-JSON stdout outputs.",
 	].join("\n") + "\n";
 }

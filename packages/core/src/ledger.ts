@@ -58,31 +58,99 @@ export type LedgerMove =
 	}
 	| { readonly kind: "Refund"; readonly refunded: UsdCents; readonly at: Instant };
 
+export type LedgerLaw = "conservation" | "one_release" | "refund_xor_payout" | "order";
+
 export type LawBreak = {
 	readonly kind: "LAW_BREAK";
-	readonly law: "conservation" | "one_release" | "refund_xor_payout" | "order";
+	readonly law: LedgerLaw;
 };
+
+const LAW_TEXT: Record<LedgerLaw, string> = {
+	conservation: "released plus fee equals held, or refund equals held",
+	one_release: "no double release",
+	refund_xor_payout: "one disposition",
+	order: "hold, then one disposition",
+};
+
+export function lawText(law: LedgerLaw): string {
+	return LAW_TEXT[law];
+}
+
+function cents(amount: UsdCents): boolean {
+	return Number.isSafeInteger(amount) && amount >= 0;
+}
+
+function breakLaw(law: LedgerLaw): LawBreak {
+	return { kind: "LAW_BREAK", law };
+}
+
+function reduceAny(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
+	if (book.length === 0 && move.kind === "Hold") {
+		if (!cents(move.gross) || move.gross <= 0) return breakLaw("conservation");
+		return [{ kind: "HELD", cents: move.gross, at: move.at }];
+	}
+	if (book.length === 1 && book[0].kind === "HELD" && move.kind === "Release") {
+		if (!cents(move.operatorNet) || !cents(move.processorFee) || !cents(move.platformFee)) return breakLaw("conservation");
+		const fee = move.processorFee + move.platformFee;
+		if (!Number.isSafeInteger(fee) || move.operatorNet + fee !== book[0].cents) return breakLaw("conservation");
+		return [book[0], { kind: "RELEASED", cents: move.operatorNet, at: move.at },
+			{ kind: "FEE", cents: fee as UsdCents, processor: move.processorFee, acquit: move.platformFee, at: move.at }];
+	}
+	if (book.length === 1 && book[0].kind === "HELD" && move.kind === "Refund") {
+		if (!cents(move.refunded) || move.refunded !== book[0].cents) return breakLaw("conservation");
+		return [book[0], { kind: "REFUND", cents: move.refunded, at: move.at }];
+	}
+	if (book.length === 3 && move.kind === "Release") return breakLaw("one_release");
+	if ((book.length === 3 && move.kind === "Refund") || (book.length === 2 && move.kind === "Release")) return breakLaw("refund_xor_payout");
+	return breakLaw("order");
+}
 
 export function reduceLedger(book: EmptyBook, move: Extract<LedgerMove, { kind: "Hold" }>): HeldBook | LawBreak;
 export function reduceLedger(book: HeldBook, move: Extract<LedgerMove, { kind: "Release" }>): PaidBook | LawBreak;
 export function reduceLedger(book: HeldBook, move: Extract<LedgerMove, { kind: "Refund" }>): RefundedBook | LawBreak;
+export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak;
 export function reduceLedger(book: EscrowBook, move: LedgerMove): EscrowBook | LawBreak {
-	// TODO Hold on empty gives [HELD gross].
-	// TODO Release on held writes RELEASED operatorNet and FEE (processorFee + platformFee) as one pair.
-	//      Break "conservation" unless operatorNet + processorFee + platformFee = HELD.
-	// TODO Refund on held writes REFUND. Break "conservation" unless refunded = HELD.
-	// TODO Any other pair breaks "order", "one_release", or "refund_xor_payout".
-	if (book.length === 0 && move.kind === "Hold") {
-		if (!Number.isSafeInteger(move.gross) || move.gross <= 0) return { kind: "LAW_BREAK", law: "conservation" };
-		return [{ kind: "HELD", cents: move.gross, at: move.at }];
-	}
-	// Release and refund remain outside the walking skeleton.
-	throw new Error("not implemented");
+	return reduceAny(book, move);
 }
 
-/** Same check as close() in ledger.bend. Used by property tests and the Bend2 demo parity check. */
 export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFUNDED" | LawBreak {
-	throw new Error("not implemented");
+	let book: EscrowBook = [];
+	// A stored book is parsed JSON, so the checker stays total: a line that is not a
+	// book entry is an illegal sequence, never a TypeError.
+	if (!Array.isArray(lines)) return breakLaw("order");
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		if (line === null || typeof line !== "object") return breakLaw("order");
+		let move: LedgerMove;
+		let fee: FeeLine | undefined;
+		switch (line.kind) {
+			case "HELD": move = { kind: "Hold", gross: line.cents, at: line.at }; break;
+			case "REFUND": move = { kind: "Refund", refunded: line.cents, at: line.at }; break;
+			case "RELEASED": {
+				const next = lines[index + 1];
+				fee = next?.kind === "FEE" ? next : undefined;
+				// The stored fee is untrusted JSON: the reducer gets exactly what was stored, so its own
+				// safe-integer check names the law. Zeros never stand in for a stored component, because
+				// a null read as a zero fee satisfies the sum and coerces in the split check instead of
+				// failing. They stand in only for a missing FEE line, which is an order break itself.
+				move = fee
+					? { kind: "Release", operatorNet: line.cents, processorFee: fee.processor, platformFee: fee.acquit, at: line.at }
+					: { kind: "Release", operatorNet: line.cents, processorFee: 0 as UsdCents, platformFee: 0 as UsdCents, at: line.at };
+				break;
+			}
+			default: return breakLaw("order");
+		}
+		// Stop at the first illegal move, with the reducer's precedence (not aggregate sums).
+		const nextBook: EscrowBook | LawBreak = reduceLedger(book, move);
+		if ("kind" in nextBook) return nextBook;
+		if (line.kind === "RELEASED") {
+			if (!fee) return breakLaw("order");
+			if (!cents(fee.cents) || fee.processor + fee.acquit !== fee.cents) return breakLaw("conservation");
+			index++;
+		}
+		book = nextBook;
+	}
+	return book.length === 3 ? "PAID" : book.length === 2 ? "REFUNDED" : "OPEN";
 }
 
 /** Commercial terms. Client pays 5% on top. Operator gives up 10%. Acquit's 15% covers PayPal's fee. */
@@ -96,9 +164,7 @@ export type CommercialSplit = {
 };
 
 export function commercialSplit(price: UsdCents): CommercialSplit {
-	// TODO Integer basis points, half-up rounding to the cent.
-	// TODO held = price + clientFee (42000). operatorNet = price - operatorFee (36000).
-	// TODO fee = clientFee + operatorFee (6000). Assert operatorNet + fee = held.
+	// Integer basis points, half-up rounding to the cent.
 	if (!Number.isSafeInteger(price) || price <= 0) throw new Error("Invalid price");
 	const round = (bps: number): UsdCents => Number((BigInt(price) * BigInt(bps) + 5000n) / 10000n) as UsdCents;
 	const clientFee = round(500);
@@ -130,3 +196,43 @@ export type TreasuryEntry =
 		readonly cause: "NET_BELOW_PROMISE" | "REFUND_DEBITED_OPERATOR";
 		readonly at: Instant;
 	};
+
+export type ReleaseFacts = {
+	readonly jobId: JobId;
+	readonly operator: OperatorId;
+	/** The operator net quoted at accept. */
+	readonly promisedNet: UsdCents;
+	/** The net the operator actually received, parsed from the provider's capture. */
+	readonly observedNet: UsdCents;
+	readonly predictedProcessorFee: UsdCents;
+	readonly observedProcessorFee: UsdCents;
+	readonly at: Instant;
+};
+
+export type RefundFacts = {
+	readonly jobId: JobId;
+	readonly operator: OperatorId;
+	readonly retainedProcessorFee: UsdCents;
+	readonly at: Instant;
+};
+
+export function releaseTreasury(facts: ReleaseFacts): readonly TreasuryEntry[] {
+	if (!cents(facts.promisedNet) || !cents(facts.observedNet) || !cents(facts.predictedProcessorFee) || !cents(facts.observedProcessorFee)) throw new Error("Invalid treasury facts");
+	const entries: TreasuryEntry[] = [];
+	if (facts.observedProcessorFee !== facts.predictedProcessorFee) {
+		entries.push({ kind: "PROCESSOR_FEE_VARIANCE", jobId: facts.jobId, predicted: facts.predictedProcessorFee, observed: facts.observedProcessorFee, at: facts.at });
+	}
+	// Compare the observed net with the promise directly: a fee-driven gap in what the operator receives is owed back.
+	if (facts.observedNet < facts.promisedNet) {
+		entries.push({ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: facts.jobId, operator: facts.operator, cents: (facts.promisedNet - facts.observedNet) as UsdCents, cause: "NET_BELOW_PROMISE", at: facts.at });
+	}
+	return entries;
+}
+
+export function refundTreasury(facts: RefundFacts): readonly TreasuryEntry[] {
+	if (!cents(facts.retainedProcessorFee) || facts.retainedProcessorFee <= 0) throw new Error("Invalid retained fee");
+	return [
+		{ kind: "REFUND_FEE_RETAINED", jobId: facts.jobId, cents: facts.retainedProcessorFee, at: facts.at },
+		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: facts.jobId, operator: facts.operator, cents: facts.retainedProcessorFee, cause: "REFUND_DEBITED_OPERATOR", at: facts.at },
+	];
+}

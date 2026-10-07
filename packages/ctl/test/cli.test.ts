@@ -24,6 +24,7 @@ async function fixture(run: (cli: (args: string[]) => { code: number | null; std
 	const root = await mkdtemp(resolve(tmpdir(), "acquit-ctl-test-"));
 	try {
 		await cp(source, resolve(root, "packages/ctl/src"), { recursive: true });
+		await cp(fileURLToPath(new URL("../../core/src", import.meta.url)), resolve(root, "packages/core/src"), { recursive: true });
 		await writeFile(resolve(root, "package.json"), '{"type":"module"}');
 		const [api, web] = [await unusedPort(), await unusedPort()];
 		const cli = (args: string[]) => {
@@ -41,13 +42,189 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 	await fixture(async cli => {
 		const result = cli(["--help"]);
 		assert.equal(result.code, 0);
-		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "login", "screenshot"]);
+		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|ledger|jobs|login|screenshot)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "ledger", "jobs", "login", "screenshot"]);
 		assert.equal(result.stdout.includes("stop [destructive]"), true);
 		assert.equal(result.stdout.includes("Exit codes: 0 success, 1 runtime failure, 2 usage error."), true);
 		assert.equal(result.stdout.includes('Failure: {"ok":false'), true);
 		const command = cli(["screenshot", "--help"]);
 		assert.equal(command.code, 0);
 		assert.equal(command.stdout.includes("--path <value>  Same-origin route to capture. Default: /."), true);
+	});
+});
+test("CLI startup does not eagerly load F1's ledger or job modules", () => {
+	const main = new URL("../src/main.ts", import.meta.url).href;
+	const script = `
+		import { registerHooks } from "node:module";
+		registerHooks({ resolve(specifier, context, nextResolve) {
+			const resolved = nextResolve(specifier, context);
+			if (/\\/core\\/src\\/(ledger|job)\\.ts$/.test(resolved.url)) throw new Error("Ledger-only module loaded at startup");
+			return resolved;
+		} });
+		process.argv = [process.execPath, "main.ts", "--help"];
+		await import(${JSON.stringify(main)});
+	`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 30_000 });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /^ledger /m);
+});
+test("ledger --all covers every stored job and names the broken law with its evidence", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		const at = "2026-11-03T15:22:00.000Z";
+		db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT)");
+		const insert = (id: string, client: string, state: unknown) =>
+			db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(id, JSON.stringify({ id, version: 1, client, bids: [], state }));
+		insert("job_open", "other-client", { status: "OPEN", phase: { kind: "BIDDING" } });
+		insert("job_broken", "other-client", { status: "IN_PROGRESS", escrow: { book: [
+			{ kind: "HELD", cents: 42000, at },
+			{ kind: "RELEASED", cents: 36000, at },
+			{ kind: "FEE", cents: 6000, processor: 1515, acquit: 4485, at },
+			{ kind: "REFUND", cents: 42000, at },
+		] } });
+		db.close();
+		const listed = cli(["jobs"]);
+		assert.equal(listed.code, 0);
+		assert.deepEqual(JSON.parse(listed.stdout).data.jobs, [{ id: "job_open", status: "OPEN" }, { id: "job_broken", status: "IN_PROGRESS" }]);
+		const report = cli(["ledger", "--all"]);
+		assert.equal(report.code, 0);
+		assert.match(report.stdout, /job_open\nNo ledger lines\nLaws: OK\n/);
+		assert.match(report.stdout, /job_broken\n/);
+		assert.match(report.stdout, /RELEASED/);
+		assert.match(report.stdout, /Laws: BROKEN refund_xor_payout \(one disposition\)/);
+		const json = JSON.parse(cli(["ledger", "--all", "--json"]).stdout);
+		assert.deepEqual(json.data.jobs.map((job: { id: string; laws: string; law: string | null }) => [job.id, job.laws, job.law]),
+			[["job_open", "OK", null], ["job_broken", "BROKEN", "refund_xor_payout"]]);
+		const check = cli(["ledger", "--all", "--check"]);
+		assert.equal(check.code, 1);
+		const failure = JSON.parse(check.stdout);
+		assert.equal(failure.error.code, "LAW_BREAK");
+		assert.match(failure.error.message, /job_broken breaks refund_xor_payout \(one disposition\)/);
+		assert.match(failure.error.fix, /job_broken/);
+		assert.match(failure.error.fix, /RELEASED/);
+		assert.match(failure.error.fix, /REFUND/);
+	});
+});
+test("ledger --job reads another client's HELD book and pins the tutorial text and API ledger", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const { projectJob } = await import("../../core/src/job.ts");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		const at = "2026-11-01T11:12:00.000Z";
+		const held = [{ kind: "HELD", cents: 42000, at }];
+		db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT)");
+		const row = { id: "job_7Q2K", version: 1, client: "other-client", title: "Fixture",
+			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z" },
+			bids: [{ id: "bid_test", operator: "devon-ops", agent: "ts-bugfixer", kind: "INDEPENDENT", price: 40000, status: "ACCEPTED" }],
+			state: { status: "IN_PROGRESS", escrow: { book: held, payee: { operator: "devon-ops" } }, attempts: { phase: "WORKING", history: [] } } };
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		db.close();
+		const text = cli(["ledger", "--job", row.id, "--check"]);
+		assert.equal(text.code, 0);
+		assert.equal(text.stdout, "2026-11-01 11:12  job_7Q2K  HELD  420.00 USD  client payment (400.00 job + 20.00 escrow fee)\nLaws: OK\n");
+		const json = cli(["ledger", "--job", row.id, "--json"]);
+		assert.equal(json.code, 0);
+		assert.deepEqual(JSON.parse(json.stdout).data.jobs, [{ id: row.id, laws: "OK", law: null, ledger: held }]);
+		// projectJob is the API's ledger projection; switching the owner must not change the stored array.
+		const mayaRow = { ...row, client: "maya-client" };
+		const apiJob = projectJob(mayaRow as never, { role: "CLIENT", clientId: "maya-client" as never }, new Map());
+		assert.deepEqual(JSON.parse(json.stdout).data.jobs[0].ledger, apiJob.ledger);
+	});
+});
+test("ledger judges the stored book exactly as stored, never a projected empty one", async () => {
+	await fixture(async (cli, root) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(resolve(root, "test.db"));
+		db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT)");
+		const insert = (id: string, state: unknown) => db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(id, JSON.stringify({ id, version: 1, client: "other-client", bids: [], state }));
+		const at = "2026-11-03T15:22:00.000Z";
+		const held = { kind: "HELD", cents: 42000, at };
+		// id, state, exact ledger text, law (null is OK), exact JSON ledger value.
+		const rows: Array<[string, unknown, string, "order" | null, unknown]> = [
+			["job_work_null", { status: "IN_PROGRESS", escrow: { book: null } },
+				"job_work_null  stored escrow.book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_work_omit", { status: "IN_PROGRESS", escrow: {} },
+				"job_work_omit  stored escrow.book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_work_noescrow", { status: "IN_PROGRESS" },
+				"job_work_noescrow  stored escrow.book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_verified_null", { status: "VERIFIED", escrow: { book: null } },
+				"job_verified_null  stored escrow.book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_refund_pending", { status: "OPEN", phase: { kind: "FUNDING", checkout: { phase: "REFUND_PENDING", escrow: { book: null } } } },
+				"job_refund_pending  stored checkout.escrow.book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_refund_noescrow", { status: "OPEN", phase: { kind: "FUNDING", checkout: { phase: "REFUND_PENDING" } } },
+				"job_refund_noescrow  stored checkout.escrow.book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_paid_omit", { status: "PAID" },
+				"job_paid_omit  stored book is not an array (missing)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_refunded_null", { status: "REFUNDED", book: null },
+				"job_refunded_null  stored book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_closed_null", { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: at, book: null },
+				"job_closed_null  stored book is not an array (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_null_line", { status: "IN_PROGRESS", escrow: { book: [null] } },
+				"job_null_line  stored line 1 is not a ledger line (null)\nLaws: BROKEN order (hold, then one disposition)\n", "order", [null]],
+			["job_bad_status", { status: "WAT" },
+				"job_bad_status  stored state.status is not a job status; the book cannot be read\nLaws: BROKEN order (hold, then one disposition)\n", "order", null],
+			["job_open_bidding", { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } }, "No ledger lines\nLaws: OK\n", null, []],
+			["job_closed_empty", { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: at, book: [] }, "No ledger lines\nLaws: OK\n", null, []],
+			["job_closed_held", { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: at, book: [held] },
+				"2026-11-03 15:22  job_closed_held  HELD  420.00 USD  client payment (400.00 job + 20.00 escrow fee)\nLaws: OK\n", null, [held]],
+		];
+		for (const [id, state] of rows) insert(id, state);
+		db.close();
+		const plain = cli(["ledger", "--job", rows[0][0]]);
+		assert.equal(plain.code, 0);
+		assert.equal(plain.stdout, rows[0][2]);
+		const open = cli(["ledger", "--job", "job_open_bidding", "--check"]);
+		assert.equal(open.code, 0);
+		assert.equal(open.stdout, "No ledger lines\nLaws: OK\n");
+		const listing = cli(["ledger", "--all"]);
+		assert.equal(listing.code, 0);
+		assert.equal(listing.stdout, rows.map(([id, , text]) => `${id}\n${text}`).join(""));
+		const json = cli(["ledger", "--all", "--json"]);
+		assert.equal(json.code, 0);
+		assert.deepEqual(JSON.parse(json.stdout).data.jobs,
+			rows.map(([id, , , law, ledger]) => ({ id, laws: law === null ? "OK" : "BROKEN", law, ledger })));
+		for (const [id, , text, law] of rows) {
+			if (law === null) continue;
+			const check = cli(["ledger", "--job", id, "--check"]);
+			assert.equal(check.code, 1);
+			const failure = JSON.parse(check.stdout);
+			assert.equal(failure.error.code, "LAW_BREAK");
+			assert.equal(failure.error.message, `${id} breaks ${law} (hold, then one disposition).`);
+			assert.equal(failure.error.fix, `Inspect the stored book, then stop the lane before another money move.\n${id}\n${text}`);
+		}
+	});
+});
+test("ledger --job reports missing and malformed ids as JOB_NOT_FOUND without an API", async () => {
+	await fixture(async cli => {
+		for (const id of ["job_missing", "nope", "", "job_a", `job_${"a".repeat(81)}`, "job_bad/id"]) {
+			const result = cli(["ledger", "--job", id]);
+			assert.equal(result.code, 1);
+			const failure = JSON.parse(result.stdout);
+			assert.equal(failure.error.code, "JOB_NOT_FOUND");
+			assert.match(failure.error.fix, /jobs, or check the id/);
+		}
+	});
+});
+test("ledger --all --check refuses a missing or jobless database instead of passing vacuously", async () => {
+	await fixture(async (cli, root) => {
+		const database = resolve(root, "test.db");
+		const refused = () => {
+			const failed = cli(["ledger", "--all", "--check"]);
+			assert.equal(failed.code, 1);
+			const failure = JSON.parse(failed.stdout);
+			assert.equal(failure.error.code, "DATABASE_NOT_FOUND");
+			assert.equal(failure.error.message, `No jobs table to check at ${database}.`);
+			assert.match(failure.error.fix, /ledger --all --check/);
+		};
+		refused();
+		const { DatabaseSync } = await import("node:sqlite");
+		new DatabaseSync(database).close();
+		refused();
+		// Without --check the plan keeps jobs and the plain listing unchanged.
+		assert.deepEqual(JSON.parse(cli(["jobs"]).stdout).data.jobs, []);
+		const listing = cli(["ledger", "--all"]);
+		assert.equal(listing.code, 0);
+		assert.equal(listing.stdout, "");
 	});
 });
 test("lane zero is the default slot; positive lanes isolate all resources", () => {

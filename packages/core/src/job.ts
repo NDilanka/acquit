@@ -22,7 +22,7 @@ import type {
 	Version,
 } from "./ids.ts";
 import { reduceLedger } from "./ledger.ts";
-import type { EmptyBook, HeldBook, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
+import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal.ts";
@@ -605,6 +605,46 @@ export function rankBids(bids: readonly Bid[], paidReceipts: ReadonlyMap<Operato
 		house: bids.find(b => b.kind === "HOUSE") ?? null };
 }
 
+/** The stored book, whatever the reader's role. projectJob serves it through the API; the ctl ledger command reads it straight from the lane database. */
+export function storedBook(row: JobRow): readonly LedgerLine[] {
+	const state = row.state;
+	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
+	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow
+		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
+	return held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
+}
+
+/** Where a stored row keeps its book and the raw parsed value exactly as stored. NONE means the state cannot hold one yet; UNREADABLE means the state shape is not recognized. The check path judges this value; storedBook above keeps the API projection's defaults for the same rows. */
+export type StoredBookRaw =
+	| { readonly kind: "NONE" }
+	| { readonly kind: "VALUE"; readonly path: "escrow.book" | "checkout.escrow.book" | "book"; readonly value: unknown }
+	| { readonly kind: "UNREADABLE"; readonly why: string };
+
+/** The book field of a holder that may be any parsed JSON value. */
+function bookAt(holder: unknown): unknown {
+	return holder !== null && typeof holder === "object" ? (holder as { readonly book?: unknown }).book : undefined;
+}
+
+export function storedBookRaw(row: JobRow): StoredBookRaw {
+	const state = row.state as unknown;
+	if (state === null || typeof state !== "object") return { kind: "UNREADABLE", why: "state is not an object" };
+	const shape = state as { readonly status?: unknown; readonly phase?: unknown; readonly escrow?: unknown; readonly book?: unknown };
+	if (shape.status === "OPEN") {
+		const phase = shape.phase as { readonly kind?: unknown; readonly checkout?: unknown } | null | undefined;
+		if (phase === null || typeof phase !== "object") return { kind: "UNREADABLE", why: "OPEN phase is not an object" };
+		if (phase.kind === "BIDDING") return { kind: "NONE" };
+		if (phase.kind !== "FUNDING") return { kind: "UNREADABLE", why: "OPEN phase.kind is not a phase kind" };
+		const checkout = phase.checkout as { readonly phase?: unknown; readonly escrow?: unknown } | null | undefined;
+		if (checkout === null || typeof checkout !== "object") return { kind: "UNREADABLE", why: "OPEN FUNDING checkout is not an object" };
+		if (!["CREATING_ORDER", "AWAITING_APPROVAL", "CAPTURING", "REFUND_PENDING"].includes(String(checkout.phase))) return { kind: "UNREADABLE", why: "OPEN FUNDING checkout.phase is not a checkout phase" };
+		if (checkout.phase !== "REFUND_PENDING") return { kind: "NONE" };
+		return { kind: "VALUE", path: "checkout.escrow.book", value: bookAt(checkout.escrow) };
+	}
+	if (shape.status === "IN_PROGRESS" || shape.status === "VERIFIED") return { kind: "VALUE", path: "escrow.book", value: bookAt(shape.escrow) };
+	if (shape.status === "PAID" || shape.status === "REFUNDED" || shape.status === "CLOSED") return { kind: "VALUE", path: "book", value: shape.book };
+	return { kind: "UNREADABLE", why: "state.status is not a job status" };
+}
+
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobView {
 	const ranked = rankBids(row.bids, paidReceipts);
@@ -615,7 +655,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
 	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow
 		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
-	const ledger = held?.book ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.book : []);
+	const ledger = storedBook(row);
 	const history = state.status === "IN_PROGRESS" ? state.attempts.history
 		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
 	const used = history.length + (state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? 1 : 0);
