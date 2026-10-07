@@ -17,25 +17,20 @@ import { parseBidArgs, runBid } from "./bid.ts";
 import { parseDiffArgs, runDiff } from "./diff.ts";
 import { parseReceiptsArgs, runReceipts } from "./receipts.ts";
 
-const USAGE = `acquit — work the job board from a terminal
+const USAGE_HEADER = `acquit — work the job board from a terminal
 
-Usage:
-  acquit login [--api <url>] [--no-open] [--timeout <seconds>]
-  acquit operator init [--provider anthropic|openai] [--provider-key-stdin] [--api <url>]
-  acquit agent create <name> --prompt <file> [--runner claude-code|codex] [--allow-tools Read,Edit,Bash] [--api <url>]
-  acquit jobs list [--api <url>]
-  acquit bid <job> --price <usd> --eta <days|hours> --agent <name> --pitch <text> [--api <url>]
-  acquit run <job> [--api <url>]
-  acquit diff <job> [--dir .] [--api <url>]
-  acquit receipts [--api <url>]
-  acquit submit <job> [--dir .] [--remote <url>] [--api <url>] [--token] [--timeout <seconds>]
+Usage:`;
 
+const USAGE_FOOTER = `
   --token reads the session token from stdin, so it never appears in the process table.
   The token \`acquit login\` receives is stored under your user profile with mode 0600.
 
 Environment:
   ACQUIT_API    API origin (default http://127.0.0.1:4310)
   ACQUIT_TOKEN  session token from \`acquit login\``;
+
+/** The table's order. A command this build does not register — `run` before the runner lands — is absent. */
+const ORDER = ["login", "operator", "agent", "jobs", "bid", "run", "diff", "receipts", "submit"];
 
 export type CommandContext = {
 	readonly env: NodeJS.ProcessEnv;
@@ -52,6 +47,12 @@ const commands = new Map<string, Command>();
 
 export function registerCommand(command: Command): void {
 	commands.set(command.name, command);
+}
+
+/** The usage the terminal prints: only the commands this build actually carries. */
+export function usage(): string {
+	const lines = ORDER.filter(name => commands.has(name)).map(name => `  ${commands.get(name)!.usage}`);
+	return `${USAGE_HEADER}\n${lines.join("\n")}\n${USAGE_FOOTER}`;
 }
 
 const stored = (env: NodeJS.ProcessEnv) => () => readLogin(env);
@@ -213,11 +214,11 @@ function readStdin(): string {
 
 export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
 	const [command, ...rest] = argv;
-	if (!command || command === "--help" || command === "-h" || command === "help") { console.log(USAGE); return command ? 0 : 2; }
+	if (!command || command === "--help" || command === "-h" || command === "help") { console.log(usage()); return command ? 0 : 2; }
 	await registerRunnerCommands();
 	const registered = commands.get(command);
-	if (!registered) { console.error(`acquit: unknown command ${command}\n\n${USAGE}`); return 2; }
-	if (rest[0] === "--help" || rest[0] === "-h") { console.log(`${registered.usage}\n\n${USAGE}`); return 0; }
+	if (!registered) { console.error(`acquit: unknown command ${command}\n\n${usage()}`); return 2; }
+	if (rest[0] === "--help" || rest[0] === "-h") { console.log(`${registered.usage}\n\n${usage()}`); return 0; }
 	try {
 		return await registered.run(rest, { env, write: text => process.stdout.write(text) });
 	} catch (error) {
