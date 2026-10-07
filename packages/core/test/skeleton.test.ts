@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { commercialSplit, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
+import { commercialSplit, checkLaws, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
@@ -9,10 +9,10 @@ import type { Ports } from "../src/effects.ts";
 import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
 import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
-import type { Bps, RemoteOutcome } from "../src/paypal.ts";
+import type { Bps, PayPal, RefundEvidence, ReleaseEvidence, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
 import { GitHubAppError } from "../src/github.ts";
 import type { GitHubFailureCode } from "../src/github.ts";
@@ -516,7 +516,9 @@ test("a rejection returns the job to READY with one attempt used, and the third 
 	assert.equal(attempts.phase, "REFUND_PENDING");
 	assert.deepEqual(attempts.phase === "REFUND_PENDING" ? attempts.refund : null, { reason: "ATTEMPTS_EXHAUSTED", selectedAt: now });
 	assert.deepEqual(exhausted.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
-	assert.equal(wakeAt(exhausted.next), null);
+	// The refund effect settles the disposition. Until it does, the capture-age watchdog is the only clock
+	// that can still change this row: it reports an unconfirmed settlement and never selects another one.
+	assert.equal(wakeAt(exhausted.next), instant("2026-10-27T12:00:00Z"));
 });
 
 test("VerifierFinished ignores a run the job is not waiting for", () => {
@@ -927,4 +929,381 @@ test("the verifier callback refuses an unauthenticated report and applies a sign
 		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
 		assert.deepEqual((await store.readJob(held.id))!.version, after!.version);
 	} finally { store.close(); base.store.close(); }
+});
+
+// The money path: approve, release, refund, and the reimbursement of the retained refund fee.
+
+const payoutItemId = "9qbheqa1MGMRG1pQyIAUjUL5ZVwZZeNBUoKIVYpj5aweGgnHBS20alUfiTIbfQg=" as PayoutItemId;
+const payoutBatchId = "7JQW2B7WJJUCN" as PayoutBatchId;
+const approvedCommit = "5cccb66515313caed72e4af329a62fc011139426" as CommitSha;
+const cutoff = instant("2026-10-27T12:00:00Z");
+
+function verifiedRow(): JobRow {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const verified = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(acceptance("run_submit_1")) }, system);
+	if (typeof verified === "string") throw new Error(verified);
+	return verified.next;
+}
+function approvedRow(): JobRow {
+	const verified = verifiedRow();
+	const approved = applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit }, { actor: maya, now, loaded: { kind: "NONE" } });
+	if (typeof approved === "string") throw new Error(approved);
+	return approved.next;
+}
+/** Three rejected attempts select the refund, as the table's own exhaustion edge does. */
+function exhaustedRow(): JobRow {
+	let row = heldRow();
+	for (const ordinal of [1, 2, 3] as const) {
+		const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+		if (typeof started === "string") throw new Error(started);
+		const judged = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection(`run_submit_${ordinal}`)) }, system);
+		if (typeof judged === "string") throw new Error(judged);
+		row = judged.next;
+	}
+	return row;
+}
+const releaseEvidence = (paid = usd("360.00")): ReleaseEvidence =>
+	({ payoutItemId, captureId: "TESTCAPTURE" as CaptureId, paid, at: later });
+const refundEvidence = (refunded = usd("420.00"), retainedProcessorFee = usd("15.15")): RefundEvidence =>
+	({ refundId: "REFUND1" as RefundId, captureId: "TESTCAPTURE" as CaptureId, refunded, retainedProcessorFee, at: later });
+
+/** A store-backed job with one enqueued effect, a scripted provider, and a clock the test moves. */
+function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>; readonly merge?: Ports["github"]["merge"] } = {}) {
+	const store = new SqliteStore(":memory:");
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), wakeAt(row));
+	const base = fixture();
+	let current = now;
+	const raised: string[] = [];
+	const ports: Ports = { ...base.ports, store, clock: { now: () => current },
+		alerts: { raise: async effect => { raised.push(effect.reason); } },
+		github: { merge: options.merge ?? (async () => "MERGED") },
+		paypal: { ...base.paypal, ...options.paypal } };
+	const enqueue = (effect: JobEffect) => {
+		const key = operationKey(effect);
+		const state = { kind: "READY", runAt: now };
+		store.db.prepare("INSERT OR REPLACE INTO outbox VALUES (?, ?, ?, ?)").run(key, JSON.stringify({ key, effect, payloadDigest: "d", state }), JSON.stringify(state), now);
+		return key;
+	};
+	return { store, base, ports, enqueue, raised, at: (value: Instant) => { current = value; },
+		row: async (): Promise<JobRow> => { const read = await store.readJob(row.id); if (!read) throw new Error("Stored job missing"); return read; },
+		effectState: (key: ReturnType<typeof operationKey>): { readonly kind: string; readonly reason?: string; readonly reconcileAt?: string } =>
+			JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)) as { readonly kind: string },
+		effectKinds: (): readonly string[] => store.db.prepare("SELECT json FROM outbox ORDER BY rowid").all()
+			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect.kind) };
+}
+const timer = { actor: { role: "SYSTEM", source: "TIMER" } as const, now, loaded: { kind: "NONE" } as const };
+
+test("Approve names the verified artifact, emits one RELEASE, and refuses a second approval", () => {
+	const verified = verifiedRow();
+	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: "f".repeat(40) as CommitSha },
+		{ actor: maya, now, loaded: { kind: "NONE" } }), "ARTIFACT_CHANGED");
+	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
+		{ actor: { role: "OPERATOR", operatorId: "devon-ops" as OperatorId }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
+	const plan = applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit }, { actor: maya, now, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "VERIFIED" }>;
+	assert.deepEqual(state.review, { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: now } });
+	assert.deepEqual(plan.effects, [{ kind: "RELEASE", jobId: verified.id, captureId: "TESTCAPTURE", payee: merchant }]);
+	// One release key per job: a second approval cannot select a second release.
+	assert.equal(applyJobCommand(plan.next, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
+		{ actor: maya, now, loaded: { kind: "NONE" } }), "REVIEW_CLOSED");
+	// The review window is a hard stop: approving after it closes is refused, not applied.
+	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
+		{ actor: maya, now: instant("2026-10-09T12:00:00Z"), loaded: { kind: "NONE" } }), "REVIEW_CLOSED");
+	// The view names the artifact the client approves, so a moved head is visible before the click.
+	assert.equal(projectJob(verified, maya, new Map()).mergeCommit, approvedCommit);
+});
+
+test("ReleaseSettled builds the receipt, the paid book, and the merge from the observed payout", () => {
+	const approved = approvedRow();
+	const plan = applyJobCommand(approved, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence() }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "PAID");
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "PAID" }>;
+	assert.deepEqual(state.book, [
+		{ kind: "HELD", cents: 42000, at: now },
+		{ kind: "RELEASED", cents: 36000, at: later },
+		{ kind: "FEE", cents: 6000, processor: 1515, acquit: 4485, at: later },
+	]);
+	assert.equal(checkLaws(state.book), "PAID");
+	assert.deepEqual(state.treasury, []);
+	assert.deepEqual(state.merge, { phase: "PENDING" });
+	assert.match(String(state.receipt.id), /^rcpt_/);
+	assert.equal(state.receipt.jobId, approved.id);
+	assert.equal(state.receipt.operator, "devon-ops");
+	assert.equal(state.receipt.agent, "ts-bugfixer");
+	assert.equal(state.receipt.pullRequest, 13);
+	assert.equal(state.receipt.mergeCommit, approvedCommit);
+	assert.deepEqual(state.receipt.frozen, { expected: 48, passed: 48 });
+	assert.deepEqual(state.receipt.hidden, { expected: 6, passed: 6 });
+	assert.equal(state.receipt.attemptsUsed, 1);
+	assert.equal(state.receipt.paid, 36000);
+	assert.equal(state.receipt.releasedAt, later);
+	assert.deepEqual(plan.effects, [{ kind: "MERGE", jobId: approved.id, pullRequest: 13, mergeCommit: approvedCommit,
+		repository: "maya-client/invoice-app" }]);
+	assert.equal(wakeAt(plan.next), null);
+	// The receipt is the only thing that can carry the paid evidence, and it is what the API serves.
+	const view = projectJob(plan.next, maya, new Map());
+	assert.equal(view.status, "PAID");
+	assert.equal(view.escrow, "RELEASED");
+	assert.deepEqual(view.receipt, state.receipt);
+});
+
+test("a release that does not name the selected disposition is never applied", () => {
+	const approved = approvedRow();
+	for (const wrong of [
+		{ release: { ...releaseEvidence(), captureId: "OTHERCAPTURE" as CaptureId }, why: "another capture" },
+		{ release: releaseEvidence(usd("359.00")), why: "a net that cannot add up to the held gross" },
+	]) {
+		const plan = applyJobCommand(approved, { type: "ReleaseSettled", jobId: approved.id, release: wrong.release }, system);
+		if (typeof plan === "string") throw new Error(`${wrong.why}: ${plan}`);
+		assert.equal(plan.next.state.status, "VERIFIED", wrong.why);
+		assert.equal(plan.next.version, approved.version, wrong.why);
+		assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: approved.id, reason: "SETTLEMENT_MISMATCH" }], wrong.why);
+	}
+	// A release observation for a job that never selected a release is a mismatch too.
+	const verified = verifiedRow();
+	const plan = applyJobCommand(verified, { type: "ReleaseSettled", jobId: verified.id, release: releaseEvidence() }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "VERIFIED");
+	assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: verified.id, reason: "SETTLEMENT_MISMATCH" }]);
+});
+
+test("a released net below the promise is owed back to the operator and alerted", () => {
+	const approved = approvedRow();
+	// The capture's own breakdown fixed the fee at 15.15, so a lower net means a higher observed fee: the
+	// release still has to add up to the held gross, which is why the ledger takes the observed net and
+	// the capture's observed fee together.
+	const plan = applyJobCommand(approved, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence(usd("359.00")) }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "PAID");
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "PAID" }>;
+	assert.deepEqual(state.treasury, [{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: approved.id,
+		operator: "devon-ops" as OperatorId, cents: 100, cause: "NET_BELOW_PROMISE", at: later }]);
+	assert.deepEqual(plan.effects, [
+		{ kind: "MERGE", jobId: approved.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" },
+		{ kind: "ALERT", jobId: approved.id, reason: "OPERATOR_REIMBURSEMENT_OWED" },
+	]);
+});
+
+test("RefundSettled refunds the held book and owes the operator the fee PayPal kept", () => {
+	const exhausted = exhaustedRow();
+	const plan = applyJobCommand(exhausted, { type: "RefundSettled", jobId: exhausted.id, refund: refundEvidence() }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "REFUNDED");
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "REFUNDED" }>;
+	assert.deepEqual(state.book, [{ kind: "HELD", cents: 42000, at: now }, { kind: "REFUND", cents: 42000, at: later }]);
+	assert.equal(checkLaws(state.book), "REFUNDED");
+	assert.equal(state.reason, "ATTEMPTS_EXHAUSTED");
+	assert.deepEqual(state.refund, refundEvidence());
+	assert.deepEqual(state.treasury, [
+		{ kind: "REFUND_FEE_RETAINED", jobId: exhausted.id, cents: 1515, at: later },
+		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: exhausted.id, operator: "devon-ops" as OperatorId, cents: 1515,
+			cause: "REFUND_DEBITED_OPERATOR", at: later },
+	]);
+	assert.deepEqual(plan.effects, [{ kind: "REIMBURSE", jobId: exhausted.id, merchant, amount: usd("15.15") }]);
+	assert.equal(wakeAt(plan.next), null);
+	// A refund observation for a job that is not waiting on a refund is never applied.
+	const verified = verifiedRow();
+	const mismatch = applyJobCommand(verified, { type: "RefundSettled", jobId: verified.id, refund: refundEvidence() }, system);
+	if (typeof mismatch === "string") throw new Error(mismatch);
+	assert.equal(mismatch.next.state.status, "VERIFIED");
+	assert.deepEqual(mismatch.effects, [{ kind: "ALERT", jobId: verified.id, reason: "SETTLEMENT_MISMATCH" }]);
+});
+
+test("ReimbursementSettled records the payout and its 0.25 fee once", () => {
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const reimbursement = { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("15.15"), fee: usd("0.25"), at: later };
+	const plan = applyJobCommand(refunded.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "REFUNDED" }>;
+	assert.deepEqual(state.treasury.at(-1), { kind: "PAYOUT_FEE_PAID", jobId: refunded.next.id, batchId: payoutBatchId,
+		paid: 1515, fee: 25, at: later });
+	assert.deepEqual(plan.effects, []);
+	// A redelivery of the same batch changes nothing: the row already carries its line.
+	const again = applyJobCommand(plan.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement }, system);
+	if (typeof again === "string") throw new Error(again);
+	assert.equal(again.next.version, plan.next.version);
+	assert.deepEqual(again.effects, []);
+});
+
+test("the capture-age cutoff refunds work the verifier never passed", () => {
+	// The delivery and review clocks normally fire first. The cutoff is the backstop for a row whose
+	// clocks were missed, and it runs first in every state that holds money.
+	const row = heldRow(instant("2026-11-03T12:00:00Z"));
+	assert.equal(wakeAt(row), cutoff);
+	const due = applyJobCommand(row, { type: "TimerDue", jobId: row.id, expectedWakeAt: cutoff },
+		{ ...timer, now: cutoff });
+	if (typeof due === "string") throw new Error(due);
+	const attempts = (due.next.state as Extract<typeof due.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.deepEqual(attempts.phase === "REFUND_PENDING" ? attempts.refund : null, { reason: "CAPTURE_CUTOFF", selectedAt: cutoff });
+	assert.deepEqual(due.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
+	// The cutoff handled the escrow, so the watchdog does not fire again while the refund settles.
+	assert.equal(wakeAt(due.next), null);
+});
+
+test("the capture-age cutoff releases verified work, and a pending settlement only alerts", () => {
+	const verified = verifiedRow();
+	const held = { ...verified, contract: { ...verified.contract, deliveryEndsAt: instant("2026-11-03T12:00:00Z") } };
+	assert.equal(wakeAt(held), cutoff);
+	const released = applyJobCommand(held, { type: "TimerDue", jobId: held.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
+	if (typeof released === "string") throw new Error(released);
+	const review = (released.next.state as Extract<typeof released.next.state, { status: "VERIFIED" }>).review;
+	assert.deepEqual(review.phase === "RELEASE_PENDING" ? review.release : null, { authority: "CAPTURE_CUTOFF", selectedAt: cutoff });
+	assert.deepEqual(released.effects, [{ kind: "RELEASE", jobId: held.id, captureId: "TESTCAPTURE", payee: merchant }]);
+	assert.equal(wakeAt(released.next), null);
+	// A release that was already selected and is still unconfirmed at the cutoff: no new disposition, one alert.
+	const approved = approvedRow();
+	const alerted = applyJobCommand(approved, { type: "TimerDue", jobId: approved.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
+	if (typeof alerted === "string") throw new Error(alerted);
+	assert.equal(alerted.next.state.status, "VERIFIED");
+	const pending = (alerted.next.state as Extract<typeof alerted.next.state, { status: "VERIFIED" }>).review;
+	assert.equal(pending.phase, "RELEASE_PENDING");
+	assert.deepEqual(alerted.effects, [{ kind: "ALERT", jobId: approved.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" }]);
+	assert.equal(wakeAt(alerted.next), null);
+});
+
+test("a review window that closes in silence releases the verified work", () => {
+	const verified = verifiedRow();
+	const endsAt = instant("2026-10-09T12:00:00Z");
+	assert.equal(wakeAt(verified), endsAt);
+	const due = applyJobCommand(verified, { type: "TimerDue", jobId: verified.id, expectedWakeAt: endsAt }, { ...timer, now: endsAt });
+	if (typeof due === "string") throw new Error(due);
+	const review = (due.next.state as Extract<typeof due.next.state, { status: "VERIFIED" }>).review;
+	assert.deepEqual(review.phase === "RELEASE_PENDING" ? review.release : null, { authority: "REVIEW_SILENCE", selectedAt: endsAt });
+	assert.deepEqual(due.effects, [{ kind: "RELEASE", jobId: verified.id, captureId: "TESTCAPTURE", payee: merchant }]);
+});
+
+test("a crash between the release dispatch and its settle reconciles instead of paying twice", async () => {
+	const approved = approvedRow();
+	let dispatches = 0;
+	let reconciles = 0;
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async call => { if (call.kind !== "RELEASE") throw new Error(`Unexpected ${call.kind}`);
+			dispatches++; return { kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05.000Z") }; },
+		reconcile: async call => { if (call.kind !== "RELEASE") throw new Error(`Unexpected ${call.kind}`);
+			reconciles++; return { kind: "CONFIRMED", observation: { kind: "RELEASE_COMPLETED", release: releaseEvidence() } }; },
+	} });
+	try {
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(harness.effectState(key), { kind: "UNCERTAIN", reconcileAt: instant("2026-10-06T12:00:05.000Z") });
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+		harness.at(instant("2026-10-06T12:00:05.000Z"));
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.equal((await harness.row()).state.status, "PAID");
+		assert.equal(dispatches, 1);
+		assert.equal(reconciles, 1);
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "MERGE"]);
+		assert.equal(harness.effectState(key).kind, "CONFIRMED");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("an uncertain release never becomes a refund, even at the capture-age cutoff", async () => {
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05.000Z") }),
+		reconcile: async () => ({ kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05.000Z") }),
+	} });
+	try {
+		const releaseKey = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, releaseKey), "WORKED");
+		// The provider still cannot say whether the payout landed when the cutoff arrives.
+		harness.at(cutoff);
+		await runDueTimers(harness.ports);
+		const row = await harness.row();
+		assert.equal(row.state.status, "VERIFIED");
+		const review = (row.state as Extract<typeof row.state, { status: "VERIFIED" }>).review;
+		assert.equal(review.phase, "RELEASE_PENDING");
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
+		assert.equal(wakeAt(row), null);
+		const alertKey = operationKey({ kind: "ALERT", jobId: approved.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" });
+		assert.equal(await runOutboxOnce(harness.ports, alertKey), "WORKED");
+		assert.deepEqual(harness.raised, ["SETTLEMENT_UNCONFIRMED_AT_CUTOFF"]);
+		// The row keeps reconciling: the release row is still due, and no refund was ever selected.
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
+		assert.equal(harness.effectState(releaseKey).kind, "UNCERTAIN");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a release the provider says already paid parks for a person and is never refunded", async () => {
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "PERMANENT_FAILURE", reason: "PAYOUT_ALREADY_COMPLETED_FOR_REFERENCE" }),
+		reconcile: async () => ({ kind: "PERMANENT_FAILURE", reason: "PAYOUT_ALREADY_COMPLETED_FOR_REFERENCE" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(harness.effectState(key), { kind: "NEEDS_HUMAN", reason: "PAYOUT_ALREADY_COMPLETED_FOR_REFERENCE" });
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+		assert.deepEqual(harness.effectKinds(), ["RELEASE"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("the refund settles from the provider and the retained fee goes back as a payout", async () => {
+	const exhausted = exhaustedRow();
+	const reimbursement = { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("15.15"), fee: usd("0.25"), at: later };
+	const calls: string[] = [];
+	const harness = moneyHarness(exhausted, { paypal: {
+		dispatch: async call => {
+			calls.push(`${call.kind}:${call.kind === "REFUND" ? call.amount : ""}`);
+			if (call.kind === "REFUND") return { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } };
+			if (call.kind === "REIMBURSE") return { kind: "CONFIRMED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement } };
+			throw new Error(`Unexpected ${call.kind}`);
+		},
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const refundKey = harness.enqueue({ kind: "REFUND", jobId: exhausted.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, refundKey), "WORKED");
+		const refunded = await harness.row();
+		assert.equal(refunded.state.status, "REFUNDED");
+		assert.deepEqual(harness.effectKinds(), ["REFUND", "REIMBURSE"]);
+		// The payout's sender batch id is the same deterministic effect key the outbox holds.
+		const payoutKey = operationKey({ kind: "REIMBURSE", jobId: exhausted.id, merchant, amount: usd("15.15") });
+		assert.equal(await runOutboxOnce(harness.ports, payoutKey), "WORKED");
+		const paid = (await harness.row()).state as Extract<JobRow["state"], { status: "REFUNDED" }>;
+		assert.deepEqual(paid.treasury.at(-1), { kind: "PAYOUT_FEE_PAID", jobId: exhausted.id, batchId: payoutBatchId,
+			paid: 1515, fee: 25, at: later });
+		assert.equal(harness.effectState(payoutKey).kind, "CONFIRMED");
+		assert.deepEqual(calls, ["REFUND:42000", "REIMBURSE:"]);
+		// A refund that is no longer pending is never dispatched: the row is the guard.
+		assert.equal(await runOutboxOnce(harness.ports, refundKey), "IDLE");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("the merge effect finishes the paid job, and a conflict parks it for a human", async () => {
+	const released = applyJobCommand(approvedRow(), { type: "ReleaseSettled", jobId: "job_submit" as JobId, release: releaseEvidence() }, system);
+	if (typeof released === "string") throw new Error(released);
+	const paid = released.next;
+	const effect: JobEffect = { kind: "MERGE", jobId: paid.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" };
+	const merged = moneyHarness(paid, { merge: async () => "MERGED" });
+	try {
+		const key = merged.enqueue(effect);
+		assert.equal(await runOutboxOnce(merged.ports, key), "WORKED");
+		const state = (await merged.row()).state as Extract<JobRow["state"], { status: "PAID" }>;
+		assert.deepEqual(state.merge, { phase: "MERGED", at: now });
+		assert.equal(merged.effectState(key).kind, "CONFIRMED");
+	} finally { merged.store.close(); merged.base.store.close(); }
+	const conflicted = moneyHarness(paid, { merge: async () => "CONFLICT" });
+	try {
+		const key = conflicted.enqueue(effect);
+		assert.equal(await runOutboxOnce(conflicted.ports, key), "WORKED");
+		const state = (await conflicted.row()).state as Extract<JobRow["state"], { status: "PAID" }>;
+		assert.deepEqual(state.merge, { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" });
+		assert.equal(conflicted.effectState(key).kind, "CONFIRMED");
+	} finally { conflicted.store.close(); conflicted.base.store.close(); }
+	const unknown = moneyHarness(paid, { merge: async () => "UNKNOWN" });
+	try {
+		const key = unknown.enqueue(effect);
+		assert.equal(await runOutboxOnce(unknown.ports, key), "WORKED");
+		const state = (await unknown.row()).state as Extract<JobRow["state"], { status: "PAID" }>;
+		assert.deepEqual(state.merge, { phase: "PENDING" });
+		assert.equal(unknown.effectState(key).kind, "UNCERTAIN");
+	} finally { unknown.store.close(); unknown.base.store.close(); }
 });
