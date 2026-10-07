@@ -227,9 +227,10 @@ test("a scoped push ignores a planted hook and refuses dangerous config on an op
 		git(work, ["config", "--local", "credential.helper", "store"]);
 		assert.throws(() => pushHead!(work, remote, frozen as CommitSha, env, scoped),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("credential.helper"));
-		// The same checkout pushed with the operator's own credential keeps that config: it is theirs.
+		// The same checkout pushed with the operator's own credential keeps that config: it is theirs,
+		// so the checkout's own pre-push hook runs as the operator's own git would run it.
 		pushHead!(work, remote, frozen as CommitSha, env, { gitDir: null });
-		assert.equal(existsSync(canary), false);
+		assert.equal(existsSync(canary), true);
 		git(work, ["config", "--local", "--unset", "credential.helper"]);
 		// A state checkout names the state git directory explicitly; plain discovery from the work tree
 		// never finds it, and the same planted metadata is ignored.
