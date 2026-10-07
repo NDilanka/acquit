@@ -5,7 +5,7 @@ import { commercialSplit, checkLaws, formatUsd, reduceLedger, usd } from "../src
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, ingestPayPalWebhook, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
-import type { Ports } from "../src/effects.ts";
+import type { OutboxState, Ports } from "../src/effects.ts";
 import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
@@ -1317,6 +1317,33 @@ test("a settlement the row refuses is parked for a person and never acknowledged
 		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
 		// A parked row is never leased again, so no later sweep re-POSTs the payout.
 		assert.equal(await runOutboxOnce(harness.ports, key), "IDLE");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refusal parks the effect in the commit itself, so a crash cannot leave it acknowledged", async () => {
+	// Settling a refusal used to take two writes: the commit acknowledged the money move CONFIRMED and a
+	// second write parked it. A crash between them left the row acknowledged with the job unmoved. The
+	// commit that refuses the observation is the only write now, so a store that dies on any other write
+	// still leaves the row parked, carrying the provider's answer.
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "CONFIRMED", observation: { kind: "RELEASE_COMPLETED",
+			release: { ...releaseEvidence(), captureId: "OTHERCAPTURE" as CaptureId } } }),
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const writes: OutboxState[] = [];
+		harness.store.recordEffect = async (_key, state) => {
+			writes.push(state);
+			throw new Error("the process died before the second write");
+		};
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(writes, []);
+		assert.equal(harness.effectState(key).kind, "NEEDS_HUMAN");
+		assert.equal(harness.effectState(key).reason, "SETTLEMENT_MISMATCH");
+		assert.match(String(harness.effectState(key).detail), /RELEASE_COMPLETED for capture OTHERCAPTURE/);
+		assert.equal((await harness.row()).state.status, "VERIFIED");
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
