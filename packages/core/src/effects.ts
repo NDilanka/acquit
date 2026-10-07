@@ -95,6 +95,12 @@ export type AtomicCommit = {
 	readonly job: { readonly expectedVersion: Version | null; readonly row: JobRow; readonly wakeAt: Instant | null } | null;
 	readonly operator: { readonly expectedVersion: Version | null; readonly row: OperatorRow; readonly agent: Agent | null } | null;
 	readonly credits: readonly { readonly expectedVersion: Version; readonly account: CreditAccount }[];
+	/**
+	 * The payee whose `paid_receipts` counter this same write increments by one. Exactly the write that
+	 * moves a job into PAID sets it, so a replayed or re-delivered settlement counts no second receipt.
+	 * Absent or null on every write that settles no release.
+	 */
+	readonly paidReceipt?: OperatorId | null;
 	readonly outbox: readonly OutboxRow[];
 	/**
 	 * The leased effect this write settles, in the state the write leaves it in. A plan that refused the
@@ -190,6 +196,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const committed = await ports.store.commit({
 			job: { expectedVersion: row?.version ?? null, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
+			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)), settlement: null, delivery: null,
 			request: { actor: actorKey, key, payloadDigest, result },
 		});
@@ -208,6 +215,15 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 
 /** What one system commit did, and the plan's own word when it refused the observation it was given. */
 export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null };
+
+/**
+ * The payee whose receipt this write counts, exactly when the plan moves the job into PAID. The row's
+ * own state is the guard: only the one commit that takes VERIFIED RELEASE_PENDING to PAID returns an
+ * operator, and every redelivered or refused settlement after it returns null.
+ */
+function paidReceiptOf(before: JobRow | null, next: JobRow): OperatorId | null {
+	return before !== null && before.state.status !== "PAID" && next.state.status === "PAID" ? next.state.payee.operator : null;
+}
 
 /**
  * The leased effect a system commit settles, and the bounded provider answer its row shows if the plan
@@ -237,6 +253,7 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 		if (typeof plan === "string") throw new Error(`System transition refused: ${plan}`);
 		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
+			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)),
 			settlement: settlement === null ? null : { key: settlement.key, state: settlementOf(settlement, plan.refused ?? null, now) },
 			request: null, delivery });

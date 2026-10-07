@@ -167,6 +167,12 @@ export class SqliteStore implements Store {
 					.run(account.version, JSON.stringify(account), account.operator, credit.expectedVersion);
 				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
 			}
+			// The count moves with the PAID row or not at all: exactly the write that settles the release
+			// sets it, so a redelivery or a refused settlement can never count the receipt twice.
+			if (change.paidReceipt) {
+				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
+				if (!counted.changes) throw new Error("Paid receipt counted no operator");
+			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
