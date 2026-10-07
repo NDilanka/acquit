@@ -225,15 +225,54 @@ test("the client disputes through the command route and the dev arbiter route re
 		// The arbiter's hackathon surface sends the same ResolveDispute the staff console will send later.
 		const upheld = await post("/api/dev/arbiter", { jobId: row.id, verdict: "UPHOLD", note: "The artifact met the frozen contract." });
 		assert.equal(upheld.status, 200);
-		const resolved = await upheld.json() as { outcome: { kind: string; result: { job: { phase: string; releaseAuthority: string | null } } } };
+		const resolved = await upheld.json() as { outcome: { kind: string; result: { job: { phase: string; releaseAuthority: string | null; arbiterNote: string | null } } } };
 		assert.equal(resolved.outcome.kind, "COMMITTED");
 		assert.equal(resolved.outcome.result.job.phase, "RELEASE_PENDING");
 		assert.equal(resolved.outcome.result.job.releaseAuthority, "ARBITER_UPHELD");
+		assert.equal(resolved.outcome.result.job.arbiterNote, "The artifact met the frozen contract.");
 		// The row left DISPUTED, so a second verdict is refused, and an unknown verdict never parses.
 		assert.equal((await post("/api/dev/arbiter", { jobId: row.id, verdict: "REFUND", note: "again" })).status, 409);
 		assert.equal((await post("/api/dev/arbiter", { jobId: row.id, verdict: "MAYBE", note: "again" })).status, 400);
 		assert.deepEqual((await calls()).map(call => [call.method, new URL(call.url).pathname]),
 			[["POST", "/v1/oauth2/token"], ["POST", "/v1/payments/referenced-payouts-items"]]);
+	});
+});
+test("the dispute and arbiter routes bound their text and the dispute owner", async () => {
+	await apiFixture(true, async (url, databasePath) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const at = "2026-11-01T11:12:00.000Z";
+		const mergeCommit = "5cccb66515313caed72e4af329a62fc011139426";
+		const row = verifiedFixture(mergeCommit, at);
+		const db = new DatabaseSync(databasePath);
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		db.close();
+		const token = async (handle: string): Promise<string> => {
+			const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle }) });
+			assert.equal(signedIn.status, 200);
+			return ((await signedIn.json()) as { token: string }).token;
+		};
+		const post = (path: string, auth: string, body: unknown) => fetch(`${url}${path}`, { method: "POST",
+			headers: { Authorization: `Bearer ${auth}` }, body: JSON.stringify(body) });
+		const reason = "x".repeat(300);
+		const overLong = "x".repeat(301);
+		// No session: the dev arbiter route answers 401 before it parses or resolves anything.
+		assert.equal((await fetch(`${url}/api/dev/arbiter`, { method: "POST",
+			body: JSON.stringify({ jobId: row.id, verdict: "UPHOLD", note: reason }) })).status, 401);
+		// A session that is not the job's client cannot dispute it, however well formed the body is.
+		const devon = await token("devon-ops");
+		const stranger = await post("/api/commands", devon, { key: randomUUID(),
+			command: { type: "Dispute", jobId: row.id, mergeCommit, reason } });
+		assert.equal(stranger.status, 409);
+		assert.deepEqual(await stranger.json(), { outcome: { kind: "DENIED", reason: "NOT_OWNER" } });
+		// The owning client may dispute, and a 301-character reason is refused before the domain sees it.
+		const maya = await token("maya-client");
+		const tooLong = await post("/api/commands", maya, { key: randomUUID(),
+			command: { type: "Dispute", jobId: row.id, mergeCommit, reason: overLong } });
+		assert.equal(tooLong.status, 400);
+		assert.equal((await post("/api/commands", maya, { key: randomUUID(),
+			command: { type: "Dispute", jobId: row.id, mergeCommit, reason } })).status, 200);
+		// The arbiter's note is bounded the same way; the 300-character edge is the reason it stays 300.
+		assert.equal((await post("/api/dev/arbiter", maya, { jobId: row.id, verdict: "UPHOLD", note: overLong })).status, 400);
 	});
 });
 test("a bid the operator cannot afford answers with the credit balance and the next grant", async () => {
