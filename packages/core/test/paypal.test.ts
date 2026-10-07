@@ -223,6 +223,9 @@ const captureAfterRefund = {
 	update_time: "2026-10-07T00:29:21Z",
 };
 
+/** The same capture read back after a partial refund: PayPal kept it open, so the money is not settled. */
+const capturePartiallyRefunded = { ...captureAfterRefund, status: "PARTIALLY_REFUNDED" };
+
 /** The platform's standard payout batch that reimbursed Devon the 15.15 refund fee, settled. */
 const payoutBatch = {
 	batch_header: {
@@ -305,7 +308,8 @@ test("parseReferencedPayout reads the recorded release as the net paid to the op
 
 test("parseRefund takes the refunded gross from the refund and the retained fee from the capture", () => {
 	const state = parseCaptureRefundState(captureAfterRefund);
-	assert.deepEqual(state, { captureId: "5GT95218NT9294342" as CaptureId, gross: 42000, processorFee: 1137, refunded: true, at: instant("2026-10-07T00:29:21Z") });
+	assert.deepEqual(state, { captureId: "5GT95218NT9294342" as CaptureId, gross: 42000, processorFee: 1137,
+		refundState: "REFUNDED", at: instant("2026-10-07T00:29:21Z") });
 	const refund = parseRefund(refundBody, state);
 	assert.equal(refund.refundId, "9CD12824GS946934H" as RefundId);
 	assert.equal(refund.captureId, "5GT95218NT9294342");
@@ -363,6 +367,35 @@ test("a fully refunded capture settles from the capture lookup", async () => {
 			["POST", "/v2/payments/captures/5GT95218NT9294342/refund", "aq-refund", { amount: { currency_code: "USD", value: "420.00" } }],
 			["GET", "/v2/payments/captures/5GT95218NT9294342", null, null],
 		]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a partially refunded capture is money back, never a settled refund", async () => {
+	// PayPal's PARTIALLY_REFUNDED leaves a balance on the capture, so it is not the full refund of the
+	// held gross: the parser names it, and the re-read holds it for a person instead of settling it.
+	const state = parseCaptureRefundState(capturePartiallyRefunded);
+	assert.equal(state.refundState, "PARTIALLY_REFUNDED");
+	assert.equal(state.gross, 42000);
+	assert.throws(() => parseRefundedCapture(state), /not fully refunded/);
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => Response.json(capturePartiallyRefunded));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "CAPTURE", id: "5GT95218NT9294342" as CaptureId }, devon);
+		if (read.kind !== "HELD") throw new Error(`Expected a held read, got ${JSON.stringify(read)}`);
+		assert.match(read.detail, /partially refunded/);
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [["GET", "/v2/payments/captures/5GT95218NT9294342"]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a refund the provider refused on a partially refunded capture parks for a person", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(url => url.endsWith("/refund") ? Response.json(duplicateRefund, { status: 422 }) : Response.json(capturePartiallyRefunded));
+	try {
+		const paypal = createPayPal(config);
+		assert.deepEqual(await paypal.dispatch({ kind: "REFUND", captureId: "5GT95218NT9294342" as CaptureId, payee: devon, amount: usd("420.00") }, "aq-refund"),
+			{ kind: "PERMANENT_FAILURE", reason: "CAPTURE_PARTIALLY_REFUNDED" });
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [
+			["POST", "/v2/payments/captures/5GT95218NT9294342/refund"], ["GET", "/v2/payments/captures/5GT95218NT9294342"]]);
 	} finally { globalThis.fetch = original; }
 });
 

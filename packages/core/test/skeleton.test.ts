@@ -995,7 +995,7 @@ function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>;
 	};
 	return { store, base, ports, enqueue, raised, at: (value: Instant) => { current = value; },
 		row: async (): Promise<JobRow> => { const read = await store.readJob(row.id); if (!read) throw new Error("Stored job missing"); return read; },
-		effectState: (key: ReturnType<typeof operationKey>): { readonly kind: string; readonly reason?: string; readonly reconcileAt?: string } =>
+		effectState: (key: ReturnType<typeof operationKey>): { readonly kind: string; readonly reason?: string; readonly detail?: string; readonly reconcileAt?: string } =>
 			JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)) as { readonly kind: string },
 		effectKinds: (): readonly string[] => store.db.prepare("SELECT json FROM outbox ORDER BY rowid").all()
 			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect.kind) };
@@ -1296,6 +1296,69 @@ test("a release the provider says already paid parks for a person and is never r
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
+test("a settlement the row refuses is parked for a person and never acknowledged", async () => {
+	// The provider says the release paid, but its evidence names another capture. The row's selected
+	// disposition is the guard, so the job must not move — and the outbox must not ack a money move the
+	// row refused. The provider's own answer is what the parked row carries.
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "CONFIRMED", observation: { kind: "RELEASE_COMPLETED",
+			release: { ...releaseEvidence(), captureId: "OTHERCAPTURE" as CaptureId } } }),
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+		assert.equal(harness.effectState(key).kind, "NEEDS_HUMAN");
+		assert.equal(harness.effectState(key).reason, "SETTLEMENT_MISMATCH");
+		assert.match(String(harness.effectState(key).detail), /RELEASE_COMPLETED for capture OTHERCAPTURE/);
+		// The mismatch is a fact a person sees: the row's own alert is enqueued next to the parked effect.
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
+		// A parked row is never leased again, so no later sweep re-POSTs the payout.
+		assert.equal(await runOutboxOnce(harness.ports, key), "IDLE");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("the day-21 cutoff never switches a verified refund into a release", () => {
+	// A verified row can be waiting on a refund. The cutoff is a hard stop on the escrow, not a switch of
+	// sides: the selected refund stands, and the unconfirmed settlement is reported for a person.
+	const verified = verifiedRow();
+	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
+	const refunding: JobRow = { ...verified, state: { ...state, review: { phase: "REFUND_PENDING",
+		refund: { reason: "DISPUTE_REFUND", selectedAt: now } } } };
+	// The refund's own effect settles it, so the capture-age cutoff is the only clock left.
+	assert.equal(wakeAt(refunding), cutoff);
+	const due = applyJobCommand(refunding, { type: "TimerDue", jobId: refunding.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
+	if (typeof due === "string") throw new Error(due);
+	assert.equal(due.next.state.status, "VERIFIED");
+	const review = (due.next.state as Extract<typeof due.next.state, { status: "VERIFIED" }>).review;
+	assert.equal(review.phase, "REFUND_PENDING");
+	assert.deepEqual(due.effects, [{ kind: "ALERT", jobId: refunding.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" }]);
+	assert.equal(wakeAt(due.next), null);
+});
+
+test("a refund a verified row selected is still wanted, and settles the row", async () => {
+	const verified = verifiedRow();
+	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
+	const refunding: JobRow = { ...verified, state: { ...state, review: { phase: "REFUND_PENDING",
+		refund: { reason: "DISPUTE_REFUND", selectedAt: now } } } };
+	const harness = moneyHarness(refunding, { paypal: {
+		dispatch: async call => call.kind === "REFUND"
+			? { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } }
+			: (() => { throw new Error(`Unexpected ${call.kind}`); })() as never,
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "REFUND", jobId: refunding.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		// The row holds the disposition, so the effect is dispatched and settled, never acknowledged unseen.
+		assert.equal((await harness.row()).state.status, "REFUNDED");
+		assert.equal(harness.effectState(key).kind, "CONFIRMED");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
 test("the refund settles from the provider and the retained fee goes back as a payout", async () => {
 	const exhausted = exhaustedRow();
 	const reimbursement = { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("15.15"), fee: usd("0.25"), at: later };
@@ -1464,6 +1527,26 @@ test("a capture webhook on a paid job is consumed once and never touches the pai
 		assert.deepEqual(after.state.status === "PAID" ? after.state.book : null, paid.state.book);
 		assert.deepEqual(recordedEvents(harness.store).map(row => [row.id, row.outcome]), [["WH-PAID-1", "no-op, job already PAID"], ["WH-PAID-2", "no-op, job already PAID"]]);
 	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a webhook fact the row refuses is recorded as a refusal and leaves the job alone", async () => {
+	// The route re-reads a real refund on a job that never selected one. The row is the guard, so the
+	// delivery is not an "applied" that changed nothing: the envelope records the refusal, and the row's
+	// own mismatch alert is enqueued.
+	const { f, jobId, held } = await heldFixture();
+	try {
+		f.read("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } });
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-REFUND-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		assert.equal(recordedOutcome(f.store, "WH-REFUND-1"), "refused, the job did not take this settlement");
+		const alerts = f.store.db.prepare("SELECT json FROM outbox").all()
+			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect)
+			.filter(effect => effect.kind === "ALERT");
+		assert.deepEqual(alerts.map(effect => effect.kind === "ALERT" ? effect.reason : null), ["SETTLEMENT_MISMATCH"]);
+	} finally { f.store.close(); }
 });
 
 test("a webhook whose resource PayPal does not know is refused and no job moves", async () => {
