@@ -45,6 +45,15 @@ export interface ReleaseEvidence {
   readonly at: Instant;
 }
 
+export type ReleaseAuthority = "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "ARBITER_SLA_MISSED" | "CAPTURE_CUTOFF";
+
+export interface DisputeView {
+  readonly reason: string;
+  readonly openedAt: Instant;
+  /** The arbiter's deadline. */
+  readonly resolveBy: Instant;
+}
+
 export interface BidView {
   readonly id: string;
   readonly operator: string;
@@ -72,6 +81,12 @@ export interface JobView {
   readonly lockedTo: string | null;
   /** The server's answer: this viewer owns the job and the review awaits its approval. */
   readonly viewerCanApprove: boolean;
+  /** The same ownership gate for Dispute. */
+  readonly viewerCanDispute: boolean;
+  /** Served while `phase` is DISPUTED; null otherwise. */
+  readonly dispute: DisputeView | null;
+  /** What selected the release, while it is pending and once the job is PAID. Null before any release. */
+  readonly releaseAuthority: ReleaseAuthority | null;
   readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
   readonly approveUrl: string | null;
   readonly ledger: readonly LedgerLine[];
@@ -109,7 +124,8 @@ export type UserCommand =
   | { readonly type: "PlaceBid"; readonly jobId: string; readonly price: UsdCents; readonly eta: Hours; readonly agent: string; readonly pitch: string }
   | { readonly type: "AcceptBid"; readonly jobId: string; readonly bidId: string }
   | { readonly type: "CancelJob"; readonly jobId: string }
-  | { readonly type: "Approve"; readonly jobId: string; readonly mergeCommit: string };
+  | { readonly type: "Approve"; readonly jobId: string; readonly mergeCommit: string }
+  | { readonly type: "Dispute"; readonly jobId: string; readonly mergeCommit: string; readonly reason: string };
 
 export type PublicResult =
   | { readonly kind: "JOB"; readonly job: JobView }
@@ -121,3 +137,6 @@ export type CommandOutcome =
   | { readonly kind: "COMMITTED"; readonly result: PublicResult }
   | { readonly kind: "REPLAY"; readonly result: PublicResult }
   | { readonly kind: "DENIED"; readonly reason: string };
+
+/** The `POST /api/commands` body. An INSUFFICIENT_CREDITS refusal also carries the credit view. */
+export type CommandResponse = { readonly outcome: CommandOutcome; readonly credits?: CreditAccountView | null };

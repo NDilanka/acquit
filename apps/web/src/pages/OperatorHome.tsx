@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CreditAccountView, JobView, OperatorView } from "../api-types";
 import { api, ApiError } from "../api";
-import { usd, utc } from "../format";
+import { creditLine, usd, utc } from "../format";
 import { Link } from "../router";
 import { useSession } from "../session";
 import { BidForm } from "./BidForm";
@@ -53,7 +53,7 @@ export function OperatorHome() {
               {credits.available}
               <small> / {credits.weeklyAllowance} this week</small>
             </div>
-            <small className="muted">Next grant {utc(credits.nextGrantAt)}</small>
+            <small className="muted">{creditLine(credits)}</small>
           </div>
         )}
       </div>

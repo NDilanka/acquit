@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ledgerNote, mergeNote, releaseNote, usd } from "./format.ts";
+import { authorityNote, creditLine, denied, disputeNote, ledgerNote, mergeNote, releaseNote, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -51,4 +51,36 @@ test("the release evidence names the payout item and the capture", () => {
     releaseNote({ payoutItemId: "PI-7XK2", captureId: "CAP-91QZ", paid: 36000, at }),
     "Payout item PI-7XK2, capture CAP-91QZ",
   );
+});
+
+test("each release authority reads in plain words", () => {
+  assert.equal(authorityNote("CLIENT_APPROVAL"), "Released on the client's approval");
+  assert.equal(authorityNote("REVIEW_SILENCE"), "Released after review silence: the client did not respond within 72 hours");
+  assert.equal(authorityNote("ARBITER_UPHELD"), "Released by the arbiter");
+  assert.equal(authorityNote("ARBITER_SLA_MISSED"), "Released after the arbiter missed its deadline");
+  assert.equal(authorityNote("CAPTURE_CUTOFF"), "Released at the PayPal capture cutoff, 21 days after payment");
+});
+
+test("an open dispute names its reason and the arbiter's deadline", () => {
+  assert.equal(
+    disputeNote({ reason: "The fix breaks EUR rounding.", openedAt: at, resolveBy: "2026-11-05T15:22:00.000Z" }),
+    "Disputed 2026-11-03 15:22 UTC: The fix breaks EUR rounding. The arbiter decides by 2026-11-05 15:22 UTC.",
+  );
+});
+
+test("the weekly credit line names the balance, the allowance, and the next grant", () => {
+  assert.equal(
+    creditLine({ available: 20, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z" }),
+    "20 of 30 credits left this week. Next grant 2026-11-09 00:00 UTC.",
+  );
+});
+
+test("a bid refused for credits says when credits return", () => {
+  const credits = { available: 0, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z" };
+  assert.equal(
+    denied("INSUFFICIENT_CREDITS", credits),
+    "Not enough bid credits: you have 0 and a bid costs 10. Your weekly allowance of 30 returns 2026-11-09 00:00 UTC. (INSUFFICIENT_CREDITS)",
+  );
+  assert.equal(denied("INSUFFICIENT_CREDITS"), "Not enough bid credits. Each bid costs 10. (INSUFFICIENT_CREDITS)");
+  assert.equal(denied("NOT_OWNER", credits), "You do not own this job. (NOT_OWNER)");
 });

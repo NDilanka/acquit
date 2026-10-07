@@ -1,4 +1,4 @@
-import type { LedgerLine, MergeProgress, ReleaseEvidence } from "./api-types";
+import type { CreditAccountView, DisputeView, LedgerLine, MergeProgress, ReleaseAuthority, ReleaseEvidence } from "./api-types";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -103,6 +103,33 @@ const reasons: Record<string, string> = {
   BUSY: "The server is busy with this job. Try again in a moment.",
 };
 
-export function denied(reason: string): string {
+/** `credits` arrives only with an INSUFFICIENT_CREDITS refusal, so the message can say when credits return. */
+export function denied(reason: string, credits?: CreditAccountView | null): string {
+  if (reason === "INSUFFICIENT_CREDITS" && credits) {
+    return (
+      `Not enough bid credits: you have ${credits.available} and a bid costs 10. ` +
+      `Your weekly allowance of ${credits.weeklyAllowance} returns ${utc(credits.nextGrantAt)}. (${reason})`
+    );
+  }
   return `${reasons[reason] ?? "The request was refused."} (${reason})`;
+}
+
+const authorities: Record<ReleaseAuthority, string> = {
+  CLIENT_APPROVAL: "Released on the client's approval",
+  REVIEW_SILENCE: "Released after review silence: the client did not respond within 72 hours",
+  ARBITER_UPHELD: "Released by the arbiter",
+  ARBITER_SLA_MISSED: "Released after the arbiter missed its deadline",
+  CAPTURE_CUTOFF: "Released at the PayPal capture cutoff, 21 days after payment",
+};
+
+export function authorityNote(authority: ReleaseAuthority): string {
+  return authorities[authority] ?? `Released (${authority})`;
+}
+
+export function disputeNote(dispute: DisputeView): string {
+  return `Disputed ${utc(dispute.openedAt)}: ${dispute.reason} The arbiter decides by ${utc(dispute.resolveBy)}.`;
+}
+
+export function creditLine(credits: CreditAccountView): string {
+  return `${credits.available} of ${credits.weeklyAllowance} credits left this week. Next grant ${utc(credits.nextGrantAt)}.`;
 }
