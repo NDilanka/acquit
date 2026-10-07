@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -63,9 +64,32 @@ async function apiFixture(dev: boolean, run: (url: string, databasePath: string,
 		await rm(dir, { recursive: true, force: true });
 	}
 }
+/**
+ * The stored VERIFIED AWAITING_CLIENT row the review routes serve: one judged pass, the held escrow,
+ * and a review window the frozen clock has not reached.
+ */
+function verifiedFixture(mergeCommit: string, at: string) {
+	const verdict = { result: "VERIFIED", runId: "run_test_1", sourceCommit: "a3b6ead29f4e367d1871e753b516cc9e832871e4",
+		mergeCommit, pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
+		reportDigest: "b".repeat(64), at };
+	return { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture", openedAt: at,
+		contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z", definitionOfDone: null },
+		bids: [{ id: "bid_test", operator: "devon-ops", handle: "devon-ops", kind: "INDEPENDENT", payee: "D3SSQU3ZEN7R2",
+			agent: "ts-bugfixer", runner: "claude-code", price: 40000, eta: 48, pitch: "test", placedAt: at,
+			respondBy: at, status: "ACCEPTED" }],
+		state: { status: "VERIFIED",
+			escrow: { payee: { bidId: "bid_test", operator: "devon-ops", payee: "D3SSQU3ZEN7R2", agent: "ts-bugfixer", price: 40000, eta: 48 },
+				quote: { split: { price: 40000, clientFee: 2000, operatorFee: 4000, held: 42000, operatorNet: 36000, fee: 6000 },
+					model: { version: "test", rateBps: 349, fixed: 49 }, predictedProcessorFee: 1515, platformFeeInstruction: 4485 },
+				capture: { orderId: "ORDER1", captureId: "CAPTURE1", payee: "D3SSQU3ZEN7R2", disbursement: "DELAYED", gross: 42000,
+					processorFee: 1515, platformFee: 4485, sellerNet: 36000, capturedAt: at },
+				book: [{ kind: "HELD", cents: 42000, at }], cutoffAt: "2026-11-28T11:12:00.000Z" },
+			history: [], passed: { ordinal: 1, verdict },
+			review: { phase: "AWAITING_CLIENT", endsAt: "2026-11-04T11:12:00.000Z" }, runsStarted: 1 } };
+}
 test("development routes require the flag and the configured lane origin", async () => {
 	await apiFixture(false, async url => {
-		for (const path of ["clock", "fund-mode", "tick"]) {
+		for (const path of ["clock", "fund-mode", "tick", "arbiter"]) {
 			const response = await fetch(`${url}/api/dev/${path}`, { method: "POST", body: "{}" });
 			assert.equal(response.status, 403);
 			const error = await response.json() as { error: string; detail: string };
@@ -135,23 +159,7 @@ test("the Approve command releases for the client and is denied to the operator"
 		const { DatabaseSync } = await import("node:sqlite");
 		const at = "2026-11-01T11:12:00.000Z";
 		const mergeCommit = "5cccb66515313caed72e4af329a62fc011139426";
-		const verdict = { result: "VERIFIED", runId: "run_test_1", sourceCommit: "a3b6ead29f4e367d1871e753b516cc9e832871e4",
-			mergeCommit, pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
-			reportDigest: "b".repeat(64), at };
-		const row = { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture", openedAt: at,
-			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z", definitionOfDone: null },
-			bids: [{ id: "bid_test", operator: "devon-ops", handle: "devon-ops", kind: "INDEPENDENT", payee: "D3SSQU3ZEN7R2",
-				agent: "ts-bugfixer", runner: "claude-code", price: 40000, eta: 48, pitch: "test", placedAt: at,
-				respondBy: at, status: "ACCEPTED" }],
-			state: { status: "VERIFIED",
-				escrow: { payee: { bidId: "bid_test", operator: "devon-ops", payee: "D3SSQU3ZEN7R2", agent: "ts-bugfixer", price: 40000, eta: 48 },
-					quote: { split: { price: 40000, clientFee: 2000, operatorFee: 4000, held: 42000, operatorNet: 36000, fee: 6000 },
-						model: { version: "test", rateBps: 349, fixed: 49 }, predictedProcessorFee: 1515, platformFeeInstruction: 4485 },
-					capture: { orderId: "ORDER1", captureId: "CAPTURE1", payee: "D3SSQU3ZEN7R2", disbursement: "DELAYED", gross: 42000,
-						processorFee: 1515, platformFee: 4485, sellerNet: 36000, capturedAt: at },
-					book: [{ kind: "HELD", cents: 42000, at }], cutoffAt: "2026-11-28T11:12:00.000Z" },
-				history: [], passed: { ordinal: 1, verdict },
-				review: { phase: "AWAITING_CLIENT", endsAt: "2026-11-04T11:12:00.000Z" }, runsStarted: 1 } };
+		const row = verifiedFixture(mergeCommit, at);
 		const db = new DatabaseSync(databasePath);
 		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
 		db.close();
@@ -186,5 +194,73 @@ test("the Approve command releases for the client and is denied to the operator"
 		// then the referenced payout for the held capture.
 		assert.deepEqual((await calls()).map(call => [call.method, new URL(call.url).pathname]),
 			[["POST", "/v1/oauth2/token"], ["POST", "/v1/payments/referenced-payouts-items"]]);
+	});
+});
+test("the client disputes through the command route and the dev arbiter route resolves it", async () => {
+	await apiFixture(true, async (url, databasePath, calls) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const at = "2026-11-01T11:12:00.000Z";
+		const mergeCommit = "5cccb66515313caed72e4af329a62fc011139426";
+		const row = verifiedFixture(mergeCommit, at);
+		const db = new DatabaseSync(databasePath);
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		db.close();
+		const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "maya-client" }) });
+		assert.equal(signedIn.status, 200);
+		const client = ((await signedIn.json()) as { token: string }).token;
+		const post = (path: string, body: unknown) => fetch(`${url}${path}`, { method: "POST",
+			headers: { Authorization: `Bearer ${client}` }, body: JSON.stringify(body) });
+		const disputed = await post("/api/commands", { key: randomUUID(),
+			command: { type: "Dispute", jobId: row.id, mergeCommit, reason: "The export path regressed." } });
+		assert.equal(disputed.status, 200);
+		const opened = await disputed.json() as { outcome: { kind: string; result: { job: { phase: string; viewerCanDispute: boolean;
+			viewerCanApprove: boolean; reviewEndsAt: string | null; dispute: { reason: string; openedAt: string; resolveBy: string } | null } } } };
+		assert.equal(opened.outcome.kind, "COMMITTED");
+		assert.equal(opened.outcome.result.job.phase, "DISPUTED");
+		assert.equal(opened.outcome.result.job.viewerCanDispute, false);
+		assert.equal(opened.outcome.result.job.viewerCanApprove, false);
+		assert.equal(opened.outcome.result.job.reviewEndsAt, null);
+		assert.deepEqual(opened.outcome.result.job.dispute, { reason: "The export path regressed.",
+			openedAt: "2025-10-09T08:53:20.000Z", resolveBy: "2025-10-11T08:53:20.000Z" });
+		// The arbiter's hackathon surface sends the same ResolveDispute the staff console will send later.
+		const upheld = await post("/api/dev/arbiter", { jobId: row.id, verdict: "UPHOLD", note: "The artifact met the frozen contract." });
+		assert.equal(upheld.status, 200);
+		const resolved = await upheld.json() as { outcome: { kind: string; result: { job: { phase: string; releaseAuthority: string | null } } } };
+		assert.equal(resolved.outcome.kind, "COMMITTED");
+		assert.equal(resolved.outcome.result.job.phase, "RELEASE_PENDING");
+		assert.equal(resolved.outcome.result.job.releaseAuthority, "ARBITER_UPHELD");
+		// The row left DISPUTED, so a second verdict is refused, and an unknown verdict never parses.
+		assert.equal((await post("/api/dev/arbiter", { jobId: row.id, verdict: "REFUND", note: "again" })).status, 409);
+		assert.equal((await post("/api/dev/arbiter", { jobId: row.id, verdict: "MAYBE", note: "again" })).status, 400);
+		assert.deepEqual((await calls()).map(call => [call.method, new URL(call.url).pathname]),
+			[["POST", "/v1/oauth2/token"], ["POST", "/v1/payments/referenced-payouts-items"]]);
+	});
+});
+test("a bid the operator cannot afford answers with the credit balance and the next grant", async () => {
+	await apiFixture(false, async (url, databasePath) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const at = "2026-11-01T11:12:00.000Z";
+		const operator = { id: "devon-ops", handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+			payouts: { kind: "READY", merchant: "D3SSQU3ZEN7R2", connectedAt: at } };
+		const agent = { id: "ts-bugfixer", owner: "devon-ops", name: "ts-bugfixer", runner: "claude-code", promptDigest: "digest", tools: [] };
+		const credits = { operator: "devon-ops", version: 0, balance: { allowance: 0, purchased: 0 }, lines: [] };
+		const job = { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture", openedAt: at,
+			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z", definitionOfDone: null },
+			bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } };
+		const db = new DatabaseSync(databasePath);
+		db.prepare("INSERT INTO operators VALUES (?, 0, ?, 0)").run("devon-ops", JSON.stringify(operator));
+		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run("ts-bugfixer", "devon-ops", JSON.stringify(agent));
+		db.prepare("INSERT INTO credits VALUES (?, 0, ?)").run("devon-ops", JSON.stringify(credits));
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(job.id, JSON.stringify(job));
+		db.close();
+		const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "devon-ops" }) });
+		assert.equal(signedIn.status, 200);
+		const token = ((await signedIn.json()) as { token: string }).token;
+		const denied = await fetch(`${url}/api/commands`, { method: "POST", headers: { Authorization: `Bearer ${token}` },
+			body: JSON.stringify({ key: randomUUID(),
+				command: { type: "PlaceBid", jobId: job.id, price: 40000, eta: 48, agent: "ts-bugfixer", pitch: "no credits" } }) });
+		assert.equal(denied.status, 409);
+		assert.deepEqual(await denied.json(), { outcome: { kind: "DENIED", reason: "INSUFFICIENT_CREDITS" },
+			credits: { available: 0, weeklyAllowance: 30, nextGrantAt: "2025-10-13T00:00:00.000Z" } });
 	});
 });

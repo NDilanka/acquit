@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import type { CommitSha } from "../../../packages/core/src/ids.ts";
+import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, devEnabled, verifierEnv, webOrigin } from "./config.ts";
@@ -93,8 +93,9 @@ function parseCommand(value: unknown): UserCommand {
 		PlaceBid: ["type", "jobId", "price", "eta", "agent", "pitch"],
 		AcceptBid: ["type", "jobId", "bidId"], CancelJob: ["type", "jobId"],
 		Submit: ["type", "jobId", "sourceCommit"],
-		// The client approves the tree the verifier judged, so the command names the commit.
+		// The client approves or disputes the tree the verifier judged, so the command names the commit.
 		Approve: ["type", "jobId", "mergeCommit"],
+		Dispute: ["type", "jobId", "mergeCommit", "reason"],
 	};
 	const allowed = typeof command.type === "string" ? keys[command.type] : undefined;
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
@@ -116,6 +117,12 @@ function parseCommand(value: unknown): UserCommand {
 			const mergeCommit = text(command.mergeCommit, "merge commit", 64);
 			if (!/^[0-9a-f]{7,64}$/.test(mergeCommit)) throw new BadBody("merge commit must be a git object name");
 			return { type: "Approve", jobId: parseJobId(text(command.jobId, "job id")), mergeCommit: mergeCommit as CommitSha };
+		}
+		case "Dispute": {
+			const mergeCommit = text(command.mergeCommit, "merge commit", 64);
+			if (!/^[0-9a-f]{7,64}$/.test(mergeCommit)) throw new BadBody("merge commit must be a git object name");
+			return { type: "Dispute", jobId: parseJobId(text(command.jobId, "job id")), mergeCommit: mergeCommit as CommitSha,
+				reason: text(command.reason, "reason") };
 		}
 		default: throw new BadBody("Unsupported command");
 	}
@@ -204,6 +211,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			parsed = { key: parseRequestKey(text(input.key, "request key")), command: parseCommand(input.command) };
 		} catch (error) { json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return; }
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
+		// A bid the operator cannot afford carries when credits return, so the bid form can say it.
+		if (outcome.kind === "DENIED" && outcome.reason === "INSUFFICIENT_CREDITS") {
+			const credits = await acquit.query(current.actor, { type: "Credits" });
+			json(res, 409, { outcome, credits: credits.kind === "CREDITS" ? credits.credits : null }); return;
+		}
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
 	}
 	if (url.pathname === "/api/dev/clock" && method === "POST") {
@@ -221,6 +233,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { mode: fundingMode }); return;
 	}
 	if (url.pathname === "/api/dev/tick" && method === "POST") { await acquit.tick(); json(res, 200, { ok: true }); return; }
+	if (url.pathname === "/api/dev/arbiter" && method === "POST") {
+		// The arbiter's hackathon surface: a development session sends the same ResolveDispute the real
+		// staff console will send later. The domain edge still guards the role and the DISPUTED phase.
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => !["jobId", "verdict", "note"].includes(key))) throw new BadBody("Unsupported arbiter field");
+		const verdict = text(input.verdict, "verdict", 16).toUpperCase();
+		if (verdict !== "UPHOLD" && verdict !== "REFUND" && verdict !== "REWORK") throw new BadBody("verdict must be UPHOLD, REFUND, or REWORK");
+		const outcome = await acquit.execute({ role: "ARBITER", staffId: "staff-arbiter" as StaffId }, parseRequestKey(randomUUID()),
+			{ type: "ResolveDispute", jobId: validJobId(text(input.jobId, "job id")), verdict, note: text(input.note, "note") });
+		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
+	}
 	if (url.pathname === "/api/jobs" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
 		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
