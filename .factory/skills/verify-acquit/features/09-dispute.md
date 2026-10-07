@@ -73,7 +73,8 @@ Preconditions:
 - **Rework.** Send `verdict: "REWORK"`. Require the job to return to `IN_PROGRESS` in `READY` with the
   judged attempt kept in history and `attempts.left` reduced by the pass it keeps. Submit again and
   require the next run to reserve ordinal 2. A rework past the delivery deadline is refused
-  `WRONG_STATE` and the deadline refunds instead.
+  `WRONG_STATE`: the refusal stands, the review stays `DISPUTED`, and the arbiter's own deadline
+  releases with `ARBITER_SLA_MISSED` at `resolveBy`, as the missed-deadline bullets above require.
 - **Clean up.** Delete the job's work repo, stop the lane, and leave the client repository as you found it.
 
 ## Gotchas
