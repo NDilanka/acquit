@@ -24,7 +24,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { assertSafePushConfig, gitGuardArgs, hardenedGitEnv, recordedWorkTree, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
+import { assertSafePushConfig, checkoutGitArgs, gitGuardArgs, hardenedGitEnv, recordedWorkTree, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
 import type { JobCheckout } from "./gitstate.ts";
 import { PROVIDER_SPECS, storedProvider } from "./operator.ts";
 import type { Provider, ProviderPort } from "./operator.ts";
@@ -220,7 +220,7 @@ function sameRemote(left: string, right: string): boolean {
 /** Every git command on a job's checkout names its state git directory and work tree explicitly:
  * discovery would follow the work tree's own .git, which the sandbox can write. */
 function jobGitArgs(checkout: JobCheckout, env: NodeJS.ProcessEnv, args: readonly string[]): readonly string[] {
-	return ["--git-dir", checkout.gitDir, "--work-tree", checkout.workTree, ...gitGuardArgs(env), ...args];
+	return checkoutGitArgs(checkout, env, args);
 }
 
 function checkoutGit(git: GitRun, checkout: JobCheckout, env: NodeJS.ProcessEnv, args: readonly string[]): GitResult {
@@ -430,8 +430,9 @@ export function submissionCommit(git: GitRun, checkout: JobCheckout, frozen: Com
 /** The ref `acquit submit` pushes to: one commit-named ref, so the two commands can only agree. */
 export function pushWork(git: GitRun, checkout: JobCheckout, url: string, commit: CommitSha, env: NodeJS.ProcessEnv): void {
 	// The state git directory is never exposed to the agent, but a push is the one place the scoped
-	// token meets config: refuse any key the CLI did not write before git can read it.
-	assertSafePushConfig(git, checkout.gitDir, env, "state");
+	// token meets config: refuse any key the CLI did not write before git can read it. The scan names
+	// the same location arguments as the push below, so the two read the same config files.
+	assertSafePushConfig(git, checkout, env, "state");
 	const pushed = git(jobGitArgs(checkout, env, ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]), env);
 	if (pushed.status !== 0) throw pushError(url, pushed.stderr);
 }

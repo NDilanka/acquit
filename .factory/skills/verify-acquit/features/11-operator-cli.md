@@ -185,11 +185,16 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   verification and any proxy with its own `-c` overrides. An own checkout (a `--dir` the state git
   directory does not record) is read through discovery with those guard overrides still applied; a
   push with the operator's own credential keeps the operator's git environment and credential helper,
-  minus the `ACQUIT_*` variables, while a push driven by the scoped token is hardened. A git directory
-  that holds config the CLI did not write refuses the scoped push (`GIT_CONFIG_UNSAFE`) instead of
-  letting the scoped token meet a URL rewrite, an http proxy, a TLS verification git reads as false,
-  a planted CA bundle, or a credential helper; the refusal names the directory and its remedy. The
-  off-github `remote.*.url` rule applies to the state checkout alone: the scoped push names the
+  minus the `ACQUIT_*` variables, while a push driven by the scoped token is hardened. The scan that
+  guards a scoped push reads every config file the push reads: it runs git with the push's own
+  location arguments (the git directory, and the work tree whenever the push names one) and the same
+  hardened environment, so a worktree config the push reads cannot hide a key from the scan. A git
+  directory that holds config the CLI did not write refuses the scoped push (`GIT_CONFIG_UNSAFE`)
+  instead of letting the scoped token meet a URL rewrite, an http proxy, a TLS verification git reads
+  as false, a planted CA bundle, or a credential helper; a state git directory that turns on
+  `extensions.worktreeConfig` refuses too, since the CLI never writes it there, while an operator's
+  own checkout may keep it and is judged key by key. The refusal names the directory and its remedy.
+  The off-github `remote.*.url` rule applies to the state checkout alone: the scoped push names the
   work-repo URL explicitly, so an operator's own remotes cannot steer it, while every
   `insteadOf`/`pushInsteadOf`/`pushurl` rewrite refuses everywhere.
 - `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.

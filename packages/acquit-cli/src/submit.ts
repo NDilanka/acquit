@@ -11,8 +11,8 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { assertSafePushConfig, existingStateCheckout, gitGuardArgs, hardenedGitEnv } from "./gitstate.ts";
-import type { GitProbe, JobCheckout } from "./gitstate.ts";
+import { assertSafePushConfig, checkoutGitArgs, existingStateCheckout, gitGuardArgs, hardenedGitEnv } from "./gitstate.ts";
+import type { GitLocation, GitProbe, JobCheckout } from "./gitstate.ts";
 import { childEnv, makeSecretDir, parseWorkRepo, remoteNamesWorkRepo, secretGuard, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
 export type SubmitOptions = {
@@ -99,7 +99,7 @@ export function localHead(dir: string, jobId?: string, env: NodeJS.ProcessEnv = 
 	const checkout = stateCheckout(dir, jobId, base);
 	const args = checkout === null
 		? ["-C", dir, ...gitGuardArgs(base), "rev-parse", "HEAD"]
-		: ["--git-dir", checkout.gitDir, "--work-tree", checkout.workTree, ...gitGuardArgs(base), "rev-parse", "HEAD"];
+		: checkoutGitArgs(checkout, base, ["rev-parse", "HEAD"]);
 	const result = spawnSync("git", args, { encoding: "utf8", timeout: 15_000, env: hardenedGitEnv(base) });
 	const head = result.stdout?.trim() ?? "";
 	if (result.status !== 0 || !SHA.test(head)) {
@@ -151,10 +151,13 @@ export function pushHead(dir: string, remote: string, commit: CommitSha, env?: N
 	const gitEnv = { ...hardenedGitEnv(base), ...(askpass ?? {}) };
 	const gitDir = stateGitDir ?? absoluteGitDir(dir, gitEnv);
 	if (gitDir === null) throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit.`);
+	// One location for the scan and the push: git reads the same config files for both, so a key the
+	// scan cannot see cannot steer the push either.
+	const location: GitLocation = { gitDir, workTree: dir };
 	// The scoped token must never meet config the CLI did not write; an operator's own credential
 	// only meets the checkout the operator works in, so its config is theirs to keep.
-	if (askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), gitDir, gitEnv, stateGitDir !== null ? "state" : "own");
-	const args = ["--git-dir", gitDir, "--work-tree", dir, ...gitGuardArgs(base), "push", remote, `${commit}:${submissionRef(commit)}`];
+	if (askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), location, gitEnv, stateGitDir !== null ? "state" : "own");
+	const args = checkoutGitArgs(location, base, ["push", remote, `${commit}:${submissionRef(commit)}`]);
 	const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 120_000, env: gitEnv });
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
@@ -237,7 +240,7 @@ function remoteUrl(dir: string, remote: string, jobId?: string, env: NodeJS.Proc
 	const checkout = stateCheckout(dir, jobId, base);
 	const args = checkout === null
 		? ["-C", dir, ...gitGuardArgs(base), "remote", "get-url", remote]
-		: ["--git-dir", checkout.gitDir, "--work-tree", checkout.workTree, ...gitGuardArgs(base), "remote", "get-url", remote];
+		: checkoutGitArgs(checkout, base, ["remote", "get-url", remote]);
 	const result = spawnSync("git", args, { encoding: "utf8", timeout: 15_000, env: hardenedGitEnv(base) });
 	const url = result.stdout?.trim() ?? "";
 	return result.status === 0 && url !== "" ? url : null;
