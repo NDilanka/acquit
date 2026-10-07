@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applySystemCommand, operationKey, runOutboxOnce } from "../src/effects.ts";
+import { applySystemCommand, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { OperationKey, Ports } from "../src/effects.ts";
 import { instant, hours, parseBidId, parseJobId } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
@@ -16,7 +16,9 @@ import { frozenDefinition } from "../src/seed-data.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Verdict, VerifierRunId } from "../src/verifier.ts";
 import type { Actor } from "../src/acquit.ts";
+import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
+import type { OperatorRow } from "../src/operator.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -219,6 +221,47 @@ test("a missed arbiter deadline commits the alert row the outbox raises", async 
 		assert.deepEqual(raised, ["DISPUTE_SLA_MISSED"]);
 		const after = await store.readJob(row.id);
 		assert.equal(after?.state.status, "VERIFIED");
+	} finally { store.close(); }
+});
+
+test("a settled release counts the payee's receipt once, and the Monday grant counts it", async () => {
+	const store = new SqliteStore(":memory:");
+	const payee = "devon-ops" as OperatorId;
+	const operator: OperatorRow = { id: payee, handle: "devon-ops", kind: "INDEPENDENT", version: 0 as Version,
+		payouts: { kind: "READY", merchant, connectedAt: now } };
+	const empty: CreditAccount = { operator: payee, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
+	const account = reduceCredits(empty, { kind: "Grant", week: creditWeek(now), paidReceipts: 0, at: now });
+	if (typeof account === "string") throw new Error(account);
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+	const verified = verifiedRow();
+	const approved = applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: judgedCommit }, userFacts(maya));
+	if (typeof approved === "string") throw new Error(approved);
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(approved.next.id, approved.next.version, JSON.stringify(approved.next), wakeAt(approved.next));
+	let current: Instant = now;
+	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => current },
+		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented },
+		alerts: { raise: unimplemented },
+		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
+	try {
+		const command = { type: "ReleaseSettled" as const, jobId: approved.next.id, release: releaseEvidence };
+		const first = await applySystemCommand(ports, command, null, "WH-RELEASE-1");
+		assert.equal(first.outcome, "COMMITTED");
+		assert.equal(first.refused, null);
+		assert.equal((await store.readJob(approved.next.id))?.state.status, "PAID");
+		assert.equal((await store.receiptCounts()).get(payee), 1, "the PAID transition counts the payee's receipt");
+		// A redelivered settlement is the same delivery, and a fresh event for the settled release is refused:
+		// neither counts the receipt a second time.
+		assert.deepEqual(await applySystemCommand(ports, command, null, "WH-RELEASE-1"), { outcome: "DELIVERY_REPLAY", refused: null });
+		assert.equal((await applySystemCommand(ports, command, null, "WH-RELEASE-2")).refused, "SETTLEMENT_MISMATCH");
+		assert.equal((await store.receiptCounts()).get(payee), 1);
+		// Monday: the grant counts the one receipt the release earned.
+		current = instant("2026-10-12T00:00:00Z");
+		await runDueTimers(ports);
+		const after = await store.readCredits(payee);
+		assert.equal(after.balance.allowance, 40, "30 plus 10 for the receipt the release earned");
+		assert.equal((await store.receiptCounts()).get(payee), 1);
 	} finally { store.close(); }
 });
 
