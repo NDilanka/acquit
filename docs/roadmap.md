@@ -12,7 +12,7 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | gf-skeleton | Build the walking skeleton | done | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | done | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | done | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
-| gf-feature | Build each feature with proof | next. H0, F1, H1, and F3 merged on 2026-10-07 (#1 to #4). F2 is in progress. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
+| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, and F2 merged on 2026-10-07 (#1 to #4, #6). F4 is next. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
 | Step 8 (id not printed) | Open the PR, babysit, ship | in progress. The root lands PRs since 2026-10-07. | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
 | Step 9 (id not printed) | Maintain the verification skill | pending | Daily from 2026-10-23 | A daily run reports `clean`, `changed`, or `blocked`. |
 
@@ -404,6 +404,9 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-07 | The operator handed merge calls to the root. H0, F1, H1, and F3 landed as merge commits, bottom-up, each pinned to its verdict SHA. | A squash would have forced a rebase and force-push of every child branch. A merge commit kept each child's patch-id equal to its verdict. | https://github.com/NDilanka/acquit/pull/1 to https://github.com/NDilanka/acquit/pull/4 |
 | 2026-10-07 | The verifier opens the client PR from a branch on the client repo after GitHub shows the fork commit there, waiting up to 45 seconds. The code falls back to a cross-repo PR from the fork after that wait, but the fallback cannot succeed with the two App installations. | Measured live. For the cross-repo PR, the client installation token got 422 "head invalid" and the org token got 403. The fork commit reached the client repo in 10 to 30 seconds. | https://github.com/NDilanka/acquit/pull/4 |
 | 2026-10-07 | F3 passed its gate. The warm Docker judge median was 276 ms and the submit-to-verdict median was about 6 seconds. | The plan's rules are 10 seconds and 120 seconds. | https://github.com/NDilanka/acquit/pull/4 |
+| 2026-10-07 | F2 passed its gate and landed as #6. Approve to PAID median 1.7 seconds, webhook route median 25 ms excluding PayPal. All 10 lanes passed on disposable client repos. | The plan's rules are 20 seconds and 500 ms. An approving lane merges into its client repo, so each lane used its own `NDilanka/invoice-app-<tag>` and `NDilanka/invoice-app` stayed frozen. | https://github.com/NDilanka/acquit/pull/6 |
+| 2026-10-07 | Dev card funding pays the operator 363.78 USD, not 360.00, and a refund reimburses 11.37 USD, not 15.15. | PayPal's observed card fee was 11.37 USD against the predicted 15.15. The book records `PROCESSOR_FEE_VARIANCE` and still sums. A refund's retained fee must equal the capture's recorded fee, or the refund parks for a person. | https://github.com/NDilanka/acquit/pull/6 |
+| 2026-10-07 | The webhook route stores a minimal envelope, never the body, and answers every caller the same `{received}` body. Signature verification is deferred. | The route is unauthenticated, and the bodies carried payer data. The route re-reads every resource from PayPal, so nothing in the body is trusted. | https://github.com/NDilanka/acquit/pull/6 |
 
 ## How to update this doc
 
