@@ -138,7 +138,7 @@ test("the callback route authenticates the bytes it was posted, not a re-encodin
 	const store = new SqliteStore(databasePath);
 	const row = heldRow();
 	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
-		acknowledge: null, delivery: null, request: null });
+		settlement: null, delivery: null, request: null });
 	store.close();
 	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
 		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
@@ -195,7 +195,7 @@ test("a rejection with hundreds of protected paths still ends the job REJECTED",
 	const store = new SqliteStore(databasePath);
 	const row = heldRow();
 	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
-		acknowledge: null, delivery: null, request: null });
+		settlement: null, delivery: null, request: null });
 	store.close();
 	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
 		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
@@ -305,7 +305,7 @@ test("the service judges a clean commit and posts a callback the real API applie
 	const store = new SqliteStore(databasePath);
 	const row = heldRow();
 	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
-		acknowledge: null, delivery: null, request: null });
+		settlement: null, delivery: null, request: null });
 	store.close();
 	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
 		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
@@ -373,7 +373,7 @@ test("a source that never arrives posts a signed RUN_FAILED the real API applies
 	const store = new SqliteStore(databasePath);
 	const row = heldRow();
 	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
-		acknowledge: null, delivery: null, request: null });
+		settlement: null, delivery: null, request: null });
 	store.close();
 	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
 		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,
@@ -429,7 +429,7 @@ test("a publish that fails after a clean judgment posts a named RUN_FAILED the A
 	const store = new SqliteStore(databasePath);
 	const row = heldRow();
 	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
-		acknowledge: null, delivery: null, request: null });
+		settlement: null, delivery: null, request: null });
 	store.close();
 	const api = spawn(process.execPath, [join(root, "apps/api/src/server.ts")], { cwd: root, stdio: ["ignore", "pipe", "pipe"],
 		env: { ...process.env, PORT: String(apiPort), WEB_ORIGIN: `http://localhost:${apiPort}`, DATABASE_PATH: databasePath,

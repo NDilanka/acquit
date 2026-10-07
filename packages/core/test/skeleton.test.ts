@@ -5,7 +5,7 @@ import { commercialSplit, checkLaws, formatUsd, reduceLedger, usd } from "../src
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, ingestPayPalWebhook, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
-import type { OutboxState, Ports } from "../src/effects.ts";
+import type { OperationKey, OutboxState, Ports } from "../src/effects.ts";
 import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
@@ -121,7 +121,7 @@ test("createAcquit uses its injected Clock to expire checkout after three hours"
 		if (typeof plan === "string") throw new Error(plan);
 		const account = await f.store.readCredits("devon-ops" as OperatorId);
 		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
-		await store.commit({ job: { expectedVersion: null, row: plan.next, wakeAt: instant("2026-10-06T15:00:00Z") }, operator: null, credits: [], outbox: [], acknowledge: null, request: null, delivery: null });
+		await store.commit({ job: { expectedVersion: null, row: plan.next, wakeAt: instant("2026-10-06T15:00:00Z") }, operator: null, credits: [], outbox: [], settlement: null, request: null, delivery: null });
 		currentNow = instant("2026-10-06T15:00:00Z");
 		await service.tick();
 		const result = await service.query(maya, { type: "Job", jobId: row.id });
@@ -429,13 +429,16 @@ test("PayPal pending/error deadlines and token refresh use the injected clock", 
 		assert.equal(oauth, 2);
 	} finally { globalThis.fetch = originalFetch; }
 });
-test("outbox acknowledgements use the store's injected clock", async () => {
-	const store = new SqliteStore(":memory:", { now: () => now });
+test("a commit settles the leased effect it was dispatched for in the same write", async () => {
+	const store = new SqliteStore(":memory:");
 	try {
-		const key = "test-key" as any;
-		store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, "{}", "{}", null);
-		await store.commit({ job: null, operator: null, credits: [], outbox: [], acknowledge: key, request: null, delivery: null });
-		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox").get()!.state)), { kind: "CONFIRMED", at: now });
+		const key = "test-key" as OperationKey;
+		store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, "{}", JSON.stringify({ kind: "LEASED", leaseUntil: now }), now);
+		await store.commit({ job: null, operator: null, credits: [], outbox: [], settlement: { key,
+			state: { kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH", detail: "PayPal answered RELEASE_COMPLETED for capture OTHERCAPTURE" } },
+			request: null, delivery: null });
+		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox").get()!.state)),
+			{ kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH", detail: "PayPal answered RELEASE_COMPLETED for capture OTHERCAPTURE" });
 	} finally { store.close(); }
 });
 

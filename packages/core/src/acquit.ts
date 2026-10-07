@@ -149,7 +149,7 @@ export type AcquitConfig = {
 
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
-	const store = new SqliteStore(config.databaseUrl, clock);
+	const store = new SqliteStore(config.databaseUrl);
 	const github = createGitHubApp(config.github);
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		clientRepository: config.clientRepository ?? DEMO_CLIENT_REPOSITORY,

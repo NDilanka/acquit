@@ -11,7 +11,6 @@ import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
-import type { Clock } from "./acquit.ts";
 
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -82,8 +81,7 @@ function due(state: OutboxState): string | null {
 }
 export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
-	private readonly clock: Clock;
-	constructor(path: string, clock: Clock = { now: () => instant(new Date().toISOString()) }) { this.clock = clock; this.db = openDatabase(path); }
+	constructor(path: string) { this.db = openDatabase(path); }
 	async readJob(id: JobId): Promise<JobRow | null> { const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)); return row ? storedJob(row) : null; }
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
@@ -156,7 +154,7 @@ export class SqliteStore implements Store {
 				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
 			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
-			if (change.acknowledge) this.updateEffect(change.acknowledge, { kind: "CONFIRMED", at: this.clock.now() });
+			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
 			if (change.delivery) this.db.prepare("INSERT INTO deliveries VALUES (?)").run(change.delivery);
 			this.db.exec("COMMIT");

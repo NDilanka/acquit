@@ -95,7 +95,12 @@ export type AtomicCommit = {
 	readonly operator: { readonly expectedVersion: Version | null; readonly row: OperatorRow; readonly agent: Agent | null } | null;
 	readonly credits: readonly { readonly expectedVersion: Version; readonly account: CreditAccount }[];
 	readonly outbox: readonly OutboxRow[];
-	readonly acknowledge: OperationKey | null;
+	/**
+	 * The leased effect this write settles, in the state the write leaves it in. A plan that refused the
+	 * observation parks it NEEDS_HUMAN here, in the same write, so no crash can leave a refused settlement
+	 * acknowledged CONFIRMED with the job unmoved.
+	 */
+	readonly settlement: { readonly key: OperationKey; readonly state: OutboxState } | null;
 	readonly request: RecordedRequest | null;
 	readonly delivery: string | null;
 };
@@ -183,7 +188,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const committed = await ports.store.commit({
 			job: { expectedVersion: row?.version ?? null, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
-			outbox: plan.effects.map(effect => outboxRow(effect, now)), acknowledge: null, delivery: null,
+			outbox: plan.effects.map(effect => outboxRow(effect, now)), settlement: null, delivery: null,
 			request: { actor: actorKey, key, payloadDigest, result },
 		});
 		if (committed !== "COMMITTED") continue;
@@ -202,7 +207,19 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 /** What one system commit did, and the plan's own word when it refused the observation it was given. */
 export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null };
 
-export async function applySystemCommand(ports: Ports, command: JobCommand, acknowledge: OperationKey | null, delivery: string | null): Promise<SystemCommit> {
+/**
+ * The leased effect a system commit settles, and the bounded provider answer its row shows if the plan
+ * refused the observation that dispatched it. The plan's own word decides the disposition: applied is
+ * CONFIRMED, refused is NEEDS_HUMAN under the plan's reason with this answer.
+ */
+export type EffectSettlement = { readonly key: OperationKey; readonly detail?: string };
+
+function settlementOf(settlement: EffectSettlement, refused: Refusal | null, now: Instant): OutboxState {
+	return refused === null ? { kind: "CONFIRMED", at: now }
+		: { kind: "NEEDS_HUMAN", reason: refused, detail: settlement.detail };
+}
+
+export async function applySystemCommand(ports: Ports, command: JobCommand, settlement: EffectSettlement | null, delivery: string | null): Promise<SystemCommit> {
 	if (!("jobId" in command)) throw new Error("System command requires job");
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const row = await ports.store.readJob(command.jobId);
@@ -218,7 +235,9 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, ackn
 		if (typeof plan === "string") throw new Error(`System transition refused: ${plan}`);
 		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
-			outbox: plan.effects.map(effect => outboxRow(effect, now)), acknowledge, request: null, delivery });
+			outbox: plan.effects.map(effect => outboxRow(effect, now)),
+			settlement: settlement === null ? null : { key: settlement.key, state: settlementOf(settlement, plan.refused ?? null, now) },
+			request: null, delivery });
 		if (committed === "COMMITTED" || committed === "DELIVERY_REPLAY") {
 			return { outcome: committed, refused: committed === "COMMITTED" ? plan.refused ?? null : null };
 		}
@@ -228,7 +247,7 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, ackn
 
 export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"IDLE" | "WORKED"> {
 	// Lease one row. For a row that was LEASED or UNCERTAIN before, reconcile first; dispatch only when
-	// reconcile says NOT_FOUND. CONFIRMED feeds the observation, with acknowledge, in one commit.
+	// reconcile says NOT_FOUND. CONFIRMED feeds the observation, with the effect's settlement, in one commit.
 	// UNKNOWN or PENDING becomes UNCERTAIN with a backoff. It never selects another disposition.
 	// PERMANENT_FAILURE on CREATE_ORDER or CAPTURE feeds FundingFailed. On a settlement it parks for a person.
 	const now = ports.clock.now();
@@ -280,15 +299,14 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 			if (!command || (effect.kind === "CAPTURE" && command.type !== "CaptureCompleted")) {
 				await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
 			} else {
-				const committed = await applySystemCommand(ports, command, row.key, null);
-				// A settlement the row refused is never acknowledged: the money is out, the row still holds the
-				// disposition, and the provider's own answer is a fact a person has to see. Nothing re-POSTs it.
-				if (committed.refused !== null) await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: committed.refused,
-					detail: boundedDetail(observationText(observation)) });
+				// The commit is the only write that settles this row: a settlement the row refuses parks the
+				// effect NEEDS_HUMAN with the provider's own bounded answer, in the same write as the fact it
+				// refused. The money is out, the row still holds the disposition, and nothing re-POSTs it.
+				await applySystemCommand(ports, command, { key: row.key, detail: boundedDetail(observationText(observation)) }, null);
 			}
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
-				await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, row.key, null);
+				await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, { key: row.key }, null);
 			} else {
 				// A refused settlement is never retried, and it is never turned into another disposition.
 				await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
@@ -428,7 +446,7 @@ async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<Jo
 	if (outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
 	// A conflict is not retried: the row names it and a person resolves it.
 	const progress: MergeProgress = outcome === "MERGED" ? { phase: "MERGED", at: now } : { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };
-	await applySystemCommand(ports, { type: "MergeFinished", jobId: effect.jobId, outcome: progress }, key, null);
+	await applySystemCommand(ports, { type: "MergeFinished", jobId: effect.jobId, outcome: progress }, { key }, null);
 	return "WORKED";
 }
 
@@ -623,7 +641,7 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts: receipts.get(operator.id) ?? 0, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;
 		const result = await ports.store.commit({ job: null, operator: null, credits: [{ expectedVersion: account.version, account: next }],
-			outbox: [], acknowledge: null, request: null, delivery: null });
+			outbox: [], settlement: null, request: null, delivery: null });
 		if (result === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {
