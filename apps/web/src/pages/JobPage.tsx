@@ -467,7 +467,7 @@ function Ledger({ job, locked }: { job: JobView; locked: BidView | null }) {
               <span>{job.id}</span>
               <b className={`k ${line.kind.toLowerCase()}`}>{line.kind}</b>
               <span className="num">{usd(line.cents)}</span>
-              <span className="note">{ledgerNote(line, line.kind === "HELD" ? (locked?.price ?? null) : null)}</span>
+              <span className="note">{ledgerNote(line, locked)}</span>
             </li>
           ))}
         </ul>
