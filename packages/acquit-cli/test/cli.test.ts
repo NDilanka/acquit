@@ -181,6 +181,21 @@ test("operator init prints the tutorial's block, stores the provider key in the 
 	assert.equal(keychain.get("acquit:provider"), "anthropic");
 });
 
+test("operator init refuses an OpenAI provider key no runner can use", async () => {
+	assert.throws(() => parseOperatorArgs(["init", "--provider", "openai"], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic key runs today.");
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const keychain = memoryKeychain();
+	await assert.rejects(runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: () => {},
+		ask: async (_question, secret) => secret ? "sk-ant-canary" : "openai", readStdin: () => "", sleep: async () => {}, now: () => 0,
+	}), (error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic key runs today.");
+	assert.equal(keychain.get("acquit:provider-key"), null);
+	assert.equal(keychain.get("acquit:provider"), null);
+});
+
 test("the Linux keychain hands the secret to keyctl on stdin, never on argv", () => {
 	const calls: { args: readonly string[]; input: string }[] = [];
 	const run = (command: string, args: readonly string[], input: string) => {

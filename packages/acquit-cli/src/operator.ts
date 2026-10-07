@@ -40,7 +40,10 @@ type Onboarding = {
 };
 
 function providerOf(value: string): Provider {
-	if (value === "anthropic" || value === "openai") return value;
+	// Only the Anthropic key reaches a runner today, so storing an OpenAI one would store a key that
+	// nothing can use.
+	if (value === "openai") throw new CliError("PROVIDER_UNSUPPORTED", "Only an Anthropic key runs today.");
+	if (value === "anthropic") return value;
 	throw new CliError("USAGE", "The provider must be anthropic or openai.");
 }
 
