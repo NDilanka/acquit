@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
-import { createFakeGitHubApp, createGitHubApp } from "../src/github.ts";
+import { createFakeGitHubApp, createGitHubApp, workRepoName } from "../src/github.ts";
 import type { GitHubAppPort } from "../src/github.ts";
 import type { CommitSha, JobId } from "../src/ids.ts";
 
@@ -50,7 +50,7 @@ type StubRepo = { full_name: string; name: string; owner: string; default_branch
 type StubPull = { number: number; head: string; branch: string; state: string; title: string; body: string;
 	merged: boolean; merge_commit_sha: string | null };
 type StubCheck = { repo: string; id: number; name: string; head_sha: string; external_id: string | null; html_url: string };
-type StubRequest = { readonly method: string; readonly path: string; readonly authorization: string };
+type StubRequest = { readonly method: string; readonly path: string; readonly authorization: string; readonly body: unknown };
 type StubRefusal = { readonly method: string; readonly path: string; readonly status: number; readonly message: string;
 	readonly headers: Record<string, string>; readonly once: boolean };
 
@@ -281,7 +281,9 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			for await (const chunk of request) chunks.push(Buffer.from(chunk as Buffer));
 			const path = request.url ?? "";
 			const authorization = request.headers.authorization ?? "";
-			state.requests.push({ method: request.method ?? "", path, authorization });
+			const posted = Buffer.concat(chunks).toString("utf8");
+			// Every request body is kept, so a test can read back exactly what a mint asked GitHub for.
+			state.requests.push({ method: request.method ?? "", path, authorization, body: posted === "" ? null : JSON.parse(posted) as unknown });
 			if (hangs.some(prefix => path.startsWith(prefix))) return;
 			const refused = refusals.find(item => item.method === request.method && path.startsWith(item.path));
 			if (refused) {
@@ -290,7 +292,7 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			}
 			const auth = authorize(authorization);
 			if (auth === null) return json(response, 401, { message: "A JSON web token could not be decoded" });
-			const body = Buffer.concat(chunks).length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+			const body = posted === "" ? {} : JSON.parse(posted) as Record<string, unknown>;
 			route(request.method ?? "", path, body, auth, response);
 		})().catch(error => { json(response, 500, { message: String(error) }); });
 	});
@@ -453,6 +455,40 @@ test("the port mints an installation token for a caller outside its own operatio
 	assert.equal(stub.state.mints.length, 1);
 });
 
+test("a scoped mint names exactly the repository and the least privilege the run needs", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const token = await port.installationToken(ORG, [workRepoName(CLIENT, JOB)]);
+	assert.equal(workRepoName(CLIENT, JOB), "invoice-app-7Q2K");
+	// The answer came from the one mint the stub made, and the body is what scopes it.
+	assert.equal(stub.state.mints.some(mint => mint.token === token && mint.owner === ORG), true);
+	const mint = stub.state.requests.find(request => request.method === "POST" && request.path === "/app/installations/42/access_tokens");
+	assert.ok(mint);
+	assert.deepEqual(mint.body, { repositories: ["invoice-app-7Q2K"], permissions: { contents: "write", metadata: "read" } });
+});
+
+test("the scope is part of the token cache, so a token is never served for another scope", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const scoped = await port.installationToken(ORG, [workRepoName(CLIENT, JOB)]);
+	assert.equal(await port.installationToken(ORG, [workRepoName(CLIENT, JOB)]), scoped);
+	assert.equal(stub.state.mints.length, 1);
+	// Neither the owner's own token nor another repository's scope may reuse the cached one.
+	const otherRepo = await port.installationToken(ORG, [workRepoName(CLIENT, OTHER_JOB)]);
+	const owner = await port.installationToken(ORG);
+	assert.notEqual(otherRepo, scoped);
+	assert.notEqual(owner, scoped);
+	assert.equal(stub.state.mints.length, 3);
+	// The owner-wide mint keeps the behavior it had before: no body at all.
+	const bodies = stub.state.requests.filter(request => request.method === "POST" && request.path === "/app/installations/42/access_tokens")
+		.map(request => request.body);
+	assert.deepEqual(bodies, [
+		{ repositories: ["invoice-app-7Q2K"], permissions: { contents: "write", metadata: "read" } },
+		{ repositories: ["invoice-app-8Z3P"], permissions: { contents: "write", metadata: "read" } },
+		null,
+	]);
+});
+
 test("a rate-limited mint is named and its copied text carries no token shape", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
@@ -468,6 +504,9 @@ test("a rate-limited mint is named and its copied text carries no token shape", 
 test("the fake port mints a token for the unit path", async () => {
 	const port = createFakeGitHubApp();
 	assert.equal(await port.installationToken(CLIENT_OWNER), await port.installationToken(CLIENT_OWNER));
+	const scoped = await port.installationToken(CLIENT_OWNER, ["invoice-app-7Q2K"]);
+	assert.notEqual(scoped, await port.installationToken(CLIENT_OWNER));
+	assert.equal(await port.installationToken(CLIENT_OWNER, ["invoice-app-7Q2K"]), scoped);
 });
 
 test("the work repo is the client repo's fork with main at the frozen commit", async t => {
