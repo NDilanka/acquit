@@ -10,7 +10,7 @@
 
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
-import { allowedConnect, allowedForward, ALLOWED_HOSTS, forwardHeaders, parseAuthority } from "./allowlist.mjs";
+import { allowedConnect, allowedForward, ALLOWED_HOSTS, authorityLabel, forwardHeaders, parseAuthority } from "./allowlist.mjs";
 
 const PORT = Number(process.env.ACQUIT_PROXY_PORT ?? 8888);
 
@@ -42,7 +42,8 @@ const server = createServer((req, res) => {
 server.on("connect", (req, client, head) => {
 	const target = parseAuthority(req.url);
 	if (target === null || !allowedConnect(req.url)) {
-		console.log(`deny connect ${req.url}`);
+		// The authority is never echoed: it can carry userinfo, and a denial log must not repeat one.
+		console.log(`deny connect ${authorityLabel(req.url)}`);
 		client.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
 		return;
 	}

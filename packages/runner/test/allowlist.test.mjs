@@ -3,7 +3,7 @@
 // module imports this one.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedConnect, allowedForward, allowedHost, forwardHeaders, parseAuthority } from "../allowlist.mjs";
+import { allowedConnect, allowedForward, allowedHost, authorityLabel, forwardHeaders, parseAuthority } from "../allowlist.mjs";
 
 test("only the registry and the provider hosts are allowed, exactly", () => {
 	assert.equal(allowedHost("registry.npmjs.org"), true);
@@ -25,6 +25,18 @@ test("a CONNECT authority parses host:port, a bare host, and IPv6 brackets", () 
 	assert.equal(parseAuthority("registry.npmjs.org:"), null);
 	assert.equal(parseAuthority("[::1"), null);
 	assert.equal(parseAuthority(""), null);
+	// A CONNECT authority is host[:port]; userinfo is not part of that form.
+	assert.equal(parseAuthority("user:secret@example.com:443"), null);
+});
+
+test("a denial names the parsed host and port, never the raw authority", () => {
+	assert.equal(authorityLabel("example.com:443"), "example.com:443");
+	assert.equal(authorityLabel("registry.npmjs.org"), "registry.npmjs.org:443");
+	assert.equal(authorityLabel("[::1]:8443"), "::1:8443");
+	// The authority a denial log prints must not repeat a credential the caller put in its userinfo.
+	assert.equal(authorityLabel("user:secret@example.com:443"), "<unparseable>");
+	assert.equal(authorityLabel("registry.npmjs.org:not-a-port"), "<unparseable>");
+	assert.equal(authorityLabel(""), "<unparseable>");
 });
 
 test("CONNECT is allowed only to 443", () => {
@@ -36,6 +48,7 @@ test("CONNECT is allowed only to 443", () => {
 	assert.equal(allowedConnect("example.com:443"), false);
 	assert.equal(allowedConnect("registry.npmjs.org.evil.example:443"), false);
 	assert.equal(allowedConnect("registry.npmjs.org:not-a-port"), false);
+	assert.equal(allowedConnect("user:secret@registry.npmjs.org:443"), false);
 });
 
 test("a plain forward is an http URL on port 80, with no userinfo", () => {

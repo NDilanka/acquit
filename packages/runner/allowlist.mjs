@@ -10,10 +10,11 @@ export function allowedHost(host) {
 	return ALLOWED_HOSTS.has(String(host ?? "").toLowerCase().replace(/\.$/, ""));
 }
 
-/** A CONNECT authority: `host:port`, `host`, `[v6]:port`, or `[v6]`. Null when it is not one. */
+/** A CONNECT authority: `host:port`, `host`, `[v6]:port`, or `[v6]`. Null when it is not one. A
+ * userinfo prefix is not one of those forms, and its text must never be treated as a host. */
 export function parseAuthority(authority) {
 	const text = String(authority ?? "");
-	if (text === "") return null;
+	if (text === "" || text.includes("@")) return null;
 	if (text.startsWith("[")) {
 		const end = text.indexOf("]");
 		if (end === -1) return null;
@@ -37,6 +38,13 @@ export function parseAuthority(authority) {
 export function allowedConnect(authority) {
 	const target = parseAuthority(authority);
 	return target !== null && target.port === 443 && allowedHost(target.host);
+}
+
+/** The one word a denial log prints for a CONNECT authority: the parsed host and port only. The raw
+ * text can carry userinfo, so it is never echoed; anything unparseable reads `<unparseable>`. */
+export function authorityLabel(authority) {
+	const target = parseAuthority(authority);
+	return target === null ? "<unparseable>" : `${target.host}:${target.port}`;
 }
 
 /** A plain forward only of an absolute-form http URL to an allowlisted host on port 80, with no
