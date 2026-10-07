@@ -34,7 +34,7 @@ export interface Receipt {
 
 export type MergeProgress =
   | { readonly phase: "PENDING" }
-  | { readonly phase: "MERGED"; readonly at: Instant }
+  | { readonly phase: "MERGED"; readonly at: Instant; readonly sha: string | null }
   | { readonly phase: "NEEDS_HUMAN"; readonly reason: string };
 
 /** The referenced payout item that paid the operator, as the release observed it. */

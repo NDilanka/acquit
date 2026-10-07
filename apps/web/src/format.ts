@@ -59,12 +59,17 @@ const mergeReasons: Record<string, string> = {
   GITHUB_MERGE_CONFLICT: "GitHub refused the merge",
 };
 
-export function mergeNote(merge: MergeProgress, pullRequest: number | null, mergeCommit: string | null): string {
+/** `approved` is the judged tree the client approved; GitHub's merge commit arrives as `merge.sha`. */
+export function mergeNote(merge: MergeProgress, pullRequest: number | null, approved: string | null): string {
   switch (merge.phase) {
     case "PENDING":
       return "Merge pending";
     case "MERGED": {
-      const what = [pullRequest !== null && `pull request #${pullRequest}`, mergeCommit && `commit ${mergeCommit.slice(0, 7)}`].filter(Boolean);
+      const what = [
+        pullRequest !== null && `pull request #${pullRequest}`,
+        merge.sha && `merge commit ${merge.sha.slice(0, 7)}`,
+        approved && `approved ${approved.slice(0, 7)}`,
+      ].filter(Boolean);
       return `Merged ${utc(merge.at)}${what.length ? `: ${what.join(", ")}` : ""}`;
     }
     case "NEEDS_HUMAN": {

@@ -61,9 +61,12 @@ Preconditions:
   ledger, and no second payout item for the capture.
 - **Confirm the merge.** `job.merge` reaches `MERGED` and the disposable repo's `main` carries the merge
   commit. A merge GitHub refuses parks as `NEEDS_HUMAN` with the reason instead of retrying. The receipt
-  panel reads `Merge pending`, then `Merged <time> UTC: pull request #<n>, commit <judged short sha>`
+  panel reads `Merge pending`, then
+  `Merged <time> UTC: pull request #<n>, merge commit <GitHub merge short sha>, approved <judged short sha>`
   without a reload (the page polls every 4 seconds while the merge is pending), or
-  `Needs a person: <reason>`. The commit is the judged tree, not GitHub's merge commit. Below it the
+  `Needs a person: <reason>`. Require the merge commit to match the disposable repo's `main` head and
+  the approved sha to match the judged commit. A row merged before the merge sha was recorded omits
+  `merge commit` and reads `approved <judged short sha>` only. Below it the
   panel shows `Payout item <id>, capture <id>` from `job.release`.
 - **Clean up.** Reset the disposable repo, delete the job's work repo (`<org>/invoice-app-<tag>-<job id
   without job_>`), and stop the lane.
