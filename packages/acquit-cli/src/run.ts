@@ -5,9 +5,11 @@
 // the agent changed, and push that commit to the work repo the way `acquit submit` expects.
 //
 // The agent never sees git metadata: the job's git directory lives in the CLI's state location,
-// outside the work tree the sandbox mounts, and an empty read-only tmpfs covers `/work/.git`. Every
-// host-side git command names that state git directory and the work tree explicitly, never
-// discovery, and runs under the hardened env and `-c` overrides in gitstate.ts.
+// outside the work tree the sandbox mounts, and an empty read-only tmpfs covers `/work/.git`. The
+// shadow is re-made as an empty real directory immediately before every mount, so a symlink a
+// previous run planted there can never move that mount onto its target. Every host-side git command
+// names the state git directory and the work tree explicitly, never discovery, and runs under the
+// hardened env and `-c` overrides in gitstate.ts.
 //
 // Secrets: the session token comes from the environment or stdin; the work-repo token lives in a
 // 0600 file named by the constant 0700 askpass script in a mkdtemp directory removed on every exit;
@@ -15,7 +17,7 @@
 // `-e` with no value. No secret is ever an argv word, a printed line, or a log line.
 
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { CommitSha } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
@@ -252,6 +254,29 @@ function hideWorkTreeGitLink(workTree: string, gitDir: string): void {
 }
 
 /**
+ * Re-makes the work tree's `.git` as an empty real 0700 directory: the shadow the sandbox mounts an
+ * empty read-only tmpfs over. The path belongs to the previous run's agent, which owns the work
+ * tree, so it may be a symlink (runc would mount the shadow on the link's target inside the
+ * container, masking it), a dangling symlink, a gitfile, a regular file, or a directory holding
+ * files a later `git add -A` could pick up. `lstatSync` never follows a link: anything that is not a
+ * real directory is unlinked by its own path, and a real directory is emptied entry by entry
+ * (`rmSync` never follows a symlink entry), so whatever a link names is never touched.
+ */
+export function ensureEmptyWorkTreeGitShadow(workTree: string): void {
+	const shadow = join(workTree, ".git");
+	const entry = lstatSync(shadow, { throwIfNoEntry: false });
+	if (entry === undefined) {
+		mkdirSync(shadow, { recursive: true, mode: 0o700 });
+	} else if (entry.isDirectory()) {
+		for (const name of readdirSync(shadow)) rmSync(join(shadow, name), { recursive: true, force: true });
+	} else {
+		rmSync(shadow, { force: true });
+		mkdirSync(shadow, { mode: 0o700 });
+	}
+	chmodSync(shadow, 0o700);
+}
+
+/**
  * Puts the job's checkout on the frozen commit with a clean working tree. The git directory lives in
  * the CLI's state location, outside the work tree, so the sandbox never sees git metadata. A fresh
  * path is cloned with `--separate-git-dir`; an existing path is only accepted when it is the one
@@ -297,13 +322,6 @@ export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string,
 	}
 	// A checkout whose work tree was deleted is recreated empty; the frozen commit repopulates it.
 	if (!existsSync(workTree)) mkdirSync(workTree, { recursive: true, mode: 0o700 });
-	// The sandbox mounts an empty read-only tmpfs over `.git`, so the path is always an empty
-	// directory: never the clone's gitfile, and never a directory the agent could write through.
-	const shadow = join(workTree, ".git");
-	if (existsSync(shadow) && !statSync(shadow).isDirectory()) {
-		throw new CliError("DIR_NOT_WORK_REPO", `${shadow} is not the empty directory the sandbox shadow needs; remove it or pass a fresh --dir.`);
-	}
-	if (!existsSync(shadow)) mkdirSync(shadow, { mode: 0o700 });
 	if (checkoutGit(git, checkout, env, ["cat-file", "-e", `${frozen}^{commit}`]).status !== 0) {
 		throw new CliError("FROZEN_COMMIT_MISSING", `The work repo does not carry the frozen commit ${frozen.slice(0, 7)}. `
 			+ "Rerun in about 30 seconds after funding creates it.");
@@ -312,6 +330,10 @@ export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string,
 	if (checkedOut.status !== 0) throw new CliError("GIT_FAILED", `git checkout of the frozen commit failed. ${safeEcho(checkedOut.stderr)}`.trim());
 	const cleaned = checkoutGit(git, checkout, env, ["clean", "-fdq"]);
 	if (cleaned.status !== 0) throw new CliError("GIT_FAILED", `git clean failed. ${safeEcho(cleaned.stderr)}`.trim());
+	// Never the clone's gitfile, never a link the mount could follow, and never a directory holding
+	// files a later `git add -A` could pick up: the sandbox shadow is an empty real directory. The
+	// check runs again immediately before every mount, on the path a previous run owned.
+	ensureEmptyWorkTreeGitShadow(workTree);
 }
 
 /** Added lines per changed path against the frozen commit. A `to` commit compares the two committed
@@ -526,7 +548,8 @@ export function signalGuard(names: SandboxNames, ports: SignalGuardPorts = {}): 
 	return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
-/** Starts the proxy and the runner, and removes both plus the networks on every exit path. */
+/** Starts the proxy and the runner, and removes both plus the networks on every exit path. The
+ * work tree's `.git` shadow is re-made empty and real immediately before the runner mounts it. */
 export async function runAgentInSandbox(plan: RunnerPlan, docker: DockerPort,
 	onOutput?: (chunk: string, stream: "stdout" | "stderr") => void, env?: NodeJS.ProcessEnv): Promise<number | null> {
 	const options = env === undefined ? {} : { env };
@@ -550,6 +573,11 @@ export async function runAgentInSandbox(plan: RunnerPlan, docker: DockerPort,
 		await setup(networkConnectArgs(plan.names.network, plan.names.proxy), "Attaching the proxy to the sandbox network");
 		const runner = { ...options, ...(onOutput === undefined ? {} : { onOutput }) };
 		if (plan.providerKey !== null) runner.env = { ...(env ?? process.env), ANTHROPIC_API_KEY: plan.providerKey };
+		// The work tree's `.git` is a path a previous run's agent owned: re-make it an empty real
+		// directory immediately before the runner mounts the read-only tmpfs over it, so a planted
+		// symlink can never make runc mount the shadow on the link's target inside the container.
+		// Every run -- fresh, adopted, or a rerun -- passes through here.
+		ensureEmptyWorkTreeGitShadow(plan.dir);
 		return await docker.run(runnerRunArgs(plan), runner);
 	} finally {
 		await cleanupSandbox(docker, plan.names);

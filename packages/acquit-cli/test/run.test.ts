@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,9 +12,10 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
 import { runDiff } from "../src/diff.ts";
-import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, globalGitIdentity, networkConnectArgs,
-	networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, pushWork, renderFinished, renderPreparing, renderRunning,
-	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, seedCommitIdentity, signalGuard, submissionCommit } from "../src/run.ts";
+import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEmptyWorkTreeGitShadow, formatDuration, gitCli,
+	globalGitIdentity, networkConnectArgs, networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, pushWork,
+	renderFinished, renderPreparing, renderRunning, runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, seedCommitIdentity, signalGuard,
+	submissionCommit } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
 import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, gitGuardArgs, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
@@ -125,6 +126,14 @@ function fakeDocker(options: { code?: number | null; failOn?: (args: readonly st
 		return args[0] === "run" && !args.includes("--detach") ? options.code ?? 0 : 0;
 	};
 	return { run, calls, envs };
+}
+
+/** A real work tree for the sandbox tests: the mount source must exist, and starting the sandbox
+ * re-makes its `.git` shadow there, so a fixed path would leak between tests. */
+function sandboxWorkTree(t: { after(callback: () => void): void }): string {
+	const work = mkdtempSync(join(tmpdir(), "acquit-run-work-"));
+	t.after(() => rmSync(work, { recursive: true, force: true }));
+	return work;
 }
 
 function fakeClient(options: { job?: JobProjection; operatorId?: string; workRepoToken?: string } = {}): ApiClient & { readonly posts: string[] } {
@@ -345,11 +354,68 @@ test("preparing the job's checkout keeps the git directory outside the work tree
 		// A rerun fetches and resets the same work tree, dropping whatever the last run left behind.
 		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
 		writeFileSync(join(work, "junk.txt"), "untracked\n");
+		// A previous run's agent owns the work tree and can have replaced the shadow with a symlink.
+		const outside = join(root, "outside");
+		mkdirSync(outside);
+		writeFileSync(join(outside, "canary.txt"), "keep\n");
+		rmSync(join(work, ".git"), { recursive: true, force: true });
+		symlinkSync(outside, join(work, ".git"));
 		prepareWorkRepo(git, checkout, bare, frozen, process.env);
 		assert.equal(git(["--git-dir", state, "--work-tree", work, "rev-parse", "HEAD"]).stdout.trim(), frozen);
 		assert.equal(existsSync(join(work, "junk.txt")), false);
 		assert.equal(readFileSync(join(work, "money.ts"), "utf8"), "const DECIMALS = 2;\n");
+		// The planted link is unlinked, the directory it named is untouched, and the shadow the
+		// sandbox will mount is empty and real again.
+		assert.equal(lstatSync(join(work, ".git")).isSymbolicLink(), false);
+		assert.equal(lstatSync(join(work, ".git")).isDirectory(), true);
+		assert.deepEqual(readdirSync(join(work, ".git")), []);
+		assert.equal(readFileSync(join(outside, "canary.txt"), "utf8"), "keep\n");
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the sandbox shadow is re-made as an empty real directory whatever a previous run left", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-shadow-function-"));
+	const outside = mkdtempSync(join(tmpdir(), "acquit-run-shadow-outside-"));
+	try {
+		const work = join(root, "work");
+		mkdirSync(work);
+		// A symlink to a directory outside: unlinking the link itself must never touch the target.
+		writeFileSync(join(outside, "canary.txt"), "keep\n");
+		symlinkSync(outside, join(work, ".git"));
+		ensureEmptyWorkTreeGitShadow(work);
+		assert.equal(lstatSync(join(work, ".git")).isSymbolicLink(), false);
+		assert.equal(statSync(join(work, ".git")).isDirectory(), true);
+		assert.deepEqual(readdirSync(join(work, ".git")), []);
+		assert.equal(statSync(join(work, ".git")).mode & 0o777, 0o700);
+		assert.equal(readFileSync(join(outside, "canary.txt"), "utf8"), "keep\n");
+		// A dangling symlink: `existsSync` would answer false and `statSync` would throw, but the
+		// link itself is still there to be removed.
+		rmSync(join(work, ".git"), { recursive: true, force: true });
+		symlinkSync(join(root, "gone"), join(work, ".git"));
+		ensureEmptyWorkTreeGitShadow(work);
+		assert.equal(lstatSync(join(work, ".git")).isDirectory(), true);
+		// A regular file, the clone's `gitdir:` link, is replaced by the directory.
+		rmSync(join(work, ".git"), { recursive: true, force: true });
+		writeFileSync(join(work, ".git"), `gitdir: ${join(root, "state")}\n`);
+		ensureEmptyWorkTreeGitShadow(work);
+		assert.equal(lstatSync(join(work, ".git")).isDirectory(), true);
+		// A real directory is emptied entry by entry; a symlink entry is unlinked, not followed.
+		writeFileSync(join(work, ".git", "hooks-pre-push"), "#!/bin/sh\nexit 0\n");
+		mkdirSync(join(work, ".git", "nested"));
+		writeFileSync(join(work, ".git", "nested", "planted.txt"), "x\n");
+		symlinkSync(join(outside, "canary.txt"), join(work, ".git", "linked"));
+		ensureEmptyWorkTreeGitShadow(work);
+		assert.deepEqual(readdirSync(join(work, ".git")), []);
+		assert.equal(readFileSync(join(outside, "canary.txt"), "utf8"), "keep\n");
+		// A missing shadow is created 0700.
+		rmSync(join(work, ".git"), { recursive: true, force: true });
+		ensureEmptyWorkTreeGitShadow(work);
+		assert.equal(statSync(join(work, ".git")).isDirectory(), true);
+		assert.equal(statSync(join(work, ".git")).mode & 0o777, 0o700);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(outside, { recursive: true, force: true });
+	}
 });
 
 test("a non-empty --dir without a state git directory is refused with the fresh-dir hint", () => {
@@ -538,11 +604,11 @@ test("the claude-code command assembly names the model CLI and never the key", (
 	assert.deepEqual(agentArgv("command", "ignored", "/tmp/fix.sh"), ["/bin/sh", "/tmp/fix.sh"]);
 });
 
-test("the provider key rides only in the docker child's environment, never argv or a file", async () => {
+test("the provider key rides only in the docker child's environment, never argv or a file", async t => {
 	const names = sandboxNames("job_7Q2K");
 	const docker = fakeDocker();
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-		dir: "/tmp/acquit-run-work", argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
+		dir: sandboxWorkTree(t), argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
 		providerKey: keyCanary, instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
 	assert.equal(await runAgentInSandbox(plan, docker), 0);
 	const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
@@ -583,11 +649,11 @@ test("a signal removes the secret directory before the process exits", () => {
 	} finally { stop(); }
 });
 
-test("the sandbox creates its egress network, starts the proxy on it, and removes every object", async () => {
+test("the sandbox creates its egress network, starts the proxy on it, and removes every object", async t => {
 	const docker = fakeDocker();
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
+		dir: sandboxWorkTree(t), argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
 		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	assert.equal(await runAgentInSandbox(plan, docker), 0);
 	const verbs = docker.calls.map(args => args.join(" "));
@@ -605,11 +671,41 @@ test("the sandbox creates its egress network, starts the proxy on it, and remove
 	assert.equal(docker.calls.some(args => args.includes("bridge")), false);
 });
 
-test("a failed runner start still removes the containers and both networks", async () => {
+test("a planted work-tree .git symlink is unlinked before the runner mounts the shadow", async () => {
+	const work = mkdtempSync(join(tmpdir(), "acquit-run-shadow-"));
+	const outside = mkdtempSync(join(tmpdir(), "acquit-run-shadow-target-"));
+	try {
+		writeFileSync(join(outside, "canary.txt"), "keep\n");
+		symlinkSync(outside, join(work, ".git"));
+		const names = sandboxNames("job_7Q2K");
+		const docker = fakeDocker({ during: args => {
+			// When the runner is started the shadow is already a real empty directory, so the tmpfs
+			// is mounted over that directory itself and never through a link to the target.
+			assert.deepEqual(args.slice(args.indexOf("--tmpfs"), args.indexOf("--tmpfs") + 2), ["--tmpfs", "/work/.git:ro"]);
+			assert.equal(lstatSync(join(work, ".git")).isDirectory(), true);
+			assert.deepEqual(readdirSync(join(work, ".git")), []);
+		} });
+		const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+			dir: work, argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: null,
+			providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		assert.equal(await runAgentInSandbox(plan, docker), 0);
+		// The link itself is gone; the directory it named is untouched.
+		assert.equal(lstatSync(join(work, ".git")).isSymbolicLink(), false);
+		assert.equal(lstatSync(join(work, ".git")).isDirectory(), true);
+		assert.deepEqual(readdirSync(join(work, ".git")), []);
+		assert.equal(statSync(join(work, ".git")).mode & 0o777, 0o700);
+		assert.equal(readFileSync(join(outside, "canary.txt"), "utf8"), "keep\n");
+	} finally {
+		rmSync(work, { recursive: true, force: true });
+		rmSync(outside, { recursive: true, force: true });
+	}
+});
+
+test("a failed runner start still removes the containers and both networks", async t => {
 	const names = sandboxNames("job_7Q2K");
 	const docker = fakeDocker({ failOn: args => args[0] === "run" && args.includes("--rm") });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
+		dir: sandboxWorkTree(t), argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
 		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "DOCKER_UNAVAILABLE");
 	const verbs = docker.calls.map(args => args.join(" "));
@@ -619,12 +715,12 @@ test("a failed runner start still removes the containers and both networks", asy
 	assert.equal(verbs.at(-1), `network rm ${names.egress}`);
 });
 
-test("a failed sandbox setup refuses by name, bounds the docker output, and still cleans up", async () => {
+test("a failed sandbox setup refuses by name, bounds the docker output, and still cleans up", async t => {
 	const names = sandboxNames("job_7Q2K");
 	const docker = fakeDocker({ codeOn: args => args[0] === "network" && args[1] === "create" ? 125 : undefined,
 		output: `Error response from daemon: pull access denied for ${tokenCanary}@example.invalid/runner\n`.repeat(20) });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
+		dir: sandboxWorkTree(t), argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
 		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "SANDBOX_SETUP_FAILED"
 		&& error.message.includes("125") && error.message.length < 500 && !error.message.includes("\n")
@@ -815,6 +911,9 @@ test("a planted work-tree .git and pre-push hook never reach run's push", async 
 		// The commit landed in the real remote under the submission ref, and no hook ran anywhere.
 		assert.equal(spawnSync("git", ["--git-dir", bare, "rev-parse", `refs/heads/submissions/${head}`]).status, 0, printed.join("\n"));
 		assert.equal(existsSync(canary), false);
+		// What the agent planted inside the work tree's .git is in the pushed tree, too: never.
+		assert.deepEqual(git(["--git-dir", bare, "ls-tree", "-r", "--name-only", `refs/heads/submissions/${head}`]).stdout.trim().split("\n").sort(),
+			["money.ts", "src.ts"]);
 		// The planted work-tree config and hook are exactly where the agent left them: run never read
 		// or wrote them, and its git always named the state git directory explicitly.
 		assert.equal(readFileSync(join(work, ".git", "config"), "utf8").includes("evil.example"), true);
@@ -824,6 +923,28 @@ test("a planted work-tree .git and pre-push hook never reach run's push", async 
 			assert.equal(call.args.includes(stateDir), true, call.args.join(" "));
 		}
 		assert.equal(printed.join("\n").includes("Changed files: src.ts (1 line)"), true, printed.join("\n"));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a file written into the work tree .git by the agent is never committed or counted", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-dotgit-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const work = join(root, "work");
+		const checkout = { gitDir: state, workTree: work };
+		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		// The agent edits the tree and also leaves a file inside the shadow: host git names the
+		// state directory instead, and its own `.git` protection keeps the work-tree path out of
+		// the add, the count, and the pushed tree.
+		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
+		writeFileSync(join(work, ".git", "planted.txt"), "not content\n");
+		const commit = submissionCommit(git, checkout, frozen, "Run job_7Q2K with ts-bugfixer", process.env);
+		assert.notEqual(commit, null);
+		assert.deepEqual(git(["--git-dir", state, "ls-tree", "-r", "--name-only", commit as string]).stdout.trim().split("\n"), ["money.ts"]);
+		assert.deepEqual(changedFiles(git, checkout, frozen, process.env, commit as string), [{ path: "money.ts", added: 1, binary: false }]);
+		// The host never removed what the agent wrote there.
+		assert.equal(readFileSync(join(work, ".git", "planted.txt"), "utf8"), "not content\n");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -863,21 +984,26 @@ test("run refuses an agent whose stored runner is not one this CLI runs", async 
 
 // ---- live docker smoke (ACQUIT_DOCKER_TEST=1) -------------------------------------------------
 
-test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, and the edit is counted",
+test("live docker smoke: egress is limited, the edit is counted, and a planted .git symlink cannot move the shadow",
 	{ skip: process.env.ACQUIT_DOCKER_TEST !== "1" }, async () => {
 	const image = process.env.ACQUIT_RUNNER_IMAGE ?? "acquit/runner-node20";
 	const probe = spawnSync("docker", ["image", "inspect", image, "--format", "{{.Id}}"], { encoding: "utf8", timeout: 30_000 });
 	assert.equal(probe.status, 0, `Build the runner image first: docker build -t ${image} packages/runner`);
-	const root = mkdtempSync(join(tmpdir(), "acquit-run-smoke-"));
+	const smokeRoot = mkdtempSync(join(tmpdir(), "acquit-run-smoke-"));
+	// The production layout: the clone's git directory is outside the work tree the sandbox mounts.
+	// `git init` writes the same `gitdir:` link a `--separate-git-dir` clone does.
+	const root = join(smokeRoot, "work");
+	const state = join(smokeRoot, "state.git");
 	const script = join(tmpdir(), `acquit-smoke-${process.pid}.sh`);
+	const plantedScript = join(tmpdir(), `acquit-smoke-planted-${process.pid}.sh`);
 	try {
 		const git = gitCli();
 		const at = (args: readonly string[]) => {
-			const result = git(["-C", root, ...args]);
+			const result = git(["--git-dir", state, "--work-tree", root, ...args]);
 			assert.equal(result.status, 0, result.stderr);
 			return result.stdout.trim();
 		};
-		at(["init", "--quiet"]);
+		assert.equal(git(["init", "--quiet", `--separate-git-dir=${state}`, root]).status, 0);
 		at(["config", "user.email", "smoke@example.invalid"]);
 		at(["config", "user.name", "smoke"]);
 		mkdirSync(join(root, "tests"));
@@ -889,7 +1015,7 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 			"#!/bin/sh",
 			"printf '\\texpect(2).toBe(2);\\n' >> tests/totals.test.ts",
 			// The work tree is bind-mounted at /work, but the job's git directory is never inside it:
-			// an empty read-only tmpfs covers /work/.git, and the real one stays on the host.
+			// an empty read-only tmpfs covers /work/.git, and the real one stays in the state path.
 			"if [ -z \"$(ls -A /work/.git 2>/dev/null)\" ]; then echo GITDIR_SHADOWED; else echo GITDIR_VISIBLE; ls -A /work/.git; fi",
 			"touch /work/.git/planted 2>/dev/null && echo GITDIR_WRITABLE || echo GITDIR_READONLY",
 			"curl -sS --max-time 15 -o /dev/null https://example.com 2>/tmp/acquit-curl.err && echo EGRESS_ALLOWED_EXAMPLE || { echo EGRESS_BLOCKED_EXAMPLE; cat /tmp/acquit-curl.err; }",
@@ -923,10 +1049,40 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 		// target is refused instead of forwarded in the clear.
 		assert.match(text, /HTTPS_FORWARD 403/);
 		assert.match(text, /HTTPSFORWARD: egress denied: api\.anthropic\.com/);
-		// The sandbox sees an empty read-only shadow where the checkout's real .git is on the host.
+		// The sandbox sees an empty read-only shadow over the work tree's own .git, while the
+		// checkout's git directory is outside the mount, in the state path.
 		assert.match(text, /GITDIR_SHADOWED/);
 		assert.match(text, /GITDIR_READONLY/);
-		assert.deepEqual(changedFiles(git, { gitDir: join(root, ".git"), workTree: root }, base, process.env), [{ path: "tests/totals.test.ts", added: 1, binary: false }]);
+		// Starting the sandbox replaced the clone's `gitdir:` link with the empty real directory
+		// it mounts the tmpfs over.
+		assert.equal(lstatSync(join(root, ".git")).isSymbolicLink(), false);
+		assert.deepEqual(readdirSync(join(root, ".git")), []);
+		assert.deepEqual(changedFiles(git, { gitDir: state, workTree: root }, base, process.env), [{ path: "tests/totals.test.ts", added: 1, binary: false }]);
+		// The previous run's agent owns the work tree and can have replaced the shadow with a
+		// symlink. A second run must unlink it before the mount: if the tmpfs landed on the link's
+		// target inside the container, the container's /etc would be masked empty.
+		rmSync(join(root, ".git"), { recursive: true, force: true });
+		symlinkSync("/etc", join(root, ".git"));
+		writeFileSync(plantedScript, [
+			"#!/bin/sh",
+			"if [ -r /etc/passwd ]; then echo ETCPASSWD_READABLE; else echo ETCPASSWD_MASKED; fi",
+			"if [ -z \"$(ls -A /work/.git 2>/dev/null)\" ]; then echo GITDIR_SHADOWED; else echo GITDIR_VISIBLE; ls -A /work/.git; fi",
+			"touch /work/.git/planted 2>/dev/null && echo GITDIR_WRITABLE || echo GITDIR_READONLY",
+			"",
+		].join("\n"), { mode: 0o755 });
+		const plantedOutput: string[] = [];
+		const planted = await runAgentInSandbox({ ...plan, commandPath: plantedScript }, (await import("../src/run.ts")).dockerCli(),
+			(chunk, stream) => plantedOutput.push(`${stream}: ${chunk}`));
+		const plantedText = plantedOutput.join("");
+		console.log(`[smoke] planted runner exit ${planted}\n${plantedText}`);
+		assert.equal(planted, 0, plantedText);
+		assert.match(plantedText, /ETCPASSWD_READABLE/);
+		assert.match(plantedText, /GITDIR_SHADOWED/);
+		assert.match(plantedText, /GITDIR_READONLY/);
+		// The link is gone, nothing it named was touched, and the shadow is empty and real.
+		assert.equal(lstatSync(join(root, ".git")).isSymbolicLink(), false);
+		assert.equal(lstatSync(join(root, ".git")).isDirectory(), true);
+		assert.deepEqual(readdirSync(join(root, ".git")), []);
 		// The run's own cleanup leaves no container or network behind.
 		const containers = spawnSync("docker", ["ps", "-a", "--filter", `name=${names.runner}`, "--format", "{{.Names}}"], { encoding: "utf8" });
 		const networks = spawnSync("docker", ["network", "ls", "--filter", `name=${names.runner}`, "--format", "{{.Name}}"], { encoding: "utf8" });
@@ -934,6 +1090,7 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 		assert.equal(networks.stdout.trim(), "", networks.stdout);
 	} finally {
 		rmSync(script, { force: true });
-		rmSync(root, { recursive: true, force: true });
+		rmSync(plantedScript, { force: true });
+		rmSync(smokeRoot, { recursive: true, force: true });
 	}
 });

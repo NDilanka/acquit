@@ -157,6 +157,11 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   afresh.
 - Every run checks out the frozen commit and runs `git clean -fd` first, so uncommitted work in
   `--dir` is lost.
+- The work tree's `.git` is re-made as an empty real 0700 directory immediately before every sandbox
+  mount, so a symlink a previous run planted there (`.git -> /etc`) is unlinked rather than mounted
+  through, the read-only tmpfs always lands on the work tree's own `.git`, and the link's target is
+  never touched. Host-side `git add -A`, status, and the changed-file count never record anything
+  under `.git`.
 - Host-side git on a job's checkout never uses discovery and never reads the operator's global or
   system config: every command names the state git directory and the work tree, sets an empty
   `core.hooksPath`, and disables the fsmonitor, credential helper, and ssh command. A state git

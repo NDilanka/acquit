@@ -22,7 +22,9 @@ The CLI refuses to start a container from a missing image; it never pulls one im
   `/work`. The git directory lives in the CLI's state location
   (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default),
   outside the bind mount: the agent never sees git metadata, and the work tree's `.git` is an empty
-  directory the sandbox mounts a read-only tmpfs over. Host git names the state git directory and the
+  directory the sandbox mounts a read-only tmpfs over. The CLI re-makes that shadow as an empty real
+  0700 directory immediately before every mount, so a symlink a previous run left at `.git` is
+  unlinked rather than mounted through. Host git names the state git directory and the
   work tree explicitly, never discovery, and runs with hooks, the fsmonitor, the credential helper,
   and the ssh command all disabled plus an empty global config. The agent edits the work tree in
   place; the host computes the changed files and makes the commit.
