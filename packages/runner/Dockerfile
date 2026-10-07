@@ -15,7 +15,7 @@ RUN apt-get update \
 RUN npm install --global @anthropic-ai/claude-code \
  && npm cache clean --force
 
-COPY run.mjs proxy.mjs /runner/
+COPY run.mjs proxy.mjs allowlist.mjs /runner/
 RUN chmod 0755 /runner/run.mjs /runner/proxy.mjs
 
 # The clone is mounted here; a bare image holds no work.
