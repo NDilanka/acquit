@@ -13,7 +13,7 @@ import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
 import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, networkConnectArgs,
 	networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, renderFinished, renderPreparing, renderRunning,
-	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, writeAskpass, writeProviderEnvFile } from "../src/run.ts";
+	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, submissionCommit, writeAskpass, writeProviderEnvFile } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions } from "../src/run.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
@@ -466,6 +466,9 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 		assert.equal(tokenFileMode, 0o600);
 		const gitLines = git.calls.map(call => call.args.join(" "));
 		assert.equal(gitLines.some(line => line.includes("push") && line.includes("refs/heads/submissions/")), true, gitLines.join(" | "));
+		// What is counted is the commit that was pushed, not the working tree that was left behind.
+		const head = "c".repeat(40);
+		assert.equal(gitLines.some(line => line.includes("diff --numstat") && line.includes(head)), true, gitLines.join(" | "));
 		// Neither the session token nor the provider key rides in a child's environment.
 		for (const call of git.calls) {
 			assert.equal(call.env?.ACQUIT_TOKEN, undefined);
@@ -485,6 +488,45 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 		assert.equal(existsSync(envFile as string), false);
 		assert.equal(printed.join("\n").includes(tokenCanary) || printed.join("\n").includes(keyCanary), false);
 	} finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test("the submission folds uncommitted work onto the agent's own commit", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-submission-"));
+	try {
+		const git = gitCli();
+		const at = (args: readonly string[]) => {
+			const result = git(["-C", root, ...args]);
+			assert.equal(result.status, 0, result.stderr);
+			return result.stdout.trim();
+		};
+		at(["init", "--quiet"]);
+		at(["config", "user.email", "fixture@example.invalid"]);
+		at(["config", "user.name", "fixture"]);
+		writeFileSync(join(root, "a.ts"), "export const a = 1;\n");
+		at(["add", "-A"]);
+		at(["commit", "--quiet", "-m", "frozen"]);
+		const frozen = at(["rev-parse", "HEAD"]) as CommitSha;
+		// The agent commits one file and leaves another uncommitted: both must reach the pushed commit.
+		writeFileSync(join(root, "a.ts"), "export const a = 2;\n");
+		at(["add", "-A"]);
+		at(["commit", "--quiet", "-m", "agent"]);
+		writeFileSync(join(root, "b.ts"), "export const b = 1;\n");
+		const pushed = submissionCommit(git, root, frozen, "Run job_7Q2K with ts-bugfixer", process.env);
+		assert.notEqual(pushed, null);
+		assert.notEqual(pushed, frozen);
+		// The pushed commit's tree carries both the agent's own commit and the file it left uncommitted.
+		assert.deepEqual(at(["ls-tree", "-r", "--name-only", pushed as string]).split("\n").sort(), ["a.ts", "b.ts"]);
+		assert.deepEqual(changedFiles(git, root, frozen, pushed as string), [
+			{ path: "a.ts", added: 1, binary: false },
+			{ path: "b.ts", added: 1, binary: false },
+		]);
+		assert.equal(at(["status", "--porcelain"]), "");
+		// Nothing changed since the fold, so the same commit is what a second run pushes; a checkout
+		// left on the frozen commit has nothing to push at all.
+		assert.equal(submissionCommit(git, root, frozen, "again", process.env), pushed);
+		at(["reset", "--hard", "--quiet", frozen]);
+		assert.equal(submissionCommit(git, root, frozen, "again", process.env), null);
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("run refuses a job the session does not own before it touches git or docker", async () => {

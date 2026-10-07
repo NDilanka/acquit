@@ -238,10 +238,11 @@ export function prepareWorkRepo(git: GitRun, dir: string, url: string, frozen: C
 	if (cleaned.status !== 0) throw new CliError("GIT_FAILED", `git clean failed. ${safeEcho(cleaned.stderr)}`.trim());
 }
 
-/** Added lines per changed path against the frozen commit, untracked files included. */
-export function changedFiles(git: GitRun, dir: string, frozen: CommitSha): readonly ChangedFile[] {
+/** Added lines per changed path against the frozen commit. A `to` commit compares the two committed
+ * trees; without one the working tree is read, untracked files included. */
+export function changedFiles(git: GitRun, dir: string, frozen: CommitSha, to?: string): readonly ChangedFile[] {
 	const files = new Map<string, ChangedFile>();
-	const tracked = runGit(git, ["-C", dir, "diff", "--numstat", "--no-renames", "-z", frozen, "--"]);
+	const tracked = runGit(git, ["-C", dir, "diff", "--numstat", "--no-renames", "-z", frozen, ...(to === undefined ? ["--"] : [to])]);
 	for (const record of tracked.stdout.split("\0")) {
 		if (record === "") continue;
 		const [added, deleted, ...rest] = record.split("\t");
@@ -250,11 +251,13 @@ export function changedFiles(git: GitRun, dir: string, frozen: CommitSha): reado
 		const binary = added === "-" || deleted === "-";
 		files.set(path, { path, added: binary ? 0 : Number(added) || 0, binary });
 	}
-	const untracked = runGit(git, ["-C", dir, "ls-files", "--others", "--exclude-standard", "-z"]);
-	for (const path of untracked.stdout.split("\0")) {
-		if (path === "") continue;
-		const counted = countLines(readFileSync(join(dir, path)));
-		files.set(path, { path, ...counted });
+	if (to === undefined) {
+		const untracked = runGit(git, ["-C", dir, "ls-files", "--others", "--exclude-standard", "-z"]);
+		for (const path of untracked.stdout.split("\0")) {
+			if (path === "") continue;
+			const counted = countLines(readFileSync(join(dir, path)));
+			files.set(path, { path, ...counted });
+		}
 	}
 	return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -284,6 +287,18 @@ export function commitWork(git: GitRun, dir: string, message: string, env: NodeJ
 	const committed = git(args, env);
 	if (committed.status !== 0) throw new CliError("COMMIT_FAILED", `git commit failed. ${safeEcho(committed.stderr)}`.trim());
 	return headOf(git, dir, env);
+}
+
+/**
+ * The commit this run pushes. Uncommitted work is folded into one commit on top of whatever the agent
+ * committed, so what the changed-files count reads and what the push carries are the same tree. Null
+ * means the checkout still sits on the frozen commit with a clean tree: there is nothing to push.
+ */
+export function submissionCommit(git: GitRun, dir: string, frozen: CommitSha, message: string, env: NodeJS.ProcessEnv): CommitSha | null {
+	const head = headOf(git, dir, env);
+	const dirty = runGit(git, ["-C", dir, "status", "--porcelain"], env).stdout.trim() !== "";
+	if (dirty) return commitWork(git, dir, message, env);
+	return head === frozen ? null : head;
 }
 
 /** The ref `acquit submit` pushes to: one commit-named ref, so the two commands can only agree. */
@@ -593,19 +608,14 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		let code: number | null;
 		try {
 			code = await runAgentInSandbox(plan, docker, (chunk, stream) => {
-				if (stream === "stderr") process.stderr.write(chunk); else process.stdout.write(chunk);
-			}, child);
+			if (stream === "stderr") process.stderr.write(chunk); else process.stdout.write(chunk);
+		}, child);
 		} finally { guard(); }
 		if (code !== 0) throw new CliError("AGENT_FAILED", `The agent exited ${code ?? "without a status"}.`);
-		const files = changedFiles(git, dir, frozen);
-		const head = headOf(git, dir, gitEnv);
-		if (head === frozen) {
-			// The agent left its work uncommitted; one commit carries it to the submission ref.
-			if (files.length > 0) pushWork(git, dir, url, commitWork(git, dir, `Run ${view.id} with ${accepted.agent}`, gitEnv), gitEnv);
-		} else {
-			// The agent committed its own work; push that commit unchanged.
-			pushWork(git, dir, url, head, gitEnv);
-		}
+		// One tree for both the count and the push: the agent's commits plus anything it left uncommitted.
+		const pushed = submissionCommit(git, dir, frozen, `Run ${view.id} with ${accepted.agent}`, gitEnv);
+		if (pushed !== null) pushWork(git, dir, url, pushed, gitEnv);
+		const files = pushed === null ? [] : changedFiles(git, dir, frozen, pushed);
 		print(renderFinished(files, now() - started, view.id));
 	} finally {
 		secret.remove();

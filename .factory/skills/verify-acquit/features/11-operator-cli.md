@@ -90,7 +90,8 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
   or 443. The proxy joins a dedicated per-run `acquit-runner-<job>-egress` network created with
   `com.docker.network.bridge.enable_icc=false`; it never joins the shared bridge.
 - `run-changed-files` counts added lines against the frozen commit and pushes the commit to
-  `refs/heads/submissions/<sha>`, the ref `acquit submit` expects.
+  `refs/heads/submissions/<sha>`, the ref `acquit submit` expects. Uncommitted work is folded into
+  the pushed commit first, so the count and the push are the same tree.
 - `run-rerun` resets the fork to the frozen commit and prints the tutorial's reset block.
 - `run-cleanup` removes `acquit-runner-<job>`, `acquit-runner-<job>-proxy`,
   `acquit-runner-<job>-net`, and `acquit-runner-<job>-egress` on every exit path, including a failed
