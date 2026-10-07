@@ -15,13 +15,15 @@ import { instant } from "./ids.ts";
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 	const db = new DatabaseSync(path);
+	// The lock guard goes on before the first write. The migration below drops a table, and a second
+	// process writing the same lane would fail this open with "database is locked" without it.
+	db.exec("PRAGMA busy_timeout = 5000");
 	// A lane created before the canonical envelope holds raw bodies, payer fields included. Drop that
 	// table rather than migrate the bytes: the envelope it should have kept is rebuildable from PayPal.
 	const columns = new Set(db.prepare("SELECT name FROM pragma_table_info('webhook_events')").all().map(row => String(row.name)));
 	if (columns.has("body")) db.exec("DROP TABLE webhook_events");
 	db.exec(`
 		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 5000;
 		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 		INSERT OR IGNORE INTO schema_version VALUES (1);
 		CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT);
