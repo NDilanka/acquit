@@ -3,9 +3,13 @@
 //   node scripts/perf/release.mjs --jobs 5
 //   node scripts/perf/release.mjs --jobs 1 --lane 11
 //
-// Per job it resets the disposable client repo, funds a job by the dev card source, submits fix-honest
-// through the verifier, approves the judged commit, waits for PAID, waits for the merge, then delivers
-// one capture envelope and replays the recorded body five times.
+// Per job it resets the disposable client repo and the lane's seeded database, funds a job by the dev
+// card source, submits fix-honest through the verifier, approves the judged commit, waits for PAID,
+// waits for the merge, then delivers one capture envelope and replays the recorded envelope five times.
+// The reset is per job because the seed grants one weekly allowance of 30 credits and a bid costs 10: a
+// lane that runs more than three jobs would refuse the fourth bid with INSUFFICIENT_CREDITS, and every
+// job deserves the same starting state anyway. A reset invalidates sessions, so the probe signs in again
+// after it.
 //
 // Metrics.
 //   Approve to PAID: the seconds from the Approve POST to the first job view that reads PAID, polled
@@ -99,11 +103,14 @@ async function main() {
 		await ctl("seed-db", "--yes");
 		await ctl("start", "--timeout", "180");
 		await ctl("fund-mode", "card");
-		const maya = await signIn("maya-client");
-		const devon = await signIn("devon-ops");
 		const approveSeconds = [];
 		const webhookSamples = [];
 		for (let index = 0; index < jobs; index++) {
+			// A lane that runs several jobs resets its fixture first, so each job's bid has the weekly
+			// allowance the seed grants. The reset invalidates sessions: mint this job's after it.
+			if (index > 0) await ctl("seed-db", "--yes");
+			const maya = await signIn("maya-client");
+			const devon = await signIn("devon-ops");
 			const job = await oneJob(index, maya, devon);
 			report.jobDetail.push(job.detail);
 			approveSeconds.push(job.approveToPaidSeconds);
