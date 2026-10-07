@@ -411,7 +411,7 @@ export function submissionCommit(git: GitRun, checkout: JobCheckout, frozen: Com
 export function pushWork(git: GitRun, checkout: JobCheckout, url: string, commit: CommitSha, env: NodeJS.ProcessEnv): void {
 	// The state git directory is never exposed to the agent, but a push is the one place the scoped
 	// token meets config: refuse any key the CLI did not write before git can read it.
-	assertSafePushConfig(git, checkout.gitDir, env);
+	assertSafePushConfig(git, checkout.gitDir, env, "state");
 	const pushed = git(jobGitArgs(checkout, env, ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]), env);
 	if (pushed.status !== 0) throw pushError(url, pushed.stderr);
 }

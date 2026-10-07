@@ -151,7 +151,7 @@ export function pushHead(dir: string, remote: string, commit: CommitSha, env?: N
 	if (gitDir === null) throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit.`);
 	// The scoped token must never meet config the CLI did not write; an operator's own credential
 	// only meets the checkout the operator works in, so its config is theirs to keep.
-	if (askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), gitDir, gitEnv);
+	if (askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), gitDir, gitEnv, stateGitDir !== null ? "state" : "own");
 	const args = ["--git-dir", gitDir, "--work-tree", dir, ...gitGuardArgs(base), "push", remote, `${commit}:${submissionRef(commit)}`];
 	const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 120_000, env: gitEnv });
 	if (result.status !== 0) throw pushError(remote, result.stderr);

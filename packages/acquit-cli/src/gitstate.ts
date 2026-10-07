@@ -175,11 +175,17 @@ function remoteOffGithub(value: string): boolean {
 	return name !== "github.com" && !name.endsWith(".github.com");
 }
 
-/** Refuses a push whose destination or credential path could be steered by config the CLI did not write. */
-export function assertSafePushConfig(git: GitProbe, gitDir: string, env: NodeJS.ProcessEnv): void {
+/** Which checkout a refused push was about: the CLI's own state git directory, or the operator's. */
+export type GitDirKind = "state" | "own";
+
+/** Refuses a push whose destination or credential path could be steered by config the CLI did not
+ * write. The refusal names the git directory and the remedy that belongs to it: a state directory is
+ * removed and cloned afresh on a fresh --dir, while a key in the operator's own checkout is unset. */
+export function assertSafePushConfig(git: GitProbe, gitDir: string, env: NodeJS.ProcessEnv, where: GitDirKind): void {
 	const unsafe = unsafeGitConfigKeys(git, gitDir, env);
-	if (unsafe.length > 0) {
-		throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to push: the job's git directory holds config the CLI did not write (${unsafe.join(", ")}). `
-			+ "Remove the state git directory and clone afresh.");
-	}
+	if (unsafe.length === 0) return;
+	const remedy = where === "own"
+		? "Remove each key from that checkout (`git config --local --unset <key>`) and rerun."
+		: "Remove the state git directory and run again on a fresh --dir.";
+	throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to push: the git directory ${gitDir} holds config the CLI did not write (${unsafe.join(", ")}). ${remedy}`);
 }

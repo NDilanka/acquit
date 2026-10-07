@@ -17,7 +17,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 	renderFinished, renderPreparing, renderRunning, runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, seedCommitIdentity, signalGuard,
 	submissionCommit } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
-import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
+import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafePushConfig, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
 import { pushHead, localHead } from "../src/submit.ts";
 
@@ -571,10 +571,26 @@ test("a push refuses state config the CLI did not write, and never runs a hook i
 		pushWork(git, checkout, bare, commit!, process.env);
 		assert.equal(existsSync(canary), false);
 		assert.equal(spawnSync("git", ["--git-dir", bare, "rev-parse", `refs/heads/submissions/${commit}`]).status, 0);
-		// A URL rewrite the CLI did not write refuses the push before git can read it.
+		// A URL rewrite the CLI did not write refuses the push before git can read it. The refusal
+		// names the state git directory and the remedy that belongs to it.
 		assert.equal(git(["--git-dir", state, "config", "--local", "url.https://evil.example/.insteadOf", bare]).status, 0);
 		assert.throws(() => pushWork(git, checkout, bare, commit!, process.env),
-			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("url.https://evil.example/.insteadof"));
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("url.https://evil.example/.insteadof")
+				&& error.message.includes(state) && error.message.includes("fresh --dir"));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the unsafe-config refusal names an operator's own git directory and its --unset remedy", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-ownconfig-"));
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const gitDir = join(own, ".git");
+		assert.equal(git(["-C", own, "config", "--local", "url.https://evil.example/.insteadOf", bare]).status, 0);
+		assert.throws(() => assertSafePushConfig(git, gitDir, process.env, "own"),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(gitDir)
+				&& error.message.includes("git config --local --unset") && error.message.includes("url.https://evil.example/.insteadof"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
