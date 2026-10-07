@@ -149,14 +149,16 @@ test("tick grants on Monday, caps at 100, and never grows the balance mid-week",
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
-test("the weekly grant is a Monday event: a missed Monday is not caught up on Thursday", async () => {
+test("the grant belongs to the ISO week: a missed Monday is caught up on the week's next tick", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-credits-"));
 	// The account's last grant covered ISO week 40. The process was down at Monday 2026-10-05, so the
-	// Thursday tick is the first it sees of week 41; it must not write that week's grant mid-week.
+	// Thursday tick is the first it sees of week 41: the grant belongs to that week and is written now,
+	// under week 41's key, with the receipt count read at this moment. Each tick writes only the week
+	// it runs in, so a week no tick ever ran in is skipped, not back-filled.
 	const lastGrant = instant("2026-10-01T09:00:00Z");
 	const thursday = instant("2026-10-08T12:00:00Z");
 	const monday = instant("2026-10-12T00:00:00Z");
-	const missedWeek = creditWeek(thursday);
+	const caughtWeek = creditWeek(thursday);
 	const grantWeek = creditWeek(monday);
 	let current: Instant = thursday;
 	const { service, store } = acquire(root, "lane8.db", () => current);
@@ -164,23 +166,68 @@ test("the weekly grant is a Monday event: a missed Monday is not caught up on Th
 		store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(devon, 0, JSON.stringify(operatorRow(devon, 1)), 1);
 		const account = granted(devon, lastGrant);
 		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+		assert.equal(nextCreditGrant(lastGrant), instant("2026-10-05T00:00:00Z"));
 		await service.tick();
-		const before = await store.readCredits(devon);
-		assert.equal(before.balance.allowance, 30, "a Thursday tick must not grant or expire the unspent allowance");
-		assert.equal(before.lines.some(line => line.key === `grant:${missedWeek}`), false, "no grant line for the week the process missed");
+		const caught = await store.readCredits(devon);
+		assert.equal(caught.balance.allowance, 40, "the Thursday tick catches week 41 up at 30 plus 10 for the one receipt");
+		assert.deepEqual(caught.lines.slice(-2), [
+			{ kind: "EXPIRE", key: `expire:${caughtWeek}`, credits: 30, at: thursday },
+			{ kind: "GRANT", key: `grant:${caughtWeek}`, credits: 40, at: thursday },
+		]);
+		// The week's key is present now, so a later tick in the same week cannot grow its grant.
+		current = instant("2026-10-09T08:00:00Z");
+		await service.tick();
+		const same = await store.readCredits(devon);
+		assert.equal(same.version, caught.version);
+		assert.equal(same.lines.filter(line => line.key === `grant:${caughtWeek}`).length, 1, "one grant line for the week");
 		current = monday;
 		await service.tick();
 		const after = await store.readCredits(devon);
 		assert.equal(after.balance.allowance, 40, "Monday grants 30 plus 10 for the one receipt");
 		assert.deepEqual(after.lines.slice(-2), [
-			{ kind: "EXPIRE", key: "expire:2026-W42", credits: 30, at: monday },
-			{ kind: "GRANT", key: "grant:2026-W42", credits: 40, at: monday },
+			{ kind: "EXPIRE", key: `expire:${grantWeek}`, credits: 40, at: monday },
+			{ kind: "GRANT", key: `grant:${grantWeek}`, credits: 40, at: monday },
 		]);
 		await service.tick();
 		const again = await store.readCredits(devon);
 		assert.equal(again.balance.allowance, 40);
 		assert.equal(again.version, after.version);
 		assert.equal(again.lines.filter(line => line.key === `grant:${grantWeek}`).length, 1, "one grant line for the week");
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the lane-8 shape: a week already granted stays put until the next Monday", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-credits-"));
+	// The plan's lane 8: the account was granted Monday 00:00 of the current week (week 41) with no
+	// receipt counted at that boundary, so it holds 30, and one receipt has since settled. The Thursday
+	// tick is the week's first sight of the new count, but the week's key is already present and the
+	// grant cannot grow; the next Monday counts the receipt and writes 40.
+	const monday = instant("2026-10-05T00:00:00Z");
+	const thursday = instant("2026-10-08T12:00:00Z");
+	const nextMonday = instant("2026-10-12T00:00:00Z");
+	let current: Instant = thursday;
+	const { service, store } = acquire(root, "lane8-shape.db", () => current);
+	try {
+		store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(devon, 0, JSON.stringify(operatorRow(devon, 1)), 1);
+		const account = granted(devon, monday);
+		assert.equal(account.balance.allowance, 30);
+		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+		await service.tick();
+		const before = await store.readCredits(devon);
+		assert.equal(before.balance.allowance, 30, "the week's grant is already written; the Thursday tick adds none");
+		assert.equal(before.lines.length, account.lines.length, "no new line for a week that already granted");
+		current = nextMonday;
+		await service.tick();
+		const after = await store.readCredits(devon);
+		assert.equal(after.balance.allowance, 40, "Monday counts the one receipt the week earned");
+		assert.deepEqual(after.lines.slice(-2), [
+			{ kind: "EXPIRE", key: "expire:2026-W42", credits: 30, at: nextMonday },
+			{ kind: "GRANT", key: "grant:2026-W42", credits: 40, at: nextMonday },
+		]);
+		await service.tick();
+		const unchanged = await store.readCredits(devon);
+		assert.equal(unchanged.version, after.version);
+		assert.equal(unchanged.balance.allowance, 40);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
