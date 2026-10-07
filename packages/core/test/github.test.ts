@@ -15,6 +15,8 @@ import type { CommitSha, JobId } from "../src/ids.ts";
 const FROZEN = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const HEAD = "b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9";
 const SUBMITTED = "c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1";
+/** The commit GitHub creates when a pull request merges with merge_method "merge". */
+const MERGED = "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1";
 const CLIENT = "NDilanka/invoice-app";
 const CLIENT_OWNER = "NDilanka";
 const ORG = "acquit-forks";
@@ -248,7 +250,9 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 				{ message: "Head branch was modified. Review and try the merge again." });
 			pull.merged = true;
 			pull.state = "closed";
-			pull.merge_commit_sha = typeof body.sha === "string" ? body.sha : FROZEN;
+			// The live API creates a merge commit: merge_commit_sha is the new commit on the base branch,
+			// never the pull's head, which keeps pointing at the judged tree.
+			pull.merge_commit_sha = MERGED;
 			return json(response, 200, { sha: pull.merge_commit_sha, merged: true, message: "Pull Request successfully merged" });
 		}
 		if (method === "GET" && segments.length === 6 && segments[3] === "commits" && segments[5] === "check-runs") {
@@ -363,6 +367,19 @@ for (const harness of HARNESSES) {
 		assert.equal(second.repository, CLIENT);
 	});
 }
+
+test("a landed merge is adopted by the pull's head, not by merge_commit_sha", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const published = await port.publishVerified(publishRequest, "req-1");
+	const request = { jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest, mergeCommit: published.mergeCommit };
+	assert.equal(await port.merge(request, "req-2"), "MERGED");
+	// merge_method "merge" created a new commit: merge_commit_sha names it, and the head still names the
+	// judged tree. Comparing merge_commit_sha with the judged tree would read this landed merge as a conflict.
+	assert.equal(stub.state.pulls[0]?.merge_commit_sha, MERGED);
+	assert.notEqual(stub.state.pulls[0]?.merge_commit_sha, published.mergeCommit);
+	assert.equal(await port.merge(request, "req-3"), "MERGED");
+});
 
 test("the App JWT is RS256, signed by the App, and inside GitHub's ten-minute cap", async t => {
 	const { port, stub, close } = await withStub();

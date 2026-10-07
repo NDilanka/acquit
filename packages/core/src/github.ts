@@ -600,15 +600,17 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const commit = checkedCommit(request.mergeCommit);
 		if (!Number.isSafeInteger(request.pullRequest) || request.pullRequest <= 0) invalid("The pull request", request.pullRequest);
 		const token = await tokenFor(client.owner);
-		const read = async (): Promise<{ readonly merged: boolean; readonly sha: string | null; readonly state: string | null }> => {
+		/** The pull's immutable head. `merge_commit_sha` is the commit GitHub created on the base branch with
+		 * merge_method "merge", so it is never equal to the judged head the merge named. */
+		const read = async (): Promise<{ readonly merged: boolean; readonly head: string | null; readonly state: string | null }> => {
 			const answer = await call(`Bearer ${token}`, { method: "GET", path: `/repos/${request.repository}/pulls/${request.pullRequest}`,
 				allow: [200], permission: "pull_requests: read" });
-			const body = answer.body as { readonly merged?: unknown; readonly merge_commit_sha?: unknown; readonly state?: unknown } | null;
-			return { merged: body?.merged === true, sha: typeof body?.merge_commit_sha === "string" ? body.merge_commit_sha : null,
+			const body = answer.body as { readonly merged?: unknown; readonly head?: { readonly sha?: unknown } | null; readonly state?: unknown } | null;
+			return { merged: body?.merged === true, head: typeof body?.head?.sha === "string" ? body.head.sha : null,
 				state: typeof body?.state === "string" ? body.state : null };
 		};
-		const settled = (pull: { readonly merged: boolean; readonly sha: string | null }): MergeOutcome | null =>
-			pull.merged ? pull.sha === commit ? "MERGED" : "CONFLICT" : null;
+		const settled = (pull: { readonly merged: boolean; readonly head: string | null }): MergeOutcome | null =>
+			pull.merged ? pull.head === commit ? "MERGED" : "CONFLICT" : null;
 		const before = await read();
 		const already = settled(before);
 		if (already !== null) return already;
