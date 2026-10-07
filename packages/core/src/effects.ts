@@ -13,6 +13,7 @@ import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, R
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
+import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookEnvelope, WebhookResourceKind } from "./paypal.ts";
@@ -612,9 +613,9 @@ async function finish(ports: Ports, delivery: Delivery, outcome: WebhookOutcome,
 	const text = webhookOutcomeText(outcome);
 	await ports.store.recordWebhookEvent({ id: delivery.deliveryId, eventType: delivery.eventType, resourceType: delivery.resourceType,
 		resourceId: delivery.resourceId, receivedAt: ports.clock.now(), outcome: text });
-	// The id and the detail are provider bytes. JSON.stringify keeps a newline in them from splitting
-	// the log line into a forged second entry.
-	console.log(`paypal webhook ${JSON.stringify(delivery.deliveryId)} ${text}${detail === undefined ? "" : ` (${JSON.stringify(detail)})`}`);
+	// The id and the detail are provider bytes. logQuoted keeps a newline, or the line separator
+	// JSON.stringify leaves raw, from splitting the log line into a forged second entry.
+	console.log(`paypal webhook ${logQuoted(delivery.deliveryId)} ${text}${detail === undefined ? "" : ` (${logQuoted(detail)})`}`);
 	return Response.json({ received: status < 400 }, { status });
 }
 
