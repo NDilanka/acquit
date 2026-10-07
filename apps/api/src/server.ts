@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
@@ -22,17 +22,38 @@ const acquit = createAcquit(settings);
 const githubApp = createGitHubApp(githubEnv);
 const db = new DatabaseSync(settings.databaseUrl);
 // The CLI login exchange's one-time codes. The row never holds the code itself: the digest is the key,
-// so a leaked database file is not a set of live sign-in links. The token is minted at approval and
-// handed over exactly once.
+// so a leaked database file is not a set of live sign-in links. It holds the challenge the CLI minted
+// (the digest of a verifier only the CLI has) and the token the browser's approval mints, handed over
+// exactly once.
 db.exec(`CREATE TABLE IF NOT EXISTS cli_codes (
-	digest TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+	digest TEXT PRIMARY KEY, challenge TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
 	handle TEXT, token TEXT, delivered_at TEXT)`);
+// A table from before the challenge column keeps its rows; the next sign-in writes one.
+if (!(db.prepare("PRAGMA table_info(cli_codes)").all() as { name?: unknown }[]).some(column => column.name === "challenge")) {
+	db.exec("ALTER TABLE cli_codes ADD COLUMN challenge TEXT");
+}
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
+const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
 const user = (handle: string) => SEEDED_USERS.find(user => user.handle === handle);
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
+/** The challenge a CLI stores for a code: base64url(sha256(verifier)), the verifier never leaving the CLI. */
+const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
+/** Both sides are fixed-length base64url digests, so the comparison is constant-time. */
+function sameChallenge(left: string, right: string): boolean {
+	const a = Buffer.from(left, "utf8");
+	const b = Buffer.from(right, "utf8");
+	return a.length === b.length && timingSafeEqual(a, b);
+}
+/** One unit of work over the code table. BEGIN IMMEDIATE takes the write lock up front, so two
+ * requests cannot both read a row as unclaimed and then both claim it. */
+function transaction<T>(work: () => T): T {
+	db.exec("BEGIN IMMEDIATE");
+	try { const value = work(); db.exec("COMMIT"); return value; }
+	catch (error) { try { db.exec("ROLLBACK"); } catch { /* the transaction opened nothing to undo */ } throw error; }
+}
 function session(req: IncomingMessage) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
@@ -49,9 +70,12 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 	res.end(JSON.stringify(value));
 }
 /** One browser or CLI session. The raw token is handed out once; the row keeps only its digest. */
+function insertSession(token: string, handle: string): void {
+	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString());
+}
 function mintSession(handle: string): string {
 	const token = randomBytes(32).toString("base64url");
-	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString());
+	insertSession(token, handle);
 	return token;
 }
 function redirect(res: ServerResponse, path: string): void { res.writeHead(302, { Location: path, "Cache-Control": "no-store" }); res.end(); }
@@ -218,24 +242,41 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	// The CLI login exchange. The CLI holds the code and polls with it; the browser holds the session
 	// and approves. Both routes are unauthenticated by design: the code is a 256-bit bearer secret with
-	// a ten-minute life, and the token is minted only when a signed-in browser approves it.
+	// a ten-minute life, bound to the verifier the CLI keeps, and the token is minted only when a
+	// signed-in browser approves it.
 	if (url.pathname === "/api/cli/codes" && method === "POST") {
+		let challenge: string;
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "challenge")) throw new BadBody("Unsupported field");
+			challenge = text(input.challenge, "challenge", 64);
+			if (!CLI_CHALLENGE.test(challenge)) throw new BadBody("challenge must be base64url(sha256(verifier))");
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
 		const now = clock.now();
 		db.prepare("DELETE FROM cli_codes WHERE expires_at <= ?").run(now);
 		const code = randomBytes(32).toString("base64url");
 		const expiresAt = new Date(Date.parse(now) + CLI_CODE_TTL_MS).toISOString();
-		db.prepare("INSERT INTO cli_codes VALUES (?, ?, ?, NULL, NULL, NULL)").run(tokenDigest(code), now, expiresAt);
+		db.prepare("INSERT INTO cli_codes (digest, challenge, created_at, expires_at) VALUES (?, ?, ?, ?)")
+			.run(tokenDigest(code), challenge, now, expiresAt);
 		json(res, 201, { code, url: `${webOrigin}/cli?code=${encodeURIComponent(code)}`, expiresAt }); return;
 	}
 	if (url.pathname.startsWith("/api/cli/codes/") && method === "GET") {
 		const digest = tokenDigest(decodeURIComponent(url.pathname.slice("/api/cli/codes/".length)));
-		const row = db.prepare("SELECT handle, token, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
+		const row = db.prepare("SELECT challenge, handle, token, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
 		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
+		// The verifier travels in a header, never the URL, and only its digest is on the row: a code
+		// read from the process table (the browser opener's argv) is useless without it.
+		const verifier = req.headers["x-acquit-verifier"];
+		if (typeof verifier !== "string" || typeof row.challenge !== "string" || !sameChallenge(challengeOf(verifier), row.challenge)) {
+			json(res, 403, { error: "VERIFIER_MISMATCH" }); return;
+		}
 		if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
 		if (row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
 		if (!row.handle) { json(res, 200, { status: "PENDING" }); return; }
-		// One delivery: the code cannot hand the same token over twice.
-		db.prepare("UPDATE cli_codes SET delivered_at = ? WHERE digest = ?").run(clock.now(), digest);
+		// One delivery under concurrency: the conditional update claims the row, or it changes nothing.
+		const delivered = transaction(() =>
+			db.prepare("UPDATE cli_codes SET delivered_at = ? WHERE digest = ? AND delivered_at IS NULL").run(clock.now(), digest).changes === 1);
+		if (!delivered) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
 		const selected = user(String(row.handle));
 		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
 	}
@@ -296,8 +337,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
 		if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
 		if (row.handle || row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
-		const token = mintSession(current.user.handle);
-		db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ?").run(current.user.handle, token, digest);
+		// One approval under concurrency: the conditional update mints the session and claims the code
+		// in the same transaction, so a raced second approval mints nothing and is refused.
+		const token = transaction(() => {
+			const minted = randomBytes(32).toString("base64url");
+			const claimed = db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ? AND handle IS NULL")
+				.run(current.user.handle, minted, digest);
+			if (claimed.changes !== 1) return null;
+			insertSession(minted, current.user.handle);
+			return minted;
+		});
+		if (token === null) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
 		json(res, 200, { handle: current.user.handle, role: current.user.role }); return;
 	}
 	if (url.pathname === "/api/jobs" && method === "GET") {

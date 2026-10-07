@@ -278,13 +278,19 @@ test("a keychain failure that echoes the secret in its output redacts it from th
 	assert.equal(refusals.every(error => error.message.includes("[redacted]")), true);
 });
 
-test("login prints the code URL, stores the token with mode 0600, and prints the tutorial's line", async () => {
+test("login prints the code URL, binds the code to its verifier, stores the token with mode 0600, and prints the tutorial's line", async () => {
 	let polls = 0;
-	const fetchStub: typeof globalThis.fetch = async input => {
+	let challenge: string | null = null;
+	let verifier: string | null = null;
+	const fetchStub: typeof globalThis.fetch = async (input, init) => {
 		const url = String(input);
-		if (url.endsWith("/api/cli/codes")) return Response.json({ code: "CODE-123", url: "http://localhost:5173/cli?code=CODE-123",
-			expiresAt: "2026-11-01T11:22:00.000Z" }, { status: 201 });
+		if (url.endsWith("/api/cli/codes")) {
+			challenge = (JSON.parse(String(init?.body ?? "{}")) as { challenge?: string }).challenge ?? null;
+			return Response.json({ code: "CODE-123", url: "http://localhost:5173/cli?code=CODE-123",
+				expiresAt: "2026-11-01T11:22:00.000Z" }, { status: 201 });
+		}
 		polls++;
+		verifier = new Headers(init?.headers).get("X-Acquit-Verifier");
 		return polls === 1
 			? Response.json({ status: "PENDING" })
 			: Response.json({ status: "APPROVED", token: "session-token", user: { handle: "devon-ops", role: "OPERATOR" } });
@@ -298,6 +304,12 @@ test("login prints the code URL, stores the token with mode 0600, and prints the
 	assert.equal(rendered, tutorialBlock("Signed in as devon-ops (operator)"));
 	assert.match(lines.join(""), /http:\/\/localhost:5173\/cli\?code=CODE-123/);
 	assert.equal(polls, 2, "the CLI polls until the browser approves the code");
+	// The challenge the API stores is the verifier's digest, and the verifier never rides in a URL.
+	assert.equal(typeof verifier, "string");
+	const sent = String(verifier);
+	assert.match(sent, /^[A-Za-z0-9_-]{40,}$/);
+	assert.equal(challenge, createHash("sha256").update(sent).digest("base64url"));
+	assert.equal(lines.join("").includes(sent), false);
 	assert.deepEqual(saved, { api: API, token: "session-token", handle: "devon-ops", role: "OPERATOR" });
 	// The token is stored under the user profile, mode 0600, and never printed.
 	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-login-"));
@@ -440,14 +452,27 @@ test("the login exchange issues a single-use, expiring token that authenticates 
 		db.prepare("INSERT INTO operators VALUES (?, 0, ?, 0)").run("devon-ops", JSON.stringify(operator));
 		db.prepare("INSERT INTO credits VALUES (?, 0, ?)").run("devon-ops", JSON.stringify(account));
 		db.close();
-		const created = await fetch(`${url}/api/cli/codes`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+		const verifier = "unit-test-verifier";
+		const challenge = createHash("sha256").update(verifier).digest("base64url");
+		const poll = (code: string, presented: string | null = verifier) => fetch(`${url}/api/cli/codes/${code}`,
+			{ headers: presented === null ? {} : { "X-Acquit-Verifier": presented } });
+		const issue = (body: unknown) => fetch(`${url}/api/cli/codes`, { method: "POST", headers: { "content-type": "application/json" },
+			body: JSON.stringify(body) });
+		// A code is bound to the verifier that minted it, so the challenge is required and shaped.
+		assert.equal((await issue({})).status, 400);
+		assert.equal((await issue({ challenge: "too-short" })).status, 400);
+		const created = await issue({ challenge });
 		assert.equal(created.status, 201);
 		const first = await created.json() as { code: string; url: string; expiresAt: string };
 		assert.match(first.url, /^http:\/\/localhost:5213\/cli\?code=/);
 		assert.ok(first.code.length >= 40, "the one-time code must carry at least 32 random bytes");
-		const other = await (await fetch(`${url}/api/cli/codes`, { method: "POST", body: "{}" })).json() as { code: string };
+		const other = await (await issue({ challenge })).json() as { code: string };
 		assert.notEqual(first.code, other.code);
-		assert.equal((await (await fetch(`${url}/api/cli/codes/${first.code}`)).json() as { status: string }).status, "PENDING");
+		// The code alone is useless: a poll without the verifier, or with another one, is refused.
+		assert.equal((await poll(first.code, null)).status, 403);
+		assert.equal((await (await poll(first.code, null)).json() as { error: string }).error, "VERIFIER_MISMATCH");
+		assert.equal((await poll(first.code, "some-other-verifier")).status, 403);
+		assert.equal((await (await poll(first.code)).json() as { status: string }).status, "PENDING");
 		// Approval needs a browser session, and the same code is never approved twice.
 		assert.equal((await fetch(`${url}/api/cli/approve`, { method: "POST", headers: { "content-type": "application/json" },
 			body: JSON.stringify({ code: first.code }) })).status, 401);
@@ -455,9 +480,11 @@ test("the login exchange issues a single-use, expiring token that authenticates 
 			body: JSON.stringify({ handle: "devon-ops" }) })).json() as { token: string };
 		const approve = () => fetch(`${url}/api/cli/approve`, { method: "POST", headers: { "content-type": "application/json",
 			Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ code: first.code }) });
-		assert.equal((await approve()).status, 200);
+		// Two approvals raced against the same code mint exactly one session.
+		const approvals = await Promise.all([approve(), approve()]);
+		assert.deepEqual(approvals.map(response => response.status).sort(), [200, 410]);
 		assert.deepEqual(await (await approve()).json(), { error: "CLI_CODE_USED" });
-		const delivered = await (await fetch(`${url}/api/cli/codes/${first.code}`)).json() as { status: string; token: string; user: { handle: string; role: string } };
+		const delivered = await (await poll(first.code)).json() as { status: string; token: string; user: { handle: string; role: string } };
 		assert.equal(delivered.status, "APPROVED");
 		assert.deepEqual(delivered.user, { handle: "devon-ops", role: "OPERATOR" });
 		// The delivered token is a session token: it authenticates the same routes, bearer or cookie.
@@ -468,14 +495,14 @@ test("the login exchange issues a single-use, expiring token that authenticates 
 		assert.deepEqual({ available: creditBody.credits.available, weeklyAllowance: creditBody.credits.weeklyAllowance, paidReceipts: creditBody.credits.paidReceipts },
 			{ available: 30, weeklyAllowance: 30, paidReceipts: 0 });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { cookie: `acquit_session=${delivered.token}` } })).status, 200);
-		// The code is single use: a second poll never hands the token over again.
-		assert.equal((await fetch(`${url}/api/cli/codes/${first.code}`)).status, 410);
-		assert.equal((await fetch(`${url}/api/cli/codes/not-a-real-code`)).status, 404);
+		// The code is single use: a second poll after delivery gets nothing, and an unknown code is 404.
+		assert.equal((await poll(first.code)).status, 410);
+		assert.equal((await poll("not-a-real-code")).status, 404);
 		// Expiry is measured on the server clock, so a lane that advances it expires the code.
-		const expiring = await (await fetch(`${url}/api/cli/codes`, { method: "POST", body: "{}" })).json() as { code: string };
+		const expiring = await (await issue({ challenge })).json() as { code: string };
 		assert.equal((await fetch(`${url}/api/dev/clock`, { method: "POST", headers: { "content-type": "application/json", ...auth },
 			body: JSON.stringify({ advanceMs: 600_001 }) })).status, 200);
-		const expired = await fetch(`${url}/api/cli/codes/${expiring.code}`);
+		const expired = await poll(expiring.code);
 		assert.equal(expired.status, 410);
 		assert.equal((await expired.json() as { error: string }).error, "CLI_CODE_EXPIRED");
 		// Operator init reads the merchant status the server already knows.

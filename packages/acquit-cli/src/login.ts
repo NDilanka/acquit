@@ -2,6 +2,7 @@
 // it, waits for a signed-in browser to approve, and stores the session token under the user profile.
 
 import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { CliError, apiFlag, saveLogin } from "./client.ts";
 import type { StoredLogin } from "./client.ts";
 
@@ -60,8 +61,13 @@ export async function runLogin(options: LoginOptions, deps: LoginDeps = {}): Pro
 	const sleep = deps.sleep ?? ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)));
 	const now = deps.now ?? Date.now;
 	const base = new URL(options.apiUrl);
+	// The verifier stays in this process; the API stores only its digest. The code is printed and
+	// handed to the browser opener, so anyone who reads the process table sees a code that is useless
+	// without the verifier.
+	const verifier = randomBytes(32).toString("base64url");
+	const challenge = createHash("sha256").update(verifier).digest("base64url");
 	const created = await call(new URL("/api/cli/codes", base), { method: "POST",
-		headers: { "content-type": "application/json", "x-acquit-cli": "1" }, body: "{}" });
+		headers: { "content-type": "application/json", "x-acquit-cli": "1" }, body: JSON.stringify({ challenge }) });
 	const issued = await created.json().catch(() => null) as CodeAnswer | null;
 	const code = typeof issued?.code === "string" ? issued.code : null;
 	const url = typeof issued?.url === "string" ? issued.url : null;
@@ -72,9 +78,12 @@ export async function runLogin(options: LoginOptions, deps: LoginDeps = {}): Pro
 	if (options.openBrowser) open(url);
 	const deadline = now() + options.timeoutSeconds * 1_000;
 	for (;;) {
-		const polled = await call(new URL(`/api/cli/codes/${encodeURIComponent(code)}`, base), { headers: { "x-acquit-cli": "1" } });
+		const polled = await call(new URL(`/api/cli/codes/${encodeURIComponent(code)}`, base),
+			{ headers: { "x-acquit-cli": "1", "X-Acquit-Verifier": verifier } });
 		const answer = await polled.json().catch(() => null) as PollAnswer | null;
 		if (polled.status === 404) throw new CliError("LOGIN_UNKNOWN", "The API does not know this sign-in code. Run `acquit login` again.");
+		if (polled.status === 403) throw new CliError("LOGIN_VERIFIER_MISMATCH",
+			"The API refused this sign-in code's verifier. Run `acquit login` again.");
 		if (polled.status === 410) {
 			throw new CliError(answer?.error === "CLI_CODE_USED" ? "LOGIN_USED" : "LOGIN_EXPIRED",
 				"This sign-in link is no longer valid. Run `acquit login` again.");
