@@ -85,7 +85,11 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
 ### Sub-features
 
 - `run-prepare` asks `POST /api/jobs/:id/work-repo-token` for a token scoped to the job's work repo
-  only, clones the work repo, and prints the tutorial's `Preparing sandbox for job_X` block.
+  only, clones the work repo, and prints the tutorial's `Preparing sandbox for job_X` block. The
+  clone's git directory lives in the CLI's state location
+  (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default),
+  outside the work tree the sandbox mounts; the work tree's `.git` is an empty directory the sandbox
+  mounts a read-only tmpfs over, so the agent never sees git metadata.
 - `run-claude-code` runs Claude Code with the operator's key, read from the OS keychain that
   `acquit operator init` filled.
 - `run-command` runs the script the operator names, mounted read-only at `/acquit/command.sh`.
@@ -117,6 +121,9 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   - Probes `curl -sS --max-time 30 -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org/`,
     which must print `200`, and `curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/`,
     which must fail: the proxy allows CONNECT only to port 443.
+  - Probes the git metadata: `test -z "$(ls -A /work/.git)"` must pass (an empty shadow directory)
+    and `touch /work/.git/probe` must fail with `Read-only file system`. Nothing under `/work/.git`
+    names the fork, the token, or a remote.
 
   Run `acquit run <job> --runner command --command <script> --dir <empty path>`. Require the
   tutorial's first block and `Changed files: tests/totals.test.ts (1 line)`.
@@ -125,12 +132,17 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   `acquit-runner-<job>-egress` survives.
 - **Re-run with an instruction.** Run again on the same job with `--instruction "..."` and a script
   that fixes `src/money.ts`. Require the reset fork line, then `Changed files: src/money.ts (<n> lines)`.
-- **Submit what run pushed.** `acquit submit <job> --dir <the same --dir>`. Submit mints the scoped
-  work-repo credential itself (`POST /api/jobs/:id/work-repo-token`) and pushes through an askpass
-  script in a 0600 temp dir it removes, so the operator needs no GitHub credential for the fork. The
-  push target is the job's work repo by default; `--remote origin` (or a `--remote` URL) that resolves
-  to the work repo takes the same path, and any other remote keeps the operator's own credential. Run
-  already pushed the commit to its submission ref, so submit's push is an up-to-date no-op.
+- **Submit what run pushed.** `acquit submit <job> --dir <the same --dir>`. Submit reads the
+  submitted commit and pushes through the job's state git directory when one exists, so a run
+  checkout needs no discovery of its own. It mints the scoped work-repo credential itself
+  (`POST /api/jobs/:id/work-repo-token`) and pushes through an askpass script in a 0600 temp dir it
+  removes, so the operator needs no GitHub credential for the fork. The push target is the job's work
+  repo by default; `--remote origin` (or a `--remote` URL) that resolves to the work repo takes the
+  same path, and any other remote keeps the operator's own credential. A named remote also falls back
+  to the operator's own credential when the mint answers `NOT_OWNER`, `WORK_REPO_NOT_READY`, or
+  `GITHUB_NOT_CONFIGURED`; the default target surfaces the latter two with their own hint, and a
+  `WORK_REPO_TOKEN_FAILED` mint is never a fallback. Run already pushed the commit to its submission
+  ref, so submit's push is an up-to-date no-op.
 - **claude-code.** Run `acquit run <job> --runner claude-code` with a stored key. Without a key, the
   CLI refuses `PROVIDER_KEY_MISSING` before it starts anything.
 - **Strangers are refused.** A session that is not the job's locked operator gets
@@ -138,17 +150,26 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
 
 ### Gotchas
 
-- An existing `--dir` must be a git work tree whose `origin` is the work repo (`DIR_NOT_WORK_REPO`
-  otherwise), so a run never resets an unrelated checkout.
+- An existing `--dir` is only accepted when it is the work tree the job's state git directory
+  records (`DIR_NOT_WORK_REPO` otherwise), so a run never resets an unrelated checkout. An empty path
+  is adopted when that recorded work tree is gone, and an older checkout with an in-tree `.git` is
+  refused by name: pass a fresh `--dir`, or remove `$XDG_STATE_HOME/acquit/work/<job>.git` to clone
+  afresh.
 - Every run checks out the frozen commit and runs `git clean -fd` first, so uncommitted work in
   `--dir` is lost.
+- Host-side git on a job's checkout never uses discovery and never reads the operator's global or
+  system config: every command names the state git directory and the work tree, sets an empty
+  `core.hooksPath`, and disables the fsmonitor, credential helper, and ssh command. A state git
+  directory that holds config the CLI did not write refuses the push (`GIT_CONFIG_UNSAFE`) instead of
+  letting the scoped token meet a URL rewrite or a credential helper.
 - `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.
 - The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
   repo. Rerun in about 30 seconds.
 - The work-repo token is never printed. The session token never comes from argv (`--token` reads
-  stdin), and both are stripped from the git and docker children's environments. `submit` mints the
-  same scoped token for a push into the job's work repo; a mint the API refuses to a stranger falls
-  back to the operator's own credential and lets `Submit` name the denial.
+  stdin), and both are stripped from the git and docker children's environments; the askpass script
+  names its own token file, so no token-path variable rides in the git child's environment either.
+  `submit` mints the same scoped token for a push into the job's work repo; a mint the API refuses to
+  a stranger falls back to the operator's own credential and lets `Submit` name the denial.
 - On Linux the provider key lives in the kernel user keyring, which a reboot clears. Run
   `acquit operator init` again after a reboot.
 - The claude-code runner starts Claude Code with `--dangerously-skip-permissions`. The sandbox is the
