@@ -311,6 +311,15 @@ test("login prints the code URL, stores the token with mode 0600, and prints the
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a fetch that cannot reach the API refuses by name and never prints a stack", async () => {
+	const refusing = () => Promise.reject(new TypeError("fetch failed"));
+	const client = apiClient({ baseUrl: "http://127.0.0.1:4399", token: "t", fetch: refusing });
+	await assert.rejects(client.get("/api/jobs"), (error: CliError) => error.code === "API_UNREACHABLE"
+		&& error.message.includes("http://127.0.0.1:4399") && !error.message.includes("\n"));
+	await assert.rejects(client.post("/api/commands", {}), (error: CliError) => error.code === "API_UNREACHABLE"
+		&& error.message.includes("http://127.0.0.1:4399") && !error.message.includes("\n"));
+});
+
 test("diff prints the tutorial's patch from the judged commit, without git's index header", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-diff-"));
 	try {

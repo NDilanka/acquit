@@ -30,18 +30,27 @@ export function apiClient(options: ApiOptions): ApiClient {
 	return {
 		baseUrl: base.origin,
 		async get(path) {
-			const response = await call(new URL(path, base), { headers: headers() });
+			const response = await reach(call, new URL(path, base), { headers: headers() }, base);
 			const body = await response.json().catch(() => null);
 			if (!response.ok) throw refusal(response.status, body);
 			return body;
 		},
 		async post(path, payload) {
-			const response = await call(new URL(path, base), { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+			const response = await reach(call, new URL(path, base), { method: "POST", headers: headers(), body: JSON.stringify(payload) }, base);
 			const body = await response.json().catch(() => null);
 			if (!response.ok && response.status !== 409) throw refusal(response.status, body);
 			return { status: response.status, body };
 		},
 	};
+}
+
+/** A fetch rejection is a connection problem, not a stack: the origin is named, the detail is bounded. */
+async function reach(call: typeof globalThis.fetch, url: URL, init: RequestInit, base: URL): Promise<Response> {
+	try { return await call(url, init); }
+	catch (error) {
+		const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200);
+		throw new CliError("API_UNREACHABLE", `The Acquit API at ${base.origin} could not be reached.${detail ? ` ${detail}` : ""}`);
+	}
 }
 
 function refusal(status: number, body: unknown): CliError {
