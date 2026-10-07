@@ -15,7 +15,8 @@
 //   Approve to PAID: the seconds from the Approve POST to the first job view that reads PAID, polled
 //   every 200 ms. The Approve command drains its own RELEASE effect inline, so this is the path the
 //   page waits on, not a background one.
-//   Webhook route: the recorded capture body is replayed five times. Every delivery re-reads the
+//   Webhook route: the envelope the route recorded for the capture is rebuilt and replayed five times.
+//   Every delivery re-reads the
 //   capture and its order from PayPal, so a route-only number is not observable from outside: each
 //   sample is the client-observed POST time minus the probe's own read of the same two resources,
 //   minted with the same credentials and the same PayPal-Auth-Assertion the route uses. The difference
@@ -120,7 +121,7 @@ async function main() {
 		const routeMedians = webhookSamples.map(sample => sample.excludedMs);
 		report.approveToPaid = { samples: approveSeconds.map(round), medianSeconds: round(median(approveSeconds)), worstSeconds: round(Math.max(...approveSeconds)),
 			passed: median(approveSeconds) <= RULES.approveToPaidMedianSeconds };
-		report.webhook = { method: `the recorded capture body is replayed ${REPLAYS} times per job; each sample subtracts the probe's own capture+order read from the POST it observed, and the unrouted body is posted with no PayPal call at all`,
+		report.webhook = { method: `the envelope the route recorded for the capture is rebuilt from its fields and replayed ${REPLAYS} times per job; each sample subtracts the probe's own capture+order read from the POST it observed, and one unrouted envelope is posted with no PayPal call at all`,
 			samples: webhookSamples.map(sample => ({ ...sample, replayMs: round(sample.replayMs), paypalMs: round(sample.paypalMs), excludedMs: round(sample.excludedMs), unroutedMs: round(sample.unroutedMs) })),
 			replayMedianMs: round(median(webhookSamples.map(sample => sample.replayMs))), paypalMedianMs: round(median(webhookSamples.map(sample => sample.paypalMs))),
 			medianMs: round(median(routeMedians)), worstMs: round(Math.max(...routeMedians)), unroutedMedianMs: round(median(webhookSamples.map(sample => sample.unroutedMs))),
