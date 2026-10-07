@@ -11,8 +11,9 @@
 // does not suit.
 //
 // Trunk safety. Before any git command, the probe refuses a --trunk that names the same worktree as
-// --head, a main worktree, a directory that is not a worktree root, and any non-default path whose
-// HEAD is not detached. A missing --trunk is created only at the default throwaway path. Under
+// --head, a main worktree, a directory that is not a worktree root, a non-default path whose HEAD is
+// not detached, and a non-default existing path the repo does not list as a registered linked
+// worktree. A missing --trunk is created only at the default throwaway path. Under
 // --clean the probe removes the trunk worktree only when this run created it or it verified it as a
 // linked worktree this repo registered, and removes lane data only for lanes this run started.
 //
@@ -147,8 +148,9 @@ function registeredWorktrees() {
  * The trunk worktree the probe may force-check-out and, under --clean, remove. The first check, before
  * any git command, is that --trunk and --head name different worktrees: `--trunk .` or `--trunk <the
  * head worktree>` would otherwise check the head out and later remove it. After that, only the default
- * throwaway (created here when missing) or a linked worktree whose HEAD is detached is accepted; a main
- * worktree or a directory that is not a worktree root is refused.
+ * throwaway (created here when missing) or a linked worktree this repo registered whose HEAD is
+ * detached is accepted; a main worktree, a directory that is not a worktree root, and a detached gitfile
+ * directory git does not list as a linked worktree are refused.
  */
 function guardTrunk() {
 	const trunkReal = realPath(trunkDir);
@@ -175,9 +177,17 @@ function guardTrunk() {
 		throw new Blocked("TRUNK_NOT_DETACHED",
 			`${trunkDir} has a branch checked out; only a detached linked worktree may be force-checked-out. Run git -C ${trunkDir} checkout --detach, or pass --trunk ${defaultTrunk}.`);
 	}
+	// A gitfile directory that this repo does not list is not a worktree the probe owns: its gitdir
+	// may point anywhere, and git commands run in it would not be this repo's. Only the default
+	// throwaway, or a path `git worktree list` registered, may be force-checked-out.
+	const registered = registeredWorktrees().has(trunkReal);
+	if (!isDefault && !registered) {
+		throw new Blocked("TRUNK_NOT_REGISTERED",
+			`${trunkDir} is not a linked worktree this repo registered; the probe only force-checks-out the default throwaway or a worktree git lists. Pass --trunk ${defaultTrunk}, or register a detached worktree for this repo.`);
+	}
 	trunkState.approved = true;
-	trunkState.registered = registeredWorktrees().has(trunkReal);
-	trunkState.removable = trunkState.registered;
+	trunkState.registered = registered;
+	trunkState.removable = registered;
 }
 
 async function preflight() {
