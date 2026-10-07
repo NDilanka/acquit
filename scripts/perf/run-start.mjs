@@ -1,11 +1,28 @@
 // The pure pieces of the cli probe's runStart metric: which line is the agent start, which job a lane
-// can measure, why a sample is not a number, what a set of samples decides, and which Docker objects
-// a sample the probe killed leaves behind. cli.mjs owns the process, the Docker preconditions, and
-// the report; these are the rules it reads.
+// can measure, why a sample is not a number, what a set of samples decides, which Docker objects a
+// sample the probe killed leaves behind, and the environment a sample child gets. cli.mjs owns the
+// process, the Docker preconditions, and the report; these are the rules it reads.
+
+import { join } from "node:path";
 
 /** One sample is a whole `acquit run`; a run that has not reached the agent start in this long is not
  * a slow number to keep waiting for. */
 export const RUN_SAMPLE_TIMEOUT_MS = 180_000;
+
+/**
+ * The environment one runStart sample child gets. The CLI keeps a job's git directory under
+ * `$XDG_STATE_HOME/acquit/work` (`%LOCALAPPDATA%\acquit\work` on Windows), so the probe points both
+ * at its own temp root: the sample clones its own `--dir`, and the measured lane's state git
+ * directory — which records another work tree — can never refuse it DIR_NOT_WORK_REPO. The sweep
+ * removes the temp root, and the state home with it. Pure: the caller passes the base environment
+ * and the platform.
+ */
+export function sampleEnv(base, { token, image, temp, platform = process.platform }) {
+	const env = { ...base, ACQUIT_TOKEN: token, ACQUIT_RUNNER_IMAGE: image,
+		ACQUIT_CLI_CONFIG: join(temp, "cli.json"), TMPDIR: temp, XDG_STATE_HOME: join(temp, "state") };
+	if (platform === "win32") env.LOCALAPPDATA = join(temp, "local");
+	return env;
+}
 
 /** `acquit run` prints this line (renderRunning in packages/acquit-cli/src/run.ts) immediately before
  * it starts the sandbox, so it is the moment the run-start clock stops. The command runner names the

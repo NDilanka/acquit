@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import test from "node:test";
 
 type RunStartSample = { markerSeconds: number | null; exitCode: number | null; agentRan: boolean; timedOut: boolean; stderr: string };
 type RunStartBlocker = { reason: string; detail: string } | null;
-const { agentStarted, fundedJobOf, runStartBlocker, runStartVerdict, sweepTargets } = await import(
+const { agentStarted, fundedJobOf, runStartBlocker, runStartVerdict, sampleEnv, sweepTargets } = await import(
 	new URL("../../../scripts/perf/run-start.mjs", import.meta.url).href) as {
 	agentStarted: (line: string) => boolean;
 	fundedJobOf: (jobs: readonly unknown[], handle: string) => { id: string } | null;
 	runStartBlocker: (sample: RunStartSample) => RunStartBlocker;
 	runStartVerdict: (samples: readonly number[], ruleSeconds: number) => { samples: number[]; medianSeconds: number; maxSeconds: number; passed: boolean };
+	sampleEnv: (base: Record<string, string | undefined>, ports: { token: string; image: string; temp: string; platform?: string }) => Record<string, string | undefined>;
 	sweepTargets: (resources: { jobId: string | null; killed: boolean }) => readonly { kind: string; name: string; remove: readonly string[] }[];
 };
 
@@ -63,6 +65,26 @@ test("a refusal before the marker blocks as RUN_START_FAILED and drops a credent
 test("a run that starts the agent but does not finish cleanly blocks as RUN_AGENT_FAILED", () => {
 	assert.equal(runStartBlocker(healthy({ exitCode: 1, stderr: "acquit: AGENT_FAILED: The agent exited 1.\n" }))?.reason, "RUN_AGENT_FAILED");
 	assert.equal(runStartBlocker(healthy({ agentRan: false }))?.reason, "RUN_AGENT_FAILED");
+});
+
+test("a runStart sample gets its own state home under the probe's temp root", () => {
+	const env = sampleEnv({ PATH: "/usr/bin", HOME: "/operator", XDG_STATE_HOME: "/operator/state", ACQUIT_TOKEN: "old" },
+		{ token: "tok", image: "img", temp: "/tmp/probe" });
+	// The CLI derives its state git directory from XDG_STATE_HOME: pointing it at the probe's temp
+	// root keeps the sample's --dir away from the measured lane's state git directory.
+	assert.equal(env.XDG_STATE_HOME, join("/tmp/probe", "state"));
+	assert.equal(env.TMPDIR, "/tmp/probe");
+	assert.equal(env.ACQUIT_CLI_CONFIG, join("/tmp/probe", "cli.json"));
+	assert.equal(env.ACQUIT_TOKEN, "tok");
+	assert.equal(env.ACQUIT_RUNNER_IMAGE, "img");
+	// Everything else in the operator's environment is passed through untouched.
+	assert.equal(env.HOME, "/operator");
+	assert.equal(env.PATH, "/usr/bin");
+	assert.equal(env.LOCALAPPDATA, undefined);
+	// Windows reads the state root from LOCALAPPDATA instead, under the same temp root.
+	const windows = sampleEnv({ HOME: "C:\\Users\\op" }, { token: "t", image: "i", temp: "/tmp/probe", platform: "win32" });
+	assert.equal(windows.LOCALAPPDATA, join("/tmp/probe", "local"));
+	assert.equal(windows.XDG_STATE_HOME, join("/tmp/probe", "state"));
 });
 
 test("only a sample the probe killed leaves Docker objects to sweep", () => {

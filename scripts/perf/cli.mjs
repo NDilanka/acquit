@@ -66,7 +66,7 @@ import { parseArgs } from "node:util";
 import { captured, portOpen, reachable, sleep } from "../../packages/ctl/src/process.ts";
 import { laneSlot } from "../../packages/ctl/src/state.ts";
 import { dockerReachable } from "../../packages/verifier/subject.ts";
-import { agentStarted, fundedJobOf, RUN_SAMPLE_TIMEOUT_MS, runStartBlocker, runStartVerdict, sweepTargets } from "./run-start.mjs";
+import { agentStarted, fundedJobOf, RUN_SAMPLE_TIMEOUT_MS, runStartBlocker, runStartVerdict, sampleEnv, sweepTargets } from "./run-start.mjs";
 import { probePassed } from "./verdict.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -530,15 +530,16 @@ async function measureRunStart(instance, job, image, blocked) {
 /**
  * One `acquit run --runner command` process, timed from spawn to the first line that marks the agent
  * start. The run is left to finish on its own so the CLI's own sandbox cleanup runs; TMPDIR scopes the
- * CLI's 0600 secret directory into the probe's temp root, which the sweep below removes either way.
+ * CLI's 0600 secret directory into the probe's temp root, and sampleEnv scopes the CLI's state git
+ * directory there too, so the sample never meets the measured lane's own state. The sweep below
+ * removes the temp root either way.
  */
 function oneRunStart({ instance, job, image, temp, dir, command }) {
 	return new Promise(resolve => {
 		const began = performance.now();
 		const child = spawn(process.execPath, ["packages/acquit-cli/src/main.ts", "run", job.id, "--runner", "command",
 			"--command", command, "--dir", dir, "--api", instance.apiUrl],
-			{ cwd: instance.dir, env: { ...process.env, ACQUIT_TOKEN: instance.devon, ACQUIT_RUNNER_IMAGE: image,
-				ACQUIT_CLI_CONFIG: join(temp, "cli.json"), TMPDIR: temp }, stdio: ["ignore", "pipe", "pipe"] });
+			{ cwd: instance.dir, env: sampleEnv(process.env, { token: instance.devon, image, temp }), stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
 		let scanned = 0;
@@ -577,9 +578,10 @@ function oneRunStart({ instance, job, image, temp, dir, command }) {
 
 /**
  * The belt for the CLI's own cleanup. A sample the probe killed can leave the measured job's runner
- * container, proxy, and network behind, and the temp root holds the command script and the CLI's secret
- * directory. Only a killed sample opens that belt: a sample left to finish cleans up after itself, so
- * an idle probe never touches Docker. The names are per job, so this touches only the objects the
+ * container, proxy, and network behind, and the temp root holds the command script, the CLI's secret
+ * directory, and the sample's own state home (its XDG_STATE_HOME and the state git directory under
+ * it). Only a killed sample opens that belt: a sample left to finish cleans up after itself, so an
+ * idle probe never touches Docker. The names are per job, so this touches only the objects the
  * probe's own runs made for that job — the same leftovers the CLI itself removes before it starts.
  */
 async function sweepRunStart() {
