@@ -9,6 +9,12 @@ import type { Keychain } from "./keychain.ts";
 
 export type Provider = "anthropic" | "openai";
 
+/** One answer from a question. `echoed` is true when the terminal itself put the typed line on screen. */
+export type AskAnswer = {
+	readonly value: string;
+	readonly echoed: boolean;
+};
+
 export type OperatorInitOptions = {
 	readonly apiUrl: string;
 	readonly token: string;
@@ -21,8 +27,11 @@ export type OperatorInitOptions = {
 export type OperatorInitDeps = {
 	readonly client: ApiClient;
 	readonly keychain: Keychain;
-	/** Reads one answer. The question is already on stdout, so this only collects the value. */
-	readonly ask: (question: string, secret: boolean) => Promise<string>;
+	/**
+	 * Reads one answer. The question is already on stdout, so this only collects the value, and
+	 * `echoed` says whether the terminal itself already put the typed answer on the screen.
+	 */
+	readonly ask: (question: string, secret: boolean) => Promise<AskAnswer>;
 	readonly readStdin: () => string;
 	readonly open: (url: string) => void;
 	readonly write: (text: string) => void;
@@ -111,23 +120,33 @@ export async function runOperatorInit(options: OperatorInitOptions, deps: Operat
 	emit("3/3 Model provider");
 
 	const question = "\tProvider (anthropic): ";
-	// The prompt is already on the terminal; the answer completes the line, and the transcript keeps it whole.
-	const answerLine = (prompt: string, answer: string): void => { deps.write(`${answer}\n`); lines.push(`${prompt}${answer}`); };
+	// The terminal already echoed the answer when `echoed` is set, so writing it again would print it
+	// twice; a pipe and the hidden key prompt echo nothing and still need the line. The transcript
+	// keeps the whole line either way.
+	const answerLine = (prompt: string, answer: string, echoed: boolean): void => {
+		if (!echoed) deps.write(`${answer}\n`);
+		lines.push(`${prompt}${answer}`);
+	};
 	let provider = options.provider;
 	if (provider === null) {
 		deps.write(question);
-		const answer = (await deps.ask(question, false)).trim();
-		provider = answer === "" ? "anthropic" : providerOf(answer);
-		answerLine(question, provider);
+		const answer = await deps.ask(question, false);
+		const typed = answer.value.trim();
+		provider = typed === "" ? "anthropic" : providerOf(typed);
+		// A blank answer leaves the terminal showing a bare prompt line; reprint the whole line over it
+		// so the screen names the default the blank became, exactly as the tutorial shows it.
+		if (answer.echoed && typed === "") deps.write(`\x1b[1A\r${question}${provider}\n`);
+		answerLine(question, provider, answer.echoed);
 	} else emit(`${question}${provider}`);
 
-	const key = options.keyOnStdin ? deps.readStdin().split("\n")[0].trim() : await (async () => {
+	const keyAnswer = options.keyOnStdin ? { value: deps.readStdin().split("\n")[0].trim(), echoed: false } : await (async () => {
 		deps.write("\tAPI key: ");
-		return (await deps.ask("\tAPI key: ", true)).trim();
+		return deps.ask("\tAPI key: ", true);
 	})();
+	const key = keyAnswer.value.trim();
 	if (key === "") throw new CliError("PROVIDER_KEY_REQUIRED", "A provider API key is required. Pipe one in or answer the prompt.");
 	if (options.keyOnStdin) emit(`\tAPI key: ${"*".repeat(key.length)}`);
-	else answerLine("\tAPI key: ", "*".repeat(key.length));
+	else answerLine("\tAPI key: ", "*".repeat(key.length), keyAnswer.echoed);
 	deps.keychain.set(PROVIDER, provider);
 	deps.keychain.set(PROVIDER_KEY, key);
 	emit("\tStored in your OS keychain. Acquit servers never receive this key.");

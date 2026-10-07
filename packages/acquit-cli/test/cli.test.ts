@@ -181,7 +181,7 @@ test("operator init prints the tutorial's block, stores the provider key in the 
 	const questions: string[] = [];
 	await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client, keychain, open: url => opened.push(url), write: text => written.push(text),
-		ask: async (question, secret) => { questions.push(question); return secret ? key : "anthropic"; },
+		ask: async (question, secret) => { questions.push(question); return { value: secret ? key : "anthropic", echoed: false }; },
 		readStdin: () => "", sleep: async () => {}, now: () => 0,
 	});
 	assert.equal(written.join(""), tutorialBlock("1/3 Payouts") + "\n");
@@ -189,6 +189,47 @@ test("operator init prints the tutorial's block, stores the provider key in the 
 	assert.deepEqual(questions, ["\tProvider (anthropic): ", "\tAPI key: "]);
 	assert.equal(keychain.get("acquit:provider-key"), key);
 	assert.equal(keychain.get("acquit:provider"), "anthropic");
+});
+
+test("operator init does not write back the provider answer a cooked terminal already echoed", async () => {
+	const pending = { onboarding: { handle: "devon-ops", payouts: "AWAITING_CONSENT", onboardingUrl: "https://www.paypal.com/onboard/devon",
+		account: null, identityVerified: false, credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const key = "k".repeat(28);
+	const written: string[] = [];
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": [pending, ready] }), keychain: memoryKeychain(), open: () => {},
+		write: text => written.push(text),
+		// A cooked-mode TTY echoes the typed line itself, so the answer must not be written again. The
+		// echo is not part of this stream, so the test puts back exactly what the terminal showed.
+		ask: async (_question, secret) => secret ? { value: key, echoed: false } : { value: "anthropic", echoed: true },
+		readStdin: () => "", sleep: async () => {}, now: () => 0,
+	});
+	assert.equal(written.join("").replace("\tProvider (anthropic): ", "\tProvider (anthropic): anthropic\n"), tutorialBlock("1/3 Payouts") + "\n");
+	assert.equal(transcript, tutorialBlock("1/3 Payouts"));
+});
+
+test("operator init rewrites the blank provider answer a cooked terminal echoed as anthropic", async () => {
+	const pending = { onboarding: { handle: "devon-ops", payouts: "AWAITING_CONSENT", onboardingUrl: "https://www.paypal.com/onboard/devon",
+		account: null, identityVerified: false, credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const written: string[] = [];
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": [pending, ready] }), keychain: memoryKeychain(), open: () => {},
+		write: text => written.push(text),
+		// An empty answer is defaulted to anthropic; the terminal echoed a bare prompt line, so the CLI
+		// moves up over it and reprints the whole line instead of leaving the default invisible.
+		ask: async (_question, secret) => secret ? { value: "k".repeat(28), echoed: false } : { value: "", echoed: true },
+		readStdin: () => "", sleep: async () => {}, now: () => 0,
+	});
+	const bare = "\tProvider (anthropic): ";
+	assert.equal(written.join(""), (tutorialBlock("1/3 Payouts") + "\n")
+		.replace(`${bare}anthropic\n`, `${bare}\x1b[1A\r${bare}anthropic\n`));
+	assert.equal(transcript, tutorialBlock("1/3 Payouts"));
 });
 
 test("operator init refuses an OpenAI provider key no runner can use", async () => {
@@ -200,7 +241,7 @@ test("operator init refuses an OpenAI provider key no runner can use", async () 
 	const keychain = memoryKeychain();
 	await assert.rejects(runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: () => {},
-		ask: async (_question, secret) => secret ? "sk-ant-canary" : "openai", readStdin: () => "", sleep: async () => {}, now: () => 0,
+		ask: async (_question, secret) => ({ value: secret ? "sk-ant-canary" : "openai", echoed: false }), readStdin: () => "", sleep: async () => {}, now: () => 0,
 	}), (error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic key runs today.");
 	assert.equal(keychain.get("acquit:provider-key"), null);
 	assert.equal(keychain.get("acquit:provider"), null);

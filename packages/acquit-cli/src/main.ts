@@ -9,6 +9,7 @@ import { apiClient, CliError, readLogin, saveLogin } from "./client.ts";
 import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
 import { openBrowser, parseLoginArgs, runLogin } from "./login.ts";
 import { parseOperatorArgs, runOperatorInit } from "./operator.ts";
+import type { AskAnswer } from "./operator.ts";
 import { platformKeychain, providerKeyPort } from "./keychain.ts";
 import { parseRunArgs, runRun } from "./run.ts";
 import { parseAgentArgs, runAgentCreate } from "./agent.ts";
@@ -192,9 +193,12 @@ function readHiddenLine(): Promise<string> {
 	});
 }
 
-async function askQuestion(_question: string, secret: boolean): Promise<string> {
-	if (!secret || !process.stdin.isTTY) return readLine();
-	return readHiddenLine();
+/** Reads one line from stdin. The question is already on stdout; this only collects the value. */
+async function askQuestion(_question: string, secret: boolean): Promise<AskAnswer> {
+	// A cooked-mode terminal echoes a visible answer itself, so the caller must not write it again.
+	// Raw mode (the hidden key) puts nothing on the screen, and a pipe echoes nothing either.
+	if (secret) return { value: process.stdin.isTTY ? await readHiddenLine() : await readLine(), echoed: false };
+	return { value: await readLine(), echoed: process.stdin.isTTY === true };
 }
 
 /** The whole of stdin, for `--provider-key-stdin`. The value never enters argv. */
