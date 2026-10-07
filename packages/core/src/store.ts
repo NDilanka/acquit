@@ -206,10 +206,15 @@ export class SqliteStore implements Store {
 				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
 			}
 			// The count moves with the PAID row or not at all: exactly the write that settles the release
-			// sets it, so a redelivery or a refused settlement can never count the receipt twice. A payee
-			// with no operators row is a fact to log, not a reason to refuse the settlement: throwing here
-			// would roll the PAID row back, and every webhook delivery of the same release would retry it.
+			// sets it, so a redelivery or a refused settlement can never count the receipt twice. The id
+			// must be the committed PAID job's own payee: a wrong id counts nobody and loses the receipt,
+			// so it refuses the write whole. A payee with no operators row is a fact to log, not a reason
+			// to refuse the settlement: throwing there would roll the PAID row back, and every webhook
+			// delivery of the same release would retry it.
 			if (change.paidReceipt) {
+				const committed = change.job;
+				const payee = committed !== null && committed.row.state.status === "PAID" ? committed.row.state.payee.operator : null;
+				if (change.paidReceipt !== payee) throw new Error(`paid receipt ${logBare(change.paidReceipt)} is not the committed PAID job's payee; refusing the write`);
 				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
 				if (!counted.changes) console.warn(`paid receipt not counted: no operators row for ${logBare(change.paidReceipt)}`);
 			}

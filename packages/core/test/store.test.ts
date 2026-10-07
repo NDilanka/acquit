@@ -10,7 +10,8 @@ import { DatabaseSync } from "node:sqlite";
 import { projectJob } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
 import { openDatabase, SqliteStore } from "../src/store.ts";
-import type { ClientId, JobId, OperatorId, Version } from "../src/ids.ts";
+import type { OperationKey, OutboxRow, RecordedRequest } from "../src/effects.ts";
+import type { AgentId, ClientId, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "../src/ids.ts";
 
 /** A second process that holds the file's write lock for 600 ms, on a table that predates the envelope. */
 const LOCK_HOLDER = `const { DatabaseSync } = require("node:sqlite");
@@ -260,6 +261,37 @@ test("a PAID commit whose payee has no operators row commits, counts nothing, an
 		assert.match(lines[0], /devon-ops/);
 		assert.equal(lines[0].includes("\n"), false, "the line stays one line");
 	} finally { console.warn = warn; store.close(); }
+});
+
+test("a commit whose paidReceipt names another operator throws and rolls the whole write back", async () => {
+	const store = new SqliteStore(":memory:");
+	const payee = "devon-ops" as OperatorId;
+	const operator = { id: payee, handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+		payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: "2026-10-06T12:00:00.000Z" } };
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	const row = storedPaidRow("job_paid_wrong_payee", "REVIEW_SILENCE");
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), null);
+	const moved = { ...row, version: row.version + 1, title: "the title the refused write would have stored" };
+	const outboxKey = "op_wrong_payee" as OperationKey;
+	const outbox: OutboxRow = { key: outboxKey,
+		effect: { kind: "ALERT", jobId: row.id as JobId, reason: "DISPUTE_SLA_MISSED" },
+		payloadDigest: "d".repeat(64) as Digest, state: { kind: "READY", runAt: "2026-10-06T12:00:00.000Z" as Instant } };
+	const request: RecordedRequest = { actor: "CLIENT:maya-client", key: "req_wrong_payee" as RequestKey,
+		payloadDigest: "d".repeat(64) as Digest, result: { kind: "AGENT", agent: "ts-bugfixer" as AgentId } };
+	try {
+		// An id that is not the PAID job's payee would count nobody while the job settles, and the receipt
+		// is lost forever: the write refuses whole, so the catch rolls back the UPDATE already run.
+		await assert.rejects(store.commit({ job: { expectedVersion: row.version as Version, row: moved as unknown as JobRow, wakeAt: null },
+			operator: null, credits: [], paidReceipt: "other-ops" as OperatorId, outbox: [outbox],
+			settlement: null, request, delivery: "evt_wrong_payee" }), /paid receipt/);
+		const stored = await store.readJob("job_paid_wrong_payee" as JobId);
+		assert.equal(stored?.version, row.version, "the refused write rolls the job row back");
+		assert.equal(stored?.title, row.title);
+		assert.equal((await store.receiptCounts()).get(payee), 0, "the PAID job's payee counts nothing");
+		assert.equal(Number(store.db.prepare("SELECT count(*) AS n FROM outbox WHERE key = ?").get(outboxKey)?.n), 0);
+		assert.equal(await store.readRequest("CLIENT:maya-client", "req_wrong_payee" as RequestKey), null);
+		assert.equal(Number(store.db.prepare("SELECT count(*) AS n FROM deliveries").get()?.n), 0);
+	} finally { store.close(); }
 });
 
 test("a VERSION_CONFLICT commit with a paid receipt set counts no receipt", async () => {
