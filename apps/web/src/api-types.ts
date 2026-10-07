@@ -32,6 +32,19 @@ export interface Receipt {
   readonly releasedAt: Instant;
 }
 
+export type MergeProgress =
+  | { readonly phase: "PENDING" }
+  | { readonly phase: "MERGED"; readonly at: Instant }
+  | { readonly phase: "NEEDS_HUMAN"; readonly reason: string };
+
+/** The referenced payout item that paid the operator, as the release observed it. */
+export interface ReleaseEvidence {
+  readonly payoutItemId: string;
+  readonly captureId: string;
+  readonly paid: UsdCents;
+  readonly at: Instant;
+}
+
 export interface BidView {
   readonly id: string;
   readonly operator: string;
@@ -54,7 +67,11 @@ export interface JobView {
   readonly budget: UsdCents;
   readonly deliveryEndsAt: Instant;
   readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
+  /** The owning client. */
+  readonly client: string;
   readonly lockedTo: string | null;
+  /** The server's answer: this viewer owns the job and the review awaits its approval. */
+  readonly viewerCanApprove: boolean;
   readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
   readonly approveUrl: string | null;
   readonly ledger: readonly LedgerLine[];
@@ -63,6 +80,10 @@ export interface JobView {
   readonly pullRequest: number | null;
   /** The tree the verifier judged. Approve must name it. */
   readonly mergeCommit: string | null;
+  /** Served on a PAID job only. */
+  readonly merge: MergeProgress | null;
+  /** Served on a PAID job only. */
+  readonly release: ReleaseEvidence | null;
   readonly receipt: Receipt | null;
   readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
 }

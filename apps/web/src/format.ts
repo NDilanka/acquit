@@ -1,4 +1,4 @@
-import type { LedgerLine } from "./api-types";
+import type { LedgerLine, MergeProgress, ReleaseEvidence } from "./api-types";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -53,6 +53,29 @@ export function ledgerNote(line: LedgerLine, locked: { readonly handle: string; 
     case "REFUND":
       return "refunded to client";
   }
+}
+
+const mergeReasons: Record<string, string> = {
+  GITHUB_MERGE_CONFLICT: "GitHub refused the merge",
+};
+
+export function mergeNote(merge: MergeProgress, pullRequest: number | null, mergeCommit: string | null): string {
+  switch (merge.phase) {
+    case "PENDING":
+      return "Merge pending";
+    case "MERGED": {
+      const what = [pullRequest !== null && `pull request #${pullRequest}`, mergeCommit && `commit ${mergeCommit.slice(0, 7)}`].filter(Boolean);
+      return `Merged ${utc(merge.at)}${what.length ? `: ${what.join(", ")}` : ""}`;
+    }
+    case "NEEDS_HUMAN": {
+      const known = mergeReasons[merge.reason];
+      return `Needs a person: ${known ? `${known} (${merge.reason})` : merge.reason}`;
+    }
+  }
+}
+
+export function releaseNote(release: ReleaseEvidence): string {
+  return `Payout item ${release.payoutItemId}, capture ${release.captureId}`;
 }
 
 const reasons: Record<string, string> = {
