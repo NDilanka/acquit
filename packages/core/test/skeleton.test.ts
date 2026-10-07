@@ -1326,7 +1326,7 @@ test("the day-21 cutoff never switches a verified refund into a release", () => 
 	const verified = verifiedRow();
 	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
 	const refunding: JobRow = { ...verified, state: { ...state, review: { phase: "REFUND_PENDING",
-		refund: { reason: "DISPUTE_REFUND", selectedAt: now } } } };
+		refund: { reason: "ARBITER_REFUND", selectedAt: now } } } };
 	// The refund's own effect settles it, so the capture-age cutoff is the only clock left.
 	assert.equal(wakeAt(refunding), cutoff);
 	const due = applyJobCommand(refunding, { type: "TimerDue", jobId: refunding.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
@@ -1342,7 +1342,7 @@ test("a refund a verified row selected is still wanted, and settles the row", as
 	const verified = verifiedRow();
 	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
 	const refunding: JobRow = { ...verified, state: { ...state, review: { phase: "REFUND_PENDING",
-		refund: { reason: "DISPUTE_REFUND", selectedAt: now } } } };
+		refund: { reason: "ARBITER_REFUND", selectedAt: now } } } };
 	const harness = moneyHarness(refunding, { paypal: {
 		dispatch: async call => call.kind === "REFUND"
 			? { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } }
@@ -1509,7 +1509,8 @@ test("a capture webhook on a paid job is consumed once and never touches the pai
 	try {
 		// The resource index a committed capture writes, so the route resolves the capture to this job.
 		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", approved.id);
-		assert.equal(await applySystemCommand(harness.ports, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence() }, null, null), "COMMITTED");
+		assert.deepEqual(await applySystemCommand(harness.ports, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence() }, null, null),
+			{ outcome: "COMMITTED", refused: null });
 		const paid = await harness.row();
 		assert.equal(paid.state.status, "PAID");
 		if (paid.state.status !== "PAID") throw new Error("Not paid");

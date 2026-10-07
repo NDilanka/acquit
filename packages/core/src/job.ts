@@ -314,11 +314,15 @@ export type Loaded =
 
 export type Facts = { readonly actor: TrustedActor; readonly now: Instant; readonly loaded: Loaded };
 
+/** A plan's own word for an observation it did not take. Only a settlement refusal sets it. */
+export type Refusal = "SETTLEMENT_MISMATCH";
+
 /** effects.ts commits the row, credit accounts, outbox rows, and the request record atomically. */
 export type Plan<Next> = {
 	readonly next: Next;
 	readonly credits: readonly CreditAccount[];
 	readonly effects: readonly JobEffect[];
+	readonly refused?: Refusal;
 };
 
 export type Edge<Before, Payload, After, By extends Role> = {
@@ -661,7 +665,9 @@ function transitionTable(): {
 							attempts: { phase: "REFUND_PENDING", history: row.state.attempts.history, refund: { reason: "CAPTURE_CUTOFF", selectedAt: facts.now } } } },
 						credits: [], effects: [refundIntent(row.id, escrow)] };
 				}
-				if (row.state.status === "VERIFIED" && row.state.review.phase !== "RELEASE_PENDING") {
+				// A row that already selected its disposition is never switched, whether that disposition is a
+				// release or a refund. Both are reported as unconfirmed settlements instead.
+				if (row.state.status === "VERIFIED" && !["RELEASE_PENDING", "REFUND_PENDING"].includes(row.state.review.phase)) {
 					return { next: { ...row, version: (row.version + 1) as Version,
 						state: { ...row.state, escrow: { ...escrow, cutoffHandledAt: facts.now },
 							review: { phase: "RELEASE_PENDING", release: { authority: "CAPTURE_CUTOFF", selectedAt: facts.now } } } },
@@ -749,7 +755,7 @@ function receiptOf(fields: Omit<Receipt, typeof receiptBrand>): Receipt {
 
 /** A settlement observation that does not match the selected disposition is never applied. It is an ALERT. */
 function settlementMismatch<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
-	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }] };
+	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }], refused: "SETTLEMENT_MISMATCH" };
 }
 
 /** The escrow this row still holds, in every state that can hold one. */
@@ -782,6 +788,7 @@ function withEscrow<S extends JobState>(state: S, escrow: HeldEscrow): S {
 function refundIntentOf(row: JobRow): RefundIntent | null {
 	const state = row.state;
 	if (state.status === "IN_PROGRESS" && state.attempts.phase === "REFUND_PENDING") return state.attempts.refund;
+	if (state.status === "VERIFIED" && state.review.phase === "REFUND_PENDING") return state.review.refund;
 	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") return state.phase.checkout.refund;
 	return null;
 }
@@ -893,7 +900,7 @@ export function wakeAt(row: JobRow): Instant | null {
 	const escrow = heldEscrowOf(row);
 	const pendingSettlement = escrow !== null && (
 		row.state.status === "IN_PROGRESS" && row.state.attempts.phase === "REFUND_PENDING" ||
-		row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING" ||
+		row.state.status === "VERIFIED" && ["RELEASE_PENDING", "REFUND_PENDING"].includes(row.state.review.phase) ||
 		row.state.status === "OPEN");
 	if (pendingSettlement) {
 		// The disposition's own effect settles it. The capture-age cutoff is the only clock left: it reports

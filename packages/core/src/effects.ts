@@ -9,7 +9,7 @@ import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
-import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, SystemJobCommand } from "./job.ts";
+import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
@@ -199,7 +199,10 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 	return { kind: "DENIED", reason: "BUSY" };
 }
 
-export async function applySystemCommand(ports: Ports, command: JobCommand, acknowledge: OperationKey | null, delivery: string | null): Promise<"COMMITTED" | "DELIVERY_REPLAY"> {
+/** What one system commit did, and the plan's own word when it refused the observation it was given. */
+export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null };
+
+export async function applySystemCommand(ports: Ports, command: JobCommand, acknowledge: OperationKey | null, delivery: string | null): Promise<SystemCommit> {
 	if (!("jobId" in command)) throw new Error("System command requires job");
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const row = await ports.store.readJob(command.jobId);
@@ -216,7 +219,9 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, ackn
 		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)), acknowledge, request: null, delivery });
-		if (committed === "COMMITTED" || committed === "DELIVERY_REPLAY") return committed;
+		if (committed === "COMMITTED" || committed === "DELIVERY_REPLAY") {
+			return { outcome: committed, refused: committed === "COMMITTED" ? plan.refused ?? null : null };
+		}
 	}
 	throw new Error("System command busy");
 }
@@ -274,7 +279,13 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 				: toJobCommand(effect.jobId, observation);
 			if (!command || (effect.kind === "CAPTURE" && command.type !== "CaptureCompleted")) {
 				await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
-			} else await applySystemCommand(ports, command, row.key, null);
+			} else {
+				const committed = await applySystemCommand(ports, command, row.key, null);
+				// A settlement the row refused is never acknowledged: the money is out, the row still holds the
+				// disposition, and the provider's own answer is a fact a person has to see. Nothing re-POSTs it.
+				if (committed.refused !== null) await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: committed.refused,
+					detail: boundedDetail(observationText(observation)) });
+			}
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
 				await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, row.key, null);
@@ -434,7 +445,7 @@ export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant):
 export type WebhookOutcome =
 	| { readonly kind: "APPLIED"; readonly jobId: JobId; readonly edge: SystemJobCommand["type"]; readonly changed: boolean }
 	| { readonly kind: "NOOP"; readonly reason: "JOB_ALREADY_SETTLED" | "RESOURCE_NOT_OURS" | "UNROUTED" | "PROVIDER_HELD"; readonly jobId: JobId | null; readonly status?: JobStatus }
-	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED"; readonly resource?: WebhookResourceKind };
+	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED" | "SETTLEMENT_MISMATCH"; readonly resource?: WebhookResourceKind };
 
 function resourceNoun(kind: WebhookResourceKind | undefined): string {
 	switch (kind) {
@@ -461,6 +472,7 @@ export function webhookOutcomeText(outcome: WebhookOutcome): string {
 				case "UNREADABLE_EVENT": return "refused, unreadable event";
 				case "RESOURCE_UNKNOWN_TO_PROVIDER": return `refused, PayPal does not know this ${resourceNoun(outcome.resource)}`;
 				case "PROVIDER_REFUSED": return `refused, the provider refused this ${resourceNoun(outcome.resource)}`;
+				case "SETTLEMENT_MISMATCH": return "refused, the job did not take this settlement";
 			}
 	}
 }
@@ -480,6 +492,20 @@ function anchorOf(observation: PayPalObservation): string | null {
 /** One delivery of one fact. The fact under a new event id finds this key and changes nothing. */
 function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObservation): string {
 	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
+}
+
+/** The provider's answer, as one bounded line a person reads: the fact it named and the resource it named. */
+function observationText(observation: PayPalObservation): string {
+	switch (observation.kind) {
+		case "ORDER_CREATED": return `PayPal answered ORDER_CREATED for order ${observation.orderId}`;
+		case "ORDER_APPROVED": return `PayPal answered ORDER_APPROVED for order ${observation.orderId}`;
+		case "CAPTURE_COMPLETED": return `PayPal answered CAPTURE_COMPLETED for capture ${observation.capture.captureId}`;
+		case "RELEASE_COMPLETED": return `PayPal answered RELEASE_COMPLETED for capture ${observation.release.captureId} (item ${observation.release.payoutItemId})`;
+		case "REFUND_COMPLETED": return `PayPal answered REFUND_COMPLETED for capture ${observation.refund.captureId} (refund ${observation.refund.refundId ?? "read back from the capture"})`;
+		case "REIMBURSEMENT_COMPLETED": return `PayPal answered REIMBURSEMENT_COMPLETED for batch ${observation.reimbursement.batchId}`;
+		case "ONBOARDING_LINK": return `PayPal answered ONBOARDING_LINK for operator ${observation.operator}`;
+		case "ONBOARDING_COMPLETED": return `PayPal answered ONBOARDING_COMPLETED for operator ${observation.operator}`;
+	}
 }
 
 /** The job a settled fact belongs to, when the route's index did not name one. */
@@ -530,7 +556,10 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request): Promi
 /** Applies one re-read fact under its own delivery key. A row that does not take the edge is the same no-op a redelivery gets. */
 async function applyFact(ports: Ports, command: SystemJobCommand, key: string, before: JobRow | null): Promise<WebhookOutcome> {
 	const committed = await applySystemCommand(ports, command, null, key);
-	if (committed === "DELIVERY_REPLAY") return settledNoop(before);
+	if (committed.outcome === "DELIVERY_REPLAY") return settledNoop(before);
+	// A plan that refused the observation is not an "applied": the row's own alert carries it, and the
+	// envelope records the refusal instead of a change that never happened.
+	if (committed.refused !== null) return { kind: "REFUSED", reason: committed.refused };
 	const after = await ports.store.readJob(command.jobId);
 	return { kind: "APPLIED", jobId: command.jobId, edge: command.type, changed: before?.version !== after?.version };
 }

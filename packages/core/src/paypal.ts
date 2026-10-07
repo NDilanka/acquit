@@ -73,7 +73,8 @@ export type CaptureRefundState = {
 	readonly captureId: CaptureId;
 	readonly gross: UsdCents;
 	readonly processorFee: UsdCents;
-	readonly refunded: boolean;
+	/** PayPal's own answer: only REFUNDED is a settled full refund. A partial refund is money back, not a settled one. */
+	readonly refundState: "NONE" | "PARTIALLY_REFUNDED" | "REFUNDED";
 	readonly at: Instant;
 };
 
@@ -303,7 +304,10 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		} catch (error) {
 			if (error instanceof ProviderError && error.status === 422 && issueOf(error.body) === "CAPTURE_FULLY_REFUNDED") {
 				const state = await captureRefundState(call.captureId, call.payee);
-				if (!state.refunded) throw error;
+				// Only a settled full refund settles this edge. A partial refund is a fact a person has to
+				// reconcile, and it never becomes a full refund of the held gross.
+				if (state.refundState === "PARTIALLY_REFUNDED") return { kind: "PERMANENT_FAILURE", reason: "CAPTURE_PARTIALLY_REFUNDED" };
+				if (state.refundState !== "REFUNDED") throw error;
 				return { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: parseRefundedCapture(state) } };
 			}
 			throw error;
@@ -356,7 +360,9 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		if (read.kind !== "READ") return read;
 		const state = routed(() => parseCaptureRefundState(read.body));
 		if (state === null) return { kind: "HELD", detail: `Capture ${id} is neither completed nor refunded` };
-		if (state.refunded) {
+		// A partial refund is money back that no disposition here settles: it stays held for a person.
+		if (state.refundState === "PARTIALLY_REFUNDED") return { kind: "HELD", detail: `Capture ${id} is only partially refunded` };
+		if (state.refundState === "REFUNDED") {
 			const refund = routed(() => parseRefundedCapture(state));
 			return refund === null ? { kind: "HELD", detail: `Capture ${id} carries no readable refund` }
 				: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund } };
@@ -677,7 +683,8 @@ export function parseCaptureRefundState(json: unknown): CaptureRefundState {
 	const processorFee = money(breakdown.paypal_fee);
 	if (processorFee > gross) throw new Error("Capture breakdown does not conserve money");
 	return { captureId: text(capture.id) as CaptureId, gross, processorFee,
-		refunded: status === "REFUNDED" || status === "PARTIALLY_REFUNDED", at: utcInstant(capture.update_time) };
+		refundState: status === "REFUNDED" ? "REFUNDED" : status === "PARTIALLY_REFUNDED" ? "PARTIALLY_REFUNDED" : "NONE",
+		at: utcInstant(capture.update_time) };
 }
 
 /**
@@ -694,9 +701,9 @@ export function parseRefund(json: unknown, state: CaptureRefundState): RefundEvi
 		retainedProcessorFee: state.processorFee, at: utcInstant(refund.create_time) };
 }
 
-/** A refund read back from the capture, when the refund id is not held. */
+/** A refund read back from the capture, when the refund id is not held. Only a settled full refund reads back. */
 export function parseRefundedCapture(state: CaptureRefundState): RefundEvidence {
-	if (!state.refunded) throw new Error("Capture is not refunded");
+	if (state.refundState !== "REFUNDED") throw new Error("Capture is not fully refunded");
 	return { refundId: null, captureId: state.captureId, refunded: state.gross,
 		retainedProcessorFee: state.processorFee, at: state.at };
 }
