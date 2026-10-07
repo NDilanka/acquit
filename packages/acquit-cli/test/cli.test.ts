@@ -17,7 +17,8 @@ import { runAgentCreate } from "../src/agent.ts";
 import { parseBidArgs, runBid } from "../src/bid.ts";
 import { runDiff } from "../src/diff.ts";
 import { runJobsList } from "../src/jobs.ts";
-import { linuxKeychain, memoryKeychain } from "../src/keychain.ts";
+import { usd, utcMinutes } from "../src/format.ts";
+import { linuxKeychain, memoryKeychain, providerKeyPort } from "../src/keychain.ts";
 import { runLogin } from "../src/login.ts";
 import { runOperatorInit } from "../src/operator.ts";
 import { runReceipts } from "../src/receipts.ts";
@@ -86,6 +87,26 @@ function fakeClient(replies: Record<string, unknown>, posts: RecordedPost[] = []
 test("jobs list renders the tutorial's table from a fixed job view", async () => {
 	const client = fakeClient({ "/api/jobs": { jobs: [openJob()], nextCursor: null } });
 	assert.equal(await runJobsList({ apiUrl: API, token: "t" }, { client }), tutorialBlock("ID         MODE"));
+});
+
+test("jobs list widens each column to its longest cell so a real-length id keeps every row aligned", async () => {
+	const long = openJob({ id: "job_01a6a1d2-3f4b-4c5d-8e9f-0a1b2c3d4e5f", title: "Deadline shown in the wrong timezone",
+		budget: 123456789, deliveryEndsAt: "2026-12-01T08:30:00.000Z" });
+	const short = openJob();
+	const client = fakeClient({ "/api/jobs": { jobs: [short, long], nextCursor: null } });
+	const lines = (await runJobsList({ apiUrl: API, token: "t" }, { client })).split("\n");
+	assert.equal(lines.length, 3);
+	// The header keeps the tutorial's names and order; every row must reach the same column starts.
+	const starts = ["MODE", "BUDGET", "DEADLINE", "TITLE"].map(label => lines[0].indexOf(label));
+	assert.deepEqual(starts, [...starts].sort((left, right) => left - right), "the header's columns stay in order");
+	for (const [index, job] of [short, long].entries()) {
+		const row = lines[index + 1];
+		assert.equal(row.slice(0, starts[0]).trimEnd(), job.id);
+		assert.equal(row.slice(starts[0], starts[1]).trimEnd(), "Bid");
+		assert.equal(row.slice(starts[1], starts[2]).trimEnd(), usd(job.budget));
+		assert.equal(row.slice(starts[2], starts[3]).trimEnd(), utcMinutes(job.deliveryEndsAt));
+		assert.equal(row.slice(starts[3]), job.title);
+	}
 });
 
 test("bid renders the tutorial's block from a fixed PlaceBid answer and parses the tutorial's flags", async () => {
@@ -170,6 +191,49 @@ test("the Linux keychain hands the secret to keyctl on stdin, never on argv", ()
 	keychain.set("acquit:provider-key", "sk-ant-canary");
 	assert.equal(calls.every(call => !call.args.some(arg => arg.includes("sk-ant-canary"))), true);
 	assert.equal(calls.some(call => call.args[0] === "padd" && call.input === "sk-ant-canary"), true);
+});
+
+test("the Linux keychain re-permissions the key where it is possessed, then files it in the user keyring", () => {
+	const calls: { args: readonly string[]; input: string }[] = [];
+	const run = (command: string, args: readonly string[], input: string) => {
+		calls.push({ args, input });
+		if (args[0] === "search") return { status: 1, stdout: "", stderr: "Required key not available" };
+		return { status: 0, stdout: args[0] === "padd" ? "123456\n" : "", stderr: "" };
+	};
+	linuxKeychain(run).set("acquit:provider-key", "sk-ant-canary");
+	// A later process only gets the stored user bits; setperm needs the possessor, and a process only
+	// possesses keys in its own keyring tree. So the key is born in @s, re-permissioned there, then
+	// linked into @u (where it persists) and removed from @s again.
+	assert.deepEqual(calls.map(call => call.args.join(" ")), [
+		"search @u user acquit:provider-key",
+		"search @s user acquit:provider-key",
+		"padd user acquit:provider-key @s",
+		"setperm 123456 0x3f1e0000",
+		"link 123456 @u",
+		"unlink 123456 @s",
+	]);
+	assert.equal(calls.every(call => !call.args.some(arg => arg.includes("sk-ant-canary"))), true);
+	assert.equal(calls.find(call => call.args[0] === "padd")?.input, "sk-ant-canary");
+});
+
+test("the Linux keychain reads the stored key back through keyctl search and pipe", () => {
+	const calls: { args: readonly string[]; input: string }[] = [];
+	const run = (command: string, args: readonly string[], input: string) => {
+		calls.push({ args, input });
+		if (args[0] === "search") return { status: 0, stdout: "123456\n", stderr: "" };
+		if (args[0] === "pipe") return { status: 0, stdout: "sk-ant-canary", stderr: "" };
+		return { status: 0, stdout: "", stderr: "" };
+	};
+	const keychain = linuxKeychain(run);
+	assert.equal(keychain.get("acquit:provider-key"), "sk-ant-canary");
+	assert.deepEqual(calls.map(call => call.args.join(" ")), ["search @u user acquit:provider-key", "pipe 123456"]);
+	const missing = () => ({ status: 1, stdout: "", stderr: "Required key not available" });
+	assert.equal(linuxKeychain(missing).get("acquit:provider-key"), null);
+});
+
+test("the provider key port reads acquit:provider-key through the injected keychain", async () => {
+	assert.equal(await providerKeyPort(memoryKeychain({ "acquit:provider-key": "sk-ant-canary" })).getProviderKey(), "sk-ant-canary");
+	assert.equal(await providerKeyPort(memoryKeychain()).getProviderKey(), null);
 });
 
 test("login prints the code URL, stores the token with mode 0600, and prints the tutorial's line", async () => {

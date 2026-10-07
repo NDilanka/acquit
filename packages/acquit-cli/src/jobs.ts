@@ -28,10 +28,15 @@ export async function runJobsList(options: JobsOptions, deps: { readonly client:
 	const jobs = body?.jobs ?? [];
 	// The skeleton has one mode; the column is the tutorial's, so it stays spelled here.
 	const header = ["ID", "MODE", "BUDGET", "DEADLINE", "TITLE"];
-	const lines = [header.map((text, index) => cell(text, COLUMNS[index])).join("")];
-	for (const job of jobs) {
-		lines.push([cell(job.id, COLUMNS[0]), cell("Bid", COLUMNS[1]), cell(usd(job.budget), COLUMNS[2]),
-			cell(utcMinutes(job.deliveryEndsAt), COLUMNS[3]), job.title].join(""));
-	}
+	const rows = jobs.map(job => [job.id, "Bid", usd(job.budget), utcMinutes(job.deliveryEndsAt)]);
+	// A column keeps the tutorial's width unless a real cell is longer. `cell` always keeps one space
+	// after a value, so the width a column needs is its longest cell plus that space; the tutorial's
+	// sample stays character for character, and a real `job_<uuid>` widens the column for every row.
+	// The title is the last column and is never padded.
+	const widths = COLUMNS.map((width, index) => Math.max(width, ...rows.map(row => row[index].length + 1)));
+	const lines = [header.slice(0, COLUMNS.length).map((text, index) => cell(text, widths[index])).join("") + header[COLUMNS.length]];
+	rows.forEach((row, index) => {
+		lines.push(row.map((text, column) => cell(text, widths[column])).join("") + jobs[index].title);
+	});
 	return lines.join("\n");
 }

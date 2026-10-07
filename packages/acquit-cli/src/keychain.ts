@@ -2,9 +2,11 @@
 //
 //   Windows -> Windows Credential Manager, through the PasswordVault API in PowerShell. The secret
 //              arrives on the script's stdin, so it never enters the process table.
-//   Linux   -> the kernel user keyring through keyctl (`keyctl padd user <service> @u`). The user
-//              keyring is memory only and is lost on reboot, so `acquit operator init` is re-run
-//              after a reboot; the tutorial's printed text cannot say that, so it lives here.
+//   Linux   -> the kernel user keyring through keyctl. The key is born in the session keyring, where
+//              the process that creates it is the possessor and can widen the permissions, and is
+//              then linked into the user keyring. The user keyring is memory only and is lost on
+//              reboot, so `acquit operator init` is re-run after a reboot; the tutorial's printed
+//              text cannot say that, so it lives here.
 //   macOS   -> the login keychain through `security add-generic-password`, again from stdin.
 //
 // Every implementation takes its process runner as a parameter, so a test can prove the secret never
@@ -16,6 +18,13 @@ import { CliError } from "./client.ts";
 /** The two entries an initialized operator holds: which provider, and its key. */
 export const PROVIDER = "acquit:provider";
 export const PROVIDER_KEY = "acquit:provider-key";
+
+/**
+ * The Linux key permission mask: possessor all; user read, write, search, link — the minimal mask
+ * with those four capabilities, verified live on this kernel (`keyctl pipe` works from a later
+ * process). View and setattr stay out: search and pipe need neither, and nothing may widen it again.
+ */
+const LINUX_PERMISSION = "0x3f1e0000";
 
 export type Keychain = {
 	set(service: string, secret: string): void;
@@ -35,18 +44,34 @@ function failed(what: string, result: KeychainResult): CliError {
 	return new CliError("KEYCHAIN_FAILED", `${what} failed. The provider key was not stored.${detail ? ` ${detail}` : ""}`);
 }
 
-/** Linux: the kernel user keyring. `padd` reads the secret from stdin; `pipe` reads it back. */
+/**
+ * Linux: the kernel user keyring. `padd` reads the secret from stdin; `pipe` reads it back.
+ *
+ * A fresh key gets possessor-all, user-view. A later process did not create it and does not possess
+ * keys linked in @u (that keyring is not in its keyring tree), so it gets only the user bits and
+ * `pipe` is denied. Widening those bits takes setattr, and setattr comes with possession; so the key
+ * is created in the session keyring @s, which this process possesses, re-permissioned there, linked
+ * into @u where it outlives the session, and unlinked from @s again.
+ */
 export function linuxKeychain(call: KeychainRun = run): Keychain {
-	const replace = (service: string): void => {
-		const found = call("keyctl", ["search", "@u", "user", service], "");
+	const replace = (keyring: string, service: string): void => {
+		const found = call("keyctl", ["search", keyring, "user", service], "");
 		const serial = found.stdout.trim();
-		if (found.status === 0 && /^\d+$/.test(serial)) call("keyctl", ["unlink", serial, "@u"], "");
+		if (found.status === 0 && /^\d+$/.test(serial)) call("keyctl", ["unlink", serial, keyring], "");
 	};
 	return {
 		set(service, secret) {
-			replace(service);
-			const added = call("keyctl", ["padd", "user", service, "@u"], secret);
-			if (added.status !== 0) throw failed(`keyctl padd ${service}`, added);
+			// A leftover from an interrupted run can sit in either keyring: drop it wherever found.
+			replace("@u", service);
+			replace("@s", service);
+			const added = call("keyctl", ["padd", "user", service, "@s"], secret);
+			const serial = added.stdout.trim();
+			if (added.status !== 0 || !/^\d+$/.test(serial)) throw failed(`keyctl padd ${service}`, added);
+			const permitted = call("keyctl", ["setperm", serial, LINUX_PERMISSION], "");
+			if (permitted.status !== 0) throw failed(`keyctl setperm ${service}`, permitted);
+			const linked = call("keyctl", ["link", serial, "@u"], "");
+			if (linked.status !== 0) throw failed(`keyctl link ${service}`, linked);
+			call("keyctl", ["unlink", serial, "@s"], "");
 		},
 		get(service) {
 			const found = call("keyctl", ["search", "@u", "user", service], "");
@@ -113,6 +138,14 @@ export function platformKeychain(platform: NodeJS.Platform = process.platform, c
 	if (platform === "win32") return windowsKeychain(call);
 	if (platform === "darwin") return macKeychain(call);
 	return linuxKeychain(call);
+}
+
+/** The seam the runner's `run.ts` consumes: the model provider key, or null when none is stored. */
+export type ProviderKeyPort = { getProviderKey(): Promise<string | null> };
+
+/** Wires the OS keychain behind the runner's provider-key port; the root passes this to `run.ts`. */
+export function providerKeyPort(keychain: Keychain): ProviderKeyPort {
+	return { async getProviderKey() { return keychain.get(PROVIDER_KEY); } };
 }
 
 /** The in-memory store the unit tests inject. Nothing here touches a disk or a process. */
