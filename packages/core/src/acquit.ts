@@ -91,6 +91,8 @@ export interface JobView {
 	readonly viewerCanDispute: boolean;
 	/** The paused dispute while `phase` is DISPUTED: its reason and the arbiter's deadline. Null otherwise. */
 	readonly dispute: { readonly reason: string; readonly openedAt: Instant; readonly resolveBy: Instant } | null;
+	/** The note the arbiter sent with its most recent ResolveDispute, whatever the verdict. Null before any arbiter decision and on rows stored before F4. */
+	readonly arbiterNote: string | null;
 	/** What selected the release, while it is pending and once the job is PAID. Null before any release. */
 	readonly releaseAuthority: ReleaseIntent["authority"] | null;
 	readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";

@@ -266,6 +266,11 @@ export type JobRow<S extends JobState = JobState> = {
 	readonly contract: AcceptanceContract;
 	readonly openedAt: Instant;
 	readonly bids: readonly Bid[];
+	/**
+	 * The note the arbiter sent with its most recent ResolveDispute, whatever the verdict. Absent before
+	 * any arbiter decision and on rows stored before F4. The route bounds its length; the domain keeps it.
+	 */
+	readonly arbiterNote?: string;
 	readonly state: S;
 };
 
@@ -607,20 +612,22 @@ function transitionTable(): {
 		} },
 		ResolveDispute: { by: "ARBITER", apply: (row, command, facts) => {
 			if (row.state.review.phase !== "DISPUTED") return "WRONG_STATE";
+			// The note rides with the decision, whatever the verdict, so the resolved view can serve it.
 			if (command.verdict === "UPHOLD") {
-				return { next: { ...row, version: (row.version + 1) as Version,
+				return { next: { ...row, version: (row.version + 1) as Version, arbiterNote: command.note,
 					state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "ARBITER_UPHELD", selectedAt: facts.now } } } },
 					credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
 			}
 			if (command.verdict === "REFUND") {
-				return { next: { ...row, version: (row.version + 1) as Version,
+				return { next: { ...row, version: (row.version + 1) as Version, arbiterNote: command.note,
 					state: { ...row.state, review: { phase: "REFUND_PENDING", refund: { reason: "ARBITER_REFUND", selectedAt: facts.now } } } },
 					credits: [], effects: [refundIntent(row.id, row.state.escrow)] };
 			}
 			// REWORK hands the work back with the pass kept in history. It needs a slot and a live deadline,
 			// because a fourth judged attempt cannot be reserved and a passed deadline refunds, not reworks.
+			// A refused rework writes nothing at all, the note included: the refusal stands and the dispute stays open.
 			if (facts.now >= row.contract.deliveryEndsAt || row.state.history.length >= TERMS.maxAttempts) return "WRONG_STATE";
-			return { next: { ...row, version: (row.version + 1) as Version,
+			return { next: { ...row, version: (row.version + 1) as Version, arbiterNote: command.note,
 				state: { status: "IN_PROGRESS", escrow: row.state.escrow,
 					attempts: { phase: "READY", history: row.state.history, runsStarted: row.state.runsStarted, failure: null } } },
 				credits: [], effects: [] };
@@ -673,7 +680,7 @@ function transitionTable(): {
 			const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
 				: row.state.status === "VERIFIED" || row.state.status === "REFUNDED" ? row.state.history : [];
 			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, title: row.title,
-				contract: row.contract, openedAt: row.openedAt, bids: row.bids,
+				contract: row.contract, openedAt: row.openedAt, bids: row.bids, arbiterNote: row.arbiterNote,
 				state: { status: "REFUNDED", payee: escrow.payee, book, reason: intent.reason, refund,
 					history, treasury } }, credits: [], effects };
 		} },
@@ -1130,6 +1137,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		// The paused review, served whole so the page can show the reason and the arbiter's deadline.
 		dispute: state.status === "VERIFIED" && state.review.phase === "DISPUTED"
 			? { reason: state.review.reason, openedAt: state.review.openedAt, resolveBy: state.review.resolveBy } : null,
+		// The arbiter's note from the most recent ResolveDispute, whatever the verdict. A row stored before F4 carries none.
+		arbiterNote: row.arbiterNote ?? null,
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
 			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,
