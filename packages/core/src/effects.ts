@@ -670,8 +670,9 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 	for (const operator of await ports.store.listOperators()) {
 		if (operator.kind === "HOUSE") continue;
 		const account = await ports.store.readCredits(operator.id);
-		// The grant is a Monday event. A tick any other day, or a week the account already holds a grant
-		// key for, appends nothing; a Monday the process missed is skipped rather than caught up.
+		// The grant belongs to the ISO week. A tick grants when the account lacks the current week's
+		// key and its previous grant's week has ended, whatever day it runs; a week no tick ran in is
+		// never back-filled, and the receipt count is read at the moment the grant is written.
 		if (!grantDue(account, now)) continue;
 		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts: receipts.get(operator.id) ?? 0, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;

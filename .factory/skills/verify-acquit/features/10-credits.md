@@ -1,8 +1,8 @@
 # Bid credits, the weekly grant, and the return
 
 An operator's bid costs 10 credits from a weekly allowance of 30, the client's cancel returns them, a
-bid nobody answers comes back after 72 hours, and every Monday Acquit grants a fresh allowance of 30
-plus 10 per verified receipt, capped at 100.
+bid nobody answers comes back after 72 hours, and every ISO week Acquit grants a fresh allowance of 30
+plus 10 per verified receipt, capped at 100, at the week's first tick.
 
 ## Sub-features
 
@@ -12,13 +12,15 @@ plus 10 per verified receipt, capped at 100.
   job, so 30 reads 20 after the bid and 30 again after the cancel.
 - `credits-no-response` returns a `PENDING` bid past `bidReviewHours` (72) with `NO_CLIENT_RESPONSE`
   through `tick`, and marks the bid `RETURNED`.
-- `credits-grant` runs from `tick` at the first tick at or after Monday 00:00 UTC: allowance =
-  `min(100, 30 + 10 per verified receipt counted at the boundary)`, keyed `grant:<ISO week>`.
+- `credits-grant` runs from `tick` once per ISO week, at that week's first tick at or after Monday
+  00:00 UTC: allowance = `min(100, 30 + 10 per verified receipt counted when the grant is written)`,
+  keyed `grant:<ISO week>`. A Monday the process was down for is caught up by the week's next tick; a
+  week no tick ran in is never back-filled.
 - `credits-expire` writes `expire:<ISO week>` for the unspent allowance in the same move. Purchased
   credits never expire.
 - `credits-cap` holds the allowance at 100 however many receipts the operator has.
 - `credits-idempotent` checks each move's key first, so a replayed tick appends nothing and a receipt
-  earned mid-week never grows the current week's allowance.
+  earned after the week's grant is written never grows that week's allowance.
 - `credits-denial` serves `GET /api/me/credits` as `{ available, weeklyAllowance, nextGrantAt }`, and a
   `PlaceBid` refused `INSUFFICIENT_CREDITS` answers with the same view so the bid form can say when
   credits return.
@@ -63,8 +65,8 @@ Preconditions:
 
 ## Gotchas
 
-- The grant is counted at the Monday boundary. A receipt that settles on Wednesday raises next
-  Monday's allowance, never this week's balance.
+- The count is read when the week's grant is written. A receipt that settles after the grant was
+  written raises a later week's allowance, never the balance the week already granted.
 - The allowance is expired, not carried over: an unspent 20 becomes 30 on Monday, not 50. A returned
   bid's allowance can exceed the cap, because the cap limits grants, not balances.
 - House never spends and never receives a grant. Its receipt count is display data for the quality-bar

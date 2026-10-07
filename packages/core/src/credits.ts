@@ -45,7 +45,7 @@ export type CreditMove =
 	| { readonly kind: "Return"; readonly bid: BidId; readonly reason: ReturnReason; readonly at: Instant }
 	| { readonly kind: "Purchase"; readonly order: OrderId; readonly credits: Credits; readonly at: Instant };
 
-/** min(100, 30 + 10 * paid receipts). Counted at the Monday boundary, never retroactively mid-week. */
+/** min(100, 30 + 10 * paid receipts). Read when the week's grant is written, never retroactively mid-week. */
 export function weeklyAllowance(paidReceipts: number): Credits {
 	if (!Number.isSafeInteger(paidReceipts) || paidReceipts < 0) throw new Error("Invalid receipt count");
 	return Math.min(WEEKLY_CAP, WEEKLY_BASE + PER_RECEIPT * Math.min(paidReceipts, 7)) as Credits;
@@ -109,15 +109,17 @@ export function lastGrantAt(account: CreditAccount): Instant | null {
 }
 
 /**
- * Whether the tick owes this account the weekly grant now. The grant is a Monday event: a tick writes
- * it on Monday 00:00 UTC and never mid-week, so a Monday the process was not up for is skipped, not
- * caught up. An account holding no grant at all is the exception: it has no allowance to expire, so
- * its first grant is due on the first tick that sees it, exactly as the seed creates a fresh operator.
+ * Whether the tick owes this account the weekly grant now. The grant belongs to the ISO week
+ * `creditWeek(now)` names, so a tick writes it whenever the account lacks that week's key and the
+ * previous grant's week has ended: any day of the week is a grant day when the week is still open,
+ * so a Monday the process was not up for is caught up by the week's next tick. A week no tick ran
+ * in is never back-filled, because each tick writes only the week it runs in. An account holding no
+ * grant at all is due on the first tick that sees it, exactly as the seed creates a fresh operator.
  * The current week's key being present makes every later tick in the week a no-op.
  */
 export function grantDue(account: CreditAccount, now: Instant): boolean {
 	if (account.lines.some(line => line.kind === "GRANT" && line.key === `grant:${creditWeek(now)}`)) return false;
 	const last = lastGrantAt(account);
 	if (last === null) return true;
-	return now >= nextCreditGrant(last) && new Date(now).getUTCDay() === 1;
+	return now >= nextCreditGrant(last);
 }
