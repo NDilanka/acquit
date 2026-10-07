@@ -94,7 +94,7 @@ export function hardenedGitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Pro
 export function gitGuardArgs(env: NodeJS.ProcessEnv = process.env): readonly string[] {
 	const root = ensureStateRoot(env);
 	return ["-c", `core.hooksPath=${emptyHooksDir(root)}`, "-c", "core.fsmonitor=false",
-		"-c", "credential.helper=", "-c", "core.sshCommand="];
+		"-c", "credential.helper=", "-c", "core.sshCommand=", "-c", "http.sslVerify=true", "-c", "http.proxy="];
 }
 
 /**
@@ -137,11 +137,14 @@ export function writeWorkTreeMarker(gitDir: string, workTree: string): void {
 
 /**
  * Local git config that must never meet the scoped work-repo token or a push: URL rewrites and push
- * targets can send it elsewhere, and the rest are code execution or credential sources. The state
- * git directory is CLI-owned, so any of these is config the CLI did not write; includes count
- * because they can smuggle the others in from a file this scan does not read.
+ * targets can send it elsewhere, and the rest are code execution, credential sources, or request
+ * rewriting. The state git directory is CLI-owned, so any of these is config the CLI did not write;
+ * includes count because they can smuggle the others in from a file this scan does not read.
+ *
+ * The `remote.*.url` rule applies only to a state checkout (`where === "state"`): the scoped push
+ * names the work-repo URL explicitly, while an operator's own checkout remotes are theirs.
  */
-export function unsafeGitConfigKeys(git: GitProbe, gitDir: string, env: NodeJS.ProcessEnv): readonly string[] {
+export function unsafeGitConfigKeys(git: GitProbe, gitDir: string, env: NodeJS.ProcessEnv, where: GitDirKind): readonly string[] {
 	const listed = git(["--git-dir", gitDir, "config", "--local", "--list", "--no-includes", "-z"], env);
 	if (listed.status !== 0) {
 		throw new CliError("GIT_FAILED", `Reading the git config of the job's state directory failed. ${listed.stderr.trim().slice(0, 200)}`.trim());
@@ -153,19 +156,32 @@ export function unsafeGitConfigKeys(git: GitProbe, gitDir: string, env: NodeJS.P
 		const newline = record.indexOf("\n");
 		const key = (newline === -1 ? record : record.slice(0, newline)).trim().toLowerCase();
 		const value = newline === -1 ? "" : record.slice(newline + 1).trim();
+		// Git parses a URL-scoped key the same way: the section first, then the name after the last
+		// dot. A URL-scoped key outranks the guard's plain `-c` override, so `http.<url>.proxy`,
+		// `.sslVerify`, and `.extraHeader` are refused here or one can move a credential-bearing
+		// request, turn off TLS verification, or add a header to the scoped push.
+		const http = key.startsWith("http.") ? key.slice(key.lastIndexOf(".") + 1) : "";
 		// `pushInsteadOf` rewrites a push to the URL the command names, exactly as `insteadOf` does.
 		if (/^url\..+\.(push)?insteadof$/.test(key) || /\.pushurl$/.test(key)
-			|| (/^remote\..+\.url$/.test(key) && remoteOffGithub(value))
+			|| (where === "state" && /^remote\..+\.url$/.test(key) && remoteOffGithub(value))
+			|| http === "proxy" || http === "extraheader" || (http === "sslverify" && boolFalse(value))
 			|| /^core\.sshcommand$/.test(key) || /^core\.hookspath$/.test(key) || /^core\.fsmonitor$/.test(key)
 			|| /^credential(\.|$)/.test(key) || /^include(\.|$)/.test(key) || /^includeif\./.test(key)) unsafe.add(key);
 	}
 	return [...unsafe].sort();
 }
 
+/** git's own false spellings; `git_config_bool` accepts these case-insensitively. */
+function boolFalse(value: string): boolean {
+	const lowered = value.toLowerCase();
+	return lowered === "false" || lowered === "no" || lowered === "off" || lowered === "0";
+}
+
 /** Whether a configured remote URL names a host that is not github.com. Only a github.com URL can be
- * the job's work repo; a local path names no host and carries no credential, so it is left alone. */
+ * the job's work repo; a local path names no host and carries no credential, so it is left alone.
+ * An scp-like URL (`host:path`, with or without `user@`) names a host too. */
 function remoteOffGithub(value: string): boolean {
-	const scp = /^[^/@\s]+@([^/:\s]+):/.exec(value);
+	const scp = /^(?:[^/@\s]+@)?([^/:\s]+):([^/].*)?$/.exec(value);
 	let host = scp?.[1] ?? "";
 	if (scp === null) {
 		try { host = new URL(value).hostname; } catch { host = ""; }
@@ -182,7 +198,7 @@ export type GitDirKind = "state" | "own";
  * write. The refusal names the git directory and the remedy that belongs to it: a state directory is
  * removed and cloned afresh on a fresh --dir, while a key in the operator's own checkout is unset. */
 export function assertSafePushConfig(git: GitProbe, gitDir: string, env: NodeJS.ProcessEnv, where: GitDirKind): void {
-	const unsafe = unsafeGitConfigKeys(git, gitDir, env);
+	const unsafe = unsafeGitConfigKeys(git, gitDir, env, where);
 	if (unsafe.length === 0) return;
 	const remedy = where === "own"
 		? "Remove each key from that checkout (`git config --local --unset <key>`) and rerun."

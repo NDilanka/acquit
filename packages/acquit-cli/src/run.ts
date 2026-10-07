@@ -264,16 +264,25 @@ function hideWorkTreeGitLink(workTree: string, gitDir: string): void {
  */
 export function ensureEmptyWorkTreeGitShadow(workTree: string): void {
 	const shadow = join(workTree, ".git");
-	const entry = lstatSync(shadow, { throwIfNoEntry: false });
-	if (entry === undefined) {
-		mkdirSync(shadow, { recursive: true, mode: 0o700 });
-	} else if (entry.isDirectory()) {
-		for (const name of readdirSync(shadow)) rmSync(join(shadow, name), { recursive: true, force: true });
-	} else {
-		rmSync(shadow, { force: true });
-		mkdirSync(shadow, { mode: 0o700 });
+	try {
+		const entry = lstatSync(shadow, { throwIfNoEntry: false });
+		if (entry === undefined) {
+			mkdirSync(shadow, { recursive: true, mode: 0o700 });
+		} else if (entry.isDirectory()) {
+			// The path belongs to the previous run's agent and can be mode 000 or 0500; re-permission
+			// it before reading, or the next run wedges on the entry it cannot list or remove.
+			chmodSync(shadow, 0o700);
+			for (const name of readdirSync(shadow)) rmSync(join(shadow, name), { recursive: true, force: true });
+		} else {
+			rmSync(shadow, { force: true });
+			mkdirSync(shadow, { mode: 0o700 });
+		}
+		chmodSync(shadow, 0o700);
+	} catch (error) {
+		if (error instanceof CliError) throw error;
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new CliError("SHADOW_NOT_USABLE", `The sandbox shadow ${shadow} cannot be re-made as an empty directory. ${detail}`);
 	}
-	chmodSync(shadow, 0o700);
 }
 
 /**

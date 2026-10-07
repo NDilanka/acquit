@@ -136,7 +136,9 @@ export type ScopedPush = { readonly gitDir: string | null; readonly askpass?: No
  * credential is not one of those: it keeps the operator's git environment (the session token still
  * stripped) and the checkout's own config, so the operator's credential helper answers. */
 export function pushHead(dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv, scoped?: ScopedPush): void {
-	const base = { ...childEnv(process.env), ...env };
+	// The CLI's own variables are stripped after the merge: an env a caller supplies can carry the
+	// session token, and every git child built below inherits this one.
+	const base = childEnv({ ...process.env, ...env });
 	const askpass = scoped?.askpass;
 	const stateGitDir = scoped?.gitDir ?? null;
 	if (askpass === undefined && stateGitDir === null) {

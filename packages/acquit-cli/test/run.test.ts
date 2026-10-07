@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -380,9 +380,11 @@ test("the git child env strips every inherited GIT_* and SSH_ASKPASS and reads n
 		assert.equal(readFileSync(env.GIT_CONFIG_GLOBAL!, "utf8"), "");
 		assert.equal(statSync(env.GIT_CONFIG_GLOBAL!).mode & 0o777, 0o600);
 		assert.equal(statSync(join(root, "acquit", "work")).mode & 0o777, 0o700);
-		// Command-line config outranks any local config: hooks, fsmonitor, credentials, and ssh are all off.
+		// Command-line config outranks any local config: hooks, fsmonitor, credentials, ssh, TLS
+		// verification, and any proxy are all settled before git reads the checkout's own config.
 		assert.deepEqual(gitGuardArgs({ XDG_STATE_HOME: root }), ["-c", `core.hooksPath=${join(root, "acquit", "hooks")}`,
-			"-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "core.sshCommand="]);
+			"-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "core.sshCommand=",
+			"-c", "http.sslVerify=true", "-c", "http.proxy="]);
 		assert.equal(statSync(join(root, "acquit", "hooks")).isDirectory(), true);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -465,6 +467,38 @@ test("the sandbox shadow is re-made as an empty real directory whatever a previo
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 		rmSync(outside, { recursive: true, force: true });
+	}
+});
+
+test("a shadow a previous run chmod'ed is emptied instead of wedging the next run", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-shadow-mode-"));
+	try {
+		const work = join(root, "work");
+		mkdirSync(work);
+		// An agent can leave the shadow unreadable (mode 000) or unwritable (mode 0500); the CLI owns
+		// the work tree, so it re-permissions the directory before it reads or empties it.
+		for (const mode of [0o000, 0o500]) {
+			mkdirSync(join(work, ".git"));
+			writeFileSync(join(work, ".git", "planted.txt"), "left by the agent\n");
+			chmodSync(join(work, ".git"), mode);
+			ensureEmptyWorkTreeGitShadow(work);
+			assert.deepEqual(readdirSync(join(work, ".git")), [], `mode ${mode.toString(8)}`);
+			assert.equal(statSync(join(work, ".git")).mode & 0o777, 0o700, `mode ${mode.toString(8)}`);
+			rmSync(join(work, ".git"), { recursive: true, force: true });
+		}
+		// A work tree the CLI cannot write is a named refusal, not a raw EACCES stack.
+		const locked = join(root, "locked");
+		mkdirSync(locked);
+		chmodSync(locked, 0o500);
+		try {
+			assert.throws(() => ensureEmptyWorkTreeGitShadow(locked),
+				(error: CliError) => error.code === "SHADOW_NOT_USABLE" && error.message.includes(join(locked, ".git")));
+		} finally { chmodSync(locked, 0o700); }
+	} finally {
+		for (const path of [join(root, "work", ".git"), join(root, "locked")]) {
+			try { chmodSync(path, 0o700); } catch { /* the shadow was removed, or is already usable */ }
+		}
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 
@@ -627,15 +661,79 @@ test("a state gitdir remote URL off github is unsafe config; the clone's own ori
 		const commit = submissionCommit(git, checkout, frozen, "fix", process.env);
 		assert.notEqual(commit, null);
 		// The clone's own origin is the fixture's local bare path: no host, so no host to steer to.
-		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env), []);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), []);
 		// A remote the CLI did not write that names github.com is the shape the CLI itself writes.
 		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.url", "https://github.com/acquit-forks/invoice-app-7q2k.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env), []);
-		// Any other host could carry the scoped push somewhere the job's work repo is not.
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), []);
+		// Any other host could carry the scoped push somewhere the job's work repo is not, including
+		// an scp-like value with no userinfo prefix.
 		assert.equal(git(["--git-dir", state, "config", "--local", "remote.evil.url", "https://evil.example/invoice-app-7q2k.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env), ["remote.evil.url"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["remote.evil.url"]);
 		assert.throws(() => pushWork(git, checkout, bare, commit!, process.env),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.evil.url"));
+		assert.equal(git(["--git-dir", state, "config", "--local", "--unset", "remote.evil.url"]).status, 0);
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.scp.url", "evil.example:repo"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["remote.scp.url"]);
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.scp.url", "evil.example:repo.git"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), ["remote.scp.url"]);
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.scp.url", "github.com:acquit-forks/invoice-app-7q2k"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), []);
+		assert.equal(git(["--git-dir", state, "config", "--local", "--unset", "remote.scp.url"]).status, 0);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the off-github remote URL rule leaves an operator's own checkout alone; a rewrite still refuses it", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-own-remote-"));
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const ownGitDir = join(own, ".git");
+		// The scoped push names the work-repo URL explicitly, so a remote in the operator's own
+		// checkout cannot steer it: their remotes are theirs.
+		assert.equal(git(["-C", own, "config", "--local", "remote.evil.url", "https://evil.example/invoice-app-7q2k.git"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, ownGitDir, process.env, "own"), []);
+		assert.doesNotThrow(() => assertSafePushConfig(git, ownGitDir, process.env, "own"));
+		// Every rewrite stays refused everywhere, the own checkout included: those rewrite the URL
+		// the scoped push names, not the checkout's own.
+		assert.equal(git(["-C", own, "config", "--local", `url.https://evil.example/.insteadOf`, bare]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, ownGitDir, process.env, "own"), ["url.https://evil.example/.insteadof"]);
+		assert.throws(() => assertSafePushConfig(git, ownGitDir, process.env, "own"),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("git config --local --unset"));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("URL-scoped and plain http config keys refuse a scoped push on a state checkout", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-http-config-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const work = join(root, "work");
+		const checkout = { gitDir: state, workTree: work };
+		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		const config = (key: string, value: string): void => {
+			assert.equal(git(["--git-dir", state, "config", "--local", key, value]).status, 0, key);
+		};
+		// A plain key loses to the guard's own -c override, but a URL-scoped key does not: git tries
+		// the longest URL match first, so both shapes must refuse before a token meets git.
+		const unsafe: readonly (readonly [string, string])[] = [
+			["http.proxy", "http://evil.example:8080"],
+			["http.https://evil.example/.proxy", "http://evil.example:8080"],
+			["http.sslVerify", "false"],
+			["http.https://evil.example/.sslVerify", "false"],
+			["http.extraHeader", "Authorization: Bearer evil"],
+			["http.https://evil.example/.extraHeader", "Authorization: Bearer evil"],
+		];
+		for (const [key, value] of unsafe) {
+			config(key, value);
+			assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), [key.toLowerCase()], key);
+			assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, process.env),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset", key]).status, 0, key);
+		}
+		// Verification on, and a key the CLI itself writes, are not config that steers anything.
+		config("http.sslVerify", "true");
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env, "state"), []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -697,6 +795,57 @@ test("an own-checkout push keeps the operator's credential helper; a scoped push
 				(error: CliError) => error.code === "PUSH_REFUSED");
 		} finally { secret.remove(); }
 		assert.equal(readFileSync(canary, "utf8"), asked);
+	} finally {
+		remote.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("pushHead strips the CLI's own variables from every git child, the own push and the scoped push alike", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-push-env-"));
+	const remote = await rejectingRemote();
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		writeFileSync(join(own, "money.ts"), "const DECIMALS = 3;\n");
+		assert.equal(git(["-C", own, "add", "-A"]).status, 0);
+		assert.equal(git(["-C", own, "-c", "user.name=operator", "-c", "user.email=operator@example.invalid", "commit", "--quiet", "-m", "fix"]).status, 0);
+		const commit = git(["-C", own, "rev-parse", "HEAD"]).stdout.trim() as CommitSha;
+		// Real children the operator's own push starts: a pre-push hook in the checkout, and the
+		// credential helper the operator configured globally. Each writes down only the three
+		// variables under test, so no other environment value ever lands on disk.
+		const probe = (dump: string): string => `#!/bin/sh\nprintf 'TOKEN=%s\\nPROVIDER_KEY=%s\\nTOKEN_FILE=%s\\n' "\${ACQUIT_TOKEN-}" "\${ACQUIT_PROVIDER_KEY-}" "\${ACQUIT_RUN_TOKEN_FILE-}" > ${dump}\n`;
+		const cleared = "TOKEN=\nPROVIDER_KEY=\nTOKEN_FILE=\n";
+		const hookEnv = join(root, "hook-env");
+		mkdirSync(join(own, ".git", "hooks"), { recursive: true });
+		writeFileSync(join(own, ".git", "hooks", "pre-push"), `${probe(hookEnv)}exit 0\n`, { mode: 0o755 });
+		const helperEnv = join(root, "helper-env");
+		const helper = join(root, "helper.sh");
+		writeFileSync(helper, `${probe(helperEnv)}cat >/dev/null\nprintf 'username=operator\\npassword=secret\\n'\n`, { mode: 0o755 });
+		const home = join(root, "home");
+		mkdirSync(home);
+		writeFileSync(join(home, ".gitconfig"), `[credential]\n\thelper = ${helper}\n`);
+		const canaries = { ACQUIT_TOKEN: "session-canary", ACQUIT_PROVIDER_KEY: keyCanary, ACQUIT_RUN_TOKEN_FILE: "/tmp/canary-token-file" };
+		const env = { HOME: home, PATH: process.env.PATH, ...canaries };
+		// The operator's own credential: the hook runs on the local push, the helper on the rejecting
+		// remote. The push itself is not the subject here.
+		pushHead(own, bare, commit, env);
+		assert.throws(() => pushHead(own, remote.url, commit, env), (error: CliError) => error.code === "PUSH_REFUSED");
+		assert.equal(readFileSync(hookEnv, "utf8"), cleared, "the pre-push hook saw one of the CLI's variables");
+		assert.equal(readFileSync(helperEnv, "utf8"), cleared, "the credential helper saw one of the CLI's variables");
+		// The scoped push's askpass child is another git child. The CLI's own script only reads its
+		// token file, so the test plays the child by replacing the script; the token value still comes
+		// from the file the CLI wrote.
+		const secret = makeSecretDir();
+		try {
+			const askpass = writeAskpass(secret.path, tokenCanary);
+			const askpassEnv = join(root, "askpass-env");
+			writeFileSync(askpass.script, `${probe(askpassEnv)}printf 'x-access-token\\n'\n`, { mode: 0o700 });
+			assert.throws(() => pushHead(own, remote.url, commit, env, { gitDir: null, askpass: askpass.env }),
+				(error: CliError) => error.code === "PUSH_REFUSED");
+			assert.equal(readFileSync(askpassEnv, "utf8"), cleared, "the askpass child saw one of the CLI's variables");
+		} finally { secret.remove(); }
 	} finally {
 		remote.stop();
 		rmSync(root, { recursive: true, force: true });
