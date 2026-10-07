@@ -151,7 +151,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 	}
 	if (url.pathname === "/paypal/webhook" && method === "POST") {
-		// The body is handed over and recorded as posted, so a replay reposts exactly what PayPal sent.
+		// The body is handed over as posted: the route parses it into its canonical envelope, keeps that,
+		// and answers the same minimal receipt whatever the delivery carried.
 		let raw: string;
 		try { raw = await rawBody(req, WEBHOOK_BODY_LIMIT_BYTES); }
 		catch (error) {
