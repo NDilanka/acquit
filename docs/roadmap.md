@@ -12,8 +12,8 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | gf-skeleton | Build the walking skeleton | done | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | done | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | done | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
-| gf-feature | Build each feature with proof | next | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
-| Step 8 (id not printed) | Open the PR, babysit, ship | pending | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
+| gf-feature | Build each feature with proof | next. H0, F1, H1, and F3 merged on 2026-10-07 (#1 to #4). F2 is in progress. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
+| Step 8 (id not printed) | Open the PR, babysit, ship | in progress. The root lands PRs since 2026-10-07. | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
 | Step 9 (id not printed) | Maintain the verification skill | pending | Daily from 2026-10-23 | A daily run reports `clean`, `changed`, or `blocked`. |
 
 The fetched playbook page prints the ids `gf-tutorial`, `gf-verify`, `gf-feature`, and `gf-plan`. The ids `gf-prototype`, `gf-architect`, and `gf-skeleton` come from the session context. The page prints no id for steps 8 and 9, so this doc names them by heading.
@@ -400,6 +400,10 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-05 | The feature PRs run as one stack in the order H0, F1, F3, F2, F4, F5, F6, F7 under Autopilot-stack. H0 isolates verification lanes and adds a dev clock. | Release needs a VERIFIED job, so the verifier goes before the PayPal adapter. Ten parallel lanes need separate ports, databases, and run state. | `docs/plan.md` Appendix B |
 | 2026-10-05 | The repo is public at `NDilanka/acquit` under the MIT license. | The hackathon needs a public repo. MIT is the default the agent chose; change it before others depend on it if you want another. | `LICENSE` |
 | 2026-10-05 | Follow the greenfield line with the Balanced role sheet. Frontend tasks run on pv-opus-medium only. | The user's role sheet and frontend rule. | This doc, Status table |
+| 2026-10-06 | The program moved from Windows to Linux, and H1 was added between F1 and F3 to make lane control work there. | Docker and the GitHub App could be set up on the Linux host. The owned-process proofs in H0 were Windows-only. | https://github.com/NDilanka/acquit/pull/3 |
+| 2026-10-07 | The operator handed merge calls to the root. H0, F1, H1, and F3 landed as merge commits, bottom-up, each pinned to its verdict SHA. | A squash would have forced a rebase and force-push of every child branch. A merge commit kept each child's patch-id equal to its verdict. | https://github.com/NDilanka/acquit/pull/1 to https://github.com/NDilanka/acquit/pull/4 |
+| 2026-10-07 | The verifier opens the client PR from a branch on the client repo after GitHub shows the fork commit there, waiting up to 45 seconds. A cross-repo PR from the fork is not used. | Measured live. The client installation token got 422 "head invalid" and the org token got 403. The fork commit reached the client repo in 10 to 30 seconds. | https://github.com/NDilanka/acquit/pull/4 |
+| 2026-10-07 | F3 passed its gate. The warm Docker judge median was 276 ms and the submit-to-verdict median was about 6 seconds. | The plan's rules are 10 seconds and 120 seconds. | https://github.com/NDilanka/acquit/pull/4 |
 
 ## How to update this doc
 
