@@ -67,6 +67,7 @@ import { captured, portOpen, reachable, sleep } from "../../packages/ctl/src/pro
 import { laneSlot } from "../../packages/ctl/src/state.ts";
 import { dockerReachable } from "../../packages/verifier/subject.ts";
 import { agentStarted, fundedJobOf, RUN_SAMPLE_TIMEOUT_MS, runStartBlocker, runStartVerdict } from "./run-start.mjs";
+import { probePassed } from "./verdict.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 // A short default: see the ownership-socket note at the top of this file.
@@ -142,9 +143,7 @@ async function main() {
 	} finally {
 		report.cleanup = await cleanup();
 	}
-	report.passed = runOnly
-		? report.blocked === null && report.runStart?.passed !== false
-		: report.help?.passed === true && report.jobsList?.passed === true && report.runStart?.passed !== false;
+	report.passed = probePassed(report);
 	await mkdir(evidence, { recursive: true });
 	await writeFile(resolve(evidence, runOnly ? "run-start.json" : "cli.json"), JSON.stringify(report, null, 2) + "\n");
 	console.log(JSON.stringify(report));
