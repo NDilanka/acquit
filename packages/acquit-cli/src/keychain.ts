@@ -39,8 +39,10 @@ const run: KeychainRun = (command, args, input) => {
 	return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 };
 
-function failed(what: string, result: KeychainResult): CliError {
-	const detail = result.stderr.trim().replace(/\s+/g, " ").slice(0, 200);
+function failed(what: string, result: KeychainResult, secret?: string): CliError {
+	// A tool can echo back what it was handed; the key never appears in an error this CLI raises.
+	const echoed = result.stderr.trim().replace(/\s+/g, " ");
+	const detail = (secret ? echoed.split(secret).join("[redacted]") : echoed).slice(0, 200);
 	return new CliError("KEYCHAIN_FAILED", `${what} failed. The provider key was not stored.${detail ? ` ${detail}` : ""}`);
 }
 
@@ -66,11 +68,11 @@ export function linuxKeychain(call: KeychainRun = run): Keychain {
 			replace("@s", service);
 			const added = call("keyctl", ["padd", "user", service, "@s"], secret);
 			const serial = added.stdout.trim();
-			if (added.status !== 0 || !/^\d+$/.test(serial)) throw failed(`keyctl padd ${service}`, added);
+			if (added.status !== 0 || !/^\d+$/.test(serial)) throw failed(`keyctl padd ${service}`, added, secret);
 			const permitted = call("keyctl", ["setperm", serial, LINUX_PERMISSION], "");
-			if (permitted.status !== 0) throw failed(`keyctl setperm ${service}`, permitted);
+			if (permitted.status !== 0) throw failed(`keyctl setperm ${service}`, permitted, secret);
 			const linked = call("keyctl", ["link", serial, "@u"], "");
-			if (linked.status !== 0) throw failed(`keyctl link ${service}`, linked);
+			if (linked.status !== 0) throw failed(`keyctl link ${service}`, linked, secret);
 			call("keyctl", ["unlink", serial, "@s"], "");
 		},
 		get(service) {
@@ -89,7 +91,7 @@ export function macKeychain(call: KeychainRun = run): Keychain {
 	return {
 		set(service, secret) {
 			const added = call("security", ["add-generic-password", "-U", "-a", account, "-s", service, "-w"], secret);
-			if (added.status !== 0) throw failed(`security add-generic-password ${service}`, added);
+			if (added.status !== 0) throw failed(`security add-generic-password ${service}`, added, secret);
 		},
 		get(service) {
 			const found = call("security", ["find-generic-password", "-a", account, "-s", service, "-w"], "");
@@ -119,7 +121,7 @@ export function windowsKeychain(call: KeychainRun = run): Keychain {
 				+ `try { $vault.Remove($vault.Retrieve('${account}','${name}')) } catch {}; `
 				+ `$vault.Add($credential)`;
 			const added = call("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], secret);
-			if (added.status !== 0) throw failed(`Windows Credential Manager ${name}`, added);
+			if (added.status !== 0) throw failed(`Windows Credential Manager ${name}`, added, secret);
 		},
 		get(service) {
 			const name = guarded(service);

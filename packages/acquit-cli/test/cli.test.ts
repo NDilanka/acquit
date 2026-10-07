@@ -261,6 +261,23 @@ test("the provider key port reads acquit:provider-key through the injected keych
 	assert.equal(await providerKeyPort(memoryKeychain()).getProviderKey(), null);
 });
 
+test("a keychain failure that echoes the secret in its output redacts it from the error", () => {
+	const secret = "sk-ant-canary-key";
+	const refusing = (command: string, _args: readonly string[], input: string) => {
+		if (command === "keyctl" && _args[0] === "search") return { status: 1, stdout: "", stderr: "Required key not available" };
+		return { status: 1, stdout: "", stderr: `${command}: refused the value ${input}` };
+	};
+	const refusals: CliError[] = [];
+	for (const keychain of [linuxKeychain(refusing), macKeychain(refusing), windowsKeychain(refusing)]) {
+		assert.throws(() => keychain.set("acquit:provider-key", secret), (error: CliError) => {
+			refusals.push(error);
+			return error.code === "KEYCHAIN_FAILED" && !error.message.includes(secret);
+		});
+	}
+	assert.equal(refusals.length, 3);
+	assert.equal(refusals.every(error => error.message.includes("[redacted]")), true);
+});
+
 test("login prints the code URL, stores the token with mode 0600, and prints the tutorial's line", async () => {
 	let polls = 0;
 	const fetchStub: typeof globalThis.fetch = async input => {
