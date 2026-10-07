@@ -6,8 +6,8 @@
 //
 // Secrets: the session token comes from the environment or stdin; the work-repo token lives in a
 // 0600 file read by a constant 0700 askpass script in a mkdtemp directory removed on every exit; the
-// provider key travels to the container only in a 0600 env file. No secret is ever an argv word, a
-// printed line, or a log line.
+// provider key travels to the container only through the docker child's environment, named by `-e`
+// with no value. No secret is ever an argv word, a printed line, or a log line.
 
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -335,15 +335,6 @@ export function writeAskpass(dir: string, token: string): { readonly env: NodeJS
 		GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } };
 }
 
-/** The provider key as a 0600 env file, the only shape it takes on disk and the only way it enters
- * the container. The value never becomes an argv word. */
-export function writeProviderEnvFile(dir: string, key: string): string {
-	const path = join(dir, "provider.env");
-	writeFileSync(path, `ANTHROPIC_API_KEY=${key}\n`, { mode: 0o600 });
-	chmodSync(path, 0o600);
-	return path;
-}
-
 // ---- the sandbox ------------------------------------------------------------------------------
 
 export type DockerRunOptions = {
@@ -402,7 +393,9 @@ export type RunnerPlan = {
 	/** The agent command, executed by /runner/run.mjs inside the container. */
 	readonly argv: readonly string[];
 	readonly commandPath: string | null;
-	readonly providerEnvFile: string | null;
+	/** The value the runner container's ANTHROPIC_API_KEY gets, or null for the command runner. It is
+	 * never an argv word: `-e ANTHROPIC_API_KEY` names it and the docker child's env carries it. */
+	readonly providerKey: string | null;
 	readonly instruction: string | null;
 	readonly jobId: string;
 	readonly uid: number | null;
@@ -420,7 +413,7 @@ export function runnerRunArgs(plan: RunnerPlan): readonly string[] {
 	// Node 24's global fetch honors the proxy variables only when this is set.
 	args.push("-e", "NODE_USE_ENV_PROXY=1", "-e", "HOME=/tmp", "-e", `ACQUIT_JOB=${plan.jobId}`);
 	if (plan.instruction !== null) args.push("-e", `ACQUIT_INSTRUCTION=${plan.instruction}`);
-	if (plan.providerEnvFile !== null) args.push("--env-file", plan.providerEnvFile);
+	if (plan.providerKey !== null) args.push("-e", "ANTHROPIC_API_KEY");
 	args.push("--mount", `type=bind,source=${plan.dir},target=/work`);
 	if (plan.commandPath !== null) args.push("--mount", `type=bind,source=${plan.commandPath},target=/acquit/command.sh,readonly`);
 	args.push("--workdir", "/work", plan.image, "node", "/runner/run.mjs", "--exec", ...plan.argv);
@@ -459,9 +452,19 @@ export function cleanupSync(names: SandboxNames): void {
 	}
 }
 
-function signalGuard(names: SandboxNames): () => void {
-	const onInterrupt = () => { cleanupSync(names); process.exit(130); };
-	const onTerminate = () => { cleanupSync(names); process.exit(143); };
+export type SignalGuardPorts = {
+	readonly cleanup?: (names: SandboxNames) => void;
+	readonly exit?: (code: number) => void;
+	/** Runs first, before the sandbox cleanup: the secret directory goes even if docker hangs. */
+	readonly onSignal?: () => void;
+};
+
+/** The handlers a signal runs before the process exits. Injectable so a test can drive them directly. */
+export function signalGuard(names: SandboxNames, ports: SignalGuardPorts = {}): () => void {
+	const cleanup = ports.cleanup ?? cleanupSync;
+	const exit = ports.exit ?? ((code: number) => process.exit(code));
+	const onInterrupt = () => { ports.onSignal?.(); cleanup(names); exit(130); };
+	const onTerminate = () => { ports.onSignal?.(); cleanup(names); exit(143); };
 	process.once("SIGINT", onInterrupt);
 	process.once("SIGTERM", onTerminate);
 	return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
@@ -489,7 +492,9 @@ export async function runAgentInSandbox(plan: RunnerPlan, docker: DockerPort,
 		await setup(egressNetworkCreateArgs(plan.names.egress), "Creating the sandbox egress network");
 		await setup(proxyRunArgs(plan.names.proxy, plan.names.egress, plan.proxyImage), "Starting the egress proxy");
 		await setup(networkConnectArgs(plan.names.network, plan.names.proxy), "Attaching the proxy to the sandbox network");
-		return await docker.run(runnerRunArgs(plan), { ...options, ...(onOutput === undefined ? {} : { onOutput }) });
+		const runner = { ...options, ...(onOutput === undefined ? {} : { onOutput }) };
+		if (plan.providerKey !== null) runner.env = { ...(env ?? process.env), ANTHROPIC_API_KEY: plan.providerKey };
+		return await docker.run(runnerRunArgs(plan), runner);
 	} finally {
 		await cleanupSandbox(docker, plan.names);
 	}
@@ -592,6 +597,9 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 	const secret = (deps.makeSecretDir ?? makeSecretDir)();
 	const names = sandboxNames(view.id);
 	const child = childEnv(env);
+	// The guard is installed before the first secret lands on disk, and it removes that directory
+	// itself: a signal must not leave a credential behind while it cleans up the sandbox.
+	const guard = signalGuard(names, { onSignal: () => secret.remove() });
 	try {
 		const askpass = writeAskpass(secret.path, credential.token);
 		const gitEnv: NodeJS.ProcessEnv = { ...child, ...askpass.env };
@@ -601,16 +609,11 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		const plan: RunnerPlan = { names, image: options.image, proxyImage: options.proxyImage, dir,
 			// The script is mounted at /acquit/command.sh; the host path is only the mount source.
 			argv: agentArgv(runner, instruction, commandPath === null ? null : "/acquit/command.sh"), commandPath,
-			providerEnvFile: providerKey === null ? null : writeProviderEnvFile(secret.path, providerKey),
-			instruction, jobId: view.id, uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
+			providerKey, instruction, jobId: view.id, uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
 		const started = now();
-		const guard = signalGuard(names);
-		let code: number | null;
-		try {
-			code = await runAgentInSandbox(plan, docker, (chunk, stream) => {
+		const code = await runAgentInSandbox(plan, docker, (chunk, stream) => {
 			if (stream === "stderr") process.stderr.write(chunk); else process.stdout.write(chunk);
 		}, child);
-		} finally { guard(); }
 		if (code !== 0) throw new CliError("AGENT_FAILED", `The agent exited ${code ?? "without a status"}.`);
 		// One tree for both the count and the push: the agent's commits plus anything it left uncommitted.
 		const pushed = submissionCommit(git, dir, frozen, `Run ${view.id} with ${accepted.agent}`, gitEnv);
@@ -618,6 +621,7 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		const files = pushed === null ? [] : changedFiles(git, dir, frozen, pushed);
 		print(renderFinished(files, now() - started, view.id));
 	} finally {
+		guard();
 		secret.remove();
 	}
 }

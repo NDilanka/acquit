@@ -11,10 +11,10 @@ import type { CommitSha, JobId, OperatorId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
-import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, networkConnectArgs,
+import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, makeSecretDir, networkConnectArgs,
 	networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, renderFinished, renderPreparing, renderRunning,
-	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, submissionCommit, writeAskpass, writeProviderEnvFile } from "../src/run.ts";
-import type { DockerPort, GitRun, RunnerPlan, RunOptions } from "../src/run.ts";
+	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, signalGuard, submissionCommit, writeAskpass } from "../src/run.ts";
+import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
 const workRepo = "acquit-forks/invoice-app-7q2k";
@@ -322,31 +322,34 @@ test("sandbox names are prefixed with acquit-runner-<job> and every network is p
 		["network", "rm", names.network], ["network", "rm", names.egress]]);
 });
 
-test("the runner container gets the internal network, the proxy, the env file, and no secret in argv", () => {
+test("the runner container gets the internal network, the proxy, and no secret in argv", () => {
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
-		providerEnvFile: "/tmp/acquit-run-secret/provider.env", instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: 1002, gid: 1002 };
+		providerKey: keyCanary, instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: 1002, gid: 1002 };
 	const args = runnerRunArgs(plan);
 	const proxy = `http://${names.proxy}:8888`;
 	for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) assert.equal(args.includes(`${name}=${proxy}`), true, name);
 	assert.equal(args.includes("NODE_USE_ENV_PROXY=1"), true);
 	assert.equal(args.includes(names.network), true);
 	assert.equal(args[args.indexOf("--network") + 1], names.network);
-	assert.equal(args[args.indexOf("--env-file") + 1], plan.providerEnvFile);
 	assert.equal(args.includes("type=bind,source=/tmp/acquit-run-work,target=/work"), true);
 	assert.deepEqual(args.slice(args.indexOf("--exec")), ["--exec", "claude", "--print", "--dangerously-skip-permissions", "Fix the rounding."]);
+	// The key is named, never valued, and never written to a file the container reads.
+	assert.equal(args[args.indexOf("ANTHROPIC_API_KEY") - 1], "-e");
+	assert.equal(args.includes("--env-file"), false);
 	assert.equal(args.some(arg => arg.includes(keyCanary)), false);
 	assert.equal(args.some(arg => arg.includes(tokenCanary)), false);
 });
 
-test("the command runner mounts its script read-only and runs it with sh", () => {
+test("the command runner mounts its script read-only, runs it with sh, and names no provider key", () => {
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerEnvFile: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	const args = runnerRunArgs(plan);
 	assert.equal(args.includes("--env-file"), false);
+	assert.equal(args.includes("ANTHROPIC_API_KEY"), false);
 	assert.equal(args.includes("type=bind,source=/tmp/fix.sh,target=/acquit/command.sh,readonly"), true);
 	assert.deepEqual(args.slice(args.indexOf("--exec")), ["--exec", "/bin/sh", "/acquit/command.sh"]);
 });
@@ -357,13 +360,21 @@ test("the claude-code command assembly names the model CLI and never the key", (
 	assert.deepEqual(agentArgv("command", "ignored", "/tmp/fix.sh"), ["/bin/sh", "/tmp/fix.sh"]);
 });
 
-test("the provider key reaches the container only through a 0600 env file", () => {
-	const dir = mkdtempSync(join(tmpdir(), "acquit-run-envfile-"));
-	try {
-		const path = writeProviderEnvFile(dir, keyCanary);
-		assert.equal(statSync(path).mode & 0o777, 0o600);
-		assert.equal(readFileSync(path, "utf8"), `ANTHROPIC_API_KEY=${keyCanary}\n`);
-	} finally { rmSync(dir, { recursive: true, force: true }); }
+test("the provider key rides only in the docker child's environment, never argv or a file", async () => {
+	const names = sandboxNames("job_7Q2K");
+	const docker = fakeDocker();
+	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: "/tmp/acquit-run-work", argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
+		providerKey: keyCanary, instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+	assert.equal(await runAgentInSandbox(plan, docker), 0);
+	const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
+	assert.equal(runner >= 0, true);
+	// The runner call carries the value in its environment; the setup calls around it never see it.
+	assert.equal(docker.envs[runner]?.ANTHROPIC_API_KEY, keyCanary);
+	for (const [index, env] of docker.envs.entries()) {
+		if (index !== runner) assert.equal(env?.ANTHROPIC_API_KEY, undefined, `call ${docker.calls[index].join(" ")}`);
+	}
+	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
 });
 
 test("the askpass script holds no token and the token file is 0600 and removed with its directory", () => {
@@ -384,7 +395,7 @@ test("the sandbox creates its egress network, starts the proxy on it, and remove
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerEnvFile: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	assert.equal(await runAgentInSandbox(plan, docker), 0);
 	const verbs = docker.calls.map(args => args.join(" "));
 	assert.deepEqual(verbs, [
@@ -406,7 +417,7 @@ test("a failed runner start still removes the containers and both networks", asy
 	const docker = fakeDocker({ failOn: args => args[0] === "run" && args.includes("--rm") });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerEnvFile: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "DOCKER_UNAVAILABLE");
 	const verbs = docker.calls.map(args => args.join(" "));
 	assert.equal(verbs.at(-4), `rm --force ${names.runner}`);
@@ -421,13 +432,32 @@ test("a failed sandbox setup refuses by name, bounds the docker output, and stil
 		output: `Error response from daemon: pull access denied for ${tokenCanary}@example.invalid/runner\n`.repeat(20) });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerEnvFile: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "SANDBOX_SETUP_FAILED"
 		&& error.message.includes("125") && error.message.length < 500 && !error.message.includes("\n")
 		&& !error.message.includes(tokenCanary));
 	const verbs = docker.calls.map(args => args.join(" "));
 	assert.equal(verbs.at(-4), `rm --force ${names.runner}`);
 	assert.equal(verbs.at(-1), `network rm ${names.egress}`);
+});
+
+test("the signal guard removes the secret directory and the sandbox before it exits", () => {
+	const names = sandboxNames("job_7Q2K");
+	const secret = makeSecretDir();
+	writeFileSync(join(secret.path, "token"), "not a real token\n");
+	const cleaned: SandboxNames[] = [];
+	const exits: number[] = [];
+	const stop = signalGuard(names, { cleanup: value => cleaned.push(value), exit: code => exits.push(code),
+		onSignal: () => secret.remove() });
+	try {
+		process.emit("SIGINT");
+		assert.equal(existsSync(secret.path), false);
+		assert.deepEqual(cleaned, [names]);
+		assert.deepEqual(exits, [130]);
+	} finally {
+		stop();
+		secret.remove();
+	}
 });
 
 // ---- the whole command ------------------------------------------------------------------------
@@ -469,23 +499,24 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 		// What is counted is the commit that was pushed, not the working tree that was left behind.
 		const head = "c".repeat(40);
 		assert.equal(gitLines.some(line => line.includes("diff --numstat") && line.includes(head)), true, gitLines.join(" | "));
-		// Neither the session token nor the provider key rides in a child's environment.
+		// Neither the session token nor the provider key rides in a git or setup child's environment.
 		for (const call of git.calls) {
 			assert.equal(call.env?.ACQUIT_TOKEN, undefined);
 			assert.equal(call.env?.ACQUIT_PROVIDER_KEY, undefined);
+			assert.equal(call.env?.ANTHROPIC_API_KEY, undefined);
 		}
-		for (const childEnv of docker.envs) {
+		const runnerCall = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
+		assert.equal(runnerCall >= 0, true);
+		for (const [index, childEnv] of docker.envs.entries()) {
 			assert.equal(childEnv?.ACQUIT_TOKEN, undefined);
 			assert.equal(childEnv?.ACQUIT_PROVIDER_KEY, undefined);
+			assert.equal(childEnv?.ANTHROPIC_API_KEY, index === runnerCall ? keyCanary : undefined, docker.calls[index].join(" "));
 		}
 		const dockerLines = docker.calls.map(args => args.join(" "));
 		assert.equal(dockerLines.some(line => line.includes(tokenCanary) || line.includes(keyCanary)), false);
+		assert.equal(dockerLines.some(line => line.includes("--env-file")), false);
 		assert.equal(dockerLines.some(line => line.includes(`--name acquit-runner-job_7Q2K`)), true);
 		assert.equal(dockerLines.at(-1), "network rm acquit-runner-job_7Q2K-egress");
-		// The askpass directory and the provider env file are gone once the command returns.
-		const envFile = docker.calls.flat().find(arg => typeof arg === "string" && arg.endsWith("provider.env"));
-		assert.equal(typeof envFile, "string");
-		assert.equal(existsSync(envFile as string), false);
 		assert.equal(printed.join("\n").includes(tokenCanary) || printed.join("\n").includes(keyCanary), false);
 	} finally { rmSync(work, { recursive: true, force: true }); }
 });
@@ -599,7 +630,7 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 		].join("\n"), { mode: 0o755 });
 		const names = sandboxNames(`smoke_${process.pid}`);
 		const plan: RunnerPlan = { names, image, proxyImage: image, dir: root, argv: agentArgv("command", "ignored", "/acquit/command.sh"),
-			commandPath: script, providerEnvFile: null, instruction: null, jobId: `smoke_${process.pid}`,
+			commandPath: script, providerKey: null, instruction: null, jobId: `smoke_${process.pid}`,
 			uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
 		const output: string[] = [];
 		const code = await runAgentInSandbox(plan, (await import("../src/run.ts")).dockerCli(),

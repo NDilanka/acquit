@@ -95,7 +95,7 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
 - `run-rerun` resets the fork to the frozen commit and prints the tutorial's reset block.
 - `run-cleanup` removes `acquit-runner-<job>`, `acquit-runner-<job>-proxy`,
   `acquit-runner-<job>-net`, and `acquit-runner-<job>-egress` on every exit path, including a failed
-  agent start.
+  agent start and a signal, and the run's secret directory with them.
 
 ### Driving it from a lane
 

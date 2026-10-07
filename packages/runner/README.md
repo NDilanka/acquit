@@ -29,11 +29,12 @@ The CLI refuses to start a container from a missing image; it never pulls one im
 - **Secrets.** The work-repo token lives in a 0600 file read by a constant 0700 `GIT_ASKPASS` script
   in a `mkdtemp` directory that is removed on every exit path; the host does the clone, fetch, and
   push, so the container never receives the git credential. The provider key reaches the container
-  only through a 0600 `--env-file`. Neither value is ever an argv word or a log line.
+  only through the docker child's environment: `-e ANTHROPIC_API_KEY` names it with no value, and no
+  other child gets it. Neither value is ever an argv word or a log line.
 - **Cleanup.** Every object is named `acquit-runner-<job>`, `acquit-runner-<job>-proxy`,
   `acquit-runner-<job>-net`, and `acquit-runner-<job>-egress`. A run removes them before it starts
-  (leftovers from a killed run) and in a `finally` block; SIGINT and SIGTERM remove them
-  synchronously before the process exits.
+  (leftovers from a killed run) and in a `finally` block; SIGINT and SIGTERM remove them and the
+  run's secret directory synchronously before the process exits.
 
 ## Runners
 
