@@ -364,7 +364,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
 	if (tokenMatch && method === "POST") {
 		// The operator's runner asks for one credential per run. Only the operator the job is locked to
-		// can have it, and the answer names the job's work repo, so the CLI never guesses a repository.
+		// can have it, the answer names the job's work repo, and the credential is scoped to that one
+		// repository, so the CLI never guesses a repository and never holds a key to another job's.
 		const jobId = validJobId(decodeURIComponent(tokenMatch[1]));
 		const result = await acquit.query(current.actor, { type: "Job", jobId });
 		if (result.kind !== "JOB") {
@@ -381,11 +382,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				detail: "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run." });
 			return;
 		}
-		const repository = `${githubEnv.organization}/${workRepoName(clientRepository, jobId)}`;
+		const name = workRepoName(clientRepository, jobId);
+		const repository = `${githubEnv.organization}/${name}`;
 		try {
-			const token = await githubApp.installationToken(githubEnv.organization);
+			// One credential per job: the mint names this job's work repo and carries only the
+			// permissions a run and submit need, so an operator holding it cannot push elsewhere.
+			const token = await githubApp.installationToken(githubEnv.organization, [name]);
 			json(res, 200, { repository, token });
 		} catch (error) {
+			if (error instanceof GitHubAppError && error.status === 422) {
+				// GitHub refuses a scoped mint while the work repo is not visible to the installation,
+				// which is the state between funding and the outbox creating the fork. The CLI already
+				// retries that condition, so it answers the same not-ready refusal a missing clone does.
+				json(res, 503, { error: "WORK_REPO_NOT_READY",
+					detail: `The work repository ${repository} is not visible to the GitHub App yet. It is created shortly after funding, so retry in about 30 seconds.` });
+				return;
+			}
 			json(res, 502, { error: "WORK_REPO_TOKEN_FAILED",
 				detail: error instanceof GitHubAppError ? boundedDetail(error.message) : "GitHub refused a credential for the work repo." });
 		}

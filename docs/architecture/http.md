@@ -81,14 +81,19 @@ the credential rather than reading a GitHub App key on the operator's machine.
 - The job must be locked to the calling operator (`job.lockedTo` equals the session's operator id);
   any other caller is refused `403 { error: "NOT_OWNER" }`. A job the caller cannot read answers
   `404 { error: "NOT_FOUND" }` or its query refusal.
-- The API mints one GitHub App installation token for the organization that holds the work repos,
-  and answers `200 { repository, token }`. `repository` is the full `owner/name` of the job's work
-  repo (`<organization>/<client repo name>-<job id>`); the CLI builds the git URL from it and never
-  guesses a repository.
-- With the App unconfigured the route answers `503 { error: "GITHUB_NOT_CONFIGURED" }`; a GitHub
-  refusal answers `502 { error: "WORK_REPO_TOKEN_FAILED", detail }` with the token redacted.
-- The token is never logged. It is the same kind of App installation credential the lane script
-  mints, and it expires within the hour.
+- The API mints one GitHub App installation token scoped to exactly the job's work repo: the mint
+  names `repositories: ["<client repo name>-<job id>"]` with `contents: write` and `metadata: read`,
+  the least privilege a run and submit exercise. A credential handed to one operator cannot push to
+  another job's work repo. It answers `200 { repository, token }`; `repository` is the full
+  `owner/name` of the job's work repo (`<organization>/<client repo name>-<job id>`), so the CLI
+  builds the git URL from it and never guesses a repository.
+- With the App unconfigured the route answers `503 { error: "GITHUB_NOT_CONFIGURED" }`. GitHub
+  answers `422` to the scoped mint while the work repo does not exist yet (the window between funding
+  and the outbox creating the fork), and the route answers that as
+  `503 { error: "WORK_REPO_NOT_READY", detail }`, the same refusal the CLI already retries for a work
+  repo that is not visible. Any other GitHub refusal answers
+  `502 { error: "WORK_REPO_TOKEN_FAILED", detail }` with the token redacted.
+- The token is never logged. It is a scoped App installation credential that expires within the hour.
 
 ## Funding (PayPal sandbox)
 
