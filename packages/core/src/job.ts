@@ -648,9 +648,15 @@ function transitionTable(): {
 		} },
 		ReimbursementSettled: { by: "SYSTEM", apply: (row, command) => {
 			const reimbursement = command.reimbursement;
-			// A redelivery of the same batch changes nothing. A second batch id is recorded, because a
-			// second payout is a fact a person has to see, not one this edge may hide.
-			if (row.state.treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID" && entry.batchId === reimbursement.batchId)) return unchanged(row);
+			// A redelivery of the batch this row already recorded changes nothing.
+			const paid = row.state.treasury.find((entry): entry is Extract<TreasuryEntry, { kind: "PAYOUT_FEE_PAID" }> => entry.kind === "PAYOUT_FEE_PAID");
+			if (paid !== undefined && paid.batchId === reimbursement.batchId) return unchanged(row);
+			const owed = row.state.treasury.find((entry): entry is Extract<TreasuryEntry, { kind: "OPERATOR_REIMBURSEMENT_OWED" }> =>
+				entry.kind === "OPERATOR_REIMBURSEMENT_OWED");
+			// Only the payout this row owes, to the payee it owes, settles the debt. Another batch is a
+			// second payout of a settled debt, and it is a fact a person has to see, not a second line.
+			if (paid !== undefined || owed === undefined || reimbursement.merchant !== row.state.payee.payee || reimbursement.paid !== owed.cents)
+				return settlementMismatch(row);
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, treasury: [...row.state.treasury, { kind: "PAYOUT_FEE_PAID", jobId: row.id,
 					batchId: reimbursement.batchId, paid: reimbursement.paid, fee: reimbursement.fee, at: reimbursement.at }] } }, credits: [], effects: [] };
