@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Actor, JobView } from "./acquit.ts";
 import { reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
-import { addHours, hours, instant, parseBidId, parseJobId } from "./ids.ts";
+import { addHours, hours, instant, parseBidId, parseJobId, parseReceiptId } from "./ids.ts";
 import type {
 	AgentId,
 	BidId,
@@ -21,11 +21,11 @@ import type {
 	ReceiptId,
 	Version,
 } from "./ids.ts";
-import { reduceLedger } from "./ledger.ts";
+import { reduceLedger, refundTreasury, releaseTreasury } from "./ledger.ts";
 import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
-import type { CaptureEvidence, FeeQuote, RefundEvidence, ReleaseEvidence } from "./paypal.ts";
+import type { CaptureEvidence, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
 
@@ -99,6 +99,11 @@ export type HeldEscrow = {
 	readonly book: HeldBook;
 	/** capturedAt + captureCutoffDays. The watchdog forces a disposition here in every state. */
 	readonly cutoffAt: Instant;
+	/**
+	 * Set when the day-21 cutoff acted on this escrow: it selected the disposition, or it reported that a
+	 * settlement was still unconfirmed. Absent on rows stored before the watchdog, and on a fresh escrow.
+	 */
+	readonly cutoffHandledAt?: Instant;
 };
 
 export type RefundReason =
@@ -264,12 +269,14 @@ export type JobEffect =
 	| { readonly kind: "CREATE_WORK_REPO"; readonly jobId: JobId; readonly repository: string; readonly frozenCommit: CommitSha }
 	| { readonly kind: "RELEASE"; readonly jobId: JobId; readonly captureId: CaptureId; readonly payee: MerchantId }
 	| { readonly kind: "REFUND"; readonly jobId: JobId; readonly captureId: CaptureId; readonly payee: MerchantId; readonly amount: UsdCents }
+	/** The retained refund fee, paid from the platform's own balance to the operator's merchant. */
+	| { readonly kind: "REIMBURSE"; readonly jobId: JobId; readonly merchant: MerchantId; readonly amount: UsdCents }
 	| { readonly kind: "START_VERIFIER"; readonly jobId: JobId; readonly attempt: PendingAttempt }
-	| { readonly kind: "MERGE"; readonly jobId: JobId; readonly pullRequest: number; readonly mergeCommit: CommitSha }
+	| { readonly kind: "MERGE"; readonly jobId: JobId; readonly pullRequest: number; readonly mergeCommit: CommitSha; readonly repository: string }
 	| {
 		readonly kind: "ALERT";
 		readonly jobId: JobId;
-		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED";
+		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH";
 	};
 
 // The table
@@ -336,8 +343,9 @@ function transitionTable(): {
 	Approve: Edge<Verified, JobRef & { readonly mergeCommit: CommitSha }, Verified, "CLIENT">;
 	Dispute: Edge<Verified, JobRef & { readonly mergeCommit: CommitSha; readonly reason: string }, Verified, "CLIENT">;
 	ResolveDispute: Edge<Verified, JobRef & { readonly verdict: "UPHOLD" | "REWORK" | "REFUND"; readonly note: string }, Verified | Work, "ARBITER">;
-	ReleaseSettled: Edge<Verified, JobRef & { readonly release: ReleaseEvidence }, JobRow<PaidState>, "SYSTEM">;
-	RefundSettled: Edge<JobRow, JobRef & { readonly refund: RefundEvidence }, JobRow<RefundedState>, "SYSTEM">;
+	ReleaseSettled: Edge<JobRow, JobRef & { readonly release: ReleaseEvidence }, JobRow<PaidState> | JobRow, "SYSTEM">;
+	RefundSettled: Edge<JobRow, JobRef & { readonly refund: RefundEvidence }, JobRow<RefundedState> | JobRow, "SYSTEM">;
+	ReimbursementSettled: Edge<JobRow<RefundedState>, JobRef & { readonly reimbursement: ReimbursementEvidence }, JobRow<RefundedState>, "SYSTEM">;
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
@@ -567,14 +575,115 @@ function transitionTable(): {
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, attempts: { phase: "READY", history, runsStarted: attempts.runsStarted, failure: null } } }, credits: [], effects: [] };
 		} },
-		Approve: { by: "CLIENT", apply: unimplemented },
+		Approve: { by: "CLIENT", apply: (row, command, facts) => {
+			// The client approves the artifact the verifier judged, not a moving pull request head.
+			if (row.state.review.phase !== "AWAITING_CLIENT" || facts.now >= row.state.review.endsAt) return "REVIEW_CLOSED";
+			if (command.mergeCommit !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: facts.now } } } },
+				credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
+		} },
 		Dispute: { by: "CLIENT", apply: unimplemented },
 		ResolveDispute: { by: "ARBITER", apply: unimplemented },
-		ReleaseSettled: { by: "SYSTEM", apply: unimplemented },
-		RefundSettled: { by: "SYSTEM", apply: unimplemented },
-		MergeFinished: { by: "SYSTEM", apply: unimplemented },
+		ReleaseSettled: { by: "SYSTEM", apply: (row, command) => {
+			const release = command.release;
+			// One disposition per job: a release is applied only to the release this row selected, and only
+			// when its evidence names the held capture and adds up to the held gross.
+			if (row.state.status !== "VERIFIED" || row.state.review.phase !== "RELEASE_PENDING" || release.captureId !== row.state.escrow.capture.captureId) return settlementMismatch(row);
+			const escrow = row.state.escrow;
+			const book = reduceLedger(escrow.book, { kind: "Release", operatorNet: release.paid,
+				processorFee: escrow.capture.processorFee, platformFee: escrow.capture.platformFee, at: release.at });
+			if ("kind" in book) return settlementMismatch(row);
+			const done = storedDefinitionOfDone(row);
+			if (done === null) return "CONTRACT_NOT_FROZEN";
+			const passed = row.state.passed;
+			const receipt = receiptOf({ id: parseReceiptId(`rcpt_${randomUUID()}`), jobId: row.id, operator: escrow.payee.operator,
+				agent: escrow.payee.agent, pullRequest: passed.verdict.pullRequest, mergeCommit: passed.verdict.mergeCommit,
+				frozen: passed.verdict.frozen, hidden: passed.verdict.hidden, attemptsUsed: passed.ordinal,
+				paid: release.paid, releasedAt: release.at });
+			const treasury = releaseTreasury({ jobId: row.id, operator: escrow.payee.operator, promisedNet: escrow.quote.split.operatorNet,
+				observedNet: release.paid, predictedProcessorFee: escrow.quote.predictedProcessorFee,
+				observedProcessorFee: escrow.capture.processorFee, at: release.at });
+			const effects: JobEffect[] = [{ kind: "MERGE", jobId: row.id, pullRequest: receipt.pullRequest,
+				mergeCommit: receipt.mergeCommit, repository: done.issue.repository }];
+			// The money is already out. A shortfall cannot be unwound, so it is owed back and named.
+			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { status: "PAID", payee: escrow.payee, book, receipt, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
+		} },
+		RefundSettled: { by: "SYSTEM", apply: (row, command) => {
+			const escrow = heldEscrowOf(row);
+			const intent = refundIntentOf(row);
+			const refund = command.refund;
+			if (escrow === null || intent === null || refund.captureId !== escrow.capture.captureId || refund.refunded !== escrow.capture.gross) return settlementMismatch(row);
+			const book = reduceLedger(escrow.book, { kind: "Refund", refunded: refund.refunded, at: refund.at });
+			if ("kind" in book) return settlementMismatch(row);
+			// PayPal kept the processing fee and debited the operator for it. Acquit owes it back, and the
+			// payout that settles the debt is a second money movement with its own effect.
+			const owed = refund.retainedProcessorFee > 0;
+			const treasury = owed ? refundTreasury({ jobId: row.id, operator: escrow.payee.operator,
+				retainedProcessorFee: refund.retainedProcessorFee, at: refund.at }) : [];
+			const effects: JobEffect[] = owed ? [{ kind: "REIMBURSE", jobId: row.id, merchant: escrow.payee.payee,
+				amount: refund.retainedProcessorFee }] : [];
+			const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
+				: row.state.status === "VERIFIED" || row.state.status === "REFUNDED" ? row.state.history : [];
+			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, title: row.title,
+				contract: row.contract, openedAt: row.openedAt, bids: row.bids,
+				state: { status: "REFUNDED", payee: escrow.payee, book, reason: intent.reason, refund,
+					history, treasury } }, credits: [], effects };
+		} },
+		ReimbursementSettled: { by: "SYSTEM", apply: (row, command) => {
+			const reimbursement = command.reimbursement;
+			// A redelivery of the same batch changes nothing. A second batch id is recorded, because a
+			// second payout is a fact a person has to see, not one this edge may hide.
+			if (row.state.treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID" && entry.batchId === reimbursement.batchId)) return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { ...row.state, treasury: [...row.state.treasury, { kind: "PAYOUT_FEE_PAID", jobId: row.id,
+					batchId: reimbursement.batchId, paid: reimbursement.paid, fee: reimbursement.fee, at: reimbursement.at }] } }, credits: [], effects: [] };
+		} },
+		MergeFinished: { by: "SYSTEM", apply: (row, command) => {
+			// The merge only ever moves forward. A redelivered observation of an earlier phase is ignored.
+			if (row.state.merge.phase !== "PENDING") return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version, state: { ...row.state, merge: command.outcome } }, credits: [], effects: [] };
+		} },
 		TimerDue: { by: "SYSTEM", apply: (row, command, facts) => {
 			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
+			// The capture-age watchdog runs first in every state that holds money. Day 21 leaves a week to
+			// reconcile before PayPal's day 28. It never switches sides: an unconfirmed settlement is reported.
+			const escrow = heldEscrowOf(row);
+			if (escrow !== null && facts.now >= escrow.cutoffAt) {
+				if (escrow.cutoffHandledAt) return unchanged(row);
+				if (row.state.status === "IN_PROGRESS" && row.state.attempts.phase !== "REFUND_PENDING") {
+					return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, escrow: { ...escrow, cutoffHandledAt: facts.now },
+							attempts: { phase: "REFUND_PENDING", history: row.state.attempts.history, refund: { reason: "CAPTURE_CUTOFF", selectedAt: facts.now } } } },
+						credits: [], effects: [refundIntent(row.id, escrow)] };
+				}
+				if (row.state.status === "VERIFIED" && row.state.review.phase !== "RELEASE_PENDING") {
+					return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, escrow: { ...escrow, cutoffHandledAt: facts.now },
+							review: { phase: "RELEASE_PENDING", release: { authority: "CAPTURE_CUTOFF", selectedAt: facts.now } } } },
+						credits: [], effects: [releaseIntent(row.id, escrow)] };
+				}
+				// A settlement was selected before the cutoff and is still unconfirmed. No new disposition.
+				return { next: { ...row, version: (row.version + 1) as Version, state: withEscrow(row.state, { ...escrow, cutoffHandledAt: facts.now }) },
+					credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" }] };
+			}
+			if (row.state.status === "VERIFIED") {
+				const review = row.state.review;
+				if (review.phase === "AWAITING_CLIENT" && facts.now >= review.endsAt) {
+					return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "REVIEW_SILENCE", selectedAt: facts.now } } } },
+						credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
+				}
+				if (review.phase === "DISPUTED" && facts.now >= review.resolveBy) {
+					// The verifier passed, so a missed arbiter deadline is Acquit's failure: release and alert.
+					return { next: { ...row, version: (row.version + 1) as Version,
+						state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "ARBITER_SLA_MISSED", selectedAt: facts.now } } } },
+						credits: [], effects: [releaseIntent(row.id, row.state.escrow), { kind: "ALERT", jobId: row.id, reason: "DISPUTE_SLA_MISSED" }] };
+				}
+				return unchanged(row);
+			}
 			if (row.state.status === "IN_PROGRESS") {
 				const attempts = row.state.attempts;
 				if (attempts.phase === "VERIFYING" && facts.now >= attempts.pending.runEndsAt) {
@@ -631,6 +740,68 @@ function unchanged<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
 	return { next: row, credits: [], effects: [] };
 }
 
+/** Only this module can build a Receipt: the brand has no runtime key, so the cast stays here. */
+function receiptOf(fields: Omit<Receipt, typeof receiptBrand>): Receipt {
+	return fields as Receipt;
+}
+
+/** A settlement observation that does not match the selected disposition is never applied. It is an ALERT. */
+function settlementMismatch<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
+	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }] };
+}
+
+/** The escrow this row still holds, in every state that can hold one. */
+function heldEscrowOf(row: JobRow): HeldEscrow | null {
+	const state = row.state;
+	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return state.escrow;
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") return state.phase.checkout.escrow;
+	return null;
+}
+
+/** The state with its held escrow replaced, wherever that state keeps it. */
+function withEscrow<S extends JobState>(state: S, escrow: HeldEscrow): S {
+	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return { ...state, escrow };
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") {
+		return { ...state, phase: { ...state.phase, checkout: { ...state.phase.checkout, escrow } } };
+	}
+	return state;
+}
+
+/** The refund this row selected, if it selected one. */
+function refundIntentOf(row: JobRow): RefundIntent | null {
+	const state = row.state;
+	if (state.status === "IN_PROGRESS" && state.attempts.phase === "REFUND_PENDING") return state.attempts.refund;
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") return state.phase.checkout.refund;
+	return null;
+}
+
+/** The release a verified job selects. F2 settles it; the intent is durable from the transition itself. */
+function releaseIntent(jobId: JobId, escrow: HeldEscrow): JobEffect {
+	return { kind: "RELEASE", jobId, captureId: escrow.capture.captureId, payee: escrow.payee.payee };
+}
+
+/**
+ * Whether this row still holds the disposition an effect belongs to. The outbox asks before it moves
+ * money: an effect the row no longer wants is delivered as done, never dispatched. A pending run,
+ * repo, verifier, or alert belongs to no disposition and is always wanted.
+ */
+export function effectWanted(row: JobRow, effect: JobEffect): boolean {
+	switch (effect.kind) {
+		case "RELEASE":
+			return row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING" &&
+				row.state.escrow.capture.captureId === effect.captureId;
+		case "REFUND":
+			return refundIntentOf(row) !== null && heldEscrowOf(row)?.capture.captureId === effect.captureId;
+		case "REIMBURSE": {
+			if (row.state.status !== "REFUNDED") return false;
+			const treasury = row.state.treasury;
+			return treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED") &&
+				!treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID");
+		}
+		default: return true;
+	}
+}
+
 /** Deterministic per job and run, so a retried start reuses one run identity instead of stacking runs. */
 export function verifierRunId(jobId: JobId, run: number): VerifierRunId {
 	return `${jobId.replace(/^job_/, "run_")}_${run}` as VerifierRunId;
@@ -663,10 +834,32 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	if (facts.actor.role === "CLIENT" && row.client !== facts.actor.clientId) return "NOT_OWNER";
 	if (command.type === "CaptureCompleted" && row.state.status !== "OPEN") return unchanged(row);
 	if (command.type === "TimerDue") return table.TimerDue.apply(row, command, facts);
+	// Settlement observations are routed from every state. The edge decides whether the observation matches
+	// the disposition this row selected; an unmatched one is an alert, never a refusal the outbox would retry.
+	if (command.type === "ReleaseSettled") return table.ReleaseSettled.apply(row, command, facts);
+	if (command.type === "RefundSettled") return table.RefundSettled.apply(row, command, facts);
 	if (row.state.status === "IN_PROGRESS") {
 		switch (command.type) {
 			case "Submit": return table.Submit.apply(row as Work, command, facts);
 			case "VerifierFinished": return table.VerifierFinished.apply(row as Work, command, facts);
+			default: return "WRONG_STATE";
+		}
+	}
+	if (row.state.status === "VERIFIED") {
+		switch (command.type) {
+			case "Approve": return table.Approve.apply(row as Verified, command, facts);
+			default: return "WRONG_STATE";
+		}
+	}
+	if (row.state.status === "PAID") {
+		switch (command.type) {
+			case "MergeFinished": return table.MergeFinished.apply(row as JobRow<PaidState>, command, facts);
+			default: return "WRONG_STATE";
+		}
+	}
+	if (row.state.status === "REFUNDED") {
+		switch (command.type) {
+			case "ReimbursementSettled": return table.ReimbursementSettled.apply(row as JobRow<RefundedState>, command, facts);
 			default: return "WRONG_STATE";
 		}
 	}
@@ -686,20 +879,46 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 
 /** The earliest instant at which TimerDue would change this row. Stored by the commit for the timer index. */
 export function wakeAt(row: JobRow): Instant | null {
-	if (row.state.status === "IN_PROGRESS") {
-		// A pending disposition is settled by its own effect, not by the timer scan. A pending run changes the row
-		// when it ends, so that is its wake time: the delivery deadline alone cannot touch a VERIFYING row.
-		if (row.state.attempts.phase === "REFUND_PENDING") return null;
-		return row.state.attempts.phase === "VERIFYING" ? row.state.attempts.pending.runEndsAt : row.contract.deliveryEndsAt;
+	const escrow = heldEscrowOf(row);
+	const pendingSettlement = escrow !== null && (
+		row.state.status === "IN_PROGRESS" && row.state.attempts.phase === "REFUND_PENDING" ||
+		row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING" ||
+		row.state.status === "OPEN");
+	if (pendingSettlement) {
+		// The disposition's own effect settles it. The capture-age cutoff is the only clock left: it reports
+		// an unconfirmed settlement once, and never selects another disposition.
+		return escrow.cutoffHandledAt === undefined ? escrow.cutoffAt : null;
+	}
+	if (escrow !== null) {
+		// The cutoff acts first. Until it does, the disposition's own clock is what changes the row.
+		const own = settlementClock(row);
+		return escrow.cutoffHandledAt === undefined ? earlier(escrow.cutoffAt, own) : own;
 	}
 	if (row.state.status !== "OPEN") return null;
 	const candidates = [row.contract.deliveryEndsAt];
 	if (row.state.phase.kind === "FUNDING") {
-		if (["CAPTURING", "REFUND_PENDING"].includes(row.state.phase.checkout.phase)) return null;
+		if (row.state.phase.checkout.phase === "CAPTURING") return null;
 		candidates.push(row.state.phase.checkoutEndsAt);
 	}
 	candidates.push(...row.bids.filter(b => b.status === "PENDING").map(b => b.respondBy));
 	return candidates.sort()[0];
+}
+
+/** The clock the row's own disposition waits on: a run end, the delivery deadline, review, or the arbiter. */
+function settlementClock(row: JobRow): Instant {
+	if (row.state.status === "IN_PROGRESS") {
+		const attempts = row.state.attempts;
+		return attempts.phase === "VERIFYING" ? attempts.pending.runEndsAt : row.contract.deliveryEndsAt;
+	}
+	if (row.state.status === "VERIFIED") {
+		const review = row.state.review;
+		return review.phase === "AWAITING_CLIENT" ? review.endsAt : review.phase === "DISPUTED" ? review.resolveBy : row.contract.deliveryEndsAt;
+	}
+	return row.contract.deliveryEndsAt;
+}
+
+function earlier(left: Instant, right: Instant): Instant {
+	return left <= right ? left : right;
 }
 
 export function rankBids(bids: readonly Bid[], paidReceipts: ReadonlyMap<OperatorId, number>): RankedBids {
@@ -842,5 +1061,6 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 				submittedAt: pending.submittedAt, runEndsAt: pending.runEndsAt } : null },
 		reviewEndsAt: state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT" ? state.review.endsAt : null,
 		pullRequest: state.status === "VERIFIED" ? state.passed.verdict.pullRequest : state.status === "PAID" ? state.receipt.pullRequest : null,
+		mergeCommit: state.status === "VERIFIED" ? state.passed.verdict.mergeCommit : state.status === "PAID" ? state.receipt.mergeCommit : null,
 		receipt: state.status === "PAID" ? state.receipt : null };
 }

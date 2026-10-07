@@ -4,7 +4,7 @@ import { confirmFunding, executeCommand, ingestVerifierCallback, runDueTimers, r
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
-import type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
+import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
 import type { DomainFailure, JobProjection, JobStatus, Receipt, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
@@ -90,6 +90,8 @@ export interface JobView {
 	readonly attempts: { readonly used: number; readonly left: number; readonly last: "REJECTED" | "VERIFIED" | null; readonly reasons: readonly string[] };
 	readonly reviewEndsAt: Instant | null;
 	readonly pullRequest: number | null;
+	/** The tree the verifier judged. Approve names it, so a moved head cannot be approved by mistake. */
+	readonly mergeCommit: CommitSha | null;
 	readonly receipt: Receipt | null;
 }
 

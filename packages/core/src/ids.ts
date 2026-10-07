@@ -36,6 +36,11 @@ export function parseBidId(raw: string): BidId {
 	return raw as BidId;
 }
 
+export function parseReceiptId(raw: string): ReceiptId {
+	if (!/^rcpt_[A-Za-z0-9_-]{4,80}$/.test(raw)) throw new Error("Invalid receipt id");
+	return raw as ReceiptId;
+}
+
 export function parseRequestKey(raw: string): RequestKey {
 	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) throw new Error("Request key must be a UUID v4");
 	return raw as RequestKey;

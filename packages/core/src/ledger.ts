@@ -7,7 +7,7 @@
 //
 // Credits never enter this file. credits.ts has its own unit brand.
 
-import type { Branded, Instant, JobId, OperatorId } from "./ids.ts";
+import type { Branded, Instant, JobId, OperatorId, PayoutBatchId } from "./ids.ts";
 
 /** Non-negative safe integer. 420.00 USD is 42000. */
 export type UsdCents = Branded<number, "UsdCents">;
@@ -194,6 +194,19 @@ export type TreasuryEntry =
 		readonly operator: OperatorId;
 		readonly cents: UsdCents;
 		readonly cause: "NET_BELOW_PROMISE" | "REFUND_DEBITED_OPERATOR";
+		readonly at: Instant;
+	}
+	/**
+	 * The payout that settled an owed reimbursement. The operator received `paid` and PayPal took `fee`
+	 * from the platform on top of it (measured: 0.25 USD for one item). The batch names the provider
+	 * resource the line came from.
+	 */
+	| {
+		readonly kind: "PAYOUT_FEE_PAID";
+		readonly jobId: JobId;
+		readonly batchId: PayoutBatchId;
+		readonly paid: UsdCents;
+		readonly fee: UsdCents;
 		readonly at: Instant;
 	};
 

@@ -973,13 +973,16 @@ const refundEvidence = (refunded = usd("420.00"), retainedProcessorFee = usd("15
 function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>; readonly merge?: Ports["github"]["merge"] } = {}) {
 	const store = new SqliteStore(":memory:");
 	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), wakeAt(row));
+	// The timer scan loads the credits of every bidder on the row, so the harness stores one.
+	const account = grant("devon-ops" as OperatorId);
+	store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
 	const base = fixture();
 	let current = now;
 	const raised: string[] = [];
 	const ports: Ports = { ...base.ports, store, clock: { now: () => current },
 		alerts: { raise: async effect => { raised.push(effect.reason); } },
 		github: { merge: options.merge ?? (async () => "MERGED") },
-		paypal: { ...base.paypal, ...options.paypal } };
+		paypal: { ...base.ports.paypal, ...options.paypal } };
 	const enqueue = (effect: JobEffect) => {
 		const key = operationKey(effect);
 		const state = { kind: "READY", runAt: now };
@@ -1072,19 +1075,31 @@ test("a release that does not name the selected disposition is never applied", (
 });
 
 test("a released net below the promise is owed back to the operator and alerted", () => {
+	// The capture is where the variance is observed: the card fee came in at 16.15, not the quoted 15.15,
+	// so the operator nets 359.00 and the release pays exactly that. The release still adds up to the held
+	// gross, which is why the ledger takes the capture's observed fee with the payout's observed net.
 	const approved = approvedRow();
-	// The capture's own breakdown fixed the fee at 15.15, so a lower net means a higher observed fee: the
-	// release still has to add up to the held gross, which is why the ledger takes the observed net and
-	// the capture's observed fee together.
-	const plan = applyJobCommand(approved, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence(usd("359.00")) }, system);
+	const verified = approved.state as Extract<typeof approved.state, { status: "VERIFIED" }>;
+	const observed = { ...verified.escrow, capture: { ...verified.escrow.capture, processorFee: usd("16.15"), sellerNet: usd("359.00") } };
+	const row: JobRow = { ...approved, state: { ...verified, escrow: observed } };
+	const plan = applyJobCommand(row, { type: "ReleaseSettled", jobId: row.id, release: releaseEvidence(usd("359.00")) }, system);
 	if (typeof plan === "string") throw new Error(plan);
 	assert.equal(plan.next.state.status, "PAID");
 	const state = plan.next.state as Extract<typeof plan.next.state, { status: "PAID" }>;
-	assert.deepEqual(state.treasury, [{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: approved.id,
-		operator: "devon-ops" as OperatorId, cents: 100, cause: "NET_BELOW_PROMISE", at: later }]);
+	assert.deepEqual(state.book, [
+		{ kind: "HELD", cents: 42000, at: now },
+		{ kind: "RELEASED", cents: 35900, at: later },
+		{ kind: "FEE", cents: 6100, processor: 1615, acquit: 4485, at: later },
+	]);
+	assert.equal(checkLaws(state.book), "PAID");
+	assert.deepEqual(state.treasury, [
+		{ kind: "PROCESSOR_FEE_VARIANCE", jobId: row.id, predicted: 1515, observed: 1615, at: later },
+		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: row.id, operator: "devon-ops" as OperatorId, cents: 100,
+			cause: "NET_BELOW_PROMISE", at: later },
+	]);
 	assert.deepEqual(plan.effects, [
-		{ kind: "MERGE", jobId: approved.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" },
-		{ kind: "ALERT", jobId: approved.id, reason: "OPERATOR_REIMBURSEMENT_OWED" },
+		{ kind: "MERGE", jobId: row.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" },
+		{ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" },
 	]);
 });
 
@@ -1146,8 +1161,11 @@ test("the capture-age cutoff refunds work the verifier never passed", () => {
 });
 
 test("the capture-age cutoff releases verified work, and a pending settlement only alerts", () => {
+	// Work that is verified late: the review window outlives the cutoff, so the watchdog releases rather
+	// than letting the escrow sit past day 21. The verifier passed, so the contract was met.
 	const verified = verifiedRow();
-	const held = { ...verified, contract: { ...verified.contract, deliveryEndsAt: instant("2026-11-03T12:00:00Z") } };
+	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
+	const held: JobRow = { ...verified, state: { ...state, review: { phase: "AWAITING_CLIENT", endsAt: instant("2026-11-01T12:00:00Z") } } };
 	assert.equal(wakeAt(held), cutoff);
 	const released = applyJobCommand(held, { type: "TimerDue", jobId: held.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
 	if (typeof released === "string") throw new Error(released);

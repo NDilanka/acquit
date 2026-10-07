@@ -8,8 +8,8 @@ import { creditWeek, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
-import { applyJobCommand, projectJob, TERMS, wakeAt } from "./job.ts";
-import type { JobCommand, JobEffect, JobRow, Loaded, SystemJobCommand } from "./job.ts";
+import { applyJobCommand, effectWanted, projectJob, TERMS, wakeAt } from "./job.ts";
+import type { JobCommand, JobEffect, JobRow, Loaded, MergeProgress, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
@@ -26,9 +26,9 @@ export type Effect = JobEffect | OperatorEffect;
 export type OperationKey = Branded<string, "OperationKey">;
 
 export function operationKey(effect: Effect): OperationKey {
-	// TODO CREATE_ORDER and CAPTURE use (jobId, kind, round). START_VERIFIER uses (jobId, kind, run).
-	// TODO RELEASE, REFUND, MERGE use (jobId, kind). One release and one refund key per job, ever.
-	// TODO PAYPAL_ONBOARD uses (operator, kind). ALERT uses (jobId, kind, reason).
+	// CREATE_ORDER and CAPTURE use (jobId, kind, round). START_VERIFIER uses (jobId, kind, run).
+	// RELEASE, REFUND, REIMBURSE, and MERGE use (jobId, kind). One release and one refund key per job, ever.
+	// PAYPAL_ONBOARD uses (operator, kind). ALERT uses (jobId, kind, reason).
 	const owner = "jobId" in effect ? effect.jobId : effect.operator;
 	const round = "round" in effect ? effect.round : effect.kind === "START_VERIFIER" ? effect.attempt.run : effect.kind === "ALERT" ? effect.reason : "";
 	// PayPal's request-id has a 38-character limit. This stable key is the same
@@ -47,6 +47,7 @@ export function toPayPalCall(effect: Effect): PayPalCall | null {
 		case "CAPTURE": return { kind: effect.kind, orderId: effect.orderId, payee: effect.payee };
 		case "RELEASE": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee };
 		case "REFUND": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee, amount: effect.amount };
+		case "REIMBURSE": return { kind: effect.kind, merchant: effect.merchant, amount: effect.amount };
 		case "PAYPAL_ONBOARD": return { kind: "ONBOARD", operator: effect.operator };
 		default: return null;
 	}
@@ -57,6 +58,9 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 	switch (observation.kind) {
 		case "ORDER_APPROVED": return { type: "BuyerApproved", jobId, orderId: observation.orderId };
 		case "CAPTURE_COMPLETED": return { type: "CaptureCompleted", jobId, capture: observation.capture };
+		case "RELEASE_COMPLETED": return { type: "ReleaseSettled", jobId, release: observation.release };
+		case "REFUND_COMPLETED": return { type: "RefundSettled", jobId, refund: observation.refund };
+		case "REIMBURSEMENT_COMPLETED": return { type: "ReimbursementSettled", jobId, reimbursement: observation.reimbursement };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
 }
@@ -216,27 +220,47 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, ackn
 }
 
 export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"IDLE" | "WORKED"> {
-	// TODO Lease one row. For a row that was LEASED or UNCERTAIN before, reconcile first.
-	// TODO dispatch only when reconcile says NOT_FOUND. CONFIRMED feeds the observation, with acknowledge, in one commit.
-	// TODO UNKNOWN or PENDING becomes UNCERTAIN with a backoff. It never selects another disposition.
-	// TODO PERMANENT_FAILURE on CREATE_ORDER or CAPTURE feeds FundingFailed. On RELEASE or REFUND it is NEEDS_HUMAN.
+	// Lease one row. For a row that was LEASED or UNCERTAIN before, reconcile first; dispatch only when
+	// reconcile says NOT_FOUND. CONFIRMED feeds the observation, with acknowledge, in one commit.
+	// UNKNOWN or PENDING becomes UNCERTAIN with a backoff. It never selects another disposition.
+	// PERMANENT_FAILURE on CREATE_ORDER or CAPTURE feeds FundingFailed. On a settlement it parks for a person.
 	const now = ports.clock.now();
 	const row = await ports.store.leaseEffect(now, instant(new Date(Date.parse(now) + 120_000).toISOString()), key);
 	if (!row) return "IDLE";
 	const effect = row.effect;
 	if (effect.kind === "START_VERIFIER") return dispatchVerifierStart(ports, row.key, effect, now);
 	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now, row.state);
-	if (effect.kind !== "CREATE_ORDER" && effect.kind !== "CAPTURE") {
+	if (effect.kind === "MERGE") return dispatchMerge(ports, row.key, effect, now);
+	if (effect.kind === "ALERT") {
+		try { await ports.alerts.raise(effect); }
+		catch (error) {
+			// An undeliverable alert is itself a fact a person has to see, and it is not retried blindly.
+			await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "ALERT_UNDELIVERED",
+				detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
+			return "WORKED";
+		}
+		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	const call = toPayPalCall(effect);
+	// PAYPAL_ONBOARD belongs to an operator row, and the skeleton has no onboarding effect to deliver.
+	if (call === null || !("jobId" in effect)) {
 		await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "OUTSIDE_SKELETON" });
 		return "WORKED";
 	}
 	const job = await ports.store.readJob(effect.jobId);
-	// A cancelled/expired create must never create a fresh payable order.
-	if (!job || job.state.status !== "OPEN" || job.state.phase.kind !== "FUNDING" ||
-		job.state.phase.round !== effect.round || (effect.kind === "CREATE_ORDER" && job.state.phase.checkout.phase !== "CREATING_ORDER")) {
+	if (!job) { await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED"; }
+	if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
+		// A cancelled/expired create must never create a fresh payable order.
+		if (job.state.status !== "OPEN" || job.state.phase.kind !== "FUNDING" ||
+			job.state.phase.round !== effect.round || (effect.kind === "CREATE_ORDER" && job.state.phase.checkout.phase !== "CREATING_ORDER")) {
+			await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED";
+		}
+	} else if (!effectWanted(job, effect)) {
+		// The row no longer holds the disposition this money movement belongs to: deliver it as done and
+		// never move money the row did not ask for.
 		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED";
 	}
-	const call = toPayPalCall(effect)!;
 	try {
 		let outcome: RemoteOutcome = { kind: "NOT_FOUND" };
 		if (row.state.kind !== "READY") outcome = await ports.paypal.reconcile(call, providerRequestId(row.key));
@@ -250,7 +274,12 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 				await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
 			} else await applySystemCommand(ports, command, row.key, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
-			await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, row.key, null);
+			if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
+				await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, row.key, null);
+			} else {
+				// A refused settlement is never retried, and it is never turned into another disposition.
+				await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
+			}
 		} else await ports.store.recordEffect(row.key, interpret(outcome, row, ports.clock.now()));
 	} catch {
 		await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
@@ -355,6 +384,27 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 		return "WORKED";
 	}
 	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+	return "WORKED";
+}
+
+/**
+ * Merges the pull request the verifier opened. The App client reads the pull before it merges, so a
+ * retry after an unknown answer adopts a merge that landed instead of opening a second one.
+ */
+async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "MERGE" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+	const job = await ports.store.readJob(effect.jobId);
+	// Only a paid job merges, and only once: a merge already recorded is delivered, not retried.
+	if (!job || job.state.status !== "PAID" || job.state.merge.phase !== "PENDING") {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	let outcome: "MERGED" | "UNKNOWN" | "CONFLICT";
+	try { outcome = await ports.github.merge(effect, providerRequestId(key)); }
+	catch { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
+	if (outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
+	// A conflict is not retried: the row names it and a person resolves it.
+	const progress: MergeProgress = outcome === "MERGED" ? { phase: "MERGED", at: now } : { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };
+	await applySystemCommand(ports, { type: "MergeFinished", jobId: effect.jobId, outcome: progress }, key, null);
 	return "WORKED";
 }
 
