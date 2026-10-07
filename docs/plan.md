@@ -38,14 +38,15 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### Spawn owners
 
-- [ ] Spawn one owner per PR with the full lifecycle the execution playbook names. Each owner works in its own git worktree under `D:\dev\Apps\acquit-worktrees\<pr-id>`. Each owner's prompt opens with the poteto-agent line from `skills/poteto-mode/references/droid-tools.md`, so the owner reads the poteto-mode SKILL.md in full before any work.
+- [ ] Spawn one owner per PR with the full lifecycle the execution playbook names. Each owner works in its own git worktree under `/home/factory-user/repos/acquit-worktrees/<pr-id>`. Each owner's prompt opens with the poteto-agent line from `skills/poteto-mode/references/droid-tools.md`, so the owner reads the poteto-mode SKILL.md in full before any work.
   - [ ] Backend code owners for H0, F3, F2, F4, F5, and F6 run on `pv-sol-high`.
   - [ ] The F1 owner runs on `pv-grok-xhigh`, per the roadmap role for the ledger.
   - [ ] Every file under `apps/web/` is written by a `pv-opus-medium` delegate, in every PR. F7's owner runs on `pv-opus-medium`.
 - [ ] Follow this dependency graph. The stack is linear, so each PR branches from its parent's branch tip.
   - [ ] H0 is first. It branches from `main`.
   - [ ] F1 after H0.
-  - [ ] F3 after F1.
+  - [ ] H1 after F1. H1 makes lane control work on Linux, after the program moved off Windows on 2026-10-06.
+  - [ ] F3 after H1.
   - [ ] F2 after F3.
   - [ ] F4 after F2.
   - [ ] F5 after F4.
@@ -62,7 +63,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] F6 touches only `packages/core/src/operator.ts`, `packages/house/**`, `scripts/seed.ts`, `packages/core/src/seed-data.ts`, `apps/web/src/pages/JobPage.tsx`, and their tests.
   - [ ] F7 touches only `apps/web/**` and `apps/api/src/**` for read routes the pages need.
   - [ ] Every PR that changes a user path updates its feature file under `.factory/skills/verify-acquit/features/` in the same PR.
-- [ ] Hold the review gate. F3, F2, F4, F5, F6, and F7 change an interaction. They wait for the operator's review in chat with screenshots and a video before the operator lands them.
+- [ ] Hold the review gate. F3, F2, F4, F5, F6, and F7 change an interaction. Each posts its screenshots and video in chat before it lands.
 
 ### PR mechanics, for every PR
 
@@ -79,14 +80,15 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] At the code-ready head SHA and at each later push that changes the patch, run the swarm per the swarm skill. One gates lane. The ten live lanes from the PR's **Verify, live** block. The perf lane from its **Verify, perf** block. Two or more audit lanes, each with its own focus, that read the diff and the receipts and distrust the PR body. The root audits the receipts in the merge-ready report before the verdict.
 - [ ] Give audit lanes these focuses at least. One audits money paths against the three ledger laws and the idempotence rules in `docs/architecture/rationale.md`. One audits secret handling and evidence sanitizing per the verify-acquit Hard rules.
 - [ ] Clean only when every lane is `PASS`. Findings go back to the owner, including a defect that a lane filed as a note. A new head gets a fresh swarm and a fresh verdict, except for results that stay valid under the patch-id rule in `playbooks/shipping.md`.
+- [ ] Since 2026-10-07 the operator has delegated merges to the root. The root lands each PR through the Shipping playbook once its verdict is clean and the PR sits at the bottom of the stack. It retargets the PR to `main`, checks that `git patch-id --stable` still matches the verdict, and merges with a merge commit pinned to the verdict SHA. A squash would force-push every child branch. The per-PR lines below that say the operator lands a PR mean this.
 - [ ] On a clean verdict, the root appends the PR to the stack. It rebases the branch onto the exact parent tip, checks `git ls-remote`, pushes with `--force-with-lease`, and sets the PR base to the parent branch. A rebase that leaves `git patch-id --stable` unchanged keeps the verdict. A changed patch-id sends the PR back for a fresh swarm. No owner merges, arms auto-merge, or closes.
 
 ### Boot recipe, for every live lane
 
 Each live lane runs on this machine in its own git worktree and its own lane slot. Drive the web UI through `agent-browser` and both CLIs through `tuistory`. H0 builds the lane slot. Before H0 lands, H0's own lanes use the slots that H0's head provides.
 
-- [ ] `git fetch origin <head-branch>` then `git worktree add D:\dev\Apps\acquit-lanes\<pr-id>-<n> <head SHA>`, then `npm install` in that worktree.
-- [ ] Set `ACQUIT_LANE=<n>`. The slot gives API port `4310 + 10n`, web port `5173 + 10n`, database `data/verify/lane-<n>/acquit.db`, run state `data/ctl/lane-<n>/`, browser session `verify-acquit-lane-<n>`, and from F3 on the client repo `invoice-app-lane-<n>`. Run the verify-acquit Launch preflight, then `npm run ctl -- start --timeout 60` through Execute with `fireAndForget:true`, then `seed-db --yes` and Doctor. Require `healthy:true`.
+- [ ] `git fetch origin <head-branch>` then `git worktree add /home/factory-user/repos/acquit-lanes/<pr-id>-<n> <head SHA>`, then `npm install` in that worktree.
+- [ ] Set `ACQUIT_LANE=<n>`. The slot gives API port `4310 + 10n`, web port `5173 + 10n`, database `data/verify/lane-<n>/acquit.db`, run state `data/ctl/lane-<n>/`, browser session `verify-acquit-lane-<n>`, and from F3 on the shared client repo `NDilanka/invoice-app` with one work repo per job, `acquit-forks/invoice-app-<job uuid>`. Run the verify-acquit Launch preflight, then `npm run ctl -- start --timeout 60` through Execute with `fireAndForget:true`, then `seed-db --yes` and Doctor. Require `healthy:true`.
 - [ ] Deliver input only through `agent-browser` with the lane's session, `tuistory`, and the operator CLI commands. Read-only diagnostics are `npm run ctl -- status`, `npm run ctl -- ledger --job <id> --json`, `GET /api/jobs/:id`, and sandbox GET calls made by the verify-acquit helpers. Assert on per-transaction PayPal values, never on a merchant balance, because lanes share the sandbox merchants.
 - [ ] Save every screenshot to `data/evidence/swarm-<pr-id>/worker-<n>/<slug>.png` and return the paths with the report.
 - [ ] Run verify-acquit Cleanup for the lane slot after every run, pass or fail.
