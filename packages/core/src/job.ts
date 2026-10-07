@@ -231,6 +231,8 @@ export type PaidState = {
 	readonly receipt: Receipt;
 	/** The release the receipt was built from: the referenced payout item that paid the operator. */
 	readonly release: ReleaseEvidence;
+	/** The authority the release was selected under. A row stored before F4 reads as null at the store boundary. */
+	readonly releaseAuthority: ReleaseIntent["authority"] | null;
 	readonly merge: MergeProgress;
 	readonly treasury: readonly TreasuryEntry[];
 };
@@ -593,8 +595,36 @@ function transitionTable(): {
 				state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: facts.now } } } },
 				credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
 		} },
-		Dispute: { by: "CLIENT", apply: unimplemented },
-		ResolveDispute: { by: "ARBITER", apply: unimplemented },
+		Dispute: { by: "CLIENT", apply: (row, command, facts) => {
+			// A dispute names the same judged artifact an approval would: a moved head is refused by name.
+			if (row.state.review.phase !== "AWAITING_CLIENT" || facts.now >= row.state.review.endsAt) return "REVIEW_CLOSED";
+			if (command.mergeCommit !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
+			// The review clock pauses here: the row keeps no endsAt in DISPUTED, and wakeAt holds the
+			// arbiter's resolveBy instead, so the old deadline can never release the escrow.
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { ...row.state, review: { phase: "DISPUTED", reason: command.reason, openedAt: facts.now,
+					resolveBy: addHours(facts.now, hours(TERMS.disputeResolutionHours)) } } }, credits: [], effects: [] };
+		} },
+		ResolveDispute: { by: "ARBITER", apply: (row, command, facts) => {
+			if (row.state.review.phase !== "DISPUTED") return "WRONG_STATE";
+			if (command.verdict === "UPHOLD") {
+				return { next: { ...row, version: (row.version + 1) as Version,
+					state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "ARBITER_UPHELD", selectedAt: facts.now } } } },
+					credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
+			}
+			if (command.verdict === "REFUND") {
+				return { next: { ...row, version: (row.version + 1) as Version,
+					state: { ...row.state, review: { phase: "REFUND_PENDING", refund: { reason: "ARBITER_REFUND", selectedAt: facts.now } } } },
+					credits: [], effects: [refundIntent(row.id, row.state.escrow)] };
+			}
+			// REWORK hands the work back with the pass kept in history. It needs a slot and a live deadline,
+			// because a fourth judged attempt cannot be reserved and a passed deadline refunds, not reworks.
+			if (facts.now >= row.contract.deliveryEndsAt || row.state.history.length >= TERMS.maxAttempts) return "WRONG_STATE";
+			return { next: { ...row, version: (row.version + 1) as Version,
+				state: { status: "IN_PROGRESS", escrow: row.state.escrow,
+					attempts: { phase: "READY", history: row.state.history, runsStarted: row.state.runsStarted, failure: null } } },
+				credits: [], effects: [] };
+		} },
 		ReleaseSettled: { by: "SYSTEM", apply: (row, command) => {
 			const release = command.release;
 			// One disposition per job: a release is applied only to the release this row selected, and only
@@ -619,7 +649,8 @@ function transitionTable(): {
 			// The money is already out. A shortfall cannot be unwound, so it is owed back and named.
 			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
 			return { next: { ...row, version: (row.version + 1) as Version,
-				state: { status: "PAID", payee: escrow.payee, book, receipt, release, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
+				state: { status: "PAID", payee: escrow.payee, book, receipt, release, releaseAuthority: row.state.review.release.authority,
+					merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
 		} },
 		RefundSettled: { by: "SYSTEM", apply: (row, command) => {
 			const escrow = heldEscrowOf(row);
@@ -880,6 +911,8 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	if (row.state.status === "VERIFIED") {
 		switch (command.type) {
 			case "Approve": return table.Approve.apply(row as Verified, command, facts);
+			case "Dispute": return table.Dispute.apply(row as Verified, command, facts);
+			case "ResolveDispute": return table.ResolveDispute.apply(row as Verified, command, facts);
 			default: return "WRONG_STATE";
 		}
 	}
@@ -1091,6 +1124,15 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		// The page gates Approve on this answer, not on the viewer's role. The edge is still the guard.
 		viewerCanApprove: viewer.role === "CLIENT" && viewer.clientId === row.client &&
 			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",
+		// The same ownership gate for Dispute: only the owning client, and only while the review is open.
+		viewerCanDispute: viewer.role === "CLIENT" && viewer.clientId === row.client &&
+			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",
+		// The paused review, served whole so the page can show the reason and the arbiter's deadline.
+		dispute: state.status === "VERIFIED" && state.review.phase === "DISPUTED"
+			? { reason: state.review.reason, openedAt: state.review.openedAt, resolveBy: state.review.resolveBy } : null,
+		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
+		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
+			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,
 		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : held ? "HELD" : "NONE",
 		approveUrl: funding?.checkout.phase === "AWAITING_APPROVAL" && viewer.role === "CLIENT" && viewer.clientId === row.client ? funding.checkout.approveUrl : null,
 		ledger, attempts: { used, left: TERMS.maxAttempts - used, last: state.status === "PAID" ? "VERIFIED" : judged.at(-1)?.result ?? null,

@@ -5,7 +5,7 @@ import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, Recorde
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
-import type { JobRow, JobState } from "./job.ts";
+import type { JobRow, JobState, PaidState, ReleaseIntent } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
@@ -56,7 +56,7 @@ export function isStoreBusy(error: unknown): boolean {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) }, state: storedMerge(row.state) };
+	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) }, state: storedPaid(storedMerge(row.state)) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
 	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
@@ -67,6 +67,12 @@ function storedMerge(state: JobState): JobState {
 	if (state.status !== "PAID" || state.merge.phase !== "MERGED") return state;
 	const merge = state.merge as { readonly at: Instant; readonly sha?: CommitSha | null };
 	return { ...state, merge: { phase: "MERGED", at: merge.at, sha: merge.sha ?? null } };
+}
+/** A paid row stored before the release authority was recorded holds none. This read types that absence. */
+function storedPaid(state: JobState): JobState {
+	if (state.status !== "PAID") return state;
+	const paid = state as PaidState & { readonly releaseAuthority?: ReleaseIntent["authority"] | null };
+	return { ...paid, releaseAuthority: paid.releaseAuthority ?? null };
 }
 /**
  * A row written before a failure carried its name stored one `reason` string. Split it here, at the
