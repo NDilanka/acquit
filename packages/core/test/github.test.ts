@@ -61,7 +61,7 @@ type Stub = {
 		readonly refs: Map<string, string>;
 		readonly commits: Map<string, Set<string>>;
 		/** Commits a repository can take only after this many refused ref writes, as a fresh fork push is. */
-		readonly propagating: Map<string, { remaining: number }>;
+		readonly propagating: Map<string, { remaining: number; message: string }>;
 		readonly pulls: StubPull[];
 		readonly checks: StubCheck[];
 		/** Mutable, like the operator installing the App while the process runs. */
@@ -76,8 +76,9 @@ type Stub = {
 	/** The next fork answers 202 with this full_name instead of the requested one. */
 	forkAs(name: string | null): void;
 	/** The repository takes this commit only after this many refused ref writes, the way GitHub exposes
-	 * a fresh fork push to the rest of the fork network after a delay. */
-	propagate(repository: string, sha: string, afterRefusals: number): void;
+	 * a fresh fork push to the rest of the fork network after a delay. `message` is the wording those
+	 * refusals carry: the live create answered both of the texts a late fork commit produces. */
+	propagate(repository: string, sha: string, afterRefusals: number, message?: string): void;
 	hang(path: string): void;
 	close(): Promise<void>;
 };
@@ -86,7 +87,7 @@ type Stub = {
 async function createGitHubStub(options: { readonly appId: string; readonly publicKey: string;
 	readonly installations: readonly { readonly id: number; readonly account: string }[] }): Promise<Stub> {
 	const state = { repos: new Map<string, StubRepo>(), refs: new Map<string, string>(), commits: new Map<string, Set<string>>(),
-		propagating: new Map<string, { remaining: number }>(), pulls: [] as StubPull[], checks: [] as StubCheck[],
+		propagating: new Map<string, { remaining: number; message: string }>(), pulls: [] as StubPull[], checks: [] as StubCheck[],
 		installations: [...options.installations], mints: [] as { owner: string; token: string }[], requests: [] as StubRequest[],
 		forks: [] as string[] };
 	const refusals: StubRefusal[] = [];
@@ -114,18 +115,19 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		return minted === undefined ? null : { kind: "installation", owner: minted.owner };
 	};
 	const segmentsOf = (path: string): string[] => path.split("?")[0]!.split("/").filter(Boolean);
-	/** A ref write naming an object the repository does not have yet. A propagating commit becomes
-	 * present after the refusals the test asked for, the way GitHub indexes a fresh fork push. */
-	const commitMissing = (repository: string, sha: string): boolean => {
+	/** A ref write naming an object the repository does not have yet, or the wording it answers. A
+	 * propagating commit becomes present after the refusals the test asked for, the way GitHub indexes
+	 * a fresh fork push. */
+	const commitMissing = (repository: string, sha: string): { readonly message: string } | null => {
 		const key = `${repository}:${sha}`;
 		const arriving = state.propagating.get(key);
 		if (arriving !== undefined) {
-			if (arriving.remaining > 0) { arriving.remaining -= 1; return true; }
+			if (arriving.remaining > 0) { arriving.remaining -= 1; return { message: arriving.message }; }
 			state.commits.get(repository)?.add(sha);
 			state.propagating.delete(key);
-			return false;
+			return null;
 		}
-		return !(state.commits.get(repository)?.has(sha) ?? false);
+		return state.commits.get(repository)?.has(sha) ?? false ? null : { message: "Object does not exist" };
 	};
 	const route = (method: string, path: string, body: Record<string, unknown>,
 		auth: { readonly kind: "app" } | { readonly kind: "installation"; readonly owner: string }, response: ServerResponse): void => {
@@ -186,7 +188,8 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			const branch = String(body.ref).replace(/^refs\/heads\//, "");
 			const sha = String(body.sha);
 			// The live API's answer for a sha the repository cannot reach, measured on a fresh fork push.
-			if (commitMissing(repository, sha)) return json(response, 422, { message: "Object does not exist" });
+			const missing = commitMissing(repository, sha);
+			if (missing) return json(response, 422, { message: missing.message });
 			state.refs.set(`${repository}:${branch}`, sha);
 			return json(response, 201, { ref: String(body.ref), object: { sha, type: "commit" } });
 		}
@@ -194,7 +197,8 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		if (method === "PATCH" && refPatch) {
 			const sha = String(body.sha);
 			// The live API refuses to point a ref at an object the repository does not have, as its create route does.
-			if (commitMissing(repository, sha)) return json(response, 422, { message: "Object does not exist" });
+			const missing = commitMissing(repository, sha);
+			if (missing) return json(response, 422, { message: missing.message });
 			state.refs.set(`${repository}:${refPatch[1]}`, sha);
 			return json(response, 200, { ref: `refs/heads/${refPatch[1]}`, object: { sha, type: "commit" } });
 		}
@@ -303,7 +307,7 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		refuse(item) { refusals.push({ method: item.method, path: item.path, status: item.status,
 			message: item.message ?? "refused by the stub", headers: item.headers ?? {}, once: item.once ?? false }); },
 		forkAs(name) { forkAs = name; },
-		propagate(repository, sha, afterRefusals) { state.propagating.set(`${repository}:${sha}`, { remaining: afterRefusals }); },
+		propagate(repository, sha, afterRefusals, message = "Object does not exist") { state.propagating.set(`${repository}:${sha}`, { remaining: afterRefusals, message }); },
 		hang(prefix) { hangs.push(prefix); },
 		close: async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
 	};
@@ -468,23 +472,47 @@ test("a commit pushed to the client repo becomes a same-repo pull request with a
 	assert.equal(published.checkRunUrl, stub.state.checks.at(0)?.html_url);
 });
 
-test("a fresh fork commit the client repository takes late converges on the client branch, never a fork pull request", async t => {
+test("a fresh fork commit the client repository takes late converges on the client branch for both of the create's refusals", async t => {
+	// The submitter pushed the commit to the job's fork. GitHub exposes a fresh fork commit to the
+	// client repository — the fork network's parent — only after it has indexed the push. The live
+	// first publish answered "Object does not exist", and on the next run the identical POST answered
+	// "Reference update failed" for about two minutes before it answered 201. Both mean the object is
+	// not visible there yet, so both wait out the same convergence budget.
+	for (const message of ["Object does not exist", "Reference update failed"]) {
+		const { port, stub, close } = await withStub();
+		try {
+			await port.createWorkRepo(workRepoRequest, "req-1");
+			stub.state.commits.get(WORK_REPO)?.add(SUBMITTED);
+			stub.propagate(CLIENT, SUBMITTED, 2, message);
+			const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");
+			assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), SUBMITTED, message);
+			assert.equal(stub.state.pulls.at(0)?.head, `${CLIENT_OWNER}:acquit/${JOB}`, message);
+			assert.equal(stub.state.checks.at(0)?.repo, CLIENT, message);
+			assert.equal(stub.state.checks.at(0)?.head_sha, SUBMITTED, message);
+			assert.equal(published.mergeCommit, SUBMITTED, message);
+			// The client repository took the commit, so the fork never carries the publisher's branch.
+			assert.equal(stub.state.refs.has(`${WORK_REPO}:acquit/${JOB}`), false, message);
+			// The create waited: two refusals, then the write that landed.
+			assert.equal(stub.state.requests.filter(request => request.method === "POST" && request.path === `/repos/${CLIENT}/git/refs`).length, 3, message);
+		} finally { await close(); }
+	}
+});
+
+test("the create's other wording is not accepted on the branch move", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
 	await port.createWorkRepo(workRepoRequest, "req-1");
-	// The submitter pushed the commit to the job's fork. GitHub exposes a fresh fork commit to the
-	// client repository — the fork network's parent — only after it has indexed the push, so the ref
-	// write answers 422 until then.
-	stub.state.commits.get(WORK_REPO)?.add(SUBMITTED);
-	stub.propagate(CLIENT, SUBMITTED, 2);
-	const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");
-	assert.equal(stub.state.refs.get(`${CLIENT}:acquit/${JOB}`), SUBMITTED);
-	assert.equal(stub.state.pulls.at(0)?.head, `${CLIENT_OWNER}:acquit/${JOB}`);
-	assert.equal(stub.state.checks.at(0)?.repo, CLIENT);
-	assert.equal(stub.state.checks.at(0)?.head_sha, SUBMITTED);
-	assert.equal(published.mergeCommit, SUBMITTED);
-	// The client repository took the commit, so the fork never carries the publisher's branch.
+	// "Reference update failed" is the create's own wording for a not-yet-visible object. A branch move
+	// is not the create: reading this text as an absent object there would burn the budget and branch
+	// the fork for a reason GitHub never named.
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, HEAD);
+	stub.refuse({ method: "PATCH", path: `/repos/${CLIENT}/git/refs/heads/acquit/${JOB}`, status: 422, message: "Reference update failed" });
+	const failure = await refusal(port.publishVerified(publishRequest, "req-2"));
+	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
+	assert.equal(failure.status, 422);
+	assert.match(failure.detail, /Reference update failed/);
 	assert.equal(stub.state.refs.has(`${WORK_REPO}:acquit/${JOB}`), false);
+	assert.deepEqual(stub.state.pulls, []);
 });
 
 test("a commit the client repository never takes is branched on the fork, and GitHub refuses the cross-repo pull request", async t => {
