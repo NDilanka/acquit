@@ -4,15 +4,15 @@ import { randomUUID } from "node:crypto";
 import { commercialSplit, checkLaws, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
-import { executeCommand, applySystemCommand, confirmFunding, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
+import { executeCommand, applySystemCommand, confirmFunding, ingestPayPalWebhook, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { Ports } from "../src/effects.ts";
 import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
 import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
-import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
-import type { Bps, PayPal, RefundEvidence, ReleaseEvidence, RemoteOutcome } from "../src/paypal.ts";
+import { createPayPal, parseCapture, parseWebhookEnvelope, quote } from "../src/paypal.ts";
+import type { Bps, PayPal, RefundEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
 import { GitHubAppError } from "../src/github.ts";
 import type { GitHubFailureCode } from "../src/github.ts";
@@ -67,6 +67,8 @@ function fixture() {
 		platformFee: usd("44.85"), sellerNet: usd("360.00"), capturedAt: now,
 	};
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	/** What the route's re-read answers for one resource id. An id the test never registers is unknown to PayPal. */
+	const reads = new Map<string, ResourceRead>();
 	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => currentNow }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal: {
 			dispatch: async call => {
@@ -78,10 +80,12 @@ function fixture() {
 			reconcile: async () => ({ kind: "NOT_FOUND" }),
 			getOrder: async () => approved ? { kind: "CONFIRMED", observation: { kind: "ORDER_APPROVED", orderId: capture.orderId } }
 				: { kind: "PENDING", checkAt: now } as RemoteOutcome,
-			parseWebhook: unimplemented,
+			parseWebhook: async request => parseWebhookEnvelope(await request.text()),
+			readResource: async resource => reads.get(resource.id) ?? { kind: "UNKNOWN" },
 		} };
 	return { store, ports, capture, dispatches: () => dispatches, captureCalls: () => captureCalls,
-		approve: () => { approved = true; }, advance: (at: string) => { currentNow = instant(at); } };
+		approve: () => { approved = true; }, advance: (at: string) => { currentNow = instant(at); },
+		read: (id: string, read: ResourceRead) => { reads.set(id, read); } };
 }
 const openCommand: UserCommand = { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
 	budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z") };
@@ -1324,4 +1328,130 @@ test("the merge effect finishes the paid job, and a conflict parks it for a huma
 		assert.deepEqual(state.merge, { phase: "PENDING" });
 		assert.equal(unknown.effectState(key).kind, "UNCERTAIN");
 	} finally { unknown.store.close(); unknown.base.store.close(); }
+});
+
+/** One delivery as posted. The route re-reads the resource the envelope points at, and trusts nothing else. */
+const captureEnvelope = (eventId: string, captureId = "TESTCAPTURE") => JSON.stringify({ id: eventId,
+	event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: captureId } });
+const delivered = (ports: Ports, body: string) => ingestPayPalWebhook(ports, new Request("http://localhost:4310/paypal/webhook", { method: "POST", body }));
+const outcomeOf = async (response: Response) => (await response.json() as { readonly outcome: string }).outcome;
+const recordedEvents = (store: SqliteStore) => store.db.prepare("SELECT id, outcome FROM webhook_events ORDER BY rowid")
+	.all().map(row => ({ id: String(row.id), outcome: String(row.outcome) }));
+/** A fixture job funded to IN_PROGRESS through the checkout edges, holding capture TESTCAPTURE. */
+async function heldFixture() {
+	const f = fixture();
+	const job = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+	const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: job.id,
+		price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+	if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+	await executeCommand(f.ports, maya, requestKey(), { type: "AcceptBid", jobId: job.id, bidId: bid.result.bid });
+	f.approve();
+	assert.equal(await confirmFunding(f.ports, maya, job.id), true);
+	const held = await f.store.readJob(job.id);
+	if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
+	return { f, jobId: job.id, held };
+}
+
+test("a capture webhook completes a funding the inline path never confirmed", async () => {
+	const f = fixture();
+	try {
+		const job = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+		const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: job.id,
+			price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		await executeCommand(f.ports, maya, requestKey(), { type: "AcceptBid", jobId: job.id, bidId: bid.result.bid });
+		// The buyer approved but the capture answer was lost, so the job waits in CAPTURING for the event.
+		await applySystemCommand(f.ports, { type: "BuyerApproved", jobId: job.id, orderId: f.capture.orderId }, null, null);
+		const waiting = await f.store.readJob(job.id);
+		assert.equal(waiting?.state.status, "OPEN");
+		assert.equal(f.captureCalls(), 0);
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const response = await delivered(f.ports, captureEnvelope("WH-CAPTURE-1"));
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { ok: true, outcome: "applied", jobId: job.id, edge: "CaptureCompleted", changed: true });
+		const held = await f.store.readJob(job.id);
+		assert.equal(held?.state.status, "IN_PROGRESS");
+		assert.equal(held?.version, (waiting?.version ?? 0) + 1);
+		if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
+		assert.deepEqual(held.state.escrow.book, [{ kind: "HELD", cents: 42000, at: now }]);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-CAPTURE-1", outcome: "applied" }]);
+	} finally { f.store.close(); }
+});
+
+test("a capture webhook is consumed once: a redelivery and a new event id change nothing", async () => {
+	const { f, jobId, held } = await heldFixture();
+	try {
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const first = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
+		// The job already holds this capture, so the edge is a no-op even on the first delivery of the fact.
+		assert.deepEqual(await first.json(), { ok: true, outcome: "applied", jobId, edge: "CaptureCompleted", changed: false });
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		const replay = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
+		assert.equal(await outcomeOf(replay), "no-op, job already IN_PROGRESS");
+		const newId = await delivered(f.ports, captureEnvelope("WH-DUP-2"));
+		assert.equal(newId.status, 200);
+		assert.equal(await outcomeOf(newId), "no-op, job already IN_PROGRESS");
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		assert.equal(f.captureCalls(), 1);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-DUP-1", outcome: "applied" }, { id: "WH-DUP-2", outcome: "no-op, job already IN_PROGRESS" }]);
+	} finally { f.store.close(); }
+});
+
+test("a capture webhook on a paid job is consumed once and never touches the paid book", async () => {
+	const approved = approvedRow();
+	const harness = moneyHarness(approved);
+	try {
+		// The resource index a committed capture writes, so the route resolves the capture to this job.
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", approved.id);
+		assert.equal(await applySystemCommand(harness.ports, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence() }, null, null), "COMMITTED");
+		const paid = await harness.row();
+		assert.equal(paid.state.status, "PAID");
+		if (paid.state.status !== "PAID") throw new Error("Not paid");
+		harness.base.read("TESTCAPTURE", { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: harness.base.capture } });
+		const first = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
+		assert.deepEqual(await first.json(), { ok: true, outcome: "applied", jobId: approved.id, edge: "CaptureCompleted", changed: false });
+		const replay = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
+		assert.equal(await outcomeOf(replay), "no-op, job already PAID");
+		const newId = await delivered(harness.ports, captureEnvelope("WH-PAID-2"));
+		assert.equal(await outcomeOf(newId), "no-op, job already PAID");
+		const after = await harness.row();
+		assert.deepEqual(after.state.status === "PAID" ? after.state.book : null, paid.state.book);
+		assert.deepEqual(recordedEvents(harness.store), [{ id: "WH-PAID-1", outcome: "applied" }, { id: "WH-PAID-2", outcome: "no-op, job already PAID" }]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a webhook whose resource PayPal does not know is refused and no job moves", async () => {
+	const { f, jobId, held } = await heldFixture();
+	try {
+		const response = await delivered(f.ports, captureEnvelope("WH-UNKNOWN-1", "CAPTURE_PAYPAL_NEVER_HAD"));
+		assert.equal(response.status, 422);
+		assert.equal(await outcomeOf(response), "refused, PayPal does not know this capture");
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-UNKNOWN-1", outcome: "refused, PayPal does not know this capture" }]);
+	} finally { f.store.close(); }
+});
+
+test("an event family the deployment does not route is recorded and dropped", async () => {
+	const f = fixture();
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-SALE-1", event_type: "PAYMENT.SALE.COMPLETED",
+			resource_type: "sale", resource: { id: "SALE1" } }));
+		assert.equal(response.status, 200);
+		assert.equal(await outcomeOf(response), "no-op, event type not routed");
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-SALE-1", outcome: "no-op, event type not routed" }]);
+	} finally { f.store.close(); }
+});
+
+test("a body that is not an event envelope is refused and still recorded", async () => {
+	const f = fixture();
+	try {
+		const response = await delivered(f.ports, "not json");
+		assert.equal(response.status, 400);
+		assert.equal(await outcomeOf(response), "refused, unreadable event");
+		const rows = f.store.db.prepare("SELECT id, body, outcome FROM webhook_events").all();
+		assert.equal(rows.length, 1);
+		assert.match(String(rows[0]?.id), /^unreadable-[0-9a-f]{16}$/);
+		assert.equal(String(rows[0]?.body), "not json");
+		assert.equal(String(rows[0]?.outcome), "refused, unreadable event");
+	} finally { f.store.close(); }
 });

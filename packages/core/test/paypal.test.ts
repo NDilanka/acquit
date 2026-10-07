@@ -7,7 +7,7 @@ import test from "node:test";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
-import { createPayPal, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement } from "../src/paypal.ts";
+import { createPayPal, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope } from "../src/paypal.ts";
 import type { Bps, PayPalCall } from "../src/paypal.ts";
 
 const devon = "D3SSQU3ZEN7R2" as MerchantId;
@@ -75,6 +75,132 @@ const refundBody = {
 		{ href: "https://api.sandbox.paypal.com/v2/payments/captures/5GT95218NT9294342", rel: "up", method: "GET" },
 	],
 };
+
+/** The same capture read back before the refund: COMPLETED, and supplementary_data names its order. */
+const captureCompleted = {
+	id: "2GU594768B218031G",
+	status: "COMPLETED",
+	amount: { currency_code: "USD", value: "420.00" },
+	final_capture: true,
+	disbursement_mode: "DELAYED",
+	seller_receivable_breakdown: {
+		gross_amount: { currency_code: "USD", value: "420.00" },
+		paypal_fee: { currency_code: "USD", value: "11.37" },
+		platform_fees: [{ amount: { currency_code: "USD", value: "44.85" }, payee: { merchant_id: "LA4PH2WMNKTDN" } }],
+		net_amount: { currency_code: "USD", value: "363.78" },
+	},
+	supplementary_data: { related_ids: { order_id: "27T27404LP7444538" } },
+	create_time: "2026-10-07T00:34:19Z",
+	update_time: "2026-10-07T00:34:19Z",
+};
+
+/** The one item of the recorded reimbursement batch, as the payout item read answers it. */
+const payoutItem = { payout_item_id: "2H2SYMTX4HLY2", transaction_status: "SUCCESS", payout_batch_id: "7JQW2B7WJJUCN" };
+
+const envelope = (body: Record<string, unknown>) => JSON.stringify(body);
+
+test("a webhook envelope names the resource family it routes and drops the rest", () => {
+	const capture = parseWebhookEnvelope(envelope({ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: "C1" } }));
+	assert.equal(capture.kind, "DELIVERY");
+	if (capture.kind !== "DELIVERY") throw new Error("Expected a delivery");
+	assert.equal(capture.deliveryId, "WH-1");
+	assert.deepEqual(capture.resource, { kind: "CAPTURE", id: "C1" });
+	// A refund event shares capture's prefix: the family is the resource_type, and the event is the fallback.
+	const refund = parseWebhookEnvelope(envelope({ id: "WH-2", event_type: "PAYMENT.CAPTURE.REFUNDED", resource_type: "refund", resource: { id: "R1" } }));
+	assert.equal(refund.kind === "DELIVERY" ? refund.resource.kind : null, "REFUND");
+	const release = parseWebhookEnvelope(envelope({ id: "WH-3", event_type: "PAYMENT.REFERENCED-PAYOUT-ITEM.COMPLETED",
+		resource_type: "referenced_payouts_items", resource: { id: "P1" } }));
+	assert.equal(release.kind === "DELIVERY" ? release.resource.kind : null, "REFERENCED_PAYOUT_ITEM");
+	const reimbursement = parseWebhookEnvelope(envelope({ id: "WH-4", event_type: "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+		resource_type: "payouts_item", resource: { id: "P2" } }));
+	assert.equal(reimbursement.kind === "DELIVERY" ? reimbursement.resource.kind : null, "PAYOUT_ITEM");
+	const sale = parseWebhookEnvelope(envelope({ id: "WH-5", event_type: "PAYMENT.SALE.COMPLETED", resource_type: "sale", resource: { id: "S1" } }));
+	assert.equal(sale.kind, "UNROUTED");
+	assert.equal(parseWebhookEnvelope("not json").kind, "UNREADABLE");
+	assert.equal(parseWebhookEnvelope(envelope({ event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "C1" } })).kind, "UNREADABLE");
+});
+
+test("a capture envelope's re-read settles the completed capture from its order", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(url => url.includes("/v2/payments/captures/") ? Response.json(captureCompleted) : Response.json(cardOrder));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "CAPTURE", id: "2GU594768B218031G" as CaptureId }, devon);
+		if (read.kind !== "SETTLED" || read.observation.kind !== "CAPTURE_COMPLETED") throw new Error(`Expected a completed capture, got ${JSON.stringify(read)}`);
+		assert.equal(read.observation.capture.captureId, "2GU594768B218031G");
+		assert.equal(read.observation.capture.gross, 42000);
+		assert.equal(read.observation.capture.processorFee, 1137);
+		assert.equal(read.observation.capture.platformFee, 4485);
+		assert.equal(read.observation.capture.sellerNet, 36378);
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [
+			["GET", "/v2/payments/captures/2GU594768B218031G"], ["GET", "/v2/checkout/orders/27T27404LP7444538"]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a refunded capture's re-read settles the refund it carries", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => Response.json(captureAfterRefund));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "CAPTURE", id: "5GT95218NT9294342" as CaptureId }, devon);
+		if (read.kind !== "SETTLED" || read.observation.kind !== "REFUND_COMPLETED") throw new Error(`Expected a completed refund, got ${JSON.stringify(read)}`);
+		assert.equal(read.observation.refund.refundId, null);
+		assert.equal(read.observation.refund.captureId, "5GT95218NT9294342");
+		assert.equal(read.observation.refund.refunded, 42000);
+		assert.equal(read.observation.refund.retainedProcessorFee, 1137);
+		assert.equal(read.observation.refund.at, instant("2026-10-07T00:29:21Z"));
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [["GET", "/v2/payments/captures/5GT95218NT9294342"]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a refund envelope's re-read settles from the refund and the capture it names", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(url => url.includes("/v2/payments/refunds/") ? Response.json(refundBody) : Response.json(captureAfterRefund));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "REFUND", id: "9CD12824GS946934H" as RefundId }, devon);
+		if (read.kind !== "SETTLED" || read.observation.kind !== "REFUND_COMPLETED") throw new Error(`Expected a completed refund, got ${JSON.stringify(read)}`);
+		assert.equal(read.observation.refund.refundId, "9CD12824GS946934H");
+		assert.equal(read.observation.refund.captureId, "5GT95218NT9294342");
+		assert.equal(read.observation.refund.refunded, 42000);
+		assert.equal(read.observation.refund.retainedProcessorFee, 1137);
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [
+			["GET", "/v2/payments/refunds/9CD12824GS946934H"], ["GET", "/v2/payments/captures/5GT95218NT9294342"]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a referenced payout item's re-read settles the release it recorded", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => Response.json(releaseBody));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "REFERENCED_PAYOUT_ITEM", id: releaseBody.item_id as PayoutItemId }, null);
+		if (read.kind !== "SETTLED" || read.observation.kind !== "RELEASE_COMPLETED") throw new Error(`Expected a completed release, got ${JSON.stringify(read)}`);
+		assert.equal(read.observation.release.payoutItemId, releaseBody.item_id);
+		assert.equal(read.observation.release.captureId, "4X1725081B3889825");
+		assert.equal(read.observation.release.paid, 36378);
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]),
+			[["GET", `/v1/payments/referenced-payouts-items/${encodeURIComponent(releaseBody.item_id)}`]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a payout item's re-read settles the reimbursement through its batch", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(url => url.endsWith("/payouts-item/2H2SYMTX4HLY2") ? Response.json(payoutItem) : Response.json(payoutBatch));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "PAYOUT_ITEM", id: "2H2SYMTX4HLY2" as PayoutItemId }, null);
+		if (read.kind !== "SETTLED" || read.observation.kind !== "REIMBURSEMENT_COMPLETED") throw new Error(`Expected a completed reimbursement, got ${JSON.stringify(read)}`);
+		assert.equal(read.observation.reimbursement.batchId, "7JQW2B7WJJUCN");
+		assert.equal(read.observation.reimbursement.paid, 1515);
+		assert.equal(read.observation.reimbursement.fee, 25);
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [
+			["GET", "/v1/payments/payouts-item/2H2SYMTX4HLY2"], ["GET", "/v1/payments/payouts/7JQW2B7WJJUCN"]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a resource PayPal does not hold is unknown, not a fact", async () => {
+	const original = globalThis.fetch;
+	recordedWire(() => Response.json({ name: "RESOURCE_NOT_FOUND" }, { status: 404 }));
+	try {
+		assert.deepEqual(await createPayPal(config).readResource({ kind: "CAPTURE", id: "CAPTURE_PAYPAL_NEVER_HAD" as CaptureId }, null), { kind: "UNKNOWN" });
+	} finally { globalThis.fetch = original; }
+});
 
 /** The same capture read back after the refund. The refund's own id is not in this body. */
 const captureAfterRefund = {
