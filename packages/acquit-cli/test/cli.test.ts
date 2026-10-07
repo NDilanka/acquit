@@ -12,16 +12,17 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { JobProjection } from "../../core/src/job.ts";
+import { apiClient, CliError } from "../src/client.ts";
 import type { ApiClient, StoredLogin } from "../src/client.ts";
 import { runAgentCreate } from "../src/agent.ts";
 import { parseBidArgs, runBid } from "../src/bid.ts";
 import { runDiff } from "../src/diff.ts";
 import { runJobsList } from "../src/jobs.ts";
 import { usd, utcMinutes } from "../src/format.ts";
-import { linuxKeychain, memoryKeychain, providerKeyPort } from "../src/keychain.ts";
+import { linuxKeychain, macKeychain, memoryKeychain, providerKeyPort, windowsKeychain } from "../src/keychain.ts";
 import { runLogin } from "../src/login.ts";
-import { runOperatorInit } from "../src/operator.ts";
-import { runReceipts } from "../src/receipts.ts";
+import { parseOperatorArgs, runOperatorInit } from "../src/operator.ts";
+import { runReceipts, weeklyCreditsLine } from "../src/receipts.ts";
 import { renderSubmission } from "../src/submit.ts";
 
 const TUTORIAL = await readFile(fileURLToPath(new URL("../../../docs/tutorial.md", import.meta.url)), "utf8");
@@ -295,6 +296,43 @@ test("diff prints the tutorial's patch from the judged commit, without git's ind
 		const client = fakeClient({ "/api/jobs/job_7Q2K": { job, handles: {}, now: "2026-11-08T09:12:00.000Z" } });
 		const rendered = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
 		assert.equal(rendered, tutorialBlock("--- a/tests/totals.test.ts"));
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("diff prefers a local HEAD that descends from the frozen commit over the judged commit", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-diff-fix-"));
+	try {
+		const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+		assert.equal(git("init", "-q", "-b", "main").status, 0);
+		assert.equal(git("config", "user.email", "test@example.com").status, 0);
+		assert.equal(git("config", "user.name", "Test").status, 0);
+		await mkdir(join(dir, "tests"));
+		const line = `\tit("formats KWD totals", () => {\n\t\texpect(formatTotal(lines, "KWD")).toBe("VALUE");\n\t});\n`;
+		await writeFile(join(dir, "tests", "totals.test.ts"), line.replace("VALUE", "10.125"));
+		assert.equal(git("add", ".").status, 0);
+		assert.equal(git("commit", "-qm", "frozen").status, 0);
+		const frozen = git("rev-parse", "HEAD").stdout.trim();
+		await writeFile(join(dir, "tests", "totals.test.ts"), line.replace("VALUE", "10.12"));
+		assert.equal(git("commit", "-qam", "tamper").status, 0);
+		const tamper = git("rev-parse", "HEAD").stdout.trim();
+		const judgedJob = openJob({ status: "IN_PROGRESS", phase: "READY", contract: { repository: "maya-client/invoice-app",
+			frozenAt: frozen, frozenTests: 48, hiddenTests: 6, protectedPaths: [] },
+			attempts: { used: 1, left: 2, last: "REJECTED", reasons: [], failure: null, pending: null,
+				history: [{ ordinal: 1, result: "REJECTED", reasons: [], reasonsTruncated: 0, sourceCommit: tamper,
+					at: "2026-11-08T09:12:00.000Z", frozen: null, hidden: null, pullRequest: null }] } });
+		const client = fakeClient({ "/api/jobs/job_7Q2K": { job: judgedJob, handles: {}, now: "2026-11-08T09:12:00.000Z" } });
+		// The rerun's fix commit sits on top of the rejected one: the patch is frozen to the fix, not the
+		// stale rejected commit the job's history still names.
+		await writeFile(join(dir, "tests", "totals.test.ts"), line.replace("VALUE", "10.13"));
+		assert.equal(git("commit", "-qam", "fix").status, 0);
+		const fixed = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
+		assert.match(fixed, /\+.*10\.13/);
+		assert.equal(fixed.includes('toBe("10.12")'), false);
+		// With the checkout back on the frozen commit there is no local work to prefer, so the judged
+		// submission is what diff shows.
+		assert.equal(git("reset", "-q", "--hard", frozen).status, 0);
+		const judged = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
+		assert.match(judged, /\+.*10\.12/);
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 

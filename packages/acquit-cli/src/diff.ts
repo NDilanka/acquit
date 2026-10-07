@@ -52,9 +52,16 @@ export async function runDiff(options: DiffOptions, deps: DiffDeps): Promise<str
 	const frozen = job.contract?.frozenAt;
 	if (!frozen) throw new CliError("CONTRACT_NOT_FROZEN", `Job ${options.jobId} has no frozen contract to compare against.`);
 	const git = deps.git ?? defaultGit;
-	// The judged tree when this checkout holds it; the checkout's HEAD is what the run left behind.
+	// The judged tree is what the frozen commit was last compared against, but a rerun leaves newer
+	// work in the checkout. Prefer a local HEAD that descends from the frozen commit; only a checkout
+	// still sitting on the frozen commit has no newer work, so there the judged submission is shown.
 	const judged = job.attempts?.history?.at(-1)?.sourceCommit ?? null;
-	const head = judged !== null && git(options.dir, ["cat-file", "-e", `${judged}^{commit}`]).status === 0 ? judged : "HEAD";
+	const judgedHere = judged !== null && git(options.dir, ["cat-file", "-e", `${judged}^{commit}`]).status === 0;
+	const local = git(options.dir, ["rev-parse", "HEAD"]);
+	const localHead = local.status === 0 ? local.stdout.trim() : "";
+	const newer = localHead !== "" && localHead !== frozen
+		&& git(options.dir, ["merge-base", "--is-ancestor", frozen, localHead]).status === 0;
+	const head = newer ? "HEAD" : judgedHere ? judged : "HEAD";
 	// One line of context: the tutorial's hunks are printed that way, and a review reads the change.
 	const patch = git(options.dir, ["diff", "--no-color", "--unified=1", frozen, head]);
 	if (patch.status !== 0) {
