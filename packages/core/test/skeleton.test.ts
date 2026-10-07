@@ -6,13 +6,13 @@ import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, ingestPayPalWebhook, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { OperationKey, OutboxState, Ports } from "../src/effects.ts";
-import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
+import { applyJobCommand, effectWanted, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
 import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, parseWebhookEnvelope, quote } from "../src/paypal.ts";
-import type { Bps, PayPal, RefundEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
+import type { Bps, PayPal, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
 import { GitHubAppError } from "../src/github.ts";
 import type { GitHubFailureCode } from "../src/github.ts";
@@ -1203,6 +1203,46 @@ test("ReimbursementSettled records the payout and its 0.25 fee once", () => {
 	assert.deepEqual(again.effects, []);
 });
 
+test("ReimbursementSettled takes only the payout the row owes, to the payee", () => {
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const owed = usd("15.15");
+	const effect: JobEffect = { kind: "REIMBURSE", jobId: refunded.next.id, merchant, amount: owed };
+	const reimbursementOf = (paid = owed, payer = merchant, batchId = payoutBatchId): ReimbursementEvidence =>
+		({ batchId, itemId: payoutItemId, merchant: payer, paid, fee: usd("0.25"), at: later });
+	// The debt is owed until a payout that matches it settles the row.
+	assert.equal(effectWanted(refunded.next, effect), true);
+	for (const wrong of [
+		{ reimbursement: reimbursementOf(usd("14.15")), why: "a payout short of the debt" },
+		{ reimbursement: reimbursementOf(owed, "other-merchant" as MerchantId), why: "a payout to another merchant" },
+	]) {
+		const plan = applyJobCommand(refunded.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: wrong.reimbursement }, system);
+		if (typeof plan === "string") throw new Error(`${wrong.why}: ${plan}`);
+		assert.equal(plan.refused, "SETTLEMENT_MISMATCH", wrong.why);
+		assert.equal(plan.next.version, refunded.next.version, wrong.why);
+		assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: refunded.next.id, reason: "SETTLEMENT_MISMATCH" }], wrong.why);
+		// A refused payout records no line, so the effect stays wanted rather than looking settled.
+		assert.equal(effectWanted(plan.next, effect), true, wrong.why);
+	}
+	const settled = applyJobCommand(refunded.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: reimbursementOf() }, system);
+	if (typeof settled === "string") throw new Error(settled);
+	assert.equal(settled.refused, undefined);
+	assert.equal(effectWanted(settled.next, effect), false);
+	// A second batch for an already settled reimbursement is a mismatch, not a second treasury line.
+	const other = reimbursementOf(owed, merchant, "OTHERBATCH" as PayoutBatchId);
+	const second = applyJobCommand(settled.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: other }, system);
+	if (typeof second === "string") throw new Error(second);
+	assert.equal(second.refused, "SETTLEMENT_MISMATCH");
+	assert.equal(second.next.version, settled.next.version);
+	assert.equal((second.next.state as Extract<JobRow["state"], { status: "REFUNDED" }>).treasury.length,
+		(settled.next.state as Extract<JobRow["state"], { status: "REFUNDED" }>).treasury.length);
+	// The batch the row already recorded stays a no-op.
+	const redelivered = applyJobCommand(settled.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: reimbursementOf() }, system);
+	if (typeof redelivered === "string") throw new Error(redelivered);
+	assert.equal(redelivered.refused, undefined);
+	assert.equal(redelivered.next.version, settled.next.version);
+});
+
 test("the capture-age cutoff refunds work the verifier never passed", () => {
 	// The delivery and review clocks normally fire first. The cutoff is the backstop for a row whose
 	// clocks were missed, and it runs first in every state that holds money.
@@ -1463,6 +1503,33 @@ test("a refund read back with a different retained fee parks the payout for a pe
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
+test("a reimbursement payout that does not pay the debt parks the effect for a person", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted, { paypal: {
+		dispatch: async call => {
+			if (call.kind === "REFUND") return { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } };
+			if (call.kind === "REIMBURSE") return { kind: "CONFIRMED", observation: { kind: "REIMBURSEMENT_COMPLETED",
+				reimbursement: { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("10.00"), fee: usd("0.25"), at: later } } };
+			throw new Error(`Unexpected ${call.kind}`);
+		},
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const refundKey = harness.enqueue({ kind: "REFUND", jobId: exhausted.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, refundKey), "WORKED");
+		assert.equal((await harness.row()).state.status, "REFUNDED");
+		const payoutKey = harness.enqueue({ kind: "REIMBURSE", jobId: exhausted.id, merchant, amount: usd("15.15") });
+		assert.equal(await runOutboxOnce(harness.ports, payoutKey), "WORKED");
+		// The payout is out but it does not match the debt: the effect parks and the row records no line.
+		assert.deepEqual(harness.effectState(payoutKey), { kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH",
+			detail: `PayPal answered REIMBURSEMENT_COMPLETED for batch ${payoutBatchId}` });
+		const row = await harness.row();
+		assert.equal(row.state.status, "REFUNDED");
+		assert.equal(row.state.status === "REFUNDED" && row.state.treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID"), false);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
 test("the merge effect finishes the paid job, and a conflict parks it for a human", async () => {
 	const released = applyJobCommand(approvedRow(), { type: "ReleaseSettled", jobId: "job_submit" as JobId, release: releaseEvidence() }, system);
 	if (typeof released === "string") throw new Error(released);
@@ -1657,6 +1724,23 @@ test("a refund webhook whose retained fee the row never recorded is refused", as
 		// The selected refund stands, and no REIMBURSE is enqueued for the fee the row did not settle.
 		assert.deepEqual(await harness.row(), refunding);
 		assert.deepEqual(harness.effectKinds(), ["ALERT"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a reimbursement webhook that does not pay the debt is refused", async () => {
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const harness = moneyHarness(refunded.next);
+	try {
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(payoutBatchId, refunded.next.id);
+		harness.base.read(payoutItemId, { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED",
+			reimbursement: { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("10.00"), fee: usd("0.25"), at: later } } });
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-PAYOUT-1", event_type: "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+			resource_type: "payouts_item", resource: { id: payoutItemId } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-PAYOUT-1"), "refused, the job did not take this settlement");
+		assert.deepEqual(await harness.row(), refunded.next);
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
