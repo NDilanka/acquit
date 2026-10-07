@@ -1790,6 +1790,30 @@ test("a refund webhook the index has not seen settles through the capture the re
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
+test("a refund webhook whose anchored re-read settles another capture is refused, not dropped", async () => {
+	const exhausted = exhaustedRow();
+	// The refund's link names the capture this job holds, while the capture the re-read answers with is
+	// another one. The anchored read is a fact the holding row never made, and a person has to see it.
+	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => payee === null
+		? { kind: "HELD", detail: `Refund ${resource.id} has no owning job`, anchor: "TESTCAPTURE" as CaptureId }
+		: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED",
+			refund: { ...refundEvidence(), captureId: "CAPTURE_ANOTHER_JOB" as CaptureId } } } } });
+	try {
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", exhausted.id);
+		const before = await harness.row();
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-ANCHOR-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// The job holding the refund's capture owns the read, so its refusal is recorded, not a silent drop.
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ANCHOR-1"), "refused, the job did not take this settlement");
+		assert.deepEqual(await harness.row(), before);
+		const enqueued = harness.store.db.prepare("SELECT json FROM outbox").all()
+			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect);
+		assert.deepEqual(enqueued, [{ kind: "ALERT", jobId: exhausted.id, reason: "SETTLEMENT_MISMATCH" }]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
 test("a refund webhook naming a capture no job holds stays a no-op", async () => {
 	const exhausted = exhaustedRow();
 	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => payee === null
