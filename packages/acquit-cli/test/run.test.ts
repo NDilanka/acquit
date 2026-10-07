@@ -761,10 +761,11 @@ test("the runner container gets the internal network, the proxy, and no secret i
 	assert.equal(args[args.indexOf("--network") + 1], names.network);
 	assert.equal(args.includes("type=bind,source=/tmp/acquit-run-work,target=/work"), true);
 	// The work tree is mounted, and an empty read-only tmpfs covers /work/.git: the agent never sees
-	// the job's git directory even if something leaves a .git inside the work tree.
+	// the job's git directory even if something leaves a .git inside the work tree. The mode is
+	// named because Docker would copy the host shadow's 0700, which the container's user cannot read.
 	const shadow = args.indexOf("--tmpfs");
 	assert.equal(shadow > args.indexOf("--mount"), true, "the shadow must be mounted after the work tree");
-	assert.equal(args[shadow + 1], "/work/.git:ro");
+	assert.equal(args[shadow + 1], "/work/.git:ro,mode=0555");
 	assert.deepEqual(args.slice(args.indexOf("--exec")), ["--exec", "claude", "--print", "--dangerously-skip-permissions", "Fix the rounding."]);
 	// The key is named, never valued, and never written to a file the container reads.
 	assert.equal(args[args.indexOf("ANTHROPIC_API_KEY") - 1], "-e");
@@ -868,7 +869,7 @@ test("a planted work-tree .git symlink is unlinked before the runner mounts the 
 		const docker = fakeDocker({ during: args => {
 			// When the runner is started the shadow is already a real empty directory, so the tmpfs
 			// is mounted over that directory itself and never through a link to the target.
-			assert.deepEqual(args.slice(args.indexOf("--tmpfs"), args.indexOf("--tmpfs") + 2), ["--tmpfs", "/work/.git:ro"]);
+			assert.deepEqual(args.slice(args.indexOf("--tmpfs"), args.indexOf("--tmpfs") + 2), ["--tmpfs", "/work/.git:ro,mode=0555"]);
 			assert.equal(lstatSync(join(work, ".git")).isDirectory(), true);
 			assert.deepEqual(readdirSync(join(work, ".git")), []);
 		} });
@@ -1190,6 +1191,16 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 			assert.equal(result.status, 0, result.stderr);
 			return result.stdout.trim();
 		};
+		// Exactly the two probes: `ls -A` exits 0 with nothing between the markers (an empty, readable
+		// directory), and touch fails with the read-only mount's own error text.
+		const assertGitShadow = (captured: string): void => {
+			const lines = captured.split("\n").map(line => line.replace(/^(?:stdout|stderr): /, ""));
+			const begin = lines.indexOf("GITDIR_LS_BEGIN");
+			assert.notEqual(begin, -1, "the shadow probes must run");
+			assert.equal(lines[begin + 1], "GITDIR_LS_EXIT 0", "ls -A /work/.git must list an empty directory and exit 0");
+			assert.equal(lines[begin + 2], "touch: cannot touch '/work/.git/probe': Read-only file system");
+			assert.equal(lines[begin + 3], "GITDIR_TOUCH_EXIT 1");
+		};
 		assert.equal(git(["init", "--quiet", `--separate-git-dir=${state}`, root]).status, 0);
 		at(["config", "user.email", "smoke@example.invalid"]);
 		at(["config", "user.name", "smoke"]);
@@ -1202,9 +1213,13 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 			"#!/bin/sh",
 			"printf '\\texpect(2).toBe(2);\\n' >> tests/totals.test.ts",
 			// The work tree is bind-mounted at /work, but the job's git directory is never inside it:
-			// an empty read-only tmpfs covers /work/.git, and the real one stays in the state path.
-			"if [ -z \"$(ls -A /work/.git 2>/dev/null)\" ]; then echo GITDIR_SHADOWED; else echo GITDIR_VISIBLE; ls -A /work/.git; fi",
-			"touch /work/.git/planted 2>/dev/null && echo GITDIR_WRITABLE || echo GITDIR_READONLY",
+			// an empty readable read-only tmpfs covers /work/.git, and the real one stays in the
+			// state path. The markers make both outcomes exact: nothing may print between BEGIN and
+			// EXIT, and the touch error text is the read-only mount's.
+			"echo GITDIR_LS_BEGIN",
+			"ls -A /work/.git",
+			"echo GITDIR_LS_EXIT $?",
+			"touch /work/.git/probe 2>&1; echo GITDIR_TOUCH_EXIT $?",
 			"curl -sS --max-time 15 -o /dev/null https://example.com 2>/tmp/acquit-curl.err && echo EGRESS_ALLOWED_EXAMPLE || { echo EGRESS_BLOCKED_EXAMPLE; cat /tmp/acquit-curl.err; }",
 			"curl -sS --max-time 30 -o /dev/null -w 'REGISTRY_HTTP %{http_code}\\n' https://registry.npmjs.org/",
 			"curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/ 2>/tmp/acquit-curl81.err && echo CONNECT_81_ALLOWED || { echo CONNECT_81_REFUSED; sed 's/^/CURL81: /' /tmp/acquit-curl81.err; }",
@@ -1236,10 +1251,9 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 		// target is refused instead of forwarded in the clear.
 		assert.match(text, /HTTPS_FORWARD 403/);
 		assert.match(text, /HTTPSFORWARD: egress denied: api\.anthropic\.com/);
-		// The sandbox sees an empty read-only shadow over the work tree's own .git, while the
-		// checkout's git directory is outside the mount, in the state path.
-		assert.match(text, /GITDIR_SHADOWED/);
-		assert.match(text, /GITDIR_READONLY/);
+		// The sandbox sees an empty readable read-only shadow over the work tree's own .git, while
+		// the checkout's git directory is outside the mount, in the state path.
+		assertGitShadow(text);
 		// Starting the sandbox replaced the clone's `gitdir:` link with the empty real directory
 		// it mounts the tmpfs over.
 		assert.equal(lstatSync(join(root, ".git")).isSymbolicLink(), false);
@@ -1253,8 +1267,10 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 		writeFileSync(plantedScript, [
 			"#!/bin/sh",
 			"if [ -r /etc/passwd ]; then echo ETCPASSWD_READABLE; else echo ETCPASSWD_MASKED; fi",
-			"if [ -z \"$(ls -A /work/.git 2>/dev/null)\" ]; then echo GITDIR_SHADOWED; else echo GITDIR_VISIBLE; ls -A /work/.git; fi",
-			"touch /work/.git/planted 2>/dev/null && echo GITDIR_WRITABLE || echo GITDIR_READONLY",
+			"echo GITDIR_LS_BEGIN",
+			"ls -A /work/.git",
+			"echo GITDIR_LS_EXIT $?",
+			"touch /work/.git/probe 2>&1; echo GITDIR_TOUCH_EXIT $?",
 			"",
 		].join("\n"), { mode: 0o755 });
 		const plantedOutput: string[] = [];
@@ -1264,8 +1280,7 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 		console.log(`[smoke] planted runner exit ${planted}\n${plantedText}`);
 		assert.equal(planted, 0, plantedText);
 		assert.match(plantedText, /ETCPASSWD_READABLE/);
-		assert.match(plantedText, /GITDIR_SHADOWED/);
-		assert.match(plantedText, /GITDIR_READONLY/);
+		assertGitShadow(plantedText);
 		// The link is gone, nothing it named was touched, and the shadow is empty and real.
 		assert.equal(lstatSync(join(root, ".git")).isSymbolicLink(), false);
 		assert.equal(lstatSync(join(root, ".git")).isDirectory(), true);

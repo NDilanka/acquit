@@ -497,8 +497,11 @@ export function runnerRunArgs(plan: RunnerPlan): readonly string[] {
 	if (plan.providerKey !== null) args.push("-e", "ANTHROPIC_API_KEY");
 	args.push("--mount", `type=bind,source=${plan.dir},target=/work`);
 	// The job's git directory is never inside the work tree; the shadow keeps even a stray `.git`
-	// from being read or written by the agent, and stays read-only.
-	args.push("--tmpfs", "/work/.git:ro");
+	// from being read or written by the agent. Docker takes a tmpfs root's mode from the directory
+	// it covers, and the host shadow is 0700 for the operator alone, so the mode is named here:
+	// 0555 root-owned lets the container's user list the empty directory and read nothing, and `ro`
+	// makes every write fail Read-only file system.
+	args.push("--tmpfs", "/work/.git:ro,mode=0555");
 	if (plan.commandPath !== null) args.push("--mount", `type=bind,source=${plan.commandPath},target=/acquit/command.sh,readonly`);
 	args.push("--workdir", "/work", plan.image, "node", "/runner/run.mjs", "--exec", ...plan.argv);
 	return args;

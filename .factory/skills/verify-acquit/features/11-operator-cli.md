@@ -121,9 +121,11 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   - Probes `curl -sS --max-time 30 -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org/`,
     which must print `200`, and `curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/`,
     which must fail: the proxy allows CONNECT only to port 443.
-  - Probes the git metadata: `test -z "$(ls -A /work/.git)"` must pass (an empty shadow directory)
-    and `touch /work/.git/probe` must fail with `Read-only file system`. Nothing under `/work/.git`
-    names the fork, the token, or a remote.
+  - Probes the git metadata: `ls -A /work/.git && echo GITDIR_LISTED` must print `GITDIR_LISTED`
+    (the shadow is readable), then `[ -z "$(ls -A /work/.git)" ] && [ -r /work/.git ] && echo
+    GITDIR_EMPTY` must print `GITDIR_EMPTY` (it lists nothing), and `touch /work/.git/probe` must
+    fail with `Read-only file system`. Nothing under `/work/.git` names the fork, the token, or a
+    remote.
 
   Run `acquit run <job> --runner command --command <script> --dir <empty path>`. Require the
   tutorial's first block and `Changed files: tests/totals.test.ts (1 line)`.
