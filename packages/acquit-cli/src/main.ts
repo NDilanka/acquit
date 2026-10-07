@@ -1,6 +1,5 @@
-// The operator CLI. F3 owns `submit`; F5 adds login, operator init, agent create, jobs list, bid, diff,
-// and receipts. `run` belongs to the runner owner: run.ts exports `runCommand` and this table loads it
-// when the file is present, so neither owner has to edit the other's dispatch.
+// The operator CLI. F3 owns `submit`; F5 adds login, operator init, agent create, jobs list, bid, run,
+// diff, and receipts.
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -10,7 +9,8 @@ import { apiClient, CliError, readLogin, saveLogin } from "./client.ts";
 import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
 import { openBrowser, parseLoginArgs, runLogin } from "./login.ts";
 import { parseOperatorArgs, runOperatorInit } from "./operator.ts";
-import { platformKeychain } from "./keychain.ts";
+import { platformKeychain, providerKeyPort } from "./keychain.ts";
+import { parseRunArgs, runRun } from "./run.ts";
 import { parseAgentArgs, runAgentCreate } from "./agent.ts";
 import { parseJobsArgs, runJobsList } from "./jobs.ts";
 import { parseBidArgs, runBid } from "./bid.ts";
@@ -29,7 +29,7 @@ Environment:
   ACQUIT_API    API origin (default http://127.0.0.1:4310)
   ACQUIT_TOKEN  session token from \`acquit login\``;
 
-/** The table's order. A command this build does not register — `run` before the runner lands — is absent. */
+/** The table's order. */
 const ORDER = ["login", "operator", "agent", "jobs", "bid", "run", "diff", "receipts", "submit"];
 
 export type CommandContext = {
@@ -144,26 +144,16 @@ registerCommand({
 	},
 });
 
-let runnerCommands: Promise<void> | null = null;
-
-/**
- * The runner owner's seam: `packages/acquit-cli/src/run.ts` exports `runCommand`, and this loads it
- * when the file is present. Until it lands the CLI works without it; once it lands, nothing here
- * changes. Only a missing module is tolerated: any other failure is the runner's to surface.
- */
-function registerRunnerCommands(): Promise<void> {
-	runnerCommands ??= (async () => {
-		try {
-			// The specifier is a variable so this build typechecks without the runner owner's file.
-			const specifier = "./run.ts";
-			const module = await import(specifier) as { readonly runCommand?: Command };
-			if (module.runCommand) registerCommand(module.runCommand);
-		} catch (error) {
-			if ((error as { readonly code?: unknown }).code !== "ERR_MODULE_NOT_FOUND") throw error;
-		}
-	})();
-	return runnerCommands;
-}
+registerCommand({
+	name: "run",
+	usage: "acquit run <job> [--instruction \"...\"] [--runner claude-code|command] [--command <script>] [--dir <path>] [--api <url>] [--token]",
+	async run(argv, context) {
+		const options = parseRunArgs(argv, context.env);
+		await runRun(options, { client: apiClient({ baseUrl: options.apiUrl, token: options.token }),
+			providerKey: providerKeyPort(platformKeychain()) });
+		return 0;
+	},
+});
 
 /** Reads one line from stdin. The question is already on stdout; this only collects the value. */
 function readLine(): Promise<string> {
@@ -215,7 +205,6 @@ function readStdin(): string {
 export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
 	const [command, ...rest] = argv;
 	if (!command || command === "--help" || command === "-h" || command === "help") { console.log(usage()); return command ? 0 : 2; }
-	await registerRunnerCommands();
 	const registered = commands.get(command);
 	if (!registered) { console.error(`acquit: unknown command ${command}\n\n${usage()}`); return 2; }
 	if (rest[0] === "--help" || rest[0] === "-h") { console.log(`${registered.usage}\n\n${usage()}`); return 0; }
