@@ -8,8 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { projectJob } from "../src/job.ts";
+import type { JobRow } from "../src/job.ts";
 import { openDatabase, SqliteStore } from "../src/store.ts";
-import type { ClientId, JobId } from "../src/ids.ts";
+import type { ClientId, JobId, OperatorId, Version } from "../src/ids.ts";
 
 /** A second process that holds the file's write lock for 600 ms, on a table that predates the envelope. */
 const LOCK_HOLDER = `const { DatabaseSync } = require("node:sqlite");
@@ -92,6 +93,41 @@ function storedRefundPendingRow(id: string, reason?: unknown) {
 				refund: { ...(reason === undefined ? {} : { reason }), selectedAt: at } } } };
 }
 
+/** A raw VERIFIED row whose review holds a refund intent. `reason` is whatever the intent's bytes carry, or absent. */
+function storedVerifiedRefundPendingRow(id: string, reason?: unknown) {
+	const at = "2026-10-06T12:00:00.000Z";
+	return { id, version: 6, client: "maya-client", title: "stored verified refund pending row", openedAt: at,
+		contract: { budget: 40000, deliveryEndsAt: "2026-10-13T12:00:00.000Z" },
+		bids: [],
+		state: { status: "VERIFIED",
+			escrow: { payee: { bidId: "bid_store", operator: "devon-ops", payee: "MERCHANT", agent: "ts-bugfixer", price: 40000, eta: 48 },
+				quote: { split: { held: 42000, fee: 6000, operatorNet: 36000, predictedProcessorFee: 1515 }, platformFeeInstruction: 4485, version: "test" },
+				capture: { orderId: "ORDER", captureId: "CAPTURE", payee: "MERCHANT", disbursement: "DELAYED", gross: 42000, processorFee: 1515,
+					platformFee: 4485, sellerNet: 36000, capturedAt: at },
+				book: [], cutoffAt: "2026-10-27T12:00:00.000Z" },
+			history: [], passed: { verdict: { pullRequest: null, mergeCommit: null } },
+			review: { phase: "REFUND_PENDING", refund: { ...(reason === undefined ? {} : { reason }), selectedAt: at } } } };
+}
+
+/** A raw OPEN FUNDING row whose checkout holds a refund intent. `reason` is whatever the intent's bytes carry, or absent. */
+function storedOpenCheckoutRefundRow(id: string, reason?: unknown) {
+	const at = "2026-10-06T12:00:00.000Z";
+	return { id, version: 7, client: "maya-client", title: "stored open checkout refund row", openedAt: at,
+		contract: { budget: 40000, deliveryEndsAt: "2026-10-13T12:00:00.000Z" },
+		bids: [],
+		state: { status: "OPEN",
+			phase: { kind: "FUNDING", round: 1,
+				chosen: { bidId: "bid_store", operator: "devon-ops", payee: "MERCHANT", agent: "ts-bugfixer", price: 40000, eta: 48 },
+				quote: { split: { held: 42000, fee: 6000, operatorNet: 36000, predictedProcessorFee: 1515 }, platformFeeInstruction: 4485, version: "test" },
+				checkout: { phase: "REFUND_PENDING",
+					escrow: { payee: { bidId: "bid_store", operator: "devon-ops", payee: "MERCHANT", agent: "ts-bugfixer", price: 40000, eta: 48 },
+						quote: { split: { held: 42000, fee: 6000, operatorNet: 36000, predictedProcessorFee: 1515 }, platformFeeInstruction: 4485, version: "test" },
+						capture: { orderId: "ORDER", captureId: "CAPTURE", payee: "MERCHANT", disbursement: "DELAYED", gross: 42000, processorFee: 1515,
+							platformFee: 4485, sellerNet: 36000, capturedAt: at },
+						book: [], cutoffAt: "2026-10-27T12:00:00.000Z" },
+					refund: { ...(reason === undefined ? {} : { reason }), selectedAt: at } } } } };
+}
+
 test("a PAID row's release authority reads as one of the five, or null", async () => {
 	const store = new SqliteStore(":memory:");
 	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
@@ -159,4 +195,86 @@ test("a refund reason reads as one of the five, or null", async () => {
 		assert.equal(pendingKnown.state.attempts.refund.reason, "ARBITER_REFUND");
 		assert.equal(projectJob(pendingKnown, maya, new Map()).refundReason, "ARBITER_REFUND");
 	} finally { store.close(); }
+});
+
+test("a refund reason reads as null on a verified review intent and an open checkout intent", async () => {
+	const store = new SqliteStore(":memory:");
+	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
+	try {
+		for (const [id, reason] of [["job_review_missing", undefined], ["job_review_unknown", "NOT_A_REASON"], ["job_review_reason", "ARBITER_REFUND"]] as const) {
+			const row = storedVerifiedRefundPendingRow(id, reason);
+			store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(id, row.version, JSON.stringify(row), null);
+		}
+		for (const [id, reason] of [["job_checkout_missing", undefined], ["job_checkout_unknown", "NOT_A_REASON"], ["job_checkout_reason", "CAPTURE_MISMATCH"]] as const) {
+			const row = storedOpenCheckoutRefundRow(id, reason);
+			store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(id, row.version, JSON.stringify(row), null);
+		}
+		// The bytes a lane stored before the reason was recorded name none at all on the review's intent.
+		const reviewMissing = await store.readJob("job_review_missing" as JobId);
+		if (reviewMissing?.state.status !== "VERIFIED" || reviewMissing.state.review.phase !== "REFUND_PENDING") throw new Error("Missing the stored review intent");
+		assert.equal(reviewMissing.state.review.refund.reason, null);
+		assert.equal(projectJob(reviewMissing, maya, new Map()).refundReason, null);
+		// A reason outside the domain's five is not a stored fact either: it reads as null too.
+		const reviewUnknown = await store.readJob("job_review_unknown" as JobId);
+		if (reviewUnknown?.state.status !== "VERIFIED" || reviewUnknown.state.review.phase !== "REFUND_PENDING") throw new Error("Missing the stored review intent");
+		assert.equal(reviewUnknown.state.review.refund.reason, null);
+		assert.equal(projectJob(reviewUnknown, maya, new Map()).refundReason, null);
+		// A known reason stays what the row recorded.
+		const reviewKnown = await store.readJob("job_review_reason" as JobId);
+		if (reviewKnown?.state.status !== "VERIFIED" || reviewKnown.state.review.phase !== "REFUND_PENDING") throw new Error("Missing the stored review intent");
+		assert.equal(reviewKnown.state.review.refund.reason, "ARBITER_REFUND");
+		assert.equal(projectJob(reviewKnown, maya, new Map()).refundReason, "ARBITER_REFUND");
+		// The same boundary holds on the checkout's own refund intent while an OPEN job is FUNDING.
+		const checkoutMissing = await store.readJob("job_checkout_missing" as JobId);
+		if (checkoutMissing?.state.status !== "OPEN" || checkoutMissing.state.phase.kind !== "FUNDING" || checkoutMissing.state.phase.checkout.phase !== "REFUND_PENDING") throw new Error("Missing the stored checkout intent");
+		assert.equal(checkoutMissing.state.phase.checkout.refund.reason, null);
+		assert.equal(projectJob(checkoutMissing, maya, new Map()).refundReason, null);
+		const checkoutUnknown = await store.readJob("job_checkout_unknown" as JobId);
+		if (checkoutUnknown?.state.status !== "OPEN" || checkoutUnknown.state.phase.kind !== "FUNDING" || checkoutUnknown.state.phase.checkout.phase !== "REFUND_PENDING") throw new Error("Missing the stored checkout intent");
+		assert.equal(checkoutUnknown.state.phase.checkout.refund.reason, null);
+		assert.equal(projectJob(checkoutUnknown, maya, new Map()).refundReason, null);
+		const checkoutKnown = await store.readJob("job_checkout_reason" as JobId);
+		if (checkoutKnown?.state.status !== "OPEN" || checkoutKnown.state.phase.kind !== "FUNDING" || checkoutKnown.state.phase.checkout.phase !== "REFUND_PENDING") throw new Error("Missing the stored checkout intent");
+		assert.equal(checkoutKnown.state.phase.checkout.refund.reason, "CAPTURE_MISMATCH");
+		assert.equal(projectJob(checkoutKnown, maya, new Map()).refundReason, "CAPTURE_MISMATCH");
+	} finally { store.close(); }
+});
+
+test("a PAID commit whose payee has no operators row commits, counts nothing, and says so", async () => {
+	const store = new SqliteStore(":memory:");
+	const payee = "devon-ops" as OperatorId;
+	const row = storedPaidRow("job_paid_no_operator", "REVIEW_SILENCE");
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), null);
+	const lines: string[] = [];
+	const warn = console.warn;
+	console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try {
+		// A payee whose operators row is missing must not make PAID unreachable: the transition commits,
+		// the count stays put, and one line names the operator for the log.
+		const committed = await store.commit({ job: { expectedVersion: row.version as Version, row: row as unknown as JobRow, wakeAt: null },
+			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
+		assert.equal(committed, "COMMITTED");
+		assert.equal((await store.readJob("job_paid_no_operator" as JobId))?.state.status, "PAID");
+		assert.equal((await store.receiptCounts()).get(payee), undefined, "no operators row means no receipt to count");
+		assert.equal(lines.length, 1);
+		assert.match(lines[0], /devon-ops/);
+		assert.equal(lines[0].includes("\n"), false, "the line stays one line");
+	} finally { console.warn = warn; store.close(); }
+});
+
+test("a VERSION_CONFLICT commit with a paid receipt set counts no receipt", async () => {
+	const store = new SqliteStore(":memory:");
+	const payee = "devon-ops" as OperatorId;
+	const operator = { id: payee, handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+		payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: "2026-10-06T12:00:00.000Z" } };
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	const row = storedPaidRow("job_paid_conflict", "REVIEW_SILENCE");
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), null);
+	// The stored row moved on since this commit read it, so the job CAS is lost and the whole write,
+	// the receipt count included, rolls back.
+	store.db.prepare("UPDATE jobs SET version = ? WHERE id = ?").run(row.version + 1, row.id);
+	const committed = await store.commit({ job: { expectedVersion: row.version as Version, row: row as unknown as JobRow, wakeAt: null },
+		operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
+	assert.equal(committed, "VERSION_CONFLICT");
+	assert.equal((await store.receiptCounts()).get(payee), 0, "the lost CAS rolls the receipt count back with the row");
 });

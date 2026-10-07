@@ -11,6 +11,7 @@ import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
+import { logBare } from "./log.ts";
 
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -201,10 +202,12 @@ export class SqliteStore implements Store {
 				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
 			}
 			// The count moves with the PAID row or not at all: exactly the write that settles the release
-			// sets it, so a redelivery or a refused settlement can never count the receipt twice.
+			// sets it, so a redelivery or a refused settlement can never count the receipt twice. A payee
+			// with no operators row is a fact to log, not a reason to refuse the settlement: throwing here
+			// would roll the PAID row back, and every webhook delivery of the same release would retry it.
 			if (change.paidReceipt) {
 				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
-				if (!counted.changes) throw new Error("Paid receipt counted no operator");
+				if (!counted.changes) console.warn(`paid receipt not counted: no operators row for ${logBare(change.paidReceipt)}`);
 			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
