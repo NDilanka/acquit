@@ -354,12 +354,15 @@ for (const harness of HARNESSES) {
 		t.after(app.close);
 		const published = await app.port.publishVerified(publishRequest, "req-1");
 		const request = { jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest, mergeCommit: published.mergeCommit };
-		assert.equal(await app.port.merge(request, "req-2"), "MERGED");
+		// The fake fast-forwards the base to the published commit. GitHub creates a merge commit of its own,
+		// so both harnesses answer the commit the merge actually landed on.
+		const landed = harness.name === "fake" ? published.mergeCommit : MERGED as CommitSha;
+		assert.deepEqual(await app.port.merge(request, "req-2"), { outcome: "MERGED", sha: landed });
 		// GitHub refuses a second merge of the same pull request. The client reads the pull and reports the
 		// merge that already landed instead of failing, which is what makes the outbox retry safe.
-		assert.equal(await app.port.merge(request, "req-3"), "MERGED");
+		assert.deepEqual(await app.port.merge(request, "req-3"), { outcome: "MERGED", sha: landed });
 		// A pull request that names another tree is not this job's artifact: a person has to look.
-		assert.equal(await app.port.merge({ ...request, mergeCommit: HEAD as CommitSha }, "req-4"), "CONFLICT");
+		assert.deepEqual(await app.port.merge({ ...request, mergeCommit: HEAD as CommitSha }, "req-4"), { outcome: "CONFLICT" });
 	});
 
 	test(`two jobs on one client repo get their own work repo and pull request (${harness.name})`, async t => {
@@ -377,12 +380,29 @@ test("a landed merge is adopted by the pull's head, not by merge_commit_sha", as
 	t.after(close);
 	const published = await port.publishVerified(publishRequest, "req-1");
 	const request = { jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest, mergeCommit: published.mergeCommit };
-	assert.equal(await port.merge(request, "req-2"), "MERGED");
+	assert.deepEqual(await port.merge(request, "req-2"), { outcome: "MERGED", sha: MERGED as CommitSha });
 	// merge_method "merge" created a new commit: merge_commit_sha names it, and the head still names the
 	// judged tree. Comparing merge_commit_sha with the judged tree would read this landed merge as a conflict.
 	assert.equal(stub.state.pulls[0]?.merge_commit_sha, MERGED);
 	assert.notEqual(stub.state.pulls[0]?.merge_commit_sha, published.mergeCommit);
-	assert.equal(await port.merge(request, "req-3"), "MERGED");
+	// Adopting the merge that landed answers that same commit GitHub made, never the tree still standing.
+	assert.deepEqual(await port.merge(request, "req-3"), { outcome: "MERGED", sha: MERGED as CommitSha });
+});
+
+test("a landed merge GitHub names no commit for is a response this client refuses", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const published = await port.publishVerified(publishRequest, "req-1");
+	// A pull the stub reports as merged while merge_commit_sha names nothing. No commit landed that this
+	// client could show, so it refuses the answer by name instead of reporting a merge nobody can read back.
+	const pull = stub.state.pulls.find(item => item.number === published.pullRequest);
+	assert.ok(pull);
+	pull.merged = true;
+	pull.state = "closed";
+	pull.merge_commit_sha = null;
+	assert.deepEqual(await refusal(port.merge({ jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest,
+		mergeCommit: published.mergeCommit }, "req-2")), { code: "GITHUB_RESPONSE_INVALID", status: null, permission: null,
+		detail: "GitHub answered a landed merge without naming the commit it made." });
 });
 
 test("the App JWT is RS256, signed by the App, and inside GitHub's ten-minute cap", async t => {
