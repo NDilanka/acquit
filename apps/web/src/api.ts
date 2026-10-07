@@ -1,5 +1,5 @@
 import type {
-  CommandOutcome,
+  CommandResponse,
   CreditAccountView,
   JobView,
   OperatorView,
@@ -69,6 +69,5 @@ export const api = {
   job: (id: string) => request<{ job: JobView }>("GET", `/api/jobs/${encodeURIComponent(id)}`),
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
-  command: async (key: string, command: UserCommand): Promise<CommandOutcome> =>
-    (await request<{ outcome: CommandOutcome }>("POST", "/api/commands", { key, command })).outcome,
+  command: (key: string, command: UserCommand) => request<CommandResponse>("POST", "/api/commands", { key, command }),
 };

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BidView, JobView, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
-import { escrowFee, eta, ledgerNote, mergeNote, releaseNote, usd, utc } from "../format";
+import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
@@ -17,9 +17,12 @@ export function JobPage({ id }: { id: string }) {
   const [checkout, setCheckout] = useState<BidView | null>(null);
   const [confirm, setConfirm] = useState<BidView | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
+  const [disputing, setDisputing] = useState(false);
+  const [disputeReason, setDisputeReason] = useState("");
   const accept = useIntent();
   const cancel = useIntent();
   const approve = useIntent();
+  const dispute = useIntent();
   const isClient = user.role === "CLIENT";
   const fundingRetry = location.search.get("funding") === "retry";
 
@@ -43,7 +46,11 @@ export function JobPage({ id }: { id: string }) {
   const polling =
     checkout !== null || job?.phase === "RELEASE_PENDING"
       ? 1000
-      : job?.status === "OPEN" || job?.phase === "VERIFYING" || job?.merge?.phase === "PENDING"
+      : job?.status === "OPEN" ||
+          job?.phase === "VERIFYING" ||
+          job?.phase === "AWAITING_CLIENT" ||
+          job?.phase === "DISPUTED" ||
+          job?.merge?.phase === "PENDING"
         ? 4000
         : null;
   useEffect(() => {
@@ -79,7 +86,9 @@ export function JobPage({ id }: { id: string }) {
   const locked = lockedBid(job);
   const funding = job.status === "OPEN" && job.phase === "FUNDING";
   const canCancel = isClient && job.status === "OPEN" && !funding && checkout === null;
-  const mergeCommit = job.viewerCanApprove ? job.mergeCommit : null;
+  const mergeCommit = job.viewerCanApprove && !job.dispute ? job.mergeCommit : null;
+  const disputeCommit = job.viewerCanDispute && !job.dispute ? job.mergeCommit : null;
+  const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
 
   const doAccept = async (bid: BidView) => {
@@ -112,6 +121,23 @@ export function JobPage({ id }: { id: string }) {
     // Another tab may have approved first. The refusal (REVIEW_CLOSED, or WRONG_STATE once PAID) then means success.
     if (!outcome && fresh && (fresh.status === "PAID" || fresh.phase === "RELEASE_PENDING")) approve.setError(null);
     setConfirmApprove(false);
+  };
+
+  const doDispute = async (commit: string, reason: string) => {
+    const outcome = await dispute.send(`dispute:${job.id}:${commit}:${reason}`, (): UserCommand => ({
+      type: "Dispute",
+      jobId: job.id,
+      mergeCommit: commit,
+      reason,
+    }));
+    if (outcome?.result.kind === "JOB") setJob(outcome.result.job);
+    const fresh = await load();
+    // Another tab may have disputed first; the job then already reads DISPUTED.
+    if (!outcome && fresh?.dispute) dispute.setError(null);
+    if (outcome || fresh?.dispute) {
+      setDisputing(false);
+      setDisputeReason("");
+    }
   };
 
   return (
@@ -152,6 +178,10 @@ export function JobPage({ id }: { id: string }) {
         </div>
       )}
 
+      {job.status === "OPEN" && job.refundReason && (
+        <div className="alert warn">{refundNote(job.refundReason, false, job.attempts.used + job.attempts.left)}</div>
+      )}
+
       <div className="grid">
         <div>
           {job.status === "OPEN" && !funding && checkout === null && (
@@ -168,21 +198,84 @@ export function JobPage({ id }: { id: string }) {
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
-          {mergeCommit && (
+          {(mergeCommit || disputeCommit || (reviewing && job.reviewEndsAt)) && (
             <section className="card pad">
               <h2>Client review</h2>
               <p className="muted">
-                The verifier passed commit <b className="mono">{short(mergeCommit)}</b>.
-                {job.reviewEndsAt && <> If you do nothing, Acquit releases the payment at {utc(job.reviewEndsAt)}.</>}
+                {job.mergeCommit && (
+                  <>
+                    The verifier passed commit <b className="mono">{short(job.mergeCommit)}</b>.{" "}
+                  </>
+                )}
+                {job.reviewEndsAt &&
+                  (mergeCommit || disputeCommit ? (
+                    <>If you do nothing, Acquit releases the payment at {utc(job.reviewEndsAt)}.</>
+                  ) : (
+                    <>
+                      The client can approve or dispute until {utc(job.reviewEndsAt)}. If the client does nothing, Acquit releases the
+                      payment then.
+                    </>
+                  ))}
               </p>
-              <div className="act">
-                <button className="btn green" disabled={approve.busy} onClick={() => setConfirmApprove(true)}>
-                  Approve and release
-                </button>
-              </div>
+              {disputing && disputeCommit ? (
+                <form
+                  className="form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const reason = disputeReason.trim();
+                    if (reason) void doDispute(disputeCommit, reason);
+                  }}
+                >
+                  <label>
+                    <span>What is wrong with the delivery?</span>
+                    <textarea
+                      rows={2}
+                      value={disputeReason}
+                      onChange={(e) => setDisputeReason(e.target.value)}
+                      placeholder="The fix passes the tests but breaks rounding for EUR invoices."
+                    />
+                  </label>
+                  {dispute.error && <div className="alert">{dispute.error}</div>}
+                  <div className="act">
+                    <small className="muted">The review clock pauses. An arbiter decides within 48 hours.</small>
+                    <button type="button" className="btn ghost" disabled={dispute.busy} onClick={() => setDisputing(false)}>
+                      Back
+                    </button>
+                    <button className="btn" disabled={dispute.busy || disputeReason.trim() === ""}>
+                      {dispute.busy ? "Opening…" : "Open dispute"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                (mergeCommit || disputeCommit) && (
+                  <div className="act">
+                    {disputeCommit && (
+                      <button className="btn ghost" onClick={() => setDisputing(true)}>
+                        Open dispute
+                      </button>
+                    )}
+                    {mergeCommit && (
+                      <button className="btn green" disabled={approve.busy} onClick={() => setConfirmApprove(true)}>
+                        Approve and release
+                      </button>
+                    )}
+                  </div>
+                )
+              )}
             </section>
           )}
           {approve.error && !confirmApprove && <div className="alert">{approve.error}</div>}
+          {dispute.error && !disputing && <div className="alert">{dispute.error}</div>}
+          {job.dispute && (
+            <section className="card pad">
+              <h2>Disputed</h2>
+              <p>{disputeNote(job.dispute)}</p>
+              <p className="muted">
+                The review clock is paused. The arbiter releases the payment, refunds the client, or sends the work back. If the arbiter
+                misses the deadline, Acquit releases the payment.
+              </p>
+            </section>
+          )}
           {judgedStatuses.includes(job.status) && <Verifier job={job} />}
 
           {!isClient && job.status === "OPEN" && !funding && !job.bids.operators.some((b) => b.handle === user.handle) && (
@@ -212,6 +305,18 @@ export function JobPage({ id }: { id: string }) {
               <div className="kv">
                 <span>Locked to</span>
                 <b>{locked.handle}</b>
+              </div>
+            )}
+            {reviewing && job.reviewEndsAt && (
+              <div className="kv">
+                <span>Review ends</span>
+                <b className="num">{utc(job.reviewEndsAt)}</b>
+              </div>
+            )}
+            {job.dispute && (
+              <div className="kv">
+                <span>Arbiter decides by</span>
+                <b className="num">{utc(job.dispute.resolveBy)}</b>
               </div>
             )}
             <div className="kv">
@@ -413,6 +518,8 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
   const { receipt, contract } = job;
   const refund = job.ledger.find((line) => line.kind === "REFUND");
   const pr = receipt?.pullRequest ?? job.pullRequest;
+  const reason = refundNote(job.refundReason, job.status === "REFUNDED", job.attempts.used + job.attempts.left);
+  const arbiter = arbiterNoteLine(job);
   return (
     <section className="card pad statuspanel">
       <pre className="mono">
@@ -444,12 +551,23 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
           <span className={mergeTone[job.merge.phase]}>{mergeNote(job.merge, job.pullRequest, job.mergeCommit)}</span>
         </p>
       )}
+      {job.status === "PAID" && job.releaseAuthority && (
+        <p>
+          <b>{authorityNote(job.releaseAuthority)}.</b>
+        </p>
+      )}
       {job.release && <p className="muted small mono">{releaseNote(job.release)}</p>}
       {refund && (
         <p>
           Refunded <b className="num">{usd(refund.cents)}</b> to the client at {utc(refund.at)}.
         </p>
       )}
+      {reason && (
+        <p>
+          <b>{reason}</b>
+        </p>
+      )}
+      {arbiter && <p className="muted">{arbiter}</p>}
     </section>
   );
 }

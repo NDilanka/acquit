@@ -5,12 +5,13 @@ import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, Recorde
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
-import type { JobRow, JobState } from "./job.ts";
+import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
+import { logBare } from "./log.ts";
 
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -56,7 +57,8 @@ export function isStoreBusy(error: unknown): boolean {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) }, state: storedMerge(row.state) };
+	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
+		state: storedRefund(storedPaid(storedMerge(row.state))) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
 	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
@@ -67,6 +69,44 @@ function storedMerge(state: JobState): JobState {
 	if (state.status !== "PAID" || state.merge.phase !== "MERGED") return state;
 	const merge = state.merge as { readonly at: Instant; readonly sha?: CommitSha | null };
 	return { ...state, merge: { phase: "MERGED", at: merge.at, sha: merge.sha ?? null } };
+}
+/** The five authorities the domain records. Anything else in a row is not an authority this build knows. */
+const RELEASE_AUTHORITIES = ["CLIENT_APPROVAL", "REVIEW_SILENCE", "ARBITER_UPHELD", "ARBITER_SLA_MISSED", "CAPTURE_CUTOFF"] as const;
+function isReleaseAuthority(value: unknown): value is ReleaseIntent["authority"] {
+	return typeof value === "string" && (RELEASE_AUTHORITIES as readonly string[]).includes(value);
+}
+/**
+ * A paid row stored before the release authority was recorded holds none, and a value outside the
+ * domain's five is not a stored fact either. This read types both absences as the typed null.
+ */
+function storedPaid(state: JobState): JobState {
+	if (state.status !== "PAID") return state;
+	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
+	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null };
+}
+/** The five reasons the domain records. Anything else in a row is not a reason this build knows. */
+const REFUND_REASONS = ["DELIVERY_DEADLINE", "ATTEMPTS_EXHAUSTED", "ARBITER_REFUND", "CAPTURE_CUTOFF", "CAPTURE_MISMATCH"] as const;
+function isRefundReason(value: unknown): value is RefundReason {
+	return typeof value === "string" && (REFUND_REASONS as readonly string[]).includes(value);
+}
+/**
+ * A refund row stored before the reason was recorded holds none, and a value outside the domain's
+ * five is not a stored fact either. This read types both absences as the typed null, on the settled
+ * row's reason and on the intent every REFUND_PENDING phase keeps.
+ */
+function storedRefund(state: JobState): JobState {
+	const reason = (value: unknown): RefundReason | null => isRefundReason(value) ? value : null;
+	if (state.status === "REFUNDED") return { ...state, reason: reason(state.reason) };
+	if (state.status === "IN_PROGRESS" && state.attempts.phase === "REFUND_PENDING") {
+		return { ...state, attempts: { ...state.attempts, refund: { ...state.attempts.refund, reason: reason(state.attempts.refund.reason) } } };
+	}
+	if (state.status === "VERIFIED" && state.review.phase === "REFUND_PENDING") {
+		return { ...state, review: { ...state.review, refund: { ...state.review.refund, reason: reason(state.review.refund.reason) } } };
+	}
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") {
+		return { ...state, phase: { ...state.phase, checkout: { ...state.phase.checkout, refund: { ...state.phase.checkout.refund, reason: reason(state.phase.checkout.refund.reason) } } } };
+	}
+	return state;
 }
 /**
  * A row written before a failure carried its name stored one `reason` string. Split it here, at the
@@ -110,6 +150,10 @@ export class SqliteStore implements Store {
 	async listOperators(): Promise<readonly OperatorRow[]> { return this.db.prepare("SELECT json FROM operators").all().map(row => JSON.parse(String(row.json)) as OperatorRow); }
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
+	}
+	async receiptCount(id: OperatorId): Promise<number> {
+		const row = this.db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(id);
+		return row ? Number(row.paid_receipts) : 0;
 	}
 	async jobForResource(resource: string): Promise<JobId | null> {
 		const row = this.db.prepare("SELECT job_id FROM resources WHERE id = ?").get(resource);
@@ -160,6 +204,19 @@ export class SqliteStore implements Store {
 				const updated = this.db.prepare("UPDATE credits SET version = ?, json = ? WHERE id = ? AND version = ?")
 					.run(account.version, JSON.stringify(account), account.operator, credit.expectedVersion);
 				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+			}
+			// The count moves with the PAID row or not at all: exactly the write that settles the release
+			// sets it, so a redelivery or a refused settlement can never count the receipt twice. The id
+			// must be the committed PAID job's own payee: a wrong id counts nobody and loses the receipt,
+			// so it refuses the write whole. A payee with no operators row is a fact to log, not a reason
+			// to refuse the settlement: throwing there would roll the PAID row back, and every webhook
+			// delivery of the same release would retry it.
+			if (change.paidReceipt) {
+				const committed = change.job;
+				const payee = committed !== null && committed.row.state.status === "PAID" ? committed.row.state.payee.operator : null;
+				if (change.paidReceipt !== payee) throw new Error(`paid receipt ${logBare(change.paidReceipt)} is not the committed PAID job's payee; refusing the write`);
+				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
+				if (!counted.changes) console.warn(`paid receipt not counted: no operators row for ${logBare(change.paidReceipt)}`);
 			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);

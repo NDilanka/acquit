@@ -4,7 +4,7 @@
 
 import { createHash } from "node:crypto";
 import type { CommandOutcome, Actor, PublicResult, UserCommand } from "./acquit.ts";
-import { creditWeek, reduceCredits } from "./credits.ts";
+import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
@@ -95,6 +95,12 @@ export type AtomicCommit = {
 	readonly job: { readonly expectedVersion: Version | null; readonly row: JobRow; readonly wakeAt: Instant | null } | null;
 	readonly operator: { readonly expectedVersion: Version | null; readonly row: OperatorRow; readonly agent: Agent | null } | null;
 	readonly credits: readonly { readonly expectedVersion: Version; readonly account: CreditAccount }[];
+	/**
+	 * The payee whose `paid_receipts` counter this same write increments by one. Exactly the write that
+	 * moves a job into PAID sets it, so a replayed or re-delivered settlement counts no second receipt.
+	 * Absent or null on every write that settles no release.
+	 */
+	readonly paidReceipt?: OperatorId | null;
 	readonly outbox: readonly OutboxRow[];
 	/**
 	 * The leased effect this write settles, in the state the write leaves it in. A plan that refused the
@@ -112,6 +118,8 @@ export interface Store {
 	listJobs(): Promise<readonly JobRow[]>;
 	listOperators(): Promise<readonly OperatorRow[]>;
 	receiptCounts(): Promise<ReadonlyMap<OperatorId, number>>;
+	/** One operator's `paid_receipts`, read at the moment a grant needs it. 0 when the row holds none. */
+	receiptCount(operator: OperatorId): Promise<number>;
 	readJob(jobId: JobId): Promise<JobRow | null>;
 	readOperator(operator: OperatorId): Promise<OperatorRow | null>;
 	readCredits(operator: OperatorId): Promise<CreditAccount>;
@@ -154,7 +162,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const previous = await ports.store.readRequest(actorKey, key);
 		if (previous) return previous.payloadDigest === payloadDigest ? { kind: "REPLAY", result: previous.result }
 			: { kind: "DENIED", reason: "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" };
-		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit", "Approve"].includes(command.type)) throw new Error("not implemented");
+		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit", "Approve", "Dispute", "ResolveDispute"].includes(command.type)) throw new Error("not implemented");
 		const row = "jobId" in command ? await ports.store.readJob(command.jobId) : null;
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
@@ -190,6 +198,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const committed = await ports.store.commit({
 			job: { expectedVersion: row?.version ?? null, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
+			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)), settlement: null, delivery: null,
 			request: { actor: actorKey, key, payloadDigest, result },
 		});
@@ -208,6 +217,15 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 
 /** What one system commit did, and the plan's own word when it refused the observation it was given. */
 export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null };
+
+/**
+ * The payee whose receipt this write counts, exactly when the plan moves the job into PAID. The row's
+ * own state is the guard: only the one commit that takes VERIFIED RELEASE_PENDING to PAID returns an
+ * operator, and every redelivered or refused settlement after it returns null.
+ */
+function paidReceiptOf(before: JobRow | null, next: JobRow): OperatorId | null {
+	return before !== null && before.state.status !== "PAID" && next.state.status === "PAID" ? next.state.payee.operator : null;
+}
 
 /**
  * The leased effect a system commit settles, and the bounded provider answer its row shows if the plan
@@ -237,6 +255,7 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 		if (typeof plan === "string") throw new Error(`System transition refused: ${plan}`);
 		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
+			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)),
 			settlement: settlement === null ? null : { key: settlement.key, state: settlementOf(settlement, plan.refused ?? null, now) },
 			request: null, delivery });
@@ -647,14 +666,18 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 
 export async function runDueTimers(ports: Ports): Promise<number> {
 	// TODO For each due row, apply TimerDue with the stored wakeAt. A stale wakeAt is a no-op.
-	// TODO Monday 00:00 UTC: Grant per operator, keyed grant:${week}, with paid receipts counted at the boundary.
 	const now = ports.clock.now();
-	const receipts = await ports.store.receiptCounts();
 	let changed = 0;
 	for (const operator of await ports.store.listOperators()) {
 		if (operator.kind === "HOUSE") continue;
 		const account = await ports.store.readCredits(operator.id);
-		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts: receipts.get(operator.id) ?? 0, at: now });
+		// The grant belongs to the ISO week. A tick grants when the account lacks the current week's
+		// key and its previous grant's week has ended, whatever day it runs; a week no tick ran in is
+		// never back-filled, and the receipt count is read per operator right before the grant is
+		// written, so a receipt that settled since the tick began still counts for this week.
+		if (!grantDue(account, now)) continue;
+		const paidReceipts = await ports.store.receiptCount(operator.id);
+		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;
 		const result = await ports.store.commit({ job: null, operator: null, credits: [{ expectedVersion: account.version, account: next }],
 			outbox: [], settlement: null, request: null, delivery: null });

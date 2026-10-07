@@ -25,10 +25,10 @@ export function useIntent() {
     setBusy(true);
     setError(null);
     try {
-      const outcome = await api.command(key, command);
+      const { outcome, credits } = await api.command(key, command);
       if (outcome.kind === "DENIED") {
         pending.current = null;
-        setError(denied(outcome.reason));
+        setError(denied(outcome.reason, credits));
         return null;
       }
       pending.current = null;

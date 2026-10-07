@@ -49,10 +49,15 @@ Commands the skeleton must support:
 | CLIENT | `{ type: "CancelJob", jobId }` |
 | OPERATOR | `{ type: "Submit", jobId, sourceCommit }` |
 | CLIENT | `{ type: "Approve", jobId, mergeCommit }` |
+| CLIENT | `{ type: "Dispute", jobId, mergeCommit, reason }` |
 
 `Approve` names the commit the verifier judged, which `GET /api/jobs/:id` serves as `job.mergeCommit`. A different commit is refused `ARTIFACT_CHANGED`; a job whose review window closed is refused `REVIEW_CLOSED`; the operator who did the work is refused `NOT_OWNER`. The approval selects one release and the job enters `RELEASE_PENDING`. The API drains that release inline with a short bound, so the response usually still shows `VERIFIED` with `phase: "RELEASE_PENDING"` and the job reaches `PAID` once PayPal answers. Approving twice with one request key replays the first result; a second approval is refused `REVIEW_CLOSED`.
 
+`Dispute` names the same judged commit and is refused the same way: a moved head is `ARTIFACT_CHANGED`, a closed window is `REVIEW_CLOSED`, and a stranger is `NOT_OWNER`. It enters `DISPUTED` and stores `resolveBy = now + 48 hours`; the 72-hour review clock pauses, because the row keeps no `endsAt` in `DISPUTED` and the timer index holds `resolveBy`. The arbiter answers with `ResolveDispute` (UPHOLD selects a release with authority `ARBITER_UPHELD`, REFUND selects `ARBITER_REFUND` through the same refund effect, REWORK returns the work to `READY` while a slot and the delivery deadline remain). The skeleton has no staff session, so the arbiter's surface is the development route below.
+
 `OpenJob` returns `PublicResult` kind `JOB`, so the new job id is `outcome.result.job.id`. The seeded House operator `house-tsfix` (agent `house-ts-fixer`) places one House bid at the budget with eta 24 right after `OpenJob` commits, so the client sees two bids once `devon-ops` bids.
+
+A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and that `409` carries the same credit view `GET /api/me/credits` serves so the bid form can say when credits return: `{ outcome: { kind: "DENIED", reason: "INSUFFICIENT_CREDITS" }, credits: CreditAccountView }`.
 
 ## Queries
 
@@ -121,7 +126,15 @@ A refund (delivery deadline, exhausted attempts, capture mismatch, or the cutoff
 
 A release or refund whose inline answer was lost settles from the webhook route's re-read of the payout item or refund, so the route is the recovery path for the same edges the outbox dispatches.
 
+The review fields: `job.reviewEndsAt` is the 72-hour deadline while `AWAITING_CLIENT` and null otherwise; `job.viewerCanDispute` is true exactly when the viewer is the owning client and the review is open; `job.dispute` is `{ reason, openedAt, resolveBy }` while `phase` reads `DISPUTED`; `job.releaseAuthority` names what selected the release while it is `RELEASE_PENDING` and on the settled `PAID` row (`CLIENT_APPROVAL`, `REVIEW_SILENCE`, `ARBITER_UPHELD`, `ARBITER_SLA_MISSED`, or `CAPTURE_CUTOFF`), and is null before any release and on a row stored before F4; `job.refundReason` names the reason the refund selected while one is pending (the row's `REFUND_PENDING` phase, or the checkout's refund while an `OPEN` job is `FUNDING`) and on the settled `REFUNDED` row (`DELIVERY_DEADLINE`, `ATTEMPTS_EXHAUSTED`, `ARBITER_REFUND`, `CAPTURE_CUTOFF`, or `CAPTURE_MISMATCH`), and is null before any refund and on a row stored before the reason was recorded. `job.arbiterNote` is the note from the arbiter's last decision (UPHOLD, REFUND, or REWORK). It is null before any arbiter decision and on a row stored before F4, and it stays on the row after the decision, so the page shows it only where that decision still stands.
+
 The paid view carries what a lane and the page read. `job.release` is the observed release evidence: `payoutItemId` names the referenced payout item the capture paid through (`GET /v1/payments/referenced-payouts-items/<item id>`), and `captureId`, `paid`, and `at` are what that item observed. `job.merge` is the merge of the verified pull request, null until `PAID` and then `PENDING`, `MERGED` with `at` and `sha`, or `NEEDS_HUMAN` with the reason. `sha` is GitHub's merge commit, the commit that landed on the base branch, read from the merge answer or the pull's `merge_commit_sha` when the client adopts a merge that already landed; it is not `job.mergeCommit`, which names the tree the verifier judged and the client approved. A row stored before the field existed serves `sha: null`. `job.pullRequest` names the pull. `job.client` names the owning client only to that client's own session and is `null` for every other viewer, and `job.viewerCanApprove` is the API's own answer to whether this session is that client with the review awaiting its approval, so the page gates the control on ownership rather than on role (a window that has already closed is still the edge's `REVIEW_CLOSED` refusal). `job.attempts` counts what the job actually used: a settled job serves the attempts its receipt or history recorded, so a PAID job's `used` is its receipt's `attemptsUsed`.
+
+## Review, disputes, and credits
+
+The 72-hour review window ends with no client action: the timer releases with authority `REVIEW_SILENCE`. A dispute opened inside the window pauses the clock, and the arbiter has 48 hours. A missed arbiter deadline releases with `ARBITER_SLA_MISSED` and raises the `DISPUTE_SLA_MISSED` alert: the effect is a durable outbox row, and the deployment's alert sink receives it. The day-21 capture-age cutoff stays first in `TimerDue`, so a dispute past it releases with `CAPTURE_CUTOFF` and never reports `ARBITER_SLA_MISSED`.
+
+`GET /api/me/credits` serves `{ credits: { available, weeklyAllowance, nextGrantAt } }` for the signed-in operator. The weekly grant runs from `tick` once per ISO week, at that week's first tick at or after Monday 00:00 UTC: allowance = `min(100, 30 + 10 per verified receipt counted when the grant is written)`, keyed `grant:<ISO week>`, with the unspent allowance expired under `expire:<ISO week>`. A Monday the process was down for is caught up by the week's next tick, and a week no tick ran in is never back-filled. A replayed tick appends nothing, and a receipt earned after the week's grant was written never grows that week's allowance. A `PENDING` bid past `bidReviewHours` (72) is returned with `NO_CLIENT_RESPONSE`; a client cancel returns it with `CLIENT_CANCEL`.
 
 ## Development controls
 
@@ -132,6 +145,9 @@ Every `/api/dev/` route requires `ACQUIT_DEV=1` on the API process and a develop
 | POST | `/api/dev/clock` | `{ advanceMs }`, a positive integer of at most 365 days | `{ now }`, the new UTC clock time after due work runs |
 | POST | `/api/dev/fund-mode` | `{ mode: "card" \| "checkout" }` | `{ mode }` |
 | POST | `/api/dev/tick` | | `{ ok: true }` after due work runs |
+| POST | `/api/dev/arbiter` | `{ jobId, verdict: "UPHOLD" \| "REFUND" \| "REWORK", note }` (verdict case-insensitive) | `{ outcome }`, the same shape `/api/commands` answers; `409` for a domain refusal such as `WRONG_STATE` |
+
+`POST /api/dev/arbiter` is the arbiter's surface for the hackathon: it sends the same `ResolveDispute` a staff console will send later, under a fixed development staff id, so the domain edge still guards the role and the `DISPUTED` phase. The client opens the dispute first through `POST /api/commands`; the route cannot create one.
 
 `createAcquit` accepts an optional `Clock` with `now(): Instant`. Production code defaults to wall time. The API development clock adds a process-local offset. Session expiry and PayPal token expiry still use wall time. Restart resets the offset and funding mode.
 

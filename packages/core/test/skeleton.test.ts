@@ -986,6 +986,15 @@ function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>;
 	// The timer scan loads the credits of every bidder on the row, so the harness stores one.
 	const account = grant("devon-ops" as OperatorId);
 	store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+	// The commit that settles a release counts the payee's receipt, so the harness stores the payee's own row.
+	const payee = row.state.status === "IN_PROGRESS" || row.state.status === "VERIFIED" ? row.state.escrow.payee.operator
+		: row.state.status === "PAID" || row.state.status === "REFUNDED" ? row.state.payee.operator
+		: row.state.status === "OPEN" && row.state.phase.kind === "FUNDING" ? row.state.phase.chosen.operator : null;
+	if (payee !== null) {
+		const operator: OperatorRow = { id: payee, handle: String(payee), kind: "INDEPENDENT", version: 0 as Version,
+			payouts: { kind: "READY", merchant, connectedAt: now } };
+		store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	}
 	const base = fixture();
 	let current = now;
 	const raised: string[] = [];
