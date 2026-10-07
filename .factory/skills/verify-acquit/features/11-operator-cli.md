@@ -10,7 +10,11 @@ block below is asserted against `docs/tutorial.md` character for character by
 - `cli-login` asks the API for a one-time code, prints and opens `<web>/cli?code=...`, polls until a
   signed-in browser approves, and stores the session token at
   `$XDG_CONFIG_HOME/acquit/cli.json` (`%APPDATA%\acquit\cli.json` on Windows) with mode 0600. The row
-  keeps only the code's digest; the token is handed over exactly once and lives seven days.
+  keeps only the code's digest, the code is bound to the CLI's own verifier (`POST /api/cli/codes`
+  takes `challenge = base64url(sha256(verifier))`, every poll presents `X-Acquit-Verifier`, and a
+  missing or wrong verifier is 403 `VERIFIER_MISMATCH`), and the token is handed over exactly once —
+  approval and delivery each claim the row with a conditional update inside a transaction, so two
+  raced approvals mint one session and two raced polls hand it over once. The session lives seven days.
 - `cli-operator-init` reads `GET /api/me/onboarding` for the merchant status the server already holds,
   opens PayPal onboarding when it is still pending, waits for `READY`, then reads the provider key from
   a prompt or from stdin (`--provider-key-stdin`) and stores it in the OS keychain. The key never
@@ -179,7 +183,9 @@ is judged on the run-start rule alone.
 
 - `login` prints and opens the web app's `/cli?code=...` page. The API half is here; the page itself is
   `apps/web/**`, which is outside this round's file scope, so a drive approves through
-  `POST /api/cli/approve` with the browser's session and the code until that page lands.
+  `POST /api/cli/approve` with the browser's session and the code until that page lands. A drive that
+  polls the code must present the same verifier the CLI minted (`X-Acquit-Verifier`); a poll without
+  it is 403 `VERIFIER_MISMATCH`.
 - The keychain is the OS store, per platform: Windows Credential Manager through the WinRT
   PasswordVault, the Linux kernel user keyring through `keyctl` (`padd`/`pipe`, the secret on stdin),
   and the macOS login keychain through `security`. The Linux user keyring is memory only, so a reboot
