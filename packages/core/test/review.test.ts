@@ -276,6 +276,26 @@ test("the capture-age cutoff stays first: a dispute past it releases CAPTURE_CUT
 	assert.deepEqual(due.effects, [{ kind: "RELEASE", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant }]);
 });
 
+test("the arbiter's note is kept with the decision and served by the view", () => {
+	// No arbiter has decided yet, so the view serves nothing.
+	assert.equal(projectJob(disputedRow(), maya, new Map()).arbiterNote, null);
+	const upheld = applyJobCommand(disputedRow(), { type: "ResolveDispute", jobId: parseJobId("job_review"), verdict: "UPHOLD", note: "The artifact met the frozen contract." }, userFacts(arbiter));
+	if (typeof upheld === "string") throw new Error(upheld);
+	assert.equal(projectJob(upheld.next, maya, new Map()).arbiterNote, "The artifact met the frozen contract.");
+	const settled = applyJobCommand(upheld.next, { type: "ReleaseSettled", jobId: parseJobId("job_review"), release: releaseEvidence }, paypalFacts(later));
+	if (typeof settled === "string") throw new Error(settled);
+	assert.equal(projectJob(settled.next, maya, new Map()).arbiterNote, "The artifact met the frozen contract.");
+	// The refund settles through a freshly built row, and the rework returns to WORK: both keep the note.
+	const refunded = applyJobCommand(disputedRow(), { type: "ResolveDispute", jobId: parseJobId("job_review"), verdict: "REFUND", note: "The contract was not met." }, userFacts(arbiter));
+	if (typeof refunded === "string") throw new Error(refunded);
+	const refundSettled = applyJobCommand(refunded.next, { type: "RefundSettled", jobId: parseJobId("job_review"), refund: refundEvidence }, paypalFacts(later));
+	if (typeof refundSettled === "string") throw new Error(refundSettled);
+	assert.equal(projectJob(refundSettled.next, maya, new Map()).arbiterNote, "The contract was not met.");
+	const rework = applyJobCommand(disputedRow(), { type: "ResolveDispute", jobId: parseJobId("job_review"), verdict: "REWORK", note: "Address the export path." }, userFacts(arbiter));
+	if (typeof rework === "string") throw new Error(rework);
+	assert.equal(projectJob(rework.next, maya, new Map()).arbiterNote, "Address the export path.");
+});
+
 test("the job view serves the review deadline, the dispute, the release authority, and viewerCanDispute", () => {
 	const verified = verifiedRow();
 	const asMaya = projectJob(verified, maya, new Map());
