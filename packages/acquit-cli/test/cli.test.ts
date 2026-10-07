@@ -186,7 +186,7 @@ test("operator init prints the tutorial's block, stores the provider key in the 
 	});
 	assert.equal(written.join(""), tutorialBlock("1/3 Payouts") + "\n");
 	assert.deepEqual(opened, ["https://www.paypal.com/onboard/devon"]);
-	assert.deepEqual(questions, ["\tProvider (anthropic, openai): ", "\tAPI key: "]);
+	assert.deepEqual(questions, ["\tProvider (anthropic): ", "\tAPI key: "]);
 	assert.equal(keychain.get("acquit:provider-key"), key);
 	assert.equal(keychain.get("acquit:provider"), "anthropic");
 });

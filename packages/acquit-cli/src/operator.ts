@@ -44,12 +44,12 @@ function providerOf(value: string): Provider {
 	// nothing can use.
 	if (value === "openai") throw new CliError("PROVIDER_UNSUPPORTED", "Only an Anthropic key runs today.");
 	if (value === "anthropic") return value;
-	throw new CliError("USAGE", "The provider must be anthropic or openai.");
+	throw new CliError("USAGE", "The provider must be anthropic.");
 }
 
 export function parseOperatorArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): OperatorInitOptions {
 	const { apiUrl, rest } = apiFlag(argv, env);
-	if (rest[0] !== "init") throw new CliError("USAGE", "Usage: acquit operator init [--provider anthropic|openai] [--provider-key-stdin] [--api <url>]");
+	if (rest[0] !== "init") throw new CliError("USAGE", "Usage: acquit operator init [--provider anthropic] [--provider-key-stdin] [--api <url>]");
 	let provider: Provider | null = null;
 	let keyOnStdin = false;
 	let timeoutSeconds = 600;
@@ -64,7 +64,7 @@ export function parseOperatorArgs(argv: readonly string[], env: NodeJS.ProcessEn
 		else throw new CliError("USAGE", `Unknown flag ${flag}.`);
 	}
 	if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1) throw new CliError("USAGE", "--timeout takes whole seconds.");
-	if (keyOnStdin && provider === null) throw new CliError("USAGE", "--provider-key-stdin needs --provider anthropic or --provider openai.");
+	if (keyOnStdin && provider === null) throw new CliError("USAGE", "--provider-key-stdin needs --provider anthropic.");
 	return { apiUrl, token: resolveToken(undefined, env, () => readLogin(env)?.token ?? null), provider, keyOnStdin, timeoutSeconds, pollMs: 1_000 };
 }
 
@@ -110,7 +110,7 @@ export async function runOperatorInit(options: OperatorInitOptions, deps: Operat
 	emit("\tPayPal verified your identity during onboarding.");
 	emit("3/3 Model provider");
 
-	const question = "\tProvider (anthropic, openai): ";
+	const question = "\tProvider (anthropic): ";
 	// The prompt is already on the terminal; the answer completes the line, and the transcript keeps it whole.
 	const answerLine = (prompt: string, answer: string): void => { deps.write(`${answer}\n`); lines.push(`${prompt}${answer}`); };
 	let provider = options.provider;

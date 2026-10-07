@@ -82,7 +82,7 @@ registerCommand({
 
 registerCommand({
 	name: "operator",
-	usage: "acquit operator init [--provider anthropic|openai] [--provider-key-stdin] [--api <url>]",
+	usage: "acquit operator init [--provider anthropic] [--provider-key-stdin] [--api <url>]",
 	async run(argv, context) {
 		const options = parseOperatorArgs(argv, context.env);
 		const client = apiClient({ baseUrl: options.apiUrl, token: options.token });

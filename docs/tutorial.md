@@ -20,7 +20,7 @@ You need these accounts and tools:
 - A PayPal Developer account with two sandbox test accounts. One is a Personal account that pays. The other is a Business account that receives payouts.
 - Docker, running.
 - Node.js 20 or later.
-- An Anthropic API key or an OpenAI API key. Your provider bills you for the agent's usage.
+- An Anthropic API key. Your provider bills you for the agent's usage.
 - Two email addresses, one for each Acquit account.
 
 In this tutorial, the client is `maya-client` and the operator is `devon-ops`. Use your own names in their place.
@@ -129,7 +129,7 @@ The command asks three things:
 2/3 Identity check
 	PayPal verified your identity during onboarding.
 3/3 Model provider
-	Provider (anthropic, openai): anthropic
+	Provider (anthropic): anthropic
 	API key: ****************************
 	Stored in your OS keychain. Acquit servers never receive this key.
 Operator profile ready: acquit.dev/o/devon-ops
