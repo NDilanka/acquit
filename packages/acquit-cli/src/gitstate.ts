@@ -137,9 +137,10 @@ export function writeWorkTreeMarker(gitDir: string, workTree: string): void {
 
 /**
  * Local git config that must never meet the scoped work-repo token or a push: URL rewrites and push
- * targets can send it elsewhere, and the rest are code execution, credential sources, or request
- * rewriting. The state git directory is CLI-owned, so any of these is config the CLI did not write;
- * includes count because they can smuggle the others in from a file this scan does not read.
+ * targets can send it elsewhere, and the rest are code execution, credential sources, request
+ * rewriting, or TLS verification. The state git directory is CLI-owned, so any of these is config
+ * the CLI did not write; includes count because they can smuggle the others in from a file this scan
+ * does not read.
  *
  * The `remote.*.url` rule applies only to a state checkout (`where === "state"`): the scoped push
  * names the work-repo URL explicitly, while an operator's own checkout remotes are theirs.
@@ -154,27 +155,38 @@ export function unsafeGitConfigKeys(git: GitProbe, gitDir: string, env: NodeJS.P
 		if (record === "") continue;
 		// `--list -z` writes `key\nvalue\0`, so the value of a remote URL is here to read, never print.
 		const newline = record.indexOf("\n");
-		const key = (newline === -1 ? record : record.slice(0, newline)).trim().toLowerCase();
+		// The key as git listed it: a URL subsection is case-sensitive, so the boolean probe below
+		// must name the key git resolves, while the refusal reports the lowercased spelling.
+		const listedKey = (newline === -1 ? record : record.slice(0, newline)).trim();
+		const key = listedKey.toLowerCase();
 		const value = newline === -1 ? "" : record.slice(newline + 1).trim();
 		// Git parses a URL-scoped key the same way: the section first, then the name after the last
 		// dot. A URL-scoped key outranks the guard's plain `-c` override, so `http.<url>.proxy`,
-		// `.sslVerify`, and `.extraHeader` are refused here or one can move a credential-bearing
-		// request, turn off TLS verification, or add a header to the scoped push.
+		// `http.<url>.sslVerify`, and `http.<url>.extraHeader` are refused here or one can move a
+		// credential-bearing request, turn off TLS verification, or add a header to the scoped push.
+		// A CA key refuses in both shapes: a planted bundle makes git trust a substituted certificate.
 		const http = key.startsWith("http.") ? key.slice(key.lastIndexOf(".") + 1) : "";
 		// `pushInsteadOf` rewrites a push to the URL the command names, exactly as `insteadOf` does.
 		if (/^url\..+\.(push)?insteadof$/.test(key) || /\.pushurl$/.test(key)
 			|| (where === "state" && /^remote\..+\.url$/.test(key) && remoteOffGithub(value))
-			|| http === "proxy" || http === "extraheader" || (http === "sslverify" && boolFalse(value))
+			|| http === "proxy" || http === "extraheader" || http === "sslcainfo" || http === "sslcapath"
+			|| (http === "sslverify" && !gitReadsTrue(git, gitDir, env, listedKey))
 			|| /^core\.sshcommand$/.test(key) || /^core\.hookspath$/.test(key) || /^core\.fsmonitor$/.test(key)
 			|| /^credential(\.|$)/.test(key) || /^include(\.|$)/.test(key) || /^includeif\./.test(key)) unsafe.add(key);
 	}
 	return [...unsafe].sort();
 }
 
-/** git's own false spellings; `git_config_bool` accepts these case-insensitively. */
-function boolFalse(value: string): boolean {
-	const lowered = value.toLowerCase();
-	return lowered === "false" || lowered === "no" || lowered === "off" || lowered === "0";
+/**
+ * Whether git reads every value of `key` as boolean true. The scan asks git rather than spelling
+ * git's false forms itself: an empty value, `00`, `0x0`, and `0k` are all false to git, and a value
+ * git cannot parse must refuse too. A listed key git cannot answer for is refused, never trusted.
+ */
+function gitReadsTrue(git: GitProbe, gitDir: string, env: NodeJS.ProcessEnv, key: string): boolean {
+	const answer = git(["--git-dir", gitDir, "config", "--local", "--no-includes", "--bool", "--get-all", key], env);
+	if (answer.status !== 0) return false;
+	const values = answer.stdout.split("\n").map(line => line.trim()).filter(line => line !== "");
+	return values.length > 0 && values.every(value => value === "true");
 }
 
 /** Whether a configured remote URL names a host that is not github.com. Only a github.com URL can be

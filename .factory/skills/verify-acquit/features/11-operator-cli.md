@@ -187,10 +187,11 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   push with the operator's own credential keeps the operator's git environment and credential helper,
   minus the `ACQUIT_*` variables, while a push driven by the scoped token is hardened. A git directory
   that holds config the CLI did not write refuses the scoped push (`GIT_CONFIG_UNSAFE`) instead of
-  letting the scoped token meet a URL rewrite, an http proxy, or a credential helper; the refusal
-  names the directory and its remedy. The off-github `remote.*.url` rule applies to the state checkout
-  alone: the scoped push names the work-repo URL explicitly, so an operator's own remotes cannot
-  steer it, while every `insteadOf`/`pushInsteadOf`/`pushurl` rewrite refuses everywhere.
+  letting the scoped token meet a URL rewrite, an http proxy, a TLS verification git reads as false,
+  a planted CA bundle, or a credential helper; the refusal names the directory and its remedy. The
+  off-github `remote.*.url` rule applies to the state checkout alone: the scoped push names the
+  work-repo URL explicitly, so an operator's own remotes cannot steer it, while every
+  `insteadOf`/`pushInsteadOf`/`pushurl` rewrite refuses everywhere.
 - `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.
 - The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
   repo. Rerun in about 30 seconds.
