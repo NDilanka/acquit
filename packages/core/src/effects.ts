@@ -8,16 +8,17 @@ import { creditWeek, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
-import { applyJobCommand, effectWanted, projectJob, TERMS, wakeAt } from "./job.ts";
-import type { JobCommand, JobEffect, JobRow, Loaded, MergeProgress, SystemJobCommand } from "./job.ts";
+import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
+import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
-import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome } from "./paypal.ts";
+import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookResourceKind } from "./paypal.ts";
 import { frozenDefinition, ISSUE } from "./seed-data.ts";
 import { isStoreBusy } from "./store.ts";
+import type { WebhookEventRow } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
 
 export type Effect = JobEffect | OperatorEffect;
@@ -111,6 +112,7 @@ export interface Store {
 	readRequest(actor: string, key: RequestKey): Promise<RecordedRequest | null>;
 	finishRequest(request: RecordedRequest): Promise<void>;
 	jobForResource(resource: string): Promise<JobId | null>;
+	recordWebhookEvent(event: WebhookEventRow): Promise<void>;
 	dueJobs(now: Instant): Promise<readonly { readonly jobId: JobId; readonly wakeAt: Instant }[]>;
 	commit(change: AtomicCommit): Promise<"COMMITTED" | "VERSION_CONFLICT" | "REQUEST_REPLAY" | "DELIVERY_REPLAY">;
 	leaseEffect(now: Instant, until: Instant, key?: OperationKey): Promise<OutboxRow | null>;
@@ -197,7 +199,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 	return { kind: "DENIED", reason: "BUSY" };
 }
 
-export async function applySystemCommand(ports: Ports, command: JobCommand, acknowledge: OperationKey | null, delivery: string | null): Promise<void> {
+export async function applySystemCommand(ports: Ports, command: JobCommand, acknowledge: OperationKey | null, delivery: string | null): Promise<"COMMITTED" | "DELIVERY_REPLAY"> {
 	if (!("jobId" in command)) throw new Error("System command requires job");
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const row = await ports.store.readJob(command.jobId);
@@ -214,7 +216,7 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, ackn
 		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)), acknowledge, request: null, delivery });
-		if (committed !== "VERSION_CONFLICT") return;
+		if (committed === "COMMITTED" || committed === "DELIVERY_REPLAY") return committed;
 	}
 	throw new Error("System command busy");
 }
@@ -428,11 +430,123 @@ export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant):
 	}
 }
 
-export function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Response> {
-	// TODO paypal.parseWebhook verifies and re-reads. Unknown resource returns 200 and is dropped.
-	// TODO Route by stored order or capture id. Commit the delivery id with the transition.
-	// TODO A new event id for an already applied capture reaches a no-op edge. The state is the guard.
-	throw new Error("not implemented");
+/** The route's closed outcome set. `webhookOutcomeText` is the one place the printed phrases are spelled. */
+export type WebhookOutcome =
+	| { readonly kind: "APPLIED"; readonly jobId: JobId; readonly edge: SystemJobCommand["type"]; readonly changed: boolean }
+	| { readonly kind: "NOOP"; readonly reason: "JOB_ALREADY_SETTLED" | "RESOURCE_NOT_OURS" | "UNROUTED" | "PROVIDER_HELD"; readonly jobId: JobId | null; readonly status?: JobStatus }
+	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED"; readonly resource?: WebhookResourceKind };
+
+function resourceNoun(kind: WebhookResourceKind | undefined): string {
+	switch (kind) {
+		case "CAPTURE": return "capture";
+		case "REFUND": return "refund";
+		case "PAYOUT_ITEM": return "payout item";
+		case "REFERENCED_PAYOUT_ITEM": return "referenced payout item";
+		default: return "resource";
+	}
+}
+
+export function webhookOutcomeText(outcome: WebhookOutcome): string {
+	switch (outcome.kind) {
+		case "APPLIED": return "applied";
+		case "NOOP":
+			switch (outcome.reason) {
+				case "JOB_ALREADY_SETTLED": return outcome.status === undefined ? "no-op, job already settled" : `no-op, job already ${outcome.status}`;
+				case "RESOURCE_NOT_OURS": return "no-op, no job holds this resource";
+				case "UNROUTED": return "no-op, event type not routed";
+				case "PROVIDER_HELD": return "no-op, PayPal has not settled this resource";
+			}
+		case "REFUSED":
+			switch (outcome.reason) {
+				case "UNREADABLE_EVENT": return "refused, unreadable event";
+				case "RESOURCE_UNKNOWN_TO_PROVIDER": return `refused, PayPal does not know this ${resourceNoun(outcome.resource)}`;
+				case "PROVIDER_REFUSED": return `refused, the provider refused this ${resourceNoun(outcome.resource)}`;
+			}
+	}
+}
+
+/** The resource a settled fact is about: what the same fact under a new event id is keyed by. A capture
+ * fact anchors on its order, which the index holds from the moment the order exists. */
+function anchorOf(observation: PayPalObservation): string | null {
+	switch (observation.kind) {
+		case "CAPTURE_COMPLETED": return observation.capture.orderId;
+		case "RELEASE_COMPLETED": return observation.release.captureId;
+		case "REFUND_COMPLETED": return observation.refund.captureId;
+		case "REIMBURSEMENT_COMPLETED": return observation.reimbursement.batchId;
+		default: return null;
+	}
+}
+
+/** One delivery of one fact. The fact under a new event id finds this key and changes nothing. */
+function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObservation): string {
+	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
+}
+
+/** The job a settled fact belongs to, when the route's index did not name one. */
+async function anchorJob(ports: Ports, observation: PayPalObservation): Promise<JobId | null> {
+	const anchor = anchorOf(observation);
+	return anchor === null ? null : ports.store.jobForResource(anchor);
+}
+
+const settledNoop = (job: JobRow | null): WebhookOutcome =>
+	({ kind: "NOOP", reason: "JOB_ALREADY_SETTLED", jobId: job?.id ?? null, status: job?.state.status });
+
+/**
+ * The webhook route. Every body is recorded, the named resource is re-read from PayPal, and the fact that
+ * read carries is routed to the edge that owns it. The job state is the guard, not the event id: a fact
+ * the job already holds is a 200 no-op under this event id or any other, and a resource PayPal does not
+ * hold is refused before any job is touched.
+ */
+export async function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Response> {
+	const envelope = await ports.paypal.parseWebhook(request);
+	if (envelope.kind === "UNREADABLE") return finish(ports, unreadableDelivery(envelope.raw), { kind: "REFUSED", reason: "UNREADABLE_EVENT" }, 400, envelope.detail);
+	if (envelope.kind === "UNROUTED") return finish(ports, envelope, { kind: "NOOP", reason: "UNROUTED", jobId: null }, 200);
+	const named = await ports.store.jobForResource(envelope.resource.id);
+	const owner = named === null ? null : await ports.store.readJob(named);
+	const read = await ports.paypal.readResource(envelope.resource, owner === null ? null : payeeMerchantOf(owner));
+	if (read.kind === "UNKNOWN") return finish(ports, envelope, { kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 422,
+		`PayPal holds no ${resourceNoun(envelope.resource.kind)} ${envelope.resource.id}.`);
+	if (read.kind === "REFUSED") return finish(ports, envelope, { kind: "REFUSED", reason: "PROVIDER_REFUSED", resource: envelope.resource.kind }, 422, read.reason);
+	if (read.kind === "HELD") return finish(ports, envelope, named === null
+		? { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null } : { kind: "NOOP", reason: "PROVIDER_HELD", jobId: named }, 200, read.detail);
+	// The route's own index names the job, and the fact itself names the capture or batch it settles.
+	const jobId = named ?? await anchorJob(ports, read.observation);
+	if (jobId === null) return finish(ports, envelope, { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null }, 200);
+	const command = toJobCommand(jobId, read.observation);
+	if (command === null) return finish(ports, envelope, { kind: "NOOP", reason: "UNROUTED", jobId }, 200);
+	const before = await ports.store.readJob(jobId);
+	try {
+		return finish(ports, envelope, await applyFact(ports, command, webhookDeliveryKey(command, read.observation), before), 200);
+	} catch (error) {
+		// A busy store is transient. PayPal retries the body, and the state guard makes the retry safe.
+		if (isStoreBusy(error)) return Response.json({ error: "STORE_BUSY" }, { status: 503 });
+		throw error;
+	}
+}
+
+/** Applies one re-read fact under its own delivery key. A row that does not take the edge is the same no-op a redelivery gets. */
+async function applyFact(ports: Ports, command: SystemJobCommand, key: string, before: JobRow | null): Promise<WebhookOutcome> {
+	const committed = await applySystemCommand(ports, command, null, key);
+	if (committed === "DELIVERY_REPLAY") return settledNoop(before);
+	const after = await ports.store.readJob(command.jobId);
+	return { kind: "APPLIED", jobId: command.jobId, edge: command.type, changed: before?.version !== after?.version };
+}
+
+/** A body with no event id is keyed by its own digest, so it is still recorded and still replayable by nothing else. */
+function unreadableDelivery(raw: string): { readonly deliveryId: string; readonly raw: string } {
+	return { deliveryId: `unreadable-${digest(raw).slice(0, 16)}`, raw };
+}
+
+/** Records the delivery and answers with its outcome. One place writes the record and the status together. */
+async function finish(ports: Ports, delivery: { readonly deliveryId: string; readonly raw: string }, outcome: WebhookOutcome, status: number, detail?: string): Promise<Response> {
+	const text = webhookOutcomeText(outcome);
+	await ports.store.recordWebhookEvent({ id: delivery.deliveryId, receivedAt: ports.clock.now(), body: delivery.raw, outcome: text });
+	const body: Record<string, unknown> = { outcome: text };
+	if (outcome.kind === "APPLIED") Object.assign(body, { jobId: outcome.jobId, edge: outcome.edge, changed: outcome.changed });
+	if (outcome.kind === "NOOP" && outcome.jobId !== null) Object.assign(body, { jobId: outcome.jobId });
+	if (outcome.kind === "NOOP" && outcome.status !== undefined) Object.assign(body, { status: outcome.status });
+	if (outcome.kind === "REFUSED") return Response.json({ error: outcome.reason, ...body, ...(detail === undefined ? {} : { detail }) }, { status });
+	return Response.json({ ok: true, ...body }, { status });
 }
 
 export async function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {

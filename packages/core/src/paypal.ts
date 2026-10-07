@@ -115,18 +115,45 @@ export type RemoteOutcome =
 	| { readonly kind: "UNKNOWN"; readonly checkAt: Instant }
 	| { readonly kind: "PERMANENT_FAILURE"; readonly reason: string };
 
-/** The resource a webhook names. The core routes by its own order and capture mapping, never by custom_id. */
+/** The resource a webhook names. The core routes by its own order, capture, refund, and batch mapping, never by custom_id. */
 export type ProviderResource =
 	| { readonly kind: "ORDER"; readonly id: OrderId }
 	| { readonly kind: "CAPTURE"; readonly id: CaptureId }
+	| { readonly kind: "REFUND"; readonly id: RefundId }
+	/** A Standard Payout item: the platform's reimbursement of a retained refund fee. */
+	| { readonly kind: "PAYOUT_ITEM"; readonly id: PayoutItemId }
+	/** A referenced payout item against a capture: the release of one job's escrow. */
+	| { readonly kind: "REFERENCED_PAYOUT_ITEM"; readonly id: PayoutItemId }
 	| { readonly kind: "MERCHANT"; readonly operator: OperatorId };
 
-export type WebhookDelivery = {
-	readonly deliveryId: string;
-	readonly resource: ProviderResource;
-	/** Null for event types the core ignores. Built from a fresh GET of the resource, not the event body. */
-	readonly observation: PayPalObservation | null;
-};
+/** The resources a webhook can carry a job fact in. */
+export type WebhookResource = Extract<ProviderResource, { kind: "CAPTURE" | "REFUND" | "PAYOUT_ITEM" | "REFERENCED_PAYOUT_ITEM" }>;
+
+export type WebhookResourceKind = WebhookResource["kind"];
+
+/**
+ * One delivery, parsed at the boundary. The body is kept as posted so the route records exactly what
+ * arrived, and no network call happens here: the route re-reads the resource with `readResource`.
+ */
+export type WebhookEnvelope =
+	| { readonly kind: "DELIVERY"; readonly deliveryId: string; readonly eventType: string; readonly resource: WebhookResource; readonly raw: string }
+	/** An event family this deployment does not route. PayPal sends many; four carry job facts. */
+	| { readonly kind: "UNROUTED"; readonly deliveryId: string; readonly eventType: string; readonly resourceType: string; readonly raw: string }
+	| { readonly kind: "UNREADABLE"; readonly raw: string; readonly detail: string };
+
+/**
+ * The fresh read of one webhook resource. The route never routes the event body, and a read that names
+ * no fact is not a failure: only a provider that does not hold the resource is.
+ */
+export type ResourceRead =
+	/** The fact the core's edges consume, built from what the provider answered now. */
+	| { readonly kind: "SETTLED"; readonly observation: PayPalObservation }
+	/** The provider holds the resource, in a state that is not a job fact. */
+	| { readonly kind: "HELD"; readonly detail: string }
+	/** The provider does not hold the resource this event names. */
+	| { readonly kind: "UNKNOWN" }
+	/** The provider refused the read: nothing about this delivery can be verified. */
+	| { readonly kind: "REFUSED"; readonly reason: string };
 
 export type PayPalConfig = {
 	readonly webOrigin: string;
@@ -146,7 +173,10 @@ export interface PayPal {
 	dispatch(call: PayPalCall, requestId: string): Promise<RemoteOutcome>;
 	/** Looks the call up by its correlation (order, capture, payout item, refund) before any resend. */
 	reconcile(call: PayPalCall, requestId: string): Promise<RemoteOutcome>;
-	parseWebhook(request: Request): Promise<WebhookDelivery | null>;
+	/** Parses one delivery's envelope. No network, no trust: the route re-reads the resource it names. */
+	parseWebhook(request: Request): Promise<WebhookEnvelope>;
+	/** The fresh read the route routes from. `payee` is the merchant that owns the resource, when a job names one. */
+	readResource(resource: WebhookResource, payee: MerchantId | null): Promise<ResourceRead>;
 }
 
 export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => instant(new Date().toISOString()) }): PayPal {
@@ -317,6 +347,60 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		}
 		return pending();
 	}
+	/** The capture read, with the fact its current state carries: a refund, its order's completed capture, or nothing. */
+	async function captureResourceRead(id: CaptureId, payee: MerchantId | null): Promise<ResourceRead> {
+		const read = await resourceRead(() => request("GET", `/v2/payments/captures/${encodeURIComponent(id)}`, payee));
+		if (read.kind !== "READ") return read;
+		const state = routed(() => parseCaptureRefundState(read.body));
+		if (state === null) return { kind: "HELD", detail: `Capture ${id} is neither completed nor refunded` };
+		if (state.refunded) {
+			const refund = routed(() => parseRefundedCapture(state));
+			return refund === null ? { kind: "HELD", detail: `Capture ${id} carries no readable refund` }
+				: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund } };
+		}
+		const orderId = captureOrderId(read.body);
+		if (orderId === null) return { kind: "HELD", detail: `Capture ${id} names no order` };
+		// The capture body names no payee. The order it belongs to does, and only an owning job can name it here.
+		if (payee === null) return { kind: "HELD", detail: `Capture ${id} has no owning job` };
+		const order = await resourceRead(() => request("GET", `/v2/checkout/orders/${encodeURIComponent(orderId)}`, payee));
+		if (order.kind !== "READ") return order;
+		const capture = routed(() => parseCapture(order.body));
+		return capture === null || capture.captureId !== id ? { kind: "HELD", detail: `Order ${orderId} does not carry capture ${id}` }
+			: { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture } };
+	}
+	/** The refund's own resource, settled with the capture's observed fee. */
+	async function refundResourceRead(id: RefundId, payee: MerchantId | null): Promise<ResourceRead> {
+		const read = await resourceRead(() => request("GET", `/v2/payments/refunds/${encodeURIComponent(id)}`, payee));
+		if (read.kind !== "READ") return read;
+		const captureId = refundCaptureId(read.body);
+		if (captureId === null) return { kind: "HELD", detail: `Refund ${id} names no capture` };
+		if (payee === null) return { kind: "HELD", detail: `Refund ${id} has no owning job` };
+		const capture = await resourceRead(() => request("GET", `/v2/payments/captures/${encodeURIComponent(captureId)}`, payee));
+		if (capture.kind !== "READ") return capture;
+		const refund = routed(() => parseRefund(read.body, parseCaptureRefundState(capture.body)));
+		return refund === null ? { kind: "HELD", detail: `Refund ${id} is not the full refund of capture ${captureId}` }
+			: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund } };
+	}
+	/** The referenced payout item that released a capture. The platform's own token reads it. */
+	async function referencedItemRead(id: PayoutItemId): Promise<ResourceRead> {
+		const read = await resourceRead(() => request("GET", `/v1/payments/referenced-payouts-items/${encodeURIComponent(id)}`, null));
+		if (read.kind !== "READ") return read;
+		const release = routed(() => parseReferencedPayout(read.body, clock.now()));
+		return release === null ? { kind: "HELD", detail: `Referenced payout item ${id} is not successful` }
+			: { kind: "SETTLED", observation: { kind: "RELEASE_COMPLETED", release } };
+	}
+	/** One item of a Standard Payout batch, read through the batch that carries its fee. */
+	async function payoutItemRead(id: PayoutItemId): Promise<ResourceRead> {
+		const read = await resourceRead(() => request("GET", `/v1/payments/payouts-item/${encodeURIComponent(id)}`, null));
+		if (read.kind !== "READ") return read;
+		const batchId = routed(() => text(object(read.body).payout_batch_id) as PayoutBatchId);
+		if (batchId === null) return { kind: "HELD", detail: `Payout item ${id} names no batch` };
+		const batch = await resourceRead(() => request("GET", `/v1/payments/payouts/${encodeURIComponent(batchId)}`, null));
+		if (batch.kind !== "READ") return batch;
+		const reimbursement = routed(() => parseReimbursement(batch.body));
+		return reimbursement === null ? { kind: "HELD", detail: `Payout batch ${batchId} is not settled` }
+			: { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement } };
+	}
 	return {
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
@@ -377,12 +461,98 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			if (call.kind === "REIMBURSE") return reimburseOutcome(call, requestId);
 			throw new Error("not implemented");
 		}, false),
-		parseWebhook: async () => { throw new Error("not implemented"); },
+		parseWebhook: async request => {
+			const raw = await request.text();
+			return raw.length > WEBHOOK_BODY_BYTES ? { kind: "UNREADABLE", raw: "", detail: `The body exceeds ${WEBHOOK_BODY_BYTES} bytes.` }
+				: parseWebhookEnvelope(raw);
+		},
+		readResource: async (resource, payee) => {
+			switch (resource.kind) {
+				case "CAPTURE": return captureResourceRead(resource.id, payee);
+				case "REFUND": return refundResourceRead(resource.id, payee);
+				case "REFERENCED_PAYOUT_ITEM": return referencedItemRead(resource.id);
+				case "PAYOUT_ITEM": return payoutItemRead(resource.id);
+			}
+		},
 	};
 }
 
 /** Payout batch and item states that will never become SUCCESS. */
 const TERMINAL_PAYOUT_FAILURES: readonly string[] = ["FAILED", "DENIED", "CANCELED", "RETURNED", "REVERSED", "BLOCKED"];
+
+/** The largest delivery the boundary will read. PayPal's own event bodies are a few KB. */
+const WEBHOOK_BODY_BYTES = 65_536;
+
+/**
+ * PayPal names the resource family in `resource_type` and the event in `event_type`. The refund family
+ * is read first because a refund event shares capture's `PAYMENT.CAPTURE.` prefix.
+ */
+const WEBHOOK_FAMILIES: readonly { readonly types: readonly string[]; readonly events: readonly string[]; readonly of: (id: string) => WebhookResource }[] = [
+	{ types: ["refund"], events: ["PAYMENT.CAPTURE.REFUND"], of: id => ({ kind: "REFUND", id: id as RefundId }) },
+	{ types: ["capture"], events: ["PAYMENT.CAPTURE."], of: id => ({ kind: "CAPTURE", id: id as CaptureId }) },
+	{ types: ["referenced_payouts_items", "referenced_payouts_item", "referenced_payout_item"], events: ["PAYMENT.REFERENCED-PAYOUT"],
+		of: id => ({ kind: "REFERENCED_PAYOUT_ITEM", id: id as PayoutItemId }) },
+	{ types: ["payouts_item", "payout_item"], events: ["PAYMENT.PAYOUTS-ITEM"], of: id => ({ kind: "PAYOUT_ITEM", id: id as PayoutItemId }) },
+];
+
+/** The envelope one delivery carries. Nothing here is trusted: the route re-reads the resource. */
+export function parseWebhookEnvelope(raw: string): WebhookEnvelope {
+	const body = routed(() => object(JSON.parse(raw) as unknown));
+	if (body === null) return { kind: "UNREADABLE", raw, detail: "The body is not a JSON object." };
+	const deliveryId = routed(() => text(body.id).trim()) ?? "";
+	const eventType = routed(() => text(body.event_type).trim()) ?? "";
+	const resource = routed(() => object(body.resource));
+	const resourceId = resource === null ? "" : routed(() => text(resource.id).trim()) ?? "";
+	if (!deliveryId || !eventType || !resourceId) return { kind: "UNREADABLE", raw, detail: "The body is not a PayPal event envelope." };
+	const resourceType = routed(() => text(body.resource_type).trim().toLowerCase()) ?? "";
+	const named = webhookResource(resourceType, eventType.toUpperCase(), resourceId);
+	return named === null ? { kind: "UNROUTED", deliveryId, eventType, resourceType, raw }
+		: { kind: "DELIVERY", deliveryId, eventType, resource: named, raw };
+}
+
+function webhookResource(resourceType: string, eventType: string, id: string): WebhookResource | null {
+	const byType = WEBHOOK_FAMILIES.find(family => family.types.includes(resourceType));
+	const byEvent = WEBHOOK_FAMILIES.find(family => family.events.some(prefix => eventType.startsWith(prefix)));
+	return (byType ?? byEvent)?.of(id) ?? null;
+}
+
+/** Provider data this deployment routes, or null. A body that names nothing routable is not a crash. */
+function routed<T>(work: () => T): T | null {
+	try { return work(); } catch { return null; }
+}
+
+/** One provider read, with the provider's own refusals named instead of thrown. */
+async function resourceRead(work: () => Promise<unknown>): Promise<{ readonly kind: "READ"; readonly body: unknown } | ResourceRead> {
+	try { return { kind: "READ", body: await work() }; }
+	catch (error) {
+		if (!(error instanceof ProviderError)) throw error;
+		if (error.status === 404) return { kind: "UNKNOWN" };
+		if (error.status >= 400 && error.status < 500) return { kind: "REFUSED", reason: `PAYPAL_HTTP_${error.status}` };
+		throw error;
+	}
+}
+
+/** The order a capture belongs to: named in supplementary_data, and its links point up as well. */
+export function captureOrderId(json: unknown): OrderId | null {
+	const named = routed(() => text(object(object(object(json).supplementary_data).related_ids).order_id) as OrderId);
+	if (named !== null) return named;
+	return routed(() => {
+		const link = array(object(json).links).map(object).find(link => text(link.rel) === "up" && text(link.href).includes("/checkout/orders/"));
+		const match = /\/checkout\/orders\/([^/?#]+)/.exec(text(link?.href));
+		return match === null ? null : match[1] as OrderId;
+	});
+}
+
+/** The capture a refund belongs to, from the refund's own `up` link. */
+export function refundCaptureId(json: unknown): CaptureId | null {
+	return routed(() => {
+		for (const link of array(object(json).links).map(object)) {
+			const match = /\/v2\/payments\/captures\/([^/?#]+)/.exec(text(link.href));
+			if (match !== null) return match[1] as CaptureId;
+		}
+		return null;
+	});
+}
 
 /** The refusal code PayPal puts in the body's `name`. */
 function nameOf(body: unknown): string | null {

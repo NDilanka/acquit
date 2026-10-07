@@ -758,6 +758,15 @@ function heldEscrowOf(row: JobRow): HeldEscrow | null {
 	return null;
 }
 
+/** The merchant this row pays, wherever the row keeps it. Null before a bid is chosen. */
+export function payeeMerchantOf(row: JobRow): MerchantId | null {
+	const state = row.state;
+	if (state.status === "PAID" || state.status === "REFUNDED") return state.payee.payee;
+	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return state.escrow.payee.payee;
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING") return state.phase.chosen.payee;
+	return null;
+}
+
 /** The state with its held escrow replaced, wherever that state keeps it. */
 function withEscrow<S extends JobState>(state: S, escrow: HeldEscrow): S {
 	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return { ...state, escrow };

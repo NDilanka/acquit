@@ -1,6 +1,6 @@
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
-import { confirmFunding, executeCommand, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
+import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
@@ -189,7 +189,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 				default: throw new Error("not implemented");
 			}
 		},
-		handlePayPalWebhook: async () => Response.json({ error: "NOT_IMPLEMENTED", detail: "Signed webhook ingestion is outside the local skeleton; use the checkout return route." }, { status: 501 }),
+		handlePayPalWebhook: request => ingestPayPalWebhook(ports, request),
 		handleVerifierCallback: request => ingestVerifierCallback(ports, request),
 		tick: () => {
 			if (!ticking) ticking = (async () => {

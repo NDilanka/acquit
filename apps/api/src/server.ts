@@ -55,6 +55,8 @@ async function body(req: IncomingMessage): Promise<unknown> {
  * read once and handed to the port unchanged: the signature is over what was posted, not a re-encoding.
  */
 const CALLBACK_BODY_LIMIT_BYTES = VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096;
+/** The webhook route's own cap, above any event body PayPal sends for one capture, refund, or payout. */
+const WEBHOOK_BODY_LIMIT_BYTES = 65_536;
 async function rawBody(req: IncomingMessage, max: number): Promise<string> {
 	const declared = Number(req.headers["content-length"] ?? "");
 	if (Number.isFinite(declared) && declared > max) throw new TooLarge("Request body too large");
@@ -149,9 +151,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 	}
 	if (url.pathname === "/paypal/webhook" && method === "POST") {
+		// The body is handed over and recorded as posted, so a replay reposts exactly what PayPal sent.
+		let raw: string;
+		try { raw = await rawBody(req, WEBHOOK_BODY_LIMIT_BYTES); }
+		catch (error) {
+			if (error instanceof TooLarge) { json(res, 413, { error: "WEBHOOK_BODY_TOO_LARGE" }); return; }
+			throw error;
+		}
 		const response = await acquit.handlePayPalWebhook(new Request(`http://localhost:${port}/paypal/webhook`, {
 			method: "POST", headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-			body: JSON.stringify(await body(req)),
+			body: raw,
 		}));
 		json(res, response.status, await response.json()); return;
 	}

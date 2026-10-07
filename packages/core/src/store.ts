@@ -9,7 +9,7 @@ import type { JobRow } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
-import type { AgentId, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
+import type { AgentId, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
 import type { Clock } from "./acquit.ts";
 
@@ -31,6 +31,7 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE INDEX IF NOT EXISTS outbox_due ON outbox(due_at);
 		CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, job_id TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY);
+		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL, outcome TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, handle TEXT NOT NULL, expires_at TEXT NOT NULL);
 	`);
 	return db;
@@ -104,6 +105,16 @@ export class SqliteStore implements Store {
 		const row = this.db.prepare("SELECT job_id FROM resources WHERE id = ?").get(resource);
 		return row ? String(row.job_id) as JobId : null;
 	}
+	/**
+	 * Every body the webhook route receives, keyed by PayPal's event id. The row keeps the body and the
+	 * outcome of the delivery that first carried it, and `received_at` moves to the latest receipt, so a
+	 * replay of an id reposts the body that was recorded for it and the audit line stays what it did first.
+	 */
+	async recordWebhookEvent(event: WebhookEventRow): Promise<void> {
+		this.db.prepare(`INSERT INTO webhook_events (id, received_at, body, outcome) VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET received_at = excluded.received_at`)
+			.run(event.id, event.receivedAt, event.body, event.outcome);
+	}
 	async dueJobs(now: Instant): Promise<readonly { jobId: JobId; wakeAt: Instant }[]> {
 		return this.db.prepare("SELECT id, wake_at FROM jobs WHERE wake_at <= ?").all(now).map(row => ({ jobId: String(row.id) as JobId, wakeAt: String(row.wake_at) as Instant }));
 	}
@@ -163,6 +174,15 @@ export class SqliteStore implements Store {
 	close(): void { this.db.close(); }
 }
 
+/** One delivery the webhook route received. The outcome is the phrase the route answered with. */
+export type WebhookEventRow = {
+	/** PayPal's event id, or a digest of the body when the body names no id. */
+	readonly id: string;
+	readonly receivedAt: Instant;
+	readonly body: string;
+	readonly outcome: string;
+};
+
 function jobResources(row: JobRow): string[] {
 	const state = row.state;
 	if (state.status === "OPEN" && state.phase.kind === "FUNDING") {
@@ -171,5 +191,12 @@ function jobResources(row: JobRow): string[] {
 		if (checkout.phase === "REFUND_PENDING") return [checkout.escrow.capture.orderId, checkout.escrow.capture.captureId];
 	}
 	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return [state.escrow.capture.orderId, state.escrow.capture.captureId];
+	// A refunded row stays the index for the refund it recorded and for the reimbursement batches it paid,
+	// so a refund or payout webhook resolves to this job. An earlier state's rows are kept: nothing deletes them.
+	if (state.status === "REFUNDED") {
+		const ids: (RefundId | PayoutBatchId | null)[] = [state.refund.refundId,
+			...state.treasury.flatMap(entry => entry.kind === "PAYOUT_FEE_PAID" ? [entry.batchId] : [])];
+		return ids.filter((id): id is RefundId | PayoutBatchId => id !== null);
+	}
 	return [];
 }
