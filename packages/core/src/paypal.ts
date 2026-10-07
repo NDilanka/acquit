@@ -152,8 +152,10 @@ export type WebhookEnvelope =
 export type ResourceRead =
 	/** The fact the core's edges consume, built from what the provider answered now. */
 	| { readonly kind: "SETTLED"; readonly observation: PayPalObservation }
-	/** The provider holds the resource, in a state that is not a job fact. */
-	| { readonly kind: "HELD"; readonly detail: string }
+	/** The provider holds the resource, in a state that is not a job fact. `anchor` is the capture this
+	 * read named, when it read that far without the owning job's merchant: a refund names its capture,
+	 * which the index holds even when the delivery's own id is new. */
+	| { readonly kind: "HELD"; readonly detail: string; readonly anchor?: CaptureId }
 	/** The provider does not hold the resource this event names. */
 	| { readonly kind: "UNKNOWN" }
 	/** The provider refused the read: nothing about this delivery can be verified. */
@@ -383,7 +385,9 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		if (read.kind !== "READ") return read;
 		const captureId = refundCaptureId(read.body);
 		if (captureId === null) return { kind: "HELD", detail: `Refund ${id} names no capture` };
-		if (payee === null) return { kind: "HELD", detail: `Refund ${id} has no owning job` };
+		// Without the owning job there is no merchant to assert, and the capture read the fee comes from
+		// cannot run. The refund still names its capture, so the route can find the job that holds it.
+		if (payee === null) return { kind: "HELD", detail: `Refund ${id} has no owning job`, anchor: captureId };
 		const capture = await resourceRead(() => request("GET", `/v2/payments/captures/${encodeURIComponent(captureId)}`, payee));
 		if (capture.kind !== "READ") return capture;
 		const refund = routed(() => parseRefund(read.body, parseCaptureRefundState(capture.body)));

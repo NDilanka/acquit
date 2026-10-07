@@ -552,13 +552,22 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request): Promi
 	if (envelope.kind === "UNREADABLE") return finish(ports, delivery, { kind: "REFUSED", reason: "UNREADABLE_EVENT" }, 400, envelope.detail);
 	if (envelope.kind === "UNROUTED") return finish(ports, delivery, { kind: "NOOP", reason: "UNROUTED", jobId: null }, 202);
 	const named = await ports.store.jobForResource(envelope.resource.id);
-	const owner = named === null ? null : await ports.store.readJob(named);
-	const read = await ports.paypal.readResource(envelope.resource, owner === null ? null : payeeMerchantOf(owner));
+	let owner = named === null ? null : await ports.store.readJob(named);
+	let read = await ports.paypal.readResource(envelope.resource, owner === null ? null : payeeMerchantOf(owner));
+	// A refund delivery names the refund id, while the index holds the capture the refund names. That
+	// unowned read still names its capture, so the job holding it is the owner and the refund is re-read
+	// with that owner's payee: the merchant assertion the provider read needs.
+	if (owner === null && read.kind === "HELD" && read.anchor !== undefined) {
+		const holding = await ports.store.jobForResource(read.anchor);
+		owner = holding === null ? null : await ports.store.readJob(holding);
+		if (owner !== null) read = await ports.paypal.readResource(envelope.resource, payeeMerchantOf(owner));
+	}
 	if (read.kind === "UNKNOWN") return finish(ports, delivery, { kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 202,
 		`PayPal holds no ${resourceNoun(envelope.resource.kind)} ${envelope.resource.id}.`);
 	if (read.kind === "REFUSED") return finish(ports, delivery, { kind: "REFUSED", reason: "PROVIDER_REFUSED", resource: envelope.resource.kind }, 202, read.reason);
-	if (read.kind === "HELD") return finish(ports, delivery, named === null
-		? { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null } : { kind: "NOOP", reason: "PROVIDER_HELD", jobId: named }, 202, read.detail);
+	const heldBy = owner?.id ?? named;
+	if (read.kind === "HELD") return finish(ports, delivery, heldBy === null
+		? { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null } : { kind: "NOOP", reason: "PROVIDER_HELD", jobId: heldBy }, 202, read.detail);
 	// The route's own index names the job, and the fact itself names the capture or batch it settles.
 	const jobId = named ?? await anchorJob(ports, read.observation);
 	if (jobId === null) return finish(ports, delivery, { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null }, 202);
