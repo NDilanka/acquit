@@ -91,25 +91,27 @@ The route trusts nothing past the resource id. It parses the envelope at the bou
 | `referenced_payouts_item` | `PAYMENT.REFERENCED-PAYOUT` | `GET /v1/payments/referenced-payouts-items/<id>` | `RELEASE_COMPLETED` |
 | `payouts_item` | `PAYMENT.PAYOUTS-ITEM` | `GET /v1/payments/payouts-item/<id>`, then its batch | `REIMBURSEMENT_COMPLETED` |
 
-The refund family is read first because a refund event shares capture's `PAYMENT.CAPTURE.` prefix. An event family this deployment does not route is recorded and dropped with `200`.
+The refund family is read first because a refund event shares capture's `PAYMENT.CAPTURE.` prefix. An event family this deployment does not route is recorded and dropped with `202`.
 
 PayPal signs a delivery with its `paypal-transmission-*` headers. The probe could not verify a signature from a local lane (Appendix A), so the route does not read them: it takes only the resource id from the envelope, and the fact it commits comes from a live read of that resource with this deployment's own credentials. A forged envelope can therefore ask the route to re-read a real fact, which the delivery key and the job state turn into a no-op, and cannot invent one.
 
 The job state is the guard, not the event id. Each fact commits under its own delivery key (`webhook:<edge>:<jobId>:<anchor>`, the anchor being the capture, refund, order, or batch the fact settles), so a redelivery and the same fact under a new event id both reach the same no-op edge and change no version. `webhookOutcomeText` in `packages/core/src/effects.ts` is the one place these phrases are spelled.
 
-| Answer | When |
+The route answers one minimal body to every caller: `202 { received: true }` for a delivery it recorded, and `400 { received: false }` for a body it could not read at all. The answer names no job, no status, and no resource, because the route is unauthenticated and anyone can post to it; the outcome phrase belongs to the envelope row and the API log, and `npm run ctl -- webhook replay` reads it back from there. `webhookOutcomeText` in `packages/core/src/effects.ts` is the one place the phrases are spelled.
+
+| Recorded outcome | When |
 |---|---|
-| `200 { ok: true, outcome: "applied", jobId, edge, changed }` | the re-read fact reached its edge; `changed` is false when the job already held it |
-| `200 { ok: true, outcome: "no-op, job already <STATUS>", jobId, status }` | the job has already moved past this fact |
-| `200 { ok: true, outcome: "no-op, event type not routed" }` | an event family this deployment does not route |
-| `200 { ok: true, outcome: "no-op, no job holds this resource" }` | no stored job names this resource |
-| `200 { ok: true, outcome: "no-op, PayPal has not settled this resource", jobId?, detail }` | the provider holds it in a state that is not a job fact |
-| `422 { error: "RESOURCE_UNKNOWN_TO_PROVIDER", outcome: "refused, PayPal does not know this capture", detail }` | the provider holds no such resource |
-| `422 { error: "PROVIDER_REFUSED", outcome: "refused, ..." }` | the provider refused the read |
-| `400 { error: "UNREADABLE_EVENT", outcome: "refused, unreadable event", detail }` | the body is not an event envelope |
+| `applied` | the re-read fact reached its edge; a fact the job already held is also `applied` and changes no version |
+| `no-op, job already <STATUS>` | the job has already moved past this fact |
+| `no-op, event type not routed` | an event family this deployment does not route |
+| `no-op, no job holds this resource` | no stored job names this resource |
+| `no-op, PayPal has not settled this resource` | the provider holds it in a state that is not a job fact |
+| `refused, PayPal does not know this capture` | the provider holds no such resource |
+| `refused, <provider reason>` | the provider refused the read |
+| `refused, unreadable event` | the body is not an event envelope |
 | `503 { error: "STORE_BUSY" }` | a transient store lock; PayPal's retry is safe |
 
-Every body the route receives is recorded in `webhook_events` (`id`, `received_at`, `body`, `outcome`) before the answer, keyed by PayPal's event id, or by the digest of a body that names none. A redelivery keeps the first body and outcome and moves `received_at`, so a replay reposts the body that was recorded for that id. `npm run ctl -- webhook replay` prints the outcome phrase, or the whole answer with `--json`.
+Every delivery is recorded as its canonical envelope in `webhook_events` (`id`, `received_at`, `event_type`, `resource_type`, `resource_id`, `outcome`) before the answer, keyed by PayPal's event id, or by the digest of a body that names none. The row is the latest delivery under that id, and it never holds the body: a delivery's bytes can carry payer fields, so the table keeps only the fields the route itself routes on. The table is bounded on insert, to the newest 500 deliveries and to nothing older than 30 days, because the route is unauthenticated and the row must not be a place to park data. A lane whose table predates the canonical envelope drops it on the next start and keeps the envelopes its route records from then on. A replay rebuilds the envelope from the recorded fields and reposts it, so it exercises the same re-read and the same state guard; the CLI prints the recorded phrase and the event id, and `--json` adds the rebuilt delivery and its byte count.
 
 ## Settlement
 

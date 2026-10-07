@@ -9,6 +9,7 @@
 //   GET order returned a transient 503 mid-poll, so reads retry before reporting UNKNOWN
 
 import { setTimeout as sleep } from "node:timers/promises";
+import { createHash } from "node:crypto";
 import { instant } from "./ids.ts";
 import type { Branded, CaptureId, Instant, JobId, MerchantId, OperatorId, OrderId, PayoutBatchId, PayoutItemId, RefundId } from "./ids.ts";
 import { formatUsd, usd } from "./ledger.ts";
@@ -132,14 +133,16 @@ export type WebhookResource = Extract<ProviderResource, { kind: "CAPTURE" | "REF
 export type WebhookResourceKind = WebhookResource["kind"];
 
 /**
- * One delivery, parsed at the boundary. The body is kept as posted so the route records exactly what
- * arrived, and no network call happens here: the route re-reads the resource with `readResource`.
+ * One delivery, parsed at the boundary. Only the canonical envelope leaves this function: the event id,
+ * the event type, the resource type and id, and the resource kind the route re-reads. The body itself is
+ * never kept, and no network call happens here: the route re-reads the resource with `readResource`.
  */
 export type WebhookEnvelope =
-	| { readonly kind: "DELIVERY"; readonly deliveryId: string; readonly eventType: string; readonly resource: WebhookResource; readonly raw: string }
+	| { readonly kind: "DELIVERY"; readonly deliveryId: string; readonly eventType: string; readonly resourceType: string; readonly resourceId: string; readonly resource: WebhookResource }
 	/** An event family this deployment does not route. PayPal sends many; four carry job facts. */
-	| { readonly kind: "UNROUTED"; readonly deliveryId: string; readonly eventType: string; readonly resourceType: string; readonly raw: string }
-	| { readonly kind: "UNREADABLE"; readonly raw: string; readonly detail: string };
+	| { readonly kind: "UNROUTED"; readonly deliveryId: string; readonly eventType: string; readonly resourceType: string; readonly resourceId: string }
+	/** A body that is not an envelope at all. Its delivery id is the digest of the bytes that arrived. */
+	| { readonly kind: "UNREADABLE"; readonly deliveryId: string; readonly detail: string };
 
 /**
  * The fresh read of one webhook resource. The route never routes the event body, and a read that names
@@ -173,7 +176,7 @@ export interface PayPal {
 	dispatch(call: PayPalCall, requestId: string): Promise<RemoteOutcome>;
 	/** Looks the call up by its correlation (order, capture, payout item, refund) before any resend. */
 	reconcile(call: PayPalCall, requestId: string): Promise<RemoteOutcome>;
-	/** Parses one delivery's envelope. No network, no trust: the route re-reads the resource it names. */
+	/** Parses one delivery into its canonical envelope. No network, no trust, and the body is never kept. */
 	parseWebhook(request: Request): Promise<WebhookEnvelope>;
 	/** The fresh read the route routes from. `payee` is the merchant that owns the resource, when a job names one. */
 	readResource(resource: WebhookResource, payee: MerchantId | null): Promise<ResourceRead>;
@@ -463,7 +466,8 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		}, false),
 		parseWebhook: async request => {
 			const raw = await request.text();
-			return raw.length > WEBHOOK_BODY_BYTES ? { kind: "UNREADABLE", raw: "", detail: `The body exceeds ${WEBHOOK_BODY_BYTES} bytes.` }
+			return raw.length > WEBHOOK_BODY_BYTES
+				? { kind: "UNREADABLE", deliveryId: unreadableEventId(raw), detail: `The body exceeds ${WEBHOOK_BODY_BYTES} bytes.` }
 				: parseWebhookEnvelope(raw);
 		},
 		readResource: async (resource, payee) => {
@@ -495,19 +499,25 @@ const WEBHOOK_FAMILIES: readonly { readonly types: readonly string[]; readonly e
 	{ types: ["payouts_item", "payout_item"], events: ["PAYMENT.PAYOUTS-ITEM"], of: id => ({ kind: "PAYOUT_ITEM", id: id as PayoutItemId }) },
 ];
 
+/** The id a body that names no event id is recorded under: its own digest, so it is still recorded once. */
+export function unreadableEventId(raw: string): string {
+	return `unreadable-${createHash("sha256").update(JSON.stringify(raw)).digest("hex").slice(0, 16)}`;
+}
+
 /** The envelope one delivery carries. Nothing here is trusted: the route re-reads the resource. */
 export function parseWebhookEnvelope(raw: string): WebhookEnvelope {
+	const unreadable = (detail: string): WebhookEnvelope => ({ kind: "UNREADABLE", deliveryId: unreadableEventId(raw), detail });
 	const body = routed(() => object(JSON.parse(raw) as unknown));
-	if (body === null) return { kind: "UNREADABLE", raw, detail: "The body is not a JSON object." };
+	if (body === null) return unreadable("The body is not a JSON object.");
 	const deliveryId = routed(() => text(body.id).trim()) ?? "";
 	const eventType = routed(() => text(body.event_type).trim()) ?? "";
 	const resource = routed(() => object(body.resource));
 	const resourceId = resource === null ? "" : routed(() => text(resource.id).trim()) ?? "";
-	if (!deliveryId || !eventType || !resourceId) return { kind: "UNREADABLE", raw, detail: "The body is not a PayPal event envelope." };
+	if (!deliveryId || !eventType || !resourceId) return unreadable("The body is not a PayPal event envelope.");
 	const resourceType = routed(() => text(body.resource_type).trim().toLowerCase()) ?? "";
 	const named = webhookResource(resourceType, eventType.toUpperCase(), resourceId);
-	return named === null ? { kind: "UNROUTED", deliveryId, eventType, resourceType, raw }
-		: { kind: "DELIVERY", deliveryId, eventType, resource: named, raw };
+	return named === null ? { kind: "UNROUTED", deliveryId, eventType, resourceType, resourceId }
+		: { kind: "DELIVERY", deliveryId, eventType, resourceType, resourceId, resource: named };
 }
 
 function webhookResource(resourceType: string, eventType: string, id: string): WebhookResource | null {

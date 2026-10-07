@@ -217,25 +217,28 @@ async function submit(jobId, token, stamp) {
 }
 
 /**
- * One capture envelope, then five replays of the body the route recorded for it. Each replay is a whole
- * delivery: the route re-reads the capture and its order from PayPal and finds the job already holds the
- * fact. The probe reads the same two resources itself, so the route's own work is the difference.
+ * One capture envelope, then five replays of the envelope the route recorded for it. Each replay is a
+ * whole delivery: the route re-reads the capture and its order from PayPal and finds the job already
+ * holds the fact. The probe reads the same two resources itself, so the route's own work is the
+ * difference. The route answers only whether it received the delivery, so the outcome phrase is read
+ * from the envelope row each delivery wrote.
  */
 async function webhookRoute(jobId, captureId, payee) {
 	const eventId = `WH-CAPTURE-${createHash("sha256").update(captureId).digest("hex").slice(0, 8).toUpperCase()}`;
 	const built = await postWebhook(JSON.stringify({ id: eventId, event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: captureId } }));
-	assert.equal(typeof built.body.outcome, "string", "The capture delivery answered no outcome.");
-	const recorded = recordedEventBody(eventId);
+	assert.equal(typeof built.body.received, "boolean", "The capture delivery answered no receipt.");
+	const recorded = recordedEnvelope(eventId);
 	assert(recorded !== null, `The route did not record the capture delivery ${eventId}.`);
-	const unrouted = await postWebhook(JSON.stringify({ id: `WH-PERF-UNROUTED-${jobId}`, event_type: "CHECKOUT.ORDER.APPROVED",
+	const unroutedId = `WH-PERF-UNROUTED-${jobId}`;
+	const unrouted = await postWebhook(JSON.stringify({ id: unroutedId, event_type: "CHECKOUT.ORDER.APPROVED",
 		resource_type: "order", resource: { id: `perf-unrouted-${jobId}` } }));
-	assert.match(String(unrouted.body.outcome), /not routed/, "The unrouted body was not answered as unrouted.");
+	assert.match(String(recordedEventOutcome(unroutedId)), /not routed/, "The unrouted body was not recorded as unrouted.");
 	const samples = [];
 	for (let round = 0; round < REPLAYS; round++) {
 		const replay = await postWebhook(recorded);
-		assert.equal(typeof replay.body.outcome, "string", `Replay ${round + 1} answered no outcome.`);
+		assert.equal(typeof replay.body.received, "boolean", `Replay ${round + 1} answered no receipt.`);
 		const paypal = await paypalRead(captureId, payee);
-		samples.push({ jobId, round: round + 1, outcome: replay.body.outcome, replayMs: replay.ms, paypalMs: paypal.ms,
+		samples.push({ jobId, round: round + 1, outcome: recordedEventOutcome(eventId), replayMs: replay.ms, paypalMs: paypal.ms,
 			excludedMs: replay.ms - paypal.ms, unroutedMs: unrouted.ms });
 	}
 	return { samples };
@@ -298,9 +301,20 @@ async function postWebhook(raw) {
 	return { ms, body };
 }
 
-function recordedEventBody(eventId) {
+/** The envelope row the route recorded for one event, rebuilt into the delivery a replay posts. */
+function recordedEnvelope(eventId) {
 	const db = new DatabaseSync(laneDatabase, { readOnly: true });
-	try { const row = db.prepare("SELECT body FROM webhook_events WHERE id = ?").get(eventId); return row === undefined ? null : String(row.body); }
+	try {
+		const row = db.prepare("SELECT id, event_type, resource_type, resource_id FROM webhook_events WHERE id = ?").get(eventId);
+		return row === undefined ? null : JSON.stringify({ id: String(row.id), event_type: String(row.event_type),
+			resource_type: String(row.resource_type), resource: { id: String(row.resource_id) } });
+	} finally { db.close(); }
+}
+
+/** The outcome phrase this delivery's own envelope row holds. */
+function recordedEventOutcome(eventId) {
+	const db = new DatabaseSync(laneDatabase, { readOnly: true });
+	try { const row = db.prepare("SELECT outcome FROM webhook_events WHERE id = ?").get(eventId); return row === undefined ? null : String(row.outcome); }
 	finally { db.close(); }
 }
 

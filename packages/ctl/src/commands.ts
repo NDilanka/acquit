@@ -114,14 +114,16 @@ export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);
 	return devPost(ctx, "fund-mode", { mode: parsed.mode });
 }
-/** The route's answer, as the route spells it. The outcome phrase is the one field every answer carries. */
-type WebhookAnswer = { readonly outcome?: string; readonly error?: string; readonly edge?: string; readonly jobId?: string; readonly changed?: boolean; readonly detail?: string };
-/** One delivery the CLI posts: the recorded bytes of an event, or a capture envelope built here. */
-type WebhookDelivery = { readonly eventId: string; readonly source: "recorded" | "built"; readonly raw: string };
+/** The route's answer. Every delivery gets the same minimal body, so the receipt flag is the only field. */
+type WebhookAnswer = { readonly received?: boolean };
+/** One delivery the CLI posts: an envelope rebuilt from a recorded row, or one built here from a capture. */
+type WebhookDelivery = { readonly eventId: string; readonly source: "recorded" | "built"; readonly envelope: string };
 /**
- * Delivers one webhook to this lane's route. A replay reposts the bytes the route recorded for an event
- * id; the capture form builds an envelope that names a real capture, which the route re-reads from PayPal
- * before it routes anything, so the envelope itself is never trusted.
+ * Delivers one webhook to this lane's route. A replay rebuilds the envelope the route recorded for an
+ * event id, from its canonical fields, and the capture form builds one that names a real capture; either
+ * way the route re-reads the resource from PayPal before it routes anything, so no envelope is trusted.
+ * The route answers only whether it received the delivery, so the outcome phrase is read back from the
+ * envelope row that delivery wrote.
  */
 export async function webhookReplay(parsed: Parsed, ctx: Context): Promise<Result> {
 	const event = parsed.event === undefined ? undefined : String(parsed.event);
@@ -132,16 +134,16 @@ export async function webhookReplay(parsed: Parsed, ctx: Context): Promise<Resul
 	const ports = await app(ctx);
 	const url = `http://127.0.0.1:${ports.api}/paypal/webhook`;
 	let response: Response;
-	try { response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: delivery.raw, signal: AbortSignal.timeout(120_000) }); }
+	try { response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: delivery.envelope, signal: AbortSignal.timeout(120_000) }); }
 	catch { throw new CliError("APP_NOT_RUNNING", "The API stopped responding during the webhook delivery.", "Run npm run -s ctl -- start, then retry the replay."); }
 	const answer = await response.json().catch(() => null) as WebhookAnswer | null;
-	if (answer === null || typeof answer.outcome !== "string") throw new CliError("PROCESS_FAILED", `The webhook route answered HTTP ${response.status} without an outcome.`, "Run npm run -s ctl -- status and read the API log for this delivery.");
-	// The outcome phrase leads, so two runs on one event id read as applied then a no-op.
-	const text = [answer.outcome, answer.edge, answer.jobId, delivery.eventId].filter(part => typeof part === "string").join("  ") + "\n";
-	return { text, eventId: delivery.eventId, source: delivery.source, status: response.status, outcome: answer.outcome,
-		...(answer.edge === undefined ? {} : { edge: answer.edge }), ...(answer.jobId === undefined ? {} : { jobId: answer.jobId }),
-		...(answer.changed === undefined ? {} : { changed: answer.changed }), ...(answer.detail === undefined ? {} : { detail: answer.detail }),
-		posted: { url, bytes: Buffer.byteLength(delivery.raw) } };
+	if (answer === null || typeof answer.received !== "boolean") throw new CliError("PROCESS_FAILED", `The webhook route answered HTTP ${response.status} without a receipt.`, "Run npm run -s ctl -- status and read the API log for this delivery.");
+	// This delivery's own record: the route writes the outcome phrase before it answers.
+	const stored = await readStoredWebhookEvent(ctx.databasePath, delivery.eventId);
+	const outcome = stored.row?.outcome ?? null;
+	const text = [outcome, delivery.eventId].filter(part => typeof part === "string").join("  ") + "\n";
+	return { text, eventId: delivery.eventId, source: delivery.source, status: response.status, outcome,
+		posted: { url, bytes: Buffer.byteLength(delivery.envelope) } };
 }
 async function recordedDelivery(ctx: Context, event: string): Promise<WebhookDelivery> {
 	const stored = await readStoredWebhookEvent(ctx.databasePath, event);
@@ -149,7 +151,11 @@ async function recordedDelivery(ctx: Context, event: string): Promise<WebhookDel
 		"Start this lane's app once so the webhook route creates the table, deliver an event, then retry.");
 	if (stored.row === null) throw new CliError("EVENT_NOT_FOUND", `No recorded webhook event has id ${JSON.stringify(event)}.`,
 		"Deliver one with npm run -s ctl -- webhook replay --capture <capture id>, which prints the event id it recorded.");
-	return { eventId: stored.row.id, source: "recorded", raw: stored.row.body };
+	// A body that named no event type or resource was recorded, but there is no envelope in it to rebuild.
+	if (stored.row.eventType === "" || stored.row.resourceId === "") throw new CliError("EVENT_NOT_REPLAYABLE", `Recorded event ${JSON.stringify(event)} names no event type or resource.`,
+		"Replay a capture instead: npm run -s ctl -- webhook replay --capture <capture id>.");
+	const { id, eventType, resourceType, resourceId } = stored.row;
+	return { eventId: id, source: "recorded", envelope: JSON.stringify({ id, event_type: eventType, resource_type: resourceType, resource: { id: resourceId } }) };
 }
 function captureDelivery(capture: string, fresh: boolean): WebhookDelivery {
 	if (process.env.ACQUIT_DEV !== "1") throw new CliError("DEV_DISABLED", "Building a capture envelope is a development control.", "Set ACQUIT_DEV=1 for the API start and this ctl command, or replay a recorded event with --event.");
@@ -157,7 +163,7 @@ function captureDelivery(capture: string, fresh: boolean): WebhookDelivery {
 	const suffix = fresh ? randomBytes(4).toString("hex").toUpperCase() : createHash("sha256").update(capture).digest("hex").slice(0, 8).toUpperCase();
 	const eventId = `WH-CAPTURE-${suffix}`;
 	// Only the resource id matters: the route re-reads the capture from PayPal and routes what it reads.
-	return { eventId, source: "built", raw: JSON.stringify({ id: eventId, event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: capture } }) };
+	return { eventId, source: "built", envelope: JSON.stringify({ id: eventId, event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: capture } }) };
 }
 async function probes(api: number, web: number, verifier?: number) {
 	const [apiPort, webPort, apiReady, webReady, verifierReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/users`), reachable(`http://127.0.0.1:${web}/`),

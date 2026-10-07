@@ -16,6 +16,10 @@ import type { Clock } from "./acquit.ts";
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 	const db = new DatabaseSync(path);
+	// A lane created before the canonical envelope holds raw bodies, payer fields included. Drop that
+	// table rather than migrate the bytes: the envelope it should have kept is rebuildable from PayPal.
+	const columns = new Set(db.prepare("SELECT name FROM pragma_table_info('webhook_events')").all().map(row => String(row.name)));
+	if (columns.has("body")) db.exec("DROP TABLE webhook_events");
 	db.exec(`
 		PRAGMA journal_mode = WAL;
 		PRAGMA busy_timeout = 5000;
@@ -31,7 +35,7 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE INDEX IF NOT EXISTS outbox_due ON outbox(due_at);
 		CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, job_id TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY);
-		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL, outcome TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, handle TEXT NOT NULL, expires_at TEXT NOT NULL);
 	`);
 	return db;
@@ -106,14 +110,19 @@ export class SqliteStore implements Store {
 		return row ? String(row.job_id) as JobId : null;
 	}
 	/**
-	 * Every body the webhook route receives, keyed by PayPal's event id. The row keeps the body and the
-	 * outcome of the delivery that first carried it, and `received_at` moves to the latest receipt, so a
-	 * replay of an id reposts the body that was recorded for it and the audit line stays what it did first.
+	 * The canonical envelope of one delivery, keyed by PayPal's event id. The row keeps the fields of the
+	 * latest delivery under that id, never the body. The route is unauthenticated, so the table is
+	 * bounded on insert: the newest deliveries by receipt time, and nothing older than the window.
 	 */
 	async recordWebhookEvent(event: WebhookEventRow): Promise<void> {
-		this.db.prepare(`INSERT INTO webhook_events (id, received_at, body, outcome) VALUES (?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET received_at = excluded.received_at`)
-			.run(event.id, event.receivedAt, event.body, event.outcome);
+		this.db.prepare(`INSERT INTO webhook_events (id, received_at, event_type, resource_type, resource_id, outcome) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET received_at = excluded.received_at, event_type = excluded.event_type,
+				resource_type = excluded.resource_type, resource_id = excluded.resource_id, outcome = excluded.outcome`)
+			.run(event.id, event.receivedAt, event.eventType, event.resourceType, event.resourceId, event.outcome);
+		this.db.prepare("DELETE FROM webhook_events WHERE received_at < ?")
+			.run(instant(new Date(Date.parse(event.receivedAt) - WEBHOOK_EVENT_MAX_AGE_MS).toISOString()));
+		this.db.prepare("DELETE FROM webhook_events WHERE id NOT IN (SELECT id FROM webhook_events ORDER BY received_at DESC, rowid DESC LIMIT ?)")
+			.run(WEBHOOK_EVENT_ROWS);
 	}
 	async dueJobs(now: Instant): Promise<readonly { jobId: JobId; wakeAt: Instant }[]> {
 		return this.db.prepare("SELECT id, wake_at FROM jobs WHERE wake_at <= ?").all(now).map(row => ({ jobId: String(row.id) as JobId, wakeAt: String(row.wake_at) as Instant }));
@@ -174,14 +183,20 @@ export class SqliteStore implements Store {
 	close(): void { this.db.close(); }
 }
 
-/** One delivery the webhook route received. The outcome is the phrase the route answered with. */
+/** One delivery the webhook route received, as its canonical envelope. The outcome is the phrase recorded for it. */
 export type WebhookEventRow = {
-	/** PayPal's event id, or a digest of the body when the body names no id. */
+	/** PayPal's event id, or the digest of a body that names none. */
 	readonly id: string;
 	readonly receivedAt: Instant;
-	readonly body: string;
+	readonly eventType: string;
+	readonly resourceType: string;
+	readonly resourceId: string;
 	readonly outcome: string;
 };
+
+/** The window of webhook envelopes one lane keeps: the newest deliveries by receipt time, and nothing older than a month. */
+const WEBHOOK_EVENT_ROWS = 500;
+const WEBHOOK_EVENT_MAX_AGE_MS = 30 * 86_400_000;
 
 function jobResources(row: JobRow): string[] {
 	const state = row.state;
