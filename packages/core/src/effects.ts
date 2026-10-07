@@ -11,7 +11,7 @@ import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, 
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
-import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
+import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
@@ -134,7 +134,8 @@ export type Ports = {
 	readonly verifier: VerifierPort;
 	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
 	readonly workRepo?: WorkRepoPort;
-	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<"MERGED" | "UNKNOWN" | "CONFLICT"> };
+	/** The merge of the verified pull request. Its answer carries the commit GitHub landed it on. */
+	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<MergeOutcome> };
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	readonly clock: { now(): Instant };
 };
@@ -429,8 +430,8 @@ async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<Jo
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
 		return "WORKED";
 	}
-	let outcome: "MERGED" | "UNKNOWN" | "CONFLICT";
-	try { outcome = await ports.github.merge(effect, providerRequestId(key)); }
+	let answer: MergeOutcome;
+	try { answer = await ports.github.merge(effect, providerRequestId(key)); }
 	catch (error) {
 		if (error instanceof GitHubAppNotConfigured) {
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
@@ -443,9 +444,11 @@ async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<Jo
 		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
 		return "WORKED";
 	}
-	if (outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
-	// A conflict is not retried: the row names it and a person resolves it.
-	const progress: MergeProgress = outcome === "MERGED" ? { phase: "MERGED", at: now } : { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };
+	if (answer.outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
+	// A conflict is not retried: the row names it and a person resolves it. A merge records the commit
+	// GitHub landed it on, which is what the paid view shows next to the tree the client approved.
+	const progress: MergeProgress = answer.outcome === "MERGED" ? { phase: "MERGED", at: now, sha: answer.sha }
+		: { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };
 	await applySystemCommand(ports, { type: "MergeFinished", jobId: effect.jobId, outcome: progress }, { key }, null);
 	return "WORKED";
 }

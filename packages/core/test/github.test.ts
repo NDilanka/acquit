@@ -572,10 +572,10 @@ test("a pull request whose head moved is never merged, and the refusal is a conf
 	// reads the pull once more rather than merging whatever is there now.
 	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, SUBMITTED);
 	const request = { jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest, mergeCommit: published.mergeCommit };
-	assert.equal(await port.merge(request, "req-2"), "CONFLICT");
+	assert.deepEqual(await port.merge(request, "req-2"), { outcome: "CONFLICT" });
 	assert.equal(stub.state.pulls.at(0)?.merged, false);
 	// The moved head is still not merged, and the client says the same thing when asked again.
-	assert.equal(await port.merge(request, "req-3"), "CONFLICT");
+	assert.deepEqual(await port.merge(request, "req-3"), { outcome: "CONFLICT" });
 });
 
 test("an existing verified branch at another commit is moved to the judged commit", async t => {

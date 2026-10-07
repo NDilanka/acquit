@@ -979,10 +979,6 @@ const refundEvidence = (refunded = usd("420.00"), retainedProcessorFee = usd("15
 /** The commit GitHub creates when the pull request merges, distinct from the judged tree it lands. */
 const landedCommit = "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1" as CommitSha;
 
-/** The answer the merge port has to give the outbox: GitHub's outcome and the commit it landed on. */
-const mergeAnswer = (answer: { readonly outcome: "MERGED"; readonly sha: CommitSha } | { readonly outcome: "CONFLICT" } | { readonly outcome: "UNKNOWN" }) =>
-	(async () => answer) as unknown as Ports["github"]["merge"];
-
 /** A store-backed job with one enqueued effect, a scripted provider, and a clock the test moves. */
 function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>; readonly merge?: Ports["github"]["merge"] } = {}) {
 	const store = new SqliteStore(":memory:");
@@ -995,7 +991,7 @@ function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>;
 	const raised: string[] = [];
 	const ports: Ports = { ...base.ports, store, clock: { now: () => current },
 		alerts: { raise: async effect => { raised.push(effect.reason); } },
-		github: { merge: options.merge ?? mergeAnswer({ outcome: "MERGED", sha: landedCommit }) },
+		github: { merge: options.merge ?? (async () => ({ outcome: "MERGED", sha: landedCommit })) },
 		paypal: { ...base.ports.paypal, ...options.paypal } };
 	const enqueue = (effect: JobEffect) => {
 		const key = operationKey(effect);
@@ -1434,7 +1430,7 @@ test("the merge effect finishes the paid job, and a conflict parks it for a huma
 	if (typeof released === "string") throw new Error(released);
 	const paid = released.next;
 	const effect: JobEffect = { kind: "MERGE", jobId: paid.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" };
-	const merged = moneyHarness(paid, { merge: mergeAnswer({ outcome: "MERGED", sha: landedCommit }) });
+	const merged = moneyHarness(paid, { merge: async () => ({ outcome: "MERGED", sha: landedCommit }) });
 	try {
 		const key = merged.enqueue(effect);
 		assert.equal(await runOutboxOnce(merged.ports, key), "WORKED");
@@ -1446,7 +1442,7 @@ test("the merge effect finishes the paid job, and a conflict parks it for a huma
 		assert.deepEqual(projectJob(row, maya, new Map()).merge, { phase: "MERGED", at: now, sha: landedCommit });
 		assert.equal(merged.effectState(key).kind, "CONFIRMED");
 	} finally { merged.store.close(); merged.base.store.close(); }
-	const conflicted = moneyHarness(paid, { merge: mergeAnswer({ outcome: "CONFLICT" }) });
+	const conflicted = moneyHarness(paid, { merge: async () => ({ outcome: "CONFLICT" }) });
 	try {
 		const key = conflicted.enqueue(effect);
 		assert.equal(await runOutboxOnce(conflicted.ports, key), "WORKED");
@@ -1456,7 +1452,7 @@ test("the merge effect finishes the paid job, and a conflict parks it for a huma
 		assert.deepEqual(projectJob(row, maya, new Map()).merge, { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" });
 		assert.equal(conflicted.effectState(key).kind, "CONFIRMED");
 	} finally { conflicted.store.close(); conflicted.base.store.close(); }
-	const unknown = moneyHarness(paid, { merge: mergeAnswer({ outcome: "UNKNOWN" }) });
+	const unknown = moneyHarness(paid, { merge: async () => ({ outcome: "UNKNOWN" }) });
 	try {
 		const key = unknown.enqueue(effect);
 		assert.equal(await runOutboxOnce(unknown.ports, key), "WORKED");

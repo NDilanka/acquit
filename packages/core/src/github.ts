@@ -109,7 +109,11 @@ export type MergeRequest = {
 	readonly mergeCommit: CommitSha;
 };
 
-export type MergeOutcome = "MERGED" | "UNKNOWN" | "CONFLICT";
+/** What a merge answers: GitHub's commit on the base branch when it merged, and why it did not. */
+export type MergeOutcome =
+	| { readonly outcome: "MERGED"; readonly sha: CommitSha }
+	| { readonly outcome: "UNKNOWN" }
+	| { readonly outcome: "CONFLICT" };
 
 /** What the money path's MERGE effect needs. */
 export interface MergerPort {
@@ -602,39 +606,46 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	/**
 	 * Merges the pull request the verifier opened. The pull is read first, so a merge that already landed
 	 * is adopted rather than attempted again, and the merge names the judged commit so a head that moved
-	 * is refused by GitHub instead of merged.
+	 * is refused by GitHub instead of merged. The answer carries the commit the merge landed on either way.
 	 */
 	const merge = async (request: MergeRequest): Promise<MergeOutcome> => {
 		const client = splitRepository(request.repository);
 		const commit = checkedCommit(request.mergeCommit);
 		if (!Number.isSafeInteger(request.pullRequest) || request.pullRequest <= 0) invalid("The pull request", request.pullRequest);
 		const token = await tokenFor(client.owner);
-		/** The pull's immutable head. `merge_commit_sha` is the commit GitHub created on the base branch with
-		 * merge_method "merge", so it is never equal to the judged head the merge named. */
-		const read = async (): Promise<{ readonly merged: boolean; readonly head: string | null; readonly state: string | null }> => {
+		/** The pull's immutable head, and the commit GitHub made on the base branch when it merged.
+		 * `merge_commit_sha` is the commit created with merge_method "merge", so it is never equal to the
+		 * judged head the merge named. */
+		const read = async (): Promise<{ readonly merged: boolean; readonly head: string | null; readonly state: string | null; readonly mergeCommit: string | null }> => {
 			const answer = await call(`Bearer ${token}`, { method: "GET", path: `/repos/${request.repository}/pulls/${request.pullRequest}`,
 				allow: [200], permission: "pull_requests: read" });
-			const body = answer.body as { readonly merged?: unknown; readonly head?: { readonly sha?: unknown } | null; readonly state?: unknown } | null;
-			return { merged: body?.merged === true, head: typeof body?.head?.sha === "string" ? body.head.sha : null,
-				state: typeof body?.state === "string" ? body.state : null };
+			const body = answer.body as { readonly merged?: unknown; readonly head?: unknown; readonly state?: unknown; readonly merge_commit_sha?: unknown } | null;
+			return { merged: body?.merged === true, head: textOf(body?.head, "sha"), state: textOf(body, "state"),
+				mergeCommit: textOf(body, "merge_commit_sha") };
 		};
-		const settled = (pull: { readonly merged: boolean; readonly head: string | null }): MergeOutcome | null =>
-			pull.merged ? pull.head === commit ? "MERGED" : "CONFLICT" : null;
+		/** The commit the merge landed on. An answer that names none is a response this client will not read as MERGED. */
+		const landedOn = (named: string | null): CommitSha => {
+			if (named === null || !COMMIT_SHA.test(named)) throw new GitHubAppError("GITHUB_RESPONSE_INVALID",
+				"GitHub answered a landed merge without naming the commit it made.");
+			return named as CommitSha;
+		};
+		const settled = (pull: { readonly merged: boolean; readonly head: string | null; readonly mergeCommit: string | null }): MergeOutcome | null =>
+			pull.merged ? pull.head === commit ? { outcome: "MERGED", sha: landedOn(pull.mergeCommit) } : { outcome: "CONFLICT" } : null;
 		const before = await read();
 		const already = settled(before);
 		if (already !== null) return already;
-		if (before.state !== "open") return "CONFLICT";
+		if (before.state !== "open") return { outcome: "CONFLICT" };
 		try {
-			await call(`Bearer ${token}`, { method: "PUT", path: `/repos/${request.repository}/pulls/${request.pullRequest}/merge`,
+			const answer = await call(`Bearer ${token}`, { method: "PUT", path: `/repos/${request.repository}/pulls/${request.pullRequest}/merge`,
 				allow: [200], permission: "contents: write", body: { sha: commit, merge_method: "merge" } });
-			return "MERGED";
+			return { outcome: "MERGED", sha: landedOn(textOf(answer.body, "sha")) };
 		} catch (error) {
 			// GitHub refuses a merge it will not make. A concurrent writer may have merged it first, so the
 			// pull is read once more; anything else that is not a refusal of this merge stays transient.
 			const after = await read().catch(() => null);
 			const raced = after === null ? null : settled(after);
 			if (raced !== null) return raced;
-			if (error instanceof GitHubAppError && [405, 409, 422].includes(error.status ?? 0)) return "CONFLICT";
+			if (error instanceof GitHubAppError && [405, 409, 422].includes(error.status ?? 0)) return { outcome: "CONFLICT" };
 			throw error;
 		}
 	};
@@ -686,10 +697,11 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 		async merge(request, requestId) {
 			calls.push({ kind: "MERGE", jobId: request.jobId, requestId });
 			const published = pullRequests.get(request.jobId);
-			if (!published) return "CONFLICT";
-			// The same rule the real client applies: only the judged tree merges, and only once.
-			if (published.pullRequest !== request.pullRequest) return "CONFLICT";
-			return published.mergeCommit === request.mergeCommit ? "MERGED" : "CONFLICT";
+			if (!published) return { outcome: "CONFLICT" };
+			// The same rule the real client applies: only the judged tree merges, and only once. The fake
+			// fast-forwards the base branch, so the commit it lands on is the published one.
+			if (published.pullRequest !== request.pullRequest) return { outcome: "CONFLICT" };
+			return published.mergeCommit === request.mergeCommit ? { outcome: "MERGED", sha: published.mergeCommit } : { outcome: "CONFLICT" };
 		},
 	};
 }

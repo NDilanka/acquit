@@ -217,7 +217,11 @@ export type Receipt = {
 
 export type MergeProgress =
 	| { readonly phase: "PENDING" }
-	| { readonly phase: "MERGED"; readonly at: Instant }
+	/**
+	 * GitHub's merge commit, the commit the verified pull request landed on. It is not the judged tree the
+	 * receipt names. A row stored before this field reads as MERGED with a null sha at the store boundary.
+	 */
+	| { readonly phase: "MERGED"; readonly at: Instant; readonly sha: CommitSha | null }
 	| { readonly phase: "NEEDS_HUMAN"; readonly reason: string };
 
 export type PaidState = {

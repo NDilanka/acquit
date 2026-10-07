@@ -96,7 +96,7 @@ export interface JobView {
 	readonly pullRequest: number | null;
 	/** The tree the verifier judged. Approve names it, so a moved head cannot be approved by mistake. */
 	readonly mergeCommit: CommitSha | null;
-	/** The merge of the verified pull request, once the job is PAID. */
+	/** The merge of the verified pull request, once the job is PAID: GitHub's commit, once it landed. */
 	readonly merge: MergeProgress | null;
 	/** What the release observed: the referenced payout item that paid the operator. Served on a PAID job. */
 	readonly release: ReleaseEvidence | null;
