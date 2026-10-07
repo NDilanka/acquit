@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { commercialSplit, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
+import { commercialSplit, checkLaws, formatUsd, reduceLedger, usd } from "../src/ledger.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
-import { executeCommand, applySystemCommand, confirmFunding, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
-import type { Ports } from "../src/effects.ts";
-import { applyJobCommand, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
+import { executeCommand, applySystemCommand, confirmFunding, ingestPayPalWebhook, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
+import type { OperationKey, OutboxState, Ports } from "../src/effects.ts";
+import { applyJobCommand, effectWanted, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
 import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
-import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
-import type { Bps, RemoteOutcome } from "../src/paypal.ts";
+import { createPayPal, parseCapture, parseWebhookEnvelope, quote } from "../src/paypal.ts";
+import type { Bps, PayPal, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
 import { GitHubAppError } from "../src/github.ts";
 import type { GitHubFailureCode } from "../src/github.ts";
@@ -67,6 +67,8 @@ function fixture() {
 		platformFee: usd("44.85"), sellerNet: usd("360.00"), capturedAt: now,
 	};
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	/** What the route's re-read answers for one resource id. An id the test never registers is unknown to PayPal. */
+	const reads = new Map<string, ResourceRead>();
 	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => currentNow }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal: {
 			dispatch: async call => {
@@ -78,10 +80,12 @@ function fixture() {
 			reconcile: async () => ({ kind: "NOT_FOUND" }),
 			getOrder: async () => approved ? { kind: "CONFIRMED", observation: { kind: "ORDER_APPROVED", orderId: capture.orderId } }
 				: { kind: "PENDING", checkAt: now } as RemoteOutcome,
-			parseWebhook: unimplemented,
+			parseWebhook: async request => parseWebhookEnvelope(await request.text()),
+			readResource: async resource => reads.get(resource.id) ?? { kind: "UNKNOWN" },
 		} };
 	return { store, ports, capture, dispatches: () => dispatches, captureCalls: () => captureCalls,
-		approve: () => { approved = true; }, advance: (at: string) => { currentNow = instant(at); } };
+		approve: () => { approved = true; }, advance: (at: string) => { currentNow = instant(at); },
+		read: (id: string, read: ResourceRead) => { reads.set(id, read); } };
 }
 const openCommand: UserCommand = { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
 	budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z") };
@@ -117,7 +121,7 @@ test("createAcquit uses its injected Clock to expire checkout after three hours"
 		if (typeof plan === "string") throw new Error(plan);
 		const account = await f.store.readCredits("devon-ops" as OperatorId);
 		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
-		await store.commit({ job: { expectedVersion: null, row: plan.next, wakeAt: instant("2026-10-06T15:00:00Z") }, operator: null, credits: [], outbox: [], acknowledge: null, request: null, delivery: null });
+		await store.commit({ job: { expectedVersion: null, row: plan.next, wakeAt: instant("2026-10-06T15:00:00Z") }, operator: null, credits: [], outbox: [], settlement: null, request: null, delivery: null });
 		currentNow = instant("2026-10-06T15:00:00Z");
 		await service.tick();
 		const result = await service.query(maya, { type: "Job", jobId: row.id });
@@ -425,13 +429,16 @@ test("PayPal pending/error deadlines and token refresh use the injected clock", 
 		assert.equal(oauth, 2);
 	} finally { globalThis.fetch = originalFetch; }
 });
-test("outbox acknowledgements use the store's injected clock", async () => {
-	const store = new SqliteStore(":memory:", { now: () => now });
+test("a commit settles the leased effect it was dispatched for in the same write", async () => {
+	const store = new SqliteStore(":memory:");
 	try {
-		const key = "test-key" as any;
-		store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, "{}", "{}", null);
-		await store.commit({ job: null, operator: null, credits: [], outbox: [], acknowledge: key, request: null, delivery: null });
-		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox").get()!.state)), { kind: "CONFIRMED", at: now });
+		const key = "test-key" as OperationKey;
+		store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, "{}", JSON.stringify({ kind: "LEASED", leaseUntil: now }), now);
+		await store.commit({ job: null, operator: null, credits: [], outbox: [], settlement: { key,
+			state: { kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH", detail: "PayPal answered RELEASE_COMPLETED for capture OTHERCAPTURE" } },
+			request: null, delivery: null });
+		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox").get()!.state)),
+			{ kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH", detail: "PayPal answered RELEASE_COMPLETED for capture OTHERCAPTURE" });
 	} finally { store.close(); }
 });
 
@@ -516,7 +523,9 @@ test("a rejection returns the job to READY with one attempt used, and the third 
 	assert.equal(attempts.phase, "REFUND_PENDING");
 	assert.deepEqual(attempts.phase === "REFUND_PENDING" ? attempts.refund : null, { reason: "ATTEMPTS_EXHAUSTED", selectedAt: now });
 	assert.deepEqual(exhausted.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
-	assert.equal(wakeAt(exhausted.next), null);
+	// The refund effect settles the disposition. Until it does, the capture-age watchdog is the only clock
+	// that can still change this row: it reports an unconfirmed settlement and never selects another one.
+	assert.equal(wakeAt(exhausted.next), instant("2026-10-27T12:00:00Z"));
 });
 
 test("VerifierFinished ignores a run the job is not waiting for", () => {
@@ -927,4 +936,1034 @@ test("the verifier callback refuses an unauthenticated report and applies a sign
 		assert.equal((await ingestVerifierCallback(ports, callback())).status, 200);
 		assert.deepEqual((await store.readJob(held.id))!.version, after!.version);
 	} finally { store.close(); base.store.close(); }
+});
+
+// The money path: approve, release, refund, and the reimbursement of the retained refund fee.
+
+const payoutItemId = "9qbheqa1MGMRG1pQyIAUjUL5ZVwZZeNBUoKIVYpj5aweGgnHBS20alUfiTIbfQg=" as PayoutItemId;
+const payoutBatchId = "7JQW2B7WJJUCN" as PayoutBatchId;
+const approvedCommit = "5cccb66515313caed72e4af329a62fc011139426" as CommitSha;
+const cutoff = instant("2026-10-27T12:00:00Z");
+
+function verifiedRow(): JobRow {
+	const row = heldRow();
+	const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+	if (typeof started === "string") throw new Error(started);
+	const verified = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(acceptance("run_submit_1")) }, system);
+	if (typeof verified === "string") throw new Error(verified);
+	return verified.next;
+}
+function approvedRow(): JobRow {
+	const verified = verifiedRow();
+	const approved = applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit }, { actor: maya, now, loaded: { kind: "NONE" } });
+	if (typeof approved === "string") throw new Error(approved);
+	return approved.next;
+}
+/** Three rejected attempts select the refund, as the table's own exhaustion edge does. */
+function exhaustedRow(): JobRow {
+	let row = heldRow();
+	for (const ordinal of [1, 2, 3] as const) {
+		const started = applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit }, { actor: devon, now, loaded: { kind: "NONE" } });
+		if (typeof started === "string") throw new Error(started);
+		const judged = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection(`run_submit_${ordinal}`)) }, system);
+		if (typeof judged === "string") throw new Error(judged);
+		row = judged.next;
+	}
+	return row;
+}
+const releaseEvidence = (paid = usd("360.00")): ReleaseEvidence =>
+	({ payoutItemId, captureId: "TESTCAPTURE" as CaptureId, paid, at: later });
+const refundEvidence = (refunded = usd("420.00"), retainedProcessorFee = usd("15.15")): RefundEvidence =>
+	({ refundId: "REFUND1" as RefundId, captureId: "TESTCAPTURE" as CaptureId, refunded, retainedProcessorFee, at: later });
+
+/** The commit GitHub creates when the pull request merges, distinct from the judged tree it lands. */
+const landedCommit = "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1" as CommitSha;
+
+/** A store-backed job with one enqueued effect, a scripted provider, and a clock the test moves. */
+function moneyHarness(row: JobRow, options: { readonly paypal?: Partial<PayPal>; readonly merge?: Ports["github"]["merge"] } = {}) {
+	const store = new SqliteStore(":memory:");
+	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), wakeAt(row));
+	// The timer scan loads the credits of every bidder on the row, so the harness stores one.
+	const account = grant("devon-ops" as OperatorId);
+	store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+	const base = fixture();
+	let current = now;
+	const raised: string[] = [];
+	const ports: Ports = { ...base.ports, store, clock: { now: () => current },
+		alerts: { raise: async effect => { raised.push(effect.reason); } },
+		github: { merge: options.merge ?? (async () => ({ outcome: "MERGED", sha: landedCommit })) },
+		paypal: { ...base.ports.paypal, ...options.paypal } };
+	const enqueue = (effect: JobEffect) => {
+		const key = operationKey(effect);
+		const state = { kind: "READY", runAt: now };
+		store.db.prepare("INSERT OR REPLACE INTO outbox VALUES (?, ?, ?, ?)").run(key, JSON.stringify({ key, effect, payloadDigest: "d", state }), JSON.stringify(state), now);
+		return key;
+	};
+	return { store, base, ports, enqueue, raised, at: (value: Instant) => { current = value; },
+		row: async (): Promise<JobRow> => { const read = await store.readJob(row.id); if (!read) throw new Error("Stored job missing"); return read; },
+		effectState: (key: ReturnType<typeof operationKey>): { readonly kind: string; readonly reason?: string; readonly detail?: string; readonly reconcileAt?: string } =>
+			JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)) as { readonly kind: string },
+		effectKinds: (): readonly string[] => store.db.prepare("SELECT json FROM outbox ORDER BY rowid").all()
+			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect.kind) };
+}
+const timer = { actor: { role: "SYSTEM", source: "TIMER" } as const, now, loaded: { kind: "NONE" } as const };
+
+test("Approve names the verified artifact, emits one RELEASE, and refuses a second approval", () => {
+	const verified = verifiedRow();
+	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: "f".repeat(40) as CommitSha },
+		{ actor: maya, now, loaded: { kind: "NONE" } }), "ARTIFACT_CHANGED");
+	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
+		{ actor: { role: "OPERATOR", operatorId: "devon-ops" as OperatorId }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
+	const plan = applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit }, { actor: maya, now, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "VERIFIED" }>;
+	assert.deepEqual(state.review, { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: now } });
+	assert.deepEqual(plan.effects, [{ kind: "RELEASE", jobId: verified.id, captureId: "TESTCAPTURE", payee: merchant }]);
+	// One release key per job: a second approval cannot select a second release.
+	assert.equal(applyJobCommand(plan.next, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
+		{ actor: maya, now, loaded: { kind: "NONE" } }), "REVIEW_CLOSED");
+	// The review window is a hard stop: approving after it closes is refused, not applied.
+	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
+		{ actor: maya, now: instant("2026-10-09T12:00:00Z"), loaded: { kind: "NONE" } }), "REVIEW_CLOSED");
+	// The view names the artifact the client approves, so a moved head is visible before the click.
+	assert.equal(projectJob(verified, maya, new Map()).mergeCommit, approvedCommit);
+});
+
+test("ReleaseSettled builds the receipt, the paid book, and the merge from the observed payout", () => {
+	const approved = approvedRow();
+	const plan = applyJobCommand(approved, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence() }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "PAID");
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "PAID" }>;
+	assert.deepEqual(state.book, [
+		{ kind: "HELD", cents: 42000, at: now },
+		{ kind: "RELEASED", cents: 36000, at: later },
+		{ kind: "FEE", cents: 6000, processor: 1515, acquit: 4485, at: later },
+	]);
+	assert.equal(checkLaws(state.book), "PAID");
+	assert.deepEqual(state.treasury, []);
+	assert.deepEqual(state.merge, { phase: "PENDING" });
+	assert.match(String(state.receipt.id), /^rcpt_/);
+	assert.equal(state.receipt.jobId, approved.id);
+	assert.equal(state.receipt.operator, "devon-ops");
+	assert.equal(state.receipt.agent, "ts-bugfixer");
+	assert.equal(state.receipt.pullRequest, 13);
+	assert.equal(state.receipt.mergeCommit, approvedCommit);
+	assert.deepEqual(state.receipt.frozen, { expected: 48, passed: 48 });
+	assert.deepEqual(state.receipt.hidden, { expected: 6, passed: 6 });
+	assert.equal(state.receipt.attemptsUsed, 1);
+	assert.equal(state.receipt.paid, 36000);
+	assert.equal(state.receipt.releasedAt, later);
+	// The release evidence is kept on the row, so the payout item a lane reads back is the one observed.
+	assert.deepEqual(state.release, releaseEvidence());
+	assert.deepEqual(plan.effects, [{ kind: "MERGE", jobId: approved.id, pullRequest: 13, mergeCommit: approvedCommit,
+		repository: "maya-client/invoice-app" }]);
+	assert.equal(wakeAt(plan.next), null);
+	// The receipt is the only thing that can carry the paid evidence, and it is what the API serves.
+	const view = projectJob(plan.next, maya, new Map());
+	assert.equal(view.status, "PAID");
+	assert.equal(view.escrow, "RELEASED");
+	assert.deepEqual(view.receipt, state.receipt);
+	assert.deepEqual(view.release, state.release);
+	assert.equal(view.release?.payoutItemId, payoutItemId);
+	assert.equal(view.release?.captureId, "TESTCAPTURE");
+	assert.deepEqual(view.merge, { phase: "PENDING" });
+	assert.equal(view.client, "maya-client");
+	assert.equal(view.viewerCanApprove, false);
+	// A paid job serves the attempts its receipt used, not zero.
+	assert.equal(view.attempts.used, 1);
+	assert.equal(view.attempts.left, 2);
+	assert.equal(view.attempts.last, "VERIFIED");
+});
+
+test("the view gates Approve on ownership and serves the attempts a settled job used", () => {
+	const verified = verifiedRow();
+	assert.equal(projectJob(verified, maya, new Map()).viewerCanApprove, true);
+	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId }, new Map()).viewerCanApprove, false);
+	assert.equal(projectJob(verified, devon, new Map()).viewerCanApprove, false);
+	// The release is already selected, so there is nothing left to approve.
+	assert.equal(projectJob(approvedRow(), maya, new Map()).viewerCanApprove, false);
+	// A refunded job serves the attempts its history carries, and no merge or release.
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const refundedView = projectJob(refunded.next, maya, new Map());
+	assert.equal(refundedView.attempts.used, 3);
+	assert.equal(refundedView.attempts.left, 0);
+	assert.equal(refundedView.attempts.last, "REJECTED");
+	assert.equal(refundedView.merge, null);
+	assert.equal(refundedView.release, null);
+});
+
+test("the view names the owning client only to that client's own session", () => {
+	const verified = verifiedRow();
+	assert.equal(projectJob(verified, maya, new Map()).client, "maya-client");
+	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId }, new Map()).client, null);
+	assert.equal(projectJob(verified, devon, new Map()).client, null);
+	assert.equal(projectJob(verified, { role: "ARBITER", staffId: "staff-1" as StaffId }, new Map()).client, null);
+});
+
+test("a release that does not name the selected disposition is never applied", () => {
+	const approved = approvedRow();
+	for (const wrong of [
+		{ release: { ...releaseEvidence(), captureId: "OTHERCAPTURE" as CaptureId }, why: "another capture" },
+		{ release: releaseEvidence(usd("359.00")), why: "a net that cannot add up to the held gross" },
+	]) {
+		const plan = applyJobCommand(approved, { type: "ReleaseSettled", jobId: approved.id, release: wrong.release }, system);
+		if (typeof plan === "string") throw new Error(`${wrong.why}: ${plan}`);
+		assert.equal(plan.next.state.status, "VERIFIED", wrong.why);
+		assert.equal(plan.next.version, approved.version, wrong.why);
+		assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: approved.id, reason: "SETTLEMENT_MISMATCH" }], wrong.why);
+	}
+	// A release observation for a job that never selected a release is a mismatch too.
+	const verified = verifiedRow();
+	const plan = applyJobCommand(verified, { type: "ReleaseSettled", jobId: verified.id, release: releaseEvidence() }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "VERIFIED");
+	assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: verified.id, reason: "SETTLEMENT_MISMATCH" }]);
+});
+
+test("a released net below the promise is owed back to the operator and alerted", () => {
+	// The capture is where the variance is observed: the card fee came in at 16.15, not the quoted 15.15,
+	// so the operator nets 359.00 and the release pays exactly that. The release still adds up to the held
+	// gross, which is why the ledger takes the capture's observed fee with the payout's observed net.
+	const approved = approvedRow();
+	const verified = approved.state as Extract<typeof approved.state, { status: "VERIFIED" }>;
+	const observed = { ...verified.escrow, capture: { ...verified.escrow.capture, processorFee: usd("16.15"), sellerNet: usd("359.00") } };
+	const row: JobRow = { ...approved, state: { ...verified, escrow: observed } };
+	const plan = applyJobCommand(row, { type: "ReleaseSettled", jobId: row.id, release: releaseEvidence(usd("359.00")) }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "PAID");
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "PAID" }>;
+	assert.deepEqual(state.book, [
+		{ kind: "HELD", cents: 42000, at: now },
+		{ kind: "RELEASED", cents: 35900, at: later },
+		{ kind: "FEE", cents: 6100, processor: 1615, acquit: 4485, at: later },
+	]);
+	assert.equal(checkLaws(state.book), "PAID");
+	assert.deepEqual(state.treasury, [
+		{ kind: "PROCESSOR_FEE_VARIANCE", jobId: row.id, predicted: 1515, observed: 1615, at: later },
+		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: row.id, operator: "devon-ops" as OperatorId, cents: 100,
+			cause: "NET_BELOW_PROMISE", at: later },
+	]);
+	assert.deepEqual(plan.effects, [
+		{ kind: "MERGE", jobId: row.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" },
+		{ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" },
+	]);
+});
+
+test("RefundSettled refunds the held book and owes the operator the fee PayPal kept", () => {
+	const exhausted = exhaustedRow();
+	const plan = applyJobCommand(exhausted, { type: "RefundSettled", jobId: exhausted.id, refund: refundEvidence() }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	assert.equal(plan.next.state.status, "REFUNDED");
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "REFUNDED" }>;
+	assert.deepEqual(state.book, [{ kind: "HELD", cents: 42000, at: now }, { kind: "REFUND", cents: 42000, at: later }]);
+	assert.equal(checkLaws(state.book), "REFUNDED");
+	assert.equal(state.reason, "ATTEMPTS_EXHAUSTED");
+	assert.deepEqual(state.refund, refundEvidence());
+	assert.deepEqual(state.treasury, [
+		{ kind: "REFUND_FEE_RETAINED", jobId: exhausted.id, cents: 1515, at: later },
+		{ kind: "OPERATOR_REIMBURSEMENT_OWED", jobId: exhausted.id, operator: "devon-ops" as OperatorId, cents: 1515,
+			cause: "REFUND_DEBITED_OPERATOR", at: later },
+	]);
+	assert.deepEqual(plan.effects, [{ kind: "REIMBURSE", jobId: exhausted.id, merchant, amount: usd("15.15") }]);
+	assert.equal(wakeAt(plan.next), null);
+	// A refund observation for a job that is not waiting on a refund is never applied.
+	const verified = verifiedRow();
+	const mismatch = applyJobCommand(verified, { type: "RefundSettled", jobId: verified.id, refund: refundEvidence() }, system);
+	if (typeof mismatch === "string") throw new Error(mismatch);
+	assert.equal(mismatch.next.state.status, "VERIFIED");
+	assert.deepEqual(mismatch.effects, [{ kind: "ALERT", jobId: verified.id, reason: "SETTLEMENT_MISMATCH" }]);
+});
+
+test("a refund whose retained fee is not the capture's recorded fee is refused", () => {
+	// The retained fee is the capture's own paypal_fee, read back from the same capture the job recorded
+	// at capture. A refund that reports any other amount is a settlement this job never made.
+	const exhausted = exhaustedRow();
+	for (const [retained, why] of [[usd("14.15"), "less than the recorded fee"], [usd("15.16"), "more than the recorded fee"]] as const) {
+		const plan = applyJobCommand(exhausted, { type: "RefundSettled", jobId: exhausted.id, refund: refundEvidence(usd("420.00"), retained) }, system);
+		if (typeof plan === "string") throw new Error(`${why}: ${plan}`);
+		assert.equal(plan.refused, "SETTLEMENT_MISMATCH", why);
+		assert.equal(plan.next.state.status, "IN_PROGRESS", why);
+		assert.equal(plan.next.version, exhausted.version, why);
+		assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: exhausted.id, reason: "SETTLEMENT_MISMATCH" }], why);
+	}
+	// The recorded fee still settles, so the guard rejects only a fee the job never saw.
+	const settled = applyJobCommand(exhausted, { type: "RefundSettled", jobId: exhausted.id, refund: refundEvidence() }, system);
+	if (typeof settled === "string") throw new Error(settled);
+	assert.equal(settled.next.state.status, "REFUNDED");
+});
+
+test("ReimbursementSettled records the payout and its 0.25 fee once", () => {
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const reimbursement = { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("15.15"), fee: usd("0.25"), at: later };
+	const plan = applyJobCommand(refunded.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement }, system);
+	if (typeof plan === "string") throw new Error(plan);
+	const state = plan.next.state as Extract<typeof plan.next.state, { status: "REFUNDED" }>;
+	assert.deepEqual(state.treasury.at(-1), { kind: "PAYOUT_FEE_PAID", jobId: refunded.next.id, batchId: payoutBatchId,
+		paid: 1515, fee: 25, at: later });
+	assert.deepEqual(plan.effects, []);
+	// A redelivery of the same batch changes nothing: the row already carries its line.
+	const again = applyJobCommand(plan.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement }, system);
+	if (typeof again === "string") throw new Error(again);
+	assert.equal(again.next.version, plan.next.version);
+	assert.deepEqual(again.effects, []);
+});
+
+test("ReimbursementSettled takes only the payout the row owes, to the payee", () => {
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const owed = usd("15.15");
+	const effect: JobEffect = { kind: "REIMBURSE", jobId: refunded.next.id, merchant, amount: owed };
+	const reimbursementOf = (paid = owed, payer = merchant, batchId = payoutBatchId): ReimbursementEvidence =>
+		({ batchId, itemId: payoutItemId, merchant: payer, paid, fee: usd("0.25"), at: later });
+	// The debt is owed until a payout that matches it settles the row.
+	assert.equal(effectWanted(refunded.next, effect), true);
+	for (const wrong of [
+		{ reimbursement: reimbursementOf(usd("14.15")), why: "a payout short of the debt" },
+		{ reimbursement: reimbursementOf(owed, "other-merchant" as MerchantId), why: "a payout to another merchant" },
+	]) {
+		const plan = applyJobCommand(refunded.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: wrong.reimbursement }, system);
+		if (typeof plan === "string") throw new Error(`${wrong.why}: ${plan}`);
+		assert.equal(plan.refused, "SETTLEMENT_MISMATCH", wrong.why);
+		assert.equal(plan.next.version, refunded.next.version, wrong.why);
+		assert.deepEqual(plan.effects, [{ kind: "ALERT", jobId: refunded.next.id, reason: "SETTLEMENT_MISMATCH" }], wrong.why);
+		// A refused payout records no line, so the effect stays wanted rather than looking settled.
+		assert.equal(effectWanted(plan.next, effect), true, wrong.why);
+	}
+	const settled = applyJobCommand(refunded.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: reimbursementOf() }, system);
+	if (typeof settled === "string") throw new Error(settled);
+	assert.equal(settled.refused, undefined);
+	assert.equal(effectWanted(settled.next, effect), false);
+	// A second batch for an already settled reimbursement is a mismatch, not a second treasury line.
+	const other = reimbursementOf(owed, merchant, "OTHERBATCH" as PayoutBatchId);
+	const second = applyJobCommand(settled.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: other }, system);
+	if (typeof second === "string") throw new Error(second);
+	assert.equal(second.refused, "SETTLEMENT_MISMATCH");
+	assert.equal(second.next.version, settled.next.version);
+	assert.equal((second.next.state as Extract<JobRow["state"], { status: "REFUNDED" }>).treasury.length,
+		(settled.next.state as Extract<JobRow["state"], { status: "REFUNDED" }>).treasury.length);
+	// The batch the row already recorded stays a no-op.
+	const redelivered = applyJobCommand(settled.next, { type: "ReimbursementSettled", jobId: refunded.next.id, reimbursement: reimbursementOf() }, system);
+	if (typeof redelivered === "string") throw new Error(redelivered);
+	assert.equal(redelivered.refused, undefined);
+	assert.equal(redelivered.next.version, settled.next.version);
+});
+
+test("the capture-age cutoff refunds work the verifier never passed", () => {
+	// The delivery and review clocks normally fire first. The cutoff is the backstop for a row whose
+	// clocks were missed, and it runs first in every state that holds money.
+	const row = heldRow(instant("2026-11-03T12:00:00Z"));
+	assert.equal(wakeAt(row), cutoff);
+	const due = applyJobCommand(row, { type: "TimerDue", jobId: row.id, expectedWakeAt: cutoff },
+		{ ...timer, now: cutoff });
+	if (typeof due === "string") throw new Error(due);
+	const attempts = (due.next.state as Extract<typeof due.next.state, { status: "IN_PROGRESS" }>).attempts;
+	assert.deepEqual(attempts.phase === "REFUND_PENDING" ? attempts.refund : null, { reason: "CAPTURE_CUTOFF", selectedAt: cutoff });
+	assert.deepEqual(due.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
+	// The cutoff handled the escrow, so the watchdog does not fire again while the refund settles.
+	assert.equal(wakeAt(due.next), null);
+});
+
+test("the capture-age cutoff releases verified work, and a pending settlement only alerts", () => {
+	// Work that is verified late: the review window outlives the cutoff, so the watchdog releases rather
+	// than letting the escrow sit past day 21. The verifier passed, so the contract was met.
+	const verified = verifiedRow();
+	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
+	const held: JobRow = { ...verified, state: { ...state, review: { phase: "AWAITING_CLIENT", endsAt: instant("2026-11-01T12:00:00Z") } } };
+	assert.equal(wakeAt(held), cutoff);
+	const released = applyJobCommand(held, { type: "TimerDue", jobId: held.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
+	if (typeof released === "string") throw new Error(released);
+	const review = (released.next.state as Extract<typeof released.next.state, { status: "VERIFIED" }>).review;
+	assert.deepEqual(review.phase === "RELEASE_PENDING" ? review.release : null, { authority: "CAPTURE_CUTOFF", selectedAt: cutoff });
+	assert.deepEqual(released.effects, [{ kind: "RELEASE", jobId: held.id, captureId: "TESTCAPTURE", payee: merchant }]);
+	assert.equal(wakeAt(released.next), null);
+	// A release that was already selected and is still unconfirmed at the cutoff: no new disposition, one alert.
+	const approved = approvedRow();
+	const alerted = applyJobCommand(approved, { type: "TimerDue", jobId: approved.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
+	if (typeof alerted === "string") throw new Error(alerted);
+	assert.equal(alerted.next.state.status, "VERIFIED");
+	const pending = (alerted.next.state as Extract<typeof alerted.next.state, { status: "VERIFIED" }>).review;
+	assert.equal(pending.phase, "RELEASE_PENDING");
+	assert.deepEqual(alerted.effects, [{ kind: "ALERT", jobId: approved.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" }]);
+	assert.equal(wakeAt(alerted.next), null);
+});
+
+test("a review window that closes in silence releases the verified work", () => {
+	const verified = verifiedRow();
+	const endsAt = instant("2026-10-09T12:00:00Z");
+	assert.equal(wakeAt(verified), endsAt);
+	const due = applyJobCommand(verified, { type: "TimerDue", jobId: verified.id, expectedWakeAt: endsAt }, { ...timer, now: endsAt });
+	if (typeof due === "string") throw new Error(due);
+	const review = (due.next.state as Extract<typeof due.next.state, { status: "VERIFIED" }>).review;
+	assert.deepEqual(review.phase === "RELEASE_PENDING" ? review.release : null, { authority: "REVIEW_SILENCE", selectedAt: endsAt });
+	assert.deepEqual(due.effects, [{ kind: "RELEASE", jobId: verified.id, captureId: "TESTCAPTURE", payee: merchant }]);
+});
+
+test("a crash between the release dispatch and its settle reconciles instead of paying twice", async () => {
+	const approved = approvedRow();
+	let dispatches = 0;
+	let reconciles = 0;
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async call => { if (call.kind !== "RELEASE") throw new Error(`Unexpected ${call.kind}`);
+			dispatches++; return { kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05.000Z") }; },
+		reconcile: async call => { if (call.kind !== "RELEASE") throw new Error(`Unexpected ${call.kind}`);
+			reconciles++; return { kind: "CONFIRMED", observation: { kind: "RELEASE_COMPLETED", release: releaseEvidence() } }; },
+	} });
+	try {
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(harness.effectState(key), { kind: "UNCERTAIN", reconcileAt: instant("2026-10-06T12:00:05.000Z") });
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+		harness.at(instant("2026-10-06T12:00:05.000Z"));
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.equal((await harness.row()).state.status, "PAID");
+		assert.equal(dispatches, 1);
+		assert.equal(reconciles, 1);
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "MERGE"]);
+		assert.equal(harness.effectState(key).kind, "CONFIRMED");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("an uncertain release never becomes a refund, even at the capture-age cutoff", async () => {
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05.000Z") }),
+		reconcile: async () => ({ kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05.000Z") }),
+	} });
+	try {
+		const releaseKey = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, releaseKey), "WORKED");
+		// The provider still cannot say whether the payout landed when the cutoff arrives.
+		harness.at(cutoff);
+		await runDueTimers(harness.ports);
+		const row = await harness.row();
+		assert.equal(row.state.status, "VERIFIED");
+		const review = (row.state as Extract<typeof row.state, { status: "VERIFIED" }>).review;
+		assert.equal(review.phase, "RELEASE_PENDING");
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
+		assert.equal(wakeAt(row), null);
+		const alertKey = operationKey({ kind: "ALERT", jobId: approved.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" });
+		assert.equal(await runOutboxOnce(harness.ports, alertKey), "WORKED");
+		assert.deepEqual(harness.raised, ["SETTLEMENT_UNCONFIRMED_AT_CUTOFF"]);
+		// The row keeps reconciling: the release row is still due, and no refund was ever selected.
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
+		assert.equal(harness.effectState(releaseKey).kind, "UNCERTAIN");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a release the provider says already paid parks for a person and is never refunded", async () => {
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "PERMANENT_FAILURE", reason: "PAYOUT_ALREADY_COMPLETED_FOR_REFERENCE" }),
+		reconcile: async () => ({ kind: "PERMANENT_FAILURE", reason: "PAYOUT_ALREADY_COMPLETED_FOR_REFERENCE" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(harness.effectState(key), { kind: "NEEDS_HUMAN", reason: "PAYOUT_ALREADY_COMPLETED_FOR_REFERENCE" });
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+		assert.deepEqual(harness.effectKinds(), ["RELEASE"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a settlement the row refuses is parked for a person and never acknowledged", async () => {
+	// The provider says the release paid, but its evidence names another capture. The row's selected
+	// disposition is the guard, so the job must not move — and the outbox must not ack a money move the
+	// row refused. The provider's own answer is what the parked row carries.
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "CONFIRMED", observation: { kind: "RELEASE_COMPLETED",
+			release: { ...releaseEvidence(), captureId: "OTHERCAPTURE" as CaptureId } } }),
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+		assert.equal(harness.effectState(key).kind, "NEEDS_HUMAN");
+		assert.equal(harness.effectState(key).reason, "SETTLEMENT_MISMATCH");
+		assert.match(String(harness.effectState(key).detail), /RELEASE_COMPLETED for capture OTHERCAPTURE/);
+		// The mismatch is a fact a person sees: the row's own alert is enqueued next to the parked effect.
+		assert.deepEqual(harness.effectKinds(), ["RELEASE", "ALERT"]);
+		// A parked row is never leased again, so no later sweep re-POSTs the payout.
+		assert.equal(await runOutboxOnce(harness.ports, key), "IDLE");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refusal parks the effect in the commit itself, so a crash cannot leave it acknowledged", async () => {
+	// Settling a refusal used to take two writes: the commit acknowledged the money move CONFIRMED and a
+	// second write parked it. A crash between them left the row acknowledged with the job unmoved. The
+	// commit that refuses the observation is the only write now, so a store that dies on any other write
+	// still leaves the row parked, carrying the provider's answer.
+	const approved = approvedRow();
+	const harness = moneyHarness(approved, { paypal: {
+		dispatch: async () => ({ kind: "CONFIRMED", observation: { kind: "RELEASE_COMPLETED",
+			release: { ...releaseEvidence(), captureId: "OTHERCAPTURE" as CaptureId } } }),
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const writes: OutboxState[] = [];
+		harness.store.recordEffect = async (_key, state) => {
+			writes.push(state);
+			throw new Error("the process died before the second write");
+		};
+		const key = harness.enqueue({ kind: "RELEASE", jobId: approved.id, captureId: "TESTCAPTURE" as CaptureId, payee: merchant });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(writes, []);
+		assert.equal(harness.effectState(key).kind, "NEEDS_HUMAN");
+		assert.equal(harness.effectState(key).reason, "SETTLEMENT_MISMATCH");
+		assert.match(String(harness.effectState(key).detail), /RELEASE_COMPLETED for capture OTHERCAPTURE/);
+		assert.equal((await harness.row()).state.status, "VERIFIED");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("the day-21 cutoff never switches a verified refund into a release", () => {
+	// A verified row can be waiting on a refund. The cutoff is a hard stop on the escrow, not a switch of
+	// sides: the selected refund stands, and the unconfirmed settlement is reported for a person.
+	const verified = verifiedRow();
+	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
+	const refunding: JobRow = { ...verified, state: { ...state, review: { phase: "REFUND_PENDING",
+		refund: { reason: "ARBITER_REFUND", selectedAt: now } } } };
+	// The refund's own effect settles it, so the capture-age cutoff is the only clock left.
+	assert.equal(wakeAt(refunding), cutoff);
+	const due = applyJobCommand(refunding, { type: "TimerDue", jobId: refunding.id, expectedWakeAt: cutoff }, { ...timer, now: cutoff });
+	if (typeof due === "string") throw new Error(due);
+	assert.equal(due.next.state.status, "VERIFIED");
+	const review = (due.next.state as Extract<typeof due.next.state, { status: "VERIFIED" }>).review;
+	assert.equal(review.phase, "REFUND_PENDING");
+	assert.deepEqual(due.effects, [{ kind: "ALERT", jobId: refunding.id, reason: "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" }]);
+	assert.equal(wakeAt(due.next), null);
+});
+
+test("a refund a verified row selected is still wanted, and settles the row", async () => {
+	const verified = verifiedRow();
+	const state = verified.state as Extract<typeof verified.state, { status: "VERIFIED" }>;
+	const refunding: JobRow = { ...verified, state: { ...state, review: { phase: "REFUND_PENDING",
+		refund: { reason: "ARBITER_REFUND", selectedAt: now } } } };
+	const harness = moneyHarness(refunding, { paypal: {
+		dispatch: async call => call.kind === "REFUND"
+			? { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } }
+			: (() => { throw new Error(`Unexpected ${call.kind}`); })() as never,
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "REFUND", jobId: refunding.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		// The row holds the disposition, so the effect is dispatched and settled, never acknowledged unseen.
+		assert.equal((await harness.row()).state.status, "REFUNDED");
+		assert.equal(harness.effectState(key).kind, "CONFIRMED");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("the refund settles from the provider and the retained fee goes back as a payout", async () => {
+	const exhausted = exhaustedRow();
+	const reimbursement = { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("15.15"), fee: usd("0.25"), at: later };
+	const calls: string[] = [];
+	const harness = moneyHarness(exhausted, { paypal: {
+		dispatch: async call => {
+			calls.push(`${call.kind}:${call.kind === "REFUND" ? call.amount : ""}`);
+			if (call.kind === "REFUND") return { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } };
+			if (call.kind === "REIMBURSE") return { kind: "CONFIRMED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement } };
+			throw new Error(`Unexpected ${call.kind}`);
+		},
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const refundKey = harness.enqueue({ kind: "REFUND", jobId: exhausted.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, refundKey), "WORKED");
+		const refunded = await harness.row();
+		assert.equal(refunded.state.status, "REFUNDED");
+		assert.deepEqual(harness.effectKinds(), ["REFUND", "REIMBURSE"]);
+		// The payout's sender batch id is the same deterministic effect key the outbox holds.
+		const payoutKey = operationKey({ kind: "REIMBURSE", jobId: exhausted.id, merchant, amount: usd("15.15") });
+		assert.equal(await runOutboxOnce(harness.ports, payoutKey), "WORKED");
+		const paid = (await harness.row()).state as Extract<JobRow["state"], { status: "REFUNDED" }>;
+		assert.deepEqual(paid.treasury.at(-1), { kind: "PAYOUT_FEE_PAID", jobId: exhausted.id, batchId: payoutBatchId,
+			paid: 1515, fee: 25, at: later });
+		assert.equal(harness.effectState(payoutKey).kind, "CONFIRMED");
+		assert.deepEqual(calls, ["REFUND:42000", "REIMBURSE:"]);
+		// A refund that is no longer pending is never dispatched: the row is the guard.
+		assert.equal(await runOutboxOnce(harness.ports, refundKey), "IDLE");
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refund read back with a different retained fee parks the payout for a person", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted, { paypal: {
+		dispatch: async call => call.kind === "REFUND"
+			? { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence(usd("420.00"), usd("14.15")) } }
+			: (() => { throw new Error(`Unexpected ${call.kind}`); })() as never,
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const key = harness.enqueue({ kind: "REFUND", jobId: exhausted.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, key), "WORKED");
+		assert.deepEqual(harness.effectState(key), { kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH",
+			detail: "PayPal answered REFUND_COMPLETED for capture TESTCAPTURE (refund REFUND1)" });
+		assert.equal((await harness.row()).state.status, "IN_PROGRESS");
+		// No reimbursement is enqueued for a refund the row never took.
+		assert.deepEqual(harness.effectKinds(), ["REFUND", "ALERT"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a reimbursement payout that does not pay the debt parks the effect for a person", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted, { paypal: {
+		dispatch: async call => {
+			if (call.kind === "REFUND") return { kind: "CONFIRMED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } };
+			if (call.kind === "REIMBURSE") return { kind: "CONFIRMED", observation: { kind: "REIMBURSEMENT_COMPLETED",
+				reimbursement: { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("10.00"), fee: usd("0.25"), at: later } } };
+			throw new Error(`Unexpected ${call.kind}`);
+		},
+		reconcile: async () => ({ kind: "NOT_FOUND" }),
+	} });
+	try {
+		const refundKey = harness.enqueue({ kind: "REFUND", jobId: exhausted.id, captureId: "TESTCAPTURE" as CaptureId,
+			payee: merchant, amount: usd("420.00") });
+		assert.equal(await runOutboxOnce(harness.ports, refundKey), "WORKED");
+		assert.equal((await harness.row()).state.status, "REFUNDED");
+		const payoutKey = harness.enqueue({ kind: "REIMBURSE", jobId: exhausted.id, merchant, amount: usd("15.15") });
+		assert.equal(await runOutboxOnce(harness.ports, payoutKey), "WORKED");
+		// The payout is out but it does not match the debt: the effect parks and the row records no line.
+		assert.deepEqual(harness.effectState(payoutKey), { kind: "NEEDS_HUMAN", reason: "SETTLEMENT_MISMATCH",
+			detail: `PayPal answered REIMBURSEMENT_COMPLETED for batch ${payoutBatchId}` });
+		const row = await harness.row();
+		assert.equal(row.state.status, "REFUNDED");
+		assert.equal(row.state.status === "REFUNDED" && row.state.treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID"), false);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("the merge effect finishes the paid job, and a conflict parks it for a human", async () => {
+	const released = applyJobCommand(approvedRow(), { type: "ReleaseSettled", jobId: "job_submit" as JobId, release: releaseEvidence() }, system);
+	if (typeof released === "string") throw new Error(released);
+	const paid = released.next;
+	const effect: JobEffect = { kind: "MERGE", jobId: paid.id, pullRequest: 13, mergeCommit: approvedCommit, repository: "maya-client/invoice-app" };
+	const merged = moneyHarness(paid, { merge: async () => ({ outcome: "MERGED", sha: landedCommit }) });
+	try {
+		const key = merged.enqueue(effect);
+		assert.equal(await runOutboxOnce(merged.ports, key), "WORKED");
+		const row = await merged.row();
+		const state = row.state as Extract<JobRow["state"], { status: "PAID" }>;
+		// The receipt names the tree the client approved; the merge names the commit GitHub made of it.
+		assert.equal(state.receipt.mergeCommit, approvedCommit);
+		assert.deepEqual(state.merge, { phase: "MERGED", at: now, sha: landedCommit });
+		assert.deepEqual(projectJob(row, maya, new Map()).merge, { phase: "MERGED", at: now, sha: landedCommit });
+		assert.equal(merged.effectState(key).kind, "CONFIRMED");
+	} finally { merged.store.close(); merged.base.store.close(); }
+	const conflicted = moneyHarness(paid, { merge: async () => ({ outcome: "CONFLICT" }) });
+	try {
+		const key = conflicted.enqueue(effect);
+		assert.equal(await runOutboxOnce(conflicted.ports, key), "WORKED");
+		const row = await conflicted.row();
+		const state = row.state as Extract<JobRow["state"], { status: "PAID" }>;
+		assert.deepEqual(state.merge, { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" });
+		assert.deepEqual(projectJob(row, maya, new Map()).merge, { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" });
+		assert.equal(conflicted.effectState(key).kind, "CONFIRMED");
+	} finally { conflicted.store.close(); conflicted.base.store.close(); }
+	const unknown = moneyHarness(paid, { merge: async () => ({ outcome: "UNKNOWN" }) });
+	try {
+		const key = unknown.enqueue(effect);
+		assert.equal(await runOutboxOnce(unknown.ports, key), "WORKED");
+		const state = (await unknown.row()).state as Extract<JobRow["state"], { status: "PAID" }>;
+		assert.deepEqual(state.merge, { phase: "PENDING" });
+		assert.equal(unknown.effectState(key).kind, "UNCERTAIN");
+	} finally { unknown.store.close(); unknown.base.store.close(); }
+});
+
+test("a paid row stored before the merge carried a sha reads MERGED with a null sha", async () => {
+	const released = applyJobCommand(approvedRow(), { type: "ReleaseSettled", jobId: "job_submit" as JobId, release: releaseEvidence() }, system);
+	if (typeof released === "string") throw new Error(released);
+	const paid = released.next;
+	if (paid.state.status !== "PAID") throw new Error("Not paid");
+	const store = new SqliteStore(":memory:");
+	try {
+		// The bytes a lane stored before the view named GitHub's merge commit: MERGED with no sha at all.
+		const legacy = { ...paid, state: { ...paid.state, merge: { phase: "MERGED", at: later } } } as unknown as JobRow;
+		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(legacy.id, legacy.version, JSON.stringify(legacy), wakeAt(legacy));
+		const read = await store.readJob(paid.id);
+		if (read?.state.status !== "PAID") throw new Error("Missing the paid row");
+		assert.deepEqual(read.state.merge, { phase: "MERGED", at: later, sha: null });
+		assert.deepEqual(projectJob(read, maya, new Map()).merge, { phase: "MERGED", at: later, sha: null });
+	} finally { store.close(); }
+});
+
+/** One delivery as posted. The route re-reads the resource the envelope points at, and trusts nothing else. */
+const captureEnvelope = (eventId: string, captureId = "TESTCAPTURE") => JSON.stringify({ id: eventId,
+	event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: captureId } });
+const delivered = (ports: Ports, body: string) => ingestPayPalWebhook(ports, new Request("http://localhost:4310/paypal/webhook", { method: "POST", body }));
+/** The answer every accepted delivery gets: no job, no status, no resource, no outcome. */
+const accepted = { received: true } as const;
+const refused = { received: false } as const;
+type RecordedEvent = { readonly id: string; readonly eventType: string; readonly resourceType: string; readonly resourceId: string; readonly outcome: string };
+const recordedEvents = (store: SqliteStore): readonly RecordedEvent[] => store.db.prepare("SELECT id, event_type, resource_type, resource_id, outcome FROM webhook_events ORDER BY rowid")
+	.all().map(row => ({ id: String(row.id), eventType: String(row.event_type), resourceType: String(row.resource_type),
+		resourceId: String(row.resource_id), outcome: String(row.outcome) }));
+const recordedOutcome = (store: SqliteStore, id: string): string | null => recordedEvents(store).find(row => row.id === id)?.outcome ?? null;
+/** A fixture job funded to IN_PROGRESS through the checkout edges, holding capture TESTCAPTURE. */
+async function heldFixture() {
+	const f = fixture();
+	const job = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+	const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: job.id,
+		price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+	if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+	await executeCommand(f.ports, maya, requestKey(), { type: "AcceptBid", jobId: job.id, bidId: bid.result.bid });
+	f.approve();
+	assert.equal(await confirmFunding(f.ports, maya, job.id), true);
+	const held = await f.store.readJob(job.id);
+	if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
+	return { f, jobId: job.id, held };
+}
+
+test("a capture webhook completes a funding the inline path never confirmed", async () => {
+	const f = fixture();
+	try {
+		const job = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+		const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: job.id,
+			price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		await executeCommand(f.ports, maya, requestKey(), { type: "AcceptBid", jobId: job.id, bidId: bid.result.bid });
+		// The buyer approved but the capture answer was lost, so the job waits in CAPTURING for the event.
+		await applySystemCommand(f.ports, { type: "BuyerApproved", jobId: job.id, orderId: f.capture.orderId }, null, null);
+		const waiting = await f.store.readJob(job.id);
+		assert.equal(waiting?.state.status, "OPEN");
+		assert.equal(f.captureCalls(), 0);
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const response = await delivered(f.ports, captureEnvelope("WH-CAPTURE-1"));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		const held = await f.store.readJob(job.id);
+		assert.equal(held?.state.status, "IN_PROGRESS");
+		assert.equal(held?.version, (waiting?.version ?? 0) + 1);
+		if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
+		assert.deepEqual(held.state.escrow.book, [{ kind: "HELD", cents: 42000, at: now }]);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-CAPTURE-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
+			resourceType: "capture", resourceId: "TESTCAPTURE", outcome: "applied" }]);
+	} finally { f.store.close(); }
+});
+
+test("a capture webhook is consumed once: a redelivery and a new event id change nothing", async () => {
+	const { f, jobId, held } = await heldFixture();
+	try {
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const first = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
+		// The job already holds this capture, so the edge is a no-op even on the first delivery of the fact.
+		assert.equal(first.status, 202);
+		assert.deepEqual(await first.json(), accepted);
+		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "applied");
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		const replay = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
+		assert.deepEqual(await replay.json(), accepted);
+		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "no-op, job already IN_PROGRESS");
+		const newId = await delivered(f.ports, captureEnvelope("WH-DUP-2"));
+		assert.equal(newId.status, 202);
+		assert.equal(recordedOutcome(f.store, "WH-DUP-2"), "no-op, job already IN_PROGRESS");
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		assert.equal(f.captureCalls(), 1);
+		assert.deepEqual(recordedEvents(f.store).map(row => [row.id, row.outcome]), [["WH-DUP-1", "no-op, job already IN_PROGRESS"], ["WH-DUP-2", "no-op, job already IN_PROGRESS"]]);
+	} finally { f.store.close(); }
+});
+
+test("a capture webhook on a paid job is consumed once and never touches the paid book", async () => {
+	const approved = approvedRow();
+	const harness = moneyHarness(approved);
+	try {
+		// The resource index a committed capture writes, so the route resolves the capture to this job.
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", approved.id);
+		assert.deepEqual(await applySystemCommand(harness.ports, { type: "ReleaseSettled", jobId: approved.id, release: releaseEvidence() }, null, null),
+			{ outcome: "COMMITTED", refused: null });
+		const paid = await harness.row();
+		assert.equal(paid.state.status, "PAID");
+		if (paid.state.status !== "PAID") throw new Error("Not paid");
+		harness.base.read("TESTCAPTURE", { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: harness.base.capture } });
+		const first = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
+		assert.equal(first.status, 202);
+		assert.deepEqual(await first.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "applied");
+		const replay = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
+		assert.deepEqual(await replay.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "no-op, job already PAID");
+		const newId = await delivered(harness.ports, captureEnvelope("WH-PAID-2"));
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-2"), "no-op, job already PAID");
+		const after = await harness.row();
+		assert.deepEqual(after.state.status === "PAID" ? after.state.book : null, paid.state.book);
+		assert.deepEqual(recordedEvents(harness.store).map(row => [row.id, row.outcome]), [["WH-PAID-1", "no-op, job already PAID"], ["WH-PAID-2", "no-op, job already PAID"]]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a webhook fact the row refuses is recorded as a refusal and leaves the job alone", async () => {
+	// The route re-reads a real refund on a job that never selected one. The row is the guard, so the
+	// delivery is not an "applied" that changed nothing: the envelope records the refusal, and the row's
+	// own mismatch alert is enqueued.
+	const { f, jobId, held } = await heldFixture();
+	try {
+		f.read("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } });
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-REFUND-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		assert.equal(recordedOutcome(f.store, "WH-REFUND-1"), "refused, the job did not take this settlement");
+		const alerts = f.store.db.prepare("SELECT json FROM outbox").all()
+			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect)
+			.filter(effect => effect.kind === "ALERT");
+		assert.deepEqual(alerts.map(effect => effect.kind === "ALERT" ? effect.reason : null), ["SETTLEMENT_MISMATCH"]);
+	} finally { f.store.close(); }
+});
+
+test("a refund webhook whose retained fee the row never recorded is refused", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted);
+	try {
+		const refunding = await harness.row();
+		assert.equal(refunding.state.status === "IN_PROGRESS" ? refunding.state.attempts.phase : null, "REFUND_PENDING");
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", exhausted.id);
+		harness.base.read("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED",
+			refund: refundEvidence(usd("420.00"), usd("15.16")) } });
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-FEE-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-FEE-1"), "refused, the job did not take this settlement");
+		// The selected refund stands, and no REIMBURSE is enqueued for the fee the row did not settle.
+		assert.deepEqual(await harness.row(), refunding);
+		assert.deepEqual(harness.effectKinds(), ["ALERT"]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a reimbursement webhook that does not pay the debt is refused", async () => {
+	const refunded = applyJobCommand(exhaustedRow(), { type: "RefundSettled", jobId: "job_submit" as JobId, refund: refundEvidence() }, system);
+	if (typeof refunded === "string") throw new Error(refunded);
+	const harness = moneyHarness(refunded.next);
+	try {
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(payoutBatchId, refunded.next.id);
+		harness.base.read(payoutItemId, { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED",
+			reimbursement: { batchId: payoutBatchId, itemId: payoutItemId, merchant, paid: usd("10.00"), fee: usd("0.25"), at: later } } });
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-PAYOUT-1", event_type: "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+			resource_type: "payouts_item", resource: { id: payoutItemId } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-PAYOUT-1"), "refused, the job did not take this settlement");
+		assert.deepEqual(await harness.row(), refunded.next);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refund webhook the index has not seen settles through the capture the refund names", async () => {
+	const exhausted = exhaustedRow();
+	const payees: (MerchantId | null)[] = [];
+	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => {
+		payees.push(payee);
+		// The provider read without an owning merchant still names the capture the refund carries; only
+		// the re-read under the job's merchant settles it.
+		return payee === null
+			? { kind: "HELD", detail: `Refund ${resource.id} has no owning job`, anchor: "TESTCAPTURE" as CaptureId }
+			: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } };
+	} } });
+	try {
+		// The index holds the capture this job escrowed, and no job holds the refund id before the row
+		// records it: the delivery names a resource the route's own index has never seen.
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", exhausted.id);
+		const before = await harness.row();
+		assert.equal(before.state.status === "IN_PROGRESS" ? before.state.attempts.phase : null, "REFUND_PENDING");
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-UNSEEN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// The anchored job's merchant is the payee of the re-read that settles the refund.
+		assert.deepEqual(payees, [null, merchant]);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "applied");
+		const after = await harness.row();
+		assert.equal(after.version, before.version + 1);
+		assert.equal(after.state.status, "REFUNDED");
+		if (after.state.status !== "REFUNDED") throw new Error("Not refunded");
+		assert.deepEqual(after.state.refund, refundEvidence());
+		assert.deepEqual(after.state.book, [{ kind: "HELD", cents: 42000, at: now }, { kind: "REFUND", cents: 42000, at: later }]);
+		// The fact settles once: a redelivery of the same event changes nothing.
+		assert.equal((await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-UNSEEN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }))).status, 202);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "no-op, job already REFUNDED");
+		assert.deepEqual(await harness.row(), after);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refund webhook whose anchored re-read settles another capture is refused, not dropped", async () => {
+	const exhausted = exhaustedRow();
+	// The refund's link names the capture this job holds, while the capture the re-read answers with is
+	// another one. The anchored read is a fact the holding row never made, and a person has to see it.
+	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => payee === null
+		? { kind: "HELD", detail: `Refund ${resource.id} has no owning job`, anchor: "TESTCAPTURE" as CaptureId }
+		: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED",
+			refund: { ...refundEvidence(), captureId: "CAPTURE_ANOTHER_JOB" as CaptureId } } } } });
+	try {
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", exhausted.id);
+		const before = await harness.row();
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-ANCHOR-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// The job holding the refund's capture owns the read, so its refusal is recorded, not a silent drop.
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ANCHOR-1"), "refused, the job did not take this settlement");
+		assert.deepEqual(await harness.row(), before);
+		const enqueued = harness.store.db.prepare("SELECT json FROM outbox").all()
+			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect);
+		assert.deepEqual(enqueued, [{ kind: "ALERT", jobId: exhausted.id, reason: "SETTLEMENT_MISMATCH" }]);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refund webhook naming a capture no job holds stays a no-op", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => payee === null
+		? { kind: "HELD", detail: `Refund ${resource.id} has no owning job`, anchor: "CAPTURE_NO_JOB_HOLDS" as CaptureId }
+		: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } } } });
+	try {
+		const before = await harness.row();
+		// No job holds the capture the refund names, so the refund is still not this deployment's to settle.
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-ORPHAN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ORPHAN-1"), "no-op, no job holds this resource");
+		assert.deepEqual(await harness.row(), before);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a webhook whose resource PayPal does not know is refused and no job moves", async () => {
+	const { f, jobId, held } = await heldFixture();
+	try {
+		const response = await delivered(f.ports, captureEnvelope("WH-UNKNOWN-1", "CAPTURE_PAYPAL_NEVER_HAD"));
+		// The answer is the same minimal body every delivery gets: an unauthenticated caller cannot tell
+		// a resource PayPal holds from one it does not.
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.deepEqual(await f.store.readJob(jobId), held);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-UNKNOWN-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
+			resourceType: "capture", resourceId: "CAPTURE_PAYPAL_NEVER_HAD", outcome: "refused, PayPal does not know this capture" }]);
+	} finally { f.store.close(); }
+});
+
+test("an event family the deployment does not route is recorded and dropped", async () => {
+	const f = fixture();
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-SALE-1", event_type: "PAYMENT.SALE.COMPLETED",
+			resource_type: "sale", resource: { id: "SALE1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-SALE-1", eventType: "PAYMENT.SALE.COMPLETED",
+			resourceType: "sale", resourceId: "SALE1", outcome: "no-op, event type not routed" }]);
+	} finally { f.store.close(); }
+});
+
+test("a body that is not an event envelope is refused and still recorded", async () => {
+	const f = fixture();
+	try {
+		const response = await delivered(f.ports, "not json");
+		assert.equal(response.status, 400);
+		assert.deepEqual(await response.json(), refused);
+		const rows = recordedEvents(f.store);
+		assert.equal(rows.length, 1);
+		assert.match(rows[0]?.id ?? "", /^unreadable-[0-9a-f]{16}$/);
+		assert.deepEqual(rows[0], { id: rows[0]?.id, eventType: "", resourceType: "", resourceId: "", outcome: "refused, unreadable event" });
+	} finally { f.store.close(); }
+});
+
+test("an envelope field longer than the bound is refused unreadable and still recorded", async () => {
+	const f = fixture();
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "W".repeat(201), event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource: { id: "TESTCAPTURE" } }));
+		assert.equal(response.status, 400);
+		assert.deepEqual(await response.json(), refused);
+		const rows = recordedEvents(f.store);
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0]?.outcome, "refused, unreadable event");
+		assert.match(rows[0]?.id ?? "", /^unreadable-[0-9a-f]{16}$/);
+	} finally { f.store.close(); }
+});
+
+test("the delivery log escapes an event id that carries a newline", async () => {
+	const f = fixture();
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-1\nINJECT", event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource: { id: "CAPTURE_PAYPAL_NEVER_HAD" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// One logged line, with the newline escaped rather than printed: the envelope cannot forge a
+		// second log entry.
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0]?.includes("\n"), false);
+		assert.equal(lines[0]?.startsWith('paypal webhook "WH-1\\nINJECT"'), true);
+		// The envelope row keeps the id as it arrived: only the log is escaped.
+		assert.equal(recordedOutcome(f.store, "WH-1\nINJECT"), "refused, PayPal does not know this capture");
+	} finally { console.log = original; f.store.close(); }
+});
+
+test("the delivery log escapes the line separators JSON.stringify leaves raw", async () => {
+	const f = fixture();
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-1\u2028INJECT\u2029END", event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource: { id: "CAPTURE_PAYPAL_NEVER_HAD" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// Both separators are escaped rather than printed: JSON.stringify leaves U+2028 and U+2029 raw,
+		// and both break a line.
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0]?.includes("\u2028"), false);
+		assert.equal(lines[0]?.includes("\u2029"), false);
+		assert.equal(lines[0]?.startsWith('paypal webhook "WH-1\\u2028INJECT\\u2029END"'), true);
+		// The envelope row keeps the id as it arrived: only the log is escaped.
+		assert.equal(recordedOutcome(f.store, "WH-1\u2028INJECT\u2029END"), "refused, PayPal does not know this capture");
+	} finally { console.log = original; f.store.close(); }
+});
+
+test("a delivery body is never stored: payer fields and the raw bytes stay out of the table", async () => {
+	const { f } = await heldFixture();
+	try {
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const body = JSON.stringify({ id: "WH-PII-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture",
+			resource: { id: f.capture.captureId, payer: { email_address: "payer@example.test", payer_id: "PAYER1",
+				name: { given_name: "Payer", surname: "Person" }, address: { address_line_1: "1 Payer Street", admin_area_2: "San Jose",
+					admin_area_1: "CA", postal_code: "95131", country_code: "US" } } } });
+		assert.equal((await delivered(f.ports, body)).status, 202);
+		const rows = f.store.db.prepare("SELECT * FROM webhook_events").all();
+		assert.equal(rows.length, 1);
+		assert.deepEqual({ ...rows[0] }, { id: "WH-PII-1", received_at: now, event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource_id: f.capture.captureId, outcome: "applied" });
+		// Not one payer field, and not one raw byte of the body, is in the table.
+		const stored = JSON.stringify(rows);
+		for (const secret of ["payer@example.test", "PAYER1", "Payer", "Person", "1 Payer Street", "95131", "address_line_1", "payer_id"]) {
+			assert.equal(stored.includes(secret), false, `${secret} reached the envelope table`);
+		}
+	} finally { f.store.close(); }
+});
+
+test("the webhook envelope table keeps a bounded window of deliveries", async () => {
+	// The route is unauthenticated, so the window is pinned here as literals: the newest 500 deliveries,
+	// and nothing older than 30 days.
+	const retentionRows = 500;
+	const retentionAgeMs = 30 * 86_400_000;
+	const store = new SqliteStore(":memory:");
+	try {
+		for (let index = 0; index < retentionRows + 2; index++) await store.recordWebhookEvent({ id: `WH-${index}`,
+			eventType: "PAYMENT.CAPTURE.COMPLETED", resourceType: "capture", resourceId: `C${index}`,
+			receivedAt: instant(new Date(Date.parse(now) + index * 1000).toISOString()), outcome: "applied" });
+		const count = () => Number(store.db.prepare("SELECT COUNT(*) AS n FROM webhook_events").get()!.n);
+		assert.equal(count(), retentionRows);
+		// The oldest rows are the ones that go; the newest delivery is always kept.
+		assert.equal(store.db.prepare("SELECT 1 FROM webhook_events WHERE id = 'WH-0'").get(), undefined);
+		assert.notEqual(store.db.prepare("SELECT 1 FROM webhook_events WHERE id = ?").get(`WH-${retentionRows + 1}`), undefined);
+		// An envelope older than the window ages out on the next insert instead of waiting for the cap.
+		await store.recordWebhookEvent({ id: "WH-STALE", eventType: "PAYMENT.CAPTURE.COMPLETED", resourceType: "capture",
+			resourceId: "C-STALE", receivedAt: instant(new Date(Date.parse(now) - retentionAgeMs - 1000).toISOString()), outcome: "applied" });
+		assert.equal(store.db.prepare("SELECT 1 FROM webhook_events WHERE id = 'WH-STALE'").get(), undefined);
+	} finally { store.close(); }
 });

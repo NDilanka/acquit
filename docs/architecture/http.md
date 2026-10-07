@@ -47,6 +47,10 @@ Commands the skeleton must support:
 | OPERATOR | `{ type: "PlaceBid", jobId, price: 40000, eta: 48, agent, pitch }` (price must be <= budget) |
 | CLIENT | `{ type: "AcceptBid", jobId, bidId }` |
 | CLIENT | `{ type: "CancelJob", jobId }` |
+| OPERATOR | `{ type: "Submit", jobId, sourceCommit }` |
+| CLIENT | `{ type: "Approve", jobId, mergeCommit }` |
+
+`Approve` names the commit the verifier judged, which `GET /api/jobs/:id` serves as `job.mergeCommit`. A different commit is refused `ARTIFACT_CHANGED`; a job whose review window closed is refused `REVIEW_CLOSED`; the operator who did the work is refused `NOT_OWNER`. The approval selects one release and the job enters `RELEASE_PENDING`. The API drains that release inline with a short bound, so the response usually still shows `VERIFIED` with `phase: "RELEASE_PENDING"` and the job reaches `PAID` once PayPal answers. Approving twice with one request key replays the first result; a second approval is refused `REVIEW_CLOSED`.
 
 `OpenJob` returns `PublicResult` kind `JOB`, so the new job id is `outcome.result.job.id`. The seeded House operator `house-tsfix` (agent `house-ts-fixer`) places one House bid at the budget with eta 24 right after `OpenJob` commits, so the client sees two bids once `devon-ops` bids.
 
@@ -72,7 +76,52 @@ Clients see their own jobs and every OPEN job. A query refusal is `403` or `404`
 
 When capture completes the job is `IN_PROGRESS`, `escrow: "HELD"`, and `ledger` is `[{ kind: "HELD", cents: 42000, at }]`.
 
-Webhooks are not reachable on localhost, so the skeleton relies on the return route plus `POST /api/dev/tick` (fires `Acquit.tick`, dev only). `POST /paypal/webhook` exists and calls `handlePayPalWebhook`, for later.
+Webhooks are not reachable on localhost, so the skeleton relies on the return route plus `POST /api/dev/tick` (fires `Acquit.tick`, dev only). `POST /paypal/webhook` carries the same facts for a lost answer; it is documented below.
+
+## Webhooks
+
+`POST /paypal/webhook` hands the raw body to `handlePayPalWebhook` unchanged, capped at 65536 bytes (`413 { error: "WEBHOOK_BODY_TOO_LARGE" }` above it). PayPal cannot reach localhost and its event list returned nothing in the probe, so a local delivery is `npm run ctl -- webhook replay --event <recorded id>`, which rebuilds the envelope the route recorded and reposts it, or `npm run ctl -- webhook replay --capture <id> [--new-event-id]`, which builds an envelope that names a real capture (a development control, `ACQUIT_DEV=1`).
+
+The route trusts nothing past the resource id. It parses the envelope at the boundary, re-reads that resource from PayPal, and routes the fact the read carries to the edge that owns it. Nothing in the event body is used as evidence, so a locally built envelope is a real test of the guard.
+
+| `resource_type` | `event_type` prefix | Re-read | Fact |
+|---|---|---|---|
+| `refund` | `PAYMENT.CAPTURE.REFUND` | `GET /v2/payments/refunds/<id>`, then the capture it names | `REFUND_COMPLETED` |
+| `capture` | `PAYMENT.CAPTURE.` | `GET /v2/payments/captures/<id>`, then its order when not refunded | `CAPTURE_COMPLETED` or `REFUND_COMPLETED` |
+| `referenced_payouts_item` | `PAYMENT.REFERENCED-PAYOUT` | `GET /v1/payments/referenced-payouts-items/<id>` | `RELEASE_COMPLETED` |
+| `payouts_item` | `PAYMENT.PAYOUTS-ITEM` | `GET /v1/payments/payouts-item/<id>`, then its batch | `REIMBURSEMENT_COMPLETED` |
+
+The refund family is read first because a refund event shares capture's `PAYMENT.CAPTURE.` prefix. An event family this deployment does not route is recorded and dropped with `202`.
+
+PayPal signs a delivery with its `paypal-transmission-*` headers. The probe could not verify a signature from a local lane (Appendix A), so the route does not read them: it takes only the resource id from the envelope, and the fact it commits comes from a live read of that resource with this deployment's own credentials. A forged envelope can therefore ask the route to re-read a real fact, which the delivery key and the job state turn into a no-op, and cannot invent one.
+
+The job state is the guard, not the event id. Each fact commits under its own delivery key (`webhook:<edge>:<jobId>:<anchor>`, the anchor being the capture, refund, order, or batch the fact settles), so a redelivery and the same fact under a new event id both reach the same no-op edge and change no version. `webhookOutcomeText` in `packages/core/src/effects.ts` is the one place these phrases are spelled.
+
+The route answers one minimal body to every caller: `202 { received: true }` for a delivery it recorded, and `400 { received: false }` for a body it could not read at all. The answer names no job, no status, and no resource, because the route is unauthenticated and anyone can post to it; the outcome phrase belongs to the envelope row and the API log, and `npm run ctl -- webhook replay` reads it back from there. The log escapes the event id and the provider detail, so neither can carry a newline that forges a second log line. `webhookOutcomeText` in `packages/core/src/effects.ts` is the one place the phrases are spelled.
+
+| Recorded outcome | When |
+|---|---|
+| `applied` | the re-read fact reached its edge; a fact the job already held is also `applied` and changes no version |
+| `no-op, job already <STATUS>` | the job has already moved past this fact |
+| `no-op, event type not routed` | an event family this deployment does not route |
+| `no-op, no job holds this resource` | no stored job names this resource |
+| `no-op, PayPal has not settled this resource` | the provider holds it in a state that is not a job fact |
+| `refused, PayPal does not know this capture` | the provider holds no such resource |
+| `refused, <provider reason>` | the provider refused the read |
+| `refused, unreadable event` | the body is not an event envelope |
+| `503 { error: "STORE_BUSY" }` | a transient store lock; PayPal's retry is safe |
+
+Every delivery is recorded as its canonical envelope in `webhook_events` (`id`, `received_at`, `event_type`, `resource_type`, `resource_id`, `outcome`) before the answer, keyed by PayPal's event id, or by the digest of a body that names none. The row is the latest delivery under that id, and it never holds the body: a delivery's bytes can carry payer fields, so the table keeps only the fields the route itself routes on. The table is bounded on insert, to the newest 500 deliveries and to nothing older than 30 days, because the route is unauthenticated and the row must not be a place to park data. Each envelope field is capped at 200 characters; a body that carries a longer one is `400 { received: false }`, the same answer a body that is not an envelope gets. A lane whose table predates the canonical envelope drops it on the next start and keeps the envelopes its route records from then on. A replay rebuilds the envelope from the recorded fields and reposts it, so it exercises the same re-read and the same state guard; the CLI prints the recorded phrase and the event id, and `--json` adds the rebuilt delivery and its byte count.
+
+## Settlement
+
+`Approve` (or the review window closing, or the day-21 capture-age cutoff for verified work) selects a release. The outbox pays the operator's merchant through PayPal's referenced payouts with the deterministic effect key as `PayPal-Request-Id`, re-reads the provider when an answer was lost, and applies `ReleaseSettled` with what the payout observed. The job then shows `status: "PAID"`, `escrow: "RELEASED"`, the three-line ledger (`HELD`, `RELEASED`, `FEE`), and a `receipt` with the frozen and hidden tallies and the paid amount. `GET /api/jobs/:id` serves the receipt as `job.receipt`; the merge of the verified pull request is a separate effect and `job.phase` stays `PAID` when it lands.
+
+A refund (delivery deadline, exhausted attempts, capture mismatch, or the cutoff on unverified work) shows `status: "REFUNDED"`, `escrow: "REFUNDED"`, and the two-line ledger (`HELD`, `REFUND`). PayPal keeps the capture's own fee, so the retained fee a refund reports must equal the fee the job recorded at capture. The retained fee is a treasury line, and the platform pays it back to the operator's merchant as a Standard Payout whose `sender_batch_id` is the effect key and whose merchant and cents must match the owed line. A retained fee, or a payout, that does not match is refused `SETTLEMENT_MISMATCH` and parked for a person instead of being applied. A settlement the provider has not confirmed at the day-21 cutoff raises `SETTLEMENT_UNCONFIRMED_AT_CUTOFF` instead of switching dispositions.
+
+A release or refund whose inline answer was lost settles from the webhook route's re-read of the payout item or refund, so the route is the recovery path for the same edges the outbox dispatches.
+
+The paid view carries what a lane and the page read. `job.release` is the observed release evidence: `payoutItemId` names the referenced payout item the capture paid through (`GET /v1/payments/referenced-payouts-items/<item id>`), and `captureId`, `paid`, and `at` are what that item observed. `job.merge` is the merge of the verified pull request, null until `PAID` and then `PENDING`, `MERGED` with `at` and `sha`, or `NEEDS_HUMAN` with the reason. `sha` is GitHub's merge commit, the commit that landed on the base branch, read from the merge answer or the pull's `merge_commit_sha` when the client adopts a merge that already landed; it is not `job.mergeCommit`, which names the tree the verifier judged and the client approved. A row stored before the field existed serves `sha: null`. `job.pullRequest` names the pull. `job.client` names the owning client only to that client's own session and is `null` for every other viewer, and `job.viewerCanApprove` is the API's own answer to whether this session is that client with the review awaiting its approval, so the page gates the control on ownership rather than on role (a window that has already closed is still the edge's `REVIEW_CLOSED` refusal). `job.attempts` counts what the job actually used: a settled job serves the attempts its receipt or history recorded, so a PAID job's `used` is its receipt's `attemptsUsed`.
 
 ## Development controls
 

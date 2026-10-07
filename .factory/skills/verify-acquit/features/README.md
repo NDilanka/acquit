@@ -7,6 +7,7 @@ Read this index before driving Acquit. Each entry names a user path and its obse
 - Follow Launch and Doctor in [the skill](../SKILL.md).
 - Set `ACQUIT_LANE=<n>` for every call. Never reset the user's `data/acquit.db`. The no-lane fallback requires `DATABASE_PATH=./data/verify/acquit.db`.
 - Start with the seeded users, the deployment's issue (`ACQUIT_CLIENT_REPOSITORY`, demo `maya-client/invoice-app`, issue `#12`), Devon's `ts-bugfixer`, and 30 bid credits.
+- A lane that approves and merges (feature 07) points `ACQUIT_CLIENT_REPOSITORY` at a disposable repo and resets it around each merging job: create or reset `NDilanka/invoice-app-f2-perf` with `node --env-file=<worktree>/.env /home/factory-user/repos/acquit/scratch/client-repo.mjs f2-perf`. Never approve or merge against the shared `NDilanka/invoice-app` fixture, and delete each job's work repo afterwards.
 - Use the URLs from `ctl status`. Lane n uses web port `5173 + 10n` and API port `4310 + 10n`.
 - Run app slots within the cap printed by `scripts/lanes.mjs start <count>`. Browser memory is measured separately; keep at most two browser sessions and respect the printed `browserCap`. App-only waves may run three or more slots.
 - Use the isolated headless namespace and session `verify-acquit-lane-<n>`.
@@ -43,3 +44,6 @@ A drive of one feature or entry point does not verify the other entries. Report 
 - [03. Bid on a job](03-bid-job.md) covers job-page and operator-dashboard bidding and the credit debit.
 - [04. Post a job, accept a bid, and fund escrow](04-fund-escrow.md) covers real sandbox checkout and optional buyer approval.
 - [05. Cancel an open job](05-cancel-job.md) covers confirmation, closed state, and returned bid credits.
+- [06. Submit work and get it verified](06-submit-verify.md) covers the CLI submission, the frozen and hidden suites, the pull request, and the review window.
+- [07. Approve the verified work and release the escrow](07-approve-release.md) covers the ownership gate, the referenced payout, the receipt, the merge, and the ledger.
+- [08. Refund the escrow](08-refund.md) covers the deadline, the exhausted attempts, the capture cutoff, and the operator's fee reimbursement.

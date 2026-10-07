@@ -1,17 +1,17 @@
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
-import { confirmFunding, executeCommand, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
+import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
-import type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
+import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobProjection, JobStatus, Receipt, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
-import type { PayPalConfig } from "./paypal.ts";
+import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
 import { unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
@@ -82,7 +82,11 @@ export interface JobView {
 	readonly budget: UsdCents;
 	readonly deliveryEndsAt: Instant;
 	readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
+	/** The client that owns the job, served to that client's own session and null to every other viewer. */
+	readonly client: ClientId | null;
 	readonly lockedTo: OperatorId | null;
+	/** The owning client's own gate: true exactly when this viewer is that client and the review is open. */
+	readonly viewerCanApprove: boolean;
 	readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
 	/** Set while FUNDING with an order the buyer has not approved yet. */
 	readonly approveUrl: string | null;
@@ -90,6 +94,12 @@ export interface JobView {
 	readonly attempts: { readonly used: number; readonly left: number; readonly last: "REJECTED" | "VERIFIED" | null; readonly reasons: readonly string[] };
 	readonly reviewEndsAt: Instant | null;
 	readonly pullRequest: number | null;
+	/** The tree the verifier judged. Approve names it, so a moved head cannot be approved by mistake. */
+	readonly mergeCommit: CommitSha | null;
+	/** The merge of the verified pull request, once the job is PAID: GitHub's commit, once it landed. */
+	readonly merge: MergeProgress | null;
+	/** What the release observed: the referenced payout item that paid the operator. Served on a PAID job. */
+	readonly release: ReleaseEvidence | null;
 	readonly receipt: Receipt | null;
 }
 
@@ -133,17 +143,23 @@ export type AcquitConfig = {
 	readonly github: { readonly appId: string; readonly privateKey: string; readonly organization: string; readonly apiBase?: string };
 	/** The deployment injects the CI adapter. Without one, a start refuses by name and no callback is accepted. */
 	readonly verifierPort?: VerifierPort;
+	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
+	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
-	const store = new SqliteStore(config.databaseUrl, clock);
-	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	const store = new SqliteStore(config.databaseUrl);
+	const github = createGitHubApp(config.github);
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		clientRepository: config.clientRepository ?? DEMO_CLIENT_REPOSITORY,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
-		github: { merge: unimplemented }, alerts: { raise: unimplemented },
-		workRepo: createGitHubApp(config.github),
+		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,
+			pullRequest: effect.pullRequest, mergeCommit: effect.mergeCommit }, requestId) },
+		// An alert nobody receives is lost. Without an operator-supplied sink it goes to the process log,
+		// where the deployment's own log handling is the record.
+		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
+		workRepo: github,
 		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
@@ -181,7 +197,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 				default: throw new Error("not implemented");
 			}
 		},
-		handlePayPalWebhook: async () => Response.json({ error: "NOT_IMPLEMENTED", detail: "Signed webhook ingestion is outside the local skeleton; use the checkout return route." }, { status: 501 }),
+		handlePayPalWebhook: request => ingestPayPalWebhook(ports, request),
 		handleVerifierCallback: request => ingestVerifierCallback(ports, request),
 		tick: () => {
 			if (!ticking) ticking = (async () => {

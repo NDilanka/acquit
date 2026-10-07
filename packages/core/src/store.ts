@@ -5,20 +5,25 @@ import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, Recorde
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
-import type { JobRow } from "./job.ts";
+import type { JobRow, JobState } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
-import type { AgentId, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
+import type { AgentId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
-import type { Clock } from "./acquit.ts";
 
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 	const db = new DatabaseSync(path);
+	// The lock guard goes on before the first write. The migration below drops a table, and a second
+	// process writing the same lane would fail this open with "database is locked" without it.
+	db.exec("PRAGMA busy_timeout = 5000");
+	// A lane created before the canonical envelope holds raw bodies, payer fields included. Drop that
+	// table rather than migrate the bytes: the envelope it should have kept is rebuildable from PayPal.
+	const columns = new Set(db.prepare("SELECT name FROM pragma_table_info('webhook_events')").all().map(row => String(row.name)));
+	if (columns.has("body")) db.exec("DROP TABLE webhook_events");
 	db.exec(`
 		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 5000;
 		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 		INSERT OR IGNORE INTO schema_version VALUES (1);
 		CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, version INTEGER NOT NULL, json TEXT NOT NULL, wake_at TEXT);
@@ -31,6 +36,7 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE INDEX IF NOT EXISTS outbox_due ON outbox(due_at);
 		CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, job_id TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY);
+		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, handle TEXT NOT NULL, expires_at TEXT NOT NULL);
 	`);
 	return db;
@@ -50,11 +56,17 @@ export function isStoreBusy(error: unknown): boolean {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) } };
+	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) }, state: storedMerge(row.state) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
 	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
 	return { ...parsed, state: { ...parsed.state, attempts: { ...parsed.state.attempts, failure } } };
+}
+/** A paid row stored before the merge carried GitHub's commit holds MERGED with no sha. This read types that absence. */
+function storedMerge(state: JobState): JobState {
+	if (state.status !== "PAID" || state.merge.phase !== "MERGED") return state;
+	const merge = state.merge as { readonly at: Instant; readonly sha?: CommitSha | null };
+	return { ...state, merge: { phase: "MERGED", at: merge.at, sha: merge.sha ?? null } };
 }
 /**
  * A row written before a failure carried its name stored one `reason` string. Split it here, at the
@@ -77,8 +89,7 @@ function due(state: OutboxState): string | null {
 }
 export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
-	private readonly clock: Clock;
-	constructor(path: string, clock: Clock = { now: () => instant(new Date().toISOString()) }) { this.clock = clock; this.db = openDatabase(path); }
+	constructor(path: string) { this.db = openDatabase(path); }
 	async readJob(id: JobId): Promise<JobRow | null> { const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)); return row ? storedJob(row) : null; }
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
@@ -103,6 +114,21 @@ export class SqliteStore implements Store {
 	async jobForResource(resource: string): Promise<JobId | null> {
 		const row = this.db.prepare("SELECT job_id FROM resources WHERE id = ?").get(resource);
 		return row ? String(row.job_id) as JobId : null;
+	}
+	/**
+	 * The canonical envelope of one delivery, keyed by PayPal's event id. The row keeps the fields of the
+	 * latest delivery under that id, never the body. The route is unauthenticated, so the table is
+	 * bounded on insert: the newest deliveries by receipt time, and nothing older than the window.
+	 */
+	async recordWebhookEvent(event: WebhookEventRow): Promise<void> {
+		this.db.prepare(`INSERT INTO webhook_events (id, received_at, event_type, resource_type, resource_id, outcome) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET received_at = excluded.received_at, event_type = excluded.event_type,
+				resource_type = excluded.resource_type, resource_id = excluded.resource_id, outcome = excluded.outcome`)
+			.run(event.id, event.receivedAt, event.eventType, event.resourceType, event.resourceId, event.outcome);
+		this.db.prepare("DELETE FROM webhook_events WHERE received_at < ?")
+			.run(instant(new Date(Date.parse(event.receivedAt) - WEBHOOK_EVENT_MAX_AGE_MS).toISOString()));
+		this.db.prepare("DELETE FROM webhook_events WHERE id NOT IN (SELECT id FROM webhook_events ORDER BY received_at DESC, rowid DESC LIMIT ?)")
+			.run(WEBHOOK_EVENT_ROWS);
 	}
 	async dueJobs(now: Instant): Promise<readonly { jobId: JobId; wakeAt: Instant }[]> {
 		return this.db.prepare("SELECT id, wake_at FROM jobs WHERE wake_at <= ?").all(now).map(row => ({ jobId: String(row.id) as JobId, wakeAt: String(row.wake_at) as Instant }));
@@ -136,7 +162,7 @@ export class SqliteStore implements Store {
 				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
 			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
-			if (change.acknowledge) this.updateEffect(change.acknowledge, { kind: "CONFIRMED", at: this.clock.now() });
+			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
 			if (change.delivery) this.db.prepare("INSERT INTO deliveries VALUES (?)").run(change.delivery);
 			this.db.exec("COMMIT");
@@ -163,6 +189,21 @@ export class SqliteStore implements Store {
 	close(): void { this.db.close(); }
 }
 
+/** One delivery the webhook route received, as its canonical envelope. The outcome is the phrase recorded for it. */
+export type WebhookEventRow = {
+	/** PayPal's event id, or the digest of a body that names none. */
+	readonly id: string;
+	readonly receivedAt: Instant;
+	readonly eventType: string;
+	readonly resourceType: string;
+	readonly resourceId: string;
+	readonly outcome: string;
+};
+
+/** The window of webhook envelopes one lane keeps: the newest deliveries by receipt time, and nothing older than a month. */
+const WEBHOOK_EVENT_ROWS = 500;
+const WEBHOOK_EVENT_MAX_AGE_MS = 30 * 86_400_000;
+
 function jobResources(row: JobRow): string[] {
 	const state = row.state;
 	if (state.status === "OPEN" && state.phase.kind === "FUNDING") {
@@ -171,5 +212,12 @@ function jobResources(row: JobRow): string[] {
 		if (checkout.phase === "REFUND_PENDING") return [checkout.escrow.capture.orderId, checkout.escrow.capture.captureId];
 	}
 	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return [state.escrow.capture.orderId, state.escrow.capture.captureId];
+	// A refunded row stays the index for the refund it recorded and for the reimbursement batches it paid,
+	// so a refund or payout webhook resolves to this job. An earlier state's rows are kept: nothing deletes them.
+	if (state.status === "REFUNDED") {
+		const ids: (RefundId | PayoutBatchId | null)[] = [state.refund.refundId,
+			...state.treasury.flatMap(entry => entry.kind === "PAYOUT_FEE_PAID" ? [entry.batchId] : [])];
+		return ids.filter((id): id is RefundId | PayoutBatchId => id !== null);
+	}
 	return [];
 }

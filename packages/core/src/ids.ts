@@ -23,6 +23,7 @@ export type MerchantId = Branded<string, "PayPalMerchantId">;
 export type OrderId = Branded<string, "PayPalOrderId">;
 export type CaptureId = Branded<string, "PayPalCaptureId">;
 export type PayoutItemId = Branded<string, "PayPalPayoutItemId">;
+export type PayoutBatchId = Branded<string, "PayPalPayoutBatchId">;
 export type RefundId = Branded<string, "PayPalRefundId">;
 
 export function parseJobId(raw: string): JobId {
@@ -33,6 +34,11 @@ export function parseJobId(raw: string): JobId {
 export function parseBidId(raw: string): BidId {
 	if (!/^bid_[A-Za-z0-9_-]{4,80}$/.test(raw)) throw new Error("Invalid bid id");
 	return raw as BidId;
+}
+
+export function parseReceiptId(raw: string): ReceiptId {
+	if (!/^rcpt_[A-Za-z0-9_-]{4,80}$/.test(raw)) throw new Error("Invalid receipt id");
+	return raw as ReceiptId;
 }
 
 export function parseRequestKey(raw: string): RequestKey {

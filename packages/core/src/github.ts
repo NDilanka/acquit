@@ -100,6 +100,30 @@ export interface PublisherPort {
 	publishVerified(request: PublishRequest, requestId: string): Promise<PublishedPullRequest>;
 }
 
+export type MergeRequest = {
+	readonly jobId: JobId;
+	/** The repository that holds the pull request: the client's, as the contract froze it. */
+	readonly repository: string;
+	readonly pullRequest: number;
+	/** The tree the verifier judged. The merge names it, so a moved head is refused instead of merged. */
+	readonly mergeCommit: CommitSha;
+};
+
+/** What a merge answers: GitHub's commit on the base branch when it merged, and why it did not. */
+export type MergeOutcome =
+	| { readonly outcome: "MERGED"; readonly sha: CommitSha }
+	| { readonly outcome: "UNKNOWN" }
+	| { readonly outcome: "CONFLICT" };
+
+/** What the money path's MERGE effect needs. */
+export interface MergerPort {
+	/**
+	 * Idempotent per pull request: a retry reads the pull and adopts a merge that already landed. CONFLICT
+	 * is a merge this client will not make, which a person resolves; a transient refusal is thrown.
+	 */
+	merge(request: MergeRequest, requestId: string): Promise<MergeOutcome>;
+}
+
 /**
  * What a caller outside this client's own operations needs: one installation token per owner, minted
  * with the same bounded, redacted, rate-limit-aware calls. The verifier's git fetch is that caller.
@@ -108,7 +132,7 @@ export interface TokenPort {
 	installationToken(owner: string): Promise<string>;
 }
 
-export interface GitHubAppPort extends WorkRepoPort, PublisherPort, TokenPort {}
+export interface GitHubAppPort extends WorkRepoPort, PublisherPort, MergerPort, TokenPort {}
 
 /** Boundary parse. A partial config is not an error here; it selects the fail-fast adapter. */
 export function parseGitHubAppConfig(input: GitHubAppConfigInput | undefined): GitHubAppConfig | null {
@@ -133,7 +157,7 @@ export function missingGitHubNames(input: GitHubAppConfigInput | undefined): rea
 /** Every call refuses immediately. It never starts a request it cannot authenticate. */
 export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({}).join(", ")}.`): GitHubAppPort {
 	const fail = (): never => { throw new GitHubAppNotConfigured(detail); };
-	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), installationToken: async () => fail() };
+	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), merge: async () => fail(), installationToken: async () => fail() };
 }
 
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
@@ -260,13 +284,22 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 	/** Server text, bounded and redacted before it is copied anywhere. */
 	const said = (body: unknown): string => boundedDetail(textOf(body, "message") ?? "");
-	/** GitHub's wording for a ref write naming an object the repository does not have. */
-	const saysObjectAbsent = (body: unknown): boolean => {
+	/** GitHub's refusal text: the top-level message plus every entry's message. */
+	const refusalText = (body: unknown): string => {
 		const messages = [textOf(body, "message") ?? ""];
 		const errors = body !== null && typeof body === "object" ? (body as { errors?: unknown }).errors : undefined;
 		if (Array.isArray(errors)) for (const item of errors) messages.push(textOf(item, "message") ?? "");
-		return /object does not exist/i.test(messages.join(" "));
+		return messages.join(" ");
 	};
+	/** GitHub's wording for a ref write naming an object the repository does not have. */
+	const saysObjectAbsent = (body: unknown): boolean => /object does not exist/i.test(refusalText(body));
+	/**
+	 * The two texts a create answers while a fork's object has not reached the client repository yet:
+	 * "Object does not exist", and "Reference update failed" (measured live: the identical POST answered
+	 * 201 about two minutes later). Only the create reads the second text; the branch move keeps the
+	 * narrower match, because a move refused for any other reason is a refusal, never a fork fallback.
+	 */
+	const saysCreateNotYetVisible = (body: unknown): boolean => saysObjectAbsent(body) || /reference update failed/i.test(refusalText(body));
 
 	const refusal = (status: number, body: unknown, headers: Headers, spec: Call): GitHubAppError => {
 		const detail = `${spec.method} ${spec.path} answered ${status}${said(body) ? `: ${said(body)}` : "."}`;
@@ -389,11 +422,11 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const existing = await readRef(repository, branch, token);
 		if (existing === commit) return;
 		if (existing !== null) throw new GitHubAppError("GITHUB_REF_CONFLICT", `${repository} has ${branch} at ${existing}, not ${commit}.`, { status: answer.status });
-		// As in the branch move above: only "Object does not exist" means this repository cannot carry
-		// the commit and the fork can. Any other 409/422 is a refusal on another rule, and reading it as
-		// an absent object would burn the convergence budget and then ask the fork for a pull request
-		// GitHub refuses for that other reason. GitHub's own text is the refusal.
-		if (saysObjectAbsent(answer.body)) {
+		// As in the branch move above: only the two texts a not-yet-propagated object produces mean this
+		// repository cannot carry the commit and the fork can. Any other 409/422 is a refusal on another
+		// rule, and reading it as an absent object would burn the convergence budget and then ask the fork
+		// for a pull request GitHub refuses for that other reason. GitHub's own text is the refusal.
+		if (saysCreateNotYetVisible(answer.body)) {
 			throw new GitHubAppError("GITHUB_COMMIT_ABSENT", `${repository} cannot take ${branch} at ${commit}: ${said(answer.body) || "the object is not in this repository"}.`, { status: answer.status });
 		}
 		throw refusal(answer.status, answer.body, answer.headers, spec);
@@ -570,14 +603,61 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	// The port carries a request id. Every operation above is idempotent on the repository, ref, pull,
 	// and the check run's external id, which is what GitHub gives this client to reconcile with, so
 	// nothing else is needed.
+	/**
+	 * Merges the pull request the verifier opened. The pull is read first, so a merge that already landed
+	 * is adopted rather than attempted again, and the merge names the judged commit so a head that moved
+	 * is refused by GitHub instead of merged. The answer carries the commit the merge landed on either way.
+	 */
+	const merge = async (request: MergeRequest): Promise<MergeOutcome> => {
+		const client = splitRepository(request.repository);
+		const commit = checkedCommit(request.mergeCommit);
+		if (!Number.isSafeInteger(request.pullRequest) || request.pullRequest <= 0) invalid("The pull request", request.pullRequest);
+		const token = await tokenFor(client.owner);
+		/** The pull's immutable head, and the commit GitHub made on the base branch when it merged.
+		 * `merge_commit_sha` is the commit created with merge_method "merge", so it is never equal to the
+		 * judged head the merge named. */
+		const read = async (): Promise<{ readonly merged: boolean; readonly head: string | null; readonly state: string | null; readonly mergeCommit: string | null }> => {
+			const answer = await call(`Bearer ${token}`, { method: "GET", path: `/repos/${request.repository}/pulls/${request.pullRequest}`,
+				allow: [200], permission: "pull_requests: read" });
+			const body = answer.body as { readonly merged?: unknown; readonly head?: unknown; readonly state?: unknown; readonly merge_commit_sha?: unknown } | null;
+			return { merged: body?.merged === true, head: textOf(body?.head, "sha"), state: textOf(body, "state"),
+				mergeCommit: textOf(body, "merge_commit_sha") };
+		};
+		/** The commit the merge landed on. An answer that names none is a response this client will not read as MERGED. */
+		const landedOn = (named: string | null): CommitSha => {
+			if (named === null || !COMMIT_SHA.test(named)) throw new GitHubAppError("GITHUB_RESPONSE_INVALID",
+				"GitHub answered a landed merge without naming the commit it made.");
+			return named as CommitSha;
+		};
+		const settled = (pull: { readonly merged: boolean; readonly head: string | null; readonly mergeCommit: string | null }): MergeOutcome | null =>
+			pull.merged ? pull.head === commit ? { outcome: "MERGED", sha: landedOn(pull.mergeCommit) } : { outcome: "CONFLICT" } : null;
+		const before = await read();
+		const already = settled(before);
+		if (already !== null) return already;
+		if (before.state !== "open") return { outcome: "CONFLICT" };
+		try {
+			const answer = await call(`Bearer ${token}`, { method: "PUT", path: `/repos/${request.repository}/pulls/${request.pullRequest}/merge`,
+				allow: [200], permission: "contents: write", body: { sha: commit, merge_method: "merge" } });
+			return { outcome: "MERGED", sha: landedOn(textOf(answer.body, "sha")) };
+		} catch (error) {
+			// GitHub refuses a merge it will not make. A concurrent writer may have merged it first, so the
+			// pull is read once more; anything else that is not a refusal of this merge stays transient.
+			const after = await read().catch(() => null);
+			const raced = after === null ? null : settled(after);
+			if (raced !== null) return raced;
+			if (error instanceof GitHubAppError && [405, 409, 422].includes(error.status ?? 0)) return { outcome: "CONFLICT" };
+			throw error;
+		}
+	};
 	return {
 		async createWorkRepo(request) { return createWorkRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
+		async merge(request) { return merge(request); },
 		async installationToken(owner) { return tokenFor(checkedOwner(owner)); },
 	};
 }
 
-export type GitHubCall = { readonly kind: "CREATE_WORK_REPO" | "PUBLISH_VERIFIED"; readonly jobId: JobId; readonly requestId: string };
+export type GitHubCall = { readonly kind: "CREATE_WORK_REPO" | "PUBLISH_VERIFIED" | "MERGE"; readonly jobId: JobId; readonly requestId: string };
 
 export type FakeGitHubApp = GitHubAppPort & {
 	readonly calls: readonly GitHubCall[];
@@ -613,6 +693,15 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 				mergeCommit: request.sourceCommit, checkRunUrl: `https://github.com/${request.repository}/runs/${request.jobId}` };
 			pullRequests.set(request.jobId, published);
 			return published;
+		},
+		async merge(request, requestId) {
+			calls.push({ kind: "MERGE", jobId: request.jobId, requestId });
+			const published = pullRequests.get(request.jobId);
+			if (!published) return { outcome: "CONFLICT" };
+			// The same rule the real client applies: only the judged tree merges, and only once. The fake
+			// fast-forwards the base branch, so the commit it lands on is the published one.
+			if (published.pullRequest !== request.pullRequest) return { outcome: "CONFLICT" };
+			return published.mergeCommit === request.mergeCommit ? { outcome: "MERGED", sha: published.mergeCommit } : { outcome: "CONFLICT" };
 		},
 	};
 }

@@ -1,4 +1,4 @@
-import type { LedgerLine } from "./api-types";
+import type { LedgerLine, MergeProgress, ReleaseEvidence } from "./api-types";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -37,21 +37,50 @@ export function eta(hours: number): string {
   return hours === 1 ? "1 hour" : `${hours} hours`;
 }
 
-/** `price` is the accepted bid price, when known, so the HELD split is exact rather than inferred. */
-export function ledgerNote(line: LedgerLine, price: number | null): string {
+const bare = (cents: number) => usd(cents).replace(" USD", "");
+
+/** `locked` is the accepted bid, when known, so the HELD split is exact rather than inferred. */
+export function ledgerNote(line: LedgerLine, locked: { readonly handle: string; readonly price: number } | null): string {
   switch (line.kind) {
     case "HELD": {
-      const job = price ?? Math.round((line.cents * 100) / 105);
-      const fee = line.cents - job;
-      return `client payment (${usd(job).replace(" USD", "")} job + ${usd(fee).replace(" USD", "")} escrow fee)`;
+      const job = locked?.price ?? Math.round((line.cents * 100) / 105);
+      return `client payment (${bare(job)} job + ${bare(line.cents - job)} escrow fee)`;
     }
     case "RELEASED":
-      return "paid to operator";
+      return `payout to ${locked?.handle ?? "operator"}`;
     case "FEE":
-      return `fees (${usd(line.processor).replace(" USD", "")} processor + ${usd(line.acquit).replace(" USD", "")} Acquit)`;
+      return `fees (${bare(line.processor)} PayPal processing + ${bare(line.acquit)} Acquit)`;
     case "REFUND":
       return "refunded to client";
   }
+}
+
+const mergeReasons: Record<string, string> = {
+  GITHUB_MERGE_CONFLICT: "GitHub refused the merge",
+};
+
+/** `approved` is the judged tree the client approved; GitHub's merge commit arrives as `merge.sha`. */
+export function mergeNote(merge: MergeProgress, pullRequest: number | null, approved: string | null): string {
+  switch (merge.phase) {
+    case "PENDING":
+      return "Merge pending";
+    case "MERGED": {
+      const what = [
+        pullRequest !== null && `pull request #${pullRequest}`,
+        merge.sha && `merge commit ${merge.sha.slice(0, 7)}`,
+        approved && `approved ${approved.slice(0, 7)}`,
+      ].filter(Boolean);
+      return `Merged ${utc(merge.at)}${what.length ? `: ${what.join(", ")}` : ""}`;
+    }
+    case "NEEDS_HUMAN": {
+      const known = mergeReasons[merge.reason];
+      return `Needs a person: ${known ? `${known} (${merge.reason})` : merge.reason}`;
+    }
+  }
+}
+
+export function releaseNote(release: ReleaseEvidence): string {
+  return `Payout item ${release.payoutItemId}, capture ${release.captureId}`;
 }
 
 const reasons: Record<string, string> = {

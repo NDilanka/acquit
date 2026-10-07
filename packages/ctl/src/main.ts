@@ -21,6 +21,7 @@ const args = process.argv.slice(2);
 const name = args[0] ?? "";
 if (name === "clock" && args[1] === "advance" && args[2] && !args[2].startsWith("--")) args.splice(1, 2, "--duration", args[2]);
 if (name === "fund-mode" && args[1] && !args[1].startsWith("--")) args.splice(1, 1, "--mode", args[1]);
+if (name === "webhook" && args[1] === "replay") args.splice(1, 1);
 try {
 	if (args.length === 0 || (args.length === 1 && name === "--help")) {
 		process.stdout.write(help());
@@ -44,7 +45,8 @@ try {
 				throw new CliError("MISSING_ARGUMENT", `--${flag.name} is required.`, `Run npm run -s ctl -- ${command.examples[0]}. See npm run -s ctl -- ${name} --help.`, 2);
 			}
 			const data = await command.run(parsed, context());
-			process.stdout.write(command.name === "ledger" && !parsed.json ? String(data.text) : JSON.stringify({ ok: true, command: name, ...(parsed["dry-run"] ? { dryRun: true } : {}), data }) + "\n");
+			// A command that answers with operator text prints it alone unless --json asks for the envelope.
+			process.stdout.write(data.text !== undefined && !parsed.json ? String(data.text) : JSON.stringify({ ok: true, command: name, ...(parsed["dry-run"] ? { dryRun: true } : {}), data }) + "\n");
 		}
 	}
 } catch (error) {

@@ -8,16 +8,18 @@ import { creditWeek, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
-import { applyJobCommand, projectJob, TERMS, wakeAt } from "./job.ts";
-import type { JobCommand, JobEffect, JobRow, Loaded, SystemJobCommand } from "./job.ts";
+import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
+import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
-import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
+import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
+import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
-import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome } from "./paypal.ts";
+import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookEnvelope, WebhookResourceKind } from "./paypal.ts";
 import { frozenDefinition, ISSUE } from "./seed-data.ts";
 import { isStoreBusy } from "./store.ts";
+import type { WebhookEventRow } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
 
 export type Effect = JobEffect | OperatorEffect;
@@ -26,9 +28,9 @@ export type Effect = JobEffect | OperatorEffect;
 export type OperationKey = Branded<string, "OperationKey">;
 
 export function operationKey(effect: Effect): OperationKey {
-	// TODO CREATE_ORDER and CAPTURE use (jobId, kind, round). START_VERIFIER uses (jobId, kind, run).
-	// TODO RELEASE, REFUND, MERGE use (jobId, kind). One release and one refund key per job, ever.
-	// TODO PAYPAL_ONBOARD uses (operator, kind). ALERT uses (jobId, kind, reason).
+	// CREATE_ORDER and CAPTURE use (jobId, kind, round). START_VERIFIER uses (jobId, kind, run).
+	// RELEASE, REFUND, REIMBURSE, and MERGE use (jobId, kind). One release and one refund key per job, ever.
+	// PAYPAL_ONBOARD uses (operator, kind). ALERT uses (jobId, kind, reason).
 	const owner = "jobId" in effect ? effect.jobId : effect.operator;
 	const round = "round" in effect ? effect.round : effect.kind === "START_VERIFIER" ? effect.attempt.run : effect.kind === "ALERT" ? effect.reason : "";
 	// PayPal's request-id has a 38-character limit. This stable key is the same
@@ -47,6 +49,7 @@ export function toPayPalCall(effect: Effect): PayPalCall | null {
 		case "CAPTURE": return { kind: effect.kind, orderId: effect.orderId, payee: effect.payee };
 		case "RELEASE": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee };
 		case "REFUND": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee, amount: effect.amount };
+		case "REIMBURSE": return { kind: effect.kind, merchant: effect.merchant, amount: effect.amount };
 		case "PAYPAL_ONBOARD": return { kind: "ONBOARD", operator: effect.operator };
 		default: return null;
 	}
@@ -57,6 +60,9 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 	switch (observation.kind) {
 		case "ORDER_APPROVED": return { type: "BuyerApproved", jobId, orderId: observation.orderId };
 		case "CAPTURE_COMPLETED": return { type: "CaptureCompleted", jobId, capture: observation.capture };
+		case "RELEASE_COMPLETED": return { type: "ReleaseSettled", jobId, release: observation.release };
+		case "REFUND_COMPLETED": return { type: "RefundSettled", jobId, refund: observation.refund };
+		case "REIMBURSEMENT_COMPLETED": return { type: "ReimbursementSettled", jobId, reimbursement: observation.reimbursement };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
 }
@@ -90,7 +96,12 @@ export type AtomicCommit = {
 	readonly operator: { readonly expectedVersion: Version | null; readonly row: OperatorRow; readonly agent: Agent | null } | null;
 	readonly credits: readonly { readonly expectedVersion: Version; readonly account: CreditAccount }[];
 	readonly outbox: readonly OutboxRow[];
-	readonly acknowledge: OperationKey | null;
+	/**
+	 * The leased effect this write settles, in the state the write leaves it in. A plan that refused the
+	 * observation parks it NEEDS_HUMAN here, in the same write, so no crash can leave a refused settlement
+	 * acknowledged CONFIRMED with the job unmoved.
+	 */
+	readonly settlement: { readonly key: OperationKey; readonly state: OutboxState } | null;
 	readonly request: RecordedRequest | null;
 	readonly delivery: string | null;
 };
@@ -107,6 +118,7 @@ export interface Store {
 	readRequest(actor: string, key: RequestKey): Promise<RecordedRequest | null>;
 	finishRequest(request: RecordedRequest): Promise<void>;
 	jobForResource(resource: string): Promise<JobId | null>;
+	recordWebhookEvent(event: WebhookEventRow): Promise<void>;
 	dueJobs(now: Instant): Promise<readonly { readonly jobId: JobId; readonly wakeAt: Instant }[]>;
 	commit(change: AtomicCommit): Promise<"COMMITTED" | "VERSION_CONFLICT" | "REQUEST_REPLAY" | "DELIVERY_REPLAY">;
 	leaseEffect(now: Instant, until: Instant, key?: OperationKey): Promise<OutboxRow | null>;
@@ -123,7 +135,8 @@ export type Ports = {
 	readonly verifier: VerifierPort;
 	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
 	readonly workRepo?: WorkRepoPort;
-	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<"MERGED" | "UNKNOWN" | "CONFLICT"> };
+	/** The merge of the verified pull request. Its answer carries the commit GitHub landed it on. */
+	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<MergeOutcome> };
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	readonly clock: { now(): Instant };
 };
@@ -141,7 +154,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const previous = await ports.store.readRequest(actorKey, key);
 		if (previous) return previous.payloadDigest === payloadDigest ? { kind: "REPLAY", result: previous.result }
 			: { kind: "DENIED", reason: "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" };
-		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit"].includes(command.type)) throw new Error("not implemented");
+		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit", "Approve"].includes(command.type)) throw new Error("not implemented");
 		const row = "jobId" in command ? await ports.store.readJob(command.jobId) : null;
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
@@ -177,7 +190,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const committed = await ports.store.commit({
 			job: { expectedVersion: row?.version ?? null, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
-			outbox: plan.effects.map(effect => outboxRow(effect, now)), acknowledge: null, delivery: null,
+			outbox: plan.effects.map(effect => outboxRow(effect, now)), settlement: null, delivery: null,
 			request: { actor: actorKey, key, payloadDigest, result },
 		});
 		if (committed !== "COMMITTED") continue;
@@ -193,7 +206,22 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 	return { kind: "DENIED", reason: "BUSY" };
 }
 
-export async function applySystemCommand(ports: Ports, command: JobCommand, acknowledge: OperationKey | null, delivery: string | null): Promise<void> {
+/** What one system commit did, and the plan's own word when it refused the observation it was given. */
+export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null };
+
+/**
+ * The leased effect a system commit settles, and the bounded provider answer its row shows if the plan
+ * refused the observation that dispatched it. The plan's own word decides the disposition: applied is
+ * CONFIRMED, refused is NEEDS_HUMAN under the plan's reason with this answer.
+ */
+export type EffectSettlement = { readonly key: OperationKey; readonly detail?: string };
+
+function settlementOf(settlement: EffectSettlement, refused: Refusal | null, now: Instant): OutboxState {
+	return refused === null ? { kind: "CONFIRMED", at: now }
+		: { kind: "NEEDS_HUMAN", reason: refused, detail: settlement.detail };
+}
+
+export async function applySystemCommand(ports: Ports, command: JobCommand, settlement: EffectSettlement | null, delivery: string | null): Promise<SystemCommit> {
 	if (!("jobId" in command)) throw new Error("System command requires job");
 	for (let attempt = 0; attempt < 5; attempt++) {
 		const row = await ports.store.readJob(command.jobId);
@@ -209,34 +237,58 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, ackn
 		if (typeof plan === "string") throw new Error(`System transition refused: ${plan}`);
 		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
-			outbox: plan.effects.map(effect => outboxRow(effect, now)), acknowledge, request: null, delivery });
-		if (committed !== "VERSION_CONFLICT") return;
+			outbox: plan.effects.map(effect => outboxRow(effect, now)),
+			settlement: settlement === null ? null : { key: settlement.key, state: settlementOf(settlement, plan.refused ?? null, now) },
+			request: null, delivery });
+		if (committed === "COMMITTED" || committed === "DELIVERY_REPLAY") {
+			return { outcome: committed, refused: committed === "COMMITTED" ? plan.refused ?? null : null };
+		}
 	}
 	throw new Error("System command busy");
 }
 
 export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"IDLE" | "WORKED"> {
-	// TODO Lease one row. For a row that was LEASED or UNCERTAIN before, reconcile first.
-	// TODO dispatch only when reconcile says NOT_FOUND. CONFIRMED feeds the observation, with acknowledge, in one commit.
-	// TODO UNKNOWN or PENDING becomes UNCERTAIN with a backoff. It never selects another disposition.
-	// TODO PERMANENT_FAILURE on CREATE_ORDER or CAPTURE feeds FundingFailed. On RELEASE or REFUND it is NEEDS_HUMAN.
+	// Lease one row. For a row that was LEASED or UNCERTAIN before, reconcile first; dispatch only when
+	// reconcile says NOT_FOUND. CONFIRMED feeds the observation, with the effect's settlement, in one commit.
+	// UNKNOWN or PENDING becomes UNCERTAIN with a backoff. It never selects another disposition.
+	// PERMANENT_FAILURE on CREATE_ORDER or CAPTURE feeds FundingFailed. On a settlement it parks for a person.
 	const now = ports.clock.now();
 	const row = await ports.store.leaseEffect(now, instant(new Date(Date.parse(now) + 120_000).toISOString()), key);
 	if (!row) return "IDLE";
 	const effect = row.effect;
 	if (effect.kind === "START_VERIFIER") return dispatchVerifierStart(ports, row.key, effect, now);
 	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now, row.state);
-	if (effect.kind !== "CREATE_ORDER" && effect.kind !== "CAPTURE") {
+	if (effect.kind === "MERGE") return dispatchMerge(ports, row.key, effect, now);
+	if (effect.kind === "ALERT") {
+		try { await ports.alerts.raise(effect); }
+		catch (error) {
+			// An undeliverable alert is itself a fact a person has to see, and it is not retried blindly.
+			await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "ALERT_UNDELIVERED",
+				detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
+			return "WORKED";
+		}
+		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	const call = toPayPalCall(effect);
+	// PAYPAL_ONBOARD belongs to an operator row, and the skeleton has no onboarding effect to deliver.
+	if (call === null || !("jobId" in effect)) {
 		await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "OUTSIDE_SKELETON" });
 		return "WORKED";
 	}
 	const job = await ports.store.readJob(effect.jobId);
-	// A cancelled/expired create must never create a fresh payable order.
-	if (!job || job.state.status !== "OPEN" || job.state.phase.kind !== "FUNDING" ||
-		job.state.phase.round !== effect.round || (effect.kind === "CREATE_ORDER" && job.state.phase.checkout.phase !== "CREATING_ORDER")) {
+	if (!job) { await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED"; }
+	if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
+		// A cancelled/expired create must never create a fresh payable order.
+		if (job.state.status !== "OPEN" || job.state.phase.kind !== "FUNDING" ||
+			job.state.phase.round !== effect.round || (effect.kind === "CREATE_ORDER" && job.state.phase.checkout.phase !== "CREATING_ORDER")) {
+			await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED";
+		}
+	} else if (!effectWanted(job, effect)) {
+		// The row no longer holds the disposition this money movement belongs to: deliver it as done and
+		// never move money the row did not ask for.
 		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED";
 	}
-	const call = toPayPalCall(effect)!;
 	try {
 		let outcome: RemoteOutcome = { kind: "NOT_FOUND" };
 		if (row.state.kind !== "READY") outcome = await ports.paypal.reconcile(call, providerRequestId(row.key));
@@ -248,9 +300,19 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 				: toJobCommand(effect.jobId, observation);
 			if (!command || (effect.kind === "CAPTURE" && command.type !== "CaptureCompleted")) {
 				await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
-			} else await applySystemCommand(ports, command, row.key, null);
+			} else {
+				// The commit is the only write that settles this row: a settlement the row refuses parks the
+				// effect NEEDS_HUMAN with the provider's own bounded answer, in the same write as the fact it
+				// refused. The money is out, the row still holds the disposition, and nothing re-POSTs it.
+				await applySystemCommand(ports, command, { key: row.key, detail: boundedDetail(observationText(observation)) }, null);
+			}
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
-			await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, row.key, null);
+			if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
+				await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, { key: row.key }, null);
+			} else {
+				// A refused settlement is never retried, and it is never turned into another disposition.
+				await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
+			}
 		} else await ports.store.recordEffect(row.key, interpret(outcome, row, ports.clock.now()));
 	} catch {
 		await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
@@ -358,6 +420,40 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 	return "WORKED";
 }
 
+/**
+ * Merges the pull request the verifier opened. The App client reads the pull before it merges, so a
+ * retry after an unknown answer adopts a merge that landed instead of opening a second one.
+ */
+async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "MERGE" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+	const job = await ports.store.readJob(effect.jobId);
+	// Only a paid job merges, and only once: a merge already recorded is delivered, not retried.
+	if (!job || job.state.status !== "PAID" || job.state.merge.phase !== "PENDING") {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	let answer: MergeOutcome;
+	try { answer = await ports.github.merge(effect, providerRequestId(key)); }
+	catch (error) {
+		if (error instanceof GitHubAppNotConfigured) {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+			return "WORKED";
+		}
+		if (error instanceof GitHubAppError && githubDisposition(error).kind === "NEEDS_HUMAN") {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: error.code, detail: boundedDetail(error.message) });
+			return "WORKED";
+		}
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		return "WORKED";
+	}
+	if (answer.outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
+	// A conflict is not retried: the row names it and a person resolves it. A merge records the commit
+	// GitHub landed it on, which is what the paid view shows next to the tree the client approved.
+	const progress: MergeProgress = answer.outcome === "MERGED" ? { phase: "MERGED", at: now, sha: answer.sha }
+		: { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };
+	await applySystemCommand(ports, { type: "MergeFinished", jobId: effect.jobId, outcome: progress }, { key }, null);
+	return "WORKED";
+}
+
 export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant): OutboxState {
 	switch (outcome.kind) {
 		case "UNKNOWN": case "PENDING": return { kind: "UNCERTAIN", reconcileAt: outcome.checkAt };
@@ -367,11 +463,161 @@ export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant):
 	}
 }
 
-export function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Response> {
-	// TODO paypal.parseWebhook verifies and re-reads. Unknown resource returns 200 and is dropped.
-	// TODO Route by stored order or capture id. Commit the delivery id with the transition.
-	// TODO A new event id for an already applied capture reaches a no-op edge. The state is the guard.
-	throw new Error("not implemented");
+/** The route's closed outcome set. `webhookOutcomeText` is the one place the printed phrases are spelled. */
+export type WebhookOutcome =
+	| { readonly kind: "APPLIED"; readonly jobId: JobId; readonly edge: SystemJobCommand["type"]; readonly changed: boolean }
+	| { readonly kind: "NOOP"; readonly reason: "JOB_ALREADY_SETTLED" | "RESOURCE_NOT_OURS" | "UNROUTED" | "PROVIDER_HELD"; readonly jobId: JobId | null; readonly status?: JobStatus }
+	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED" | "SETTLEMENT_MISMATCH"; readonly resource?: WebhookResourceKind };
+
+function resourceNoun(kind: WebhookResourceKind | undefined): string {
+	switch (kind) {
+		case "CAPTURE": return "capture";
+		case "REFUND": return "refund";
+		case "PAYOUT_ITEM": return "payout item";
+		case "REFERENCED_PAYOUT_ITEM": return "referenced payout item";
+		default: return "resource";
+	}
+}
+
+export function webhookOutcomeText(outcome: WebhookOutcome): string {
+	switch (outcome.kind) {
+		case "APPLIED": return "applied";
+		case "NOOP":
+			switch (outcome.reason) {
+				case "JOB_ALREADY_SETTLED": return outcome.status === undefined ? "no-op, job already settled" : `no-op, job already ${outcome.status}`;
+				case "RESOURCE_NOT_OURS": return "no-op, no job holds this resource";
+				case "UNROUTED": return "no-op, event type not routed";
+				case "PROVIDER_HELD": return "no-op, PayPal has not settled this resource";
+			}
+		case "REFUSED":
+			switch (outcome.reason) {
+				case "UNREADABLE_EVENT": return "refused, unreadable event";
+				case "RESOURCE_UNKNOWN_TO_PROVIDER": return `refused, PayPal does not know this ${resourceNoun(outcome.resource)}`;
+				case "PROVIDER_REFUSED": return `refused, the provider refused this ${resourceNoun(outcome.resource)}`;
+				case "SETTLEMENT_MISMATCH": return "refused, the job did not take this settlement";
+			}
+	}
+}
+
+/** The resource a settled fact is about: what the same fact under a new event id is keyed by. A capture
+ * fact anchors on its order, which the index holds from the moment the order exists. */
+function anchorOf(observation: PayPalObservation): string | null {
+	switch (observation.kind) {
+		case "CAPTURE_COMPLETED": return observation.capture.orderId;
+		case "RELEASE_COMPLETED": return observation.release.captureId;
+		case "REFUND_COMPLETED": return observation.refund.captureId;
+		case "REIMBURSEMENT_COMPLETED": return observation.reimbursement.batchId;
+		default: return null;
+	}
+}
+
+/** One delivery of one fact. The fact under a new event id finds this key and changes nothing. */
+function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObservation): string {
+	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
+}
+
+/** The provider's answer, as one bounded line a person reads: the fact it named and the resource it named. */
+function observationText(observation: PayPalObservation): string {
+	switch (observation.kind) {
+		case "ORDER_CREATED": return `PayPal answered ORDER_CREATED for order ${observation.orderId}`;
+		case "ORDER_APPROVED": return `PayPal answered ORDER_APPROVED for order ${observation.orderId}`;
+		case "CAPTURE_COMPLETED": return `PayPal answered CAPTURE_COMPLETED for capture ${observation.capture.captureId}`;
+		case "RELEASE_COMPLETED": return `PayPal answered RELEASE_COMPLETED for capture ${observation.release.captureId} (item ${observation.release.payoutItemId})`;
+		case "REFUND_COMPLETED": return `PayPal answered REFUND_COMPLETED for capture ${observation.refund.captureId} (refund ${observation.refund.refundId ?? "read back from the capture"})`;
+		case "REIMBURSEMENT_COMPLETED": return `PayPal answered REIMBURSEMENT_COMPLETED for batch ${observation.reimbursement.batchId}`;
+		case "ONBOARDING_LINK": return `PayPal answered ONBOARDING_LINK for operator ${observation.operator}`;
+		case "ONBOARDING_COMPLETED": return `PayPal answered ONBOARDING_COMPLETED for operator ${observation.operator}`;
+	}
+}
+
+/** The job a settled fact belongs to, when the route's index did not name one. */
+async function anchorJob(ports: Ports, observation: PayPalObservation): Promise<JobId | null> {
+	const anchor = anchorOf(observation);
+	return anchor === null ? null : ports.store.jobForResource(anchor);
+}
+
+const settledNoop = (job: JobRow | null): WebhookOutcome =>
+	({ kind: "NOOP", reason: "JOB_ALREADY_SETTLED", jobId: job?.id ?? null, status: job?.state.status });
+
+/**
+ * The webhook route. Every delivery is recorded as its canonical envelope, the named resource is re-read
+ * from PayPal, and the fact that read carries is routed to the edge that owns it. The job state is the
+ * guard, not the event id: a fact the job already holds is a no-op under this event id or any other, and
+ * a resource PayPal does not hold is recorded as a refusal. The answer is the same minimal body whatever
+ * happened, so an unauthenticated caller reads no job id, no status, and no resource existence from it.
+ * The outcome phrase lives in the envelope row and the route's log.
+ */
+export async function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Response> {
+	const envelope = await ports.paypal.parseWebhook(request);
+	const delivery = deliveryOf(envelope);
+	if (envelope.kind === "UNREADABLE") return finish(ports, delivery, { kind: "REFUSED", reason: "UNREADABLE_EVENT" }, 400, envelope.detail);
+	if (envelope.kind === "UNROUTED") return finish(ports, delivery, { kind: "NOOP", reason: "UNROUTED", jobId: null }, 202);
+	const named = await ports.store.jobForResource(envelope.resource.id);
+	let owner = named === null ? null : await ports.store.readJob(named);
+	let read = await ports.paypal.readResource(envelope.resource, owner === null ? null : payeeMerchantOf(owner));
+	// A refund delivery names the refund id, while the index holds the capture the refund names. That
+	// unowned read still names its capture, so the job holding it is the owner and the refund is re-read
+	// with that owner's payee: the merchant assertion the provider read needs.
+	if (owner === null && read.kind === "HELD" && read.anchor !== undefined) {
+		const holding = await ports.store.jobForResource(read.anchor);
+		owner = holding === null ? null : await ports.store.readJob(holding);
+		if (owner !== null) read = await ports.paypal.readResource(envelope.resource, payeeMerchantOf(owner));
+	}
+	if (read.kind === "UNKNOWN") return finish(ports, delivery, { kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 202,
+		`PayPal holds no ${resourceNoun(envelope.resource.kind)} ${envelope.resource.id}.`);
+	if (read.kind === "REFUSED") return finish(ports, delivery, { kind: "REFUSED", reason: "PROVIDER_REFUSED", resource: envelope.resource.kind }, 202, read.reason);
+	const heldBy = owner?.id ?? named;
+	if (read.kind === "HELD") return finish(ports, delivery, heldBy === null
+		? { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null } : { kind: "NOOP", reason: "PROVIDER_HELD", jobId: heldBy }, 202, read.detail);
+	// The route's own index names the job. A read an anchor found belongs to the job whose payee it was
+	// made under, and the fact's own capture or batch is the fallback.
+	const jobId = named ?? owner?.id ?? await anchorJob(ports, read.observation);
+	if (jobId === null) return finish(ports, delivery, { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null }, 202);
+	const command = toJobCommand(jobId, read.observation);
+	if (command === null) return finish(ports, delivery, { kind: "NOOP", reason: "UNROUTED", jobId }, 202);
+	const before = await ports.store.readJob(jobId);
+	try {
+		return finish(ports, delivery, await applyFact(ports, command, webhookDeliveryKey(command, read.observation), before), 202);
+	} catch (error) {
+		// A busy store is transient. PayPal retries the body, and the state guard makes the retry safe.
+		if (isStoreBusy(error)) return Response.json({ error: "STORE_BUSY" }, { status: 503 });
+		throw error;
+	}
+}
+
+/** Applies one re-read fact under its own delivery key. A row that does not take the edge is the same no-op a redelivery gets. */
+async function applyFact(ports: Ports, command: SystemJobCommand, key: string, before: JobRow | null): Promise<WebhookOutcome> {
+	const committed = await applySystemCommand(ports, command, null, key);
+	if (committed.outcome === "DELIVERY_REPLAY") return settledNoop(before);
+	// A plan that refused the observation is not an "applied": the row's own alert carries it, and the
+	// envelope records the refusal instead of a change that never happened.
+	if (committed.refused !== null) return { kind: "REFUSED", reason: committed.refused };
+	const after = await ports.store.readJob(command.jobId);
+	return { kind: "APPLIED", jobId: command.jobId, edge: command.type, changed: before?.version !== after?.version };
+}
+
+/** The canonical fields one delivery's envelope row keeps, whatever the delivery turned out to be. */
+type Delivery = { readonly deliveryId: string; readonly eventType: string; readonly resourceType: string; readonly resourceId: string };
+
+function deliveryOf(envelope: WebhookEnvelope): Delivery {
+	return envelope.kind === "UNREADABLE"
+		? { deliveryId: envelope.deliveryId, eventType: "", resourceType: "", resourceId: "" }
+		: { deliveryId: envelope.deliveryId, eventType: envelope.eventType, resourceType: envelope.resourceType, resourceId: envelope.resourceId };
+}
+
+/**
+ * Records the delivery's envelope and answers. Every accepted delivery gets the same minimal body; the
+ * unreadable one is the only 4xx, and it names nothing about the provider. The outcome phrase and the
+ * provider's detail go to the envelope row and the route log, never to the caller.
+ */
+async function finish(ports: Ports, delivery: Delivery, outcome: WebhookOutcome, status: number, detail?: string): Promise<Response> {
+	const text = webhookOutcomeText(outcome);
+	await ports.store.recordWebhookEvent({ id: delivery.deliveryId, eventType: delivery.eventType, resourceType: delivery.resourceType,
+		resourceId: delivery.resourceId, receivedAt: ports.clock.now(), outcome: text });
+	// The id and the detail are provider bytes. logQuoted keeps a newline, or the line separator
+	// JSON.stringify leaves raw, from splitting the log line into a forged second entry.
+	console.log(`paypal webhook ${logQuoted(delivery.deliveryId)} ${text}${detail === undefined ? "" : ` (${logQuoted(detail)})`}`);
+	return Response.json({ received: status < 400 }, { status });
 }
 
 export async function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {
@@ -411,7 +657,7 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts: receipts.get(operator.id) ?? 0, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;
 		const result = await ports.store.commit({ job: null, operator: null, credits: [{ expectedVersion: account.version, account: next }],
-			outbox: [], acknowledge: null, request: null, delivery: null });
+			outbox: [], settlement: null, request: null, delivery: null });
 		if (result === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {

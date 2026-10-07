@@ -15,6 +15,36 @@ export type LedgerLine =
   | { readonly kind: "FEE"; readonly cents: UsdCents; readonly processor: UsdCents; readonly acquit: UsdCents; readonly at: Instant }
   | { readonly kind: "REFUND"; readonly cents: UsdCents; readonly at: Instant };
 
+export type TestTally = { readonly expected: number; readonly passed: number };
+
+/** Built only when a release settles; served on a PAID job. */
+export interface Receipt {
+  readonly id: string;
+  readonly jobId: string;
+  readonly operator: string;
+  readonly agent: string;
+  readonly pullRequest: number;
+  readonly mergeCommit: string;
+  readonly frozen: TestTally;
+  readonly hidden: TestTally;
+  readonly attemptsUsed: number;
+  readonly paid: UsdCents;
+  readonly releasedAt: Instant;
+}
+
+export type MergeProgress =
+  | { readonly phase: "PENDING" }
+  | { readonly phase: "MERGED"; readonly at: Instant; readonly sha: string | null }
+  | { readonly phase: "NEEDS_HUMAN"; readonly reason: string };
+
+/** The referenced payout item that paid the operator, as the release observed it. */
+export interface ReleaseEvidence {
+  readonly payoutItemId: string;
+  readonly captureId: string;
+  readonly paid: UsdCents;
+  readonly at: Instant;
+}
+
 export interface BidView {
   readonly id: string;
   readonly operator: string;
@@ -37,14 +67,25 @@ export interface JobView {
   readonly budget: UsdCents;
   readonly deliveryEndsAt: Instant;
   readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
+  /** The owning client, served to that client's own session only. Null for every other viewer. */
+  readonly client: string | null;
   readonly lockedTo: string | null;
+  /** The server's answer: this viewer owns the job and the review awaits its approval. */
+  readonly viewerCanApprove: boolean;
   readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
   readonly approveUrl: string | null;
   readonly ledger: readonly LedgerLine[];
   readonly attempts: { readonly used: number; readonly left: number; readonly last: "REJECTED" | "VERIFIED" | null; readonly reasons: readonly string[] };
   readonly reviewEndsAt: Instant | null;
   readonly pullRequest: number | null;
-  readonly receipt: unknown;
+  /** The tree the verifier judged. Approve must name it. */
+  readonly mergeCommit: string | null;
+  /** Served on a PAID job only. */
+  readonly merge: MergeProgress | null;
+  /** Served on a PAID job only. */
+  readonly release: ReleaseEvidence | null;
+  readonly receipt: Receipt | null;
+  readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
 }
 
 export interface OperatorView {
@@ -62,12 +103,13 @@ export interface CreditAccountView {
   readonly nextGrantAt: Instant;
 }
 
-/** The four commands the skeleton supports (http.md "Commands"). */
+/** The user commands the web app sends (http.md "Commands"). */
 export type UserCommand =
   | { readonly type: "OpenJob"; readonly repository: string; readonly issueNumber: number; readonly budget: UsdCents; readonly deliveryEndsAt: Instant }
   | { readonly type: "PlaceBid"; readonly jobId: string; readonly price: UsdCents; readonly eta: Hours; readonly agent: string; readonly pitch: string }
   | { readonly type: "AcceptBid"; readonly jobId: string; readonly bidId: string }
-  | { readonly type: "CancelJob"; readonly jobId: string };
+  | { readonly type: "CancelJob"; readonly jobId: string }
+  | { readonly type: "Approve"; readonly jobId: string; readonly mergeCommit: string };
 
 export type PublicResult =
   | { readonly kind: "JOB"; readonly job: JobView }
