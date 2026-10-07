@@ -2,7 +2,7 @@
 // only route out is the allowlisting proxy, and never lets a token or a provider key reach argv.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
 import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
+import { pushHead } from "../src/submit.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
 const workRepo = "acquit-forks/invoice-app-7q2k";
@@ -559,6 +560,70 @@ test("a state gitdir remote URL off github is unsafe config; the clone's own ori
 		assert.throws(() => pushWork(git, checkout, bare, commit!, process.env),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.evil.url"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * A remote in its own process that answers every request 401. pushHead is synchronous, so an
+ * in-process server could never answer the git child it blocks on; this one names a host git dials
+ * and never lets a push through, which is what makes git ask the configured credential source.
+ */
+async function rejectingRemote(): Promise<{ readonly url: string; readonly stop: () => void }> {
+	const child = spawn(process.execPath, ["--input-type=module", "-e",
+		"import { createServer } from 'node:http';\n"
+		+ "const server = createServer((request, response) => { response.writeHead(401, { 'WWW-Authenticate': 'Basic realm=\"acquit-test\"' }); response.end(); });\n"
+		+ "server.listen(0, '127.0.0.1', () => console.log(server.address().port));"],
+		{ stdio: ["ignore", "pipe", "pipe"] });
+	const port = await new Promise<number>((resolve, reject) => {
+		let output = "";
+		child.stdout.on("data", (chunk: Buffer) => {
+			output += chunk.toString("utf8");
+			const first = output.split("\n")[0] ?? "";
+			if (/^\d+$/.test(first)) resolve(Number(first));
+		});
+		child.once("error", reject);
+		child.once("exit", code => reject(new Error(`the rejecting remote exited ${code}`)));
+	});
+	return { url: `http://127.0.0.1:${port}/invoice-app-7q2k.git`, stop: () => child.kill("SIGKILL") };
+}
+
+test("an own-checkout push keeps the operator's credential helper; a scoped push never consults it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-push-cred-"));
+	const remote = await rejectingRemote();
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		writeFileSync(join(own, "money.ts"), "const DECIMALS = 3;\n");
+		assert.equal(git(["-C", own, "add", "-A"]).status, 0);
+		assert.equal(git(["-C", own, "-c", "user.name=operator", "-c", "user.email=operator@example.invalid", "commit", "--quiet", "-m", "fix"]).status, 0);
+		const commit = git(["-C", own, "rev-parse", "HEAD"]).stdout.trim() as CommitSha;
+		// A global credential helper the operator owns: it records that git asked it, then answers.
+		const helper = join(root, "helper.sh");
+		const canary = join(root, "helper-called");
+		writeFileSync(helper, `#!/bin/sh\nprintf '%s\\n' "$1" >> "${canary}"\ncat >/dev/null\nprintf 'username=operator\\npassword=secret\\n'\n`, { mode: 0o755 });
+		const home = join(root, "home");
+		mkdirSync(home);
+		writeFileSync(join(home, ".gitconfig"), `[credential]\n\thelper = ${helper}\n`);
+		const operatorEnv = { HOME: home };
+		// The operator's own checkout and the operator's own remote: the operator's git env, so the
+		// helper is asked. The push still fails, because the remote refuses every credential.
+		assert.throws(() => pushHead(own, remote.url, commit, operatorEnv),
+			(error: CliError) => error.code === "PUSH_REFUSED");
+		const asked = readFileSync(canary, "utf8");
+		assert.match(asked, /^get$/m);
+		// A push the CLI's own token drives hardens the env and clears the helper: the same remote and
+		// the same checkout, but the operator's helper is never asked again.
+		const secret = makeSecretDir();
+		try {
+			const askpass = writeAskpass(secret.path, tokenCanary);
+			assert.throws(() => pushHead(own, remote.url, commit, operatorEnv, { gitDir: null, askpass: askpass.env }),
+				(error: CliError) => error.code === "PUSH_REFUSED");
+		} finally { secret.remove(); }
+		assert.equal(readFileSync(canary, "utf8"), asked);
+	} finally {
+		remote.stop();
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("diff reads a run checkout through the state git directory, never discovery", async () => {

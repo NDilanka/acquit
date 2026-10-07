@@ -129,23 +129,30 @@ export type ScopedPush = { readonly gitDir: string | null; readonly askpass?: No
  * never writes the publisher's `acquit/<jobId>` branch: the publisher creates that ref itself at
  * the judged commit, which is in the work repo because the submission ref carries it. A submission
  * the API later denies (VERIFIER_PENDING, WRONG_STATE) therefore cannot move the open pull request's
- * head. */
+ * head.
+ *
+ * The hardening and the guard `-c` args cover every git call on a state checkout and every push the
+ * CLI's own scoped token drives. A push on the operator's own checkout with the operator's own
+ * credential is not one of those: it keeps the operator's git environment (the session token still
+ * stripped) and the checkout's own config, so the operator's credential helper answers. */
 export function pushHead(dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv, scoped?: ScopedPush): void {
 	const base = { ...childEnv(process.env), ...env };
-	const gitEnv = { ...hardenedGitEnv(base), ...(scoped?.askpass ?? {}) };
-	const guard = gitGuardArgs(base);
-	let args: readonly string[];
-	if (scoped === undefined) {
-		// The operator's own credential to a remote the operator named: discovery stays, hardened.
-		args = ["-C", dir, ...guard, "push", remote, `${commit}:${submissionRef(commit)}`];
-	} else {
-		const gitDir = scoped.gitDir ?? absoluteGitDir(dir, gitEnv);
-		if (gitDir === null) throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit.`);
-		// The scoped token must never meet config the CLI did not write; an operator's own credential
-		// only meets the checkout the operator works in, so its config is theirs to keep.
-		if (scoped.askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), gitDir, gitEnv);
-		args = ["--git-dir", gitDir, "--work-tree", dir, ...guard, "push", remote, `${commit}:${submissionRef(commit)}`];
+	const askpass = scoped?.askpass;
+	const stateGitDir = scoped?.gitDir ?? null;
+	if (askpass === undefined && stateGitDir === null) {
+		// The operator's own credential to a remote the operator named: discovery stays, unhardened.
+		const result = spawnSync("git", ["-C", dir, "push", remote, `${commit}:${submissionRef(commit)}`],
+			{ encoding: "utf8", timeout: 120_000, env: base });
+		if (result.status !== 0) throw pushError(remote, result.stderr);
+		return;
 	}
+	const gitEnv = { ...hardenedGitEnv(base), ...(askpass ?? {}) };
+	const gitDir = stateGitDir ?? absoluteGitDir(dir, gitEnv);
+	if (gitDir === null) throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit.`);
+	// The scoped token must never meet config the CLI did not write; an operator's own credential
+	// only meets the checkout the operator works in, so its config is theirs to keep.
+	if (askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), gitDir, gitEnv);
+	const args = ["--git-dir", gitDir, "--work-tree", dir, ...gitGuardArgs(base), "push", remote, `${commit}:${submissionRef(commit)}`];
 	const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 120_000, env: gitEnv });
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
