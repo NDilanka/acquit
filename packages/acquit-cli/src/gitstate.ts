@@ -19,9 +19,11 @@ export type JobCheckout = { readonly gitDir: string; readonly workTree: string }
  * both hand git this same shape. */
 export type GitLocation = { readonly gitDir: string; readonly workTree?: string };
 
+/** The answer a git probe gives: run.ts's GitRun and submit.ts's probe both fit this shape. */
+export type GitResult = { readonly status: number | null; readonly stdout: string; readonly stderr: string };
+
 /** A git invocation the hardening helpers drive; run.ts's GitRun and submit.ts's probe both fit. */
-export type GitProbe = (args: readonly string[], env?: NodeJS.ProcessEnv) =>
-	{ readonly status: number | null; readonly stdout: string; readonly stderr: string };
+export type GitProbe = (args: readonly string[], env?: NodeJS.ProcessEnv) => GitResult;
 
 /** The record inside a state git directory naming the one work tree it was cloned into. */
 const WORK_TREE_MARKER = "acquit-worktree";
@@ -154,20 +156,21 @@ export function writeWorkTreeMarker(gitDir: string, workTree: string): void {
 }
 
 /**
- * Config the push would read that must never meet the scoped work-repo token or a push: URL rewrites
- * and push targets can send it elsewhere, and the rest are code execution, credential sources,
- * request rewriting, or TLS verification. The state git directory is CLI-owned, so any of these is
- * config the CLI did not write; includes count because they can smuggle the others in from a file this
- * scan does not read.
+ * Config a scoped-token command would read that must never meet that token: URL rewrites and push
+ * targets can send it elsewhere, and the rest are code execution, credential sources, request
+ * rewriting, or TLS verification. The state git directory is CLI-owned, so any of these is config the
+ * CLI did not write; includes count because they can smuggle the others in from a file this scan does
+ * not read.
  *
- * The scan runs git with the push's own location arguments and guard, and no `--local`, so the keys
- * listed are the keys git resolves for that push, a worktree config included. `--show-scope` names
+ * The scan runs git with the command's own location arguments and guard, and no `--local`, so the keys
+ * listed are the keys git resolves for that command, a worktree config included. `--show-scope` names
  * the file each key came from: the CLI's own `-c` guard is skipped by scope, and a system or global
  * key refuses outright, because the CLI hides both files, so git naming either one means this child
- * is not the one the push uses and no key-by-key judgement of that file can be trusted.
+ * is not the one the command uses and no key-by-key judgement of that file can be trusted.
  *
- * The `remote.*.url` rule applies only to a state checkout (`where === "state"`): the scoped push
- * names the work-repo URL explicitly, while an operator's own checkout remotes are theirs.
+ * The `remote.*.url` rule applies only to a state checkout (`where === "state"`): the scoped commands
+ * on one name their destination there (the push its work-repo URL, the rerun fetch `origin`), while an
+ * operator's own checkout remotes are theirs.
  */
 export function unsafeGitConfigKeys(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind): readonly string[] {
 	const listed = git([...checkoutGitArgs(location, env, ["config", "--list", "--show-scope", "--no-includes", "-z"])], env);
@@ -191,7 +194,7 @@ export function unsafeGitConfigKeys(git: GitProbe, location: GitLocation, env: N
 		// itself. Any other scope is a file the CLI did not hand this child.
 		if (scope === "command") continue;
 		if (scope !== "local" && scope !== "worktree") {
-			throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to push: git read ${scope} config for ${location.gitDir} (${listedKey}) although the CLI hides `
+			throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to run git with the scoped token: git read ${scope} config for ${location.gitDir} (${listedKey}) although the CLI hides `
 				+ "every config file but the checkout's own. Rerun with a clean environment: a GIT_CONFIG_* variable or a git wrapper is overriding the CLI's own.");
 		}
 		// Git parses a URL-scoped key the same way: the section first, then the name after the last
@@ -238,17 +241,33 @@ function remoteOffGithub(value: string): boolean {
 	return name !== "github.com" && !name.endsWith(".github.com");
 }
 
-/** Which checkout a refused push was about: the CLI's own state git directory, or the operator's. */
+/** Which checkout a refused command was about: the CLI's own state git directory, or the operator's. */
 export type GitDirKind = "state" | "own";
 
-/** Refuses a push whose destination or credential path could be steered by config the CLI did not
- * write. The refusal names the git directory and the remedy that belongs to it: a state directory is
- * removed and cloned afresh on a fresh --dir, while a key in the operator's own checkout is unset. */
-export function assertSafePushConfig(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind): void {
+/** Refuses a git command that carries the CLI's scoped token when the location it reads holds config
+ * the CLI did not write. The refusal names the git directory and the remedy that belongs to it: a
+ * state directory is removed and cloned afresh on a fresh --dir, while a key in the operator's own
+ * checkout is unset. */
+export function assertSafeScopedConfig(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, where: GitDirKind): void {
 	const unsafe = unsafeGitConfigKeys(git, location, env, where);
 	if (unsafe.length === 0) return;
 	const remedy = where === "own"
 		? "Remove each key from that checkout (`git config --local --unset <key>`) and rerun."
 		: "Remove the state git directory and run again on a fresh --dir.";
-	throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to push: the git directory ${location.gitDir} holds config the CLI did not write (${unsafe.join(", ")}). ${remedy}`);
+	throw new CliError("GIT_CONFIG_UNSAFE", `Refusing to run git with the scoped token: the git directory ${location.gitDir} holds config `
+		+ `the CLI did not write (${unsafe.join(", ")}). ${remedy}`);
+}
+
+/**
+ * One git command that carries the CLI's scoped work-repo token. There is one way a command gets that
+ * token: this function scans the config of the location that command reads first, with the command's
+ * own location arguments and the same hardened env, and only then runs git with the askpass added. So
+ * a token never meets config the CLI did not write, whether the command is a push or a rerun's fetch.
+ * Every remote-reaching command the scoped token drives goes through here; a local-only command runs
+ * on the hardened env alone and never carries the askpass.
+ */
+export function scopedGit(git: GitProbe, location: GitLocation, env: NodeJS.ProcessEnv, askpass: NodeJS.ProcessEnv,
+	where: GitDirKind, args: readonly string[]): GitResult {
+	assertSafeScopedConfig(git, location, env, where);
+	return git(checkoutGitArgs(location, env, args), { ...env, ...askpass });
 }

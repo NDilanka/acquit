@@ -11,7 +11,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { assertSafePushConfig, checkoutGitArgs, existingStateCheckout, gitGuardArgs, hardenedGitEnv } from "./gitstate.ts";
+import { checkoutGitArgs, existingStateCheckout, gitGuardArgs, hardenedGitEnv, scopedGit } from "./gitstate.ts";
 import type { GitLocation, GitProbe, JobCheckout } from "./gitstate.ts";
 import { childEnv, makeSecretDir, parseWorkRepo, remoteNamesWorkRepo, secretGuard, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
@@ -79,8 +79,8 @@ function stateCheckout(dir: string, jobId: string | undefined, env: NodeJS.Proce
 
 /** A git probe over the CLI's hardened env, for the local config reads a scoped push makes. */
 function gitProbe(env: NodeJS.ProcessEnv): GitProbe {
-	return args => {
-		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 15_000, env });
+	return (args, callEnv) => {
+		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 15_000, env: callEnv ?? env });
 		return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 	};
 }
@@ -117,10 +117,9 @@ export function submissionRef(commit: CommitSha): string {
 /**
  * A scoped push names the job's git directory explicitly. `gitDir` is the state git directory when
  * `acquit run` cloned the checkout; null resolves the checkout's own git directory, never left to
- * discovery. `askpass` is the CLI's own credential script for the job's work repo, applied after the
- * environment is hardened so it is the only askpass that survives; a push that carries it also
- * refuses config the CLI did not write, because that is the one place a CLI-minted token meets a git
- * directory.
+ * discovery. `askpass` is the CLI's own credential script for the job's work repo: a push that
+ * carries it goes through `scopedGit`, which scans the location's config first, so the token never
+ * meets config the CLI did not write.
  */
 export type ScopedPush = { readonly gitDir: string | null; readonly askpass?: NodeJS.ProcessEnv };
 
@@ -148,17 +147,19 @@ export function pushHead(dir: string, remote: string, commit: CommitSha, env?: N
 		if (result.status !== 0) throw pushError(remote, result.stderr);
 		return;
 	}
-	const gitEnv = { ...hardenedGitEnv(base), ...(askpass ?? {}) };
+	const gitEnv = hardenedGitEnv(base);
 	const gitDir = stateGitDir ?? absoluteGitDir(dir, gitEnv);
 	if (gitDir === null) throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit.`);
 	// One location for the scan and the push: git reads the same config files for both, so a key the
 	// scan cannot see cannot steer the push either.
 	const location: GitLocation = { gitDir, workTree: dir };
-	// The scoped token must never meet config the CLI did not write; an operator's own credential
-	// only meets the checkout the operator works in, so its config is theirs to keep.
-	if (askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), location, gitEnv, stateGitDir !== null ? "state" : "own");
-	const args = checkoutGitArgs(location, base, ["push", remote, `${commit}:${submissionRef(commit)}`]);
-	const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 120_000, env: gitEnv });
+	const args = ["push", remote, `${commit}:${submissionRef(commit)}`];
+	// The scoped token must never meet config the CLI did not write: scopedGit scans this location
+	// first and adds the askpass only then. An operator's own credential only meets the checkout the
+	// operator works in, so its config is theirs to keep and the hardened env runs the push alone.
+	const result = askpass === undefined
+		? spawnSync("git", checkoutGitArgs(location, gitEnv, args), { encoding: "utf8", timeout: 120_000, env: gitEnv })
+		: scopedGit(gitProbe(gitEnv), location, gitEnv, askpass, stateGitDir !== null ? "state" : "own", args);
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 

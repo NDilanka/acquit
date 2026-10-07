@@ -20,7 +20,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
 import { PROVIDER_SPECS } from "../src/operator.ts";
 import type { Provider } from "../src/operator.ts";
-import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafePushConfig, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
+import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafeScopedConfig, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
 import { pushHead, localHead } from "../src/submit.ts";
 
@@ -422,7 +422,9 @@ test("preparing the job's checkout keeps the git directory outside the work tree
 		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
 		const work = join(root, "work");
 		const checkout = { gitDir: state, workTree: work };
-		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		// The CLI's own hardened env: the rerun's fetch carries the scoped token and is scanned first.
+		const env = hardenedEnv(root);
+		prepareWorkRepo(git, checkout, bare, frozen, env);
 		// The commit lives in the state git directory; the work tree carries no git metadata at all.
 		assert.equal(git(["--git-dir", state, "--work-tree", work, "rev-parse", "HEAD"]).stdout.trim(), frozen);
 		assert.equal(existsSync(join(state, "HEAD")), true);
@@ -438,7 +440,7 @@ test("preparing the job's checkout keeps the git directory outside the work tree
 		writeFileSync(join(outside, "canary.txt"), "keep\n");
 		rmSync(join(work, ".git"), { recursive: true, force: true });
 		symlinkSync(outside, join(work, ".git"));
-		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		prepareWorkRepo(git, checkout, bare, frozen, env);
 		assert.equal(git(["--git-dir", state, "--work-tree", work, "rev-parse", "HEAD"]).stdout.trim(), frozen);
 		assert.equal(existsSync(join(work, "junk.txt")), false);
 		assert.equal(readFileSync(join(work, "money.ts"), "utf8"), "const DECIMALS = 2;\n");
@@ -550,7 +552,9 @@ test("a state git directory whose checkout is gone adopts a fresh empty --dir an
 		const { bare, frozen, git } = workRepoFixture(root);
 		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
 		const first = join(root, "first");
-		prepareWorkRepo(git, { gitDir: state, workTree: first }, bare, frozen, process.env);
+		// The CLI's own hardened env: the adopted checkout's rerun fetch carries the scoped token.
+		const env = hardenedEnv(root);
+		prepareWorkRepo(git, { gitDir: state, workTree: first }, bare, frozen, env);
 		// While the recorded checkout lives, a different non-empty checkout is refused.
 		const other = join(root, "other");
 		mkdirSync(other);
@@ -560,7 +564,7 @@ test("a state git directory whose checkout is gone adopts a fresh empty --dir an
 		// Once it is gone, an empty (or missing) --dir is adopted and the marker follows it.
 		rmSync(first, { recursive: true, force: true });
 		const fresh = join(root, "fresh");
-		prepareWorkRepo(git, { gitDir: state, workTree: fresh }, bare, frozen, process.env);
+		prepareWorkRepo(git, { gitDir: state, workTree: fresh }, bare, frozen, env);
 		assert.equal(recordedWorkTree(state), fresh);
 		assert.equal(git(["--git-dir", state, "--work-tree", fresh, "rev-parse", "HEAD"]).stdout.trim(), frozen);
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -650,7 +654,7 @@ test("the unsafe-config refusal names an operator's own git directory and its --
 		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
 		const gitDir = join(own, ".git");
 		assert.equal(git(["-C", own, "config", "--local", "url.https://evil.example/.insteadOf", bare]).status, 0);
-		assert.throws(() => assertSafePushConfig(git, { gitDir, workTree: own }, env, "own"),
+		assert.throws(() => assertSafeScopedConfig(git, { gitDir, workTree: own }, env, "own"),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(gitDir)
 				&& error.message.includes("git config --local --unset") && error.message.includes("url.https://evil.example/.insteadof"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -724,12 +728,12 @@ test("the off-github remote URL rule leaves an operator's own checkout alone; a 
 		// checkout cannot steer it: their remotes are theirs.
 		assert.equal(git(["-C", own, "config", "--local", "remote.evil.url", "https://evil.example/invoice-app-7q2k.git"]).status, 0);
 		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
-		assert.doesNotThrow(() => assertSafePushConfig(git, location, env, "own"));
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own"));
 		// Every rewrite stays refused everywhere, the own checkout included: those rewrite the URL
 		// the scoped push names, not the checkout's own.
 		assert.equal(git(["-C", own, "config", "--local", `url.https://evil.example/.insteadOf`, bare]).status, 0);
 		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["url.https://evil.example/.insteadof"]);
-		assert.throws(() => assertSafePushConfig(git, location, env, "own"),
+		assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("git config --local --unset"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -1041,7 +1045,7 @@ test("a scan that reads a system or global config refuses, because the CLI hides
 		// The CLI hands every scan an env whose GIT_CONFIG_GLOBAL is its own empty file. An env that
 		// leaves the operator's home config visible is not the env the push uses, and git naming that
 		// scope is the only sign, so the scan refuses instead of judging a file the push never reads.
-		assert.throws(() => assertSafePushConfig(git, { gitDir: join(own, ".git"), workTree: own },
+		assert.throws(() => assertSafeScopedConfig(git, { gitDir: join(own, ".git"), workTree: own },
 			{ HOME: home, GIT_CONFIG_NOSYSTEM: "1" }, "own"),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("global") && error.message.includes("user.name"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -1511,7 +1515,10 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 			assert.equal(call.env?.SSH_ASKPASS, undefined);
 			assert.equal(call.env?.GIT_CONFIG_NOSYSTEM, identityRead ? undefined : "1");
 			assert.equal(call.env?.GIT_CONFIG_GLOBAL, identityRead ? undefined : join(stateHome, "acquit", "gitconfig"));
-			assert.equal(call.env?.GIT_ASKPASS !== undefined, !identityRead);
+			// The askpass rides only on a command that can reach a remote: a local call runs on the
+			// hardened env alone.
+			const remoteCall = call.args.includes("clone") || call.args.includes("fetch") || call.args.includes("push");
+			assert.equal(call.env?.GIT_ASKPASS !== undefined, remoteCall, call.args.join(" "));
 		}
 		const runnerCall = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
 		assert.equal(runnerCall >= 0, true);

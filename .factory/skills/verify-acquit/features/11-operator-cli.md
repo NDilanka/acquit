@@ -186,17 +186,21 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   directory does not record) is read through discovery with those guard overrides still applied; a
   push with the operator's own credential keeps the operator's git environment and credential helper,
   minus the `ACQUIT_*` variables, while a push driven by the scoped token is hardened. The scan that
-  guards a scoped push reads every config file the push reads: it runs git with the push's own
-  location arguments (the git directory, and the work tree whenever the push names one) and the same
-  hardened environment, so a worktree config the push reads cannot hide a key from the scan. A git
-  directory that holds config the CLI did not write refuses the scoped push (`GIT_CONFIG_UNSAFE`)
-  instead of letting the scoped token meet a URL rewrite, an http proxy, a TLS verification git reads
-  as false, a planted CA bundle, or a credential helper; a state git directory that turns on
-  `extensions.worktreeConfig` refuses too, since the CLI never writes it there, while an operator's
-  own checkout may keep it and is judged key by key. The refusal names the directory and its remedy.
-  The off-github `remote.*.url` rule applies to the state checkout alone: the scoped push names the
-  work-repo URL explicitly, so an operator's own remotes cannot steer it, while every
-  `insteadOf`/`pushInsteadOf`/`pushurl` rewrite refuses everywhere.
+  guards the scoped token runs before every git call that carries it, not only the push: it runs git
+  with that call's own location arguments (the git directory, and the work tree whenever the call
+  names one) and the same hardened environment, so a worktree config the call reads cannot hide a key
+  from the scan. A git directory that holds config the CLI did not write refuses the call
+  (`GIT_CONFIG_UNSAFE`) instead of letting the scoped token meet a URL rewrite, an http proxy, a TLS
+  verification git reads as false, a planted CA bundle, or a credential helper; a state git directory
+  that turns on `extensions.worktreeConfig` refuses too, since the CLI never writes it there, while an
+  operator's own checkout may keep it and is judged key by key. The refusal names the directory and
+  its remedy. A rerun's fetch of the state checkout carries the token, so it is scanned the same way;
+  the one call that runs without a scan is the fresh clone, which has no git directory to read yet,
+  passes `--template=`, and clones under an env that hides the system and global config. The
+  off-github `remote.*.url` rule applies to the state checkout alone: the scoped calls name their
+  destination there (the push its work-repo URL, the rerun fetch `origin`), so an operator's own
+  remotes cannot steer them, while every `insteadOf`/`pushInsteadOf`/`pushurl` rewrite refuses
+  everywhere.
 - `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.
 - The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
   repo. Rerun in about 30 seconds.

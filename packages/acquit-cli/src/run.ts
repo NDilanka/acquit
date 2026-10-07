@@ -24,7 +24,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { assertSafePushConfig, checkoutGitArgs, gitGuardArgs, hardenedGitEnv, recordedWorkTree, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
+import { checkoutGitArgs, gitGuardArgs, hardenedGitEnv, recordedWorkTree, scopedGit, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
 import type { JobCheckout } from "./gitstate.ts";
 import { PROVIDER_SPECS, storedProvider } from "./operator.ts";
 import type { Provider, ProviderPort } from "./operator.ts";
@@ -302,8 +302,14 @@ export function ensureEmptyWorkTreeGitShadow(workTree: string): void {
  * path is cloned with `--separate-git-dir`; an existing path is only accepted when it is the one
  * work tree the state git directory records, so a run can never reset an unrelated checkout. An
  * older build's in-tree .git cannot be adopted: the operator passes a fresh --dir instead.
+ *
+ * `env` is the hardened environment without the askpass; `askpass` is the CLI's scoped work-repo
+ * credential, which `scopedGit` adds to a remote call only after scanning that call's location. The
+ * rerun's fetch carries the token, so it scans the state git directory first. The fresh clone is the
+ * one exception (its git directory does not exist yet) and runs on `env` plus `askpass` directly.
  */
-export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string, frozen: CommitSha, env: NodeJS.ProcessEnv): void {
+export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string, frozen: CommitSha,
+	env: NodeJS.ProcessEnv, askpass: NodeJS.ProcessEnv = {}): void {
 	const { gitDir, workTree } = checkout;
 	// A --dir that is a regular file (or a link to one) can never be the checkout; refuse it here,
 	// where a later readdir would otherwise surface a raw ENOTDIR stack.
@@ -333,14 +339,21 @@ export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string,
 			throw new CliError("DIR_NOT_WORK_REPO", `${gitDir} tracks ${safeEcho(origin || "(no origin)")}, not ${safeEcho(url)}. `
 				+ "Remove the state git directory and pass a fresh --dir to clone afresh.");
 		}
-		const fetched = git(["--git-dir", gitDir, ...gitGuardArgs(env), "fetch", "--quiet", "--no-tags", "origin"], env);
+		// The rerun fetch carries the scoped token, so the scan of the same location runs first: a
+		// planted worktree config cannot steer the token to another host or off TLS.
+		const fetched = scopedGit(git, checkout, env, askpass, "state", ["fetch", "--quiet", "--no-tags", "origin"]);
 		if (fetched.status !== 0) throw cloneError(url, fetched.stderr);
 	} else if (existsSync(workTree) && readdirSync(workTree).length > 0) {
 		throw new CliError("DIR_NOT_WORK_REPO", `${workTree} is not empty and no state git directory for this job exists. `
 			+ "An older checkout's in-tree .git cannot be adopted; pass a fresh --dir (an empty path) instead.");
 	} else {
 		mkdirSync(dirname(gitDir), { recursive: true, mode: 0o700 });
-		const cloned = git([...gitGuardArgs(env), "clone", "--quiet", "--template=", "--separate-git-dir", gitDir, url, workTree], env);
+		// The fresh clone is the one remote call with the scoped token that runs before any scan:
+		// this branch runs only when the state git directory does not exist, so there is no config to
+		// read yet. `--template=` keeps the clone from inheriting a template the machine installed,
+		// and the env hides the system and global config every other source would come from.
+		const cloned = git([...gitGuardArgs(env), "clone", "--quiet", "--template=", "--separate-git-dir", gitDir, url, workTree],
+			{ ...env, ...askpass });
 		if (cloned.status !== 0) throw cloneError(url, cloned.stderr);
 		chmodSync(gitDir, 0o700);
 		writeWorkTreeMarker(gitDir, resolve(workTree));
@@ -428,12 +441,12 @@ export function submissionCommit(git: GitRun, checkout: JobCheckout, frozen: Com
 }
 
 /** The ref `acquit submit` pushes to: one commit-named ref, so the two commands can only agree. */
-export function pushWork(git: GitRun, checkout: JobCheckout, url: string, commit: CommitSha, env: NodeJS.ProcessEnv): void {
-	// The state git directory is never exposed to the agent, but a push is the one place the scoped
-	// token meets config: refuse any key the CLI did not write before git can read it. The scan names
-	// the same location arguments as the push below, so the two read the same config files.
-	assertSafePushConfig(git, checkout, env, "state");
-	const pushed = git(jobGitArgs(checkout, env, ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]), env);
+export function pushWork(git: GitRun, checkout: JobCheckout, url: string, commit: CommitSha,
+	env: NodeJS.ProcessEnv, askpass: NodeJS.ProcessEnv = {}): void {
+	// The state git directory is never exposed to the agent, but a push is one place the scoped token
+	// meets config. scopedGit scans that location with the push's own arguments and only then adds the
+	// askpass, so no key the CLI did not write can steer the token.
+	const pushed = scopedGit(git, checkout, env, askpass, "state", ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]);
 	if (pushed.status !== 0) throw pushError(url, pushed.stderr);
 }
 
@@ -724,9 +737,10 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 	const guard = signalGuard(names, { onSignal: () => secret.remove() });
 	try {
 		const askpass = writeAskpass(secret.path, credential.token);
-		// The hardened env first, the CLI's own askpass last: nothing inherited survives into git.
-		const gitEnv: NodeJS.ProcessEnv = { ...hardenedGitEnv(child), ...askpass.env };
-		prepareWorkRepo(git, checkout, url, frozen, gitEnv);
+		// The hardened env carries no credential: scopedGit adds the askpass to a remote call only
+		// after scanning the config that call reads, and every local call runs on this env alone.
+		const gitEnv = hardenedGitEnv(child);
+		prepareWorkRepo(git, checkout, url, frozen, gitEnv, askpass.env);
 		// The identity read is the one call that must see the operator's home; it still loses every
 		// inherited GIT_* variable.
 		seedCommitIdentity(git, checkout, globalGitIdentity(git, stripGitEnv(child)), gitEnv);
@@ -744,7 +758,7 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		if (code !== 0) throw new CliError("AGENT_FAILED", `The agent exited ${code ?? "without a status"}.`);
 		// One tree for both the count and the push: the agent's commits plus anything it left uncommitted.
 		const pushed = submissionCommit(git, checkout, frozen, `Run ${view.id} with ${accepted.agent}`, gitEnv);
-		if (pushed !== null) pushWork(git, checkout, url, pushed, gitEnv);
+		if (pushed !== null) pushWork(git, checkout, url, pushed, gitEnv, askpass.env);
 		const files = pushed === null ? [] : changedFiles(git, checkout, frozen, gitEnv, pushed);
 		print(renderFinished(files, now() - started, view.id));
 	} finally {
