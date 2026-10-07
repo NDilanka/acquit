@@ -1,4 +1,4 @@
-import type { CreditAccountView, DisputeView, LedgerLine, MergeProgress, ReleaseAuthority, ReleaseEvidence } from "./api-types";
+import type { CreditAccountView, DisputeView, JobView, LedgerLine, MergeProgress, RefundReason, ReleaseAuthority, ReleaseEvidence } from "./api-types";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -132,4 +132,38 @@ export function disputeNote(dispute: DisputeView): string {
 
 export function creditLine(credits: CreditAccountView): string {
   return `${credits.available} of ${credits.weeklyAllowance} credits left this week. Next grant ${utc(credits.nextGrantAt)}.`;
+}
+
+/** `settled` is true once the job is REFUNDED; `maxAttempts` is the job's attempt allowance (used plus left). */
+export function refundNote(reason: RefundReason | null, settled: boolean, maxAttempts: number): string | null {
+  switch (reason) {
+    case null:
+      return null;
+    case "ARBITER_REFUND":
+      return settled ? "Refunded by the arbiter." : "Refund pending: the arbiter refunded the client.";
+    case "DELIVERY_DEADLINE":
+      return settled ? "Refunded because the delivery deadline passed." : "Refund pending: the delivery deadline passed.";
+    case "ATTEMPTS_EXHAUSTED":
+      return settled
+        ? `Refunded after all ${maxAttempts} delivery attempts were used.`
+        : `Refund pending: all ${maxAttempts} delivery attempts were used.`;
+    case "CAPTURE_CUTOFF":
+      return settled ? "Refunded at the PayPal capture cutoff." : "Refund pending: the PayPal capture cutoff arrived.";
+    case "CAPTURE_MISMATCH":
+      return settled
+        ? "Refunded because the capture did not match the order."
+        : "Refund pending: the capture did not match the order.";
+  }
+}
+
+/**
+ * The served note belongs to the arbiter's most recent decision and stays on the row afterwards, so it is
+ * shown only while the outcome is still that decision. Only a REWORK verdict returns a job to IN_PROGRESS
+ * once a note exists, so an IN_PROGRESS job with a note and no refund is one the arbiter sent back.
+ */
+export function arbiterNoteLine(job: Pick<JobView, "status" | "arbiterNote" | "releaseAuthority" | "refundReason">): string | null {
+  if (job.arbiterNote === null) return null;
+  const decided =
+    job.releaseAuthority === "ARBITER_UPHELD" || job.refundReason === "ARBITER_REFUND" || (job.status === "IN_PROGRESS" && job.refundReason === null);
+  return decided ? `Arbiter's note: ${job.arbiterNote}` : null;
 }

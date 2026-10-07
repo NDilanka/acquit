@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { authorityNote, creditLine, denied, disputeNote, ledgerNote, mergeNote, releaseNote, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, creditLine, denied, disputeNote, ledgerNote, mergeNote, refundNote, releaseNote, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -83,4 +83,39 @@ test("a bid refused for credits says when credits return", () => {
   );
   assert.equal(denied("INSUFFICIENT_CREDITS"), "Not enough bid credits. Each bid costs 10. (INSUFFICIENT_CREDITS)");
   assert.equal(denied("NOT_OWNER", credits), "You do not own this job. (NOT_OWNER)");
+});
+
+test("a settled refund names its reason in plain words", () => {
+  assert.equal(refundNote("ARBITER_REFUND", true, 3), "Refunded by the arbiter.");
+  assert.equal(refundNote("DELIVERY_DEADLINE", true, 3), "Refunded because the delivery deadline passed.");
+  assert.equal(refundNote("ATTEMPTS_EXHAUSTED", true, 3), "Refunded after all 3 delivery attempts were used.");
+  assert.equal(refundNote("CAPTURE_CUTOFF", true, 3), "Refunded at the PayPal capture cutoff.");
+  assert.equal(refundNote("CAPTURE_MISMATCH", true, 3), "Refunded because the capture did not match the order.");
+  assert.equal(refundNote(null, true, 3), null);
+});
+
+test("a pending refund says it is pending and why", () => {
+  assert.equal(refundNote("ARBITER_REFUND", false, 3), "Refund pending: the arbiter refunded the client.");
+  assert.equal(refundNote("DELIVERY_DEADLINE", false, 3), "Refund pending: the delivery deadline passed.");
+  assert.equal(refundNote("ATTEMPTS_EXHAUSTED", false, 4), "Refund pending: all 4 delivery attempts were used.");
+  assert.equal(refundNote("CAPTURE_CUTOFF", false, 3), "Refund pending: the PayPal capture cutoff arrived.");
+  assert.equal(refundNote("CAPTURE_MISMATCH", false, 3), "Refund pending: the capture did not match the order.");
+  assert.equal(refundNote(null, false, 3), null);
+});
+
+test("the arbiter's note shows only where the arbiter decided", () => {
+  const note = "The EUR rounding is <b>correct</b>.";
+  const base = { arbiterNote: note, releaseAuthority: null, refundReason: null } as const;
+  const shown = `Arbiter's note: ${note}`;
+  assert.equal(arbiterNoteLine({ ...base, status: "PAID", releaseAuthority: "ARBITER_UPHELD" }), shown);
+  assert.equal(arbiterNoteLine({ ...base, status: "VERIFIED", releaseAuthority: "ARBITER_UPHELD" }), shown);
+  assert.equal(arbiterNoteLine({ ...base, status: "REFUNDED", refundReason: "ARBITER_REFUND" }), shown);
+  assert.equal(arbiterNoteLine({ ...base, status: "VERIFIED", refundReason: "ARBITER_REFUND" }), shown);
+  assert.equal(arbiterNoteLine({ ...base, status: "IN_PROGRESS" }), shown);
+  // A later outcome the arbiter did not choose leaves an older note unshown.
+  assert.equal(arbiterNoteLine({ ...base, status: "PAID", releaseAuthority: "CLIENT_APPROVAL" }), null);
+  assert.equal(arbiterNoteLine({ ...base, status: "REFUNDED", refundReason: "DELIVERY_DEADLINE" }), null);
+  assert.equal(arbiterNoteLine({ ...base, status: "VERIFIED" }), null);
+  assert.equal(arbiterNoteLine({ ...base, status: "IN_PROGRESS", refundReason: "ATTEMPTS_EXHAUSTED" }), null);
+  assert.equal(arbiterNoteLine({ ...base, arbiterNote: null, status: "PAID", releaseAuthority: "ARBITER_UPHELD" }), null);
 });

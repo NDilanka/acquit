@@ -47,6 +47,8 @@ export interface ReleaseEvidence {
 
 export type ReleaseAuthority = "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "ARBITER_SLA_MISSED" | "CAPTURE_CUTOFF";
 
+export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER_REFUND" | "CAPTURE_CUTOFF" | "CAPTURE_MISMATCH";
+
 export interface DisputeView {
   readonly reason: string;
   readonly openedAt: Instant;
@@ -85,8 +87,12 @@ export interface JobView {
   readonly viewerCanDispute: boolean;
   /** Served while `phase` is DISPUTED; null otherwise. */
   readonly dispute: DisputeView | null;
+  /** The note from the arbiter's most recent decision, whatever the verdict. It outlives that decision, so a later outcome may not be the arbiter's. */
+  readonly arbiterNote: string | null;
   /** What selected the release, while it is pending and once the job is PAID. Null before any release. */
   readonly releaseAuthority: ReleaseAuthority | null;
+  /** What selected the refund, while it is pending and once the job is REFUNDED. Null before any refund and on rows stored before the reason was recorded. */
+  readonly refundReason: RefundReason | null;
   readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
   readonly approveUrl: string | null;
   readonly ledger: readonly LedgerLine[];

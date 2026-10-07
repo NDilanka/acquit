@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BidView, JobView, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
-import { authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, releaseNote, usd, utc } from "../format";
+import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
@@ -176,6 +176,10 @@ export function JobPage({ id }: { id: string }) {
           PayPal did not confirm the payment yet. Your approval is kept; no money moved twice.{" "}
           <a href={`/paypal/return?jobId=${encodeURIComponent(job.id)}`}>Check the payment again</a>
         </div>
+      )}
+
+      {job.status === "OPEN" && job.refundReason && (
+        <div className="alert warn">{refundNote(job.refundReason, false, job.attempts.used + job.attempts.left)}</div>
       )}
 
       <div className="grid">
@@ -514,6 +518,8 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
   const { receipt, contract } = job;
   const refund = job.ledger.find((line) => line.kind === "REFUND");
   const pr = receipt?.pullRequest ?? job.pullRequest;
+  const reason = refundNote(job.refundReason, job.status === "REFUNDED", job.attempts.used + job.attempts.left);
+  const arbiter = arbiterNoteLine(job);
   return (
     <section className="card pad statuspanel">
       <pre className="mono">
@@ -556,6 +562,12 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
           Refunded <b className="num">{usd(refund.cents)}</b> to the client at {utc(refund.at)}.
         </p>
       )}
+      {reason && (
+        <p>
+          <b>{reason}</b>
+        </p>
+      )}
+      {arbiter && <p className="muted">{arbiter}</p>}
     </section>
   );
 }
