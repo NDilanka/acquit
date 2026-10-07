@@ -623,7 +623,7 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 			"printf '\\texpect(2).toBe(2);\\n' >> tests/totals.test.ts",
 			"curl -sS --max-time 15 -o /dev/null https://example.com 2>/tmp/acquit-curl.err && echo EGRESS_ALLOWED_EXAMPLE || { echo EGRESS_BLOCKED_EXAMPLE; cat /tmp/acquit-curl.err; }",
 			"curl -sS --max-time 30 -o /dev/null -w 'REGISTRY_HTTP %{http_code}\\n' https://registry.npmjs.org/",
-			"curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/ 2>/tmp/acquit-curl81.err && echo CONNECT_81_ALLOWED || { echo CONNECT_81_REFUSED; cat /tmp/acquit-curl81.err; }",
+			"curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/ 2>/tmp/acquit-curl81.err && echo CONNECT_81_ALLOWED || { echo CONNECT_81_REFUSED; sed 's/^/CURL81: /' /tmp/acquit-curl81.err; }",
 			"node -e \"fetch('https://example.com').then(() => console.log('FETCH_ALLOWED_EXAMPLE')).catch(() => console.log('FETCH_BLOCKED_EXAMPLE'))\"",
 			"node -e \"fetch('https://registry.npmjs.org/').then(r => console.log('FETCH_REGISTRY', r.status)).catch(e => console.log('FETCH_REGISTRY_FAILED', e.message))\"",
 			"",
@@ -644,7 +644,9 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 		assert.match(text, /REGISTRY_HTTP (200|30\d)/);
 		assert.match(text, /FETCH_REGISTRY 200/);
 		assert.match(text, /CONNECT_81_REFUSED/);
-		assert.match(text, /CONNECT registry\.npmjs\.org:81/);
+		// curl does not echo the authority it failed to tunnel; the prefixed line is that attempt's own
+		// stderr, and a 403 there is the proxy refusing the port before any upstream dial.
+		assert.match(text, /CURL81: curl: \(56\) CONNECT tunnel failed, response 403/);
 		assert.deepEqual(changedFiles(git, root, base), [{ path: "tests/totals.test.ts", added: 1, binary: false }]);
 		// The run's own cleanup leaves no container or network behind.
 		const containers = spawnSync("docker", ["ps", "-a", "--filter", `name=${names.runner}`, "--format", "{{.Names}}"], { encoding: "utf8" });
