@@ -992,6 +992,83 @@ test("an operator's own checkout keeps the keys that do not steer the scoped tok
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a local protocol.file.allow beats the command-line transport guard, so an own checkout refuses the key", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-own-protocol-"));
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const location = { gitDir: join(own, ".git"), workTree: own };
+		const fileUrl = `file://${bare}`;
+		// The control, in real git: the guard's command-line `protocol.allow=never` refuses the file
+		// transport on its own, and then one local per-protocol allow beats that command-line key.
+		// That is why the key cannot be kept: git prefers `protocol.<name>.allow` to the general
+		// `protocol.allow` whatever scope each one comes from, so the command-line guard alone never
+		// settles the transport on a checkout that carries the per-protocol key.
+		const refused = git(["-C", own, "-c", "protocol.allow=never", "fetch", fileUrl, "main"], env);
+		assert.equal(refused.status, 128, refused.stderr);
+		assert.equal(refused.stderr.includes("transport 'file' not allowed"), true, refused.stderr);
+		assert.equal(git(["-C", own, "config", "--local", "protocol.file.allow", "always"]).status, 0);
+		const allowed = git(["-C", own, "-c", "protocol.allow=never", "fetch", fileUrl, "main"], env);
+		assert.equal(allowed.status, 0, allowed.stderr);
+		// The scan refuses the key by name, with the remedy an own checkout gets.
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), ["protocol.file.allow"]);
+		assert.throws(() => assertSafeScopedConfig(git, location, env, "own", bare),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("protocol.file.allow")
+				&& error.message.includes("git config --local --unset"));
+		// A refusal is per key: with the override gone the checkout scans clean again.
+		assert.equal(git(["-C", own, "config", "--local", "--unset", "protocol.file.allow"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), []);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a remote.<url>.vcs helper key refuses an own checkout before the scoped push reaches a helper", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-own-vcs-"));
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const location = { gitDir: join(own, ".git"), workTree: own };
+		const url = workRepoUrl(workRepo);
+		// `remote.<url>.vcs` hands a push that names that URL to `git-remote-<vcs>`: a helper is not
+		// a transport the command-line protocol guard can refuse, and the reviewer's reproducer left
+		// real git 2.43 crashing (exit 139) where the guard alone answers `transport 'ext' not
+		// allowed`. The scan refuses the key before the push names the URL.
+		assert.equal(git(["-C", own, "config", "--local", `remote.${url}.vcs`, "ext"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", url), [`remote.${url}.vcs`.toLowerCase()]);
+		assert.throws(() => assertSafeScopedConfig(git, location, env, "own", url),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(`remote.${url}.vcs`.toLowerCase())
+				&& error.message.includes("git config --local --unset"));
+		// The exact pair from the finding: the helper key plus the per-protocol allow it needs,
+		// refused together.
+		assert.equal(git(["-C", own, "config", "--local", "protocol.ext.allow", "always"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", url), ["protocol.ext.allow", `remote.${url}.vcs`.toLowerCase()]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an own checkout's ordinary keys, protocol.version included, still scan clean", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-own-ordinary-"));
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const location = { gitDir: join(own, ".git"), workTree: own };
+		for (const [key, value] of [["color.ui", "auto"], ["pull.rebase", "true"], ["protocol.version", "2"]] as const) {
+			assert.equal(git(["-C", own, "config", "--local", key, value]).status, 0, key);
+		}
+		// The clone's own remote is there and stays theirs, with the ordinary keys around it.
+		assert.equal(git(["-C", own, "config", "--local", "remote.origin.url"]).stdout.trim(), bare);
+		// `protocol.version` is the protocol section's one other key: it picks the wire protocol
+		// version on the transport the guard already settled and cannot move the token, and ordinary
+		// operators carry it, so the rule refuses the allow shapes alone rather than the whole section.
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), []);
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own", bare));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 /** The port a test server child prints as its first stdout line, or a rejection when it dies first. */
 async function printedPort(child: ChildProcess): Promise<number> {
 	return await new Promise<number>((resolve, reject) => {
