@@ -569,8 +569,9 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request): Promi
 	const heldBy = owner?.id ?? named;
 	if (read.kind === "HELD") return finish(ports, delivery, heldBy === null
 		? { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null } : { kind: "NOOP", reason: "PROVIDER_HELD", jobId: heldBy }, 202, read.detail);
-	// The route's own index names the job, and the fact itself names the capture or batch it settles.
-	const jobId = named ?? await anchorJob(ports, read.observation);
+	// The route's own index names the job. A read an anchor found belongs to the job whose payee it was
+	// made under, and the fact's own capture or batch is the fallback.
+	const jobId = named ?? owner?.id ?? await anchorJob(ports, read.observation);
 	if (jobId === null) return finish(ports, delivery, { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null }, 202);
 	const command = toJobCommand(jobId, read.observation);
 	if (command === null) return finish(ports, delivery, { kind: "NOOP", reason: "UNROUTED", jobId }, 202);
