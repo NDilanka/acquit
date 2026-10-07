@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
 import type { StoredBookRaw } from "../../core/src/job.ts";
+import { logBare } from "../../core/src/log.ts";
 import { alive, captured, childListener, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs, readStoredWebhookEvent } from "./state.ts";
@@ -141,7 +142,8 @@ export async function webhookReplay(parsed: Parsed, ctx: Context): Promise<Resul
 	// This delivery's own record: the route writes the outcome phrase before it answers.
 	const stored = await readStoredWebhookEvent(ctx.databasePath, delivery.eventId);
 	const outcome = stored.row?.outcome ?? null;
-	const text = [outcome, delivery.eventId].filter(part => typeof part === "string").join("  ") + "\n";
+	// The stored id is provider bytes, so it prints escaped: it cannot end the line or fake a second one.
+	const text = [outcome, logBare(delivery.eventId)].filter(part => typeof part === "string").join("  ") + "\n";
 	return { text, eventId: delivery.eventId, source: delivery.source, status: response.status, outcome,
 		posted: { url, bytes: Buffer.byteLength(delivery.envelope) } };
 }

@@ -6,3 +6,8 @@
 export function logQuoted(value: string): string {
 	return JSON.stringify(value).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
+
+/** The same escaped value without the quotes of the JSON string, for a bare field in a printed line. */
+export function logBare(value: string): string {
+	return logQuoted(value).slice(1, -1);
+}
