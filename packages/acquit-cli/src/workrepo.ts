@@ -1,7 +1,8 @@
 // The credential a push into the job's work repository uses. The API mints one token scoped to that
-// repository alone; git reads it from a 0600 file through a constant 0700 askpass script in a mkdtemp
-// directory removed on every exit. The token is never an argv word, a printed line, or a value in the
-// environment of a child that does not need it.
+// repository alone; git reads it from a 0600 file named by a constant 0700 askpass script in a
+// mkdtemp directory removed on every exit. The token is never an argv word, a printed line, or a
+// value in the environment of a child that does not need it: the script knows the file path itself,
+// so git's environment carries no token-bearing variable at all.
 
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,24 +17,31 @@ export function makeSecretDir(): { readonly path: string; readonly remove: () =>
 	return { path, remove: () => rmSync(path, { recursive: true, force: true }) };
 }
 
-const ASKPASS_SCRIPT = `#!/bin/sh
-# The token is read from the 0600 file the environment names; this script holds no secret.
+/** A path as one single-quoted shell word, so a path with a quote can never break the script. */
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function askpassScript(tokenFile: string): string {
+	return `#!/bin/sh
+# The token file path is written here; this script holds no secret and needs no variable.
 case "$1" in
 	*[Uu]sername*) printf '%s\\n' x-access-token ;;
-	*) cat "$ACQUIT_RUN_TOKEN_FILE" ;;
+	*) cat ${shellQuote(tokenFile)} ;;
 esac
 `;
+}
 
-/** The git credential for one push: a constant 0700 askpass script plus the 0600 token file it reads. */
+/** The git credential for one push: a constant 0700 askpass script plus the 0600 token file it reads.
+ * The script embeds the token file path, so git's environment carries no secret-bearing variable. */
 export function writeAskpass(dir: string, token: string): { readonly env: NodeJS.ProcessEnv; readonly script: string; readonly tokenFile: string } {
 	const tokenFile = join(dir, "token");
 	const script = join(dir, "askpass.sh");
 	writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
 	chmodSync(tokenFile, 0o600);
-	writeFileSync(script, ASKPASS_SCRIPT, { mode: 0o700 });
+	writeFileSync(script, askpassScript(tokenFile), { mode: 0o700 });
 	chmodSync(script, 0o700);
-	return { tokenFile, script, env: { ACQUIT_RUN_TOKEN_FILE: tokenFile, GIT_ASKPASS: script,
-		GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } };
+	return { tokenFile, script, env: { GIT_ASKPASS: script } };
 }
 
 /** The credential the API mints for this job's work repo. Neither value is ever printed. */
@@ -52,11 +60,13 @@ export function workRepoUrl(repository: string): string {
 	return `https://github.com/${repository}.git`;
 }
 
-/** The environment a child gets: the operator's, minus the two secrets this CLI itself holds. */
+/** The environment a child gets: the operator's, minus the two secrets this CLI itself holds and
+ * the token-path variable an older build used. */
 export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const child = { ...env };
 	delete child.ACQUIT_TOKEN;
 	delete child.ACQUIT_PROVIDER_KEY;
+	delete child.ACQUIT_RUN_TOKEN_FILE;
 	return child;
 }
 

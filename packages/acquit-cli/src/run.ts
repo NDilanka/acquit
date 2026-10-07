@@ -4,19 +4,26 @@
 // fork, run the agent inside a container whose only route out is an allowlisting proxy, commit what
 // the agent changed, and push that commit to the work repo the way `acquit submit` expects.
 //
+// The agent never sees git metadata: the job's git directory lives in the CLI's state location,
+// outside the work tree the sandbox mounts, and an empty read-only tmpfs covers `/work/.git`. Every
+// host-side git command names that state git directory and the work tree explicitly, never
+// discovery, and runs under the hardened env and `-c` overrides in gitstate.ts.
+//
 // Secrets: the session token comes from the environment or stdin; the work-repo token lives in a
-// 0600 file read by a constant 0700 askpass script in a mkdtemp directory removed on every exit; the
-// provider key travels to the container only through the docker child's environment, named by `-e`
-// with no value. No secret is ever an argv word, a printed line, or a log line.
+// 0600 file named by the constant 0700 askpass script in a mkdtemp directory removed on every exit;
+// the provider key travels to the container only through the docker child's environment, named by
+// `-e` with no value. No secret is ever an argv word, a printed line, or a log line.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { CommitSha } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
+import { assertSafePushConfig, gitGuardArgs, hardenedGitEnv, recordedWorkTree, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
+import type { JobCheckout } from "./gitstate.ts";
 import { pushError, submissionRef } from "./submit.ts";
 import { childEnv, makeSecretDir, parseWorkRepo, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
@@ -197,44 +204,121 @@ function sameRemote(left: string, right: string): boolean {
 	return normalize(left) === normalize(right);
 }
 
-/**
- * Puts `dir` on the frozen commit with a clean working tree. A fresh path is cloned; an existing
- * work tree must already track the work repo, so a run can never reset an unrelated checkout.
- */
-export function prepareWorkRepo(git: GitRun, dir: string, url: string, frozen: CommitSha, env: NodeJS.ProcessEnv): void {
-	const missing = !existsSync(dir);
-	if (missing || readdirSync(dir).length === 0) {
-		const cloned = git(["clone", "--quiet", url, dir], env);
-		if (cloned.status !== 0) throw cloneError(url, cloned.stderr);
-	} else {
-		const inside = git(["-C", dir, "rev-parse", "--is-inside-work-tree"], env);
-		if (inside.status !== 0 || inside.stdout.trim() !== "true") {
-			throw new CliError("DIR_NOT_EMPTY", `${dir} is not empty and is not a git work tree. `
-				+ "Pass --dir with an empty path, or with a clone of the job's work repo.");
-		}
-		const origin = git(["-C", dir, "remote", "get-url", "origin"], env).stdout.trim();
-		if (!sameRemote(origin, url)) {
-			throw new CliError("DIR_NOT_WORK_REPO", `${dir} tracks ${safeEcho(origin || "(no origin)")}, not ${safeEcho(url)}. `
-				+ "Pass --dir with a clone of the job's work repo.");
-		}
-		const fetched = git(["-C", dir, "fetch", "--quiet", "--no-tags", "origin"], env);
-		if (fetched.status !== 0) throw cloneError(url, fetched.stderr);
+/** Every git command on a job's checkout names its state git directory and work tree explicitly:
+ * discovery would follow the work tree's own .git, which the sandbox can write. */
+function jobGitArgs(checkout: JobCheckout, env: NodeJS.ProcessEnv, args: readonly string[]): readonly string[] {
+	return ["--git-dir", checkout.gitDir, "--work-tree", checkout.workTree, ...gitGuardArgs(env), ...args];
+}
+
+function checkoutGit(git: GitRun, checkout: JobCheckout, env: NodeJS.ProcessEnv, args: readonly string[]): GitResult {
+	return git(jobGitArgs(checkout, env, args), env);
+}
+
+/** The identity the operator's own global config names, read before the hardened env hides it. */
+export function globalGitIdentity(git: GitRun, env: NodeJS.ProcessEnv): { readonly name: string | null; readonly email: string | null } {
+	const read = (key: string): string | null => {
+		const result = git(["config", "--global", key], env);
+		const value = result.status === 0 ? result.stdout.trim() : "";
+		return value === "" || /[\r\n]/.test(value) ? null : value;
+	};
+	return { name: read("user.name"), email: read("user.email") };
+}
+
+/** The hardened env cannot see the operator's global config, so the identity the run's commit should
+ * carry is copied into the CLI-owned state git directory. */
+export function seedCommitIdentity(git: GitRun, checkout: JobCheckout, identity: { readonly name: string | null; readonly email: string | null },
+	env: NodeJS.ProcessEnv): void {
+	for (const [key, value] of [["user.name", identity.name], ["user.email", identity.email]] as const) {
+		if (value === null || value === "") continue;
+		git(jobGitArgs(checkout, env, ["config", key, value]), env);
 	}
-	if (git(["-C", dir, "cat-file", "-e", `${frozen}^{commit}`], env).status !== 0) {
+}
+
+/** Replaces the `gitdir:` link `--separate-git-dir` writes with an empty directory. Host git never
+ * reads the link (every command names the state git directory), and the sandbox mounts an empty
+ * read-only tmpfs over `.git`, so no process can follow or write it. */
+function hideWorkTreeGitLink(workTree: string, gitDir: string): void {
+	const link = join(workTree, ".git");
+	let text: string;
+	try { text = readFileSync(link, "utf8"); } catch {
+		throw new CliError("DIR_NOT_WORK_REPO", `${workTree}/.git is missing after the clone; refusing to use the checkout.`);
+	}
+	const target = /^gitdir:\s*(.+)$/i.exec(text.trim())?.[1];
+	if (target === undefined || resolve(workTree, target) !== resolve(gitDir)) {
+		throw new CliError("DIR_NOT_WORK_REPO", `${workTree}/.git does not point at the job's state git directory; refusing to touch it.`);
+	}
+	rmSync(link, { force: true });
+	mkdirSync(link, { mode: 0o700 });
+}
+
+/**
+ * Puts the job's checkout on the frozen commit with a clean working tree. The git directory lives in
+ * the CLI's state location, outside the work tree, so the sandbox never sees git metadata. A fresh
+ * path is cloned with `--separate-git-dir`; an existing path is only accepted when it is the one
+ * work tree the state git directory records, so a run can never reset an unrelated checkout. An
+ * older build's in-tree .git cannot be adopted: the operator passes a fresh --dir instead.
+ */
+export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string, frozen: CommitSha, env: NodeJS.ProcessEnv): void {
+	const { gitDir, workTree } = checkout;
+	if (existsSync(gitDir)) {
+		const recorded = recordedWorkTree(gitDir);
+		if (recorded === null) {
+			throw new CliError("DIR_NOT_WORK_REPO", `The state git directory ${gitDir} has no recorded work tree; remove it and pass a fresh --dir.`);
+		}
+		if (resolve(recorded) !== resolve(workTree)) {
+			// The checkout the state directory was cloned into is gone (a deleted temp root, a moved
+			// machine copy): an empty path may be adopted, anything else is not this job's checkout.
+			if (existsSync(recorded)) {
+				throw new CliError("DIR_NOT_WORK_REPO", `${workTree} is not the checkout this job's state git directory belongs to (${recorded}). `
+					+ "Pass --dir with that path, or remove the state git directory to clone afresh.");
+			}
+			if (existsSync(workTree) && readdirSync(workTree).length > 0) {
+				throw new CliError("DIR_NOT_WORK_REPO", `${workTree} is not empty and is not this job's checkout. Pass --dir with an empty path.`);
+			}
+			writeWorkTreeMarker(gitDir, resolve(workTree));
+		}
+		const origin = checkoutGit(git, checkout, env, ["config", "--get", "remote.origin.url"]).stdout.trim();
+		if (!sameRemote(origin, url)) {
+			throw new CliError("DIR_NOT_WORK_REPO", `${gitDir} tracks ${safeEcho(origin || "(no origin)")}, not ${safeEcho(url)}. `
+				+ "Remove the state git directory and pass a fresh --dir to clone afresh.");
+		}
+		const fetched = git(["--git-dir", gitDir, ...gitGuardArgs(env), "fetch", "--quiet", "--no-tags", "origin"], env);
+		if (fetched.status !== 0) throw cloneError(url, fetched.stderr);
+	} else if (existsSync(workTree) && readdirSync(workTree).length > 0) {
+		throw new CliError("DIR_NOT_WORK_REPO", `${workTree} is not empty and no state git directory for this job exists. `
+			+ "An older checkout's in-tree .git cannot be adopted; pass a fresh --dir (an empty path) instead.");
+	} else {
+		mkdirSync(dirname(gitDir), { recursive: true, mode: 0o700 });
+		const cloned = git([...gitGuardArgs(env), "clone", "--quiet", "--template=", "--separate-git-dir", gitDir, url, workTree], env);
+		if (cloned.status !== 0) throw cloneError(url, cloned.stderr);
+		chmodSync(gitDir, 0o700);
+		writeWorkTreeMarker(gitDir, resolve(workTree));
+		hideWorkTreeGitLink(workTree, gitDir);
+	}
+	// A checkout whose work tree was deleted is recreated empty; the frozen commit repopulates it.
+	if (!existsSync(workTree)) mkdirSync(workTree, { recursive: true, mode: 0o700 });
+	// The sandbox mounts an empty read-only tmpfs over `.git`, so the path is always an empty
+	// directory: never the clone's gitfile, and never a directory the agent could write through.
+	const shadow = join(workTree, ".git");
+	if (existsSync(shadow) && !statSync(shadow).isDirectory()) {
+		throw new CliError("DIR_NOT_WORK_REPO", `${shadow} is not the empty directory the sandbox shadow needs; remove it or pass a fresh --dir.`);
+	}
+	if (!existsSync(shadow)) mkdirSync(shadow, { mode: 0o700 });
+	if (checkoutGit(git, checkout, env, ["cat-file", "-e", `${frozen}^{commit}`]).status !== 0) {
 		throw new CliError("FROZEN_COMMIT_MISSING", `The work repo does not carry the frozen commit ${frozen.slice(0, 7)}. `
 			+ "Rerun in about 30 seconds after funding creates it.");
 	}
-	const checkedOut = git(["-C", dir, "checkout", "--force", "--quiet", frozen], env);
+	const checkedOut = checkoutGit(git, checkout, env, ["checkout", "--force", "--quiet", frozen]);
 	if (checkedOut.status !== 0) throw new CliError("GIT_FAILED", `git checkout of the frozen commit failed. ${safeEcho(checkedOut.stderr)}`.trim());
-	const cleaned = git(["-C", dir, "clean", "-fdq"], env);
+	const cleaned = checkoutGit(git, checkout, env, ["clean", "-fdq"]);
 	if (cleaned.status !== 0) throw new CliError("GIT_FAILED", `git clean failed. ${safeEcho(cleaned.stderr)}`.trim());
 }
 
 /** Added lines per changed path against the frozen commit. A `to` commit compares the two committed
  * trees; without one the working tree is read, untracked files included. */
-export function changedFiles(git: GitRun, dir: string, frozen: CommitSha, to?: string): readonly ChangedFile[] {
+export function changedFiles(git: GitRun, checkout: JobCheckout, frozen: CommitSha, env: NodeJS.ProcessEnv, to?: string): readonly ChangedFile[] {
 	const files = new Map<string, ChangedFile>();
-	const tracked = runGit(git, ["-C", dir, "diff", "--numstat", "--no-renames", "-z", frozen, ...(to === undefined ? ["--"] : [to])]);
+	const tracked = runGit(git, jobGitArgs(checkout, env, ["diff", "--numstat", "--no-renames", "-z", frozen, ...(to === undefined ? ["--"] : [to])]), env);
 	for (const record of tracked.stdout.split("\0")) {
 		if (record === "") continue;
 		const [added, deleted, ...rest] = record.split("\t");
@@ -244,10 +328,10 @@ export function changedFiles(git: GitRun, dir: string, frozen: CommitSha, to?: s
 		files.set(path, { path, added: binary ? 0 : Number(added) || 0, binary });
 	}
 	if (to === undefined) {
-		const untracked = runGit(git, ["-C", dir, "ls-files", "--others", "--exclude-standard", "-z"]);
+		const untracked = runGit(git, jobGitArgs(checkout, env, ["ls-files", "--others", "--exclude-standard", "-z"]), env);
 		for (const path of untracked.stdout.split("\0")) {
 			if (path === "") continue;
-			const counted = countLines(readFileSync(join(dir, path)));
+			const counted = countLines(readFileSync(join(checkout.workTree, path)));
 			files.set(path, { path, ...counted });
 		}
 	}
@@ -262,23 +346,25 @@ function countLines(buffer: Buffer): { added: number; binary: boolean } {
 	return { added: lines.length - (lines.at(-1) === "" ? 1 : 0), binary: false };
 }
 
-export function headOf(git: GitRun, dir: string, env: NodeJS.ProcessEnv): CommitSha {
-	const head = runGit(git, ["-C", dir, "rev-parse", "HEAD"], env).stdout.trim();
+export function headOf(git: GitRun, checkout: JobCheckout, env: NodeJS.ProcessEnv): CommitSha {
+	const head = runGit(git, jobGitArgs(checkout, env, ["rev-parse", "HEAD"]), env).stdout.trim();
 	if (!/^[0-9a-f]{7,64}$/.test(head)) throw new CliError("GIT_FAILED", `git rev-parse HEAD answered ${head || "(nothing)"}.`);
 	return head as CommitSha;
 }
 
-/** Commits the agent's tree with the operator's identity when one is configured, and a runner
- * identity otherwise, so a machine with no git user still produces the commit submit needs. */
-export function commitWork(git: GitRun, dir: string, message: string, env: NodeJS.ProcessEnv): CommitSha {
-	runGit(git, ["-C", dir, "add", "-A"], env);
-	const configured = git(["-C", dir, "config", "user.email"], env).stdout.trim();
-	const args = ["-C", dir];
+/** Commits the agent's tree with the operator's identity when the state git directory carries one,
+ * and a runner identity otherwise, so a machine with no git user still produces the commit submit
+ * needs. `git add -A` reads the work tree's .gitattributes, but a filter driver needs config the CLI
+ * wrote none of and the hardened env hides every other source, so attributes alone run nothing. */
+export function commitWork(git: GitRun, checkout: JobCheckout, message: string, env: NodeJS.ProcessEnv): CommitSha {
+	runGit(git, jobGitArgs(checkout, env, ["add", "-A"]), env);
+	const configured = git(jobGitArgs(checkout, env, ["config", "user.email"]), env).stdout.trim();
+	const args = [...jobGitArgs(checkout, env, [])];
 	if (configured === "") args.push("-c", "user.name=acquit-runner", "-c", "user.email=runner@acquit.local");
 	args.push("commit", "--quiet", "-m", message);
 	const committed = git(args, env);
 	if (committed.status !== 0) throw new CliError("COMMIT_FAILED", `git commit failed. ${safeEcho(committed.stderr)}`.trim());
-	return headOf(git, dir, env);
+	return headOf(git, checkout, env);
 }
 
 /**
@@ -286,16 +372,19 @@ export function commitWork(git: GitRun, dir: string, message: string, env: NodeJ
  * committed, so what the changed-files count reads and what the push carries are the same tree. Null
  * means the checkout still sits on the frozen commit with a clean tree: there is nothing to push.
  */
-export function submissionCommit(git: GitRun, dir: string, frozen: CommitSha, message: string, env: NodeJS.ProcessEnv): CommitSha | null {
-	const head = headOf(git, dir, env);
-	const dirty = runGit(git, ["-C", dir, "status", "--porcelain"], env).stdout.trim() !== "";
-	if (dirty) return commitWork(git, dir, message, env);
+export function submissionCommit(git: GitRun, checkout: JobCheckout, frozen: CommitSha, message: string, env: NodeJS.ProcessEnv): CommitSha | null {
+	const head = headOf(git, checkout, env);
+	const dirty = runGit(git, jobGitArgs(checkout, env, ["status", "--porcelain"]), env).stdout.trim() !== "";
+	if (dirty) return commitWork(git, checkout, message, env);
 	return head === frozen ? null : head;
 }
 
 /** The ref `acquit submit` pushes to: one commit-named ref, so the two commands can only agree. */
-export function pushWork(git: GitRun, dir: string, url: string, commit: CommitSha, env: NodeJS.ProcessEnv): void {
-	const pushed = git(["-C", dir, "push", "--quiet", url, `${commit}:${submissionRef(commit)}`], env);
+export function pushWork(git: GitRun, checkout: JobCheckout, url: string, commit: CommitSha, env: NodeJS.ProcessEnv): void {
+	// The state git directory is never exposed to the agent, but a push is the one place the scoped
+	// token meets config: refuse any key the CLI did not write before git can read it.
+	assertSafePushConfig(git, checkout.gitDir, env);
+	const pushed = git(jobGitArgs(checkout, env, ["push", "--quiet", url, `${commit}:${submissionRef(commit)}`]), env);
 	if (pushed.status !== 0) throw pushError(url, pushed.stderr);
 }
 
@@ -379,6 +468,9 @@ export function runnerRunArgs(plan: RunnerPlan): readonly string[] {
 	if (plan.instruction !== null) args.push("-e", `ACQUIT_INSTRUCTION=${plan.instruction}`);
 	if (plan.providerKey !== null) args.push("-e", "ANTHROPIC_API_KEY");
 	args.push("--mount", `type=bind,source=${plan.dir},target=/work`);
+	// The job's git directory is never inside the work tree; the shadow keeps even a stray `.git`
+	// from being read or written by the agent, and stays read-only.
+	args.push("--tmpfs", "/work/.git:ro");
 	if (plan.commandPath !== null) args.push("--mount", `type=bind,source=${plan.commandPath},target=/acquit/command.sh,readonly`);
 	args.push("--workdir", "/work", plan.image, "node", "/runner/run.mjs", "--exec", ...plan.argv);
 	return args;
@@ -541,6 +633,8 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 	const url = workRepoUrl(credential.repository);
 	const frozen = view.contract.frozenAt;
 	const reset = view.attempts.used > 0;
+	// The git directory stays in the CLI's state location: the sandbox only ever mounts `dir`.
+	const checkout: JobCheckout = { gitDir: stateGitDir(view.id, env), workTree: dir };
 	print(renderPreparing({ jobId: view.id, workRepo: credential.repository, image: options.image, frozenAt: frozen, reset }));
 
 	const secret = (deps.makeSecretDir ?? makeSecretDir)();
@@ -551,8 +645,12 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 	const guard = signalGuard(names, { onSignal: () => secret.remove() });
 	try {
 		const askpass = writeAskpass(secret.path, credential.token);
-		const gitEnv: NodeJS.ProcessEnv = { ...child, ...askpass.env };
-		prepareWorkRepo(git, dir, url, frozen, gitEnv);
+		// The hardened env first, the CLI's own askpass last: nothing inherited survives into git.
+		const gitEnv: NodeJS.ProcessEnv = { ...hardenedGitEnv(child), ...askpass.env };
+		prepareWorkRepo(git, checkout, url, frozen, gitEnv);
+		// The identity read is the one call that must see the operator's home; it still loses every
+		// inherited GIT_* variable.
+		seedCommitIdentity(git, checkout, globalGitIdentity(git, stripGitEnv(child)), gitEnv);
 		const instruction = options.instruction ?? defaultInstruction(view);
 		print(renderRunning(String(accepted.agent), runner, commandPath));
 		const plan: RunnerPlan = { names, image: options.image, proxyImage: options.proxyImage, dir,
@@ -565,9 +663,9 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		}, child);
 		if (code !== 0) throw new CliError("AGENT_FAILED", `The agent exited ${code ?? "without a status"}.`);
 		// One tree for both the count and the push: the agent's commits plus anything it left uncommitted.
-		const pushed = submissionCommit(git, dir, frozen, `Run ${view.id} with ${accepted.agent}`, gitEnv);
-		if (pushed !== null) pushWork(git, dir, url, pushed, gitEnv);
-		const files = pushed === null ? [] : changedFiles(git, dir, frozen, pushed);
+		const pushed = submissionCommit(git, checkout, frozen, `Run ${view.id} with ${accepted.agent}`, gitEnv);
+		if (pushed !== null) pushWork(git, checkout, url, pushed, gitEnv);
+		const files = pushed === null ? [] : changedFiles(git, checkout, frozen, gitEnv, pushed);
 		print(renderFinished(files, now() - started, view.id));
 	} finally {
 		guard();
