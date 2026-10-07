@@ -193,6 +193,18 @@ test("a refund envelope's re-read settles from the refund and the capture it nam
 	} finally { globalThis.fetch = original; }
 });
 
+test("a refund read without an owning merchant still names the capture it carries", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(url => url.includes("/v2/payments/refunds/") ? Response.json(refundBody) : Response.json(captureAfterRefund));
+	try {
+		const read = await createPayPal(config).readResource({ kind: "REFUND", id: "9CD12824GS946934H" as RefundId }, null);
+		// No merchant to assert, so the refund cannot settle here. The read still names the capture a job
+		// can hold, which is what lets the route anchor the job and read again under its payee.
+		assert.deepEqual(read, { kind: "HELD", detail: "Refund 9CD12824GS946934H has no owning job", anchor: "5GT95218NT9294342" as CaptureId });
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path]), [["GET", "/v2/payments/refunds/9CD12824GS946934H"]]);
+	} finally { globalThis.fetch = original; }
+});
+
 test("a referenced payout item's re-read settles the release it recorded", async () => {
 	const original = globalThis.fetch;
 	const wire = recordedWire(() => Response.json(releaseBody));

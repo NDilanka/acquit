@@ -1752,6 +1752,61 @@ test("a reimbursement webhook that does not pay the debt is refused", async () =
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
+test("a refund webhook the index has not seen settles through the capture the refund names", async () => {
+	const exhausted = exhaustedRow();
+	const payees: (MerchantId | null)[] = [];
+	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => {
+		payees.push(payee);
+		// The provider read without an owning merchant still names the capture the refund carries; only
+		// the re-read under the job's merchant settles it.
+		return payee === null
+			? { kind: "HELD", detail: `Refund ${resource.id} has no owning job`, anchor: "TESTCAPTURE" as CaptureId }
+			: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } };
+	} } });
+	try {
+		// The index holds the capture this job escrowed, and no job holds the refund id before the row
+		// records it: the delivery names a resource the route's own index has never seen.
+		harness.store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run("TESTCAPTURE", exhausted.id);
+		const before = await harness.row();
+		assert.equal(before.state.status === "IN_PROGRESS" ? before.state.attempts.phase : null, "REFUND_PENDING");
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-UNSEEN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// The anchored job's merchant is the payee of the re-read that settles the refund.
+		assert.deepEqual(payees, [null, merchant]);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "applied");
+		const after = await harness.row();
+		assert.equal(after.version, before.version + 1);
+		assert.equal(after.state.status, "REFUNDED");
+		if (after.state.status !== "REFUNDED") throw new Error("Not refunded");
+		assert.deepEqual(after.state.refund, refundEvidence());
+		assert.deepEqual(after.state.book, [{ kind: "HELD", cents: 42000, at: now }, { kind: "REFUND", cents: 42000, at: later }]);
+		// The fact settles once: a redelivery of the same event changes nothing.
+		assert.equal((await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-UNSEEN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }))).status, 202);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "no-op, job already REFUNDED");
+		assert.deepEqual(await harness.row(), after);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
+test("a refund webhook naming a capture no job holds stays a no-op", async () => {
+	const exhausted = exhaustedRow();
+	const harness = moneyHarness(exhausted, { paypal: { readResource: async (resource, payee) => payee === null
+		? { kind: "HELD", detail: `Refund ${resource.id} has no owning job`, anchor: "CAPTURE_NO_JOB_HOLDS" as CaptureId }
+		: { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundEvidence() } } } });
+	try {
+		const before = await harness.row();
+		// No job holds the capture the refund names, so the refund is still not this deployment's to settle.
+		const response = await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-ORPHAN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
+			resource_type: "refund", resource: { id: "REFUND1" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ORPHAN-1"), "no-op, no job holds this resource");
+		assert.deepEqual(await harness.row(), before);
+	} finally { harness.store.close(); harness.base.store.close(); }
+});
+
 test("a webhook whose resource PayPal does not know is refused and no job moves", async () => {
 	const { f, jobId, held } = await heldFixture();
 	try {
