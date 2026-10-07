@@ -424,7 +424,8 @@ test("diff prints the tutorial's patch from the judged commit, without git's ind
 				history: [{ ordinal: 1, result: "REJECTED", reasons: [], reasonsTruncated: 0, sourceCommit: tamper,
 					at: "2026-11-08T09:12:00.000Z", frozen: null, hidden: null, pullRequest: null }] } });
 		const client = fakeClient({ "/api/jobs/job_7Q2K": { job, handles: {}, now: "2026-11-08T09:12:00.000Z" } });
-		const rendered = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
+		// The state root is disposable, so no run of this machine's real profile can be read.
+		const rendered = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client, env: { XDG_STATE_HOME: join(dir, "state-home") } });
 		assert.equal(rendered, tutorialBlock("--- a/tests/totals.test.ts"));
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -451,17 +452,18 @@ test("diff prefers a local HEAD that descends from the frozen commit over the ju
 				history: [{ ordinal: 1, result: "REJECTED", reasons: [], reasonsTruncated: 0, sourceCommit: tamper,
 					at: "2026-11-08T09:12:00.000Z", frozen: null, hidden: null, pullRequest: null }] } });
 		const client = fakeClient({ "/api/jobs/job_7Q2K": { job: judgedJob, handles: {}, now: "2026-11-08T09:12:00.000Z" } });
+		const diffEnv = { XDG_STATE_HOME: join(dir, "state-home") };
 		// The rerun's fix commit sits on top of the rejected one: the patch is frozen to the fix, not the
 		// stale rejected commit the job's history still names.
 		await writeFile(join(dir, "tests", "totals.test.ts"), line.replace("VALUE", "10.13"));
 		assert.equal(git("commit", "-qam", "fix").status, 0);
-		const fixed = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
+		const fixed = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client, env: diffEnv });
 		assert.match(fixed, /\+.*10\.13/);
 		assert.equal(fixed.includes('toBe("10.12")'), false);
 		// With the checkout back on the frozen commit there is no local work to prefer, so the judged
 		// submission is what diff shows.
 		assert.equal(git("reset", "-q", "--hard", frozen).status, 0);
-		const judged = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
+		const judged = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client, env: diffEnv });
 		assert.match(judged, /\+.*10\.12/);
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });

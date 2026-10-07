@@ -99,7 +99,8 @@ test("the session token never comes from argv: --token reads stdin and a value i
 });
 
 test("localHead refuses a directory that is not a repository", () => {
-	assert.throws(() => localHead("/tmp"), (error: CliError) => error.code === "NOT_A_REPOSITORY");
+	assert.throws(() => localHead("/tmp", undefined, { XDG_STATE_HOME: join(tmpdir(), `acquit-head-none-${process.pid}`) }),
+		(error: CliError) => error.code === "NOT_A_REPOSITORY");
 });
 
 test("a push to a work repo funding has not created yet is refused by name", async () => {
@@ -133,10 +134,12 @@ test("a push refusal names both causes of a missing work repo and repeats no cre
 });
 
 test("each submission lands on its own commit-named ref and never moves the publisher's branch", async () => {
-	const { pushHead } = await import("../../acquit-cli/src/submit.ts") as { pushHead?: (dir: string, remote: string, commit: CommitSha) => void };
+	const { pushHead } = await import("../../acquit-cli/src/submit.ts") as { pushHead?: (dir: string, remote: string, commit: CommitSha,
+		env?: NodeJS.ProcessEnv, scoped?: { readonly gitDir: string | null }) => void };
 	assert.equal(typeof pushHead, "function");
 	const root = mkdtempSync(join(tmpdir(), "acquit-push-sibling-"));
 	try {
+		const stateHome = join(root, "state-home");
 		const work = join(root, "work");
 		const remote = join(root, "invoice-app-7Q2K.git");
 		mkdirSync(work);
@@ -163,21 +166,84 @@ test("each submission lands on its own commit-named ref and never moves the publ
 		git(work, ["add", "-A"]);
 		git(work, ["commit", "--quiet", "-m", "tamper"]);
 		const rejected = git(work, ["rev-parse", "HEAD"]);
-		pushHead!(work, remote, rejected as CommitSha);
+		pushHead!(work, remote, rejected as CommitSha, { XDG_STATE_HOME: stateHome });
 		git(work, ["checkout", "--quiet", "--detach", frozen]);
 		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
 		git(work, ["add", "-A"]);
 		git(work, ["commit", "--quiet", "-m", "fix"]);
 		const fix = git(work, ["rev-parse", "HEAD"]);
-		pushHead!(work, remote, fix as CommitSha);
+		pushHead!(work, remote, fix as CommitSha, { XDG_STATE_HOME: stateHome });
 		// The ref is content-addressed, so the same commit pushed twice is an up-to-date no-op.
-		pushHead!(work, remote, fix as CommitSha);
+		pushHead!(work, remote, fix as CommitSha, { XDG_STATE_HOME: stateHome });
 		assert.equal(git(remote, ["rev-parse", `refs/heads/submissions/${rejected}`]), rejected);
 		assert.equal(git(remote, ["rev-parse", `refs/heads/submissions/${fix}`]), fix);
 		assert.equal(git(remote, ["rev-parse", "refs/heads/acquit/job_7Q2K"]), frozen,
 			"pushHead must neither create nor move the publisher's branch");
 		assert.equal(spawnSync("git", ["-C", remote, "cat-file", "-e", `${rejected}^{commit}`]).status, 0,
 			"the rejected commit must have reached the work repo");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a scoped push ignores a planted hook and refuses dangerous config on an operator checkout", async () => {
+	const { pushHead, localHead } = await import("../../acquit-cli/src/submit.ts") as { pushHead?: (dir: string, remote: string, commit: CommitSha,
+		env?: NodeJS.ProcessEnv, scoped?: { readonly gitDir: string | null; readonly askpass?: NodeJS.ProcessEnv }) => void;
+		localHead?: (dir: string, jobId?: string, env?: NodeJS.ProcessEnv) => CommitSha };
+	assert.equal(typeof pushHead, "function");
+	const root = mkdtempSync(join(tmpdir(), "acquit-push-scoped-"));
+	try {
+		const stateHome = join(root, "state-home");
+		const env = { PATH: process.env.PATH, XDG_STATE_HOME: stateHome };
+		const work = join(root, "work");
+		const remote = join(root, "invoice-app-7Q2K.git");
+		mkdirSync(work);
+		const git = (dir: string, args: readonly string[]) => {
+			const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+			if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
+			return result.stdout.trim();
+		};
+		git(root, ["init", "--bare", "--quiet", "--initial-branch=main", remote]);
+		git(work, ["init", "--quiet"]);
+		git(work, ["config", "user.email", "fixture@example.invalid"]);
+		git(work, ["config", "user.name", "fixture"]);
+		writeFileSync(join(work, "money.ts"), "const DECIMALS = 2;\n");
+		git(work, ["add", "-A"]);
+		git(work, ["commit", "--quiet", "-m", "frozen"]);
+		const frozen = git(work, ["rev-parse", "HEAD"]);
+		git(work, ["push", "--quiet", remote, `${frozen}:refs/heads/main`]);
+		// The operator's own checkout: no state git directory exists, so the scoped push resolves the
+		// checkout's git directory itself. A hook planted there must never run. The askpass stands in
+		// for the credential the API mints for the work repo.
+		const canary = join(root, "hook-ran");
+		const scoped = { gitDir: null, askpass: { GIT_ASKPASS: "/bin/true" } } as const;
+		mkdirSync(join(work, ".git", "hooks"), { recursive: true });
+		writeFileSync(join(work, ".git", "hooks", "pre-push"), `#!/bin/sh\ntouch ${canary}\n`, { mode: 0o755 });
+		pushHead!(work, remote, frozen as CommitSha, env, scoped);
+		assert.equal(existsSync(canary), false);
+		assert.equal(git(remote, ["rev-parse", `refs/heads/submissions/${frozen}`]), frozen);
+		// Config the CLI did not write is refused before git can read it, even on the operator's own
+		// checkout: the scoped token must never meet an untrusted credential or URL rewrite.
+		git(work, ["config", "--local", "credential.helper", "store"]);
+		assert.throws(() => pushHead!(work, remote, frozen as CommitSha, env, scoped),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("credential.helper"));
+		// The same checkout pushed with the operator's own credential keeps that config: it is theirs.
+		pushHead!(work, remote, frozen as CommitSha, env, { gitDir: null });
+		assert.equal(existsSync(canary), false);
+		git(work, ["config", "--local", "--unset", "credential.helper"]);
+		// A state checkout names the state git directory explicitly; plain discovery from the work tree
+		// never finds it, and the same planted metadata is ignored.
+		const state = join(stateHome, "acquit", "work", "job_7Q2K.git");
+		mkdirSync(dirname(state), { recursive: true });
+		git(root, ["clone", "--quiet", "--separate-git-dir", state, remote, join(root, "state-work")]);
+		assert.equal(localHead!(join(root, "state-work"), "job_7Q2K", env), frozen);
+		rmSync(join(root, "state-work", ".git"), { force: true });
+		mkdirSync(join(root, "state-work", ".git"));
+		writeFileSync(join(root, "state-work", ".git", "config"), `[url "https://evil.example/"]\n\tinsteadOf = ${remote}\n`);
+		assert.equal(spawnSync("git", ["-C", join(root, "state-work"), "rev-parse", "HEAD"]).status !== 0, true);
+		writeFileSync(join(root, "state-work", "fix.ts"), "export const fixed = true;\n");
+		pushHead!(join(root, "state-work"), remote, frozen as CommitSha, env, { gitDir: state, askpass: { GIT_ASKPASS: "/bin/true" } });
+		assert.equal(git(remote, ["rev-parse", `refs/heads/submissions/${frozen}`]), frozen);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -205,7 +271,7 @@ test("runSubmit polls until the submitted commit is judged and prints the block"
 
 test("a submit pushes through the credential the API mints for the job's work repo", async () => {
 	const posts: string[] = [];
-	const pushes: { remote: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+	const pushes: { remote: string; env: NodeJS.ProcessEnv | undefined; scoped: { gitDir: string | null; askpass?: NodeJS.ProcessEnv } }[] = [];
 	let tokenFile: string | null = null;
 	let tokenSeen = "";
 	const client: ApiClient = { baseUrl: "http://api.test",
@@ -218,15 +284,20 @@ test("a submit pushes through the credential the API mints for the job's work re
 		} };
 	await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote: null, apiUrl: "http://api.test", token: "s3cret",
 		timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted,
-		push: (dir, remote, commit, env) => {
-			pushes.push({ remote, env });
-			tokenFile = String(env?.ACQUIT_RUN_TOKEN_FILE ?? "");
-			tokenSeen = readFileSync(tokenFile, "utf8").trim();
+		env: { XDG_STATE_HOME: join(tmpdir(), `acquit-submit-none-${process.pid}`) },
+		push: (dir, remote, commit, env, scoped) => {
+			pushes.push({ remote, env, scoped: scoped ?? { gitDir: null } });
+			// The askpass script names its own token file; no token-path variable is in the environment.
+			tokenFile = /cat '([^']*)'/.exec(readFileSync(String(scoped?.askpass?.GIT_ASKPASS ?? ""), "utf8"))?.[1] ?? null;
+			tokenSeen = tokenFile === null ? "" : readFileSync(tokenFile, "utf8").trim();
 		}, sleep: async () => {} });
 	assert.deepEqual(posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
 	assert.equal(pushes.length, 1);
 	assert.equal(pushes[0].remote, "https://github.com/acquit-forks/invoice-app-7Q2K.git");
-	assert.equal(pushes[0].env?.GIT_ASKPASS !== undefined, true);
+	assert.equal(pushes[0].scoped.askpass?.GIT_ASKPASS !== undefined, true);
+	assert.equal(pushes[0].scoped.askpass?.ACQUIT_RUN_TOKEN_FILE, undefined);
+	assert.equal(pushes[0].scoped.gitDir, null, "no state git directory exists for /tmp/work");
+	assert.equal(pushes[0].env?.GIT_ASKPASS, undefined, "the askpass is not part of the inherited environment");
 	assert.equal(pushes[0].remote.includes(workRepoToken), false);
 	assert.equal(Object.values(pushes[0].env ?? {}).some(value => String(value).includes(workRepoToken)), false);
 	assert.equal(tokenSeen, workRepoToken);
@@ -313,6 +384,55 @@ test("a mint refused to a stranger leaves the denial to the Submit command", asy
 	const named = await run("origin");
 	assert.deepEqual(named.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
 	assert.deepEqual(named.pushes, ["origin"]);
+});
+
+test("a mint that is not ready or not configured falls back for a named remote and surfaces for the default", async () => {
+	const noState = { XDG_STATE_HOME: join(tmpdir(), `acquit-submit-none-${process.pid}`) };
+	const run = async (remote: string | null, code: string, detail: string) => {
+		const posts: string[] = [];
+		const pushes: string[] = [];
+		const client: ApiClient = { baseUrl: "http://api.test",
+			async get() { return { job: rejectedView(), handles: {} }; },
+			async post(path) {
+				posts.push(path);
+				if (path.endsWith("/work-repo-token")) throw new CliError(code, detail);
+				return { status: 200, body: { outcome: { kind: "COMMITTED" } } };
+			} };
+		try {
+			await runSubmit({ jobId: "job_7Q2K", dir: "/tmp/work", remote, apiUrl: "http://api.test", token: "s3cret",
+				timeoutSeconds: 30, pollMs: 1 }, { client, head: () => submitted, env: noState,
+				remoteUrl: () => "https://github.com/acquit-forks/invoice-app-7Q2K.git",
+				push: (dir, named) => pushes.push(named), sleep: async () => {} });
+			return { error: null as CliError | null, posts, pushes };
+		} catch (error) {
+			assert.equal(error instanceof CliError, true);
+			return { error: error as CliError, posts, pushes };
+		}
+	};
+	const retry = "The work repository acquit-forks/invoice-app-7Q2K is not visible to the GitHub App yet. "
+		+ "It is created shortly after funding, so retry in about 30 seconds.";
+	// A named work-repo remote keeps the operator's own credential, the way submit pushed before the
+	// scoped mint existed; the Submit command still runs.
+	const namedNotReady = await run("origin", "WORK_REPO_NOT_READY", retry);
+	assert.deepEqual(namedNotReady.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.deepEqual(namedNotReady.pushes, ["origin"]);
+	const namedUnconfigured = await run("origin", "GITHUB_NOT_CONFIGURED", "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run.");
+	assert.deepEqual(namedUnconfigured.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.deepEqual(namedUnconfigured.pushes, ["origin"]);
+	// The default target has no operator credential to fall back to: the refusal surfaces with its
+	// retry hint instead of a Submit the API would refuse.
+	const defaultNotReady = await run(null, "WORK_REPO_NOT_READY", retry);
+	assert.equal(defaultNotReady.error?.code, "WORK_REPO_NOT_READY");
+	assert.match(defaultNotReady.error?.message ?? "", /retry in about 30 seconds/);
+	assert.deepEqual(defaultNotReady.posts, ["/api/jobs/job_7Q2K/work-repo-token"]);
+	const defaultUnconfigured = await run(null, "GITHUB_NOT_CONFIGURED", "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run.");
+	assert.equal(defaultUnconfigured.error?.code, "GITHUB_NOT_CONFIGURED");
+	assert.deepEqual(defaultUnconfigured.posts, ["/api/jobs/job_7Q2K/work-repo-token"]);
+	// A mint that failed for any other reason is never papered over with another credential.
+	const tokenFailed = await run("origin", "WORK_REPO_TOKEN_FAILED", "GitHub refused a credential for the work repo.");
+	assert.equal(tokenFailed.error?.code, "WORK_REPO_TOKEN_FAILED");
+	assert.deepEqual(tokenFailed.posts, ["/api/jobs/job_7Q2K/work-repo-token"]);
+	assert.deepEqual(tokenFailed.pushes, []);
 });
 
 test("a run that never reports ends in a named timeout, not a hang", async () => {

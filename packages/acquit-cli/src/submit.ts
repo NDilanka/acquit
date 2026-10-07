@@ -1,5 +1,7 @@
 // `acquit submit <job> [--dir .]`. One attempt: push the submitted commit to its own ref on the job's
 // work repository, ask the API to record the submission, then print the block docs/tutorial.md shows.
+// A `--dir` `acquit run` cloned has no git metadata of its own: the job's state git directory is
+// named explicitly, and a scoped push refuses config the CLI did not write.
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -9,6 +11,8 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
+import { assertSafePushConfig, existingStateCheckout, gitGuardArgs, hardenedGitEnv } from "./gitstate.ts";
+import type { GitProbe, JobCheckout } from "./gitstate.ts";
 import { childEnv, makeSecretDir, parseWorkRepo, remoteNamesWorkRepo, secretGuard, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
 export type SubmitOptions = {
@@ -67,9 +71,36 @@ function readTokenFromStdin(): string {
 	try { return readFileSync(0, "utf8"); } catch { return ""; }
 }
 
-/** The commit the operator is submitting. A dirty tree is the operator's business, not this command's. */
-export function localHead(dir: string): CommitSha {
-	const result = spawnSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 15_000 });
+/** The job's state checkout when one exists: the git directory the CLI keeps outside the work tree
+ * `acquit run` mounted, so a run checkout has no discovery of its own. */
+function stateCheckout(dir: string, jobId: string | undefined, env: NodeJS.ProcessEnv): JobCheckout | null {
+	return jobId === undefined ? null : existingStateCheckout(jobId, dir, env);
+}
+
+/** A git probe over the CLI's hardened env, for the local config reads a scoped push makes. */
+function gitProbe(env: NodeJS.ProcessEnv): GitProbe {
+	return args => {
+		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 15_000, env });
+		return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+	};
+}
+
+/** The checkout's own git directory, for a checkout no run cloned. Null when there is none. */
+function absoluteGitDir(dir: string, env: NodeJS.ProcessEnv): string | null {
+	const result = spawnSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8", timeout: 15_000, env });
+	const gitDir = result.stdout?.trim() ?? "";
+	return result.status === 0 && gitDir !== "" ? gitDir : null;
+}
+
+/** The commit the operator is submitting. A dirty tree is the operator's business, not this command's.
+ * A job's state git directory is named explicitly; only the operator's own checkout keeps discovery. */
+export function localHead(dir: string, jobId?: string, env: NodeJS.ProcessEnv = process.env): CommitSha {
+	const base = childEnv(env);
+	const checkout = stateCheckout(dir, jobId, base);
+	const args = checkout === null
+		? ["-C", dir, ...gitGuardArgs(base), "rev-parse", "HEAD"]
+		: ["--git-dir", checkout.gitDir, "--work-tree", checkout.workTree, ...gitGuardArgs(base), "rev-parse", "HEAD"];
+	const result = spawnSync("git", args, { encoding: "utf8", timeout: 15_000, env: hardenedGitEnv(base) });
 	const head = result.stdout?.trim() ?? "";
 	if (result.status !== 0 || !SHA.test(head)) {
 		throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit. ${tail(result.stderr)}`.trim());
@@ -83,15 +114,39 @@ export function submissionRef(commit: CommitSha): string {
 	return `refs/heads/submissions/${commit}`;
 }
 
+/**
+ * A scoped push names the job's git directory explicitly. `gitDir` is the state git directory when
+ * `acquit run` cloned the checkout; null resolves the checkout's own git directory, never left to
+ * discovery. `askpass` is the CLI's own credential script for the job's work repo, applied after the
+ * environment is hardened so it is the only askpass that survives; a push that carries it also
+ * refuses config the CLI did not write, because that is the one place a CLI-minted token meets a git
+ * directory.
+ */
+export type ScopedPush = { readonly gitDir: string | null; readonly askpass?: NodeJS.ProcessEnv };
+
 /** Pushing into the job's work repo goes through the credential the API mints for that repo alone;
  * a remote the operator names that is not that repo keeps the operator's own credential. The CLI
  * never writes the publisher's `acquit/<jobId>` branch: the publisher creates that ref itself at
  * the judged commit, which is in the work repo because the submission ref carries it. A submission
  * the API later denies (VERIFIER_PENDING, WRONG_STATE) therefore cannot move the open pull request's
  * head. */
-export function pushHead(dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv): void {
-	const result = spawnSync("git", ["-C", dir, "push", remote, `${commit}:${submissionRef(commit)}`],
-		{ encoding: "utf8", timeout: 120_000, env: { ...childEnv(process.env), ...env } });
+export function pushHead(dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv, scoped?: ScopedPush): void {
+	const base = { ...childEnv(process.env), ...env };
+	const gitEnv = { ...hardenedGitEnv(base), ...(scoped?.askpass ?? {}) };
+	const guard = gitGuardArgs(base);
+	let args: readonly string[];
+	if (scoped === undefined) {
+		// The operator's own credential to a remote the operator named: discovery stays, hardened.
+		args = ["-C", dir, ...guard, "push", remote, `${commit}:${submissionRef(commit)}`];
+	} else {
+		const gitDir = scoped.gitDir ?? absoluteGitDir(dir, gitEnv);
+		if (gitDir === null) throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit.`);
+		// The scoped token must never meet config the CLI did not write; an operator's own credential
+		// only meets the checkout the operator works in, so its config is theirs to keep.
+		if (scoped.askpass !== undefined) assertSafePushConfig(gitProbe(gitEnv), gitDir, gitEnv);
+		args = ["--git-dir", gitDir, "--work-tree", dir, ...guard, "push", remote, `${commit}:${submissionRef(commit)}`];
+	}
+	const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 120_000, env: gitEnv });
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
 
@@ -155,18 +210,26 @@ function hoursBetween(from: string, to: string): number {
 
 export type SubmitDeps = {
 	readonly client: ApiClient;
-	readonly head: (dir: string) => CommitSha;
-	readonly push: (dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv) => void;
+	/** The submitted commit: the job's state git directory when it exists, otherwise the checkout's own. */
+	readonly head: (dir: string, jobId?: string, env?: NodeJS.ProcessEnv) => CommitSha;
+	readonly push: (dir: string, remote: string, commit: CommitSha, env?: NodeJS.ProcessEnv, scoped?: ScopedPush) => void;
 	/** A `--remote` value resolved to the URL git would push to; null when git cannot resolve it. */
-	readonly remoteUrl?: (dir: string, remote: string) => string | null;
+	readonly remoteUrl?: (dir: string, remote: string, jobId?: string, env?: NodeJS.ProcessEnv) => string | null;
 	readonly makeSecretDir?: () => { readonly path: string; readonly remove: () => void };
 	readonly sleep?: (ms: number) => Promise<void>;
 	readonly now?: () => number;
+	/** The environment state paths and hardening read; the process environment by default. */
+	readonly env?: NodeJS.ProcessEnv;
 };
 
 /** The URL a `--remote` names: a configured remote resolves through git, anything else is itself. */
-function remoteUrl(dir: string, remote: string): string | null {
-	const result = spawnSync("git", ["-C", dir, "remote", "get-url", remote], { encoding: "utf8", timeout: 15_000 });
+function remoteUrl(dir: string, remote: string, jobId?: string, env: NodeJS.ProcessEnv = process.env): string | null {
+	const base = childEnv(env);
+	const checkout = stateCheckout(dir, jobId, base);
+	const args = checkout === null
+		? ["-C", dir, ...gitGuardArgs(base), "remote", "get-url", remote]
+		: ["--git-dir", checkout.gitDir, "--work-tree", checkout.workTree, ...gitGuardArgs(base), "remote", "get-url", remote];
+	const result = spawnSync("git", args, { encoding: "utf8", timeout: 15_000, env: hardenedGitEnv(base) });
 	const url = result.stdout?.trim() ?? "";
 	return result.status === 0 && url !== "" ? url : null;
 }
@@ -178,12 +241,16 @@ function remoteUrl(dir: string, remote: string): string | null {
  * operator's own credential.
  */
 async function pushSubmission(options: SubmitOptions, view: JobProjection, commit: CommitSha, deps: SubmitDeps): Promise<void> {
+	const env = deps.env ?? process.env;
 	let named: string | null = null;
 	if (options.remote !== null) {
-		const resolved = (deps.remoteUrl ?? remoteUrl)(options.dir, options.remote) ?? options.remote;
+		const resolved = (deps.remoteUrl ?? remoteUrl)(options.dir, options.remote, view.id, env) ?? options.remote;
 		const repository = view.contract?.repository ?? null;
 		if (repository === null || !remoteNamesWorkRepo(resolved, repository, view.id)) {
-			deps.push(options.dir, options.remote, commit);
+			// The operator's own credential, but a run checkout still names its state git directory:
+			// there is no discovery to fall back on.
+			const state = stateCheckout(options.dir, view.id, env);
+			deps.push(options.dir, options.remote, commit, env, { gitDir: state?.gitDir ?? null });
 			return;
 		}
 		named = options.remote;
@@ -195,12 +262,18 @@ async function pushSubmission(options: SubmitOptions, view: JobProjection, commi
 	try {
 		credential = parseWorkRepo((await deps.client.post(`/api/jobs/${encodeURIComponent(view.id)}/work-repo-token`, {})).body);
 	} catch (error) {
-		// The scoped credential belongs to the job's operator alone. A refused mint falls back to the
-		// operator's own credential, and the Submit command answers with the domain denial that names
-		// the operator the job is locked to.
-		if (error instanceof CliError && error.code === "NOT_OWNER") {
-			if (named !== null) deps.push(options.dir, named, commit);
-			return;
+		// A named remote still takes the operator's own credential when the mint cannot answer: a
+		// stranger's denial, a work repo GitHub has not created yet, or an API with no GitHub App.
+		// The default target has no other credential to fall back to, so a not-ready or not-configured
+		// mint surfaces with its own hint and the Submit command never runs; a stranger's denial is
+		// left to the Submit command, which names the operator the job is locked to.
+		if (error instanceof CliError && (error.code === "NOT_OWNER" || error.code === "WORK_REPO_NOT_READY" || error.code === "GITHUB_NOT_CONFIGURED")) {
+			if (named !== null) {
+				const state = stateCheckout(options.dir, view.id, env);
+				deps.push(options.dir, named, commit, env, { gitDir: state?.gitDir ?? null });
+				return;
+			}
+			if (error.code === "NOT_OWNER") return;
 		}
 		throw error;
 	}
@@ -209,7 +282,10 @@ async function pushSubmission(options: SubmitOptions, view: JobProjection, commi
 	const stop = secretGuard(() => secret.remove());
 	try {
 		const askpass = writeAskpass(secret.path, credential.token);
-		deps.push(options.dir, workRepoUrl(credential.repository), commit, askpass.env);
+		// A run checkout's git directory lives in the CLI's state location; an operator checkout's own
+		// git directory is resolved explicitly for the scoped push, never left to discovery.
+		const state = stateCheckout(options.dir, view.id, env);
+		deps.push(options.dir, workRepoUrl(credential.repository), commit, env, { gitDir: state?.gitDir ?? null, askpass: askpass.env });
 	} finally {
 		stop();
 		secret.remove();
@@ -218,7 +294,8 @@ async function pushSubmission(options: SubmitOptions, view: JobProjection, commi
 
 /** Records one submission and waits for its verdict. */
 export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promise<string> {
-	const sourceCommit = deps.head(options.dir);
+	const env = deps.env ?? process.env;
+	const sourceCommit = deps.head(options.dir, options.jobId, env);
 	const before = await jobView(deps.client, options.jobId);
 	await pushSubmission(options, before.job, sourceCommit, deps);
 	// A failure the job already carried for this commit belongs to an earlier run; only a new one ends this wait.
