@@ -4,9 +4,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import { config } from "./config.ts";
+import { config, devEnabled, webOrigin } from "./config.ts";
 
-const settings = config();
+let clockOffset = 0;
+let fundingMode: "checkout" | "card" = "checkout";
+const clock = { now: () => instant(new Date(Date.now() + clockOffset).toISOString()) };
+const baseSettings = config();
+const settings = { ...baseSettings, clock, paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
 const db = new DatabaseSync(settings.databaseUrl);
 const port = Number(process.env.PORT ?? 4310);
@@ -18,7 +22,7 @@ function session(req: IncomingMessage) {
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
 	if (!token) return null;
-	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), new Date().toISOString());
+	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), clock.now());
 	const selected = record ? user(String(record.handle)) : null;
 	return selected ? { user: selected, token, actor: selected.role === "CLIENT"
 		? { role: "CLIENT", clientId: selected.handle as ClientId } as Actor
@@ -62,7 +66,6 @@ function parseCommand(value: unknown): UserCommand {
 	};
 	const allowed = typeof command.type === "string" ? keys[command.type] : undefined;
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
-	// Construct just the documented payload. System edges cannot cross HTTP.
 	switch (command.type) {
 		case "OpenJob": return { type: "OpenJob", repository: text(command.repository, "repository"),
 			issueNumber: integer(command.issueNumber, "issue number"), budget: integer(command.budget, "budget") as UsdCents,
@@ -78,19 +81,23 @@ function parseCommand(value: unknown): UserCommand {
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	const method = req.method ?? "GET";
-	// Session cookies stay same-origin. The sandbox/dev identity picker is not production authentication.
 	const origin = req.headers.origin;
-	if (origin && ![`http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) {
+	const webAlias = new URL(webOrigin);
+	if (webAlias.hostname === "localhost") webAlias.hostname = "127.0.0.1";
+	if (origin && ![webOrigin, webAlias.origin, `http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) {
 		json(res, 403, { error: "ORIGIN_DENIED" }); return;
 	}
 	if (url.pathname === "/api/users" && method === "GET") { json(res, 200, { users: SEEDED_USERS }); return; }
+	if (url.pathname.startsWith("/api/dev/") && !devEnabled) {
+		json(res, 403, { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }); return;
+	}
 	if (url.pathname === "/api/session") {
 		if (method === "GET") { json(res, 200, { user: session(req)?.user ?? null }); return; }
 		if (method === "POST") {
 			const selected = user(text(object(await body(req)).handle, "handle"));
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
 			const token = randomBytes(32).toString("base64url");
-			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), selected.handle, new Date(Date.now() + 7 * 86400000).toISOString());
+			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), selected.handle, new Date(Date.parse(clock.now()) + 7 * 86400000).toISOString());
 			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 			json(res, 200, { user: selected, token }); return;
 		}
@@ -132,6 +139,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
 	}
+	if (url.pathname === "/api/dev/clock" && method === "POST") {
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "advanceMs")) throw new BadBody("Unsupported clock field");
+		const advanceMs = integer(input.advanceMs, "advanceMs", 365 * 86400000);
+		clockOffset += advanceMs;
+		await acquit.tick();
+		json(res, 200, { now: clock.now() }); return;
+	}
+	if (url.pathname === "/api/dev/fund-mode" && method === "POST") {
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "mode") || !["card", "checkout"].includes(String(input.mode))) throw new BadBody("Expected card or checkout");
+		fundingMode = input.mode as "card" | "checkout";
+		json(res, 200, { mode: fundingMode }); return;
+	}
 	if (url.pathname === "/api/dev/tick" && method === "POST") { await acquit.tick(); json(res, 200, { ok: true }); return; }
 	if (url.pathname === "/api/jobs" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
@@ -170,7 +191,6 @@ const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });
 		else res.end();
-		// Never log request headers, environment values, tokens, or provider payloads.
 		if (!(error instanceof BadBody)) console.error("Request failed; no sensitive payload logged.");
 	});
 });

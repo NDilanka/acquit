@@ -1,22 +1,31 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync } from "node:fs";
-import { mkdtemp, readFile, writeFile, unlink, rmdir, appendFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { readFile, writeFile, appendFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { context } from "../../../../packages/ctl/src/state.ts";
+import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
+import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
+import { dashboardPorts } from "../../../../packages/ctl/src/browser-safety.ts";
+import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
-const databasePath = resolve(root, "data/verify/acquit.db");
+if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
+const ctx = context();
+const databasePath = ctx.databasePath;
+const webUrl = `http://localhost:${ctx.webPort}`;
+const apiUrl = `http://localhost:${ctx.apiPort}`;
+const browserSession = ctx.browserSession;
 const [mode, stamp] = process.argv.slice(2);
-assert(["doctor", "drive", "cleanup"].includes(mode), "Use doctor, drive, or cleanup with a run stamp.");
+assert(["doctor", "drive", "approve", "cleanup"].includes(mode), "Use doctor, drive, approve, or cleanup with a run stamp.");
 assert(/^[A-Za-z0-9_-]+$/.test(stamp ?? ""), "Use a run stamp with letters, digits, underscores, or hyphens.");
-process.env.DATABASE_PATH = "./data/verify/acquit.db";
-process.env.PORT = "4310";
-process.env.WEB_PORT = "5173";
+process.env.DATABASE_PATH = databasePath;
+process.env.PORT = String(ctx.apiPort);
+process.env.WEB_PORT = String(ctx.webPort);
 if (existsSync(resolve(root, ".env"))) process.loadEnvFile(resolve(root, ".env"));
-const evidence = resolve(root, "data/evidence/verify-acquit", stamp);
+const evidence = resolve(root, process.env.ACQUIT_EVIDENCE_DIR ?? "data/evidence/verify-acquit", stamp);
 const launch = JSON.parse(await readFile(join(evidence, "launch.json"), "utf8"));
 assert(launch.ok && launch.command === "start" && launch.data.alreadyRunning === false, "This run must start its own instance.");
 assert.equal(resolve(launch.data.databasePath), databasePath, "Refuse to drive the real database.");
@@ -25,47 +34,26 @@ for (const name of Object.keys(browserEnv)) {
 	if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT"
 		|| /PAYPAL|SANDBOX|MERCHANT_ID|PASSWORD|SECRET|TOKEN|API_KEY/.test(name)) delete browserEnv[name];
 }
-browserEnv.AGENT_BROWSER_SESSION = "verify-acquit";
+browserEnv.AGENT_BROWSER_SESSION = browserSession;
 browserEnv.AGENT_BROWSER_HEADED = "false";
+// Sandbox token + order calls can each consume their 15s timeout before a
+// durable retry. The browser's 25s default is shorter than that valid path.
+browserEnv.AGENT_BROWSER_DEFAULT_TIMEOUT = "60000";
 const secrets = Object.entries(process.env)
 	.filter(([name, value]) => value && /PAYPAL_CLIENT_|MERCHANT_ID|SANDBOX_BUYER_|PASSWORD|SECRET|TOKEN|API_KEY/.test(name))
 	.map(([, value]) => value);
-const redact = value => {
-	let text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-	for (const secret of secrets) text = text.replaceAll(secret, "[redacted]");
-	return text.replace(/(https:\/\/www\.sandbox\.paypal\.com\/[^"\s?]+)\?[^"\s]+/g, "$1?[redacted]");
-};
+const redact = redactor(secrets);
 const save = (name, value) => writeFile(join(evidence, name), redact(value) + "\n");
 
-async function captured(executable, args, env) {
-	const dir = await mkdtemp(join(tmpdir(), "verify-acquit-"));
-	const file = join(dir, "stdout");
-	const fd = openSync(file, "w", 0o600);
-	try {
-		// Browser daemons retain pipe handles on Windows after their CLI exits.
-		const code = await new Promise((resolveExit, reject) => {
-			const child = spawn(executable, args, { cwd: root, env, windowsHide: true, stdio: ["ignore", fd, "ignore"] });
-			const timer = setTimeout(() => {
-				if (process.platform === "win32") {
-					spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
-				} else child.kill();
-				reject(new Error("Child command timed out. Run cleanup."));
-			}, 90_000);
-			child.once("error", error => { clearTimeout(timer); reject(error); });
-			child.once("exit", code => { clearTimeout(timer); resolveExit(code); });
-		});
-		const reply = JSON.parse(await readFile(file, "utf8"));
-		assert.equal(code, 0, redact(reply.error ?? "Child command failed without a JSON error."));
-		return reply;
-	} finally {
-		closeSync(fd);
-		await unlink(file);
-		await rmdir(dir);
-	}
+async function captured(executable, args, env, input) {
+	const { code, stdout } = await captureCommand(executable, args, root, env, 90_000, input);
+	const reply = JSON.parse(stdout);
+	assert.equal(code, 0, redact(reply.error ?? "Child command failed without a JSON error."));
+	return reply;
 }
 
 async function cli(...args) {
-	const reply = await captured(process.execPath, ["packages/cli/src/main.ts", ...args], process.env);
+	const reply = await captured(process.execPath, ["packages/ctl/src/main.ts", ...args], process.env);
 	assert(reply.ok, `Acquit CLI ${args[0]} failed.`);
 	return reply.data;
 }
@@ -75,25 +63,26 @@ async function doctor() {
 	assert(status.run, "The owned run is missing.");
 	assert.equal(resolve(status.database.path), databasePath, "The running API uses the wrong database.");
 	assert.deepEqual({ api: status.run.api.pid, web: status.run.web.pid }, launch.data.pids, "Ownership changed. Do not stop or drive another run.");
-	assert.equal(status.run.api.port, 4310);
-	assert.equal(status.run.web.port, 5173);
+	assert.equal(status.run.api.port, ctx.apiPort);
+	assert.equal(status.run.web.port, ctx.webPort);
 	assert(status.healthy, "The owned instance is not healthy or not seeded.");
 	return status;
 }
 
 async function browser(...args) {
+	const command = args[0] === "wait" && !args.includes("--timeout") ? ["wait", "--timeout", "20000", ...args.slice(1)] : args;
 	let reply;
 	try {
-		reply = await captured("agent-browser", [
-			"--config", join(evidence, "browser.json"), "--namespace", "verify-acquit",
-			"--session", "verify-acquit", "--json", ...args,
+		reply = await captured(browserExecutable(), [
+			"--config", join(evidence, "browser.json"), "--namespace", browserSession,
+			"--session", browserSession, "--json", ...command,
 		], browserEnv);
 	} catch (error) {
-		if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), JSON.stringify({ command: args, ok: false }) + "\n");
-		throw new Error(`Browser command failed: ${args.join(" ")}. ${redact(error.message)}`);
+		if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command, ok: false }) + "\n");
+		throw new Error(redact(`Browser command failed: ${command.join(" ")}. ${error.message}`));
 	}
 	assert(reply.success, `Browser ${args[0]} failed. Child diagnostics are withheld.`);
-	if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), JSON.stringify({ command: args, ok: true }) + "\n");
+	if (mode === "drive") await appendFile(join(evidence, "actions.jsonl"), redact({ command, ok: true }) + "\n");
 	return reply.data;
 }
 
@@ -110,12 +99,136 @@ async function signIn(handle) {
 }
 
 async function api(path, handle) {
-	const session = JSON.parse(await readFile(resolve(root, "data/cli/sessions", `${handle}.json`), "utf8"));
-	const response = await fetch(`http://localhost:4310${path}`, {
+	const session = JSON.parse(await readFile(resolve(ctx.dir, "sessions", `${handle}.json`), "utf8"));
+	const response = await fetch(`${apiUrl}${path}`, {
 		headers: { Authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(10_000),
 	});
 	assert(response.ok, `GET ${path} returned ${response.status}.`);
 	return response.json();
+}
+async function approve() {
+	if (!process.env.SANDBOX_BUYER_PASSWORD) return { passed: false, status: "BLOCKED", reason: "SANDBOX_BUYER_PASSWORD is not set" };
+	assert(process.env.SANDBOX_BUYER_EMAIL, "SANDBOX_BUYER_EMAIL is not set.");
+	await doctor();
+	const previous = JSON.parse(await readFile(join(evidence, "summary.json"), "utf8"));
+	assert(previous.passed && previous.jobId, "Run drive to checkout before approve.");
+	const checkDashboard = async () => {
+		const ports = [];
+		if (process.env.AGENT_BROWSER_DASHBOARD_PORT) ports.push(Number(process.env.AGENT_BROWSER_DASHBOARD_PORT));
+		if (process.platform === "win32") {
+			ports.push(...await dashboardPorts(browserSession, root));
+		} else if (process.env.AGENT_BROWSER_DASHBOARD_PORT === undefined) {
+			throw new Error("Approval refused: custom dashboard ports can only be discovered on Windows. Set AGENT_BROWSER_DASHBOARD_PORT or close the dashboard.");
+		}
+		await refuseDashboard(ports, portOpen);
+	};
+	await checkDashboard();
+	// agent-browser 0.37.1 starts a per-session stream server at
+	// ~/.agent-browser/namespaces/<ns>/run/<ns>.stream. A synthetic experiment
+	// showed stream disable closes that port and removes the file. Do it before
+	// any credential command, and refuse if the file remains.
+	const streamFile = join(homedir(), ".agent-browser", "namespaces", browserSession, "run", `${browserSession}.stream`);
+	await browser("stream", "disable").catch(() => {});
+	if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
+	// Force checkout locale even when PayPal inferred Sinhala from this host.
+	// Apply it to the order approval URL, not a later /signin redirect.
+	const funding = await api(`/api/jobs/${previous.jobId}`, "maya-client");
+	const alreadyHeld = funding.job.escrow === "HELD";
+	if (alreadyHeld) await browser("open", `${webUrl}/jobs/${previous.jobId}`);
+	else {
+		assert(funding.job.approveUrl, "The job has no pending approval URL.");
+		await browser("open", englishCheckoutUrl(funding.job.approveUrl));
+	}
+	await browser("wait", "--load", "domcontentloaded");
+	const fillCredential = async (selector, key) => {
+		// Recheck immediately before the fill. A dashboard or stream client that
+		// attaches between steps must not see the credential.
+		await checkDashboard();
+		await browser("stream", "disable").catch(() => {});
+		if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
+		const command = credentialFill(selector, process.env[key]);
+		// Do not use browser(): its action journal must never receive credential input.
+		const code = await discarded(browserExecutable(), ["--config", join(evidence, "browser.json"), "--namespace", browserSession,
+			"--session", browserSession, "--json", ...command.args], root, browserEnv, 90_000, command.input);
+		// Withhold batch diagnostics, including echoed command input on failure.
+		assert.equal(code, 0, "Credential field could not be filled. No diagnostics saved.");
+	};
+	const probe = `(${paypalPageProbe.toString()})(${JSON.stringify(paypalControlSelectors)})`;
+	const observe = async () => JSON.parse((await browser("eval", `JSON.stringify(${probe})`)).result);
+	// Each iteration re-probes and classifies the page, acts once, then waits
+	// until the classification changes. A control observed in one probe is never
+	// waited on: the next iteration probes again.
+	const deadline = Date.now() + 180_000;
+	let previousClass = "";
+	for (let step = 0; step < 12 && !alreadyHeld && Date.now() < deadline; step++) {
+		const current = new URL((await browser("get", "url")).url);
+		if (current.origin === webUrl && current.pathname === `/jobs/${previous.jobId}`) break;
+		assert(current.protocol === "https:" && ["sandbox.paypal.com", "www.sandbox.paypal.com"].includes(current.hostname), "Approval left the sandbox checkout.");
+		const fields = await observe();
+		const pageClass = classifyCheckout(fields, webUrl);
+		if (pageClass === "returned") break;
+		await save(`approval-step-${step}.json`, { pageClass, control: fields.control, email: fields.email, password: fields.password, overlays: fields.overlays });
+		if (pageClass === "overlay") { for (const overlay of fields.overlays) await browser("find", "role", "button", "click", "--name", overlay, "--exact"); }
+		else if (pageClass === "email") await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
+		else if (pageClass === "password" || pageClass === "login") {
+			if (fields.email) await fillCredential('input[type="email"],input[name="login_email"]', "SANDBOX_BUYER_EMAIL");
+			await fillCredential('input[type="password"]', "SANDBOX_BUYER_PASSWORD");
+		} else if (pageClass === "spinner") await browser("wait", "--load", "domcontentloaded").catch(() => {});
+		// Re-probe before clicking. The control from the classification probe may
+		// already be the previous step's leftover at 0x0.
+		if (["email", "password", "login", "review"].includes(pageClass)) {
+			const fresh = await observe();
+			if (fresh.origin !== webUrl && fresh.control) {
+				await browser("scrollintoview", fresh.control);
+				await browser("click", fresh.control);
+			}
+		}
+		const stepDeadline = Date.now() + 20_000;
+		let changed = false;
+		while (Date.now() < stepDeadline) {
+			const next = await observe().catch(() => null);
+			if (next && (next.origin === webUrl || classifyCheckout(next, webUrl) !== pageClass)) { changed = true; break; }
+			await new Promise(resolve => setTimeout(resolve, 400));
+		}
+		if (!changed && pageClass === previousClass) {
+			const diagnostic = await browser("eval", `JSON.stringify({step:${step},pageClass:${JSON.stringify(pageClass)},path:location.pathname,title:document.title,probe:${probe}})`).catch(() => null);
+			if (diagnostic) await save(`approval-timeout-${step}.json`, JSON.parse(diagnostic.result));
+			throw new Error(`Approval step ${step} (${pageClass}) did not change within 20s.`);
+		}
+		previousClass = pageClass;
+	}
+	assert(Date.now() < deadline, "Approval exceeded its total deadline.");
+	await browser("wait", "--url", `${webUrl}/jobs/${previous.jobId}`);
+	// The return redirect drops the session cookie. Sign back in so the held
+	// line renders; the capture itself already happened server-side.
+	// The return redirect drops the session, and a single click on the picker can
+	// land before the page is ready to handle it. Re-probe and click until the
+	// picker is gone rather than trusting one click.
+	const pickerGone = Date.now() + 20_000;
+	while (Date.now() < pickerGone) {
+		const signedOut = await browser("eval", `document.body.innerText.includes("Sign in as a seeded user")`);
+		if (signedOut.result !== true && signedOut.result !== "true") break;
+		await browser("find", "role", "button", "click", "--name", "maya-client").catch(() => {});
+		await new Promise(resolve => setTimeout(resolve, 500));
+	}
+	// The return page renders the held line after the capture settles. Give it
+	// longer than a login step, and record the page state if it never appears.
+	try { await browser("wait", "--timeout", "60000", "--text", "Escrow: HELD, locked to devon-ops"); }
+	catch (error) {
+		const page = await browser("eval", `JSON.stringify({path:location.pathname,text:(document.body.innerText||"").slice(0,400)})`).catch(() => null);
+		if (page) await save("approval-held-timeout.json", JSON.parse(page.result));
+		throw error;
+	}
+	const held = await api(`/api/jobs/${previous.jobId}`, "maya-client");
+	assert.equal(held.job.status, "IN_PROGRESS");
+	assert.equal(held.job.escrow, "HELD");
+	assert.equal(held.job.lockedTo, "devon-ops");
+	assert(held.job.ledger.some(line => line.kind === "HELD" && line.cents === 42000));
+	await capture("held");
+	await save("job-held.json", held);
+	const result = { ...previous, approval: "completed", passed: true };
+	await save("summary.json", result);
+	return result;
 }
 
 async function cleanup() {
@@ -131,30 +244,32 @@ async function cleanup() {
 	}
 	const stopped = await cli("status");
 	assert(!stopped.run && !stopped.ports.api.open && !stopped.ports.web.open, "Cleanup left an app process or port.");
-	await save("cleanup.json", { stopped: true, portsClosed: [4310, 5173], evidenceRetained: true });
-	return { stopped: true, portsClosed: [4310, 5173], evidence };
+	await save("cleanup.json", { stopped: true, portsClosed: [ctx.apiPort, ctx.webPort], evidenceRetained: true });
+	return { stopped: true, portsClosed: [ctx.apiPort, ctx.webPort], evidence };
 }
 
 let summary = { feature: "04-fund-escrow", entryPoint: "/jobs/new", passed: false, approval: "skipped", artifacts: evidence };
 try {
 	if (mode === "doctor") {
 		const status = await doctor();
-		console.log(JSON.stringify({ healthy: status.healthy, databasePath, pids: launch.data.pids, ports: [4310, 5173] }));
+		console.log(JSON.stringify({ healthy: status.healthy, databasePath, pids: launch.data.pids, ports: [ctx.apiPort, ctx.webPort] }));
+	} else if (mode === "approve") {
+		console.log(JSON.stringify(await approve()));
 	} else if (mode === "cleanup") {
 		console.log(JSON.stringify(await cleanup()));
 	} else {
 		await doctor();
 		assert(process.env.OPERATOR_DEVON_MERCHANT_ID?.trim(), "Configure OPERATOR_DEVON_MERCHANT_ID without printing its value.");
-		await save("browser.json", { headed: false, autoConnect: false });
+		await save("browser.json", { headed: false, autoConnect: false, args: "--lang=en-US", headers: JSON.stringify({ "Accept-Language": "en-US,en;q=0.9" }) });
 		await cli("login", "--test-user", "maya-client", "--save");
 		await cli("login", "--test-user", "devon-ops", "--save");
 		await browser("open", "about:blank");
 		await browser("cookies", "clear");
 		await browser("set", "viewport", "1440", "1000");
-		await browser("open", "http://localhost:5173");
+		await browser("open", webUrl);
 		await capture("01-signin");
 		await signIn("maya-client");
-		await browser("open", "http://localhost:5173/jobs/new");
+		await browser("open", `${webUrl}/jobs/new`);
 		await browser("wait", "--text", "#12 Totals round wrong for 3-decimal currencies");
 		await browser("select", "select:has(option[value='maya-client/invoice-app#12'])", "maya-client/invoice-app#12");
 		await browser("find", "label", "Budget (USD)", "fill", "400");
@@ -180,7 +295,7 @@ try {
 		const before = await api("/api/me/credits", "devon-ops");
 		assert.equal(before.credits.available, 30, "Reset only the verification database before this drive.");
 		await save("credits-before.json", before);
-		await browser("open", `http://localhost:5173/jobs/${jobId}`);
+		await browser("open", `${webUrl}/jobs/${jobId}`);
 		await browser("wait", "--text", "Place a bid");
 		await browser("find", "label", "Price (USD)", "fill", "400");
 		await browser("select", "select:has(option[value='48'])", "48");
@@ -196,7 +311,7 @@ try {
 		summary.credits = { before: 30, after: 20 };
 		await browser("find", "role", "button", "click", "--name", "Sign out", "--exact");
 		await signIn("maya-client");
-		await browser("open", `http://localhost:5173/jobs/${jobId}`);
+		await browser("open", `${webUrl}/jobs/${jobId}`);
 		await browser("wait", "--text", "devon-ops");
 		await capture("06-bids");
 		const bids = await api(`/api/jobs/${jobId}`, "maya-client");
@@ -212,6 +327,18 @@ try {
 		await browser("wait", "--text", "Accept devon-ops?");
 		await capture("07-accept-confirm");
 		await browser("find", "role", "button", "click", "--name", "Accept and pay with PayPal", "--exact");
+		if (process.env.ACQUIT_FUND_MODE === "card") {
+			await browser("wait", "--text", "Escrow: HELD, locked to devon-ops");
+			const held = await api(`/api/jobs/${jobId}`, "maya-client");
+			assert.equal(held.job.status, "IN_PROGRESS");
+			assert.equal(held.job.escrow, "HELD");
+			assert.equal(held.job.lockedTo, "devon-ops");
+			assert.equal(held.job.ledger[0].cents, 42000);
+			await capture("card-held");
+			await save("job-held.json", held);
+			summary.passed = true;
+			summary.approval = "dev sandbox card, no buyer login";
+		} else {
 		await browser("wait", "--url", "https://www.sandbox.paypal.com/**");
 		await browser("wait", "--load", "domcontentloaded");
 		const checkout = new URL((await browser("get", "url")).url);
@@ -250,10 +377,20 @@ try {
 		summary.approval = process.env.SANDBOX_BUYER_PASSWORD
 			? "pending optional completion; buyer password is set"
 			: "skipped because SANDBOX_BUYER_PASSWORD is not set";
+		}
 		await save("summary.json", summary);
 		console.log(JSON.stringify(summary));
 	}
 } catch (error) {
+	if (mode === "approve") {
+		await save("approval-error.json", { passed: false, step: "approval", error: redact(error.message) });
+		// Structural diagnostics only: never input values, body text, snapshots,
+		// screenshots, network bodies, or saved state on a credential page.
+		try {
+			const page = await browser("eval", `JSON.stringify({path:location.pathname,controls:Array.from(document.querySelectorAll('button,input')).map(e=>({tag:e.tagName,type:e.type,id:["btnLogin","btnNext","payment-submit-btn","button-profile","confirmButtonTop","confirmButtonBottom"].includes(e.id)?e.id:"[other]",disabled:e.disabled,display:getComputedStyle(e).display,visibility:getComputedStyle(e).visibility,opacity:getComputedStyle(e).opacity,rect:{x:e.getBoundingClientRect().x,y:e.getBoundingClientRect().y,width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height}}))})`);
+			await save("approval-controls.json", JSON.parse(page.result));
+		} catch {}
+	}
 	if (mode === "drive") {
 		if (existsSync(join(evidence, "browser.json"))) {
 			try { await capture("failure"); } catch {}

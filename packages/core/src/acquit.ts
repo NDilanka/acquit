@@ -1,6 +1,3 @@
-// The package's only entry point. package.json "exports" maps "." to this file and nothing else,
-// so an import of job.ts, ledger.ts, or effects.ts from outside the package fails to resolve.
-
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, runDueTimers, runOutboxOnce } from "./effects.ts";
@@ -28,7 +25,6 @@ export type Actor =
 	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId }
 	| { readonly role: "ARBITER"; readonly staffId: StaffId };
 
-/** Derived from the transition table. Adding a user edge there adds a command here. */
 export type UserCommand = UserJobCommand | OperatorCommand;
 
 export type Failure = DomainFailure | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";
@@ -118,21 +114,26 @@ export interface Acquit {
 	/** Timer worker. Fires due job clocks and the weekly grant, then drains the outbox. */
 	tick(): Promise<void>;
 }
+export interface Clock {
+	now(): Instant;
+}
 
 export type AcquitConfig = {
 	readonly databaseUrl: string;
+	readonly clock?: Clock;
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
 	readonly github: { readonly appId: string; readonly privateKey: string };
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
-	const store = new SqliteStore(config.databaseUrl);
+	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
+	const store = new SqliteStore(config.databaseUrl, clock);
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, paypal: createPayPal(config.paypal), feeModel: config.paypal.feeModel,
+	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented },
-		clock: { now: () => instant(new Date().toISOString()) } };
+		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
 		execute: (actor, key, command) => executeCommand(ports, actor, key, command),

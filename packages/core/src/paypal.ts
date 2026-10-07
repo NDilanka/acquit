@@ -1,6 +1,3 @@
-// PayPal adapter. The only file that knows Orders v2, referenced payouts, refunds, Partner Referrals,
-// PayPal-Auth-Assertion, webhook signatures, and HATEOAS host quirks. Callers get domain observations.
-//
 // Measured in the sandbox (scratch/paypal-escrow):
 //   the payee is named at order creation, with disbursement_mode DELAYED and platform_fees
 //   release is POST /v1/payments/referenced-payouts-items with the capture id and no amount field
@@ -16,6 +13,7 @@ import { instant } from "./ids.ts";
 import type { Branded, CaptureId, Instant, JobId, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId } from "./ids.ts";
 import { formatUsd, usd } from "./ledger.ts";
 import type { CommercialSplit, UsdCents } from "./ledger.ts";
+import type { Clock } from "./acquit.ts";
 
 /** Basis points. 349 is 3.49%. */
 export type Bps = Branded<number, "Bps">;
@@ -33,8 +31,6 @@ export type FeeQuote = {
 };
 
 export function quote(split: CommercialSplit, model: ProcessorFeeModel): FeeQuote {
-	// TODO predicted = halfUp(split.held * rateBps / 10000) + fixed. 42000 gives 1466 + 49 = 1515.
-	// TODO Reject when platformFeeInstruction would be negative. The job price is too small to carry the fee.
 	if (!Number.isSafeInteger(model.rateBps) || model.rateBps < 0 || !Number.isSafeInteger(model.fixed) || model.fixed < 0) throw new Error("Invalid fee model");
 	const predictedProcessorFee = (Number((BigInt(split.held) * BigInt(model.rateBps) + 5000n) / 10000n) + model.fixed) as UsdCents;
 	if (predictedProcessorFee > split.fee) throw new Error("Price cannot carry processing fee");
@@ -71,7 +67,7 @@ export type RefundEvidence = {
 };
 
 export type PayPalCall =
-	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly payee: MerchantId; readonly quote: FeeQuote }
+	| { readonly kind: "CREATE_ORDER"; readonly jobId: JobId; readonly payee: MerchantId; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
 	| { readonly kind: "CAPTURE"; readonly orderId: OrderId; readonly payee: MerchantId }
 	| { readonly kind: "RELEASE"; readonly captureId: CaptureId; readonly payee: MerchantId }
 	/** Full amount only. Never names platform_fees. */
@@ -109,6 +105,8 @@ export type WebhookDelivery = {
 };
 
 export type PayPalConfig = {
+	readonly webOrigin: string;
+	readonly fundingMode?: () => "checkout" | "card";
 	readonly apiBase: "https://api-m.sandbox.paypal.com";
 	readonly clientId: string;
 	readonly secret: string;
@@ -127,17 +125,12 @@ export interface PayPal {
 	parseWebhook(request: Request): Promise<WebhookDelivery | null>;
 }
 
-export function createPayPal(config: PayPalConfig): PayPal {
-	// TODO CREATE_ORDER: intent CAPTURE, amount quote.split.held, payee.merchant_id = payee,
-	//      payment_instruction.disbursement_mode DELAYED, platform_fees = quote.platformFeeInstruction.
-	// TODO CAPTURE, RELEASE, REFUND carry authAssertion(payee).
-	// TODO Normalize HATEOAS hosts with normalizeLink before following them.
-	// TODO parseWebhook verifies the signature, then re-reads the named resource and builds the observation.
+export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => instant(new Date().toISOString()) }): PayPal {
 	if (config.apiBase !== "https://api-m.sandbox.paypal.com") throw new Error("Only PayPal sandbox is supported");
 	let token: string | null = null;
 	let tokenExpires = 0;
 	async function accessToken(): Promise<string> {
-		if (token && Date.now() < tokenExpires) return token;
+		if (token && Date.parse(clock.now()) < tokenExpires) return token;
 		const response = await fetch(`${config.apiBase}/v1/oauth2/token`, {
 			method: "POST", headers: { Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.secret}`).toString("base64")}`,
 				"Content-Type": "application/x-www-form-urlencoded" },
@@ -146,7 +139,7 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		if (!response.ok) throw new ProviderError(response.status);
 		const body = object(await response.json());
 		token = text(body.access_token);
-		tokenExpires = Date.now() + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
+		tokenExpires = Date.parse(clock.now()) + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
 		return token;
 	}
 	async function request(method: "GET" | "POST", path: string, payee: MerchantId, body?: unknown, requestId?: string): Promise<unknown> {
@@ -173,7 +166,7 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		}
 		throw new Error("Unreachable");
 	}
-	const pending = (): Extract<RemoteOutcome, { kind: "UNKNOWN" }> => ({ kind: "UNKNOWN", checkAt: instant(new Date(Date.now() + 5000).toISOString()) });
+	const pending = (): Extract<RemoteOutcome, { kind: "UNKNOWN" }> => ({ kind: "UNKNOWN", checkAt: instant(new Date(Date.parse(clock.now()) + 5000).toISOString()) });
 	async function guarded(action: () => Promise<RemoteOutcome>, creating = false): Promise<RemoteOutcome> {
 		try { return await action(); } catch (error) {
 			if (error instanceof ProviderError && error.status >= 400 && error.status < 500 && ![401, 408, 409, 429].includes(error.status) && (creating || error.status !== 422)) {
@@ -190,12 +183,16 @@ export function createPayPal(config: PayPalConfig): PayPal {
 		if (order.status === "COMPLETED") return { kind: "CONFIRMED", observation: { kind: "CAPTURE_COMPLETED", capture: parseCapture(json) } };
 		if (order.status === "APPROVED") return { kind: "CONFIRMED", observation: { kind: "ORDER_APPROVED", orderId } };
 		if (order.status === "VOIDED") return { kind: "PERMANENT_FAILURE", reason: "ORDER_VOIDED" };
-		return { kind: "PENDING", checkAt: instant(new Date(Date.now() + 5000).toISOString()) };
+		return { kind: "PENDING", checkAt: instant(new Date(Date.parse(clock.now()) + 5000).toISOString()) };
 	}
 	return {
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
 			if (call.kind === "CREATE_ORDER") {
+				// Legacy payloads always mean checkout; runtime toggles cannot change
+				// the payment source bound to a queued order/request-id.
+				const fundingMode = call.fundingMode ?? "checkout";
+				if (fundingMode === "card" && process.env.ACQUIT_DEV !== "1") return { kind: "PERMANENT_FAILURE", reason: "DEV_DISABLED" };
 				const json = object(await request("POST", "/v2/checkout/orders", call.payee, {
 					intent: "CAPTURE", purchase_units: [{
 						reference_id: call.jobId, custom_id: call.jobId, description: "Acquit verified coding work",
@@ -204,12 +201,20 @@ export function createPayPal(config: PayPalConfig): PayPal {
 						payment_instruction: { disbursement_mode: "DELAYED", platform_fees: [
 							{ amount: { currency_code: "USD", value: formatUsd(call.quote.platformFeeInstruction) } },
 						] },
-					}], payment_source: { paypal: { experience_context: {
+					}], payment_source: fundingMode === "card" ? { card: {
+						number: "4111111111111111", expiry: "2028-12", security_code: "123", name: "Acquit Sandbox Probe",
+						billing_address: { address_line_1: "123 Test Street", admin_area_2: "San Jose", admin_area_1: "CA", postal_code: "95131", country_code: "US" },
+					} } : { paypal: { experience_context: {
 						shipping_preference: "NO_SHIPPING", user_action: "PAY_NOW",
-						return_url: `http://localhost:5173/paypal/return?jobId=${encodeURIComponent(call.jobId)}`,
-						cancel_url: `http://localhost:5173/paypal/cancel?jobId=${encodeURIComponent(call.jobId)}`,
+						return_url: `${config.webOrigin}/paypal/return?jobId=${encodeURIComponent(call.jobId)}`,
+						cancel_url: `${config.webOrigin}/paypal/cancel?jobId=${encodeURIComponent(call.jobId)}`,
 					} } },
 				}, requestId));
+				if (json.status === "COMPLETED") {
+					parseCapture(json);
+					return { kind: "CONFIRMED", observation: { kind: "ORDER_CREATED", orderId: text(json.id) as OrderId,
+						approveUrl: `${config.webOrigin}/paypal/return?jobId=${encodeURIComponent(call.jobId)}` } };
+				}
 				const link = array(json.links).map(object).find(link => link.rel === "approve" || link.rel === "payer-action");
 				const approveUrl = text(link?.href);
 				const url = new URL(approveUrl);

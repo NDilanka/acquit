@@ -10,12 +10,16 @@ import { applyJobCommand, TERMS } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, MerchantId, OperatorId, OrderId, CaptureId, Version } from "../src/ids.ts";
-import { parseCapture, quote } from "../src/paypal.ts";
+import { createPayPal, parseCapture, quote } from "../src/paypal.ts";
 import type { Bps, RemoteOutcome } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
+import { closeAcquit, createAcquit } from "../src/acquit.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -87,6 +91,121 @@ test("commercialSplit is integer cents and quotes the measured platform fee", ()
 	assert.equal(quote(split, model).platformFeeInstruction, 4485);
 	assert.equal(formatUsd(usd("420.00")), "420.00");
 	assert.throws(() => usd("1.005"));
+});
+test("createAcquit uses its injected Clock to expire checkout after three hours", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-clock-test-"));
+	const databaseUrl = join(root, "clock.db");
+	const f = fixture();
+	let currentNow = now;
+	const service = createAcquit({ databaseUrl, clock: { now: () => currentNow },
+		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243",
+			clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model },
+		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+	const store = new SqliteStore(databaseUrl);
+	try {
+		const opened = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+		const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: opened.id,
+			price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		const row = await f.store.readJob(opened.id);
+		assert(row);
+		const plan = applyJobCommand(row, { type: "AcceptBid", jobId: row.id, bidId: bid.result.bid },
+			{ actor: maya, now, loaded: { kind: "ACCEPT_BID", quote: quote(commercialSplit(usd("400.00")), model) } });
+		if (typeof plan === "string") throw new Error(plan);
+		const account = await f.store.readCredits("devon-ops" as OperatorId);
+		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+		await store.commit({ job: { expectedVersion: null, row: plan.next, wakeAt: instant("2026-10-06T15:00:00Z") }, operator: null, credits: [], outbox: [], acknowledge: null, request: null, delivery: null });
+		currentNow = instant("2026-10-06T15:00:00Z");
+		await service.tick();
+		const result = await service.query(maya, { type: "Job", jobId: row.id });
+		assert.equal(result.kind, "JOB");
+		if (result.kind !== "JOB") throw new Error("Missing job");
+		assert.equal(result.job.status, "OPEN");
+		assert.equal(result.job.phase, "BIDDING");
+		assert.equal(result.job.bids.operators[0].status, "PENDING");
+		assert.deepEqual(result.job.ledger, []);
+	} finally { store.close(); closeAcquit(service); f.store.close(); await rm(root, { recursive: true, force: true }); }
+});
+test("sandbox card funding passes through the real order and CaptureCompleted edges", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-card-test-"));
+	const databaseUrl = join(root, "card.db");
+	const f = fixture();
+	const store = new SqliteStore(databaseUrl);
+	for (const table of ["operators", "agents", "credits"]) {
+		for (const row of f.store.db.prepare(`SELECT * FROM ${table}`).all()) {
+			const values = Object.values(row);
+			store.db.prepare(`INSERT INTO ${table} VALUES (${values.map(() => "?").join(",")})`).run(...values);
+		}
+	}
+	const originalFetch = globalThis.fetch;
+	const originalDev = process.env.ACQUIT_DEV;
+	process.env.ACQUIT_DEV = "1";
+	let creates = 0;
+	let reads = 0;
+	const wire = { id: "CARDORDER", status: "COMPLETED", purchase_units: [{
+		payee: { merchant_id: merchant }, payment_instruction: { disbursement_mode: "DELAYED" },
+		payments: { captures: [{ id: "CARDCAPTURE", status: "COMPLETED", disbursement_mode: "DELAYED", create_time: now,
+			amount: { currency_code: "USD", value: "420.00" }, seller_receivable_breakdown: {
+				paypal_fee: { currency_code: "USD", value: "11.37" }, net_amount: { currency_code: "USD", value: "363.78" },
+				platform_fees: [{ amount: { currency_code: "USD", value: "44.85" } }],
+			} }] },
+	}] };
+	globalThis.fetch = async (input, init) => {
+		const url = String(input);
+		if (url.endsWith("/v1/oauth2/token")) return Response.json({ access_token: "unit-test-token", expires_in: 300 });
+		if (init?.method === "POST" && url.endsWith("/v2/checkout/orders")) {
+			creates++;
+			const body = JSON.parse(String(init.body));
+			assert.deepEqual(body.payment_source.card, { number: "4111111111111111", expiry: "2028-12", security_code: "123", name: "Acquit Sandbox Probe",
+				billing_address: { address_line_1: "123 Test Street", admin_area_2: "San Jose", admin_area_1: "CA", postal_code: "95131", country_code: "US" } });
+			return Response.json(wire, { status: 201 });
+		}
+		assert.equal(init?.method, "GET");
+		assert(url.endsWith("/v2/checkout/orders/CARDORDER"));
+		reads++;
+		return Response.json(wire);
+	};
+	const service = createAcquit({ databaseUrl, clock: { now: () => now }, paypal: {
+		apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5253", clientId: "test", secret: "test",
+		webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => "card",
+	}, verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "" } });
+	try {
+		const opened = jobOf(await service.execute(maya, requestKey(), openCommand));
+		const bid = await service.execute(devon, requestKey(), { type: "PlaceBid", jobId: opened.id, price: usd("400.00"),
+			eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		const key = requestKey();
+		const accept: UserCommand = { type: "AcceptBid", jobId: opened.id, bidId: bid.result.bid };
+		const held = jobOf(await service.execute(maya, key, accept));
+		assert.equal(held.status, "IN_PROGRESS");
+		assert.equal(held.escrow, "HELD");
+		assert.equal(held.lockedTo, "devon-ops");
+		assert.deepEqual(held.ledger, [{ kind: "HELD", cents: 42000, at: now }]);
+		assert.deepEqual(jobOf(await service.execute(maya, key, accept)), held);
+		assert.equal(creates, 1);
+		assert.equal(reads, 1);
+	} finally {
+		globalThis.fetch = originalFetch;
+		if (originalDev === undefined) delete process.env.ACQUIT_DEV; else process.env.ACQUIT_DEV = originalDev;
+		store.close(); closeAcquit(service); f.store.close(); await rm(root, { recursive: true, force: true });
+	}
+});
+test("PayPal checkout return and cancel URLs use the configured web origin", async () => {
+	const originalFetch = globalThis.fetch;
+	let source: { paypal: { experience_context: { return_url: string; cancel_url: string } } } | undefined;
+	globalThis.fetch = async (input, init) => {
+		if (String(input).endsWith("/v1/oauth2/token")) return Response.json({ access_token: "unit-test-token", expires_in: 300 });
+		source = JSON.parse(String(init?.body)).payment_source;
+		return Response.json({ id: "CHECKOUTORDER", links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=CHECKOUTORDER" }] });
+	};
+	try {
+		const paypal = createPayPal({ apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5223", clientId: "test",
+			secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model });
+		assert.equal((await paypal.dispatch({ kind: "CREATE_ORDER", jobId: parseJobId("job_origin"), payee: merchant,
+			quote: quote(commercialSplit(usd("400.00")), model) }, "request-origin")).kind, "CONFIRMED");
+		assert.equal(source?.paypal.experience_context.return_url, "http://localhost:5223/paypal/return?jobId=job_origin");
+		assert.equal(source?.paypal.experience_context.cancel_url, "http://localhost:5223/paypal/cancel?jobId=job_origin");
+	} finally { globalThis.fetch = originalFetch; }
 });
 test("credits grant 30, spend 10 once, then refuse insufficient funds", () => {
 	const initial = grant();
@@ -257,4 +376,58 @@ test("abandoned checkout expires to bidding, then unanswered bids return credits
 		assert.ok((await f.store.readJob(job.id))?.bids.every(bid => bid.status === "RETURNED"));
 		assert.equal(f.captureCalls(), 0);
 	} finally { f.store.close(); }
+});
+test("a queued CREATE_ORDER keeps its accepted funding mode after runtime toggles", async () => {
+	const f = fixture();
+	let mode: "card" | "checkout" = "checkout";
+	const ports = { ...f.ports, fundingMode: () => mode };
+	const originalDispatch = ports.paypal.dispatch;
+	const calls: string[] = [];
+	let pending = true;
+	ports.paypal.dispatch = async (call, id) => {
+		if (call.kind === "CREATE_ORDER") {
+			calls.push(call.fundingMode!);
+			if (pending) return { kind: "UNKNOWN", checkAt: instant("2026-10-06T12:00:05Z") };
+		}
+		return originalDispatch(call, id);
+	};
+	try {
+		const job = jobOf(await executeCommand(ports, maya, requestKey(), openCommand));
+		const bid = await executeCommand(ports, devon, requestKey(), { type: "PlaceBid", jobId: job.id,
+			price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		await executeCommand(ports, maya, requestKey(), { type: "AcceptBid", jobId: job.id, bidId: bid.result.bid });
+		const stored = JSON.parse(String(f.store.db.prepare("SELECT json FROM outbox").get()!.json));
+		assert.equal(stored.effect.fundingMode, "checkout");
+		mode = "card"; pending = false; f.advance("2026-10-06T12:00:06Z");
+		await runOutboxOnce(ports);
+		assert.deepEqual(calls, ["checkout", "checkout"]);
+	} finally { f.store.close(); }
+});
+test("PayPal pending/error deadlines and token refresh use the injected clock", async () => {
+	const originalFetch = globalThis.fetch;
+	let current = now;
+	let oauth = 0;
+	let fail = false;
+	globalThis.fetch = async input => {
+		if (String(input).endsWith("/v1/oauth2/token")) { oauth++; return Response.json({ access_token: "fake", expires_in: 300 }); }
+		return fail ? new Response("", { status: 503 }) : Response.json({ id: "TESTORDER", status: "CREATED" });
+	};
+	try {
+		const paypal = createPayPal({ apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5223",
+			clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model }, { now: () => current });
+		assert.deepEqual(await paypal.getOrder("TESTORDER" as OrderId, merchant), { kind: "PENDING", checkAt: instant("2026-10-06T12:00:05.000Z") });
+		current = instant("2026-10-06T16:00:00Z"); fail = true;
+		assert.deepEqual(await paypal.getOrder("TESTORDER" as OrderId, merchant), { kind: "UNKNOWN", checkAt: instant("2026-10-06T16:00:05.000Z") });
+		assert.equal(oauth, 2);
+	} finally { globalThis.fetch = originalFetch; }
+});
+test("outbox acknowledgements use the store's injected clock", async () => {
+	const store = new SqliteStore(":memory:", { now: () => now });
+	try {
+		const key = "test-key" as any;
+		store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run(key, "{}", "{}", null);
+		await store.commit({ job: null, operator: null, credits: [], outbox: [], acknowledge: key, request: null, delivery: null });
+		assert.deepEqual(JSON.parse(String(store.db.prepare("SELECT state FROM outbox").get()!.state)), { kind: "CONFIRMED", at: now });
+	} finally { store.close(); }
 });

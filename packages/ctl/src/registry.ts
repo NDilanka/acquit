@@ -1,4 +1,4 @@
-import { login, screenshot, seedDb, start, status, stop } from "./commands.ts";
+import { clockAdvance, fundMode, login, screenshot, seedDb, start, status, stop } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -21,6 +21,12 @@ export interface Command {
 	run: (parsed: Parsed, ctx: Context) => Promise<Result>;
 }
 export const registry: Command[] = [
+	{ name: "clock", summary: "Advance the development clock and run due work. Requires ACQUIT_DEV=1.", usage: "clock advance <duration>",
+		flags: [{ name: "duration", type: "string", summary: "Positive duration with ms, s, m, h, or d.", required: true }],
+		examples: ["clock advance 4h"], destructive: false, run: clockAdvance },
+	{ name: "fund-mode", summary: "Choose sandbox checkout or test-card funding. Requires ACQUIT_DEV=1.", usage: "fund-mode <card|checkout>",
+		flags: [{ name: "mode", type: "string", summary: "Funding source, card or checkout.", required: true }],
+		examples: ["fund-mode card"], destructive: false, run: fundMode },
 	{ name: "start", summary: "Launch the API and web app, or reuse a healthy owned run.", usage: "start [--timeout <s>]",
 		flags: [{ name: "timeout", type: "string", summary: "Readiness timeout in seconds.", default: "30" }],
 		examples: ["start", "start --timeout 60"], destructive: false, run: start },
@@ -33,9 +39,9 @@ export const registry: Command[] = [
 		examples: ["seed-db --dry-run", "seed-db --yes"], destructive: true, run: seedDb },
 	{ name: "login", summary: "Create a local development session for a seeded handle.", usage: "login --test-user <handle> [--save]",
 		flags: [{ name: "test-user", type: "string", summary: "Development handle from GET /api/users.", required: true },
-			{ name: "save", type: "boolean", summary: "Save the local token to data/cli/sessions/<handle>.json.", default: false }],
+			{ name: "save", type: "boolean", summary: "Save the local token to data/ctl/sessions/<handle>.json.", default: false }],
 		examples: ["login --test-user maya-client --save"], destructive: false, run: login },
-	{ name: "screenshot", summary: "Capture the web app in an isolated headless acquit-cli browser.", usage: "screenshot [--path </route>] [--as <handle>] [--out <file.png>] [--full] [--wait-text <text>]",
+	{ name: "screenshot", summary: "Capture the web app in an isolated headless acquit-ctl browser.", usage: "screenshot [--path </route>] [--as <handle>] [--out <file.png>] [--full] [--wait-text <text>]",
 		flags: [{ name: "path", type: "string", summary: "Same-origin route to capture.", default: "/" },
 			{ name: "as", type: "string", summary: "Development handle to log in as." },
 			{ name: "out", type: "string", summary: "Output PNG, relative to repository root.", defaultDescription: "data/evidence/<ISO-stamp>-<slug>.png" },
@@ -50,12 +56,12 @@ export function flags(command: Command): FlagSpec[] {
 export function help(command?: Command): string {
 	const entries = command ? [command] : registry;
 	return [
-		command ? `Usage: npm run -s acquit -- ${command.usage}` : "Usage: npm run -s acquit -- <command> [flags]",
+		command ? `Usage: npm run -s ctl -- ${command.usage}` : "Usage: npm run -s ctl -- <command> [flags]",
 		...entries.flatMap(entry => [
 			`\n${entry.name}${entry.destructive ? " [destructive]" : ""}  ${entry.summary}`,
 			`  ${entry.usage}`,
 			...flags(entry).map(flag => `  --${flag.name}${flag.type === "string" ? " <value>" : ""}  ${flag.summary}${flag.required ? " Required." : ""}${flag.defaultDescription !== undefined || flag.default !== undefined ? ` Default: ${flag.defaultDescription ?? flag.default}.` : ""}`),
-			"  Examples:", ...entry.examples.map(example => `    npm run -s acquit -- ${example}`),
+			"  Examples:", ...entry.examples.map(example => `    npm run -s ctl -- ${example}`),
 		]),
 		"\nExit codes: 0 success, 1 runtime failure, 2 usage error.",
 		'Success: {"ok":true,"command":"...","dryRun":true,"data":{...}} (dryRun only for dry runs).',

@@ -40,7 +40,7 @@ export function providerRequestId(key: OperationKey): string {
 
 export function toPayPalCall(effect: Effect): PayPalCall | null {
 	switch (effect.kind) {
-		case "CREATE_ORDER": return { kind: effect.kind, jobId: effect.jobId, payee: effect.payee, quote: effect.quote };
+		case "CREATE_ORDER": return { kind: effect.kind, jobId: effect.jobId, payee: effect.payee, quote: effect.quote, fundingMode: effect.fundingMode ?? "checkout" };
 		case "CAPTURE": return { kind: effect.kind, orderId: effect.orderId, payee: effect.payee };
 		case "RELEASE": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee };
 		case "REFUND": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee, amount: effect.amount };
@@ -109,6 +109,7 @@ export interface Store {
 }
 
 export type Ports = {
+	readonly fundingMode?: () => "checkout" | "card";
 	readonly feeModel: ProcessorFeeModel;
 	readonly store: Store;
 	readonly paypal: PayPal;
@@ -148,7 +149,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		} else if (command.type === "AcceptBid") {
 			const bid = row?.bids.find(b => b.id === command.bidId);
 			if (!bid) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel) };
+			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel), fundingMode: ports.fundingMode?.() ?? "checkout" };
 		} else if (command.type === "CancelJob") {
 			const accounts = new Map<OperatorId, CreditAccount>();
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));
@@ -174,6 +175,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		if (command.type === "OpenJob") await placeHouseBid(ports, plan.next);
 		// Drain only this command's own effects, not somebody else's checkout.
 		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
+		if (plan.effects.some(effect => effect.kind === "CREATE_ORDER" && effect.fundingMode === "card")) await confirmFunding(ports, actor, plan.next.id);
 		const refreshed = await ports.store.readJob(plan.next.id);
 		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts()) };
 		await ports.store.finishRequest({ actor: actorKey, key, payloadDigest, result });
@@ -238,19 +240,19 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 			} else await applySystemCommand(ports, command, row.key, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			await applySystemCommand(ports, { type: "FundingFailed", jobId: effect.jobId, round: effect.round, reason: outcome.reason }, row.key, null);
-		} else await ports.store.recordEffect(row.key, interpret(outcome, row));
+		} else await ports.store.recordEffect(row.key, interpret(outcome, row, ports.clock.now()));
 	} catch {
 		await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
 	}
 	return "WORKED";
 }
 
-export function interpret(outcome: RemoteOutcome, row: OutboxRow): OutboxState {
+export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant): OutboxState {
 	switch (outcome.kind) {
 		case "UNKNOWN": case "PENDING": return { kind: "UNCERTAIN", reconcileAt: outcome.checkAt };
 		case "PERMANENT_FAILURE": return { kind: "NEEDS_HUMAN", reason: outcome.reason };
-		case "NOT_FOUND": return { kind: "READY", runAt: new Date().toISOString() as Instant };
-		case "CONFIRMED": return { kind: "CONFIRMED", at: new Date().toISOString() as Instant };
+		case "NOT_FOUND": return { kind: "READY", runAt: now };
+		case "CONFIRMED": return { kind: "CONFIRMED", at: now };
 	}
 }
 

@@ -39,13 +39,13 @@ Open http://localhost:5173 and sign in as `maya-client` (client) or `devon-ops` 
 For agents and scripts. Every command prints one JSON object, and every error has a `fix` field naming what to run instead.
 
 ```
-npm run -s acquit -- --help
-npm run -s acquit -- start            # starts or reuses the API and web app
-npm run -s acquit -- status           # read-only health check
-npm run -s acquit -- seed-db --dry-run
-npm run -s acquit -- login --test-user maya-client --save
-npm run -s acquit -- screenshot --as maya-client --path /
-npm run -s acquit -- stop --dry-run
+npm run -s ctl -- --help
+npm run -s ctl -- start            # starts or reuses the API and web app
+npm run -s ctl -- status           # read-only health check
+npm run -s ctl -- seed-db --dry-run
+npm run -s ctl -- login --test-user maya-client --save
+npm run -s ctl -- screenshot --as maya-client --path /
+npm run -s ctl -- stop --dry-run
 ```
 
 ## Check
@@ -55,3 +55,11 @@ npm run typecheck
 npm test
 npm run smoke     # real sandbox: login, OpenJob, PlaceBid, AcceptBid, checkout link
 ```
+
+## Verification lanes
+
+Set `ACQUIT_LANE=<n>` before every control command. Lane n uses API port `4310 + 10n`, web port `5173 + 10n`, database `data/verify/lane-<n>/acquit.db`, run files `data/ctl/lane-<n>/`, and browser session `verify-acquit-lane-<n>`. Without a lane, the control command keeps the configured default ports and database.
+
+Start the API with `ACQUIT_DEV=1` to use `npm run ctl -- clock advance 4h` or `npm run ctl -- fund-mode card`. Card mode uses a real sandbox test-card capture without buyer login. Funding regression and tutorial runs use checkout mode. The clock offset and funding mode reset on restart.
+
+`node .factory/skills/verify-acquit/scripts/lanes.mjs start 10` measures two app slots' simultaneous working sets and the separate marginal browser cost. The app cost is the larger of the first-slot and marginal cost; the reserve is measured startup transient pressure plus 64 MB (128 MB minimum). Admission uses current free physical memory, with `ACQUIT_MAX_LANES` and `ACQUIT_RESERVE_MB` optional overrides. Browsers have a separate cap, at most two by default. `lanes.mjs restart <n>` stops an owned slot before measuring free memory and admitting its replacement; do not count a restart as an additional slot. Run `doctor` and `cleanup` through the same script. See [the verification skill](.factory/skills/verify-acquit/SKILL.md) for the browser drive and evidence rules.
