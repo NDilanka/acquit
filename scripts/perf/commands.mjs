@@ -10,6 +10,12 @@
 // closed, and every spawned service exits before it prints. Pass --trunk a short path if the default
 // does not suit.
 //
+// Trunk safety. Before any git command, the probe refuses a --trunk that names the same worktree as
+// --head, a main worktree, a directory that is not a worktree root, and any non-default path whose
+// HEAD is not detached. A missing --trunk is created only at the default throwaway path. Under
+// --clean the probe removes the trunk worktree only when this run created it or it verified it as a
+// linked worktree this repo registered, and removes lane data only for lanes this run started.
+//
 // The probe boots two isolated instances on separate lanes: one from a detached trunk worktree
 // (origin/main, fetched and checked out before every run, created here when missing) and one from the
 // head worktree. Each sample opens a job as maya-client, times one PlaceBid as devon-ops, and cancels
@@ -37,10 +43,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { chmod, copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -81,6 +87,12 @@ const report = { bids, jobs, ticks, rounds, roundSize: 10, trunkDir, headDir, tr
 	trunkBaseline: null, trunkHead: null, headHead: null, baseline: null, bidLatency: null, tick: null, cleanup: null, blocked: null, detail: null,
 	passed: false, node: process.version };
 const started = [];
+/**
+ * Where the trunk worktree stands, filled by guardTrunk before any mutating git command. `created` is
+ * set when this run made the worktree, `registered` when it is a linked worktree this repo lists, and
+ * `removable` when --clean may remove it: the probe only ever removes one it created or verified.
+ */
+const trunkState = { approved: false, created: false, registered: false, removable: false };
 
 /** One report, one reason, and a nonzero exit. Cleanup below still runs. */
 class Blocked extends Error {
@@ -106,7 +118,71 @@ async function main() {
 	console.log(JSON.stringify(report));
 }
 
+/** The real path of an existing path, or of its deepest existing ancestor plus the rest. */
+function realPath(path) {
+	const parts = [];
+	let current = resolve(path);
+	while (!existsSync(current)) {
+		const parent = dirname(current);
+		if (parent === current) return current;
+		parts.unshift(basename(current));
+		current = parent;
+	}
+	try { return join(realpathSync(current), ...parts); } catch { return resolve(path); }
+}
+
+/** The linked worktrees this repo registered, by real path. The first entry is the main worktree and is never one. */
+function registeredWorktrees() {
+	const registered = new Set();
+	const listed = spawnSync("git", ["-C", root, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+	if (listed.status !== 0) return registered;
+	for (const block of String(listed.stdout).split("\n\n").slice(1)) {
+		const line = block.split("\n").find(entry => entry.startsWith("worktree "));
+		if (line) registered.add(realPath(line.slice("worktree ".length).trim()));
+	}
+	return registered;
+}
+
+/**
+ * The trunk worktree the probe may force-check-out and, under --clean, remove. The first check, before
+ * any git command, is that --trunk and --head name different worktrees: `--trunk .` or `--trunk <the
+ * head worktree>` would otherwise check the head out and later remove it. After that, only the default
+ * throwaway (created here when missing) or a linked worktree whose HEAD is detached is accepted; a main
+ * worktree or a directory that is not a worktree root is refused.
+ */
+function guardTrunk() {
+	const trunkReal = realPath(trunkDir);
+	const headReal = realPath(headDir);
+	if (trunkReal === headReal) {
+		throw new Blocked("TRUNK_IS_HEAD",
+			`--trunk and --head name the same worktree (${trunkReal}); the probe would check it out and later remove it. Point --head at the head worktree and --trunk at ${defaultTrunk}.`);
+	}
+	const isDefault = realPath(trunkDir) === realPath(defaultTrunk);
+	if (!existsSync(trunkDir)) {
+		if (!isDefault) throw new Blocked("TRUNK_MISSING", `No trunk worktree at ${trunkDir}, and the probe only creates the default throwaway (${defaultTrunk}).`);
+		trunkState.approved = true;
+		return;
+	}
+	const dotGit = resolve(trunkDir, ".git");
+	if (!existsSync(dotGit)) throw new Blocked("TRUNK_NOT_A_WORKTREE", `${trunkDir} is not the root of a git worktree; refusing to check it out or remove it.`);
+	if (statSync(dotGit).isDirectory()) throw new Blocked("TRUNK_IS_MAIN_WORKTREE", `${trunkDir} is a main worktree; the probe only touches the default throwaway or a linked worktree with a detached HEAD.`);
+	const pointer = readFileSync(dotGit, "utf8").trim();
+	const gitDir = pointer.startsWith("gitdir:") ? resolve(trunkDir, pointer.slice("gitdir:".length).trim()) : null;
+	const headFile = gitDir === null ? null : resolve(gitDir, "HEAD");
+	const head = headFile !== null && existsSync(headFile) ? readFileSync(headFile, "utf8").trim() : "";
+	const detached = head !== "" && !head.startsWith("ref:");
+	if (!isDefault && !detached) {
+		throw new Blocked("TRUNK_NOT_DETACHED",
+			`${trunkDir} has a branch checked out; only a detached linked worktree may be force-checked-out. Run git -C ${trunkDir} checkout --detach, or pass --trunk ${defaultTrunk}.`);
+	}
+	trunkState.approved = true;
+	trunkState.registered = registeredWorktrees().has(trunkReal);
+	trunkState.removable = trunkState.registered;
+}
+
 async function preflight() {
+	// First, before any git command: the trunk must be a worktree the probe owns, never the head.
+	guardTrunk();
 	assert(existsSync(resolve(root, ".env")), "The head worktree needs its .env for PayPal and GitHub configuration.");
 	assert(existsSync(resolve(headDir, "package.json")), `No head worktree at ${headDir}.`);
 	assert(existsSync(resolve(headDir, "packages/ctl/src/main.ts")), `The head worktree at ${headDir} has no control CLI.`);
@@ -116,10 +192,12 @@ async function preflight() {
 	// best effort: an offline machine falls back to the local main ref, and the report records which one ran.
 	report.trunkBaseline = fetchTrunkBaseline();
 	if (!existsSync(resolve(trunkDir, "package.json"))) {
-		assert(values.trunk === defaultTrunk, `The supplied trunk worktree ${trunkDir} is missing.`);
+		// guardTrunk admitted this path, and only the default throwaway may be missing entirely.
 		spawnSync("git", ["-C", root, "worktree", "prune"], { encoding: "utf8" });
 		const added = spawnSync("git", ["-C", root, "worktree", "add", "--detach", trunkDir, report.trunkBaseline.ref], { encoding: "utf8" });
 		assert.equal(added.status, 0, `Could not create the isolated trunk baseline: ${added.stderr}`);
+		trunkState.created = true;
+		trunkState.removable = true;
 		const cli = npmCli();
 		const installed = cli === null
 			? await captured("npm", ["install"], trunkDir, process.env, 300_000)
@@ -145,8 +223,11 @@ async function preflight() {
  * cannot authenticate. The detail never carries the remote URL, which may embed a credential.
  */
 function fetchTrunkBaseline() {
+	// A fetch must never stop for a credential: no terminal prompt, no askpass program, and an ssh that
+	// fails closed rather than asking. A machine without credentials falls back to the local main ref.
 	const fetched = spawnSync("git", ["-C", root, "fetch", "origin", "main"],
-		{ encoding: "utf8", timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+		{ encoding: "utf8", timeout: 120_000,
+			env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } });
 	if (fetched.status === 0) return { ref: "origin/main", fetched: true, detail: null };
 	const local = spawnSync("git", ["-C", root, "rev-parse", "--verify", "--quiet", "main"], { encoding: "utf8" });
 	const last = String(fetched.stderr ?? fetched.error?.message ?? "").trim().split("\n").filter(line => line !== "").at(-1) ?? "";
@@ -193,7 +274,7 @@ async function boot(side, dir, lane) {
 }
 
 async function cleanup() {
-	const result = { lanesStopped: [], removed: [], errors: [] };
+	const result = { lanesStopped: [], removed: [], skipped: [], errors: [] };
 	for (const instance of started.reverse()) {
 		try { await ctl(instance, "stop"); result.lanesStopped.push(`${instance.side} lane ${instance.lane}`); }
 		catch (error) { result.errors.push(`${instance.side}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -203,16 +284,24 @@ async function cleanup() {
 }
 
 /**
- * --clean: the throwaway baseline worktree and this run's lane data go away. The probe's lanes are
- * never lane 0, so the real database and its run directory are never candidates for removal.
+ * --clean: the throwaway baseline worktree and the lane data of the lanes this run actually started go
+ * away. The probe's lanes are never lane 0, so the real database and its run directory are never
+ * candidates for removal, and the trunk worktree goes only when this run created it or guardTrunk
+ * verified it as a linked worktree this repo registered.
  */
 async function removeArtifacts(result) {
-	const removed = spawnSync("git", ["-C", root, "worktree", "remove", "--force", trunkDir], { encoding: "utf8" });
-	if (removed.status === 0) result.removed.push(`trunk worktree ${trunkDir}`);
-	else if (existsSync(trunkDir)) result.errors.push(`trunk worktree: ${String(removed.stderr ?? "").trim().split("\n").at(-1) || `git worktree remove exited with ${removed.status}`}`);
+	if (trunkState.removable) {
+		const removed = spawnSync("git", ["-C", root, "worktree", "remove", "--force", trunkDir], { encoding: "utf8" });
+		if (removed.status === 0) result.removed.push(`trunk worktree ${trunkDir}`);
+		else if (existsSync(trunkDir)) result.errors.push(`trunk worktree: ${String(removed.stderr ?? "").trim().split("\n").at(-1) || `git worktree remove exited with ${removed.status}`}`);
+	} else if (trunkState.approved) {
+		result.skipped.push(`trunk worktree ${trunkDir}: not created by this run and not a registered linked worktree`);
+	} else {
+		result.skipped.push(`trunk worktree ${trunkDir}: refused by the worktree guard`);
+	}
 	spawnSync("git", ["-C", root, "worktree", "prune"], { encoding: "utf8" });
-	for (const [dir, lane] of [[headDir, headLane], [trunkDir, trunkLane]]) {
-		for (const path of [resolve(dir, laneSlot(lane).runDir), resolve(dir, "data/verify", `lane-${lane}`)]) {
+	for (const instance of started) {
+		for (const path of [resolve(instance.dir, laneSlot(instance.lane).runDir), resolve(instance.dir, "data/verify", `lane-${instance.lane}`)]) {
 			if (!existsSync(path)) continue;
 			try { await rm(path, { recursive: true, force: true }); result.removed.push(path); }
 			catch (error) { result.errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
