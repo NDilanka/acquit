@@ -48,8 +48,11 @@ The CLI refuses to start a container from a missing image; it never pulls one im
 ## The proxy
 
 `proxy.mjs` is a small HTTP CONNECT proxy. It logs only the host of a denied or failed request, never
-a path or a header. The allowlist is a host *and a port*: a CONNECT is allowed only to 443 and a
-plain HTTP forward only to 80 or 443, so the right host on another port is refused too. A request
-from the container to any host outside the allowlist fails at the proxy; a request to the registry or
-the model provider succeeds. `node:24`'s global `fetch` honors the proxy only with
+a path or a header. The allowlist is a scheme, a host, and a port: a CONNECT is allowed only to 443,
+and a plain HTTP forward only to an absolute-form `http:` URL with no userinfo on port 80, so the
+right host on another port or scheme is refused too. A request from the container to any host outside
+the allowlist fails at the proxy; a request to the registry or the model provider succeeds. A host
+process can reach the proxy through its egress bridge IP, but host processes already have
+unrestricted network access, so the proxy grants them nothing new; the threat model is the sandboxed
+container, which has no other route out. `node:24`'s global `fetch` honors the proxy only with
 `NODE_USE_ENV_PROXY=1`, which the CLI sets alongside `HTTP(S)_PROXY`.
