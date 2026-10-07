@@ -9,6 +9,7 @@ import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { transaction } from "./transaction.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
@@ -46,13 +47,6 @@ function sameChallenge(left: string, right: string): boolean {
 	const a = Buffer.from(left, "utf8");
 	const b = Buffer.from(right, "utf8");
 	return a.length === b.length && timingSafeEqual(a, b);
-}
-/** One unit of work over the code table. BEGIN IMMEDIATE takes the write lock up front, so two
- * requests cannot both read a row as unclaimed and then both claim it. */
-function transaction<T>(work: () => T): T {
-	db.exec("BEGIN IMMEDIATE");
-	try { const value = work(); db.exec("COMMIT"); return value; }
-	catch (error) { try { db.exec("ROLLBACK"); } catch { /* the transaction opened nothing to undo */ } throw error; }
 }
 function session(req: IncomingMessage) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
@@ -270,13 +264,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (typeof verifier !== "string" || typeof row.challenge !== "string" || !sameChallenge(challengeOf(verifier), row.challenge)) {
 			json(res, 403, { error: "VERIFIER_MISMATCH" }); return;
 		}
-		if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
 		if (row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
-		if (!row.handle) { json(res, 200, { status: "PENDING" }); return; }
+		if (!row.handle) {
+			// A pending code has no claim to race, so its expiry is read here and reported.
+			if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
+			json(res, 200, { status: "PENDING" }); return;
+		}
 		// One delivery under concurrency: the conditional update claims the row, or it changes nothing.
-		const delivered = transaction(() =>
-			db.prepare("UPDATE cli_codes SET delivered_at = ? WHERE digest = ? AND delivered_at IS NULL").run(clock.now(), digest).changes === 1);
-		if (!delivered) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
+		// The expiry rides in the claim, so a code that lapses before the update cannot deliver.
+		const delivered = transaction(db, () =>
+			db.prepare("UPDATE cli_codes SET delivered_at = ? WHERE digest = ? AND delivered_at IS NULL AND expires_at > ?")
+				.run(clock.now(), digest, clock.now()).changes === 1);
+		if (!delivered) {
+			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
+		}
 		const selected = user(String(row.handle));
 		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
 	}
@@ -335,19 +336,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const digest = tokenDigest(code);
 		const row = db.prepare("SELECT handle, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
 		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
-		if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
 		if (row.handle || row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
 		// One approval under concurrency: the conditional update mints the session and claims the code
-		// in the same transaction, so a raced second approval mints nothing and is refused.
-		const token = transaction(() => {
+		// in the same transaction, so a raced second approval mints nothing and is refused. The expiry
+		// rides in the claim, so a code that lapses before the update cannot be approved.
+		const token = transaction(db, () => {
 			const minted = randomBytes(32).toString("base64url");
-			const claimed = db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ? AND handle IS NULL")
-				.run(current.user.handle, minted, digest);
+			const claimed = db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ? AND handle IS NULL AND expires_at > ?")
+				.run(current.user.handle, minted, digest, clock.now());
 			if (claimed.changes !== 1) return null;
 			insertSession(minted, current.user.handle);
 			return minted;
 		});
-		if (token === null) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
+		if (token === null) {
+			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
+		}
 		json(res, 200, { handle: current.user.handle, role: current.user.role }); return;
 	}
 	if (url.pathname === "/api/jobs" && method === "GET") {

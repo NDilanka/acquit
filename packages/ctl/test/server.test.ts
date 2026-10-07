@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -301,5 +301,65 @@ test("a bid the operator cannot afford answers with the credit balance and the n
 		assert.equal(denied.status, 409);
 		assert.deepEqual(await denied.json(), { outcome: { kind: "DENIED", reason: "INSUFFICIENT_CREDITS" },
 			credits: { available: 0, weeklyAllowance: 30, nextGrantAt: "2025-10-13T00:00:00.000Z" } });
+	});
+});
+test("a BEGIN the lock refuses fails that request and leaves the API serving the next one", async () => {
+	await apiFixture(false, async (url, databasePath) => {
+		const { DatabaseSync } = await import("node:sqlite");
+		const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "devon-ops" }) });
+		assert.equal(signedIn.status, 200);
+		const auth = ((await signedIn.json()) as { token: string }).token;
+		const challenge = createHash("sha256").update("unit-test-verifier").digest("base64url");
+		const created = await fetch(`${url}/api/cli/codes`, { method: "POST", body: JSON.stringify({ challenge }) });
+		assert.equal(created.status, 201);
+		const { code } = await created.json() as { code: string };
+		const approve = () => fetch(`${url}/api/cli/approve`, { method: "POST",
+			headers: { Authorization: `Bearer ${auth}` }, body: JSON.stringify({ code }) });
+		// A second connection holds the write lock, so the approval's BEGIN IMMEDIATE is refused.
+		const blocker = new DatabaseSync(databasePath);
+		blocker.exec("BEGIN IMMEDIATE");
+		const refused = await approve();
+		assert.equal(refused.status, 500);
+		assert.deepEqual(await refused.json(), { error: "INTERNAL_ERROR" });
+		// Releasing the lock leaves the connection out of a transaction: the same approval now claims
+		// the code, so the failed BEGIN wedged nothing.
+		blocker.exec("ROLLBACK");
+		blocker.close();
+		const approved = await approve();
+		assert.equal(approved.status, 200);
+		assert.deepEqual(await approved.json(), { handle: "devon-ops", role: "OPERATOR" });
+	});
+});
+test("an expired code is refused by the claim that would approve or deliver it", async () => {
+	await apiFixture(true, async url => {
+		const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "devon-ops" }) });
+		assert.equal(signedIn.status, 200);
+		const auth = ((await signedIn.json()) as { token: string }).token;
+		const challenge = createHash("sha256").update("unit-test-verifier").digest("base64url");
+		const issue = async (): Promise<string> => {
+			const response = await fetch(`${url}/api/cli/codes`, { method: "POST", body: JSON.stringify({ challenge }) });
+			assert.equal(response.status, 201);
+			return ((await response.json()) as { code: string }).code;
+		};
+		const advance = (advanceMs: number) => fetch(`${url}/api/dev/clock`, { method: "POST",
+			headers: { Authorization: `Bearer ${auth}` }, body: JSON.stringify({ advanceMs }) });
+		const approve = (code: string) => fetch(`${url}/api/cli/approve`, { method: "POST",
+			headers: { Authorization: `Bearer ${auth}` }, body: JSON.stringify({ code }) });
+		const poll = (code: string) => fetch(`${url}/api/cli/codes/${encodeURIComponent(code)}`,
+			{ headers: { "X-Acquit-Verifier": "unit-test-verifier" } });
+		// A code that lapses before approval cannot be claimed: the approval's UPDATE carries the expiry.
+		const stale = await issue();
+		assert.equal((await advance(600_001)).status, 200);
+		const refused = await approve(stale);
+		assert.equal(refused.status, 410);
+		assert.deepEqual(await refused.json(), { error: "CLI_CODE_EXPIRED" });
+		// A code approved before it lapses still expires before its one delivery: the delivery claim
+		// carries the same expiry.
+		const approved = await issue();
+		assert.equal((await approve(approved)).status, 200);
+		assert.equal((await advance(600_001)).status, 200);
+		const lapsed = await poll(approved);
+		assert.equal(lapsed.status, 410);
+		assert.deepEqual(await lapsed.json(), { error: "CLI_CODE_EXPIRED" });
 	});
 });
