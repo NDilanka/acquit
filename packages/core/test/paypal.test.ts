@@ -103,8 +103,9 @@ test("a webhook envelope names the resource family it routes and drops the rest"
 	const capture = parseWebhookEnvelope(envelope({ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: "C1" } }));
 	assert.equal(capture.kind, "DELIVERY");
 	if (capture.kind !== "DELIVERY") throw new Error("Expected a delivery");
-	assert.equal(capture.deliveryId, "WH-1");
-	assert.deepEqual(capture.resource, { kind: "CAPTURE", id: "C1" });
+	// The boundary keeps the canonical envelope only: the body itself never leaves this function.
+	assert.deepEqual(capture, { kind: "DELIVERY", deliveryId: "WH-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
+		resourceType: "capture", resourceId: "C1", resource: { kind: "CAPTURE", id: "C1" } });
 	// A refund event shares capture's prefix: the family is the resource_type, and the event is the fallback.
 	const refund = parseWebhookEnvelope(envelope({ id: "WH-2", event_type: "PAYMENT.CAPTURE.REFUNDED", resource_type: "refund", resource: { id: "R1" } }));
 	assert.equal(refund.kind === "DELIVERY" ? refund.resource.kind : null, "REFUND");
@@ -115,8 +116,11 @@ test("a webhook envelope names the resource family it routes and drops the rest"
 		resource_type: "payouts_item", resource: { id: "P2" } }));
 	assert.equal(reimbursement.kind === "DELIVERY" ? reimbursement.resource.kind : null, "PAYOUT_ITEM");
 	const sale = parseWebhookEnvelope(envelope({ id: "WH-5", event_type: "PAYMENT.SALE.COMPLETED", resource_type: "sale", resource: { id: "S1" } }));
-	assert.equal(sale.kind, "UNROUTED");
-	assert.equal(parseWebhookEnvelope("not json").kind, "UNREADABLE");
+	assert.deepEqual(sale, { kind: "UNROUTED", deliveryId: "WH-5", eventType: "PAYMENT.SALE.COMPLETED", resourceType: "sale", resourceId: "S1" });
+	const unreadable = parseWebhookEnvelope("not json");
+	assert.equal(unreadable.kind, "UNREADABLE");
+	assert.match(unreadable.deliveryId, /^unreadable-[0-9a-f]{16}$/);
+	assert.equal("raw" in unreadable, false);
 	assert.equal(parseWebhookEnvelope(envelope({ event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "C1" } })).kind, "UNREADABLE");
 });
 

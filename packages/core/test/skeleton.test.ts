@@ -1368,9 +1368,14 @@ test("the merge effect finishes the paid job, and a conflict parks it for a huma
 const captureEnvelope = (eventId: string, captureId = "TESTCAPTURE") => JSON.stringify({ id: eventId,
 	event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: captureId } });
 const delivered = (ports: Ports, body: string) => ingestPayPalWebhook(ports, new Request("http://localhost:4310/paypal/webhook", { method: "POST", body }));
-const outcomeOf = async (response: Response) => (await response.json() as { readonly outcome: string }).outcome;
-const recordedEvents = (store: SqliteStore) => store.db.prepare("SELECT id, outcome FROM webhook_events ORDER BY rowid")
-	.all().map(row => ({ id: String(row.id), outcome: String(row.outcome) }));
+/** The answer every accepted delivery gets: no job, no status, no resource, no outcome. */
+const accepted = { received: true } as const;
+const refused = { received: false } as const;
+type RecordedEvent = { readonly id: string; readonly eventType: string; readonly resourceType: string; readonly resourceId: string; readonly outcome: string };
+const recordedEvents = (store: SqliteStore): readonly RecordedEvent[] => store.db.prepare("SELECT id, event_type, resource_type, resource_id, outcome FROM webhook_events ORDER BY rowid")
+	.all().map(row => ({ id: String(row.id), eventType: String(row.event_type), resourceType: String(row.resource_type),
+		resourceId: String(row.resource_id), outcome: String(row.outcome) }));
+const recordedOutcome = (store: SqliteStore, id: string): string | null => recordedEvents(store).find(row => row.id === id)?.outcome ?? null;
 /** A fixture job funded to IN_PROGRESS through the checkout edges, holding capture TESTCAPTURE. */
 async function heldFixture() {
 	const f = fixture();
@@ -1401,14 +1406,15 @@ test("a capture webhook completes a funding the inline path never confirmed", as
 		assert.equal(f.captureCalls(), 0);
 		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
 		const response = await delivered(f.ports, captureEnvelope("WH-CAPTURE-1"));
-		assert.equal(response.status, 200);
-		assert.deepEqual(await response.json(), { ok: true, outcome: "applied", jobId: job.id, edge: "CaptureCompleted", changed: true });
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
 		const held = await f.store.readJob(job.id);
 		assert.equal(held?.state.status, "IN_PROGRESS");
 		assert.equal(held?.version, (waiting?.version ?? 0) + 1);
 		if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
 		assert.deepEqual(held.state.escrow.book, [{ kind: "HELD", cents: 42000, at: now }]);
-		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-CAPTURE-1", outcome: "applied" }]);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-CAPTURE-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
+			resourceType: "capture", resourceId: "TESTCAPTURE", outcome: "applied" }]);
 	} finally { f.store.close(); }
 });
 
@@ -1418,16 +1424,19 @@ test("a capture webhook is consumed once: a redelivery and a new event id change
 		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
 		const first = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
 		// The job already holds this capture, so the edge is a no-op even on the first delivery of the fact.
-		assert.deepEqual(await first.json(), { ok: true, outcome: "applied", jobId, edge: "CaptureCompleted", changed: false });
+		assert.equal(first.status, 202);
+		assert.deepEqual(await first.json(), accepted);
+		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "applied");
 		assert.deepEqual(await f.store.readJob(jobId), held);
 		const replay = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
-		assert.equal(await outcomeOf(replay), "no-op, job already IN_PROGRESS");
+		assert.deepEqual(await replay.json(), accepted);
+		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "no-op, job already IN_PROGRESS");
 		const newId = await delivered(f.ports, captureEnvelope("WH-DUP-2"));
-		assert.equal(newId.status, 200);
-		assert.equal(await outcomeOf(newId), "no-op, job already IN_PROGRESS");
+		assert.equal(newId.status, 202);
+		assert.equal(recordedOutcome(f.store, "WH-DUP-2"), "no-op, job already IN_PROGRESS");
 		assert.deepEqual(await f.store.readJob(jobId), held);
 		assert.equal(f.captureCalls(), 1);
-		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-DUP-1", outcome: "applied" }, { id: "WH-DUP-2", outcome: "no-op, job already IN_PROGRESS" }]);
+		assert.deepEqual(recordedEvents(f.store).map(row => [row.id, row.outcome]), [["WH-DUP-1", "no-op, job already IN_PROGRESS"], ["WH-DUP-2", "no-op, job already IN_PROGRESS"]]);
 	} finally { f.store.close(); }
 });
 
@@ -1443,14 +1452,17 @@ test("a capture webhook on a paid job is consumed once and never touches the pai
 		if (paid.state.status !== "PAID") throw new Error("Not paid");
 		harness.base.read("TESTCAPTURE", { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: harness.base.capture } });
 		const first = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
-		assert.deepEqual(await first.json(), { ok: true, outcome: "applied", jobId: approved.id, edge: "CaptureCompleted", changed: false });
+		assert.equal(first.status, 202);
+		assert.deepEqual(await first.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "applied");
 		const replay = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
-		assert.equal(await outcomeOf(replay), "no-op, job already PAID");
+		assert.deepEqual(await replay.json(), accepted);
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "no-op, job already PAID");
 		const newId = await delivered(harness.ports, captureEnvelope("WH-PAID-2"));
-		assert.equal(await outcomeOf(newId), "no-op, job already PAID");
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-2"), "no-op, job already PAID");
 		const after = await harness.row();
 		assert.deepEqual(after.state.status === "PAID" ? after.state.book : null, paid.state.book);
-		assert.deepEqual(recordedEvents(harness.store), [{ id: "WH-PAID-1", outcome: "applied" }, { id: "WH-PAID-2", outcome: "no-op, job already PAID" }]);
+		assert.deepEqual(recordedEvents(harness.store).map(row => [row.id, row.outcome]), [["WH-PAID-1", "no-op, job already PAID"], ["WH-PAID-2", "no-op, job already PAID"]]);
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
@@ -1458,10 +1470,13 @@ test("a webhook whose resource PayPal does not know is refused and no job moves"
 	const { f, jobId, held } = await heldFixture();
 	try {
 		const response = await delivered(f.ports, captureEnvelope("WH-UNKNOWN-1", "CAPTURE_PAYPAL_NEVER_HAD"));
-		assert.equal(response.status, 422);
-		assert.equal(await outcomeOf(response), "refused, PayPal does not know this capture");
+		// The answer is the same minimal body every delivery gets: an unauthenticated caller cannot tell
+		// a resource PayPal holds from one it does not.
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
 		assert.deepEqual(await f.store.readJob(jobId), held);
-		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-UNKNOWN-1", outcome: "refused, PayPal does not know this capture" }]);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-UNKNOWN-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
+			resourceType: "capture", resourceId: "CAPTURE_PAYPAL_NEVER_HAD", outcome: "refused, PayPal does not know this capture" }]);
 	} finally { f.store.close(); }
 });
 
@@ -1470,9 +1485,10 @@ test("an event family the deployment does not route is recorded and dropped", as
 	try {
 		const response = await delivered(f.ports, JSON.stringify({ id: "WH-SALE-1", event_type: "PAYMENT.SALE.COMPLETED",
 			resource_type: "sale", resource: { id: "SALE1" } }));
-		assert.equal(response.status, 200);
-		assert.equal(await outcomeOf(response), "no-op, event type not routed");
-		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-SALE-1", outcome: "no-op, event type not routed" }]);
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-SALE-1", eventType: "PAYMENT.SALE.COMPLETED",
+			resourceType: "sale", resourceId: "SALE1", outcome: "no-op, event type not routed" }]);
 	} finally { f.store.close(); }
 });
 
@@ -1481,11 +1497,53 @@ test("a body that is not an event envelope is refused and still recorded", async
 	try {
 		const response = await delivered(f.ports, "not json");
 		assert.equal(response.status, 400);
-		assert.equal(await outcomeOf(response), "refused, unreadable event");
-		const rows = f.store.db.prepare("SELECT id, body, outcome FROM webhook_events").all();
+		assert.deepEqual(await response.json(), refused);
+		const rows = recordedEvents(f.store);
 		assert.equal(rows.length, 1);
-		assert.match(String(rows[0]?.id), /^unreadable-[0-9a-f]{16}$/);
-		assert.equal(String(rows[0]?.body), "not json");
-		assert.equal(String(rows[0]?.outcome), "refused, unreadable event");
+		assert.match(rows[0]?.id ?? "", /^unreadable-[0-9a-f]{16}$/);
+		assert.deepEqual(rows[0], { id: rows[0]?.id, eventType: "", resourceType: "", resourceId: "", outcome: "refused, unreadable event" });
 	} finally { f.store.close(); }
+});
+
+test("a delivery body is never stored: payer fields and the raw bytes stay out of the table", async () => {
+	const { f } = await heldFixture();
+	try {
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const body = JSON.stringify({ id: "WH-PII-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture",
+			resource: { id: f.capture.captureId, payer: { email_address: "payer@example.test", payer_id: "PAYER1",
+				name: { given_name: "Payer", surname: "Person" }, address: { address_line_1: "1 Payer Street", admin_area_2: "San Jose",
+					admin_area_1: "CA", postal_code: "95131", country_code: "US" } } } });
+		assert.equal((await delivered(f.ports, body)).status, 202);
+		const rows = f.store.db.prepare("SELECT * FROM webhook_events").all();
+		assert.equal(rows.length, 1);
+		assert.deepEqual({ ...rows[0] }, { id: "WH-PII-1", received_at: now, event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource_id: f.capture.captureId, outcome: "applied" });
+		// Not one payer field, and not one raw byte of the body, is in the table.
+		const stored = JSON.stringify(rows);
+		for (const secret of ["payer@example.test", "PAYER1", "Payer", "Person", "1 Payer Street", "95131", "address_line_1", "payer_id"]) {
+			assert.equal(stored.includes(secret), false, `${secret} reached the envelope table`);
+		}
+	} finally { f.store.close(); }
+});
+
+test("the webhook envelope table keeps a bounded window of deliveries", async () => {
+	// The route is unauthenticated, so the window is pinned here as literals: the newest 500 deliveries,
+	// and nothing older than 30 days.
+	const retentionRows = 500;
+	const retentionAgeMs = 30 * 86_400_000;
+	const store = new SqliteStore(":memory:");
+	try {
+		for (let index = 0; index < retentionRows + 2; index++) await store.recordWebhookEvent({ id: `WH-${index}`,
+			eventType: "PAYMENT.CAPTURE.COMPLETED", resourceType: "capture", resourceId: `C${index}`,
+			receivedAt: instant(new Date(Date.parse(now) + index * 1000).toISOString()), outcome: "applied" });
+		const count = () => Number(store.db.prepare("SELECT COUNT(*) AS n FROM webhook_events").get()!.n);
+		assert.equal(count(), retentionRows);
+		// The oldest rows are the ones that go; the newest delivery is always kept.
+		assert.equal(store.db.prepare("SELECT 1 FROM webhook_events WHERE id = 'WH-0'").get(), undefined);
+		assert.notEqual(store.db.prepare("SELECT 1 FROM webhook_events WHERE id = ?").get(`WH-${retentionRows + 1}`), undefined);
+		// An envelope older than the window ages out on the next insert instead of waiting for the cap.
+		await store.recordWebhookEvent({ id: "WH-STALE", eventType: "PAYMENT.CAPTURE.COMPLETED", resourceType: "capture",
+			resourceId: "C-STALE", receivedAt: instant(new Date(Date.parse(now) - retentionAgeMs - 1000).toISOString()), outcome: "applied" });
+		assert.equal(store.db.prepare("SELECT 1 FROM webhook_events WHERE id = 'WH-STALE'").get(), undefined);
+	} finally { store.close(); }
 });
