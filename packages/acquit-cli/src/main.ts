@@ -148,7 +148,7 @@ registerCommand({
 	name: "run",
 	usage: "acquit run <job> [--instruction \"...\"] [--runner claude-code|command] [--command <script>] [--dir <path>] [--api <url>] [--token]",
 	async run(argv, context) {
-		const options = parseRunArgs(argv, context.env);
+		const options = parseRunArgs(argv, context.env, undefined, stored(context.env));
 		await runRun(options, { client: apiClient({ baseUrl: options.apiUrl, token: options.token }),
 			providerKey: providerKeyPort(platformKeychain()) });
 		return 0;

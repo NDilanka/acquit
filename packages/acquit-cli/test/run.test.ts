@@ -137,6 +137,18 @@ test("the session token never comes from argv: --token reads stdin and a value i
 	assert.throws(() => parseRunArgs(["job_7Q2K", "--token"], {}, () => "\n"), (error: CliError) => error.code === "AUTH_REQUIRED");
 });
 
+test("run resolves the stored login for its origin and its token", () => {
+	const stored = () => ({ api: "http://127.0.0.1:4399", token: "stored-session", handle: "devon-ops", role: "OPERATOR" });
+	const options = parseRunArgs(["job_7Q2K"], {}, () => "", stored);
+	assert.equal(options.apiUrl, "http://127.0.0.1:4399");
+	assert.equal(options.token, "stored-session");
+	// The flag and the environment still outrank the file, as they do for submit.
+	assert.equal(parseRunArgs(["job_7Q2K", "--api", "http://127.0.0.1:4330"], {}, () => "", stored).apiUrl, "http://127.0.0.1:4330");
+	assert.equal(parseRunArgs(["job_7Q2K"], { ACQUIT_API: "http://127.0.0.1:4111" }, () => "", stored).apiUrl, "http://127.0.0.1:4111");
+	assert.equal(parseRunArgs(["job_7Q2K"], { ACQUIT_TOKEN: "env-token" }, () => "", stored).token, "env-token");
+	assert.throws(() => parseRunArgs(["job_7Q2K"], {}), (error: CliError) => error.code === "AUTH_REQUIRED");
+});
+
 test("--runner and --command must agree, and --command alone selects the command runner", () => {
 	assert.equal(parseRunArgs(["job_7Q2K", "--command", "/tmp/fix.sh"], { ACQUIT_TOKEN: "s" }).runner, "command");
 	assert.equal(parseRunArgs(["job_7Q2K", "--runner", "claude-code"], { ACQUIT_TOKEN: "s" }).runner, "claude-code");

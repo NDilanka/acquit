@@ -17,7 +17,7 @@ import type { CommitSha } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
-import type { ApiClient } from "./client.ts";
+import type { ApiClient, StoredLogin } from "./client.ts";
 import { pushError, submissionRef } from "./submit.ts";
 
 /** The image the tutorial names. The sandbox is the image plus the internal network and the proxy. */
@@ -46,10 +46,11 @@ function readTokenFromStdin(): string {
 }
 
 export function parseRunArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env,
-	readStdin: () => string = readTokenFromStdin): RunOptions {
+	readStdin: () => string = readTokenFromStdin, stored: () => StoredLogin | null = () => null): RunOptions {
+	const login = stored();
 	let jobId: string | null = null;
 	let dir: string | null = null;
-	let apiUrl = env.ACQUIT_API ?? "http://127.0.0.1:4310";
+	let apiUrl = env.ACQUIT_API ?? login?.api ?? "http://127.0.0.1:4310";
 	let instruction: string | null = null;
 	let runner: RunnerKind | null = null;
 	let command: string | null = null;
@@ -93,8 +94,8 @@ export function parseRunArgs(argv: readonly string[], env: NodeJS.ProcessEnv = p
 	if (runner === "command" && command === null) throw new CliError("USAGE", "--runner command needs --command <script>.");
 	if (command !== null && runner === null) runner = "command";
 	const image = env.ACQUIT_RUNNER_IMAGE?.trim() || DEFAULT_RUNNER_IMAGE;
-	return { jobId, dir, apiUrl, token: resolveToken(tokenOnStdin ? readStdin().trim() || undefined : undefined, env),
-		instruction, runner, command, image, proxyImage: env.ACQUIT_RUNNER_PROXY_IMAGE?.trim() || image };
+	return { jobId, dir, apiUrl, token: resolveToken(tokenOnStdin ? readStdin().trim() || undefined : undefined, env,
+		() => login?.token ?? null), instruction, runner, command, image, proxyImage: env.ACQUIT_RUNNER_PROXY_IMAGE?.trim() || image };
 }
 
 // ---- the provider-key seam --------------------------------------------------------------------
