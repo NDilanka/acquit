@@ -20,13 +20,19 @@ The CLI refuses to start a container from a missing image; it never pulls one im
   Claude Code CLI.
 - **Clone.** The job's work repo is cloned on the host with a scoped credential and bind-mounted at
   `/work`. The git directory lives in the CLI's state location
-  (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default),
-  outside the bind mount: the agent never sees git metadata, and the work tree's `.git` is an empty
-  directory the sandbox mounts a read-only tmpfs over. The CLI re-makes that shadow as an empty real
-  0700 directory immediately before every mount, so a symlink a previous run left at `.git` is
-  unlinked rather than mounted through. Host git names the state git directory and the
-  work tree explicitly, never discovery, and runs with hooks, the fsmonitor, the credential helper,
-  and the ssh command all disabled plus an empty global config. The agent edits the work tree in
+  (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default, and
+  `%LOCALAPPDATA%\acquit\work\<job>.git` on Windows), outside the bind mount: the agent never sees
+  git metadata, and the work tree's `.git` is an empty directory the sandbox mounts a readable
+  read-only 0555 tmpfs over. The CLI re-makes that shadow as an empty real 0700 directory immediately
+  before every mount, so a symlink a previous run left at `.git` is unlinked rather than mounted
+  through; the tmpfs names mode 0555 because Docker would otherwise copy that 0700, which the
+  container's own user cannot read. Host git names a job's state checkout explicitly — the state git
+  directory and the work tree — and runs there with hooks, the fsmonitor, the credential helper, and
+  the ssh command all disabled plus an empty global config; a `--dir` the state git directory does not
+  record is the operator's own checkout and is used as-is through discovery, and a push from it with
+  the operator's own credential keeps the operator's git environment and its credential helper. The
+  CLI never removes a state git directory: delete
+  `$XDG_STATE_HOME/acquit/work/<job>.git` after a job is done. The agent edits the work tree in
   place; the host computes the changed files and makes the commit.
 - **Network.** The container joins a per-job `--internal` Docker network with no gateway, so it has
   no route out. A sidecar container from the same image runs `proxy.mjs`; it is attached to the

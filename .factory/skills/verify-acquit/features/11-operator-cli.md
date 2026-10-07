@@ -87,15 +87,16 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
 - `run-prepare` asks `POST /api/jobs/:id/work-repo-token` for a token scoped to the job's work repo
   only, clones the work repo, and prints the tutorial's `Preparing sandbox for job_X` block. The
   clone's git directory lives in the CLI's state location
-  (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default),
-  outside the work tree the sandbox mounts; the work tree's `.git` is an empty directory the sandbox
-  mounts a read-only tmpfs over, so the agent never sees git metadata.
+  (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default, and
+  `%LOCALAPPDATA%\acquit\work\<job>.git` on Windows), outside the work tree the sandbox mounts; the
+  work tree's `.git` is an empty directory the sandbox mounts a readable read-only tmpfs over, so the
+  agent never sees git metadata.
 - `run-claude-code` runs Claude Code with the operator's key, read from the OS keychain that
   `acquit operator init` filled.
 - `run-command` runs the script the operator names, mounted read-only at `/acquit/command.sh`.
 - `run-egress` keeps the container on an internal network whose only route out is the allowlisting
-  proxy: `registry.npmjs.org` and `api.anthropic.com` only, CONNECT to port 443 and plain HTTP to 80
-  or 443. The proxy joins a dedicated per-run `acquit-runner-<job>-egress` network created with
+  proxy: `registry.npmjs.org` and `api.anthropic.com` only, CONNECT to port 443 and plain HTTP to
+  port 80. The proxy joins a dedicated per-run `acquit-runner-<job>-egress` network created with
   `com.docker.network.bridge.enable_icc=false`; it never joins the shared bridge.
 - `run-changed-files` counts added lines against the frozen commit and pushes the commit to
   `refs/heads/submissions/<sha>`, the ref `acquit submit` expects. Uncommitted work is folded into
@@ -135,8 +136,9 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
 - **Re-run with an instruction.** Run again on the same job with `--instruction "..."` and a script
   that fixes `src/money.ts`. Require the reset fork line, then `Changed files: src/money.ts (<n> lines)`.
 - **Submit what run pushed.** `acquit submit <job> --dir <the same --dir>`. Submit reads the
-  submitted commit and pushes through the job's state git directory when one exists, so a run
-  checkout needs no discovery of its own. It mints the scoped work-repo credential itself
+  submitted commit and pushes through the job's state git directory when `--dir` is the work tree
+  that directory records, so a run checkout needs no discovery of its own; any other `--dir` is the
+  operator's own checkout and keeps discovery. It mints the scoped work-repo credential itself
   (`POST /api/jobs/:id/work-repo-token`) and pushes through an askpass script in a 0600 temp dir it
   removes, so the operator needs no GitHub credential for the fork. The push target is the job's work
   repo by default; `--remote origin` (or a `--remote` URL) that resolves to the work repo takes the
@@ -156,19 +158,26 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   records (`DIR_NOT_WORK_REPO` otherwise), so a run never resets an unrelated checkout. An empty path
   is adopted when that recorded work tree is gone, and an older checkout with an in-tree `.git` is
   refused by name: pass a fresh `--dir`, or remove `$XDG_STATE_HOME/acquit/work/<job>.git` to clone
-  afresh.
+  afresh. The CLI never removes a state git directory by itself: after a job is done, delete
+  `$XDG_STATE_HOME/acquit/work/<job>.git` (on Windows `%LOCALAPPDATA%\acquit\work\<job>.git`) to
+  reclaim it.
 - Every run checks out the frozen commit and runs `git clean -fd` first, so uncommitted work in
   `--dir` is lost.
 - The work tree's `.git` is re-made as an empty real 0700 directory immediately before every sandbox
   mount, so a symlink a previous run planted there (`.git -> /etc`) is unlinked rather than mounted
   through, the read-only tmpfs always lands on the work tree's own `.git`, and the link's target is
-  never touched. Host-side `git add -A`, status, and the changed-file count never record anything
-  under `.git`.
-- Host-side git on a job's checkout never uses discovery and never reads the operator's global or
-  system config: every command names the state git directory and the work tree, sets an empty
-  `core.hooksPath`, and disables the fsmonitor, credential helper, and ssh command. A state git
-  directory that holds config the CLI did not write refuses the push (`GIT_CONFIG_UNSAFE`) instead of
-  letting the scoped token meet a URL rewrite or a credential helper.
+  never touched. The mount names mode 0555: Docker would otherwise copy the host shadow's 0700, which
+  the container's own user cannot read. Host-side `git add -A`, status, and the changed-file count
+  never record anything under `.git`.
+- Host-side git names a job's state checkout explicitly — the state git directory and the work tree —
+  and never reads the operator's global or system config there: every command sets an empty
+  `core.hooksPath` and disables the fsmonitor, credential helper, and ssh command. An operator's own
+  checkout (a `--dir` the state git directory does not record) is used as-is through discovery; a
+  push from it with the operator's own credential keeps the operator's git environment and its
+  credential helper, while a push the CLI's scoped token drives is hardened there too. A git directory
+  that holds config the CLI did not write refuses the scoped push (`GIT_CONFIG_UNSAFE`) instead of
+  letting the scoped token meet a URL rewrite or a credential helper; the refusal names the directory
+  and its remedy.
 - `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.
 - The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
   repo. Rerun in about 30 seconds.
@@ -206,8 +215,10 @@ lanes, seeds the head lane, and reports:
 `GET /api/jobs` with the token from `ACQUIT_TOKEN` (never argv), and writes `<evidence>/run-start.json`
 instead of `cli.json`. `--run-lane` must be 1 or more (lane 0 is the real database) and the pair is
 required together. Blockers it can meet alone: `RUN_TOKEN_MISSING`, `RUN_LANE_UNREACHABLE`,
-`RUN_TOKEN_REJECTED`, `RUN_JOB_UNKNOWN`, `RUN_JOB_NOT_FUNDED`. It sweeps only the
-`acquit-runner-<job>` objects and temp roots its own samples made.
+`RUN_TOKEN_REJECTED`, `RUN_JOB_UNKNOWN`, `RUN_JOB_NOT_FUNDED`. Each sample child gets its own
+`XDG_STATE_HOME` (`LOCALAPPDATA` on Windows) under the probe's temp root, so it never meets the
+measured lane's state git directory, and the sweep removes that root with the state home in it. It
+sweeps only the `acquit-runner-<job>` objects and temp roots its own samples made.
 
 Rules: fail if the head `--help` median exceeds the trunk median by more than 20 percent, or if the
 `jobs list` median exceeds 800 ms, or if the warm run-start median exceeds 30 seconds. A live-lane run
