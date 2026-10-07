@@ -149,6 +149,41 @@ test("tick grants on Monday, caps at 100, and never grows the balance mid-week",
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
+test("the weekly grant is a Monday event: a missed Monday is not caught up on Thursday", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-credits-"));
+	// The account's last grant covered ISO week 40. The process was down at Monday 2026-10-05, so the
+	// Thursday tick is the first it sees of week 41; it must not write that week's grant mid-week.
+	const lastGrant = instant("2026-10-01T09:00:00Z");
+	const thursday = instant("2026-10-08T12:00:00Z");
+	const monday = instant("2026-10-12T00:00:00Z");
+	const missedWeek = creditWeek(thursday);
+	const grantWeek = creditWeek(monday);
+	let current: Instant = thursday;
+	const { service, store } = acquire(root, "lane8.db", () => current);
+	try {
+		store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(devon, 0, JSON.stringify(operatorRow(devon, 1)), 1);
+		const account = granted(devon, lastGrant);
+		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+		await service.tick();
+		const before = await store.readCredits(devon);
+		assert.equal(before.balance.allowance, 30, "a Thursday tick must not grant or expire the unspent allowance");
+		assert.equal(before.lines.some(line => line.key === `grant:${missedWeek}`), false, "no grant line for the week the process missed");
+		current = monday;
+		await service.tick();
+		const after = await store.readCredits(devon);
+		assert.equal(after.balance.allowance, 40, "Monday grants 30 plus 10 for the one receipt");
+		assert.deepEqual(after.lines.slice(-2), [
+			{ kind: "EXPIRE", key: "expire:2026-W42", credits: 30, at: monday },
+			{ kind: "GRANT", key: "grant:2026-W42", credits: 40, at: monday },
+		]);
+		await service.tick();
+		const again = await store.readCredits(devon);
+		assert.equal(again.balance.allowance, 40);
+		assert.equal(again.version, after.version);
+		assert.equal(again.lines.filter(line => line.key === `grant:${grantWeek}`).length, 1, "one grant line for the week");
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
 test("a bid the client never answers returns its credits through tick", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-credits-"));
 	const respondBy = instant("2026-10-09T12:00:00Z");
