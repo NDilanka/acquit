@@ -21,6 +21,7 @@ import { runJobsList } from "../src/jobs.ts";
 import { usd, utcMinutes } from "../src/format.ts";
 import { linuxKeychain, macKeychain, memoryKeychain, providerKeyPort, windowsKeychain } from "../src/keychain.ts";
 import { runLogin } from "../src/login.ts";
+import { main } from "../src/main.ts";
 import { parseOperatorArgs, runOperatorInit } from "../src/operator.ts";
 import { runReceipts, weeklyCreditsLine } from "../src/receipts.ts";
 import { renderSubmission } from "../src/submit.ts";
@@ -330,6 +331,30 @@ test("a fetch that cannot reach the API refuses by name and never prints a stack
 		&& error.message.includes("http://127.0.0.1:4399") && !error.message.includes("\n"));
 	await assert.rejects(client.post("/api/commands", {}), (error: CliError) => error.code === "API_UNREACHABLE"
 		&& error.message.includes("http://127.0.0.1:4399") && !error.message.includes("\n"));
+});
+
+test("login names an unreachable API on its create and on its poll, in one line and without a stack", async () => {
+	const originalFetch = globalThis.fetch;
+	const originalError = console.error;
+	const run = async (stub: typeof globalThis.fetch): Promise<string[]> => {
+		const errors: string[] = [];
+		globalThis.fetch = stub;
+		console.error = (line: unknown) => { errors.push(String(line)); };
+		try { assert.equal(await main(["login", "--api", "http://127.0.0.1:4399", "--no-open"]), 1); }
+		finally { globalThis.fetch = originalFetch; console.error = originalError; }
+		return errors;
+	};
+	const refusing = () => Promise.reject(new TypeError("fetch failed"));
+	const refusedCreate = await run(refusing);
+	assert.equal(refusedCreate.length, 1);
+	assert.match(refusedCreate[0], /^acquit: API_UNREACHABLE: The Acquit API at http:\/\/127\.0\.0\.1:4399 could not be reached\./);
+	assert.equal(refusedCreate[0].includes("\n"), false);
+	const refusedPoll = await run(async input => String(input).endsWith("/api/cli/codes")
+		? Response.json({ code: "CODE-123", url: "http://localhost:5173/cli?code=CODE-123" }, { status: 201 })
+		: refusing());
+	assert.equal(refusedPoll.length, 1);
+	assert.match(refusedPoll[0], /^acquit: API_UNREACHABLE: The Acquit API at http:\/\/127\.0\.0\.1:4399 could not be reached\./);
+	assert.equal(refusedPoll[0].includes("\n"), false);
 });
 
 test("diff prints the tutorial's patch from the judged commit, without git's index header", async () => {

@@ -44,8 +44,9 @@ export function apiClient(options: ApiOptions): ApiClient {
 	};
 }
 
-/** A fetch rejection is a connection problem, not a stack: the origin is named, the detail is bounded. */
-async function reach(call: typeof globalThis.fetch, url: URL, init: RequestInit, base: URL): Promise<Response> {
+/** A fetch rejection is a connection problem, not a stack: the origin is named, the detail is bounded.
+ * Exported for the calls that do not go through apiClient, such as the login exchange. */
+export async function reach(call: typeof globalThis.fetch, url: URL, init: RequestInit, base: URL): Promise<Response> {
 	try { return await call(url, init); }
 	catch (error) {
 		const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200);

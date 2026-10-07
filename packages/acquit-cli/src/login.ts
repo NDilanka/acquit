@@ -3,7 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { CliError, apiFlag, saveLogin } from "./client.ts";
+import { CliError, apiFlag, reach, saveLogin } from "./client.ts";
 import type { StoredLogin } from "./client.ts";
 
 export type LoginOptions = {
@@ -66,8 +66,8 @@ export async function runLogin(options: LoginOptions, deps: LoginDeps = {}): Pro
 	// without the verifier.
 	const verifier = randomBytes(32).toString("base64url");
 	const challenge = createHash("sha256").update(verifier).digest("base64url");
-	const created = await call(new URL("/api/cli/codes", base), { method: "POST",
-		headers: { "content-type": "application/json", "x-acquit-cli": "1" }, body: JSON.stringify({ challenge }) });
+	const created = await reach(call, new URL("/api/cli/codes", base), { method: "POST",
+		headers: { "content-type": "application/json", "x-acquit-cli": "1" }, body: JSON.stringify({ challenge }) }, base);
 	const issued = await created.json().catch(() => null) as CodeAnswer | null;
 	const code = typeof issued?.code === "string" ? issued.code : null;
 	const url = typeof issued?.url === "string" ? issued.url : null;
@@ -78,8 +78,8 @@ export async function runLogin(options: LoginOptions, deps: LoginDeps = {}): Pro
 	if (options.openBrowser) open(url);
 	const deadline = now() + options.timeoutSeconds * 1_000;
 	for (;;) {
-		const polled = await call(new URL(`/api/cli/codes/${encodeURIComponent(code)}`, base),
-			{ headers: { "x-acquit-cli": "1", "X-Acquit-Verifier": verifier } });
+		const polled = await reach(call, new URL(`/api/cli/codes/${encodeURIComponent(code)}`, base),
+			{ headers: { "x-acquit-cli": "1", "X-Acquit-Verifier": verifier } }, base);
 		const answer = await polled.json().catch(() => null) as PollAnswer | null;
 		if (polled.status === 404) throw new CliError("LOGIN_UNKNOWN", "The API does not know this sign-in code. Run `acquit login` again.");
 		if (polled.status === 403) throw new CliError("LOGIN_VERIFIER_MISMATCH",
