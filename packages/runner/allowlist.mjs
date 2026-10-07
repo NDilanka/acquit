@@ -1,6 +1,7 @@
 // The one egress allowlist the runner's proxy reads. A host alone is not enough: the right host on
 // another port is still egress the sandbox was never meant to have, so CONNECT is 443 only and a
-// plain HTTP forward is 80 or 443.
+// plain HTTP forward is an http URL on port 80 only. An https absolute-form forward is refused rather
+// than downgraded or tunneled from the plain path: 443 belongs to CONNECT alone.
 
 export const ALLOWED_HOSTS = new Set(["registry.npmjs.org", "api.anthropic.com"]);
 
@@ -38,7 +39,29 @@ export function allowedConnect(authority) {
 	return target !== null && target.port === 443 && allowedHost(target.host);
 }
 
-/** A plain HTTP forward only to 80 or 443. */
-export function allowedForward(host, port) {
-	return (port === 80 || port === 443) && allowedHost(host);
+/** A plain forward only of an absolute-form http URL to an allowlisted host on port 80, with no
+ * userinfo: forwarding `user:pass@host` upstream would hand the caller's secret onward. */
+export function allowedForward(url) {
+	return url.protocol === "http:" && url.username === "" && url.password === ""
+		&& (url.port === "" || url.port === "80") && allowedHost(url.hostname);
+}
+
+/** Hop-by-hop headers a proxy must not forward. `Connection` adds names to this set. */
+const HOP_BY_HOP = new Set(["connection", "proxy-authorization", "proxy-connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade"]);
+
+/** The request headers a forward copies upstream. Everything hop-by-hop is dropped, including any
+ * header `Connection` names, so a request cannot smuggle one past the proxy's own hop. */
+export function forwardHeaders(headers) {
+	const drop = new Set(HOP_BY_HOP);
+	const connection = headers.connection;
+	for (const value of Array.isArray(connection) ? connection : [connection]) {
+		if (typeof value !== "string") continue;
+		for (const name of value.split(",")) drop.add(name.trim().toLowerCase());
+	}
+	const kept = {};
+	for (const [name, value] of Object.entries(headers)) {
+		if (value === undefined || drop.has(name.toLowerCase())) continue;
+		kept[name] = value;
+	}
+	return kept;
 }

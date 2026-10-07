@@ -2,29 +2,32 @@
 // The one route out of the runner's internal network. The runner container can reach nothing else:
 // its network has no gateway, so every HTTPS request it makes is a CONNECT to this proxy, and this
 // proxy dials upstream only for the package registry and the model provider, only on the ports the
-// allowlist names.
+// allowlist names. A plain forward is an http URL on port 80 with no userinfo, and hop-by-hop headers
+// never ride past this hop.
 //
 // A denial answers 403 and names the host on stdout, so a lane transcript shows what was refused.
 // Request paths and headers are never logged: an npm token or an API key could ride in them.
 
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
-import { allowedConnect, allowedForward, ALLOWED_HOSTS, parseAuthority } from "./allowlist.mjs";
+import { allowedConnect, allowedForward, ALLOWED_HOSTS, forwardHeaders, parseAuthority } from "./allowlist.mjs";
 
 const PORT = Number(process.env.ACQUIT_PROXY_PORT ?? 8888);
 
 const server = createServer((req, res) => {
 	let target;
 	try { target = new URL(req.url); } catch { res.writeHead(400, { "content-type": "text/plain" }); res.end("bad proxy request\n"); return; }
-	const port = target.port === "" ? 80 : Number(target.port);
-	if (!allowedForward(target.hostname, port)) {
-		console.log(`deny http ${target.hostname}:${port}`);
+	if (!allowedForward(target)) {
+		// The origin names the scheme, host, and port only: a refused URL can carry a credential in
+		// its userinfo, and the log line must never repeat one.
+		console.log(`deny forward ${target.protocol}//${target.hostname}${target.port === "" ? "" : `:${target.port}`}`);
 		res.writeHead(403, { "content-type": "text/plain" });
 		res.end(`egress denied: ${target.hostname}\n`);
 		return;
 	}
-	const upstream = httpRequest({ host: target.hostname, port, method: req.method,
-		path: `${target.pathname}${target.search}`, headers: req.headers }, answer => {
+	// The allowlist leaves port 80 as the only forward, so the dial does not re-read the URL's port.
+	const upstream = httpRequest({ host: target.hostname, port: 80, method: req.method,
+		path: `${target.pathname}${target.search}`, headers: forwardHeaders(req.headers) }, answer => {
 		res.writeHead(answer.statusCode ?? 502, answer.headers);
 		answer.pipe(res);
 	});
