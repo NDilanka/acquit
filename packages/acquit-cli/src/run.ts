@@ -351,21 +351,28 @@ export function dockerCli(): DockerPort {
 	};
 }
 
-export type SandboxNames = { readonly runner: string; readonly proxy: string; readonly network: string };
+export type SandboxNames = { readonly runner: string; readonly proxy: string; readonly network: string; readonly egress: string };
 
 /** Every object this run makes carries the job in its name, so nothing is left running unnamed. */
 export function sandboxNames(jobId: string): SandboxNames {
 	const base = `acquit-runner-${jobId}`;
-	return { runner: base, proxy: `${base}-proxy`, network: `${base}-net` };
+	return { runner: base, proxy: `${base}-proxy`, network: `${base}-net`, egress: `${base}-egress` };
 }
 
 export function networkCreateArgs(network: string): readonly string[] {
 	return ["network", "create", "--internal", network];
 }
 
-/** The proxy is the one container with a route out: the default bridge, plus the internal network. */
-export function proxyRunArgs(proxy: string, network: string, image: string): readonly string[] {
-	return ["run", "--detach", "--rm", "--name", proxy, "--network", "bridge", "--pull=never", image, "node", "/runner/proxy.mjs"];
+/** The proxy's own network: per run and not internal, so it has a route out, and with inter-container
+ * communication off so nothing else on the host's bridges can reach the proxy's port. */
+export function egressNetworkCreateArgs(egress: string): readonly string[] {
+	return ["network", "create", "-o", "com.docker.network.bridge.enable_icc=false", egress];
+}
+
+/** The proxy is the one container with a route out: its own per-run egress network, plus the internal
+ * network the runner joins. It never attaches to the shared bridge. */
+export function proxyRunArgs(proxy: string, egress: string, image: string): readonly string[] {
+	return ["run", "--detach", "--rm", "--name", proxy, "--network", egress, "--pull=never", image, "node", "/runner/proxy.mjs"];
 }
 
 export function networkConnectArgs(network: string, proxy: string): readonly string[] {
@@ -387,7 +394,7 @@ export type RunnerPlan = {
 	readonly gid: number | null;
 };
 
-/** The runner container: the internal network only, the proxy in its environment, the key in a file. */
+/** The runner container: the internal network only, the proxy in its environment, the key by name. */
 export function runnerRunArgs(plan: RunnerPlan): readonly string[] {
 	mountSafe("work tree", plan.dir);
 	if (plan.commandPath !== null) mountSafe("command script", plan.commandPath);
@@ -419,7 +426,8 @@ export function agentArgv(runner: RunnerKind, instruction: string, commandPath: 
 }
 
 export function cleanupArgs(names: SandboxNames): readonly (readonly string[])[] {
-	return [["rm", "--force", names.runner], ["rm", "--force", names.proxy], ["network", "rm", names.network]];
+	return [["rm", "--force", names.runner], ["rm", "--force", names.proxy],
+		["network", "rm", names.network], ["network", "rm", names.egress]];
 }
 
 /** Best effort, in the one order that cannot leave a container attached to a removed network. */
@@ -444,17 +452,28 @@ function signalGuard(names: SandboxNames): () => void {
 	return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
-/** Starts the proxy and the runner, and removes both plus the network on every exit path. */
+/** Starts the proxy and the runner, and removes both plus the networks on every exit path. */
 export async function runAgentInSandbox(plan: RunnerPlan, docker: DockerPort,
 	onOutput?: (chunk: string, stream: "stdout" | "stderr") => void, env?: NodeJS.ProcessEnv): Promise<number | null> {
 	const options = env === undefined ? {} : { env };
+	// A setup command's output names the daemon's refusal; it is bounded and redacted before it is
+	// quoted, and the cleanup below still runs.
+	const setup = async (args: readonly string[], what: string): Promise<void> => {
+		const output: string[] = [];
+		const code = await docker.run(args, { ...options, onOutput: chunk => output.push(chunk) });
+		if (code !== 0) {
+			const detail = safeEcho(boundedDetail(output.join(" ").trim()));
+			throw new CliError("SANDBOX_SETUP_FAILED", `${what} failed (docker exited ${code ?? "without a status"}).${detail ? ` ${detail}` : ""}`);
+		}
+	};
 	try {
 		// A previous run killed before its cleanup leaves names behind; the names are per job, so this
 		// can only ever remove this job's own leftovers.
 		await cleanupSandbox(docker, plan.names);
-		await docker.run(networkCreateArgs(plan.names.network), options);
-		await docker.run(proxyRunArgs(plan.names.proxy, plan.names.network, plan.proxyImage), options);
-		await docker.run(networkConnectArgs(plan.names.network, plan.names.proxy), options);
+		await setup(networkCreateArgs(plan.names.network), "Creating the sandbox network");
+		await setup(egressNetworkCreateArgs(plan.names.egress), "Creating the sandbox egress network");
+		await setup(proxyRunArgs(plan.names.proxy, plan.names.egress, plan.proxyImage), "Starting the egress proxy");
+		await setup(networkConnectArgs(plan.names.network, plan.names.proxy), "Attaching the proxy to the sandbox network");
 		return await docker.run(runnerRunArgs(plan), { ...options, ...(onOutput === undefined ? {} : { onOutput }) });
 	} finally {
 		await cleanupSandbox(docker, plan.names);

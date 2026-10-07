@@ -86,12 +86,15 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
   `acquit operator init` filled.
 - `run-command` runs the script the operator names, mounted read-only at `/acquit/command.sh`.
 - `run-egress` keeps the container on an internal network whose only route out is the allowlisting
-  proxy: `registry.npmjs.org` and `api.anthropic.com` only.
+  proxy: `registry.npmjs.org` and `api.anthropic.com` only, CONNECT to port 443 and plain HTTP to 80
+  or 443. The proxy joins a dedicated per-run `acquit-runner-<job>-egress` network created with
+  `com.docker.network.bridge.enable_icc=false`; it never joins the shared bridge.
 - `run-changed-files` counts added lines against the frozen commit and pushes the commit to
   `refs/heads/submissions/<sha>`, the ref `acquit submit` expects.
 - `run-rerun` resets the fork to the frozen commit and prints the tutorial's reset block.
-- `run-cleanup` removes `acquit-runner-<job>`, `acquit-runner-<job>-proxy`, and
-  `acquit-runner-<job>-net` on every exit path, including a failed agent start.
+- `run-cleanup` removes `acquit-runner-<job>`, `acquit-runner-<job>-proxy`,
+  `acquit-runner-<job>-net`, and `acquit-runner-<job>-egress` on every exit path, including a failed
+  agent start.
 
 ### Driving it from a lane
 
@@ -107,12 +110,14 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   - Probes `curl -sS --max-time 15 -o /dev/null https://example.com`, which must fail with
     `CONNECT tunnel failed, response 403`.
   - Probes `curl -sS --max-time 30 -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org/`,
-    which must print `200`.
+    which must print `200`, and `curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/`,
+    which must fail: the proxy allows CONNECT only to port 443.
 
   Run `acquit run <job> --runner command --command <script> --dir <empty path>`. Require the
   tutorial's first block and `Changed files: tests/totals.test.ts (1 line)`.
 - **No leftovers.** After every run, `docker ps -a --filter name=acquit-runner` and
-  `docker network ls --filter name=acquit-runner` must be empty.
+  `docker network ls --filter name=acquit-runner` must be empty, so neither the internal network nor
+  `acquit-runner-<job>-egress` survives.
 - **Re-run with an instruction.** Run again on the same job with `--instruction "..."` and a script
   that fixes `src/money.ts`. Require the reset fork line, then `Changed files: src/money.ts (<n> lines)`.
 - **Submit what run pushed.** `acquit submit <job> --dir <the same --dir> --remote origin`. Run already

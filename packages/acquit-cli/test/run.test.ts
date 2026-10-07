@@ -11,8 +11,8 @@ import type { CommitSha, JobId, OperatorId } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
-import { agentArgv, changedFiles, cleanupArgs, formatDuration, gitCli, networkConnectArgs, networkCreateArgs,
-	parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, renderFinished, renderPreparing, renderRunning,
+import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, formatDuration, gitCli, networkConnectArgs,
+	networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, renderFinished, renderPreparing, renderRunning,
 	runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, writeAskpass, writeProviderEnvFile } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions } from "../src/run.ts";
 
@@ -91,13 +91,19 @@ function fakeGit(answers: { numstat?: string; untracked?: string; head?: string 
 
 type RecordingDocker = DockerPort & { readonly calls: readonly string[][]; readonly envs: readonly (NodeJS.ProcessEnv | undefined)[] };
 
-function fakeDocker(options: { code?: number | null; failOn?: (args: readonly string[]) => boolean } = {}): RecordingDocker {
+function fakeDocker(options: { code?: number | null; failOn?: (args: readonly string[]) => boolean;
+	codeOn?: (args: readonly string[]) => number | null | undefined; output?: string } = {}): RecordingDocker {
 	const calls: string[][] = [];
 	const envs: (NodeJS.ProcessEnv | undefined)[] = [];
 	const run: DockerPort["run"] = async (args, runOptions) => {
 		calls.push([...args]);
 		envs.push(runOptions?.env);
 		if (options.failOn?.(args) === true) throw new CliError("DOCKER_UNAVAILABLE", "docker could not start");
+		const forced = options.codeOn?.(args);
+		if (forced !== undefined) {
+			if (options.output !== undefined) runOptions?.onOutput?.(options.output, "stderr");
+			return forced;
+		}
 		return args[0] === "run" && !args.includes("--detach") ? options.code ?? 0 : 0;
 	};
 	return { run, calls, envs };
@@ -299,15 +305,21 @@ test("preparing a matching clone fetches the frozen commit and resets the tree",
 
 // ---- docker command assembly ------------------------------------------------------------------
 
-test("sandbox names are prefixed with acquit-runner-<job> and the network is internal", () => {
+test("sandbox names are prefixed with acquit-runner-<job> and every network is per run", () => {
 	const names = sandboxNames("job_7Q2K");
-	assert.deepEqual(names, { runner: "acquit-runner-job_7Q2K", proxy: "acquit-runner-job_7Q2K-proxy", network: "acquit-runner-job_7Q2K-net" });
+	assert.deepEqual(names, { runner: "acquit-runner-job_7Q2K", proxy: "acquit-runner-job_7Q2K-proxy",
+		network: "acquit-runner-job_7Q2K-net", egress: "acquit-runner-job_7Q2K-egress" });
 	assert.deepEqual(networkCreateArgs(names.network), ["network", "create", "--internal", names.network]);
+	assert.deepEqual(egressNetworkCreateArgs(names.egress),
+		["network", "create", "-o", "com.docker.network.bridge.enable_icc=false", names.egress]);
 	assert.deepEqual(networkConnectArgs(names.network, names.proxy), ["network", "connect", names.network, names.proxy]);
-	const proxy = proxyRunArgs(names.proxy, names.network, "acquit/runner-node20");
-	assert.deepEqual(proxy, ["run", "--detach", "--rm", "--name", names.proxy, "--network", "bridge", "--pull=never",
+	const proxy = proxyRunArgs(names.proxy, names.egress, "acquit/runner-node20");
+	assert.deepEqual(proxy, ["run", "--detach", "--rm", "--name", names.proxy, "--network", names.egress, "--pull=never",
 		"acquit/runner-node20", "node", "/runner/proxy.mjs"]);
-	assert.deepEqual(cleanupArgs(names), [["rm", "--force", names.runner], ["rm", "--force", names.proxy], ["network", "rm", names.network]]);
+	// The proxy never joins the default bridge, where unrelated containers could reach it.
+	assert.equal(proxy.includes("bridge"), false);
+	assert.deepEqual(cleanupArgs(names), [["rm", "--force", names.runner], ["rm", "--force", names.proxy],
+		["network", "rm", names.network], ["network", "rm", names.egress]]);
 });
 
 test("the runner container gets the internal network, the proxy, the env file, and no secret in argv", () => {
@@ -367,7 +379,7 @@ test("the askpass script holds no token and the token file is 0600 and removed w
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the sandbox starts the proxy before the runner and removes every container and the network", async () => {
+test("the sandbox creates its egress network, starts the proxy on it, and removes every object", async () => {
 	const docker = fakeDocker();
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
@@ -376,17 +388,20 @@ test("the sandbox starts the proxy before the runner and removes every container
 	assert.equal(await runAgentInSandbox(plan, docker), 0);
 	const verbs = docker.calls.map(args => args.join(" "));
 	assert.deepEqual(verbs, [
-		`rm --force ${names.runner}`, `rm --force ${names.proxy}`, `network rm ${names.network}`,
+		`rm --force ${names.runner}`, `rm --force ${names.proxy}`, `network rm ${names.network}`, `network rm ${names.egress}`,
 		`network create --internal ${names.network}`,
-		`run --detach --rm --name ${names.proxy} --network bridge --pull=never acquit/runner-node20 node /runner/proxy.mjs`,
+		`network create -o com.docker.network.bridge.enable_icc=false ${names.egress}`,
+		`run --detach --rm --name ${names.proxy} --network ${names.egress} --pull=never acquit/runner-node20 node /runner/proxy.mjs`,
 		`network connect ${names.network} ${names.proxy}`,
-		docker.calls[6].join(" "),
-		`rm --force ${names.runner}`, `rm --force ${names.proxy}`, `network rm ${names.network}`,
+		docker.calls[8].join(" "),
+		`rm --force ${names.runner}`, `rm --force ${names.proxy}`, `network rm ${names.network}`, `network rm ${names.egress}`,
 	]);
-	assert.equal(verbs[6].startsWith(`run --rm --name ${names.runner} `), true);
+	assert.equal(verbs[8].startsWith(`run --rm --name ${names.runner} `), true);
+	// The proxy is never attached to the shared bridge.
+	assert.equal(docker.calls.some(args => args.includes("bridge")), false);
 });
 
-test("a failed runner start still removes the container and the network", async () => {
+test("a failed runner start still removes the containers and both networks", async () => {
 	const names = sandboxNames("job_7Q2K");
 	const docker = fakeDocker({ failOn: args => args[0] === "run" && args.includes("--rm") });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
@@ -394,9 +409,25 @@ test("a failed runner start still removes the container and the network", async 
 		providerEnvFile: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "DOCKER_UNAVAILABLE");
 	const verbs = docker.calls.map(args => args.join(" "));
-	assert.equal(verbs.at(-3), `rm --force ${names.runner}`);
-	assert.equal(verbs.at(-2), `rm --force ${names.proxy}`);
-	assert.equal(verbs.at(-1), `network rm ${names.network}`);
+	assert.equal(verbs.at(-4), `rm --force ${names.runner}`);
+	assert.equal(verbs.at(-3), `rm --force ${names.proxy}`);
+	assert.equal(verbs.at(-2), `network rm ${names.network}`);
+	assert.equal(verbs.at(-1), `network rm ${names.egress}`);
+});
+
+test("a failed sandbox setup refuses by name, bounds the docker output, and still cleans up", async () => {
+	const names = sandboxNames("job_7Q2K");
+	const docker = fakeDocker({ codeOn: args => args[0] === "network" && args[1] === "create" ? 125 : undefined,
+		output: `Error response from daemon: pull access denied for ${tokenCanary}@example.invalid/runner\n`.repeat(20) });
+	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
+		providerEnvFile: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "SANDBOX_SETUP_FAILED"
+		&& error.message.includes("125") && error.message.length < 500 && !error.message.includes("\n")
+		&& !error.message.includes(tokenCanary));
+	const verbs = docker.calls.map(args => args.join(" "));
+	assert.equal(verbs.at(-4), `rm --force ${names.runner}`);
+	assert.equal(verbs.at(-1), `network rm ${names.egress}`);
 });
 
 // ---- the whole command ------------------------------------------------------------------------
@@ -447,7 +478,7 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 		const dockerLines = docker.calls.map(args => args.join(" "));
 		assert.equal(dockerLines.some(line => line.includes(tokenCanary) || line.includes(keyCanary)), false);
 		assert.equal(dockerLines.some(line => line.includes(`--name acquit-runner-job_7Q2K`)), true);
-		assert.equal(dockerLines.at(-1), "network rm acquit-runner-job_7Q2K-net");
+		assert.equal(dockerLines.at(-1), "network rm acquit-runner-job_7Q2K-egress");
 		// The askpass directory and the provider env file are gone once the command returns.
 		const envFile = docker.calls.flat().find(arg => typeof arg === "string" && arg.endsWith("provider.env"));
 		assert.equal(typeof envFile, "string");
@@ -519,6 +550,7 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 			"printf '\\texpect(2).toBe(2);\\n' >> tests/totals.test.ts",
 			"curl -sS --max-time 15 -o /dev/null https://example.com 2>/tmp/acquit-curl.err && echo EGRESS_ALLOWED_EXAMPLE || { echo EGRESS_BLOCKED_EXAMPLE; cat /tmp/acquit-curl.err; }",
 			"curl -sS --max-time 30 -o /dev/null -w 'REGISTRY_HTTP %{http_code}\\n' https://registry.npmjs.org/",
+			"curl -sS --max-time 15 -o /dev/null https://registry.npmjs.org:81/ 2>/tmp/acquit-curl81.err && echo CONNECT_81_ALLOWED || { echo CONNECT_81_REFUSED; cat /tmp/acquit-curl81.err; }",
 			"node -e \"fetch('https://example.com').then(() => console.log('FETCH_ALLOWED_EXAMPLE')).catch(() => console.log('FETCH_BLOCKED_EXAMPLE'))\"",
 			"node -e \"fetch('https://registry.npmjs.org/').then(r => console.log('FETCH_REGISTRY', r.status)).catch(e => console.log('FETCH_REGISTRY_FAILED', e.message))\"",
 			"",
@@ -538,7 +570,14 @@ test("live docker smoke: example.com is refused, registry.npmjs.org succeeds, an
 		assert.match(text, /FETCH_BLOCKED_EXAMPLE/);
 		assert.match(text, /REGISTRY_HTTP (200|30\d)/);
 		assert.match(text, /FETCH_REGISTRY 200/);
+		assert.match(text, /CONNECT_81_REFUSED/);
+		assert.match(text, /CONNECT registry\.npmjs\.org:81/);
 		assert.deepEqual(changedFiles(git, root, base), [{ path: "tests/totals.test.ts", added: 1, binary: false }]);
+		// The run's own cleanup leaves no container or network behind.
+		const containers = spawnSync("docker", ["ps", "-a", "--filter", `name=${names.runner}`, "--format", "{{.Names}}"], { encoding: "utf8" });
+		const networks = spawnSync("docker", ["network", "ls", "--filter", `name=${names.runner}`, "--format", "{{.Name}}"], { encoding: "utf8" });
+		assert.equal(containers.stdout.trim(), "", containers.stdout);
+		assert.equal(networks.stdout.trim(), "", networks.stdout);
 	} finally {
 		rmSync(script, { force: true });
 		rmSync(root, { recursive: true, force: true });

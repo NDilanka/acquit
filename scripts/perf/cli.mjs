@@ -498,6 +498,7 @@ async function sweepRunStart() {
 			{ kind: "container", name: `acquit-runner-${jobId}`, remove: ["rm", "--force", `acquit-runner-${jobId}`] },
 			{ kind: "container", name: `acquit-runner-${jobId}-proxy`, remove: ["rm", "--force", `acquit-runner-${jobId}-proxy`] },
 			{ kind: "network", name: `acquit-runner-${jobId}-net`, remove: ["network", "rm", `acquit-runner-${jobId}-net`] },
+			{ kind: "network", name: `acquit-runner-${jobId}-egress`, remove: ["network", "rm", `acquit-runner-${jobId}-egress`] },
 		];
 		for (const target of targets) {
 			if (spawnSync("docker", [target.kind, "inspect", target.name], { encoding: "utf8", timeout: 30_000 }).status !== 0) continue;

@@ -22,15 +22,18 @@ The CLI refuses to start a container from a missing image; it never pulls one im
   `/work`. The agent edits it in place; the host computes the changed files and makes the commit.
 - **Network.** The container joins a per-job `--internal` Docker network with no gateway, so it has
   no route out. A sidecar container from the same image runs `proxy.mjs`; it is attached to the
-  internal network and to the default bridge, and it is the only path out. The proxy allows exactly
-  `registry.npmjs.org` and `api.anthropic.com` and answers every other host `403`.
+  internal network and to a second per-run `acquit-runner-<job>-egress` network created with
+  `com.docker.network.bridge.enable_icc=false`, and it is the only path out. It never joins the
+  default bridge. The proxy allows exactly `registry.npmjs.org` and `api.anthropic.com` and answers
+  every other host `403`.
 - **Secrets.** The work-repo token lives in a 0600 file read by a constant 0700 `GIT_ASKPASS` script
   in a `mkdtemp` directory that is removed on every exit path; the host does the clone, fetch, and
   push, so the container never receives the git credential. The provider key reaches the container
   only through a 0600 `--env-file`. Neither value is ever an argv word or a log line.
-- **Cleanup.** Every object is named `acquit-runner-<job>`, `acquit-runner-<job>-proxy`, and
-  `acquit-runner-<job>-net`. A run removes them before it starts (leftovers from a killed run) and
-  in a `finally` block; SIGINT and SIGTERM remove them synchronously before the process exits.
+- **Cleanup.** Every object is named `acquit-runner-<job>`, `acquit-runner-<job>-proxy`,
+  `acquit-runner-<job>-net`, and `acquit-runner-<job>-egress`. A run removes them before it starts
+  (leftovers from a killed run) and in a `finally` block; SIGINT and SIGTERM remove them
+  synchronously before the process exits.
 
 ## Runners
 
