@@ -6,9 +6,9 @@
 // `~/.local/state/acquit/work/<jobId>.git`, and `%LOCALAPPDATA%\acquit\work\<jobId>.git` on
 // Windows), created mode 0700.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { CliError } from "./client.ts";
 
 /** The one job checkout host git works on: the state git directory plus the work tree it was cloned into. */
@@ -98,12 +98,28 @@ export function gitGuardArgs(env: NodeJS.ProcessEnv = process.env): readonly str
 }
 
 /**
- * The job's state checkout when one exists; null means `workTree` is the operator's own checkout,
- * which no agent has been given. Callers keep discovery only for that case.
+ * The job's state checkout when `workTree` is the one work tree the state git directory records;
+ * null means `workTree` is the operator's own checkout, which no agent has been given, so callers
+ * keep discovery there. Both spellings are realpath'd when they exist, so a symlink to the recorded
+ * work tree is that same checkout.
  */
 export function existingStateCheckout(jobId: string, workTree: string, env: NodeJS.ProcessEnv = process.env): JobCheckout | null {
 	const gitDir = stateGitDir(jobId, env);
-	return existsSync(gitDir) ? { gitDir, workTree } : null;
+	if (!existsSync(gitDir)) return null;
+	const recorded = recordedWorkTree(gitDir);
+	return recorded !== null && sameWorkTree(recorded, workTree) ? { gitDir, workTree } : null;
+}
+
+/** Whether two paths name the same work tree: real paths when both exist, resolved spellings
+ * otherwise. */
+function sameWorkTree(left: string, right: string): boolean {
+	const real = (path: string): string | null => {
+		try { return realpathSync(path); } catch { return null; }
+	};
+	const leftReal = real(left);
+	const rightReal = real(right);
+	if (leftReal !== null && rightReal !== null) return leftReal === rightReal;
+	return resolve(left) === resolve(right);
 }
 
 /** The work tree a state git directory was cloned into, or null when it records none. */

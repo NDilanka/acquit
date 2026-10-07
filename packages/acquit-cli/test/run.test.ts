@@ -19,7 +19,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
 import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
-import { pushHead } from "../src/submit.ts";
+import { pushHead, localHead } from "../src/submit.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
 const workRepo = "acquit-forks/invoice-app-7q2k";
@@ -315,6 +315,55 @@ test("the job's git directory lives in the CLI's state location, never in the wo
 	assert.equal(stateGitDir("job_7Q2K", { HOME: "/tmp/home" }), join("/tmp/home", ".local", "state", "acquit", "work", "job_7Q2K.git"));
 	assert.throws(() => stateGitDir("../escape", {}), (error: CliError) => error.code === "USAGE");
 	assert.equal(existingStateCheckout("job_7Q2K", "/tmp/work", { XDG_STATE_HOME: "/tmp/absent" }), null);
+});
+
+test("the state checkout is used only for the work tree the state git directory records", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-recorded-"));
+	try {
+		const stateHome = join(root, "state-home");
+		const env = { XDG_STATE_HOME: stateHome };
+		const state = stateGitDir("job_7Q2K", env);
+		mkdirSync(state, { recursive: true });
+		const recorded = join(root, "run-checkout");
+		const own = join(root, "operator-checkout");
+		mkdirSync(recorded);
+		mkdirSync(own);
+		writeWorkTreeMarker(state, recorded);
+		// The --dir the state git directory records: submit and diff read it through that directory.
+		assert.deepEqual(existingStateCheckout("job_7Q2K", recorded, env), { gitDir: state, workTree: recorded });
+		// A symlink to the recorded work tree names the same checkout.
+		const link = join(root, "link");
+		symlinkSync(recorded, link);
+		assert.deepEqual(existingStateCheckout("job_7Q2K", link, env), { gitDir: state, workTree: link });
+		// Any other --dir is the operator's own checkout: discovery, no state git directory.
+		assert.equal(existingStateCheckout("job_7Q2K", own, env), null);
+		// A state directory that records no work tree belongs to no checkout either.
+		const unmarked = stateGitDir("job_NOMARK", env);
+		mkdirSync(unmarked, { recursive: true });
+		assert.equal(existingStateCheckout("job_NOMARK", recorded, env), null);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("submit reads the operator's own checkout when the state git directory records another work tree", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-localhead-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const stateHome = join(root, "state-home");
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: stateHome });
+		const work = join(root, "work");
+		prepareWorkRepo(git, { gitDir: state, workTree: work }, bare, frozen, process.env);
+		// The operator's own clone of the same work repo, carrying a newer commit of its own.
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		writeFileSync(join(own, "money.ts"), "const DECIMALS = 3;\n");
+		assert.equal(git(["-C", own, "add", "-A"]).status, 0);
+		assert.equal(git(["-C", own, "-c", "user.name=operator", "-c", "user.email=operator@example.invalid", "commit", "--quiet", "-m", "own"]).status, 0);
+		const ownHead = git(["-C", own, "rev-parse", "HEAD"]).stdout.trim();
+		const env = { XDG_STATE_HOME: stateHome };
+		assert.equal(localHead(own, "job_7Q2K", env), ownHead);
+		// The --dir the state directory records still reads through the state git directory.
+		assert.equal(localHead(work, "job_7Q2K", env), frozen);
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("the git child env strips every inherited GIT_* and SSH_ASKPASS and reads no user config", () => {
