@@ -24,7 +24,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { checkoutGitArgs, gitGuardArgs, hardenedGitEnv, recordedWorkTree, scopedGit, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
+import { checkoutGitArgs, gitGuardArgs, hardenedGitEnv, recordedWorkTree, REMOTE_GIT_TIMEOUT_MS, scopedGit, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
 import type { JobCheckout } from "./gitstate.ts";
 import { PROVIDER_SPECS, storedProvider } from "./operator.ts";
 import type { Provider, ProviderPort } from "./operator.ts";
@@ -182,11 +182,11 @@ export function formatDuration(ms: number): string {
 // ---- git --------------------------------------------------------------------------------------
 
 export type GitResult = { readonly status: number | null; readonly stdout: string; readonly stderr: string };
-export type GitRun = (args: readonly string[], env?: NodeJS.ProcessEnv) => GitResult;
+export type GitRun = (args: readonly string[], env?: NodeJS.ProcessEnv, timeoutMs?: number) => GitResult;
 
 export function gitCli(): GitRun {
-	return (args, env) => {
-		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 300_000, env: env ?? process.env });
+	return (args, env, timeoutMs = REMOTE_GIT_TIMEOUT_MS) => {
+		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: timeoutMs, env: env ?? process.env });
 		return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 	};
 }
@@ -351,9 +351,10 @@ export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string,
 		// The fresh clone is the one remote call with the scoped token that runs before any scan:
 		// this branch runs only when the state git directory does not exist, so there is no config to
 		// read yet. `--template=` keeps the clone from inheriting a template the machine installed,
-		// and the env hides the system and global config every other source would come from.
+		// and the env hides the system and global config every other source would come from. It is a
+		// remote call, so it names the shared remote bound rather than the probe's default.
 		const cloned = git([...gitGuardArgs(env), "clone", "--quiet", "--template=", "--separate-git-dir", gitDir, url, workTree],
-			{ ...env, ...askpass });
+			{ ...env, ...askpass }, REMOTE_GIT_TIMEOUT_MS);
 		if (cloned.status !== 0) throw cloneError(url, cloned.stderr);
 		chmodSync(gitDir, 0o700);
 		writeWorkTreeMarker(gitDir, resolve(workTree));

@@ -11,7 +11,7 @@ import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
-import { checkoutGitArgs, existingStateCheckout, gitGuardArgs, hardenedGitEnv, scopedGit } from "./gitstate.ts";
+import { checkoutGitArgs, existingStateCheckout, gitGuardArgs, hardenedGitEnv, LOCAL_GIT_TIMEOUT_MS, REMOTE_GIT_TIMEOUT_MS, scopedGit } from "./gitstate.ts";
 import type { GitLocation, GitProbe, JobCheckout } from "./gitstate.ts";
 import { childEnv, makeSecretDir, parseWorkRepo, remoteNamesWorkRepo, secretGuard, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
@@ -77,17 +77,19 @@ function stateCheckout(dir: string, jobId: string | undefined, env: NodeJS.Proce
 	return jobId === undefined ? null : existingStateCheckout(jobId, dir, env);
 }
 
-/** A git probe over the CLI's hardened env, for the local config reads a scoped push makes. */
+/** A git probe over the CLI's hardened env, for the local config reads a scoped push makes. A call
+ * that names no bound is a local read: the scan, the config lookups, and the checkout's own git
+ * directory all answer from the machine's files. A remote call names its bound at the call site. */
 function gitProbe(env: NodeJS.ProcessEnv): GitProbe {
-	return (args, callEnv) => {
-		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 15_000, env: callEnv ?? env });
+	return (args, callEnv, timeoutMs = LOCAL_GIT_TIMEOUT_MS) => {
+		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: timeoutMs, env: callEnv ?? env });
 		return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 	};
 }
 
 /** The checkout's own git directory, for a checkout no run cloned. Null when there is none. */
 function absoluteGitDir(dir: string, env: NodeJS.ProcessEnv): string | null {
-	const result = spawnSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8", timeout: 15_000, env });
+	const result = spawnSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8", timeout: LOCAL_GIT_TIMEOUT_MS, env });
 	const gitDir = result.stdout?.trim() ?? "";
 	return result.status === 0 && gitDir !== "" ? gitDir : null;
 }
@@ -100,7 +102,7 @@ export function localHead(dir: string, jobId?: string, env: NodeJS.ProcessEnv = 
 	const args = checkout === null
 		? ["-C", dir, ...gitGuardArgs(base), "rev-parse", "HEAD"]
 		: checkoutGitArgs(checkout, base, ["rev-parse", "HEAD"]);
-	const result = spawnSync("git", args, { encoding: "utf8", timeout: 15_000, env: hardenedGitEnv(base) });
+	const result = spawnSync("git", args, { encoding: "utf8", timeout: LOCAL_GIT_TIMEOUT_MS, env: hardenedGitEnv(base) });
 	const head = result.stdout?.trim() ?? "";
 	if (result.status !== 0 || !SHA.test(head)) {
 		throw new CliError("NOT_A_REPOSITORY", `${dir} is not a git repository with a commit. ${tail(result.stderr)}`.trim());
@@ -143,7 +145,7 @@ export function pushHead(dir: string, remote: string, commit: CommitSha, env?: N
 	if (askpass === undefined && stateGitDir === null) {
 		// The operator's own credential to a remote the operator named: discovery stays, unhardened.
 		const result = spawnSync("git", ["-C", dir, "push", remote, `${commit}:${submissionRef(commit)}`],
-			{ encoding: "utf8", timeout: 120_000, env: base });
+			{ encoding: "utf8", timeout: REMOTE_GIT_TIMEOUT_MS, env: base });
 		if (result.status !== 0) throw pushError(remote, result.stderr);
 		return;
 	}
@@ -155,10 +157,11 @@ export function pushHead(dir: string, remote: string, commit: CommitSha, env?: N
 	const location: GitLocation = { gitDir, workTree: dir };
 	const args = ["push", remote, `${commit}:${submissionRef(commit)}`];
 	// The scoped token must never meet config the CLI did not write: scopedGit scans this location
-	// first and adds the askpass only then. An operator's own credential only meets the checkout the
-	// operator works in, so its config is theirs to keep and the hardened env runs the push alone.
+	// first and adds the askpass only then, and names the scan's local bound and the push's remote one
+	// itself. An operator's own credential only meets the checkout the operator works in, so its
+	// config is theirs to keep and the hardened env runs the push alone, on the shared remote bound.
 	const result = askpass === undefined
-		? spawnSync("git", checkoutGitArgs(location, gitEnv, args), { encoding: "utf8", timeout: 120_000, env: gitEnv })
+		? spawnSync("git", checkoutGitArgs(location, gitEnv, args), { encoding: "utf8", timeout: REMOTE_GIT_TIMEOUT_MS, env: gitEnv })
 		: scopedGit(gitProbe(gitEnv), location, gitEnv, askpass, stateGitDir !== null ? "state" : "own", args);
 	if (result.status !== 0) throw pushError(remote, result.stderr);
 }
@@ -242,7 +245,7 @@ function remoteUrl(dir: string, remote: string, jobId?: string, env: NodeJS.Proc
 	const args = checkout === null
 		? ["-C", dir, ...gitGuardArgs(base), "remote", "get-url", remote]
 		: checkoutGitArgs(checkout, base, ["remote", "get-url", remote]);
-	const result = spawnSync("git", args, { encoding: "utf8", timeout: 15_000, env: hardenedGitEnv(base) });
+	const result = spawnSync("git", args, { encoding: "utf8", timeout: LOCAL_GIT_TIMEOUT_MS, env: hardenedGitEnv(base) });
 	const url = result.stdout?.trim() ?? "";
 	return result.status === 0 && url !== "" ? url : null;
 }
