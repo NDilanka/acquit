@@ -9,7 +9,7 @@ import type { OperationKey, OutboxState, Ports } from "../src/effects.ts";
 import { applyJobCommand, effectWanted, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
 import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, parseWebhookEnvelope, quote } from "../src/paypal.ts";
 import type { Bps, PayPal, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
@@ -1092,6 +1092,14 @@ test("the view gates Approve on ownership and serves the attempts a settled job 
 	assert.equal(refundedView.attempts.last, "REJECTED");
 	assert.equal(refundedView.merge, null);
 	assert.equal(refundedView.release, null);
+});
+
+test("the view names the owning client only to that client's own session", () => {
+	const verified = verifiedRow();
+	assert.equal(projectJob(verified, maya, new Map()).client, "maya-client");
+	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId }, new Map()).client, null);
+	assert.equal(projectJob(verified, devon, new Map()).client, null);
+	assert.equal(projectJob(verified, { role: "ARBITER", staffId: "staff-1" as StaffId }, new Map()).client, null);
 });
 
 test("a release that does not name the selected disposition is never applied", () => {
