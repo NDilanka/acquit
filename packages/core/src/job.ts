@@ -626,6 +626,10 @@ function transitionTable(): {
 			const intent = refundIntentOf(row);
 			const refund = command.refund;
 			if (escrow === null || intent === null || refund.captureId !== escrow.capture.captureId || refund.refunded !== escrow.capture.gross) return settlementMismatch(row);
+			// PayPal keeps the capture's own fee, read back from the same capture the job recorded at
+			// capture. A refund that reports any other retained amount is a fact this job never settled,
+			// so the treasury is never charged a fee the row did not see.
+			if (refund.retainedProcessorFee !== escrow.capture.processorFee) return settlementMismatch(row);
 			const book = reduceLedger(escrow.book, { kind: "Refund", refunded: refund.refunded, at: refund.at });
 			if ("kind" in book) return settlementMismatch(row);
 			// PayPal kept the processing fee and debited the operator for it. Acquit owes it back, and the
