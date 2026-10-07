@@ -23,6 +23,7 @@ export type MerchantId = Branded<string, "PayPalMerchantId">;
 export type OrderId = Branded<string, "PayPalOrderId">;
 export type CaptureId = Branded<string, "PayPalCaptureId">;
 export type PayoutItemId = Branded<string, "PayPalPayoutItemId">;
+export type PayoutBatchId = Branded<string, "PayPalPayoutBatchId">;
 export type RefundId = Branded<string, "PayPalRefundId">;
 
 export function parseJobId(raw: string): JobId {

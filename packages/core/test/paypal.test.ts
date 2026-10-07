@@ -204,7 +204,7 @@ test("parseReimbursement reads the recorded payout batch and its 0.25 fee", () =
 	assert.equal(reimbursement.at, instant("2026-10-07T00:31:20Z"));
 });
 
-test("a release whose payout already completed is refused as settled, never re-paid", async () => {
+test("a release whose payout already completed parks for a person and never re-pays", async () => {
 	const original = globalThis.fetch;
 	const wire = recordedWire(() => Response.json(duplicateRelease, { status: 422 }));
 	try {
