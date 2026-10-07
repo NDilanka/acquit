@@ -22,6 +22,11 @@ SANDBOX_BUYER_EMAIL=...
 PORT=4310
 WEB_PORT=5173
 DATABASE_PATH=./data/acquit.db
+# Optional: the verifier's port and the pair the API and the verifier must share.
+# npm run dev and a lane generate the pair when they are absent.
+ACQUIT_VERIFIER_PORT=4311
+ACQUIT_VERIFIER_RUN_SECRET=...
+ACQUIT_VERIFIER_CALLBACK_SECRET=...
 ```
 
 ## Run
@@ -58,7 +63,11 @@ npm run smoke     # real sandbox: login, OpenJob, PlaceBid, AcceptBid, checkout 
 
 ## Verification lanes
 
-Set `ACQUIT_LANE=<n>` before every control command. Lane n uses API port `4310 + 10n`, web port `5173 + 10n`, database `data/verify/lane-<n>/acquit.db`, run files `data/ctl/lane-<n>/`, and browser session `verify-acquit-lane-<n>`. Without a lane, the control command keeps the configured default ports and database.
+Set `ACQUIT_LANE=<n>` before every control command. Lane n uses API port `4310 + 10n`, web port `5173 + 10n`, verifier port `4311 + 10n`, database `data/verify/lane-<n>/acquit.db`, run files `data/ctl/lane-<n>/`, and browser session `verify-acquit-lane-<n>`. Without a lane, the control command keeps the configured default ports and database. `npm run ctl -- start` owns all three services: it records each one's PID, port, and ownership channel in the run file, probes `/api/users`, `/`, and the verifier's `/healthz`, and `stop` proves ownership of each before it kills anything.
+
+The verifier needs a run secret, a callback secret, and the API's callback URL. A lane generates the pair per start and hands the same values to the API and the verifier; neither the run file nor a log line carries a secret. Set `ACQUIT_VERIFIER_RUN_SECRET`, `ACQUIT_VERIFIER_CALLBACK_SECRET`, and `ACQUIT_VERIFIER_CALLBACK_URL` in `.env` to keep them stable, and `ACQUIT_VERIFIER_PORT` outside a lane. The verifier judges with the Docker subject by default; `ACQUIT_VERIFIER_SUBJECT=child` with `ACQUIT_DEV=1` is the test/dev path and is refused otherwise.
+
+A lane's client repo is the repository the job's contract names, and it must exist on GitHub with the frozen commit as its default branch. `node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> <branch> --owner <account> --create` prepares the local work directory, creates the private repo with `main` at the fixture's frozen commit, and reports whether the App installation can see it. The live lane repo is `NDilanka/invoice-app` (public, `main` = `a3b6ead`). The contract names the deployment's client repository: set `ACQUIT_CLIENT_REPOSITORY=NDilanka/invoice-app` for that lane. `OpenJob` accepts only that repository and freezes it into the contract; the default is `maya-client/invoice-app`.
 
 Start the API with `ACQUIT_DEV=1` to use `npm run ctl -- clock advance 4h` or `npm run ctl -- fund-mode card`. Card mode uses a real sandbox test-card capture without buyer login. Funding regression and tutorial runs use checkout mode. The clock offset and funding mode reset on restart.
 

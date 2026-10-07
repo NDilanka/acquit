@@ -11,9 +11,9 @@ export async function suspendedRecovery(run: RunState | null, cwd: string) {
 	const empty = { checked: true, candidates: [], warning };
 	if (!run) return empty;
 	if (process.platform !== "win32") return { ...empty, checked: false, reason: "Suspended-thread inspection is Windows-only." };
-	const records = (["api", "web"] as const).flatMap(role => {
+	const records = (["api", "web", "verifier"] as const).flatMap(role => {
 		const service = run[role];
-		return /^[0-9a-f]{32}$/.test(service.nonce ?? "") ? [{ role, service }] : [];
+		return service && /^[0-9a-f]{32}$/.test(service.nonce ?? "") ? [{ role, service }] : [];
 	});
 	if (!records.length) return empty;
 	try {

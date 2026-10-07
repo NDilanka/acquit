@@ -10,11 +10,14 @@ import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, projectJob, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, Loaded, SystemJobCommand } from "./job.ts";
+import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
+import type { GitHubFailureCode, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome } from "./paypal.ts";
 import { frozenDefinition, ISSUE } from "./seed-data.ts";
+import { isStoreBusy } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
 
 export type Effect = JobEffect | OperatorEffect;
@@ -61,9 +64,11 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 export type OutboxState =
 	| { readonly kind: "READY"; readonly runAt: Instant }
 	| { readonly kind: "LEASED"; readonly leaseUntil: Instant }
-	| { readonly kind: "UNCERTAIN"; readonly reconcileAt: Instant }
+	/** A retry can clear it. `attempt` counts the refusals this row has waited out and drives the backoff. */
+	| { readonly kind: "UNCERTAIN"; readonly reconcileAt: Instant; readonly attempt?: number }
 	| { readonly kind: "CONFIRMED"; readonly at: Instant }
-	| { readonly kind: "NEEDS_HUMAN"; readonly reason: string };
+	/** A person has to act. `reason` is the named refusal and `detail` its bounded text, so an operator can read both. */
+	| { readonly kind: "NEEDS_HUMAN"; readonly reason: string; readonly detail?: string };
 
 export type OutboxRow = {
 	readonly key: OperationKey;
@@ -111,9 +116,13 @@ export interface Store {
 export type Ports = {
 	readonly fundingMode?: () => "checkout" | "card";
 	readonly feeModel: ProcessorFeeModel;
+	/** The deployment's client repository: the one OpenJob accepts and freezes into the contract. */
+	readonly clientRepository: string;
 	readonly store: Store;
 	readonly paypal: PayPal;
 	readonly verifier: VerifierPort;
+	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
+	readonly workRepo?: WorkRepoPort;
 	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<"MERGED" | "UNKNOWN" | "CONFLICT"> };
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	readonly clock: { now(): Instant };
@@ -132,14 +141,14 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const previous = await ports.store.readRequest(actorKey, key);
 		if (previous) return previous.payloadDigest === payloadDigest ? { kind: "REPLAY", result: previous.result }
 			: { kind: "DENIED", reason: "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" };
-		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob"].includes(command.type)) throw new Error("not implemented");
+		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit"].includes(command.type)) throw new Error("not implemented");
 		const row = "jobId" in command ? await ports.store.readJob(command.jobId) : null;
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
 		if (command.type === "OpenJob") {
-			if (command.repository !== ISSUE.repository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
+			if (command.repository !== ports.clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
 			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, contract: {
-				definitionOfDone: frozenDefinition(), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+				definitionOfDone: frozenDefinition(ports.clientRepository), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
 			const operator = await ports.store.readOperator(actor.operatorId);
@@ -215,6 +224,8 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 	const row = await ports.store.leaseEffect(now, instant(new Date(Date.parse(now) + 120_000).toISOString()), key);
 	if (!row) return "IDLE";
 	const effect = row.effect;
+	if (effect.kind === "START_VERIFIER") return dispatchVerifierStart(ports, row.key, effect, now);
+	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now, row.state);
 	if (effect.kind !== "CREATE_ORDER" && effect.kind !== "CAPTURE") {
 		await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "OUTSIDE_SKELETON" });
 		return "WORKED";
@@ -247,6 +258,106 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 	return "WORKED";
 }
 
+function backoffFrom(now: Instant): Instant {
+	return instant(new Date(Date.parse(now) + 5000).toISOString());
+}
+
+/** Starts the run the attempt reserved. A run that was already reported, or whose slot was returned, is not started again. */
+async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "START_VERIFIER" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+	const job = await ports.store.readJob(effect.jobId);
+	const waiting = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" &&
+		job.state.attempts.pending.runId === effect.attempt.runId;
+	if (!job || !waiting) {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	const done = job.contract.definitionOfDone;
+	if (done === null) {
+		// A row stored before the freeze has no test list to judge against. Record it for a human instead of starting a run.
+		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "CONTRACT_NOT_FROZEN" });
+		return "WORKED";
+	}
+	try {
+		await ports.verifier.start({ runId: effect.attempt.runId, jobId: job.id, ordinal: effect.attempt.ordinal,
+			sourceCommit: effect.attempt.sourceCommit, definitionOfDone: done });
+	} catch {
+		// The run may or may not have started. It is never dispatched twice from here, and the run-end timer returns the slot.
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		return "WORKED";
+	}
+	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+	return "WORKED";
+}
+
+/** What the outbox does with one refusal from the GitHub App client. One table, one place to read. */
+export type GitHubDisposition = { readonly kind: "NEEDS_HUMAN" } | { readonly kind: "UNCERTAIN" };
+
+export const GITHUB_REFUSAL_DISPOSITIONS: Readonly<Record<GitHubFailureCode, GitHubDisposition>> = {
+	GITHUB_APP_KEY_INVALID: { kind: "NEEDS_HUMAN" },
+	GITHUB_INSTALLATION_MISSING: { kind: "NEEDS_HUMAN" },
+	GITHUB_PERMISSION_MISSING: { kind: "NEEDS_HUMAN" },
+	GITHUB_FORK_MISMATCH: { kind: "NEEDS_HUMAN" },
+	GITHUB_REF_CONFLICT: { kind: "NEEDS_HUMAN" },
+	GITHUB_COMMIT_ABSENT: { kind: "NEEDS_HUMAN" },
+	GITHUB_NOT_FOUND: { kind: "NEEDS_HUMAN" },
+	GITHUB_RESPONSE_INVALID: { kind: "NEEDS_HUMAN" },
+	GITHUB_REQUEST_INVALID: { kind: "NEEDS_HUMAN" },
+	GITHUB_RATE_LIMITED: { kind: "UNCERTAIN" },
+	GITHUB_TIMEOUT: { kind: "UNCERTAIN" },
+	GITHUB_NETWORK: { kind: "UNCERTAIN" },
+	// GITHUB_HTTP_ERROR is the status GitHub does not name. A 5xx is transient; every other status waits for a person.
+	GITHUB_HTTP_ERROR: { kind: "NEEDS_HUMAN" },
+};
+
+/** A transient refusal waits 5s, 10s, 20s, and so on, never past five minutes. */
+const GITHUB_BACKOFF_BASE_MS = 5_000;
+const GITHUB_BACKOFF_CAP_MS = 300_000;
+
+function githubDisposition(error: GitHubAppError): GitHubDisposition {
+	if (error.code === "GITHUB_HTTP_ERROR" && error.status !== null && error.status >= 500) return { kind: "UNCERTAIN" };
+	return GITHUB_REFUSAL_DISPOSITIONS[error.code];
+}
+
+/** The next reconcile time for a transient refusal, doubled per attempt and bounded. */
+function backoffFor(now: Instant, attempt: number): Instant {
+	const delay = Math.min(GITHUB_BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1), GITHUB_BACKOFF_CAP_MS);
+	return instant(new Date(Date.parse(now) + delay).toISOString());
+}
+
+/** Pushes the frozen commit to the per-job work repository. No App means the row waits for a human, by name. */
+async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "CREATE_WORK_REPO" }>,
+	now: Instant, previous: OutboxState): Promise<"IDLE" | "WORKED"> {
+	const job = await ports.store.readJob(effect.jobId);
+	// Work that never started needs no repository.
+	if (!job || job.state.status === "OPEN" || job.state.status === "CLOSED") {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "WORKED";
+	}
+	if (!ports.workRepo) {
+		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+		return "WORKED";
+	}
+	const attempt = (previous.kind === "UNCERTAIN" ? previous.attempt ?? 0 : 0) + 1;
+	try {
+		await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key));
+	} catch (error) {
+		if (error instanceof GitHubAppNotConfigured) {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+			return "WORKED";
+		}
+		if (error instanceof GitHubAppError && githubDisposition(error).kind === "NEEDS_HUMAN") {
+			// The operator reads the code and the bounded detail off the row. A retry cannot clear this one.
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: error.code, detail: boundedDetail(error.message) });
+			return "WORKED";
+		}
+		// Transient, or a failure the client did not name: retry later, backing off as the attempts pile up.
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFor(now, attempt), attempt });
+		return "WORKED";
+	}
+	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+	return "WORKED";
+}
+
 export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant): OutboxState {
 	switch (outcome.kind) {
 		case "UNKNOWN": case "PENDING": return { kind: "UNCERTAIN", reconcileAt: outcome.checkAt };
@@ -263,8 +374,29 @@ export function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Res
 	throw new Error("not implemented");
 }
 
-export function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {
-	throw new Error("not implemented");
+export async function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {
+	// The port authenticates the judge's signed report. Submitted-program output never reaches this path.
+	const parsed = await ports.verifier.parseCallback(request);
+	if (!parsed) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+	const job = await ports.store.readJob(parsed.jobId);
+	const pending = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
+	const report = parsed.report;
+	const runId = report.kind === "VERDICT" ? report.verdict.runId : report.failure.runId;
+	const sourceCommit = report.kind === "VERDICT" ? report.verdict.sourceCommit : report.failure.sourceCommit;
+	const waiting = pending !== null && pending.runId === runId && pending.sourceCommit === sourceCommit;
+	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
+	if (!waiting) return Response.json({ ok: true, applied: false });
+	// The run id is right but the attempt number is not: the report contradicts the attempt it names.
+	if (pending.ordinal !== parsed.ordinal) return Response.json({ error: "ORDINAL_MISMATCH" }, { status: 409 });
+	try {
+		await applySystemCommand(ports, { type: "VerifierFinished", jobId: parsed.jobId, report }, null, `verifier:${runId}`);
+	} catch (error) {
+		// The job state is the guard: a report for a job that is not waiting on this run changes nothing.
+		// A busy store is transient, not a refusal: a 5xx makes the service retry the same report.
+		if (isStoreBusy(error)) return Response.json({ error: "STORE_BUSY" }, { status: 503 });
+		return Response.json({ error: "REFUSED" }, { status: 409 });
+	}
+	return Response.json({ ok: true, applied: true });
 }
 
 export async function runDueTimers(ports: Ports): Promise<number> {

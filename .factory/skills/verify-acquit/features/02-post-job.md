@@ -23,7 +23,7 @@ Preconditions:
 - Use `ab` from the feature index. Save the new job ID for later features.
 
 - **Open the form.** Run `ab open "$webUrl/jobs/new"` and `ab wait --text '#12 Totals round wrong for 3-decimal currencies'`. To test a link entry, snapshot first and click that link's fresh ref instead of navigating directly.
-- **Configure the job.** Run `ab select 'select:has(option[value="maya-client/invoice-app#12"])' 'maya-client/invoice-app#12'`, `ab find label 'Budget (USD)' fill 400`, and `ab select 'select:has(option[value="7"])' 7`. Bid is the only available mode.
+- **Configure the job.** The form lists the deployment's client repository (`ACQUIT_CLIENT_REPOSITORY`; the demo default is `maya-client/invoice-app`, so `<client repo>` below is `maya-client/invoice-app` on the demo). Run `ab select 'select:has(option[value="<client repo>#12"])' '<client repo>#12'`, `ab find label 'Budget (USD)' fill 400`, and `ab select 'select:has(option[value="7"])' 7`. Bid is the only available mode.
 - **Capture the action.** Run `ab screenshot --full data/evidence/verify-acquit/RUN_STAMP/post-form.png` and save `ab snapshot` before submission.
 - **Open the job.** Run `ab find role button click --name 'Open job' --exact` and `ab wait --text 'Open job page'`. Require `OPEN`, `400.00 USD`, commit `a41c9e2`, 48 visible tests, six hidden tests, and protected paths.
 - **Confirm persistence.** Run `ab find role link click --name 'Open job page'`. Run `ab get url` and retain its `job_...` ID. Require a House bid using `house-ts-fixer`. Reopen this URL and save a screenshot.

@@ -4,13 +4,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import { config, devEnabled, webOrigin } from "./config.ts";
+import type { CommitSha } from "../../../packages/core/src/ids.ts";
+import { VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
+import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
+import { config, clientRepository, devEnabled, verifierEnv, webOrigin } from "./config.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
 const clock = { now: () => instant(new Date(Date.now() + clockOffset).toISOString()) };
 const baseSettings = config();
-const settings = { ...baseSettings, clock, paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
+const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? createRemoteVerifier(verifierEnv) : undefined,
+	paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
 const db = new DatabaseSync(settings.databaseUrl);
 const port = Number(process.env.PORT ?? 4310);
@@ -34,6 +38,7 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 }
 function redirect(res: ServerResponse, path: string): void { res.writeHead(302, { Location: path, "Cache-Control": "no-store" }); res.end(); }
 class BadBody extends Error {}
+class TooLarge extends Error {}
 async function body(req: IncomingMessage): Promise<unknown> {
 	let size = 0;
 	const chunks: Buffer[] = [];
@@ -44,6 +49,28 @@ async function body(req: IncomingMessage): Promise<unknown> {
 		chunks.push(buffer);
 	}
 	try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; } catch { throw new BadBody("Expected a JSON body"); }
+}
+/**
+ * The verifier callback's own cap, above the largest bounded verdict the service posts. The bytes are
+ * read once and handed to the port unchanged: the signature is over what was posted, not a re-encoding.
+ */
+const CALLBACK_BODY_LIMIT_BYTES = VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096;
+async function rawBody(req: IncomingMessage, max: number): Promise<string> {
+	const declared = Number(req.headers["content-length"] ?? "");
+	if (Number.isFinite(declared) && declared > max) throw new TooLarge("Request body too large");
+	let size = 0;
+	const chunks: Buffer[] = [];
+	for await (const chunk of req) {
+		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+		size += buffer.length;
+		if (size > max) {
+			// Stop reading, but leave the socket for the answer: the caller is told why, not reset.
+			req.pause();
+			throw new TooLarge("Request body too large");
+		}
+		chunks.push(buffer);
+	}
+	return Buffer.concat(chunks).toString("utf8");
 }
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadBody("Expected an object");
@@ -63,6 +90,7 @@ function parseCommand(value: unknown): UserCommand {
 		OpenJob: ["type", "repository", "issueNumber", "budget", "deliveryEndsAt"],
 		PlaceBid: ["type", "jobId", "price", "eta", "agent", "pitch"],
 		AcceptBid: ["type", "jobId", "bidId"], CancelJob: ["type", "jobId"],
+		Submit: ["type", "jobId", "sourceCommit"],
 	};
 	const allowed = typeof command.type === "string" ? keys[command.type] : undefined;
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
@@ -75,6 +103,11 @@ function parseCommand(value: unknown): UserCommand {
 			agent: text(command.agent, "agent", 80) as AgentId, pitch: text(command.pitch, "pitch", 2000) };
 		case "AcceptBid": return { type: "AcceptBid", jobId: parseJobId(text(command.jobId, "job id")), bidId: parseBidId(text(command.bidId, "bid id")) };
 		case "CancelJob": return { type: "CancelJob", jobId: parseJobId(text(command.jobId, "job id")) };
+		case "Submit": {
+			const sourceCommit = text(command.sourceCommit, "source commit", 64);
+			if (!/^[0-9a-f]{7,64}$/.test(sourceCommit)) throw new BadBody("source commit must be a git object name");
+			return { type: "Submit", jobId: parseJobId(text(command.jobId, "job id")), sourceCommit: sourceCommit as CommitSha };
+		}
 		default: throw new BadBody("Unsupported command");
 	}
 }
@@ -125,10 +158,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		catch { redirect(res, `${path}?funding=retry`); }
 		return;
 	}
+	if (url.pathname === "/api/verifier/callback" && method === "POST") {
+		// The CI is not a browser session. The port authenticates the signed body, or nothing is applied.
+		const missing = [!verifierEnv.ciUrl ? "ACQUIT_VERIFIER_CI_URL" : null, !verifierEnv.callbackSecret ? "ACQUIT_VERIFIER_CALLBACK_SECRET" : null]
+			.filter((name): name is string => name !== null);
+		if (missing.length) { json(res, 503, { error: "VERIFIER_CI_NOT_CONFIGURED",
+			detail: `Set ${missing.join(" and ")} to accept a report.` }); return; }
+		let raw: string;
+		try { raw = await rawBody(req, CALLBACK_BODY_LIMIT_BYTES); }
+		catch (error) {
+			if (error instanceof TooLarge) { json(res, 413, { error: "CALLBACK_BODY_TOO_LARGE" }); return; }
+			throw error;
+		}
+		const response = await acquit.handleVerifierCallback(new Request(`http://localhost:${port}${url.pathname}`, { method: "POST",
+			headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+			body: raw }));
+		json(res, response.status, await response.json()); return;
+	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
-	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [ISSUE] }); return; }
+	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [{ ...ISSUE, repository: clientRepository }] }); return; }
 	if (url.pathname === "/api/commands" && method === "POST") {
 		let parsed: { key: ReturnType<typeof parseRequestKey>; command: UserCommand };
 		try {
@@ -163,7 +213,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -186,6 +236,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 function validJobId(raw: string): ReturnType<typeof parseJobId> {
 	try { return parseJobId(raw); } catch { throw new BadBody("Invalid job id"); }
+}
+/** Operator ids become handles here so the CLI never prints a bare id where a person's handle belongs. */
+function operatorHandles(): Record<string, string> {
+	const handles: Record<string, string> = {};
+	for (const row of db.prepare("SELECT id, json FROM operators").all()) {
+		const operator = JSON.parse(String(row.json)) as { handle?: string };
+		if (typeof operator.handle === "string") handles[String(row.id)] = operator.handle;
+	}
+	return handles;
 }
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {

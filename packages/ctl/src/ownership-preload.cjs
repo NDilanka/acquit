@@ -20,7 +20,7 @@ if (!path) return;
 const record = process.env.ACQUIT_OWNERSHIP_RECORD;
 const role = process.env.ACQUIT_OWNERSHIP_ROLE;
 if (record) {
-	if (!["api", "web"].includes(role)) process.exit(1);
+	if (!["api", "web", "verifier"].includes(role)) process.exit(1);
 	const launcher = process.ppid;
 	const deadline = Date.now() + 2000;
 	const wait = new Int32Array(new SharedArrayBuffer(4));

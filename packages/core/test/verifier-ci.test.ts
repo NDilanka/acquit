@@ -1,0 +1,149 @@
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { createFakeGitHubApp } from "../src/github.ts";
+import { instant } from "../src/ids.ts";
+import type { CommitSha, JobId, TestId } from "../src/ids.ts";
+import { unconfiguredVerifier, VerifierCiNotConfigured } from "../src/verifier.ts";
+import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
+import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict } from "../../verifier/ci.ts";
+import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "../../verifier/signing.ts";
+import { childProcessSubject } from "../../verifier/subject.ts";
+import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
+
+const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
+	fileURLToPath(new URL("../../../../../acquit/scratch/verifier/invoice-app", import.meta.url))]
+	.find(candidate => candidate !== undefined && existsSync(join(candidate, ".git"))) ?? null;
+
+const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+const definition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
+	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(c => c.id),
+	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
+
+const verifiedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: { result: "VERIFIED", runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
+	mergeCommit: "5cccb66515313caed72e4af329a62fc011139426", pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
+	reportDigest: "a".repeat(64), at: instant("2026-10-06T12:00:00Z") } } };
+const failedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED", failure: { runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
+	name: "PUBLISH_FAILED", detail: "no App installation on maya-client", at: instant("2026-10-06T12:00:00Z") } } };
+
+test("the unconfigured verifier refuses a start by name and never accepts a callback", async () => {
+	const port = unconfiguredVerifier();
+	await assert.rejects(() => port.start({} as VerifierRunRequest), (error: VerifierCiNotConfigured) => error.code === "VERIFIER_CI_NOT_CONFIGURED");
+	assert.equal(await port.parseCallback(new Request("https://ci.test/callback", { method: "POST", body: "{}" })), null);
+	const empty = createRemoteVerifier({ ciUrl: "  ", runSecret: "s3cret", callbackSecret: "s3cret" });
+	await assert.rejects(() => empty.start({} as VerifierRunRequest), (error: VerifierCiNotConfigured) => error.code === "VERIFIER_CI_NOT_CONFIGURED");
+	const unsigned = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "", callbackSecret: "s3cret" });
+	await assert.rejects(() => unsigned.start({} as VerifierRunRequest), (error: VerifierCiNotConfigured) => error.code === "VERIFIER_CI_NOT_CONFIGURED");
+});
+
+test("the callback boundary accepts only a signed report and drops every unsigned or malformed body", async () => {
+	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "s3cret", callbackSecret: "s3cret" });
+	const signed = (body: string, secret = "s3cret") => new Request("https://ci.test/callback", { method: "POST",
+		headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body });
+	const raw = JSON.stringify(verifiedReport);
+	assert.equal(await port.parseCallback(new Request("https://ci.test/callback", { method: "POST", body: raw })), null);
+	assert.equal(await port.parseCallback(signed(raw, "wrong-secret")), null);
+	assert.equal(await port.parseCallback(signed("{not json}")), null);
+	assert.deepEqual(await port.parseCallback(signed(raw)), verifiedReport);
+	assert.deepEqual(await port.parseCallback(signed(JSON.stringify(failedReport))), failedReport);
+	assert.deepEqual(await port.parseCallback(signed(JSON.stringify({ ...verifiedReport, ordinal: 4 }))), null);
+	assert.deepEqual(await port.parseCallback(signed(JSON.stringify({ ...verifiedReport, jobId: "not-a-job" }))), null);
+	const tampered = { ...verifiedReport, report: { kind: "VERDICT", verdict: { ...verifiedReport.report.verdict, reportDigest: undefined } } };
+	assert.deepEqual(await port.parseCallback(signed(JSON.stringify(tampered))), null);
+});
+
+test("the callback boundary carries a run's named failure, bounded, or nothing", async () => {
+	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "s3cret", callbackSecret: "s3cret" });
+	const signed = (value: unknown) => {
+		const body = JSON.stringify(value);
+		return new Request("https://ci.test/callback", { method: "POST",
+			headers: { "x-acquit-signature": `sha256=${createHmac("sha256", "s3cret").update(body).digest("hex")}` }, body });
+	};
+	assert.deepEqual(await port.parseCallback(signed(failedReport)), failedReport);
+	// A subject stopped from outside is a named failure like any other, and the boundary carries it.
+	const killed = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure,
+		name: "SUBJECT_KILLED", detail: "the subject was killed externally (SIGKILL)" } } };
+	assert.deepEqual(await port.parseCallback(signed(killed)), killed);
+	// A report that carries neither a verdict nor a named failure is refused, not guessed at.
+	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "RUN_FAILED" } })), null);
+	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1, report: { kind: "SOMETHING_ELSE" } })), null);
+	assert.equal(await port.parseCallback(signed({ jobId: "job_ci_test", ordinal: 1 })), null);
+	// The name is a closed set. An unrecognized one is refused rather than carried as free text.
+	const unknown = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, name: "SOMETHING_ELSE" } } };
+	assert.equal(await port.parseCallback(signed(unknown)), null);
+	const unnamed = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, detail: 7 } } };
+	assert.equal(await port.parseCallback(signed(unnamed)), null);
+	// The detail is display text: the boundary bounds it instead of refusing the report it cannot act on.
+	const long = { ...failedReport, report: { kind: "RUN_FAILED", failure: { ...failedReport.report.failure, detail: "x".repeat(5_000) } } };
+	const parsed = await port.parseCallback(signed(long));
+	assert.equal(parsed?.report.kind === "RUN_FAILED" ? parsed.report.failure.detail.length : 0, 300);
+});
+
+test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejection's named reason", () => {
+	const rejected = { result: "REJECTED", runId: "run_ci_2", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z", reasonsTruncated: 0,
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }, { kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }] };
+	assert.deepEqual(parseVerdict(rejected)?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasonsTruncated: undefined }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOMETHING_ELSE" }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_SYMLINK", path: "src/money.ts" }] })?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_SYMLINK" }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_GITLINK", path: "src/money.ts" }] })?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "TREE_GITLINK" }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "DIFF_TOO_LARGE", paths: 5000, limit: 4096 }] })?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "DIFF_TOO_LARGE", paths: 0, limit: 4096 }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }] })?.result, "REJECTED");
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 0, limit: 256 }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302 }] }), null);
+	assert.deepEqual(parseVerdict({ ...rejected, at: "yesterday" }), null);
+	assert.deepEqual(parseVerdict({ ...verifiedReport.report.verdict, frozen: { expected: 48, passed: 49 } }), null);
+	assert.deepEqual(parseVerdict({ ...verifiedReport.report.verdict, pullRequest: 0 }), null);
+	assert.deepEqual(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: rejected } })?.ordinal, 1);
+	const overReadBound = { ...rejected, reasons: [{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }] };
+	const parsed = parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: overReadBound } });
+	const verdict = parsed?.report.kind === "VERDICT" ? parsed.report.verdict : null;
+	assert.deepEqual(verdict?.result === "REJECTED" ? verdict.reasons : null,
+		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }]);
+});
+
+test("the remote verifier signs the run body with a timestamp and refuses a non-2xx answer", async () => {
+	const calls: { url: string; method: string; timestamp: string; nonce: string; signature: string; body: string }[] = [];
+	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "run-secret", callbackSecret: "s3cret", now: () => 1_760_000_000_000,
+		fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const headers = new Headers(init?.headers);
+			calls.push({ url: String(input), method: String(init?.method), timestamp: headers.get(RUN_TIMESTAMP_HEADER) ?? "",
+				nonce: headers.get(RUN_NONCE_HEADER) ?? "", signature: headers.get(RUN_SIGNATURE_HEADER) ?? "", body: String(init?.body) });
+			return new Response("", { status: 202 });
+		}) as typeof fetch });
+	await port.start({ runId: "run_ci_3" } as VerifierRunRequest);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].url, "https://ci.test/runs");
+	assert.equal(calls[0].method, "POST");
+	assert.equal(calls[0].timestamp, "1760000000");
+	assert.match(calls[0].nonce, /^[0-9a-f]{32}$/);
+	assert.equal(calls[0].signature, `sha256=${createHmac("sha256", "run-secret").update(`1760000000.${calls[0].nonce}.${calls[0].body}`).digest("hex")}`);
+	const refusing = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "s3cret", callbackSecret: "s3cret",
+		fetch: (async () => new Response("nope", { status: 503 })) as typeof fetch });
+	await assert.rejects(() => refusing.start({ runId: "run_ci_4" } as VerifierRunRequest), /HTTP 503/);
+});
+
+test("the local verifier runs the judge once per run id and hands the verdict to its listener", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
+	const seen: Verdict[] = [];
+	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+		clock: { now: () => instant("2026-10-06T12:00:00Z") }, onVerdict: async (_request, verdict) => { seen.push(verdict); } });
+	const head = spawnSync("git", ["-C", FIXTURE!, "rev-parse", "fix-honest^{commit}"], { encoding: "utf8" }).stdout.trim() as CommitSha;
+	const request: VerifierRunRequest = { runId: "run_ci_honest" as VerifierRunId, jobId: "job_ci_honest" as JobId, ordinal: 1,
+		sourceCommit: head, definitionOfDone: definition };
+	await verifier.start(request);
+	await verifier.start(request);
+	assert.equal(verifier.runs.size, 1);
+	assert.equal(seen.length, 1);
+	const outcome = verifier.runs.get("run_ci_honest" as VerifierRunId);
+	assert.equal(outcome?.kind === "VERDICT" ? outcome.verdict.result : outcome?.kind, "VERIFIED");
+	assert.equal(seen[0].result === "VERIFIED" ? seen[0].pullRequest : 0, 13);
+});

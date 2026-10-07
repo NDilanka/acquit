@@ -34,7 +34,7 @@ test("status reports only exact worktree suspended argv, without kill commands o
 		const script = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class SuspendOwned { [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint rights,bool inherit,int pid); [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr handle); [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle); }'; foreach($id in @(${children.map(child => child.pid).join(",")})) { $h=[SuspendOwned]::OpenProcess(0x0800,$false,$id); if($h -eq [IntPtr]::Zero){exit 1}; try { if([SuspendOwned]::NtSuspendProcess($h) -ne 0){exit 1} } finally { [void][SuspendOwned]::CloseHandle($h) } }`;
 		assert.equal((await powershell(["-Command", script], root)).code, 0);
 		const dir = resolve(root, "data/ctl");
-		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, browserSession: "test" };
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, verifierPort: 4311, browserSession: "test" };
 		await atomicJson(ctx.stateFile, { api: { pid: 0, nonce, port: 4310 }, web: { pid: 0, nonce: ownershipNonce(), port: 5173 },
 			logs: { api: "", web: "" }, databasePath: ctx.databasePath, startedAt: "test" });
 		const result = await status({}, ctx) as any;

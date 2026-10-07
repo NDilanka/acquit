@@ -12,8 +12,11 @@ async function call(path, method = 'GET', payload, token) {
   return json;
 }
 const maya = (await call('/api/session', 'POST', { handle: 'maya-client' })).token;
+// The deployment names its own client repository; the demo literal is only the default.
+const [{ repository, issues }] = (await call('/api/repos', 'GET', undefined, maya)).repos;
+const [{ number: issueNumber }] = issues;
 const opened = await call('/api/commands', 'POST', { key: randomUUID(), command: {
-  type: 'OpenJob', repository: 'maya-client/invoice-app', issueNumber: 12,
+  type: 'OpenJob', repository, issueNumber,
   budget: 40000, deliveryEndsAt: new Date(Date.now() + 7 * 86400000).toISOString(),
 } }, maya);
 assert.equal(opened.outcome.kind, 'COMMITTED');

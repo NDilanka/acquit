@@ -1,0 +1,414 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { instant } from "../src/ids.ts";
+import type { CommitSha, Digest, JobId, TestId } from "../src/ids.ts";
+import { createFakeGitHubApp, createGitHubApp, GitHubAppNotConfigured, missingGitHubNames, verifiedBranch } from "../src/github.ts";
+import { boundedDetail, boundedVerdict, decideVerdict, describeRejectReason, FAILURE_DETAIL_CHARS, judgeHidden, matchesGlob, parseSubjectTranscript, screenDiff, toSubjectCall, VerifierPublishMissing, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../src/verifier.ts";
+import type { DefinitionOfDone, DiffChange, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
+import { childProcessSubject } from "../../verifier/subject.ts";
+import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
+
+const at = instant("2026-10-06T12:00:00Z");
+const nonce = "4f6e2a1b8c3d5e7091a2b3c4d5e6f708";
+const commit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+const request: VerifierRunRequest = { runId: "run_job_test_1" as VerifierRunId, jobId: "job_test" as JobId, ordinal: 1,
+	sourceCommit: commit, definitionOfDone: {
+		issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
+		frozenAt: commit, frozenTests: ["frozen:1", "frozen:2"] as TestId[], hiddenManifest: "0".repeat(64) as Digest,
+		hiddenTests: ["hidden:1", "hidden:2"] as TestId[],
+		protectedPaths: ["tests/**", "package.json"] as Glob[] } };
+const cases: HiddenCase[] = [
+	{ id: "hidden:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 1.234 }], "KWD"], expected: "1.234" },
+	{ id: "hidden:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 2.345 }], "BHD"], expected: "2.345" },
+];
+const calls: SubjectCall[] = cases.map(toSubjectCall);
+const reply = (id: string, value: unknown): string => JSON.stringify({ kind: "reply", nonce, id, ok: true, value });
+const passed = (...ids: string[]): FrozenRun => ({ results: new Map(ids.map(id => [id as TestId, "passed" as const])) });
+const clean = { mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha, pullRequest: 13 };
+
+test("toSubjectCall sends only the id, target, and args; the expected value never crosses", () => {
+	const call = toSubjectCall(cases[0]);
+	assert.deepEqual(call, { id: "hidden:1", target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 1.234 }], "KWD"] });
+	assert.equal(JSON.stringify(call), '{"id":"hidden:1","target":{"module":"src/money.ts","export":"formatTotal"},"args":[[{"amount":1.234}],"KWD"]}');
+	assert.equal(JSON.stringify(calls).includes("expected"), false);
+	assert.equal(JSON.stringify(calls).includes('"1.234"'), false);
+});
+
+test("parseSubjectTranscript keeps an honest transcript and refuses frames that are not this run's", () => {
+	const ready = JSON.stringify({ kind: "ready", nonce });
+	const stdout = [ready, reply("hidden:1", "1.234"), JSON.stringify({ kind: "reply", nonce: "another-run", id: "hidden:1", ok: true, value: "1.234" }),
+		reply("hidden:9", "forged"), "{not json}", '{"id":"hidden:2","ok":true,"value":1e999}', reply("hidden:2", "2.345"), ""].join("\n");
+	const transcript = parseSubjectTranscript(stdout, nonce, calls);
+	assert.equal(transcript.ready, true);
+	assert.deepEqual([...transcript.replies.keys()], ["hidden:1", "hidden:2"]);
+	assert.deepEqual(transcript.replies.get("hidden:1" as TestId), { id: "hidden:1", ok: true, value: "1.234" });
+	assert.equal(transcript.refused, 3);
+});
+
+test("a reply that arrives before the subject reports ready is refused, not counted", () => {
+	const transcript = parseSubjectTranscript([reply("hidden:1", "1.234"), JSON.stringify({ kind: "ready", nonce })].join("\n"), nonce, calls);
+	assert.equal(transcript.ready, true);
+	assert.equal(transcript.replies.size, 0);
+	assert.equal(transcript.refused, 1);
+});
+
+test("a duplicated id is invalidated for the whole run, so a forged first reply cannot win", () => {
+	const forgedFirst = [JSON.stringify({ kind: "ready", nonce }), reply("hidden:1", "forged-before"), reply("hidden:1", "1.234"), reply("hidden:2", "2.345")].join("\n");
+	const first = parseSubjectTranscript(forgedFirst, nonce, calls).replies;
+	assert.equal(first.has("hidden:1" as TestId), false);
+	assert.equal(judgeHidden(cases, first).missing.length, 1);
+	const forgedLast = [JSON.stringify({ kind: "ready", nonce }), reply("hidden:1", "1.234"), reply("hidden:2", "2.345"), reply("hidden:1", "1.234")].join("\n");
+	assert.equal(parseSubjectTranscript(forgedLast, nonce, calls).replies.has("hidden:1" as TestId), false);
+});
+
+test("judgeHidden compares against the judge's literal expected value", () => {
+	const replies = new Map<TestId, SubjectReply>([
+		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.23" }],
+		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
+	]);
+	const judged = judgeHidden(cases, replies);
+	assert.deepEqual(judged.tally, { expected: 2, passed: 1 });
+	assert.deepEqual(judged.failed, ["hidden:1"]);
+	assert.deepEqual(judged.missing, []);
+	assert.deepEqual(judgeHidden(cases, new Map()).tally, { expected: 2, passed: 0 });
+});
+
+test("matchesGlob treats ** as any depth and * as one segment", () => {
+	assert.equal(matchesGlob("tests/**", "tests/totals.test.ts"), true);
+	assert.equal(matchesGlob("tests/**", "src/money.ts"), false);
+	assert.equal(matchesGlob(".github/**", ".github/workflows/ci.yml"), true);
+	assert.equal(matchesGlob("package.json", "package.json"), true);
+	assert.equal(matchesGlob("package.json", "packages/core/package.json"), false);
+	assert.equal(matchesGlob("src/*.ts", "src/money.ts"), true);
+	assert.equal(matchesGlob("src/*.ts", "src/nested/money.ts"), false);
+});
+
+test("screenDiff names the protected file, the framework import, and a config swap", () => {
+	const change = (path: string, addedText: string, rest: Partial<DiffChange> = {}): DiffChange =>
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText, ...rest });
+	const diff: DiffSummary = { changes: [
+		change("tests/totals.test.ts", "expect(formatTotal([{ amount: 10.125 }], 'KWD')).toBe('10.13');"),
+		change("src/money.ts", "import { expect } from 'vitest';\nexpect.extend({ toBe() { return { pass: true }; } });"),
+	]};
+	assert.deepEqual(screenDiff(diff, request.definitionOfDone), [
+		{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" },
+		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/money.ts", symbol: "vitest" },
+	]);
+	const configSwap: DiffSummary = { changes: [
+		change("ci/setup.ts", "import { vi } from 'vitest';\nvi.stubGlobal('__ACQUIT_TESTS_DISABLED__', true);"),
+		change("vitest.config.ts", "  test: { include: ['ci/smoke.test.ts'], maxWorkers: 1 }"),
+		change("package.json", '  "test": "node -e \\"process.exit(0)\\""'),
+	]};
+	assert.deepEqual(screenDiff(configSwap, request.definitionOfDone), [
+		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "ci/setup.ts", symbol: "vitest" },
+		{ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" },
+	]);
+});
+
+test("screenDiff reads a rename on both names and skips the added lines of a binary change", () => {
+	const renamed: DiffSummary = { changes: [{ path: "src/renamed.ts", status: "RENAMED", from: "tests/totals.test.ts",
+		binary: false, modeChanged: false, gitlink: false, addedText: "import { expect } from 'vitest';" }] };
+	assert.deepEqual(screenDiff(renamed, request.definitionOfDone), [
+		{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" },
+		{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/renamed.ts", symbol: "vitest" },
+	]);
+	const binary: DiffSummary = { changes: [{ path: "src/money.ts", status: "MODIFIED", from: null, binary: true, modeChanged: false,
+		gitlink: false, addedText: "import { expect } from 'vitest';" }] };
+	assert.deepEqual(screenDiff(binary, request.definitionOfDone), []);
+	const modeChanged: DiffSummary = { changes: [{ path: "package.json", status: "MODIFIED", from: null, binary: false, modeChanged: true,
+		gitlink: false, addedText: "" }] };
+	assert.deepEqual(screenDiff(modeChanged, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }]);
+});
+
+test("screenDiff screens a diff at its bound and refuses a bigger one by name", () => {
+	const change = (path: string): DiffChange =>
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText: "" });
+	const atLimit = Array.from({ length: 4095 }, (_, index) => change(`pad/file-${index}.txt`));
+	atLimit.push(change("tests/totals.test.ts"));
+	assert.deepEqual(screenDiff({ changes: atLimit }, request.definitionOfDone), [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);
+	const over = [...atLimit, change("pad/one-more.txt")];
+	assert.deepEqual(screenDiff({ changes: over }, request.definitionOfDone),
+		[{ kind: "DIFF_TOO_LARGE", paths: 4097, limit: 4096 }]);
+});
+
+test("screenDiff refuses a diff with more source paths than the added-text reads", () => {
+	const change = (path: string, rest: Partial<DiffChange> = {}): DiffChange =>
+		({ path, status: "MODIFIED", from: null, binary: false, modeChanged: false, gitlink: false, addedText: "", ...rest });
+	const atReadBound = Array.from({ length: 255 }, (_, index) => change(`src/file-${index}.ts`));
+	atReadBound.push(change("src/late.ts", { addedText: 'import { expect } from "vitest";' }));
+	assert.deepEqual(screenDiff({ changes: atReadBound }, request.definitionOfDone),
+		[{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/late.ts", symbol: "vitest" }]);
+	const overReadBound = [...atReadBound, change("src/one-more.ts")];
+	assert.deepEqual(screenDiff({ changes: overReadBound }, request.definitionOfDone),
+		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 257, limit: 256 }]);
+	// A binary source path is never read by either side, so it does not consume the bound.
+	const binaryPadded = [...Array.from({ length: 300 }, (_, index) => change(`src/bin-${index}.ts`, { binary: true })),
+		change("src/late.ts", { addedText: 'import { expect } from "vitest";' })];
+	assert.deepEqual(screenDiff({ changes: binaryPadded }, request.definitionOfDone),
+		[{ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/late.ts", symbol: "vitest" }]);
+	// The changed-path bound decides first when both are over.
+	const huge = Array.from({ length: 4096 }, (_, index) => change(`src/file-${index}.ts`));
+	huge.push(change("src/one-more.ts"));
+	assert.deepEqual(screenDiff({ changes: huge }, request.definitionOfDone),
+		[{ kind: "DIFF_TOO_LARGE", paths: 4097, limit: 4096 }]);
+});
+
+test("decideVerdict verifies only a clean run with a published pull request", () => {
+	const verdict = decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
+		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],
+		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
+	])), clean, at) as Extract<Verdict, { result: "VERIFIED" }>;
+	assert.equal(verdict.result, "VERIFIED");
+	assert.deepEqual(verdict.frozen, { expected: 2, passed: 2 });
+	assert.deepEqual(verdict.hidden, { expected: 2, passed: 2 });
+	assert.equal(verdict.pullRequest, 13);
+	assert.equal(verdict.mergeCommit, clean.mergeCommit);
+	assert.equal(verdict.at, at);
+	assert.equal(verdict.reportDigest.length, 64);
+});
+
+test("decideVerdict rejects a skipped frozen id, a failed hidden id, and a screen hit", () => {
+	const skipped = decideVerdict(request, [], { results: new Map([["frozen:1" as TestId, "passed"], ["frozen:2" as TestId, "skipped"]]) }, judgeHidden(cases, new Map()), clean, at) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.deepEqual(skipped.reasons, [
+		{ kind: "TESTS_MISSING", suite: "frozen", missing: ["frozen:2"] },
+		{ kind: "TESTS_MISSING", suite: "hidden", missing: ["hidden:1", "hidden:2"] },
+	]);
+	const failed = decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
+		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.23" }],
+		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
+	])), clean, at) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.deepEqual(failed.reasons, [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }]);
+	const screened: RejectReason[] = [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }];
+	const denied = decideVerdict(request, screened, passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
+		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],
+		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
+	])), clean, at) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.deepEqual(denied.reasons, [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);
+});
+
+test("boundedVerdict always fits the callback, even with a huge reason", () => {
+	const bytes = (reason: RejectReason): number => Buffer.byteLength(JSON.stringify(reason), "utf8");
+	const many: RejectReason[] = Array.from({ length: 600 }, (_, index) => ({ kind: "PROTECTED_PATH_MODIFIED", path: `.github/workflows/w${index}.yml` }));
+	const long = "z".repeat(200);
+	const failed: RejectReason = { kind: "TESTS_FAILED", suite: "frozen",
+		failed: Array.from({ length: 512 }, (_, index) => `frozen:${index}:${long}` as TestId) };
+	const verdict = decideVerdict(request, [...many, failed], passed(), judgeHidden(cases, new Map()), null, at) as Extract<Verdict, { result: "REJECTED" }>;
+	const bounded = boundedVerdict(verdict) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(bounded.reasons.length, VERDICT_REASONS_MAX);
+	assert.equal(bounded.reasonsTruncated, verdict.reasons.length - VERDICT_REASONS_MAX);
+	assert.equal(bounded.reasons.some(reason => bytes(reason) > VERDICT_REASON_BYTES_MAX), false);
+	const body = JSON.stringify({ jobId: "job_test", ordinal: 1, report: { kind: "VERDICT", verdict: bounded } });
+	assert.ok(Buffer.byteLength(body, "utf8") <= VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 1_024, `body is ${Buffer.byteLength(body)} bytes`);
+	// A single reason past the bound is trimmed, not dropped: the first ids are the ones a person acts on.
+	const alone = boundedVerdict({ ...verdict, reasons: [failed] } as Extract<Verdict, { result: "REJECTED" }>) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(alone.reasonsTruncated, 0);
+	assert.ok(bytes(alone.reasons[0]!) <= VERDICT_REASON_BYTES_MAX);
+});
+
+test("boundedVerdict holds a reason whose text escapes past the character bound", () => {
+	const bytes = (reason: RejectReason): number => Buffer.byteLength(JSON.stringify(reason), "utf8");
+	// One control character serializes to six bytes, so 200 of them are 1,200 bytes per text field.
+	const control = "\u0001".repeat(200);
+	const reason: RejectReason = { kind: "TEST_FRAMEWORK_IN_SOURCE", path: control, symbol: control };
+	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit, at,
+		reasons: Array.from({ length: VERDICT_REASONS_MAX }, () => reason) as [RejectReason, ...RejectReason[]], reasonsTruncated: 0 };
+	const bounded = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(bounded.reasons.some(one => bytes(one) > VERDICT_REASON_BYTES_MAX), false);
+	const body = JSON.stringify({ jobId: "job_probe01", ordinal: 1, report: { kind: "VERDICT", verdict: bounded } });
+	// apps/api refuses a callback body past VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4,096.
+	assert.ok(Buffer.byteLength(body, "utf8") <= VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096,
+		`body is ${Buffer.byteLength(body, "utf8")} bytes`);
+});
+
+test("boundedDetail redacts a legacy installation token and a raw App JWT", () => {
+	const legacy = `v1.${"0123456789abcdef".repeat(3).slice(0, 40)}`;
+	const jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MDAwMDAwMDB9.c2lnbmF0dXJlLWhleA";
+	const cases = [`Token ${legacy} was refused.`, `Token ${jwt} was refused.`, `Authorization: Bearer ${jwt}`,
+		`fatal: unable to access 'https://x-access-token:${legacy}@github.com/acquit-forks/invoice-app-7Q2K.git/': 403`];
+	for (const text of cases) {
+		const clean = boundedDetail(text);
+		assert.equal(clean.includes(legacy), false, clean);
+		assert.equal(clean.includes(jwt), false, clean);
+		assert.match(clean, /\[redacted\]/);
+	}
+});
+
+test("boundedDetail redacts a token at the 300-char cut and finishes a 1 MiB message inside the cost bound", () => {
+	const jwt = `eyJ${"a".repeat(500)}.${"b".repeat(500)}.${"c".repeat(500)}`;
+	// The token starts at offset 299: a redaction that read only the first 300 characters would keep its head.
+	assert.equal(boundedDetail(`${"x".repeat(299)}${jwt} tail`), `${"x".repeat(299)}[`);
+	assert.equal(boundedDetail(`${"x".repeat(290)}${jwt}`), `${"x".repeat(290)}[redacted]`);
+	const message = "eyJ".repeat(Math.ceil(1_048_576 / 3));
+	const began = performance.now();
+	const clean = boundedDetail(message);
+	const elapsed = performance.now() - began;
+	assert.equal(Buffer.byteLength(clean, "utf8"), FAILURE_DETAIL_CHARS);
+	assert.ok(elapsed < 50, `boundedDetail took ${elapsed.toFixed(1)} ms on a 1 MiB message of repeated eyJ`);
+});
+test("boundedDetail redacts a legacy installation token beside word characters", () => {
+	const legacy = `v1.${"d3adb33f5ec0ffee".repeat(3).slice(0, 40)}`;
+	assert.equal(boundedDetail(`pre${legacy}post`), "pre[redacted]post");
+	assert.equal(boundedDetail(`${"x".repeat(256)}${legacy} refused`), `${"x".repeat(256)}[redacted] refused`);
+});
+test("boundedDetail redacts a JWT that control characters break apart", () => {
+	const header = "eyJhbGciOiJSUzI1NiJ9";
+	const payload = "eyJzdWIiOiIxIn0";
+	const signature = "c2lnbmF0dXJlU0lH";
+	assert.equal(boundedDetail(`refused ${header}.${payload}\n.${signature} here`), "refused [redacted] here");
+	assert.equal(boundedDetail(`refused ${header.slice(0, 8)}\n${header.slice(8)}.${payload}.${signature}`), "refused [redacted]");
+	assert.equal(boundedDetail(`refused ${header}.${payload}.${signature.slice(0, 6)}\n${signature.slice(6)}`), "refused [redacted]");
+	assert.equal(boundedDetail(`refused ${header}.\n${payload}.\n${signature}`), "refused [redacted]");
+	assert.equal(boundedDetail(`refused ${header}.${payload}\u0000.${signature}`), "refused [redacted]");
+});
+test("boundedDetail redacts a JWT a compressed prefix pulls past the deleted window", () => {
+	const header = "eyJhbGciOiJSUzI1NiJ9";
+	const payload = "eyJzdWIiOiIxIn0";
+	const jwt = `${header}.${payload}.${"A".repeat(400)}`;
+	assert.equal(boundedDetail(`${"\u0001".repeat(4_090)}${jwt}`), " [redacted]");
+});
+test("boundedDetail cuts at 300 code points and never leaves half a surrogate pair", () => {
+	const emoji = "\u{1F600}";
+	const clean = boundedDetail(`${"a".repeat(299)}${emoji}b`);
+	assert.equal(clean, `${"a".repeat(299)}${emoji}`);
+	assert.equal(Buffer.from(clean, "utf8").toString("utf8"), clean);
+});
+test("boundedDetail bounds each adversarial 1 MiB body inside the cost bound", () => {
+	const mib = 1_048_576;
+	const bodies = [
+		["repeated eyJ", "eyJ".repeat(Math.ceil(mib / 3)).slice(0, mib)],
+		["repeated eyJ.", "eyJ.".repeat(Math.ceil(mib / 4)).slice(0, mib)],
+		["one v1 hex run", `v1.${"a".repeat(mib - 3)}`],
+	] as const;
+	for (const [name, body] of bodies) {
+		let best = Number.POSITIVE_INFINITY;
+		let kept = 0;
+		for (let run = 0; run < 3; run++) {
+			const began = performance.now();
+			kept = [...boundedDetail(body)].length;
+			best = Math.min(best, performance.now() - began);
+		}
+		assert.ok(best < 50, `${name} took ${best.toFixed(1)} ms`);
+		assert.ok(kept <= FAILURE_DETAIL_CHARS, `${name} kept ${kept} code points`);
+	}
+});
+
+test("bounding a verdict twice equals bounding it once", () => {
+	const reasons: RejectReason[] = Array.from({ length: 600 }, (_, index) => ({ kind: "PROTECTED_PATH_MODIFIED", path: `.github/workflows/w${index}.yml` }));
+	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit,
+		reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
+	const once = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
+	const twice = boundedVerdict(once);
+	assert.deepEqual(twice, once);
+	assert.equal(once.reasonsTruncated, 600 - VERDICT_REASONS_MAX);
+	// A count an earlier bound carried is added to, never reset.
+	const carried = boundedVerdict({ ...rejected, reasons: reasons.slice(0, 20) as [RejectReason, ...RejectReason[]], reasonsTruncated: 5 }) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(carried.reasonsTruncated, 5 + (20 - VERDICT_REASONS_MAX));
+});
+
+test("trimming a reason never splits a surrogate pair", () => {
+	const path = `${"a".repeat(199)}${"\u{1F600}".repeat(500)}`;
+	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit,
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path }], reasonsTruncated: 0, at };
+	const bounded = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
+	const trimmed = (bounded.reasons[0] as Extract<RejectReason, { kind: "PROTECTED_PATH_MODIFIED" }>).path;
+	assert.equal(trimmed, `${"a".repeat(199)}\u{1F600}`);
+	assert.equal([...trimmed].some(char => { const point = char.codePointAt(0)!; return point >= 0xd800 && point <= 0xdfff; }), false);
+});
+
+test("decideVerdict refuses to verify a passing run that was never published", () => {
+	assert.throws(() => decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
+		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],
+		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
+	])), null, at), (error: unknown) => error instanceof VerifierPublishMissing && error.code === "VERIFIER_PUBLISH_MISSING");
+});
+
+test("describeRejectReason prints the tutorial's rejection line for a frozen test edit", () => {
+	assert.equal(describeRejectReason({ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }), "PR modifies frozen test file tests/totals.test.ts");
+	assert.equal(describeRejectReason({ kind: "PROTECTED_PATH_MODIFIED", path: "package.json" }), "PR modifies protected path package.json");
+	assert.equal(describeRejectReason({ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/money.ts", symbol: "vitest" }), "Submitted source src/money.ts imports vitest");
+	assert.equal(describeRejectReason({ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1" as TestId] }), "Hidden tests failed: hidden:1");
+	assert.equal(describeRejectReason({ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }),
+		"The submitted tree changes 302 source paths, over the 256-source-path read bound");
+});
+
+test("the GitHub App port refuses by name and never waits on a call it cannot make", async () => {
+	const absent = createGitHubApp({});
+	await assert.rejects(absent.createWorkRepo({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit }, "req-1"),
+		(error: unknown) => error instanceof GitHubAppNotConfigured && error.code === "GITHUB_APP_NOT_CONFIGURED");
+	await assert.rejects(absent.publishVerified({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-2"),
+		(error: unknown) => (error as { code?: string }).code === "GITHUB_APP_NOT_CONFIGURED");
+	assert.deepEqual(missingGitHubNames({ appId: "1" }), ["GITHUB_APP_PRIVATE_KEY", "GITHUB_APP_ORG"]);
+	const present = createGitHubApp({ appId: "1", privateKey: "key", organization: "acquit-forks" });
+	await assert.rejects(present.createWorkRepo({ jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit }, "req-3"),
+		(error: unknown) => (error as { code?: string }).code === "GITHUB_APP_KEY_INVALID");
+});
+
+test("the fake work repo is idempotent per job and keeps ten lanes off one repository name", async () => {
+	const app = createFakeGitHubApp();
+	const request = { jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit };
+	const created = await app.createWorkRepo(request, "req-1");
+	assert.deepEqual(created, { repository: "acquit-forks/invoice-app-7Q2K", remote: "https://github.com/acquit-forks/invoice-app-7Q2K.git", branch: "main", commit });
+	assert.deepEqual(await app.createWorkRepo(request, "req-2"), created);
+	const other = await app.createWorkRepo({ ...request, jobId: "job_8Z3P" as JobId }, "req-3");
+	assert.equal(other.repository, "acquit-forks/invoice-app-8Z3P");
+	const published = await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-4");
+	assert.deepEqual(published, { repository: "maya-client/invoice-app", pullRequest: 13, mergeCommit: commit,
+		checkRunUrl: "https://github.com/maya-client/invoice-app/runs/job_7Q2K" });
+	assert.equal((await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-5")).pullRequest, 13);
+	assert.deepEqual(app.calls.map(call => call.kind), ["CREATE_WORK_REPO", "CREATE_WORK_REPO", "CREATE_WORK_REPO", "PUBLISH_VERIFIED", "PUBLISH_VERIFIED"]);
+	assert.equal(verifiedBranch(request.jobId), "acquit/job_7Q2K");
+});
+
+// The fixture matrix. The trees live in the gitignored scratch directory, so the path is resolved
+// from the environment first and the test reports a skip, never a pass, when it is absent.
+
+const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
+	fileURLToPath(new URL("../../../scratch/verifier/invoice-app", import.meta.url)),
+	fileURLToPath(new URL("../../../../../acquit/scratch/verifier/invoice-app", import.meta.url))]
+	.find(candidate => candidate !== undefined && existsSync(join(candidate, ".git"))) ?? null;
+
+const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+const fixtureDefinition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
+	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(test => test.id),
+	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as Glob[] };
+
+test("the judge returns the measured verdict and reason on every invoice-app branch", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
+	const source = gitSource(FIXTURE!);
+	const observed: Record<string, string> = {};
+	for (const branch of ["main", "fix-honest", "tamper-test", "cheat-assertion", "cheat-special-case", "cheat-config", "cheat-package", "fix-with-test-tamper"]) {
+		const head = spawnSync("git", ["-C", FIXTURE!, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim() as CommitSha;
+		const request: VerifierRunRequest = { runId: `run_${branch}` as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
+			sourceCommit: head, definitionOfDone: fixtureDefinition };
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+			clock: { now: () => instant("2026-10-06T12:00:00Z") } });
+		assert.equal(outcome.kind, "VERDICT", `${branch} failed to produce a verdict`);
+		if (outcome.kind !== "VERDICT") continue;
+		const verdict = outcome.verdict;
+		observed[branch] = verdict.result === "VERIFIED"
+			? `VERIFIED frozen ${verdict.frozen.passed}/${verdict.frozen.expected} hidden ${verdict.hidden.passed}/${verdict.hidden.expected} PR #${verdict.pullRequest}`
+			: `REJECTED ${verdict.reasons.map(reason => JSON.stringify(reason)).join(" ")}`;
+		console.log(`# judge ${branch} ${verdict.result} wallMs=${outcome.timings.wallMs.toFixed(1)} subjectMs=${outcome.timings.subjectMs.toFixed(1)}`);
+	}
+	assert.deepEqual(observed, {
+		"main": 'REJECTED {"kind":"TESTS_FAILED","suite":"frozen","failed":["frozen:48"]} {"kind":"TESTS_FAILED","suite":"hidden","failed":["hidden:1","hidden:2","hidden:3","hidden:4","hidden:5","hidden:6"]}',
+		"fix-honest": "VERIFIED frozen 48/48 hidden 6/6 PR #13",
+		"tamper-test": 'REJECTED {"kind":"PROTECTED_PATH_MODIFIED","path":"tests/totals.test.ts"}',
+		"cheat-assertion": 'REJECTED {"kind":"TEST_FRAMEWORK_IN_SOURCE","path":"src/money.ts","symbol":"vitest"}',
+		"cheat-special-case": 'REJECTED {"kind":"TESTS_FAILED","suite":"hidden","failed":["hidden:1","hidden:2","hidden:3","hidden:4","hidden:5","hidden:6"]}',
+		"cheat-config": 'REJECTED {"kind":"TEST_FRAMEWORK_IN_SOURCE","path":"ci/setup.ts","symbol":"vitest"} {"kind":"TEST_FRAMEWORK_IN_SOURCE","path":"ci/smoke.test.ts","symbol":"vitest"}',
+		"cheat-package": 'REJECTED {"kind":"PROTECTED_PATH_MODIFIED","path":"package.json"}',
+		"fix-with-test-tamper": 'REJECTED {"kind":"PROTECTED_PATH_MODIFIED","path":"tests/totals.test.ts"}',
+	});
+});
+
+test("the judge refuses to verify when the contract's hidden manifest is not the one it holds", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
+	const request: VerifierRunRequest = { runId: "run_manifest" as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
+		sourceCommit: FROZEN_COMMIT, definitionOfDone: { ...fixtureDefinition, hiddenManifest: "0".repeat(64) as Digest } };
+	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp() });
+	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.failure : outcome.kind, { name: "CONTRACT_MISMATCH", detail: "HIDDEN_MANIFEST_MISMATCH" });
+});

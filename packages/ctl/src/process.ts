@@ -42,6 +42,16 @@ export function alive(pid: number): boolean {
 	}
 	return true;
 }
+// Compare exactly the roles the launch recorded. A lane started before the
+// verifier joined has no verifier key; a hardcoded api/web pair rejects a
+// three-service lane.
+export function runPids(
+	run: { api?: { pid: number } | null; web?: { pid: number } | null; verifier?: { pid: number } | null } | null,
+	launchPids: { api?: number; web?: number; verifier?: number },
+): { api?: number | null; web?: number | null; verifier?: number | null } {
+	const services = run as Record<string, { pid: number } | null | undefined> | null;
+	return Object.fromEntries(Object.keys(launchPids).map(role => [role, services?.[role]?.pid ?? null]));
+}
 // A reply alone is NOT proof: a squatter can name another process's pid.
 // Stop verifies the kernel-reported server PID on the answering connection.
 export function ownershipNonce(): string {

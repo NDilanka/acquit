@@ -27,22 +27,26 @@ export interface ServiceRecord {
 export interface RunState {
 	api: ServiceRecord;
 	web: ServiceRecord;
-	logs: { api: string; web: string };
+	// Absent in a run file written before the verifier joined the lane, and
+	// absent on a start that never reached the verifier spawn.
+	verifier?: ServiceRecord;
+	logs: { api: string; web: string; verifier?: string };
 	startedAt: string;
 	databasePath: string;
 }
 export interface LaneSlot {
 	apiPort: number;
 	webPort: number;
+	verifierPort: number;
 	databasePath: string;
 	runDir: string;
 	browserSession: string;
 }
 export function laneSlot(n?: number): LaneSlot {
 	if (n === 0) n = undefined;
-	if (n === undefined) return { apiPort: 4310, webPort: 5173, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" };
+	if (n === undefined) return { apiPort: 4310, webPort: 5173, verifierPort: 4311, databasePath: "data/acquit.db", runDir: "data/ctl", browserSession: "verify-acquit" };
 	if (!Number.isSafeInteger(n) || n < 0 || 5173 + 10 * n > 65535) throw new CliError("INVALID_ARGUMENT", "ACQUIT_LANE must be an integer between 0 and 6036.", "Set ACQUIT_LANE to a valid lane number.", 2);
-	return { apiPort: 4310 + 10 * n, webPort: 5173 + 10 * n, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` };
+	return { apiPort: 4310 + 10 * n, webPort: 5173 + 10 * n, verifierPort: 4311 + 10 * n, databasePath: `data/verify/lane-${n}/acquit.db`, runDir: `data/ctl/lane-${n}`, browserSession: `verify-acquit-lane-${n}` };
 }
 export interface Context {
 	root: string;
@@ -51,6 +55,7 @@ export interface Context {
 	databasePath: string;
 	apiPort: number;
 	webPort: number;
+	verifierPort: number;
 	browserSession: string;
 }
 export function context(): Context {
@@ -65,8 +70,10 @@ export function context(): Context {
 	const lane = process.env.ACQUIT_LANE === "0" ? undefined : process.env.ACQUIT_LANE;
 	const slot = laneSlot(lane === undefined ? undefined : /^\d+$/.test(lane) ? Number(lane) : NaN);
 	const dir = resolve(root, slot.runDir);
+	const apiPort = lane === undefined ? port("PORT", slot.apiPort) : slot.apiPort;
 	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, lane === undefined ? process.env.DATABASE_PATH ?? slot.databasePath : slot.databasePath),
-		apiPort: lane === undefined ? port("PORT", slot.apiPort) : slot.apiPort, webPort: lane === undefined ? port("WEB_PORT", slot.webPort) : slot.webPort, browserSession: slot.browserSession };
+		apiPort, webPort: lane === undefined ? port("WEB_PORT", slot.webPort) : slot.webPort,
+		verifierPort: lane === undefined ? port("ACQUIT_VERIFIER_PORT", slot.verifierPort) : slot.verifierPort, browserSession: slot.browserSession };
 }
 export async function readState(ctx: Context): Promise<RunState | null> {
 	let raw: string;
@@ -75,13 +82,16 @@ export async function readState(ctx: Context): Promise<RunState | null> {
 	try { raw = readFileSync(ctx.stateFile, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 	try {
 		const state = JSON.parse(raw) as RunState;
-		for (const service of [state.api, state.web]) {
+		for (const service of [state.api, state.web, state.verifier]) {
+			if (service === undefined) continue;
 			// The nonce locates a channel, never grants kill authority. Legacy
 			// records stay readable, but requireOwned must verify the kernel peer.
-			if (service && !/^[0-9a-f]{32}$/.test(service.nonce ?? "")) service.nonce = null;
-			if (!service || !Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535) throw new Error();
+			if (!/^[0-9a-f]{32}$/.test(service.nonce ?? "")) service.nonce = null;
+			if (!Number.isSafeInteger(service.pid) || service.pid < 0 || !Number.isSafeInteger(service.port) || service.port < 1 || service.port > 65535) throw new Error();
 		}
-		if (typeof state.logs?.api !== "string" || typeof state.logs.web !== "string" || typeof state.databasePath !== "string" || typeof state.startedAt !== "string") throw new Error();
+		if (!state.api || !state.web || typeof state.logs?.api !== "string" || typeof state.logs.web !== "string"
+			|| (state.verifier !== undefined && typeof state.logs.verifier !== "string")
+			|| typeof state.databasePath !== "string" || typeof state.startedAt !== "string") throw new Error();
 		return state;
 	} catch { throw new CliError("INVALID_STATE", "The CLI ownership file is invalid.", `Inspect ${ctx.stateFile}. Restore its owned PIDs or remove the file only after stopping those processes.`); }
 }

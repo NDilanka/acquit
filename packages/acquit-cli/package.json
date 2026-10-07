@@ -1,0 +1,9 @@
+{
+  "name": "@acquit/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "acquit": "src/main.ts" },
+  "scripts": { "start": "node src/main.ts" },
+  "engines": { "node": ">=24.0.0" }
+}

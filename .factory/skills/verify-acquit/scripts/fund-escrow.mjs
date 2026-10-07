@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { context } from "../../../../packages/ctl/src/state.ts";
-import { captured as captureCommand, discarded, portOpen } from "../../../../packages/ctl/src/process.ts";
+import { captured as captureCommand, discarded, portOpen, runPids } from "../../../../packages/ctl/src/process.ts";
 import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
 import { dashboardPorts } from "../../../../packages/ctl/src/browser-safety.ts";
 import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
@@ -62,7 +62,7 @@ async function doctor() {
 	const status = await cli("status");
 	assert(status.run, "The owned run is missing.");
 	assert.equal(resolve(status.database.path), databasePath, "The running API uses the wrong database.");
-	assert.deepEqual({ api: status.run.api.pid, web: status.run.web.pid }, launch.data.pids, "Ownership changed. Do not stop or drive another run.");
+	assert.deepEqual(runPids(status.run, launch.data.pids), launch.data.pids, "Ownership changed. Do not stop or drive another run.");
 	assert.equal(status.run.api.port, ctx.apiPort);
 	assert.equal(status.run.web.port, ctx.webPort);
 	assert(status.healthy, "The owned instance is not healthy or not seeded.");
@@ -235,7 +235,7 @@ async function cleanup() {
 	const status = await cli("status");
 	if (status.run) {
 		assert.equal(resolve(status.run.databasePath), databasePath, "Cleanup refuses a different database.");
-		assert.deepEqual({ api: status.run.api.pid, web: status.run.web.pid }, launch.data.pids, "Cleanup refuses changed ownership.");
+		assert.deepEqual(runPids(status.run, launch.data.pids), launch.data.pids, "Cleanup refuses changed ownership.");
 	}
 	try {
 		if (existsSync(join(evidence, "browser.json"))) await browser("close");
@@ -270,8 +270,13 @@ try {
 		await capture("01-signin");
 		await signIn("maya-client");
 		await browser("open", `${webUrl}/jobs/new`);
-		await browser("wait", "--text", "#12 Totals round wrong for 3-decimal currencies");
-		await browser("select", "select:has(option[value='maya-client/invoice-app#12'])", "maya-client/invoice-app#12");
+		// The form lists the deployment's client repository, not the demo literal.
+		const [listing] = (await api("/api/repos", "maya-client")).repos;
+		assert(listing?.issues?.length > 0, "The deployment's client repository has no issues to post.");
+		const issue = listing.issues[0];
+		const option = `${listing.repository}#${issue.number}`;
+		await browser("wait", "--text", `#${issue.number} ${issue.title}`);
+		await browser("select", `select:has(option[value='${option}'])`, option);
 		await browser("find", "label", "Budget (USD)", "fill", "400");
 		await browser("select", "select:has(option[value='7'])", "7");
 		await capture("02-post-form");

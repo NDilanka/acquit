@@ -33,7 +33,7 @@ test("a real pipe squatter answering the victim pid cannot authorize stop; faile
 		await first(once(squatter.stdout!, "data"), 5000, "Squatter did not bind.");
 		assert.equal(await ownedProcess(victim.pid!, nonce), false);
 		const dir = resolve(root, "data/ctl");
-		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, browserSession: "test" };
+		const ctx = { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "test.db"), apiPort: 4310, webPort: 5173, verifierPort: 4311, browserSession: "test" };
 		const { atomicJson } = await import("../src/state.ts");
 		await atomicJson(ctx.stateFile, { api: { pid: victim.pid, nonce, port: 4310 }, web: { pid: 0, nonce: ownershipNonce(), port: 5173 }, logs: { api: "", web: "" }, databasePath: ctx.databasePath, startedAt: "test" });
 		await assert.rejects(stop({}, ctx), (error: any) => error.code === "PID_MISMATCH");
@@ -125,9 +125,9 @@ const plainListener = (path: string) => `require("node:net").createServer(s => {
 const forgerListener = (path: string, victimPid: number) => `require("node:net").createServer(s => { s.on("error", () => {}); s.on("data", () => s.end("${victimPid} 0\\n")); }).listen(${JSON.stringify(path)}, () => console.log("ready"));`;
 function probeContext(root: string, name: string, apiPort: number, webPort: number) {
 	const dir = resolve(root, name);
-	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "unused.db"), apiPort, webPort, browserSession: "probe" };
+	return { root, dir, stateFile: resolve(dir, "run.json"), databasePath: resolve(root, "unused.db"), apiPort, webPort, verifierPort: webPort + 1, browserSession: "probe" };
 }
-async function recordRun(ctx: { stateFile: string; databasePath: string; apiPort: number; webPort: number }, api: Record<string, unknown>): Promise<void> {
+async function recordRun(ctx: { stateFile: string; databasePath: string; apiPort: number; webPort: number; verifierPort: number }, api: Record<string, unknown>): Promise<void> {
 	await atomicJson(ctx.stateFile, { api, web: { pid: 0, nonce: ownershipNonce(), port: ctx.webPort },
 		logs: { api: "", web: "" }, databasePath: ctx.databasePath, startedAt: "fixture" });
 }
