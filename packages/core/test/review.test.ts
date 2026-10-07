@@ -124,15 +124,35 @@ test("the arbiter upholding a dispute releases with ARBITER_UPHELD and the paid 
 
 test("the arbiter refunding a dispute refunds ARBITER_REFUND through the existing refund effect", () => {
 	const row = disputedRow();
+	assert.equal(projectJob(row, maya, new Map()).refundReason, null, "no refund is selected before the arbiter answers");
 	const plan = applyJobCommand(row, { type: "ResolveDispute", jobId: row.id, verdict: "REFUND", note: "The contract was not met." }, userFacts(arbiter));
 	if (typeof plan === "string") throw new Error(plan);
 	const state = plan.next.state as Extract<typeof plan.next.state, { status: "VERIFIED" }>;
 	assert.deepEqual(state.review, { phase: "REFUND_PENDING", refund: { reason: "ARBITER_REFUND", selectedAt: now } });
 	assert.deepEqual(plan.effects, [{ kind: "REFUND", jobId: row.id, captureId: "TESTCAPTURE", payee: merchant, amount: 42000 }]);
+	assert.equal(projectJob(plan.next, maya, new Map()).refundReason, "ARBITER_REFUND");
 	const settled = applyJobCommand(plan.next, { type: "RefundSettled", jobId: row.id, refund: refundEvidence }, paypalFacts(later));
 	if (typeof settled === "string") throw new Error(settled);
 	const refunded = settled.next.state as Extract<typeof settled.next.state, { status: "REFUNDED" }>;
 	assert.equal(refunded.reason, "ARBITER_REFUND");
+	const view = projectJob(settled.next, maya, new Map());
+	assert.equal(view.status, "REFUNDED");
+	assert.equal(view.refundReason, "ARBITER_REFUND");
+});
+
+test("the deadline refund serves DELIVERY_DEADLINE while pending and once settled", () => {
+	const row = heldRow();
+	assert.equal(projectJob(row, maya, new Map()).refundReason, null, "a job owing no refund serves none");
+	const due = applyJobCommand(row, { type: "TimerDue", jobId: row.id, expectedWakeAt: wakeAt(row) }, timerFacts(row.contract.deliveryEndsAt));
+	if (typeof due === "string") throw new Error(due);
+	const state = due.next.state as Extract<typeof due.next.state, { status: "IN_PROGRESS" }>;
+	assert.equal(state.attempts.phase, "REFUND_PENDING");
+	assert.equal(projectJob(due.next, maya, new Map()).refundReason, "DELIVERY_DEADLINE");
+	const settled = applyJobCommand(due.next, { type: "RefundSettled", jobId: row.id, refund: refundEvidence }, paypalFacts(later));
+	if (typeof settled === "string") throw new Error(settled);
+	const view = projectJob(settled.next, maya, new Map());
+	assert.equal(view.status, "REFUNDED");
+	assert.equal(view.refundReason, "DELIVERY_DEADLINE");
 });
 
 test("a rework returns the verified work to READY with its history and one slot left", () => {

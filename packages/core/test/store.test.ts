@@ -61,6 +61,37 @@ function storedPaidRow(id: string, releaseAuthority?: unknown) {
 			...(releaseAuthority === undefined ? {} : { releaseAuthority }) } };
 }
 
+/** A raw REFUNDED row as a lane stored it. `reason` is whatever its bytes carry, or absent. */
+function storedRefundedRow(id: string, reason?: unknown) {
+	const at = "2026-10-06T12:00:00.000Z";
+	return { id, version: 4, client: "maya-client", title: "stored refunded row", openedAt: at,
+		contract: { budget: 40000, deliveryEndsAt: "2026-10-13T12:00:00.000Z" },
+		bids: [],
+		state: { status: "REFUNDED",
+			payee: { bidId: "bid_store", operator: "devon-ops", payee: "MERCHANT", agent: "ts-bugfixer", price: 40000, eta: 48 },
+			book: [],
+			...(reason === undefined ? {} : { reason }),
+			refund: { refundId: "REFUND1", captureId: "CAPTURE", refunded: 42000, retainedProcessorFee: 1515, at },
+			history: [],
+			treasury: [] } };
+}
+
+/** A raw IN_PROGRESS row holding a refund intent. `reason` is whatever the intent's bytes carry, or absent. */
+function storedRefundPendingRow(id: string, reason?: unknown) {
+	const at = "2026-10-06T12:00:00.000Z";
+	return { id, version: 5, client: "maya-client", title: "stored refund pending row", openedAt: at,
+		contract: { budget: 40000, deliveryEndsAt: "2026-10-13T12:00:00.000Z" },
+		bids: [],
+		state: { status: "IN_PROGRESS",
+			escrow: { payee: { bidId: "bid_store", operator: "devon-ops", payee: "MERCHANT", agent: "ts-bugfixer", price: 40000, eta: 48 },
+				quote: { split: { held: 42000, fee: 6000, operatorNet: 36000, predictedProcessorFee: 1515 }, platformFeeInstruction: 4485, version: "test" },
+				capture: { orderId: "ORDER", captureId: "CAPTURE", payee: "MERCHANT", disbursement: "DELAYED", gross: 42000, processorFee: 1515,
+					platformFee: 4485, sellerNet: 36000, capturedAt: at },
+				book: [], cutoffAt: "2026-10-27T12:00:00.000Z" },
+			attempts: { phase: "REFUND_PENDING", history: [],
+				refund: { ...(reason === undefined ? {} : { reason }), selectedAt: at } } } };
+}
+
 test("a PAID row's release authority reads as one of the five, or null", async () => {
 	const store = new SqliteStore(":memory:");
 	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
@@ -84,5 +115,48 @@ test("a PAID row's release authority reads as one of the five, or null", async (
 		if (known?.state.status !== "PAID") throw new Error("Missing the stored paid row");
 		assert.equal(known.state.releaseAuthority, "REVIEW_SILENCE");
 		assert.equal(projectJob(known, maya, new Map()).releaseAuthority, "REVIEW_SILENCE");
+	} finally { store.close(); }
+});
+
+test("a refund reason reads as one of the five, or null", async () => {
+	const store = new SqliteStore(":memory:");
+	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
+	try {
+		for (const [id, reason] of [["job_refunded_missing", undefined], ["job_refunded_unknown", "NOT_A_REASON"], ["job_refunded_reason", "DELIVERY_DEADLINE"]] as const) {
+			const row = storedRefundedRow(id, reason);
+			store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(id, row.version, JSON.stringify(row), null);
+		}
+		for (const [id, reason] of [["job_pending_missing", undefined], ["job_pending_unknown", "NOT_A_REASON"], ["job_pending_reason", "ARBITER_REFUND"]] as const) {
+			const row = storedRefundPendingRow(id, reason);
+			store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(id, row.version, JSON.stringify(row), null);
+		}
+		// The bytes a lane stored before the reason was recorded name none at all: the settled row and
+		// the pending intent both read as the typed null, and the view serves null with them.
+		const missing = await store.readJob("job_refunded_missing" as JobId);
+		if (missing?.state.status !== "REFUNDED") throw new Error("Missing the stored refunded row");
+		assert.equal(missing.state.reason, null);
+		assert.equal(projectJob(missing, maya, new Map()).refundReason, null);
+		const pendingMissing = await store.readJob("job_pending_missing" as JobId);
+		if (pendingMissing?.state.status !== "IN_PROGRESS" || pendingMissing.state.attempts.phase !== "REFUND_PENDING") throw new Error("Missing the stored pending row");
+		assert.equal(pendingMissing.state.attempts.refund.reason, null);
+		assert.equal(projectJob(pendingMissing, maya, new Map()).refundReason, null);
+		// A reason outside the domain's five is not a stored fact either: it reads as null too.
+		const unknown = await store.readJob("job_refunded_unknown" as JobId);
+		if (unknown?.state.status !== "REFUNDED") throw new Error("Missing the stored refunded row");
+		assert.equal(unknown.state.reason, null);
+		assert.equal(projectJob(unknown, maya, new Map()).refundReason, null);
+		const pendingUnknown = await store.readJob("job_pending_unknown" as JobId);
+		if (pendingUnknown?.state.status !== "IN_PROGRESS" || pendingUnknown.state.attempts.phase !== "REFUND_PENDING") throw new Error("Missing the stored pending row");
+		assert.equal(pendingUnknown.state.attempts.refund.reason, null);
+		assert.equal(projectJob(pendingUnknown, maya, new Map()).refundReason, null);
+		// A known reason stays what the row recorded, pending and settled.
+		const known = await store.readJob("job_refunded_reason" as JobId);
+		if (known?.state.status !== "REFUNDED") throw new Error("Missing the stored refunded row");
+		assert.equal(known.state.reason, "DELIVERY_DEADLINE");
+		assert.equal(projectJob(known, maya, new Map()).refundReason, "DELIVERY_DEADLINE");
+		const pendingKnown = await store.readJob("job_pending_reason" as JobId);
+		if (pendingKnown?.state.status !== "IN_PROGRESS" || pendingKnown.state.attempts.phase !== "REFUND_PENDING") throw new Error("Missing the stored pending row");
+		assert.equal(pendingKnown.state.attempts.refund.reason, "ARBITER_REFUND");
+		assert.equal(projectJob(pendingKnown, maya, new Map()).refundReason, "ARBITER_REFUND");
 	} finally { store.close(); }
 });
