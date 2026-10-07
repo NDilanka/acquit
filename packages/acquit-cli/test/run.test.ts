@@ -17,7 +17,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 	renderFinished, renderPreparing, renderRunning, runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, seedCommitIdentity, signalGuard,
 	submissionCommit } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
-import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, gitGuardArgs, writeWorkTreeMarker } from "../src/gitstate.ts";
+import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
@@ -513,6 +513,51 @@ test("a push refuses state config the CLI did not write, and never runs a hook i
 		assert.equal(git(["--git-dir", state, "config", "--local", "url.https://evil.example/.insteadOf", bare]).status, 0);
 		assert.throws(() => pushWork(git, checkout, bare, commit!, process.env),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("url.https://evil.example/.insteadof"));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a planted pushInsteadOf is refused, and the decoy it names never receives the push", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-pushinstead-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const work = join(root, "work");
+		const checkout = { gitDir: state, workTree: work };
+		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
+		const commit = submissionCommit(git, checkout, frozen, "fix", process.env);
+		assert.notEqual(commit, null);
+		// A real rewrite to a real decoy: pushing to the bare path would land in the decoy instead.
+		const decoy = join(root, "decoy.git");
+		assert.equal(spawnSync("git", ["init", "--bare", "--quiet", decoy]).status, 0);
+		assert.equal(git(["--git-dir", state, "config", "--local", `url.${decoy}.pushInsteadOf`, bare]).status, 0);
+		assert.throws(() => pushWork(git, checkout, bare, commit!, process.env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("pushinsteadof"));
+		assert.equal(spawnSync("git", ["--git-dir", decoy, "for-each-ref"], { encoding: "utf8" }).stdout.trim(), "");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a state gitdir remote URL off github is unsafe config; the clone's own origin and a github URL are not", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-remote-url-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const work = join(root, "work");
+		const checkout = { gitDir: state, workTree: work };
+		prepareWorkRepo(git, checkout, bare, frozen, process.env);
+		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
+		const commit = submissionCommit(git, checkout, frozen, "fix", process.env);
+		assert.notEqual(commit, null);
+		// The clone's own origin is the fixture's local bare path: no host, so no host to steer to.
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env), []);
+		// A remote the CLI did not write that names github.com is the shape the CLI itself writes.
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.url", "https://github.com/acquit-forks/invoice-app-7q2k.git"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env), []);
+		// Any other host could carry the scoped push somewhere the job's work repo is not.
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.evil.url", "https://evil.example/invoice-app-7q2k.git"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, state, process.env), ["remote.evil.url"]);
+		assert.throws(() => pushWork(git, checkout, bare, commit!, process.env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.evil.url"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 

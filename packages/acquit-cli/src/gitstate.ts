@@ -133,12 +133,30 @@ export function unsafeGitConfigKeys(git: GitProbe, gitDir: string, env: NodeJS.P
 	const unsafe = new Set<string>();
 	for (const record of listed.stdout.split("\0")) {
 		if (record === "") continue;
-		const key = (record.split("\n", 1)[0] ?? "").trim().toLowerCase();
-		if (/^url\..+\.insteadof$/.test(key) || /\.pushurl$/.test(key) || /^core\.sshcommand$/.test(key)
-			|| /^core\.hookspath$/.test(key) || /^core\.fsmonitor$/.test(key) || /^credential(\.|$)/.test(key)
-			|| /^include(\.|$)/.test(key) || /^includeif\./.test(key)) unsafe.add(key);
+		// `--list -z` writes `key\nvalue\0`, so the value of a remote URL is here to read, never print.
+		const newline = record.indexOf("\n");
+		const key = (newline === -1 ? record : record.slice(0, newline)).trim().toLowerCase();
+		const value = newline === -1 ? "" : record.slice(newline + 1).trim();
+		// `pushInsteadOf` rewrites a push to the URL the command names, exactly as `insteadOf` does.
+		if (/^url\..+\.(push)?insteadof$/.test(key) || /\.pushurl$/.test(key)
+			|| (/^remote\..+\.url$/.test(key) && remoteOffGithub(value))
+			|| /^core\.sshcommand$/.test(key) || /^core\.hookspath$/.test(key) || /^core\.fsmonitor$/.test(key)
+			|| /^credential(\.|$)/.test(key) || /^include(\.|$)/.test(key) || /^includeif\./.test(key)) unsafe.add(key);
 	}
 	return [...unsafe].sort();
+}
+
+/** Whether a configured remote URL names a host that is not github.com. Only a github.com URL can be
+ * the job's work repo; a local path names no host and carries no credential, so it is left alone. */
+function remoteOffGithub(value: string): boolean {
+	const scp = /^[^/@\s]+@([^/:\s]+):/.exec(value);
+	let host = scp?.[1] ?? "";
+	if (scp === null) {
+		try { host = new URL(value).hostname; } catch { host = ""; }
+	}
+	if (host === "") return false;
+	const name = host.toLowerCase();
+	return name !== "github.com" && !name.endsWith(".github.com");
 }
 
 /** Refuses a push whose destination or credential path could be steered by config the CLI did not write. */
