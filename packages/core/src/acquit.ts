@@ -6,7 +6,7 @@ import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobProjection, JobStatus, Receipt, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobStatus, Receipt, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
@@ -135,17 +135,23 @@ export type AcquitConfig = {
 	readonly github: { readonly appId: string; readonly privateKey: string; readonly organization: string; readonly apiBase?: string };
 	/** The deployment injects the CI adapter. Without one, a start refuses by name and no callback is accepted. */
 	readonly verifierPort?: VerifierPort;
+	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
+	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
 	const store = new SqliteStore(config.databaseUrl, clock);
-	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	const github = createGitHubApp(config.github);
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		clientRepository: config.clientRepository ?? DEMO_CLIENT_REPOSITORY,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
-		github: { merge: unimplemented }, alerts: { raise: unimplemented },
-		workRepo: createGitHubApp(config.github),
+		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,
+			pullRequest: effect.pullRequest, mergeCommit: effect.mergeCommit }, requestId) },
+		// An alert nobody receives is lost. Without an operator-supplied sink it goes to the process log,
+		// where the deployment's own log handling is the record.
+		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
+		workRepo: github,
 		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {

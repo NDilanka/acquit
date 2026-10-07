@@ -91,6 +91,8 @@ function parseCommand(value: unknown): UserCommand {
 		PlaceBid: ["type", "jobId", "price", "eta", "agent", "pitch"],
 		AcceptBid: ["type", "jobId", "bidId"], CancelJob: ["type", "jobId"],
 		Submit: ["type", "jobId", "sourceCommit"],
+		// The client approves the tree the verifier judged, so the command names the commit.
+		Approve: ["type", "jobId", "mergeCommit"],
 	};
 	const allowed = typeof command.type === "string" ? keys[command.type] : undefined;
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
@@ -107,6 +109,11 @@ function parseCommand(value: unknown): UserCommand {
 			const sourceCommit = text(command.sourceCommit, "source commit", 64);
 			if (!/^[0-9a-f]{7,64}$/.test(sourceCommit)) throw new BadBody("source commit must be a git object name");
 			return { type: "Submit", jobId: parseJobId(text(command.jobId, "job id")), sourceCommit: sourceCommit as CommitSha };
+		}
+		case "Approve": {
+			const mergeCommit = text(command.mergeCommit, "merge commit", 64);
+			if (!/^[0-9a-f]{7,64}$/.test(mergeCommit)) throw new BadBody("merge commit must be a git object name");
+			return { type: "Approve", jobId: parseJobId(text(command.jobId, "job id")), mergeCommit: mergeCommit as CommitSha };
 		}
 		default: throw new BadBody("Unsupported command");
 	}

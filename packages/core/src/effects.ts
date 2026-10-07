@@ -145,7 +145,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const previous = await ports.store.readRequest(actorKey, key);
 		if (previous) return previous.payloadDigest === payloadDigest ? { kind: "REPLAY", result: previous.result }
 			: { kind: "DENIED", reason: "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" };
-		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit"].includes(command.type)) throw new Error("not implemented");
+		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit", "Approve"].includes(command.type)) throw new Error("not implemented");
 		const row = "jobId" in command ? await ports.store.readJob(command.jobId) : null;
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
@@ -400,7 +400,18 @@ async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<Jo
 	}
 	let outcome: "MERGED" | "UNKNOWN" | "CONFLICT";
 	try { outcome = await ports.github.merge(effect, providerRequestId(key)); }
-	catch { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
+	catch (error) {
+		if (error instanceof GitHubAppNotConfigured) {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
+			return "WORKED";
+		}
+		if (error instanceof GitHubAppError && githubDisposition(error).kind === "NEEDS_HUMAN") {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: error.code, detail: boundedDetail(error.message) });
+			return "WORKED";
+		}
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		return "WORKED";
+	}
 	if (outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
 	// A conflict is not retried: the row names it and a person resolves it.
 	const progress: MergeProgress = outcome === "MERGED" ? { phase: "MERGED", at: now } : { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };

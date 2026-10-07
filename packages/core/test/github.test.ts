@@ -45,7 +45,8 @@ async function refusal(work: Promise<unknown>): Promise<Refusal> {
 
 type StubRepo = { full_name: string; name: string; owner: string; default_branch: string; fork: boolean;
 	parent: { full_name: string } | null };
-type StubPull = { number: number; head: string; branch: string; state: string; title: string; body: string };
+type StubPull = { number: number; head: string; branch: string; state: string; title: string; body: string;
+	merged: boolean; merge_commit_sha: string | null };
 type StubCheck = { repo: string; id: number; name: string; head_sha: string; external_id: string | null; html_url: string };
 type StubRequest = { readonly method: string; readonly path: string; readonly authorization: string };
 type StubRefusal = { readonly method: string; readonly path: string; readonly status: number; readonly message: string;
@@ -220,9 +221,35 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 				{ message: "Validation Failed", errors: [{ message: `A pull request already exists for ${head}` }] });
 			const branch = head.includes(":") ? head.split(":")[1]! : head;
 			const number = 100 + state.pulls.length;
-			state.pulls.push({ number, head, branch: repository, state: "open", title: String(body.title), body: String(body.body ?? "") });
+			state.pulls.push({ number, head, branch: repository, state: "open", title: String(body.title), body: String(body.body ?? ""),
+				merged: false, merge_commit_sha: null });
 			return json(response, 201, { number, state: "open", title: String(body.title), body: String(body.body ?? ""),
 				head: { label: head, ref: branch, sha: state.refs.get(`${repository}:${branch}`) ?? "" }, base: { ref: String(body.base) } });
+		}
+		const pullNumber = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/);
+		if (method === "GET" && pullNumber) {
+			const pull = state.pulls.find(item => item.number === Number(pullNumber[1]) && item.branch === repository);
+			if (!pull) return json(response, 404, { message: "Not Found" });
+			return json(response, 200, { number: pull.number, state: pull.state, title: pull.title, merged: pull.merged,
+				merge_commit_sha: pull.merge_commit_sha,
+				head: { label: pull.head, ref: pull.head.split(":").at(-1), sha: state.refs.get(`${repository}:${pull.head.split(":").at(-1)}`) ?? "" },
+				base: { ref: "main" } });
+		}
+		const mergePull = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/merge$/);
+		if (method === "PUT" && mergePull) {
+			const pull = state.pulls.find(item => item.number === Number(mergePull[1]) && item.branch === repository);
+			if (!pull) return json(response, 404, { message: "Not Found" });
+			// The live API answers 405 for a pull request it will not merge again.
+			if (pull.merged) return json(response, 405, { message: "Pull Request is not mergeable" });
+			if (pull.state !== "open") return json(response, 405, { message: "Pull Request is not mergeable" });
+			// A merge that names another sha than the head is refused: the caller has to look again.
+			const headSha = state.refs.get(`${repository}:${pull.head.split(":").at(-1)}`) ?? "";
+			if (typeof body.sha === "string" && body.sha !== headSha) return json(response, 409,
+				{ message: "Head branch was modified. Review and try the merge again." });
+			pull.merged = true;
+			pull.state = "closed";
+			pull.merge_commit_sha = typeof body.sha === "string" ? body.sha : FROZEN;
+			return json(response, 200, { sha: pull.merge_commit_sha, merged: true, message: "Pull Request successfully merged" });
 		}
 		if (method === "GET" && segments.length === 6 && segments[3] === "commits" && segments[5] === "check-runs") {
 			const sha = segments[4];
@@ -312,6 +339,19 @@ for (const harness of HARNESSES) {
 		assert.ok(published.pullRequest > 0);
 		assert.notEqual(published.checkRunUrl, null);
 		assert.deepEqual(await app.port.publishVerified(publishRequest, "req-2"), published);
+	});
+
+	test(`the judged tree merges once and a retry adopts the merge (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const published = await app.port.publishVerified(publishRequest, "req-1");
+		const request = { jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest, mergeCommit: published.mergeCommit };
+		assert.equal(await app.port.merge(request, "req-2"), "MERGED");
+		// GitHub refuses a second merge of the same pull request. The client reads the pull and reports the
+		// merge that already landed instead of failing, which is what makes the outbox retry safe.
+		assert.equal(await app.port.merge(request, "req-3"), "MERGED");
+		// A pull request that names another tree is not this job's artifact: a person has to look.
+		assert.equal(await app.port.merge({ ...request, mergeCommit: HEAD as CommitSha }, "req-4"), "CONFLICT");
 	});
 
 	test(`two jobs on one client repo get their own work repo and pull request (${harness.name})`, async t => {
@@ -457,6 +497,20 @@ test("a 422 from the pull request POST carries GitHub's own message into the ref
 	assert.equal(failure.code, "GITHUB_HTTP_ERROR");
 	assert.equal(failure.status, 422);
 	assert.match(failure.detail, /Validation Failed/);
+});
+
+test("a pull request whose head moved is never merged, and the refusal is a conflict", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const published = await port.publishVerified(publishRequest, "req-1");
+	// The head moves after the verdict. GitHub refuses a merge that names another sha, and the client
+	// reads the pull once more rather than merging whatever is there now.
+	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, SUBMITTED);
+	const request = { jobId: JOB, repository: CLIENT, pullRequest: published.pullRequest, mergeCommit: published.mergeCommit };
+	assert.equal(await port.merge(request, "req-2"), "CONFLICT");
+	assert.equal(stub.state.pulls.at(0)?.merged, false);
+	// The moved head is still not merged, and the client says the same thing when asked again.
+	assert.equal(await port.merge(request, "req-3"), "CONFLICT");
 });
 
 test("an existing verified branch at another commit is moved to the judged commit", async t => {
@@ -731,7 +785,7 @@ test("a duplicate-ref 422 adopts the ref and never opens a second pull request",
 	// The winner of the race already created the branch on the client repo and opened its pull request.
 	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, SUBMITTED);
 	stub.state.pulls.push({ number: 500, head: `${CLIENT_OWNER}:acquit/${JOB}`, branch: CLIENT, state: "open",
-		title: `Acquit verifier: ${JOB}`, body: "" });
+		title: `Acquit verifier: ${JOB}`, body: "", merged: false, merge_commit_sha: null });
 	// The loser read the ref before the winner created it, so its create answers the duplicate-ref 422.
 	stub.refuse({ method: "GET", path: `/repos/${CLIENT}/git/ref/heads/acquit/${JOB}`, status: 404, message: "Not Found", once: true });
 	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/git/refs`, status: 422, message: "Reference already exists", once: true });
@@ -749,7 +803,7 @@ test("a duplicate-ref 409 adopts the ref the same way", async t => {
 	stub.state.commits.get(CLIENT)?.add(SUBMITTED);
 	stub.state.refs.set(`${CLIENT}:acquit/${JOB}`, SUBMITTED);
 	stub.state.pulls.push({ number: 500, head: `${CLIENT_OWNER}:acquit/${JOB}`, branch: CLIENT, state: "open",
-		title: `Acquit verifier: ${JOB}`, body: "" });
+		title: `Acquit verifier: ${JOB}`, body: "", merged: false, merge_commit_sha: null });
 	stub.refuse({ method: "GET", path: `/repos/${CLIENT}/git/ref/heads/acquit/${JOB}`, status: 404, message: "Not Found", once: true });
 	stub.refuse({ method: "POST", path: `/repos/${CLIENT}/git/refs`, status: 409, message: "Reference already exists", once: true });
 	const published = await port.publishVerified({ ...publishRequest, sourceCommit: SUBMITTED as CommitSha }, "req-2");

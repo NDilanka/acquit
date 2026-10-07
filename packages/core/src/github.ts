@@ -100,6 +100,26 @@ export interface PublisherPort {
 	publishVerified(request: PublishRequest, requestId: string): Promise<PublishedPullRequest>;
 }
 
+export type MergeRequest = {
+	readonly jobId: JobId;
+	/** The repository that holds the pull request: the client's, as the contract froze it. */
+	readonly repository: string;
+	readonly pullRequest: number;
+	/** The tree the verifier judged. The merge names it, so a moved head is refused instead of merged. */
+	readonly mergeCommit: CommitSha;
+};
+
+export type MergeOutcome = "MERGED" | "UNKNOWN" | "CONFLICT";
+
+/** What the money path's MERGE effect needs. */
+export interface MergerPort {
+	/**
+	 * Idempotent per pull request: a retry reads the pull and adopts a merge that already landed. CONFLICT
+	 * is a merge this client will not make, which a person resolves; a transient refusal is thrown.
+	 */
+	merge(request: MergeRequest, requestId: string): Promise<MergeOutcome>;
+}
+
 /**
  * What a caller outside this client's own operations needs: one installation token per owner, minted
  * with the same bounded, redacted, rate-limit-aware calls. The verifier's git fetch is that caller.
@@ -108,7 +128,7 @@ export interface TokenPort {
 	installationToken(owner: string): Promise<string>;
 }
 
-export interface GitHubAppPort extends WorkRepoPort, PublisherPort, TokenPort {}
+export interface GitHubAppPort extends WorkRepoPort, PublisherPort, MergerPort, TokenPort {}
 
 /** Boundary parse. A partial config is not an error here; it selects the fail-fast adapter. */
 export function parseGitHubAppConfig(input: GitHubAppConfigInput | undefined): GitHubAppConfig | null {
@@ -133,7 +153,7 @@ export function missingGitHubNames(input: GitHubAppConfigInput | undefined): rea
 /** Every call refuses immediately. It never starts a request it cannot authenticate. */
 export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({}).join(", ")}.`): GitHubAppPort {
 	const fail = (): never => { throw new GitHubAppNotConfigured(detail); };
-	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), installationToken: async () => fail() };
+	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), merge: async () => fail(), installationToken: async () => fail() };
 }
 
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
@@ -570,14 +590,52 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	// The port carries a request id. Every operation above is idempotent on the repository, ref, pull,
 	// and the check run's external id, which is what GitHub gives this client to reconcile with, so
 	// nothing else is needed.
+	/**
+	 * Merges the pull request the verifier opened. The pull is read first, so a merge that already landed
+	 * is adopted rather than attempted again, and the merge names the judged commit so a head that moved
+	 * is refused by GitHub instead of merged.
+	 */
+	const merge = async (request: MergeRequest): Promise<MergeOutcome> => {
+		const client = splitRepository(request.repository);
+		const commit = checkedCommit(request.mergeCommit);
+		if (!Number.isSafeInteger(request.pullRequest) || request.pullRequest <= 0) invalid("The pull request", request.pullRequest);
+		const token = await tokenFor(client.owner);
+		const read = async (): Promise<{ readonly merged: boolean; readonly sha: string | null; readonly state: string | null }> => {
+			const answer = await call(`Bearer ${token}`, { method: "GET", path: `/repos/${request.repository}/pulls/${request.pullRequest}`,
+				allow: [200], permission: "pull_requests: read" });
+			const body = answer.body as { readonly merged?: unknown; readonly merge_commit_sha?: unknown; readonly state?: unknown } | null;
+			return { merged: body?.merged === true, sha: typeof body?.merge_commit_sha === "string" ? body.merge_commit_sha : null,
+				state: typeof body?.state === "string" ? body.state : null };
+		};
+		const settled = (pull: { readonly merged: boolean; readonly sha: string | null }): MergeOutcome | null =>
+			pull.merged ? pull.sha === commit ? "MERGED" : "CONFLICT" : null;
+		const before = await read();
+		const already = settled(before);
+		if (already !== null) return already;
+		if (before.state !== "open") return "CONFLICT";
+		try {
+			await call(`Bearer ${token}`, { method: "PUT", path: `/repos/${request.repository}/pulls/${request.pullRequest}/merge`,
+				allow: [200], permission: "contents: write", body: { sha: commit, merge_method: "merge" } });
+			return "MERGED";
+		} catch (error) {
+			// GitHub refuses a merge it will not make. A concurrent writer may have merged it first, so the
+			// pull is read once more; anything else that is not a refusal of this merge stays transient.
+			const after = await read().catch(() => null);
+			const raced = after === null ? null : settled(after);
+			if (raced !== null) return raced;
+			if (error instanceof GitHubAppError && [405, 409, 422].includes(error.status ?? 0)) return "CONFLICT";
+			throw error;
+		}
+	};
 	return {
 		async createWorkRepo(request) { return createWorkRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
+		async merge(request) { return merge(request); },
 		async installationToken(owner) { return tokenFor(checkedOwner(owner)); },
 	};
 }
 
-export type GitHubCall = { readonly kind: "CREATE_WORK_REPO" | "PUBLISH_VERIFIED"; readonly jobId: JobId; readonly requestId: string };
+export type GitHubCall = { readonly kind: "CREATE_WORK_REPO" | "PUBLISH_VERIFIED" | "MERGE"; readonly jobId: JobId; readonly requestId: string };
 
 export type FakeGitHubApp = GitHubAppPort & {
 	readonly calls: readonly GitHubCall[];
@@ -613,6 +671,14 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 				mergeCommit: request.sourceCommit, checkRunUrl: `https://github.com/${request.repository}/runs/${request.jobId}` };
 			pullRequests.set(request.jobId, published);
 			return published;
+		},
+		async merge(request, requestId) {
+			calls.push({ kind: "MERGE", jobId: request.jobId, requestId });
+			const published = pullRequests.get(request.jobId);
+			if (!published) return "CONFLICT";
+			// The same rule the real client applies: only the judged tree merges, and only once.
+			if (published.pullRequest !== request.pullRequest) return "CONFLICT";
+			return published.mergeCommit === request.mergeCommit ? "MERGED" : "CONFLICT";
 		},
 	};
 }

@@ -47,6 +47,10 @@ Commands the skeleton must support:
 | OPERATOR | `{ type: "PlaceBid", jobId, price: 40000, eta: 48, agent, pitch }` (price must be <= budget) |
 | CLIENT | `{ type: "AcceptBid", jobId, bidId }` |
 | CLIENT | `{ type: "CancelJob", jobId }` |
+| OPERATOR | `{ type: "Submit", jobId, sourceCommit }` |
+| CLIENT | `{ type: "Approve", jobId, mergeCommit }` |
+
+`Approve` names the commit the verifier judged, which `GET /api/jobs/:id` serves as `job.mergeCommit`. A different commit is refused `ARTIFACT_CHANGED`; a job whose review window closed is refused `REVIEW_CLOSED`; the operator who did the work is refused `NOT_OWNER`. The approval selects one release and the job enters `RELEASE_PENDING`. The API drains that release inline with a short bound, so the response usually still shows `VERIFIED` with `phase: "RELEASE_PENDING"` and the job reaches `PAID` once PayPal answers. Approving twice with one request key replays the first result; a second approval is refused `REVIEW_CLOSED`.
 
 `OpenJob` returns `PublicResult` kind `JOB`, so the new job id is `outcome.result.job.id`. The seeded House operator `house-tsfix` (agent `house-ts-fixer`) places one House bid at the budget with eta 24 right after `OpenJob` commits, so the client sees two bids once `devon-ops` bids.
 
@@ -73,6 +77,12 @@ Clients see their own jobs and every OPEN job. A query refusal is `403` or `404`
 When capture completes the job is `IN_PROGRESS`, `escrow: "HELD"`, and `ledger` is `[{ kind: "HELD", cents: 42000, at }]`.
 
 Webhooks are not reachable on localhost, so the skeleton relies on the return route plus `POST /api/dev/tick` (fires `Acquit.tick`, dev only). `POST /paypal/webhook` exists and calls `handlePayPalWebhook`, for later.
+
+## Settlement
+
+`Approve` (or the review window closing, or the day-21 capture-age cutoff for verified work) selects a release. The outbox pays the operator's merchant through PayPal's referenced payouts with the deterministic effect key as `PayPal-Request-Id`, re-reads the provider when an answer was lost, and applies `ReleaseSettled` with what the payout observed. The job then shows `status: "PAID"`, `escrow: "RELEASED"`, the three-line ledger (`HELD`, `RELEASED`, `FEE`), and a `receipt` with the frozen and hidden tallies and the paid amount. `GET /api/jobs/:id` serves the receipt as `job.receipt`; the merge of the verified pull request is a separate effect and `job.phase` stays `PAID` when it lands.
+
+A refund (delivery deadline, exhausted attempts, capture mismatch, or the cutoff on unverified work) shows `status: "REFUNDED"`, `escrow: "REFUNDED"`, and the two-line ledger (`HELD`, `REFUND`). The retained PayPal fee is a treasury line, and the platform pays it back to the operator's merchant as a Standard Payout whose `sender_batch_id` is the effect key. A settlement the provider has not confirmed at the day-21 cutoff raises `SETTLEMENT_UNCONFIRMED_AT_CUTOFF` instead of switching dispositions.
 
 ## Development controls
 
