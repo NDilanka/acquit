@@ -603,7 +603,9 @@ async function finish(ports: Ports, delivery: Delivery, outcome: WebhookOutcome,
 	const text = webhookOutcomeText(outcome);
 	await ports.store.recordWebhookEvent({ id: delivery.deliveryId, eventType: delivery.eventType, resourceType: delivery.resourceType,
 		resourceId: delivery.resourceId, receivedAt: ports.clock.now(), outcome: text });
-	console.log(`paypal webhook ${delivery.deliveryId} ${text}${detail === undefined ? "" : ` (${detail})`}`);
+	// The id and the detail are provider bytes. JSON.stringify keeps a newline in them from splitting
+	// the log line into a forged second entry.
+	console.log(`paypal webhook ${JSON.stringify(delivery.deliveryId)} ${text}${detail === undefined ? "" : ` (${JSON.stringify(detail)})`}`);
 	return Response.json({ received: status < 400 }, { status });
 }
 

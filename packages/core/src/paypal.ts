@@ -493,6 +493,9 @@ const TERMINAL_PAYOUT_FAILURES: readonly string[] = ["FAILED", "DENIED", "CANCEL
 /** The largest delivery the boundary will read. PayPal's own event bodies are a few KB. */
 const WEBHOOK_BODY_BYTES = 65_536;
 
+/** The longest envelope field the boundary records. PayPal's own ids run tens of characters. */
+const WEBHOOK_FIELD_CHARS = 200;
+
 /**
  * PayPal names the resource family in `resource_type` and the event in `event_type`. The refund family
  * is read first because a refund event shares capture's `PAYMENT.CAPTURE.` prefix.
@@ -521,6 +524,10 @@ export function parseWebhookEnvelope(raw: string): WebhookEnvelope {
 	const resourceId = resource === null ? "" : routed(() => text(resource.id).trim()) ?? "";
 	if (!deliveryId || !eventType || !resourceId) return unreadable("The body is not a PayPal event envelope.");
 	const resourceType = routed(() => text(body.resource_type).trim().toLowerCase()) ?? "";
+	// Nothing bounds these fields but this check: an over-long one would land in the delivery row and
+	// the route log, so the boundary refuses it as it refuses any body that is not an envelope.
+	if ([deliveryId, eventType, resourceType, resourceId].some(field => field.length > WEBHOOK_FIELD_CHARS))
+		return unreadable(`An envelope field exceeds ${WEBHOOK_FIELD_CHARS} characters.`);
 	const named = webhookResource(resourceType, eventType.toUpperCase(), resourceId);
 	return named === null ? { kind: "UNROUTED", deliveryId, eventType, resourceType, resourceId }
 		: { kind: "DELIVERY", deliveryId, eventType, resourceType, resourceId, resource: named };
