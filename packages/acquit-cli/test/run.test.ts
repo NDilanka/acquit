@@ -517,6 +517,18 @@ test("a state git directory with no recorded work tree is refused by name", () =
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a --dir that is a regular file is refused as DIR_NOT_WORK_REPO, never as an ENOTDIR stack", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-file-dir-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const state = stateGitDir("job_7Q2K", { XDG_STATE_HOME: join(root, "state-home") });
+		const file = join(root, "notes.txt");
+		writeFileSync(file, "not a checkout\n");
+		assert.throws(() => prepareWorkRepo(git, { gitDir: state, workTree: file }, bare, frozen, process.env),
+			(error: CliError) => error.code === "DIR_NOT_WORK_REPO" && error.message.includes("not a directory"));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("the operator's global git identity is copied into the state git directory, not read from it", () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-identity-"));
 	try {

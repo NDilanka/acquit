@@ -285,6 +285,12 @@ export function ensureEmptyWorkTreeGitShadow(workTree: string): void {
  */
 export function prepareWorkRepo(git: GitRun, checkout: JobCheckout, url: string, frozen: CommitSha, env: NodeJS.ProcessEnv): void {
 	const { gitDir, workTree } = checkout;
+	// A --dir that is a regular file (or a link to one) can never be the checkout; refuse it here,
+	// where a later readdir would otherwise surface a raw ENOTDIR stack.
+	const entry = statSync(workTree, { throwIfNoEntry: false });
+	if (entry !== undefined && !entry.isDirectory()) {
+		throw new CliError("DIR_NOT_WORK_REPO", `${workTree} is not a directory. Pass --dir with a directory path (an empty one is cloned afresh).`);
+	}
 	if (existsSync(gitDir)) {
 		const recorded = recordedWorkTree(gitDir);
 		if (recorded === null) {
