@@ -12,7 +12,7 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | gf-skeleton | Build the walking skeleton | done | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | done | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | done | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
-| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, and F2 merged on 2026-10-07 (#1 to #4, #6). F4 is next. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
+| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, F2, and F4 merged on 2026-10-07 (#1 to #4, #6, #8). F5 is next. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
 | Step 8 (id not printed) | Open the PR, babysit, ship | in progress. The root lands PRs since 2026-10-07. | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
 | Step 9 (id not printed) | Maintain the verification skill | pending | Daily from 2026-10-23 | A daily run reports `clean`, `changed`, or `blocked`. |
 
@@ -407,6 +407,9 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-07 | F2 passed its gate and landed as #6. Approve to PAID median 1.7 seconds, webhook route median 25 ms excluding PayPal. All 10 lanes passed on disposable client repos. | The plan's rules are 20 seconds and 500 ms. An approving lane merges into its client repo, so each lane used its own `NDilanka/invoice-app-<tag>` and `NDilanka/invoice-app` stayed frozen. | https://github.com/NDilanka/acquit/pull/6 |
 | 2026-10-07 | Dev card funding pays the operator 363.78 USD, not 360.00, and a refund reimburses 11.37 USD, not 15.15. | PayPal's observed card fee was 11.37 USD against the predicted 15.15. The book records `PROCESSOR_FEE_VARIANCE` and still sums. A refund's retained fee must equal the capture's recorded fee, or the refund parks for a person. | https://github.com/NDilanka/acquit/pull/6 |
 | 2026-10-07 | The webhook route stores a minimal envelope, never the body, and answers every caller the same `{received}` body. Signature verification is deferred. | The route is unauthenticated, and the bodies carried payer data. The route re-reads every resource from PayPal, so nothing in the body is trusted. | https://github.com/NDilanka/acquit/pull/6 |
+| 2026-10-07 | F4 passed its gate and landed as #8. PlaceBid median 2.3 ms at trunk and head, and `tick` over 200 jobs median 2.2 ms. All 10 lanes passed on disposable client repos. | The plan's rules are 20 percent over trunk and 200 ms. | https://github.com/NDilanka/acquit/pull/8 |
+| 2026-10-07 | The weekly credit grant belongs to the ISO week. The first tick of a week grants once on any day, and a missed week is not back-filled. | Granting on every tick burned the next Monday's key, and granting only on a Monday dropped a whole week when the process was down that day. | https://github.com/NDilanka/acquit/pull/8 |
+| 2026-10-07 | The arbiter's hackathon surface is the dev-only `POST /api/dev/arbiter`, open to any signed-in session when `ACQUIT_DEV=1`. | A real arbiter role and console are out of scope for the hackathon, and the route is off outside dev. | https://github.com/NDilanka/acquit/pull/8 |
 
 ## How to update this doc
 

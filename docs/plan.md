@@ -365,7 +365,7 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 
 - [ ] Implement `Dispute` and `ResolveDispute` in `job.ts`. A dispute pauses the 72-hour clock, and the arbiter has 48 hours.
 - [ ] Extend `TimerDue` in VERIFIED. Review silence releases with authority `REVIEW_SILENCE`. A missed arbiter deadline releases with `ARBITER_SLA_MISSED` and an alert.
-- [ ] Run the weekly grant from `tick` on Monday 00:00 UTC. The allowance is 30 plus 10 per verified receipt, capped at 100.
+- [ ] Run the weekly grant from `tick`. The grant belongs to the ISO week that starts Monday 00:00 UTC: the first tick of a week grants once, on any day, and a missed week is not back-filled. The allowance is 30 plus 10 per paid receipt, capped at 100.
 - [ ] Add a dev-only arbiter route `POST /api/dev/arbiter` that sends `ResolveDispute`, and document it as the arbiter's surface for the hackathon.
 - [ ] Have the `pv-opus-medium` delegate add **Open dispute** and the review deadline to `JobPage.tsx`, and the weekly credit line to `OperatorHome.tsx`.
 
@@ -385,11 +385,11 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 - [ ] Lane 1. Regression lane against trunk. Bid as Devon at trunk and head and read `GET /api/me/credits`. Save `bid-charge.png`. Pass when both show 30 then 20, and at head a client cancel returns Devon to 30.
 - [ ] Lane 2. Bid, then advance the clock 73 hours with no client action. Save `no-response-return.png`. Pass when Devon's credits return to 30.
 - [ ] Lane 3. Verify a job and advance the clock 73 hours. Save `silence-release.png`. Pass when the job shows PAID with authority `REVIEW_SILENCE` and one payout item.
-- [ ] Lane 4. Verify a job, click **Open dispute**, and advance 73 hours. Save `dispute-paused.png`. Pass when the job stays VERIFIED in DISPUTED.
+- [ ] Lane 4. Verify a job, advance 30 hours, click **Open dispute**, and advance 43 more hours. That is past the 72-hour review deadline but inside the arbiter's 48 hours, which a plain 73-hour advance after the dispute would miss. Save `dispute-paused.png`. Pass when the job stays VERIFIED in DISPUTED with escrow held.
 - [ ] Lane 5. Resolve a dispute to release through the arbiter route. Save `arbiter-release.png`. Pass when the job shows PAID.
 - [ ] Lane 6. Resolve a dispute to refund. Save `arbiter-refund.png`. Pass when the job shows REFUNDED with one sandbox refund.
 - [ ] Lane 7. Leave a dispute undecided for 49 hours. Save `arbiter-missed.png`. Pass when the job shows PAID with `ARBITER_SLA_MISSED` and an alert row exists.
-- [ ] Lane 8. With one receipt, advance the clock from Thursday to Monday. Save `weekly-grant.png`. Pass when credits read 30 before Monday and 40 after.
+- [ ] Lane 8. Earn one receipt with a real payment on a Thursday, then advance the clock to Monday. Save `weekly-grant.png`. Pass when no grant lands before Monday, so credits read 30 less the job's 10-credit bid, and Monday grants 40 once.
 - [ ] Lane 9. Seed an operator with eight receipts and advance to Monday. Save `grant-cap.png`. Pass when credits read 100.
 - [ ] Lane 10. Spend all credits, then bid again. Save `no-credits.png`. Pass when the bid form shows a denial that says when credits return, and no bid is added.
 
