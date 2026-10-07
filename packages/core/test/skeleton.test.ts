@@ -1880,6 +1880,27 @@ test("the delivery log escapes an event id that carries a newline", async () => 
 	} finally { console.log = original; f.store.close(); }
 });
 
+test("the delivery log escapes the line separators JSON.stringify leaves raw", async () => {
+	const f = fixture();
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-1\u2028INJECT\u2029END", event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource: { id: "CAPTURE_PAYPAL_NEVER_HAD" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// Both separators are escaped rather than printed: JSON.stringify leaves U+2028 and U+2029 raw,
+		// and both break a line.
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0]?.includes("\u2028"), false);
+		assert.equal(lines[0]?.includes("\u2029"), false);
+		assert.equal(lines[0]?.startsWith('paypal webhook "WH-1\\u2028INJECT\\u2029END"'), true);
+		// The envelope row keeps the id as it arrived: only the log is escaped.
+		assert.equal(recordedOutcome(f.store, "WH-1\u2028INJECT\u2029END"), "refused, PayPal does not know this capture");
+	} finally { console.log = original; f.store.close(); }
+});
+
 test("a delivery body is never stored: payer fields and the raw bytes stay out of the table", async () => {
 	const { f } = await heldFixture();
 	try {
