@@ -1,0 +1,353 @@
+// The F5 operator CLI. Every command's block comes from fixed API replies and is asserted against the
+// matching block in docs/tutorial.md, character for character. The login exchange and the operator
+// surfaces are also driven against a real API on an isolated database, the way packages/ctl does it.
+
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import type { JobProjection } from "../../core/src/job.ts";
+import type { ApiClient, StoredLogin } from "../src/client.ts";
+import { runAgentCreate } from "../src/agent.ts";
+import { parseBidArgs, runBid } from "../src/bid.ts";
+import { runDiff } from "../src/diff.ts";
+import { runJobsList } from "../src/jobs.ts";
+import { linuxKeychain, memoryKeychain } from "../src/keychain.ts";
+import { runLogin } from "../src/login.ts";
+import { runOperatorInit } from "../src/operator.ts";
+import { runReceipts } from "../src/receipts.ts";
+import { renderSubmission } from "../src/submit.ts";
+
+const TUTORIAL = await readFile(fileURLToPath(new URL("../../../docs/tutorial.md", import.meta.url)), "utf8");
+
+/** Every fenced block in docs/tutorial.md, without its fence and without the final newline. */
+function tutorialBlocks(): readonly string[] {
+	return [...TUTORIAL.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map(match => match[1].replace(/\n$/, ""));
+}
+
+/** The one block that starts with the given line. A missing or duplicated block fails the test. */
+function tutorialBlock(startsWith: string): string {
+	const found = tutorialBlocks().filter(block => block.startsWith(startsWith));
+	assert.equal(found.length, 1, `docs/tutorial.md holds ${found.length} blocks starting with ${JSON.stringify(startsWith)}`);
+	return found[0];
+}
+
+const API = "http://api.test";
+
+/** The OPEN BIDDING projection the tutorial's jobs list and bid blocks show. */
+function openJob(overrides: Record<string, unknown> = {}): JobProjection {
+	return {
+		id: "job_7Q2K", title: "Totals round wrong for 3-decimal currencies", status: "OPEN", phase: "BIDDING",
+		budget: 40000, deliveryEndsAt: "2026-11-08T10:00:00.000Z",
+		contract: { repository: "maya-client/invoice-app", frozenAt: "a41c9e2", frozenTests: 48, hiddenTests: 6, protectedPaths: [] },
+		bids: { operators: [], house: null }, lockedTo: null, escrow: "NONE", approveUrl: null, ledger: [],
+		attempts: { used: 0, left: 3, last: null, reasons: [], history: [], pending: null, failure: null },
+		reviewEndsAt: null, pullRequest: null, mergeCommit: null, ...overrides,
+	} as unknown as JobProjection;
+}
+
+const bidView = { id: "bid_7Q2K_1", operator: "devon-ops", handle: "devon-ops", label: "INDEPENDENT", price: 40000, eta: 48,
+	agent: "ts-bugfixer", runner: "claude-code", pitch: "TypeScript currency fix with a dedicated bug-fix agent. Source changes only.",
+	paidReceipts: 0, status: "PENDING" };
+
+type RecordedPost = { readonly path: string; readonly payload: unknown };
+
+/**
+ * A fixed API. `replies` maps a GET path, or `POST <path>`, to the body; an array is consumed in
+ * order and its last element repeats, so a poll can answer PENDING then APPROVED.
+ */
+function fakeClient(replies: Record<string, unknown>, posts: RecordedPost[] = []): ApiClient {
+	const queues = new Map(Object.entries(replies).map(([path, body]) => [path, Array.isArray(body) ? [...body] : [body]]));
+	const take = (path: string): unknown => {
+		const queue = queues.get(path);
+		if (!queue || queue.length === 0) throw new Error(`Unexpected request ${path}`);
+		return queue.length > 1 ? queue.shift() : queue[0];
+	};
+	return {
+		baseUrl: API,
+		async get(path) { return take(path); },
+		async post(path, payload) {
+			posts.push({ path, payload });
+			const answer = take(`POST ${path}`);
+			const status = typeof answer === "object" && answer !== null && "status" in answer
+				? Number((answer as { status: number }).status) : 200;
+			const body = typeof answer === "object" && answer !== null && "body" in answer
+				? (answer as { body: unknown }).body : answer;
+			return { status, body };
+		},
+	};
+}
+
+test("jobs list renders the tutorial's table from a fixed job view", async () => {
+	const client = fakeClient({ "/api/jobs": { jobs: [openJob()], nextCursor: null } });
+	assert.equal(await runJobsList({ apiUrl: API, token: "t" }, { client }), tutorialBlock("ID         MODE"));
+});
+
+test("bid renders the tutorial's block from a fixed PlaceBid answer and parses the tutorial's flags", async () => {
+	const options = parseBidArgs(["job_7Q2K", "--price", "400", "--eta", "2d", "--agent", "ts-bugfixer",
+		"--pitch", bidView.pitch, "--api", API], { ACQUIT_TOKEN: "t" });
+	assert.deepEqual({ jobId: options.jobId, price: options.price, etaHours: options.etaHours, agent: options.agent, pitch: options.pitch },
+		{ jobId: "job_7Q2K", price: 40000, etaHours: 48, agent: "ts-bugfixer", pitch: bidView.pitch });
+	const job = openJob({ bids: { operators: [bidView], house: null } });
+	const posts: RecordedPost[] = [];
+	const client = fakeClient({ "POST /api/commands": { outcome: { kind: "COMMITTED",
+		result: { kind: "BID", job, bid: bidView.id, creditsLeft: 20 } } } }, posts);
+	const rendered = await runBid({ apiUrl: API, token: "t", jobId: options.jobId, price: options.price,
+		etaHours: options.etaHours, agent: options.agent, pitch: options.pitch }, { client });
+	assert.equal(rendered, tutorialBlock("Bid sent on job_7Q2K"));
+	const command = (posts[0].payload as { command: unknown }).command;
+	assert.deepEqual(command, { type: "PlaceBid", jobId: "job_7Q2K", price: 40000, eta: 48, agent: "ts-bugfixer", pitch: bidView.pitch });
+});
+
+test("receipts renders the tutorial's block from the receipt, credit, and profile replies", async () => {
+	const client = fakeClient({
+		"/api/me/receipts": { receipts: [{ id: "rcpt_9F3D", jobId: "job_7Q2K", operator: "devon-ops", agent: "ts-bugfixer",
+			pullRequest: 13, repository: "maya-client/invoice-app", mergeCommit: "5cccb66515313caed72e4af329a62fc011139426",
+			frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, attemptsUsed: 2, paid: 36000,
+			releasedAt: "2026-11-03T15:22:00.000Z" }], nextCursor: null },
+		"/api/me/credits": { credits: { available: 30, weeklyAllowance: 40, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 1 } },
+		"/api/me/operator": { operator: { id: "devon-ops", handle: "devon-ops", label: "INDEPENDENT", payouts: "READY",
+			onboardingUrl: null, paidReceipts: 1 }, agents: [] },
+	});
+	assert.equal(await runReceipts({ apiUrl: API, token: "t" }, { client }), tutorialBlock("rcpt_9F3D"));
+});
+
+test("agent create reads the prompt file and renders the tutorial's block", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-agent-"));
+	try {
+		const prompt = join(dir, "ts-bugfixer.md");
+		const text = "You fix bugs in TypeScript projects.\nRead the issue. Find the cause in the source before you change anything.\n"
+			+ "Change files under src/ only.\nNever edit tests, CI configuration, or package files.\nRun `npm test` before you finish.\n";
+		await writeFile(prompt, text);
+		const posts: RecordedPost[] = [];
+		const client = fakeClient({ "POST /api/me/agents": { agent: { id: "ts-bugfixer", name: "ts-bugfixer", runner: "claude-code",
+			tools: ["Read", "Edit", "Bash"] } } }, posts);
+		const rendered = await runAgentCreate({ apiUrl: API, token: "t", name: "ts-bugfixer", runner: "claude-code",
+			promptPath: "prompts/ts-bugfixer.md", tools: ["Read", "Edit", "Bash"] }, { client, readFile: () => text });
+		assert.equal(rendered, tutorialBlock("Agent ts-bugfixer created"));
+		assert.deepEqual(posts[0].payload, { name: "ts-bugfixer", runner: "claude-code", tools: ["Read", "Edit", "Bash"],
+			promptDigest: createHash("sha256").update(await readFile(prompt, "utf8")).digest("hex") });
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("operator init prints the tutorial's block, stores the provider key in the keychain, and opens the onboarding URL", async () => {
+	const pending = { onboarding: { handle: "devon-ops", payouts: "AWAITING_CONSENT", onboardingUrl: "https://www.paypal.com/onboard/devon",
+		account: null, identityVerified: false, credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const client = fakeClient({ "/api/me/onboarding": [pending, ready] });
+	const key = "k".repeat(28);
+	const keychain = memoryKeychain();
+	const opened: string[] = [];
+	const written: string[] = [];
+	const questions: string[] = [];
+	await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+		client, keychain, open: url => opened.push(url), write: text => written.push(text),
+		ask: async (question, secret) => { questions.push(question); return secret ? key : "anthropic"; },
+		readStdin: () => "", sleep: async () => {}, now: () => 0,
+	});
+	assert.equal(written.join(""), tutorialBlock("1/3 Payouts") + "\n");
+	assert.deepEqual(opened, ["https://www.paypal.com/onboard/devon"]);
+	assert.deepEqual(questions, ["\tProvider (anthropic, openai): ", "\tAPI key: "]);
+	assert.equal(keychain.get("acquit:provider-key"), key);
+	assert.equal(keychain.get("acquit:provider"), "anthropic");
+});
+
+test("the Linux keychain hands the secret to keyctl on stdin, never on argv", () => {
+	const calls: { args: readonly string[]; input: string }[] = [];
+	const run = (command: string, args: readonly string[], input: string) => {
+		calls.push({ args, input });
+		if (args[0] === "search") return { status: 1, stdout: "", stderr: "Required key not available" };
+		return { status: 0, stdout: args[0] === "padd" ? "123456" : "", stderr: "" };
+	};
+	const keychain = linuxKeychain(run);
+	keychain.set("acquit:provider-key", "sk-ant-canary");
+	assert.equal(calls.every(call => !call.args.some(arg => arg.includes("sk-ant-canary"))), true);
+	assert.equal(calls.some(call => call.args[0] === "padd" && call.input === "sk-ant-canary"), true);
+});
+
+test("login prints the code URL, stores the token with mode 0600, and prints the tutorial's line", async () => {
+	let polls = 0;
+	const fetchStub: typeof globalThis.fetch = async input => {
+		const url = String(input);
+		if (url.endsWith("/api/cli/codes")) return Response.json({ code: "CODE-123", url: "http://localhost:5173/cli?code=CODE-123",
+			expiresAt: "2026-11-01T11:22:00.000Z" }, { status: 201 });
+		polls++;
+		return polls === 1
+			? Response.json({ status: "PENDING" })
+			: Response.json({ status: "APPROVED", token: "session-token", user: { handle: "devon-ops", role: "OPERATOR" } });
+	};
+	let saved: StoredLogin | null = null;
+	const lines: string[] = [];
+	const rendered = await runLogin({ apiUrl: API, openBrowser: false, timeoutSeconds: 30, pollMs: 1 }, {
+		fetch: fetchStub, write: line => lines.push(line), save: login => { saved = login; },
+		sleep: async () => {}, now: () => 0,
+	});
+	assert.equal(rendered, tutorialBlock("Signed in as devon-ops (operator)"));
+	assert.match(lines.join(""), /http:\/\/localhost:5173\/cli\?code=CODE-123/);
+	assert.equal(polls, 2, "the CLI polls until the browser approves the code");
+	assert.deepEqual(saved, { api: API, token: "session-token", handle: "devon-ops", role: "OPERATOR" });
+	// The token is stored under the user profile, mode 0600, and never printed.
+	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-login-"));
+	try {
+		const { readLogin, saveLogin } = await import("../src/client.ts");
+		const path = join(dir, "acquit", "cli.json");
+		saveLogin(saved!, { ACQUIT_CLI_CONFIG: path });
+		assert.equal((await stat(path)).mode & 0o777, 0o600);
+		assert.deepEqual(readLogin({ ACQUIT_CLI_CONFIG: path }), saved);
+		assert.equal(lines.join("").includes("session-token"), false);
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("diff prints the tutorial's patch from the judged commit, without git's index header", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-diff-"));
+	try {
+		const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+		assert.equal(git("init", "-q", "-b", "main").status, 0);
+		assert.equal(git("config", "user.email", "test@example.com").status, 0);
+		assert.equal(git("config", "user.name", "Test").status, 0);
+		await mkdir(join(dir, "tests"));
+		const filler = Array.from({ length: 17 }, (_, index) => `// line ${index + 1}`).join("\n");
+		const test = `${filler}\n\tit("formats KWD totals with 3 decimals", () => {\n\t\texpect(formatTotal(lines, "KWD")).toBe("10.125");\n\t});\n`;
+		await writeFile(join(dir, "tests", "totals.test.ts"), test);
+		assert.equal(git("add", ".").status, 0);
+		assert.equal(git("commit", "-qm", "frozen").status, 0);
+		const frozen = git("rev-parse", "HEAD").stdout.trim();
+		await writeFile(join(dir, "tests", "totals.test.ts"), test.replace("10.125", "10.13"));
+		assert.equal(git("add", ".").status, 0);
+		assert.equal(git("commit", "-qm", "tamper").status, 0);
+		const tamper = git("rev-parse", "HEAD").stdout.trim();
+		const job = openJob({ status: "IN_PROGRESS", phase: "READY", contract: { repository: "maya-client/invoice-app",
+			frozenAt: frozen, frozenTests: 48, hiddenTests: 6, protectedPaths: [] },
+			attempts: { used: 1, left: 2, last: "REJECTED", reasons: [], failure: null, pending: null,
+				history: [{ ordinal: 1, result: "REJECTED", reasons: [], reasonsTruncated: 0, sourceCommit: tamper,
+					at: "2026-11-08T09:12:00.000Z", frozen: null, hidden: null, pullRequest: null }] } });
+		const client = fakeClient({ "/api/jobs/job_7Q2K": { job, handles: {}, now: "2026-11-08T09:12:00.000Z" } });
+		const rendered = await runDiff({ apiUrl: API, token: "t", jobId: "job_7Q2K", dir }, { client });
+		assert.equal(rendered, tutorialBlock("--- a/tests/totals.test.ts"));
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("submit reads the client review window from the server's clock, not the submission time", () => {
+	const view = openJob({ status: "VERIFIED", phase: "AWAITING_CLIENT", escrow: "HELD",
+		attempts: { used: 2, left: 1, last: "VERIFIED", reasons: [], failure: null, pending: null,
+			history: [{ ordinal: 2, result: "VERIFIED", reasons: [], reasonsTruncated: 0, sourceCommit: "a3b6ead29f4e367d1871e753b516cc9e832871e4",
+				at: "2026-11-08T09:20:00.000Z", frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, pullRequest: 13 }] },
+		reviewEndsAt: "2026-11-11T09:20:00.000Z", pullRequest: 13 });
+	const atVerdict = renderSubmission(view, () => "devon-ops", "2026-11-08T09:20:00.000Z");
+	assert.match(atVerdict, /\nClient review window: 72 hours$/);
+	// A lane that advances the development clock 29 hours before submitting reads the remaining window.
+	const afterAdvance = renderSubmission(view, () => "devon-ops", "2026-11-09T14:20:00.000Z");
+	assert.match(afterAdvance, /\nClient review window: 43 hours$/);
+	assert.equal(afterAdvance.includes("101 hours"), false);
+});
+
+/** A real API on an isolated database, reached over loopback. */
+async function withApi(run: (lane: { url: string; databasePath: string }) => Promise<void>): Promise<void> {
+	const root = fileURLToPath(new URL("../../..", import.meta.url));
+	const dir = await mkdtemp(join(tmpdir(), "acquit-cli-api-"));
+	const listener = createServer();
+	await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
+	const port = (listener.address() as { port: number }).port;
+	await new Promise<void>(resolve => listener.close(() => resolve()));
+	const child = spawn(process.execPath, ["apps/api/src/server.ts"], { cwd: root, stdio: "ignore", env: {
+		...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: "1", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
+		DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test" } });
+	const url = `http://127.0.0.1:${port}`;
+	try {
+		const deadline = Date.now() + 15_000;
+		for (;;) {
+			if (await fetch(`${url}/api/users`).then(response => response.ok).catch(() => false)) break;
+			assert.equal(child.exitCode, null, "The isolated test API exited early.");
+			assert(Date.now() < deadline, "The isolated test API failed readiness.");
+			await new Promise(resolve => setTimeout(resolve, 50));
+		}
+		await run({ url, databasePath: join(dir, "acquit.db") });
+	} finally {
+		child.kill("SIGTERM");
+		await new Promise<void>(resolve => child.once("exit", () => resolve()));
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+}
+
+test("the login exchange issues a single-use, expiring token that authenticates the operator surfaces", async () => {
+	await withApi(async ({ url, databasePath }) => {
+		const created = await fetch(`${url}/api/cli/codes`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+		assert.equal(created.status, 201);
+		const first = await created.json() as { code: string; url: string; expiresAt: string };
+		assert.match(first.url, /^http:\/\/localhost:5213\/cli\?code=/);
+		assert.ok(first.code.length >= 40, "the one-time code must carry at least 32 random bytes");
+		const other = await (await fetch(`${url}/api/cli/codes`, { method: "POST", body: "{}" })).json() as { code: string };
+		assert.notEqual(first.code, other.code);
+		assert.equal((await (await fetch(`${url}/api/cli/codes/${first.code}`)).json() as { status: string }).status, "PENDING");
+		// Approval needs a browser session, and the same code is never approved twice.
+		assert.equal((await fetch(`${url}/api/cli/approve`, { method: "POST", headers: { "content-type": "application/json" },
+			body: JSON.stringify({ code: first.code }) })).status, 401);
+		const session = await (await fetch(`${url}/api/session`, { method: "POST", headers: { "content-type": "application/json" },
+			body: JSON.stringify({ handle: "devon-ops" }) })).json() as { token: string };
+		const approve = () => fetch(`${url}/api/cli/approve`, { method: "POST", headers: { "content-type": "application/json",
+			Authorization: `Bearer ${session.token}` }, body: JSON.stringify({ code: first.code }) });
+		assert.equal((await approve()).status, 200);
+		assert.deepEqual(await (await approve()).json(), { error: "CLI_CODE_USED" });
+		const delivered = await (await fetch(`${url}/api/cli/codes/${first.code}`)).json() as { status: string; token: string; user: { handle: string; role: string } };
+		assert.equal(delivered.status, "APPROVED");
+		assert.deepEqual(delivered.user, { handle: "devon-ops", role: "OPERATOR" });
+		// The delivered token is a session token: it authenticates the same routes, bearer or cookie.
+		const auth = { Authorization: `Bearer ${delivered.token}` };
+		const credits = await fetch(`${url}/api/me/credits`, { headers: auth });
+		assert.equal(credits.status, 200);
+		const creditBody = await credits.json() as { credits: { available: number; weeklyAllowance: number; paidReceipts: number } };
+		assert.deepEqual({ available: creditBody.credits.available, weeklyAllowance: creditBody.credits.weeklyAllowance, paidReceipts: creditBody.credits.paidReceipts },
+			{ available: 30, weeklyAllowance: 30, paidReceipts: 0 });
+		assert.equal((await fetch(`${url}/api/jobs`, { headers: { cookie: `acquit_session=${delivered.token}` } })).status, 200);
+		// The code is single use: a second poll never hands the token over again.
+		assert.equal((await fetch(`${url}/api/cli/codes/${first.code}`)).status, 410);
+		assert.equal((await fetch(`${url}/api/cli/codes/not-a-real-code`)).status, 404);
+		// Expiry is measured on the server clock, so a lane that advances it expires the code.
+		const expiring = await (await fetch(`${url}/api/cli/codes`, { method: "POST", body: "{}" })).json() as { code: string };
+		assert.equal((await fetch(`${url}/api/dev/clock`, { method: "POST", headers: { "content-type": "application/json", ...auth },
+			body: JSON.stringify({ advanceMs: 600_001 }) })).status, 200);
+		const expired = await fetch(`${url}/api/cli/codes/${expiring.code}`);
+		assert.equal(expired.status, 410);
+		assert.equal((await expired.json() as { error: string }).error, "CLI_CODE_EXPIRED");
+		// Operator init reads the merchant status the server already knows.
+		const onboarding = await (await fetch(`${url}/api/me/onboarding`, { headers: auth })).json() as { onboarding: { handle: string; payouts: string;
+			onboardingUrl: string | null; account: string | null; identityVerified: boolean;
+			credits: { available: number; weeklyAllowance: number; paidReceipts: number; nextGrantAt: string } } };
+		assert.equal(onboarding.onboarding.handle, "devon-ops");
+		assert.equal(onboarding.onboarding.payouts, "READY");
+		assert.equal(onboarding.onboarding.account, "sandbox Business account (payouts enabled)");
+		assert.equal(onboarding.onboarding.identityVerified, true);
+		assert.equal(onboarding.onboarding.onboardingUrl, null);
+		assert.equal(onboarding.onboarding.credits.available, 30);
+		assert.equal(onboarding.onboarding.credits.paidReceipts, 0);
+		assert.equal(typeof onboarding.onboarding.credits.nextGrantAt, "string");
+		// Agent create is operator-only, refuses a duplicate name, and shows up on the operator surface.
+		const agent = { name: "ts-bugfixer-2", runner: "claude-code", promptDigest: "a".repeat(64), tools: ["Read", "Edit"] };
+		const createdAgent = await fetch(`${url}/api/me/agents`, { method: "POST", headers: { "content-type": "application/json", ...auth },
+			body: JSON.stringify(agent) });
+		assert.equal(createdAgent.status, 201);
+		assert.equal((await fetch(`${url}/api/me/agents`, { method: "POST", headers: { "content-type": "application/json", ...auth },
+			body: JSON.stringify(agent) })).status, 409);
+		const listed = await (await fetch(`${url}/api/me/operator`, { headers: auth })).json() as { agents: { id: string }[] };
+		assert.equal(listed.agents.some(entry => entry.id === "ts-bugfixer-2"), true);
+		assert.deepEqual(await (await fetch(`${url}/api/me/receipts`, { headers: auth })).json(), { receipts: [], nextCursor: null });
+		// A stored job serves the server's now, which the submit block measures the review window against.
+		const row = { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture", openedAt: "2026-11-01T11:12:00.000Z",
+			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z", definitionOfDone: null }, bids: [],
+			state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } };
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(databasePath);
+		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		db.close();
+		const served = await (await fetch(`${url}/api/jobs/${row.id}`, { headers: auth })).json() as { job: { id: string }; now: string };
+		assert.equal(served.job.id, row.id);
+		assert.equal(typeof served.now, "string");
+	});
+});
