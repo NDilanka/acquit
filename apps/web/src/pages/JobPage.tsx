@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { BidView, JobView, UserCommand } from "../api-types";
+import type { BidView, JobView, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
-import { escrowFee, eta, ledgerNote, usd, utc } from "../format";
+import { escrowFee, eta, ledgerNote, mergeNote, releaseNote, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
@@ -39,9 +39,13 @@ export function JobPage({ id }: { id: string }) {
     void load();
   }, [load]);
 
-  // Fast poll while waiting for a PayPal order or release; slow poll while bids may still arrive or a verdict is due.
+  // Fast poll while waiting for a PayPal order or release; slow poll while bids may still arrive, a verdict is due, or the merge runs.
   const polling =
-    checkout !== null || job?.phase === "RELEASE_PENDING" ? 1000 : job?.status === "OPEN" || job?.phase === "VERIFYING" ? 4000 : null;
+    checkout !== null || job?.phase === "RELEASE_PENDING"
+      ? 1000
+      : job?.status === "OPEN" || job?.phase === "VERIFYING" || job?.merge?.phase === "PENDING"
+        ? 4000
+        : null;
   useEffect(() => {
     if (polling === null) return;
     const t = window.setInterval(() => void load(), polling);
@@ -75,7 +79,7 @@ export function JobPage({ id }: { id: string }) {
   const locked = lockedBid(job);
   const funding = job.status === "OPEN" && job.phase === "FUNDING";
   const canCancel = isClient && job.status === "OPEN" && !funding && checkout === null;
-  const mergeCommit = job.status === "VERIFIED" && job.phase === "AWAITING_CLIENT" ? job.mergeCommit : null;
+  const mergeCommit = job.viewerCanApprove ? job.mergeCommit : null;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
 
   const doAccept = async (bid: BidView) => {
@@ -164,7 +168,7 @@ export function JobPage({ id }: { id: string }) {
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
-          {isClient && mergeCommit && (
+          {mergeCommit && (
             <section className="card pad">
               <h2>Client review</h2>
               <p className="muted">
@@ -213,9 +217,7 @@ export function JobPage({ id }: { id: string }) {
             <div className="kv">
               <span>Attempts</span>
               <b className="num">
-                {job.receipt
-                  ? `${job.receipt.attemptsUsed} used`
-                  : `${job.attempts.used} used, ${job.attempts.left} left`}
+                {job.receipt ? `${job.attempts.used} used` : `${job.attempts.used} used, ${job.attempts.left} left`}
               </b>
             </div>
           </div>
@@ -405,6 +407,8 @@ function Checkout({ bid, approveUrl, redirecting }: { bid: BidView | null; appro
   );
 }
 
+const mergeTone: Record<MergeProgress["phase"], string> = { PENDING: "pill held", MERGED: "pill ok", NEEDS_HUMAN: "alert warn" };
+
 function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) {
   const { receipt, contract } = job;
   const refund = job.ledger.find((line) => line.kind === "REFUND");
@@ -435,6 +439,12 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
           Approved commit <span className="mono">{short(receipt.mergeCommit)}</span>.
         </p>
       )}
+      {job.merge && (
+        <p>
+          <span className={mergeTone[job.merge.phase]}>{mergeNote(job.merge, job.pullRequest, job.mergeCommit)}</span>
+        </p>
+      )}
+      {job.release && <p className="muted small mono">{releaseNote(job.release)}</p>}
       {refund && (
         <p>
           Refunded <b className="num">{usd(refund.cents)}</b> to the client at {utc(refund.at)}.
