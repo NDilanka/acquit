@@ -70,4 +70,5 @@ export const api = {
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   command: (key: string, command: UserCommand) => request<CommandResponse>("POST", "/api/commands", { key, command }),
+  approveCli: (code: string) => request<SessionUser>("POST", "/api/cli/approve", { code }),
 };
