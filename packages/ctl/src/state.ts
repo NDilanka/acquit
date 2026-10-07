@@ -211,6 +211,22 @@ export async function readStoredJobs(path: string): Promise<StoredJobs> {
 	} catch { throw new CliError("DATABASE_UNREADABLE", "The configured SQLite database could not be read.", `Check file access to ${path}, then run npm run -s ctl -- status.`); }
 	finally { db?.close(); }
 }
+export type StoredWebhookEvent = { readonly available: boolean; readonly row: { readonly id: string; readonly body: string } | null };
+/** One recorded webhook body, read-only. available is false when the file or its webhook_events table is absent. */
+export async function readStoredWebhookEvent(path: string, id: string): Promise<StoredWebhookEvent> {
+	if (!existsSync(path)) return { available: false, row: null };
+	const { DatabaseSync } = await import("node:sqlite");
+	let db;
+	try {
+		db = new DatabaseSync(path, { readOnly: true });
+		db.exec("PRAGMA busy_timeout = 5000");
+		const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => String(row.name)));
+		if (!tables.has("webhook_events")) return { available: false, row: null };
+		const row = db.prepare("SELECT id, body FROM webhook_events WHERE id = ?").get(id);
+		return { available: true, row: row === undefined ? null : { id: String(row.id), body: String(row.body) } };
+	} catch { throw new CliError("DATABASE_UNREADABLE", "The configured SQLite database could not be read.", `Check file access to ${path}, then run npm run -s ctl -- status.`); }
+	finally { db?.close(); }
+}
 export function envKeys(ctx: Context): Record<string, { inDotEnv: boolean; configured: boolean }> {
 	const path = resolve(ctx.root, ".env");
 	const names = new Set(existsSync(path) ? [...readFileSync(path, "utf8").matchAll(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/gm)].map(match => match[1]) : []);

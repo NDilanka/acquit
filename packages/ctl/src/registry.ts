@@ -1,4 +1,4 @@
-import { clockAdvance, fundMode, jobList, ledger, login, screenshot, seedDb, start, status, stop } from "./commands.ts";
+import { clockAdvance, fundMode, jobList, ledger, login, screenshot, seedDb, start, status, stop, webhookReplay } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -56,6 +56,13 @@ export const registry: Command[] = [
 			{ name: "full", type: "boolean", summary: "Capture the full scroll height.", default: false },
 			{ name: "wait-text", type: "string", summary: "Wait for visible text instead of network idle." }],
 		examples: ["screenshot --as maya-client --path /", "screenshot --path / --full --wait-text Jobs"], destructive: false, run: screenshot },
+	{ name: "webhook", summary: "Replay a recorded webhook body, or deliver an envelope that names a real capture.", usage: "webhook replay (--event <id> | --capture <id> [--new-event-id]) [--json]",
+		flags: [{ name: "event", type: "string", summary: "Recorded event id whose stored body is reposted." },
+			{ name: "capture", type: "string", summary: "Capture id wrapped in an envelope the route re-reads. Requires ACQUIT_DEV=1." },
+			{ name: "new-event-id", type: "boolean", summary: "Mint a new event id instead of the capture's derived one.", default: false },
+			{ name: "json", type: "boolean", summary: "Print the JSON envelope instead of the outcome line.", default: false }],
+		examples: ["webhook replay --capture 5O190127TN364715T", "webhook replay --event WH-CAPTURE-2AB12345"],
+		destructive: false, run: webhookReplay },
 ];
 export function flags(command: Command): FlagSpec[] {
 	return [...command.flags, ...(command.destructive ? [{ name: "dry-run", type: "boolean" as const, summary: "Report proposed changes without making them.", default: false }] : []),
@@ -74,6 +81,6 @@ export function help(command?: Command): string {
 		"\nExit codes: 0 success, 1 runtime failure, 2 usage error.",
 		'Success: {"ok":true,"command":"...","dryRun":true,"data":{...}} (dryRun only for dry runs).',
 		'Failure: {"ok":false,"command":"...","error":{"code":"...","message":"...","fix":"..."}}',
-		"Help and ledger output without --json are the only non-JSON stdout outputs.",
+		"Help, ledger, and webhook replay output without --json are the only non-JSON stdout outputs.",
 	].join("\n") + "\n";
 }
