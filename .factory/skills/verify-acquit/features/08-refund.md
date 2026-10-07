@@ -54,8 +54,8 @@ Preconditions:
   payout fee from the batch.
 - **Replay the capture webhook.** `npm run -s ctl -- webhook replay --capture <capture id>` prints the
   event id it recorded and the outcome; require `no-op, job already REFUNDED` and an unchanged ledger.
-  Replay the recorded body with `npm run -s ctl -- webhook replay --event <recorded id>` and require the
-  same. The route's re-read of the capture is the recovery path when the inline refund answer was lost:
+  Replay the recorded envelope with `npm run -s ctl -- webhook replay --event <recorded id>` and require
+  the same. The route's re-read of the capture is the recovery path when the inline refund answer was lost:
   a job left in `REFUND_PENDING` settles from that delivery.
 - **Clean up.** Delete the job's work repo, stop the lane, and leave the client repository as you found
   it.
