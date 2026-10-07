@@ -47,3 +47,5 @@ A drive of one feature or entry point does not verify the other entries. Report 
 - [06. Submit work and get it verified](06-submit-verify.md) covers the CLI submission, the frozen and hidden suites, the pull request, and the review window.
 - [07. Approve the verified work and release the escrow](07-approve-release.md) covers the ownership gate, the referenced payout, the receipt, the merge, and the ledger.
 - [08. Refund the escrow](08-refund.md) covers the deadline, the exhausted attempts, the capture cutoff, and the operator's fee reimbursement.
+- [09. Open a dispute and let the arbiter decide](09-dispute.md) covers the paused review clock, both arbiter outcomes, the rework, and the missed arbiter deadline with its alert.
+- [10. Bid credits, the weekly grant, and the return](10-credits.md) covers the bid charge, the cancel and no-response returns, the Monday grant, the cap, and the no-credits denial.
