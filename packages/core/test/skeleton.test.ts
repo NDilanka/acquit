@@ -1783,6 +1783,40 @@ test("a body that is not an event envelope is refused and still recorded", async
 	} finally { f.store.close(); }
 });
 
+test("an envelope field longer than the bound is refused unreadable and still recorded", async () => {
+	const f = fixture();
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "W".repeat(201), event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource: { id: "TESTCAPTURE" } }));
+		assert.equal(response.status, 400);
+		assert.deepEqual(await response.json(), refused);
+		const rows = recordedEvents(f.store);
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0]?.outcome, "refused, unreadable event");
+		assert.match(rows[0]?.id ?? "", /^unreadable-[0-9a-f]{16}$/);
+	} finally { f.store.close(); }
+});
+
+test("the delivery log escapes an event id that carries a newline", async () => {
+	const f = fixture();
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try {
+		const response = await delivered(f.ports, JSON.stringify({ id: "WH-1\nINJECT", event_type: "PAYMENT.CAPTURE.COMPLETED",
+			resource_type: "capture", resource: { id: "CAPTURE_PAYPAL_NEVER_HAD" } }));
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), accepted);
+		// One logged line, with the newline escaped rather than printed: the envelope cannot forge a
+		// second log entry.
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0]?.includes("\n"), false);
+		assert.equal(lines[0]?.startsWith('paypal webhook "WH-1\\nINJECT"'), true);
+		// The envelope row keeps the id as it arrived: only the log is escaped.
+		assert.equal(recordedOutcome(f.store, "WH-1\nINJECT"), "refused, PayPal does not know this capture");
+	} finally { console.log = original; f.store.close(); }
+});
+
 test("a delivery body is never stored: payer fields and the raw bytes stay out of the table", async () => {
 	const { f } = await heldFixture();
 	try {

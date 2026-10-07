@@ -124,6 +124,29 @@ test("a webhook envelope names the resource family it routes and drops the rest"
 	assert.equal(parseWebhookEnvelope(envelope({ event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "C1" } })).kind, "UNREADABLE");
 });
 
+test("a webhook envelope field longer than the bound is unreadable", () => {
+	// PayPal's own ids are tens of characters. A field past the bound is attacker-controlled bytes, and
+	// the boundary refuses it like any other body it cannot read.
+	const over = parseWebhookEnvelope(envelope({ id: "W".repeat(201), event_type: "PAYMENT.CAPTURE.COMPLETED",
+		resource_type: "capture", resource: { id: "C1" } }));
+	assert.equal(over.kind, "UNREADABLE");
+	if (over.kind !== "UNREADABLE") throw new Error("Expected an unreadable envelope");
+	assert.equal(over.detail, "An envelope field exceeds 200 characters.");
+	assert.match(over.deliveryId, /^unreadable-[0-9a-f]{16}$/);
+	// The longest field the boundary keeps still routes.
+	const exact = parseWebhookEnvelope(envelope({ id: "W".repeat(200), event_type: "PAYMENT.CAPTURE.COMPLETED",
+		resource_type: "capture", resource: { id: "C1" } }));
+	assert.equal(exact.kind, "DELIVERY");
+	// Every envelope field is bounded, not only the event id.
+	for (const body of [
+		{ id: "WH-1", event_type: "E".repeat(201), resource_type: "capture", resource: { id: "C1" } },
+		{ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "R".repeat(201), resource: { id: "C1" } },
+		{ id: "WH-1", event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: "C".repeat(201) } },
+	]) {
+		assert.equal(parseWebhookEnvelope(envelope(body)).kind, "UNREADABLE");
+	}
+});
+
 test("a capture envelope's re-read settles the completed capture from its order", async () => {
 	const original = globalThis.fetch;
 	const wire = recordedWire(url => url.includes("/v2/payments/captures/") ? Response.json(captureCompleted) : Response.json(cardOrder));
