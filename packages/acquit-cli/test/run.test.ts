@@ -20,7 +20,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
 import { PROVIDER_SPECS } from "../src/operator.ts";
 import type { Provider } from "../src/operator.ts";
-import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafeScopedConfig, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
+import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafeScopedConfig, checkoutGitArgs, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
 import { pushHead, localHead } from "../src/submit.ts";
 
@@ -682,7 +682,7 @@ test("a planted pushInsteadOf is refused, and the decoy it names never receives 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("a state gitdir remote URL off github is unsafe config; the clone's own origin and a github URL are not", () => {
+test("a state gitdir's origin must name github, and a remote the CLI did not write refuses", () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-remote-url-"));
 	try {
 		const { bare, frozen, git } = workRepoFixture(root);
@@ -694,25 +694,32 @@ test("a state gitdir remote URL off github is unsafe config; the clone's own ori
 		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
 		const commit = submissionCommit(git, checkout, frozen, "fix", env);
 		assert.notEqual(commit, null);
+		const origin = (value: string): void => {
+			assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.url", value]).status, 0, value);
+		};
 		// The clone's own origin is the fixture's local bare path: no host, so no host to steer to.
 		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
-		// A remote the CLI did not write that names github.com is the shape the CLI itself writes.
-		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.url", "https://github.com/acquit-forks/invoice-app-7q2k.git"]).status, 0);
+		// The CLI writes remote.origin.url, so its value is judged: a github.com URL passes in both
+		// spellings, the scp-like one included.
+		origin("https://github.com/acquit-forks/invoice-app-7q2k.git");
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
+		origin("github.com:acquit-forks/invoice-app-7q2k");
 		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
 		// Any other host could carry the scoped push somewhere the job's work repo is not, including
 		// an scp-like value with no userinfo prefix.
-		assert.equal(git(["--git-dir", state, "config", "--local", "remote.evil.url", "https://evil.example/invoice-app-7q2k.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.evil.url"]);
+		origin("https://evil.example/invoice-app-7q2k.git");
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.url"]);
 		assert.throws(() => pushWork(git, checkout, bare, commit!, env),
-			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.evil.url"));
-		assert.equal(git(["--git-dir", state, "config", "--local", "--unset", "remote.evil.url"]).status, 0);
-		assert.equal(git(["--git-dir", state, "config", "--local", "remote.scp.url", "evil.example:repo"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.scp.url"]);
-		assert.equal(git(["--git-dir", state, "config", "--local", "remote.scp.url", "evil.example:repo.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.scp.url"]);
-		assert.equal(git(["--git-dir", state, "config", "--local", "remote.scp.url", "github.com:acquit-forks/invoice-app-7q2k"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
-		assert.equal(git(["--git-dir", state, "config", "--local", "--unset", "remote.scp.url"]).status, 0);
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.origin.url"));
+		origin("evil.example:repo");
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.url"]);
+		origin("evil.example:repo.git");
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.url"]);
+		// A second remote is config the CLI did not write: a state checkout keeps remote.origin.url
+		// alone, so `remote.work.url` refuses even when it names github.com.
+		origin(bare);
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.url", "https://github.com/acquit-forks/invoice-app-7q2k.git"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.work.url"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -767,9 +774,11 @@ test("URL-scoped and plain http config keys refuse a scoped push on a state chec
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
 			assert.equal(git(["--git-dir", state, "config", "--local", "--unset", key]).status, 0, key);
 		}
-		// Verification on, and a key the CLI itself writes, are not config that steers anything.
+		// The state policy keeps only the keys the CLI's own clone writes, and it writes no http key:
+		// verification is settled by the guard's `-c` overrides. So a true sslVerify is config the CLI
+		// did not write here and refuses with the rest.
 		config("http.sslVerify", "true");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslverify"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -778,41 +787,53 @@ test("git decides which sslVerify spellings are false, so empty, 00, 0x0, and 0k
 	try {
 		const { bare, frozen, git } = workRepoFixture(root);
 		const env = hardenedEnv(root);
-		const state = stateGitDir("job_7Q2K", env);
-		const checkout = { gitDir: state, workTree: join(root, "work") };
-		prepareWorkRepo(git, checkout, bare, frozen, env);
+		// This value judgement is the own-checkout policy's: an operator's checkout may hold an http
+		// key, and the question is only whether git would read it as true.
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const location = { gitDir: join(own, ".git"), workTree: own };
 		const config = (key: string, value: string): void => {
-			assert.equal(git(["--git-dir", state, "config", "--local", key, value]).status, 0, key);
+			assert.equal(git(["-C", own, "config", "--local", key, value]).status, 0, key);
 		};
 		const unset = (key: string): void => {
-			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", key]).status, 0, key);
+			assert.equal(git(["-C", own, "config", "--local", "--unset-all", key]).status, 0, key);
 		};
 		// git reads each of these as boolean false, and the guard's own -c http.sslVerify=true loses
 		// to a URL-scoped key. A hand-written list of false spellings caught only the last one.
 		for (const value of ["", "00", "0x0", "0k", "false"]) {
 			config("http.sslVerify", value);
-			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslverify"], JSON.stringify(value));
-			assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, env),
+			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["http.sslverify"], JSON.stringify(value));
+			assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("http.sslverify"), JSON.stringify(value));
 			unset("http.sslVerify");
 		}
 		// The URL-scoped empty value is the same false, and no guard override outranks it.
 		config("http.https://evil.example/.sslVerify", "");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.https://evil.example/.sslverify"]);
-		assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, env),
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["http.https://evil.example/.sslverify"]);
+		assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("http.https://evil.example/.sslverify"));
 		unset("http.https://evil.example/.sslVerify");
 		// Every spelling git reads as true passes, and a key present with no value is true to git.
 		for (const value of ["true", "yes", "on", "1"]) {
 			config("http.sslVerify", value);
-			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [], value);
+			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), [], value);
 			unset("http.sslVerify");
 		}
-		writeFileSync(join(state, "config"), `${readFileSync(join(state, "config"), "utf8")}\n[http]\n\tsslVerify\n`);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
+		writeFileSync(join(own, ".git", "config"), `${readFileSync(join(own, ".git", "config"), "utf8")}\n[http]\n\tsslVerify\n`);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
 		// git cannot read this one as a boolean at all, and an answer that is not true refuses.
 		config("http.sslVerify", "banana");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslverify"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["http.sslverify"]);
+		// A state checkout never gets to that judgement: the CLI writes no http key into its own
+		// clone, so the key refuses there whatever value it holds.
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		for (const value of ["true", "false", ""]) {
+			assert.equal(git(["--git-dir", state, "config", "--local", "http.sslVerify", value]).status, 0, JSON.stringify(value));
+			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslverify"], JSON.stringify(value));
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", "http.sslVerify"]).status, 0);
+		}
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -836,6 +857,118 @@ test("a planted sslCAInfo or sslCAPath refuses plain and URL-scoped", () => {
 		// A config-file spelling git normalizes on read refuses the same way.
 		writeFileSync(join(state, "config"), `${readFileSync(join(state, "config"), "utf8")}\n[HTTP]\n\tSSLCaInfo = /tmp/planted-ca\n`);
 		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslcainfo"]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a fresh state checkout the CLI cloned and seeded holds no key the state policy refuses", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-state-allow-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		seedCommitIdentity(git, checkout, { name: "operator", email: "operator@example.invalid" }, env);
+		// An allowlist is only correct while it covers every key the CLI's own clone writes, and the
+		// audit's finding was one key it did not name. This reads the real list, so a git that writes
+		// one more key fails here by name instead of refusing every run. The fixture's bare repo HEAD
+		// names a branch its own push never created, so this clone writes no branch section; the
+		// state policy keeps branch.* for the clone whose remote does name its default branch.
+		const listed = git(["--git-dir", state, "config", "--local", "--list", "--name-only"]).stdout.trim().split("\n").filter(line => line !== "");
+		assert.ok(listed.includes("core.repositoryformatversion"), listed.join(", "));
+		assert.ok(listed.includes("remote.origin.url"), listed.join(", "));
+		assert.ok(listed.includes("remote.origin.fetch"), listed.join(", "));
+		assert.ok(listed.includes("user.name") && listed.includes("user.email"), listed.join(", "));
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [], `the clone wrote ${listed.join(", ")}`);
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, checkout, env, "state"));
+		// A rerun reads the same checkout again and fetches through the scoped token, so the rerun
+		// branch scans the location it is about to fetch from: this proves the allowlist matches the
+		// checkout the CLI itself produced, not only the one it had just cloned.
+		const secret = makeSecretDir();
+		try {
+			const askpass = writeAskpass(secret.path, "ghs_CANARY_STATE_ALLOW");
+			assert.doesNotThrow(() => prepareWorkRepo(git, checkout, bare, frozen, env, askpass.env));
+		} finally { secret.remove(); }
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a state checkout keeps only the clone's own keys, so any other key refuses by name", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-state-unlisted-"));
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		seedCommitIdentity(git, checkout, { name: "operator", email: "operator@example.invalid" }, env);
+		// Every one of these is a key the CLI's clone never writes, so the state policy refuses each by
+		// name. The first two are the leak the audit found: git answers a proxy's 407 with its
+		// credential source, so a proxy key in the state config hands the scoped token to whoever
+		// answers the CONNECT, and no key-by-key value rule could be trusted to see that.
+		for (const key of ["remote.origin.proxy", "remote.origin.proxyAuthMethod", "remote.origin.pushurl",
+			"remote.origin.vcs", "core.fsmonitor", "gc.auto", "foo.bar", "include.path"]) {
+			assert.equal(git(["--git-dir", state, "config", "--local", key, "http://127.0.0.1:1/"]).status, 0, key);
+			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [key.toLowerCase()], key);
+			assert.throws(() => assertSafeScopedConfig(git, checkout, env, "state"),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", key]).status, 0, key);
+		}
+		// A second remote is unlisted whatever it names, even when its URL names github.com: only the
+		// remote the clone wrote has a value rule that knows which URLs the job's work repo can be at.
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.pushurl", "https://evil.example/repo.git"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.work.pushurl"]);
+		assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", "remote.work.pushurl"]).status, 0);
+		// The clone's own origin keeps a value rule: the refspec the rerun fetch reads is the one the
+		// clone wrote, so any other refspec refuses.
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]).status, 0);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.fetch"]);
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an operator's own checkout keeps the keys that do not steer the scoped token", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-own-keep-"));
+	try {
+		const { bare, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const own = join(root, "own");
+		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
+		const location = { gitDir: join(own, ".git"), workTree: own };
+		const config = (key: string, value: string): void => {
+			assert.equal(git(["-C", own, "config", "--local", key, value]).status, 0, key);
+		};
+		const unset = (key: string): void => {
+			assert.equal(git(["-C", own, "config", "--local", "--unset-all", key]).status, 0, key);
+		};
+		// The operator's own checkout: their identity, their editor, their colour, their push default,
+		// and the remote their own clone wrote are all theirs to keep.
+		config("user.name", "operator");
+		config("user.email", "operator@example.invalid");
+		config("core.editor", "vim");
+		config("color.ui", "auto");
+		config("push.default", "simple");
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own"));
+		// Each of these can move the scoped token, add a header to its request, turn off the
+		// verification of where it goes, or run code on the machine that holds it. A remote nickname
+		// cannot hold a slash, so a URL-named remote's own `.url` refuses too.
+		for (const [key, value] of [["remote.origin.proxy", "http://127.0.0.1:1"],
+			["remote.origin.proxyAuthMethod", "basic"], ["remote.origin.pushurl", "https://evil.example/repo.git"],
+			["http.proxy", "http://127.0.0.1:1"], ["http.https://evil.example/.proxy", "http://127.0.0.1:1"],
+			["http.extraHeader", "Authorization: Basic eA=="], ["http.https://evil.example/.extraHeader", "Authorization: Basic eA=="],
+			["http.sslCAInfo", "/tmp/planted-ca"], ["http.https://evil.example/.sslCAInfo", "/tmp/planted-ca"],
+			["core.hooksPath", "/tmp/planted-hooks"], ["core.sshCommand", "sh -c evil"], ["core.fsmonitor", "/tmp/planted-fsmonitor"],
+			["credential.helper", "/tmp/planted-helper"], ["include.path", "/tmp/planted-include"],
+			["url.https://evil.example/.insteadOf", "https://github.com/"],
+			["url.https://evil.example/.pushInsteadOf", "https://github.com/"],
+			["remote.https://evil.example/repo.git.url", "https://evil.example/repo.git"]] as const) {
+			config(key, value);
+			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), [key.toLowerCase()], key);
+			assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
+				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
+			unset(key);
+		}
+		// A refusal is per key, never a verdict on the checkout: the kept keys are still there.
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -992,6 +1125,79 @@ test("a rerun fetch refuses the planted worktree config before the scoped token 
 	}
 });
 
+/**
+ * An HTTP proxy in its own process that records every CONNECT it is asked for and answers 407, so the
+ * git child that dials it asks its credential source. A fetch is synchronous, so an in-process proxy
+ * could never answer it. The record is what proves a planted proxy key is live: a request that
+ * reaches this proxy carries what git would have sent to the host the job's work repo lives on.
+ */
+async function recordingProxy(root: string): Promise<{ readonly url: string;
+	readonly connects: () => readonly { readonly host: string; readonly proxyAuthorization: string }[]; readonly stop: () => void }> {
+	const log = join(root, "proxy.log");
+	writeFileSync(log, "");
+	const child = spawn(process.execPath, ["--input-type=module", "-e",
+		"import { appendFileSync } from 'node:fs';\n"
+		+ "import { createServer } from 'node:http';\n"
+		+ "const server = createServer();\n"
+		+ "server.on('connect', (request, socket) => {\n"
+		+ `	appendFileSync(${JSON.stringify(log)}, JSON.stringify({ host: request.url ?? "", proxyAuthorization: request.headers['proxy-authorization'] ?? "" }) + "\\n");\n`
+		+ "	socket.write('HTTP/1.1 407 Proxy Authentication Required\\r\\nProxy-Authenticate: Basic realm=\"acquit-test\"\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n');\n"
+		+ "	socket.end();\n"
+		+ "});\n"
+		+ "server.listen(0, '127.0.0.1', () => console.log(server.address().port));\n"],
+		{ stdio: ["ignore", "pipe", "pipe"] });
+	const port = await printedPort(child);
+	return {
+		url: `http://127.0.0.1:${port}`,
+		connects: () => readFileSync(log, "utf8").split("\n").filter(line => line !== "")
+			.map(line => JSON.parse(line) as { readonly host: string; readonly proxyAuthorization: string }),
+		stop: () => child.kill("SIGKILL"),
+	};
+}
+
+test("a planted remote.origin.proxy refuses the rerun fetch, and the scoped token never reaches the proxy", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-remote-proxy-"));
+	const proxy = await recordingProxy(root);
+	const secret = makeSecretDir();
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		const canary = "ghs_CANARY_REMOTE_PROXY";
+		const askpass = writeAskpass(secret.path, canary);
+		// The URL a rerun fetches is the job's work repo on github.com, and a proxy key in the state
+		// config redirects that dial to a host the CLI never chose. Git answers the proxy's 407 with
+		// its credential source, so the scoped token goes to the proxy, not to the work repo. The
+		// proxy URL names a user, which is the shape the audit used and the one git fills a password
+		// for: without it the 407 is never retried and no credential is offered.
+		const workRepoUrl = "https://github.com/acquit-forks/invoice-app-7q2k.git";
+		const proxyWithUser = proxy.url.replace("http://", "http://proxy-user@");
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.url", workRepoUrl]).status, 0);
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.proxy", proxyWithUser]).status, 0);
+		// Control: the same fetch argv and env a rerun makes, with the scan left out. The proxy sees
+		// the CONNECT and the canary, so "no request" below is the refusal and not a dead proxy.
+		const withoutScan = git(checkoutGitArgs(checkout, env, ["fetch", "--quiet", "--no-tags", "origin"]), { ...env, ...askpass.env });
+		assert.notEqual(withoutScan.status, 0, "the planted proxy let the fetch through");
+		const connects = proxy.connects();
+		assert.ok(connects.length > 0, "the planted proxy was never dialed");
+		assert.deepEqual([...new Set(connects.map(connect => connect.host))], ["github.com:443"]);
+		assert.equal(carriedCanary(connects.map(connect => ({ authorization: connect.proxyAuthorization })), canary), true,
+			`the control arm never sent the canary, so the no-request arm would prove nothing: ${JSON.stringify(connects)}`);
+		// The rerun fetch carries the scoped token, so it scans the same location first: the proxy key
+		// refuses by name and the fetch never runs.
+		const refused = proxy.connects().length;
+		assert.throws(() => prepareWorkRepo(git, checkout, workRepoUrl, frozen, env, askpass.env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.origin.proxy"));
+		assert.equal(proxy.connects().length, refused);
+	} finally {
+		proxy.stop();
+		secret.remove();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a linked worktree's own config refuses a scoped push on the operator's checkout", async () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-linked-config-"));
 	const remote = await selfSignedRemote(root);
@@ -1065,6 +1271,64 @@ async function rejectingRemote(): Promise<{ readonly url: string; readonly stop:
 	const port = await printedPort(child);
 	return { url: `http://127.0.0.1:${port}/invoice-app-7q2k.git`, stop: () => child.kill("SIGKILL") };
 }
+
+/**
+ * A remote in its own process that holds every request open for `delayMs` before answering 401, so a
+ * push whose bound is shorter than one answer is killed mid-call. pushWork and pushHead are
+ * synchronous, so an in-process server could never answer the git child they block on.
+ */
+async function slowRemote(delayMs: number): Promise<{ readonly url: string; readonly stop: () => void }> {
+	const child = spawn(process.execPath, ["--input-type=module", "-e",
+		"import { createServer } from 'node:http';\n"
+		+ `const delay = ${delayMs};\n`
+		+ "const server = createServer((request, response) => {\n"
+		+ "	request.resume();\n"
+		+ "	setTimeout(() => { response.writeHead(401, { 'WWW-Authenticate': 'Basic realm=\"acquit-test\"' }); response.end(); }, delay);\n"
+		+ "});\n"
+		+ "server.listen(0, '127.0.0.1', () => console.log(server.address().port));\n"],
+		{ stdio: ["ignore", "pipe", "pipe"] });
+	const port = await printedPort(child);
+	return { url: `http://127.0.0.1:${port}/invoice-app-7q2k.git`, stop: () => child.kill("SIGKILL") };
+}
+
+test("the scoped submit push outlives the scan's own bound when a remote answers slowly", async () => {
+	// Git asks twice: once without a credential, then again with the one the askpass answers, and it
+	// fails only after the second answer. Two answers of nine seconds put a push bound of fifteen
+	// seconds (the scan's, which r13 handed the push) one answer in, so the delay has to sit above
+	// half the old bound or the arms cannot be told apart.
+	const delayMs = 9_000;
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-push-slow-"));
+	const remote = await slowRemote(delayMs);
+	const secret = makeSecretDir();
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		writeFileSync(join(checkout.workTree, "money.ts"), "const DECIMALS = 3;\n");
+		const commit = submissionCommit(git, checkout, frozen, "fix", env);
+		assert.notEqual(commit, null);
+		const askpass = writeAskpass(secret.path, "ghs_CANARY_SLOW_PUSH");
+		const started = Date.now();
+		let error: CliError | null = null;
+		// The submit path: pushHead builds its own git port for the scan, and the push runs on that
+		// port. It is the call the audit measured, and the one whose bound r13 shortened.
+		try { pushHead(checkout.workTree, remote.url, commit!, env, { gitDir: state, askpass: askpass.env }); }
+		catch (thrown) { error = thrown as CliError; }
+		const elapsedMs = Date.now() - started;
+		assert.notEqual(error, null, "the slow remote let the push through");
+		assert.equal(error!.code, "PUSH_REFUSED");
+		// The push took both answers, so its bound is longer than the scan's fifteen seconds, and the
+		// refusal carries git's own last line rather than the empty stderr of a child killed mid-call.
+		assert.ok(elapsedMs >= 2 * delayMs - 500, `the push was cut off after ${elapsedMs}ms, short of the scan's 15s bound`);
+		assert.match(error!.message, /Authentication failed/, error!.message);
+	} finally {
+		remote.stop();
+		secret.remove();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("an own-checkout push keeps the operator's credential helper; a scoped push never consults it", async () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-push-cred-"));
