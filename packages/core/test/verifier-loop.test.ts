@@ -97,7 +97,7 @@ test("Submit on the tamper-test commit prints the tutorial's REJECTED block, the
 	assert.equal(rejected.status, "IN_PROGRESS");
 	assert.equal(rejected.escrow, "HELD");
 	assert.equal(rejected.lockedTo, "devon-ops");
-	assert.equal(renderSubmission(rejected, () => "devon-ops"), [
+	assert.equal(renderSubmission(rejected, () => "devon-ops", now), [
 		"Submitted job_7Q2K (attempt 1 of 3)",
 		"Verifier result: REJECTED",
 		"\tPR modifies frozen test file tests/totals.test.ts",
@@ -113,7 +113,7 @@ test("Submit on the tamper-test commit prints the tutorial's REJECTED block, the
 	assert.equal(verified.pullRequest, 13);
 	assert.equal(verified.attempts.left, 1);
 	assert.equal(verified.reviewEndsAt, instant("2026-10-09T12:00:00Z"));
-	assert.equal(renderSubmission(verified, () => "devon-ops"), [
+	assert.equal(renderSubmission(verified, () => "devon-ops", now), [
 		"Submitted job_7Q2K (attempt 2 of 3)",
 		"Verifier result: VERIFIED",
 		"\tFrozen tests: 48 passed (suite frozen at a3b6ead)",

@@ -47,7 +47,7 @@ function verifiedView(): JobProjection {
 const noHandles = () => null;
 
 test("the REJECTED block matches docs/tutorial.md character for character", () => {
-	assert.equal(renderSubmission(rejectedView(), noHandles), [
+	assert.equal(renderSubmission(rejectedView(), noHandles, "2026-11-08T09:12:00.000Z"), [
 		"Submitted job_7Q2K (attempt 1 of 3)",
 		"Verifier result: REJECTED",
 		"\tPR modifies frozen test file tests/totals.test.ts",
@@ -58,7 +58,8 @@ test("the REJECTED block matches docs/tutorial.md character for character", () =
 });
 
 test("the VERIFIED block matches docs/tutorial.md character for character", () => {
-	assert.equal(renderSubmission(verifiedView(), noHandles), [
+	// The verdict's own instant is the API clock the CLI reads it with, so the window is the full 72 hours.
+	assert.equal(renderSubmission(verifiedView(), noHandles, "2026-11-08T09:20:00.000Z"), [
 		"Submitted job_7Q2K (attempt 2 of 3)",
 		"Verifier result: VERIFIED",
 		"\tFrozen tests: 48 passed (suite frozen at a41c9e2)",
@@ -72,7 +73,7 @@ test("the VERIFIED block matches docs/tutorial.md character for character", () =
 });
 
 test("the VERIFIED block refuses a projection with no frozen contract by name", () => {
-	assert.throws(() => renderSubmission({ ...verifiedView(), contract: null }, noHandles),
+	assert.throws(() => renderSubmission({ ...verifiedView(), contract: null }, noHandles, "2026-11-08T09:20:00.000Z"),
 		(error: CliError) => error.code === "CONTRACT_NOT_FROZEN");
 });
 
@@ -251,9 +252,10 @@ test("a failure the job already carried for this commit does not stop the wait f
 });
 
 test("the handle the block prints comes from the API, never from the id", () => {
-	assert.equal(renderSubmission(rejectedView(), () => "devon-ops"), renderSubmission(rejectedView(), () => "devon-ops"));
-	assert.match(renderSubmission(rejectedView(), () => "someone-else"), /Escrow: HELD, locked to someone-else/);
-	assert.match(renderSubmission(rejectedView(), () => null), /Escrow: HELD, locked to devon-ops/);
+	const at = "2026-11-08T09:12:00.000Z";
+	assert.equal(renderSubmission(rejectedView(), () => "devon-ops", at), renderSubmission(rejectedView(), () => "devon-ops", at));
+	assert.match(renderSubmission(rejectedView(), () => "someone-else", at), /Escrow: HELD, locked to someone-else/);
+	assert.match(renderSubmission(rejectedView(), () => null, at), /Escrow: HELD, locked to devon-ops/);
 });
 
 test("the real CLI prints the child-subject refusal by name and exits 1 without a stack", () => {
@@ -281,7 +283,9 @@ test("main prints usage, refuses an unknown command, and reports a refusal witho
 		assert.equal(await main([], {}), 2);
 		assert.match(lines[0], /^acquit — work the job board/);
 		assert.equal(await main(["--help"], {}), 0);
-		assert.equal(await main(["diff", "job_7Q2K"], {}), 2);
+		// `diff` is a known command, so it asks for a token; a command this build does not carry exits 2.
+		assert.equal(await main(["verify", "job_7Q2K"], {}), 2);
+		assert.equal(await main(["diff", "job_7Q2K"], {}), 1);
 		assert.equal(await main(["submit", "job_7Q2K"], {}), 1);
 		assert.match(errors.at(-1) ?? "", /^acquit: AUTH_REQUIRED: /);
 		assert.equal(lines.some(line => line.includes("s3cret")), false);

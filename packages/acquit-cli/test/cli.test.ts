@@ -278,6 +278,16 @@ async function withApi(run: (lane: { url: string; databasePath: string }) => Pro
 
 test("the login exchange issues a single-use, expiring token that authenticates the operator surfaces", async () => {
 	await withApi(async ({ url, databasePath }) => {
+		// The lane seeds the operator the tutorial's session belongs to: a fresh database has no rows.
+		const { DatabaseSync } = await import("node:sqlite");
+		const db = new DatabaseSync(databasePath);
+		const at = "2026-11-01T11:12:00.000Z";
+		const operator = { id: "devon-ops", handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+			payouts: { kind: "READY", merchant: "D3SSQU3ZEN7R2", connectedAt: at } };
+		const account = { operator: "devon-ops", version: 0, balance: { allowance: 30, purchased: 0 }, lines: [] };
+		db.prepare("INSERT INTO operators VALUES (?, 0, ?, 0)").run("devon-ops", JSON.stringify(operator));
+		db.prepare("INSERT INTO credits VALUES (?, 0, ?)").run("devon-ops", JSON.stringify(account));
+		db.close();
 		const created = await fetch(`${url}/api/cli/codes`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
 		assert.equal(created.status, 201);
 		const first = await created.json() as { code: string; url: string; expiresAt: string };
@@ -342,10 +352,9 @@ test("the login exchange issues a single-use, expiring token that authenticates 
 		const row = { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture", openedAt: "2026-11-01T11:12:00.000Z",
 			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z", definitionOfDone: null }, bids: [],
 			state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } };
-		const { DatabaseSync } = await import("node:sqlite");
-		const db = new DatabaseSync(databasePath);
-		db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
-		db.close();
+		const jobs = new DatabaseSync(databasePath);
+		jobs.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
+		jobs.close();
 		const served = await (await fetch(`${url}/api/jobs/${row.id}`, { headers: auth })).json() as { job: { id: string }; now: string };
 		assert.equal(served.job.id, row.id);
 		assert.equal(typeof served.now, "string");

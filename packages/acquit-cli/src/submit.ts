@@ -8,7 +8,7 @@ import type { CommitSha } from "../../core/src/ids.ts";
 import type { JobProjection } from "../../core/src/job.ts";
 import { boundedDetail, describeRunFailure } from "../../core/src/verifier.ts";
 import { apiClient, CliError, resolveToken } from "./client.ts";
-import type { ApiClient } from "./client.ts";
+import type { ApiClient, StoredLogin } from "./client.ts";
 
 export type SubmitOptions = {
 	readonly jobId: string;
@@ -23,11 +23,12 @@ export type SubmitOptions = {
 const SHA = /^[0-9a-f]{7,40}$/;
 
 export function parseSubmitArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env,
-	readStdin: () => string = readTokenFromStdin): SubmitOptions {
+	readStdin: () => string = readTokenFromStdin, stored: () => StoredLogin | null = () => null): SubmitOptions {
+	const login = stored();
 	let jobId: string | null = null;
 	let dir = ".";
 	let remote: string | null = null;
-	let apiUrl = env.ACQUIT_API ?? "http://127.0.0.1:4310";
+	let apiUrl = env.ACQUIT_API ?? login?.api ?? "http://127.0.0.1:4310";
 	let tokenOnStdin = false;
 	let timeoutSeconds = 300;
 	for (let index = 0; index < argv.length; index++) {
@@ -56,8 +57,8 @@ export function parseSubmitArgs(argv: readonly string[], env: NodeJS.ProcessEnv 
 	}
 	if (jobId === null) throw new CliError("USAGE", "Usage: acquit submit <job> [--dir .] [--remote <url>] [--api <url>] [--token] [--timeout <seconds>]");
 	if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1) throw new CliError("USAGE", "--timeout takes whole seconds.");
-	return { jobId, dir, remote, apiUrl, token: resolveToken(tokenOnStdin ? readStdin().trim() || undefined : undefined, env),
-		timeoutSeconds, pollMs: 500 };
+	return { jobId, dir, remote, apiUrl, token: resolveToken(tokenOnStdin ? readStdin().trim() || undefined : undefined, env,
+		() => login?.token ?? null), timeoutSeconds, pollMs: 500 };
 }
 
 /** `--token` reads one line from stdin. The value never enters argv, a log line, or an error message. */
@@ -112,7 +113,7 @@ function safeEcho(text: string): string {
 }
 
 /** The block docs/tutorial.md prints. Every value comes from the projection, never from this process. */
-export function renderSubmission(view: JobProjection, handleOf: (operatorId: string) => string | null): string {
+export function renderSubmission(view: JobProjection, handleOf: (operatorId: string) => string | null, now: string): string {
 	const attempt = view.attempts.history.at(-1);
 	if (!attempt) throw new CliError("NOT_JUDGED", `Job ${view.id} has no judged attempt.`);
 	const total = attempt.ordinal + view.attempts.left;
@@ -134,7 +135,8 @@ export function renderSubmission(view: JobProjection, handleOf: (operatorId: str
 	lines.push("\tProtected paths: none touched");
 	lines.push(`Pull request opened: ${contract.repository}#${attempt.pullRequest ?? 0}`);
 	lines.push(`Job status: ${view.status}`);
-	lines.push(`Client review window: ${view.reviewEndsAt ? hoursBetween(attempt.at, view.reviewEndsAt) : 0} hours`);
+	// The window is what remains on the API's own clock, never what this process's wall clock says.
+	lines.push(`Client review window: ${view.reviewEndsAt ? hoursBetween(now, view.reviewEndsAt) : 0} hours`);
 	return lines.join("\n");
 }
 
@@ -171,9 +173,9 @@ export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promi
 	const sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
 	const deadline = (deps.now ?? Date.now)() + options.timeoutSeconds * 1000;
 	for (;;) {
-		const { job, handles } = await jobView(deps.client, options.jobId);
+		const { job, handles, now } = await jobView(deps.client, options.jobId);
 		const judged = job.attempts.history.find(attempt => attempt.sourceCommit === sourceCommit);
-		if (judged) return renderSubmission(job, operatorId => handles.get(operatorId) ?? null);
+		if (judged) return renderSubmission(job, operatorId => handles.get(operatorId) ?? null, now);
 		const failure = job.attempts.failure;
 		// The service reports a run that ended without a verdict at once, by name. Print it.
 		if (failure && failure.sourceCommit === sourceCommit && failure.runId !== previousFailure) {
@@ -187,12 +189,17 @@ export async function runSubmit(options: SubmitOptions, deps: SubmitDeps): Promi
 	}
 }
 
-/** The job projection plus the operator handles the block prints. The API resolves ids to handles. */
-async function jobView(client: ApiClient, jobId: string): Promise<{ job: JobProjection; handles: Map<string, string> }> {
+/**
+ * The job projection plus the operator handles the block prints, and the API's own clock. The API
+ * resolves ids to handles; `now` is what the review window is measured against, so a development
+ * clock that moved after the verdict cannot inflate the hours this block prints.
+ */
+async function jobView(client: ApiClient, jobId: string): Promise<{ job: JobProjection; handles: Map<string, string>; now: string }> {
 	const body = await client.get(`/api/jobs/${encodeURIComponent(jobId)}`);
-	const record = body && typeof body === "object" ? body as { job?: JobProjection; handles?: Record<string, string> } : {};
+	const record = body && typeof body === "object" ? body as { job?: JobProjection; handles?: Record<string, string>; now?: unknown } : {};
 	if (!record.job) throw new CliError("NOT_FOUND", `Job ${jobId} is not readable with this token.`);
-	return { job: record.job, handles: new Map(Object.entries(record.handles ?? {})) };
+	return { job: record.job, handles: new Map(Object.entries(record.handles ?? {})),
+		now: typeof record.now === "string" ? record.now : new Date().toISOString() };
 }
 
 function outcomeOf(body: unknown): { kind: string; reason?: string } | null {
