@@ -270,6 +270,18 @@ function stateConfig(workRepoUrl: string): ConfigPolicy {
 const OWN_CONFIG: ConfigPolicy = {
 	unlisted: "keep",
 	rules: [
+		// The scoped call settles the transport with `-c protocol.allow=never` and
+		// `-c protocol.https.allow=always`, but git prefers a `protocol.<name>.allow` from any scope
+		// to the general command-line key: a local `protocol.file.allow=always` (or any other
+		// protocol or helper name, `ext` included) reopens that transport for the token. The
+		// section's one other key, `protocol.version`, selects the wire protocol version on the
+		// transport the guard already settled and can steer no transport, so the allow shapes refuse
+		// and an ordinary operator's `protocol.version` stays.
+		{ key: /^protocol\.(?:.+\.)?allow$/, verdict: "refuse" },
+		// `remote.<url>.vcs` hands a push that names that URL to `git-remote-<vcs>`: a remote helper
+		// is not a transport, so the command-line protocol guard never refuses it (on git 2.43 the
+		// push crashes instead of failing `transport 'ext' not allowed`).
+		{ key: /^remote\..+\.vcs$/, verdict: "refuse" },
 		// `pushInsteadOf` rewrites a push to the URL the command names, exactly as `insteadOf` does.
 		{ key: /^url\..+\.(push)?insteadof$/, verdict: "refuse" },
 		{ key: /\.pushurl$/, verdict: "refuse" },

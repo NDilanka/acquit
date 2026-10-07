@@ -204,8 +204,13 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   judged key by key and refuses the key families that could steer the scoped token:
   `insteadOf`/`pushInsteadOf` rewrites, a `remote.*.pushurl`, `.proxy`, or `.proxyAuthMethod`, an http
   `proxy`, `extraHeader`, TLS verification git reads as false, or CA bundle, `core.hooksPath`,
-  `core.sshCommand`, `core.fsmonitor`, and any `credential.*` or `include*` family. The refusal names
-  the directory and its remedy. A rerun's fetch of the state checkout carries the token, so it is
+  `core.sshCommand`, `core.fsmonitor`, and any `credential.*` or `include*` family. A
+  `protocol.allow` or `protocol.<name>.allow` override refuses too, because git prefers a
+  per-protocol key from the checkout's own file to the command-line transport guard, so a local
+  `protocol.file.allow=always` reopens that transport for the scoped token; a `remote.<url>.vcs`
+  helper key refuses the same way, because it hands a push that names that URL to
+  `git-remote-<vcs>` instead of a transport the guard can settle. The refusal names the directory and
+  its remedy. A rerun's fetch of the state checkout carries the token, so it is
   scanned the same way; the one call that runs without a scan is the fresh clone, which has no git
   directory to read yet, passes `--template=`, and clones under an env that hides the system and
   global config. The state checkout's `remote.origin.url` is judged exactly: it keeps only when it is
