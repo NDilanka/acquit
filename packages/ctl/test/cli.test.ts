@@ -573,10 +573,11 @@ test("malformed ownership files fail closed without replacing their contents", a
 		assert.equal(await readFile(file, "utf8"), '{"api":{"pid":"not-a-pid"}}');
 	});
 });
-/** A stub API that answers readiness, records every webhook it receives, and answers applied then no-op. */
+/** A stub API that answers readiness, records every webhook it receives, and stores the outcome the real route would. */
 const webhookStub = `
 import { createServer } from "node:http";
 import { appendFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 let seen = 0;
 createServer((req, res) => {
 	const chunks = [];
@@ -586,9 +587,15 @@ createServer((req, res) => {
 		if (req.url === "/api/users") { res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"users":[]}'); return; }
 		seen += 1;
 		appendFileSync(process.env.STUB_LOG, JSON.stringify({ method: req.method, url: req.url, type: req.headers["content-type"], body }) + "\\n");
-		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify(seen === 1 ? { ok: true, outcome: "applied", edge: "CaptureCompleted", jobId: "job_7Q2K", changed: true }
-			: { ok: true, outcome: "no-op, job already PAID", jobId: "job_7Q2K" }));
+		const outcome = seen === 1 ? "applied" : "no-op, job already PAID";
+		const envelope = JSON.parse(body);
+		const db = new DatabaseSync(process.env.STUB_DB);
+		db.exec("CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL)");
+		db.prepare("INSERT INTO webhook_events VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET received_at = excluded.received_at, outcome = excluded.outcome")
+			.run(envelope.id, new Date().toISOString(), envelope.event_type, envelope.resource_type, envelope.resource.id, outcome);
+		db.close();
+		res.writeHead(202, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ received: true }));
 	});
 }).listen(Number(process.env.STUB_PORT), "127.0.0.1");
 `;
@@ -596,40 +603,42 @@ createServer((req, res) => {
 async function withWebhookStub(root: string, run: (port: number) => Promise<void>): Promise<void> {
 	const [port] = await unusedPorts(1);
 	const log = resolve(root, "stub.log");
-	const stub = spawn(process.execPath, ["--input-type=module", "-e", webhookStub], { env: { ...process.env, STUB_PORT: String(port), STUB_LOG: log }, stdio: "ignore" });
+	const stub = spawn(process.execPath, ["--input-type=module", "-e", webhookStub], { env: { ...process.env, STUB_PORT: String(port), STUB_LOG: log,
+		STUB_DB: resolve(root, "test.db") }, stdio: "ignore" });
 	try {
 		const deadline = Date.now() + 5000;
 		while (!(await reachable(`http://127.0.0.1:${port}/api/users`)) && Date.now() < deadline) await sleep(25);
 		await run(port);
 	} finally { stub.kill(); }
 }
-test("webhook replay reposts the recorded bytes and prints applied then the settled no-op", async () => {
+test("webhook replay reposts the stored envelope and prints applied then the settled no-op", async () => {
 	await fixture(async (cli, root) => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const db = new DatabaseSync(resolve(root, "test.db"));
-		db.exec("CREATE TABLE webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL, outcome TEXT NOT NULL)");
-		const recorded = '{"id":"WH-CAPTURE-1","event_type":"PAYMENT.CAPTURE.COMPLETED","resource_type":"capture","resource":{"id":"5O190127TN364715T"}}';
-		db.prepare("INSERT INTO webhook_events VALUES (?, ?, ?, ?)").run("WH-CAPTURE-1", "2026-11-01T11:12:00.000Z", recorded, "applied");
+		db.exec("CREATE TABLE webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL)");
+		db.prepare("INSERT INTO webhook_events VALUES (?, ?, ?, ?, ?, ?)").run("WH-CAPTURE-1", "2026-11-01T11:12:00.000Z",
+			"PAYMENT.CAPTURE.COMPLETED", "capture", "5O190127TN364715T", "applied");
 		db.close();
+		const rebuilt = '{"id":"WH-CAPTURE-1","event_type":"PAYMENT.CAPTURE.COMPLETED","resource_type":"capture","resource":{"id":"5O190127TN364715T"}}';
 		await withWebhookStub(root, async port => {
 			const env = { PORT: String(port) };
 			const first = cli(["webhook", "replay", "--event", "WH-CAPTURE-1"], env);
 			assert.equal(first.code, 0);
-			assert.equal(first.stdout, "applied  CaptureCompleted  job_7Q2K  WH-CAPTURE-1\n");
+			assert.equal(first.stdout, "applied  WH-CAPTURE-1\n");
 			const second = cli(["webhook", "replay", "--event", "WH-CAPTURE-1"], env);
 			assert.equal(second.code, 0);
-			assert.equal(second.stdout, "no-op, job already PAID  job_7Q2K  WH-CAPTURE-1\n");
+			assert.equal(second.stdout, "no-op, job already PAID  WH-CAPTURE-1\n");
 			const json = cli(["webhook", "replay", "--event", "WH-CAPTURE-1", "--json"], env);
-			assert.deepEqual(JSON.parse(json.stdout).data, { text: "no-op, job already PAID  job_7Q2K  WH-CAPTURE-1\n", eventId: "WH-CAPTURE-1",
-				source: "recorded", status: 200, outcome: "no-op, job already PAID", jobId: "job_7Q2K", posted: { url: `http://127.0.0.1:${port}/paypal/webhook`, bytes: Buffer.byteLength(recorded) } });
-			// The route sees the stored bytes, not a re-encoding, and never a token.
+			assert.deepEqual(JSON.parse(json.stdout).data, { text: "no-op, job already PAID  WH-CAPTURE-1\n", eventId: "WH-CAPTURE-1",
+				source: "recorded", status: 202, outcome: "no-op, job already PAID", posted: { url: `http://127.0.0.1:${port}/paypal/webhook`, bytes: Buffer.byteLength(rebuilt) } });
+			// The route sees the envelope rebuilt from the stored fields, not a stored body, and never a token.
 			const received = (await readFile(resolve(root, "stub.log"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
 			assert.deepEqual(received.map(entry => [entry.method, entry.url, entry.type, entry.body]),
-				[["POST", "/paypal/webhook", "application/json", recorded], ["POST", "/paypal/webhook", "application/json", recorded], ["POST", "/paypal/webhook", "application/json", recorded]]);
+				[["POST", "/paypal/webhook", "application/json", rebuilt], ["POST", "/paypal/webhook", "application/json", rebuilt], ["POST", "/paypal/webhook", "application/json", rebuilt]]);
 		});
 	});
 });
-test("webhook replay refuses an unknown id, a missing source, and a flag that belongs to the other source", async () => {
+test("webhook replay refuses an unknown id, a missing source, an unreadable record, and a crossed flag", async () => {
 	await fixture(async (cli, root) => {
 		const none = cli(["webhook", "replay", "--event", "WH-NOPE"]);
 		assert.equal(none.code, 1);
@@ -638,11 +647,16 @@ test("webhook replay refuses an unknown id, a missing source, and a flag that be
 			fix: "Start this lane's app once so the webhook route creates the table, deliver an event, then retry." });
 		const { DatabaseSync } = await import("node:sqlite");
 		const db = new DatabaseSync(resolve(root, "test.db"));
-		db.exec("CREATE TABLE webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL, outcome TEXT NOT NULL)");
+		db.exec("CREATE TABLE webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL)");
+		db.prepare("INSERT INTO webhook_events VALUES (?, ?, ?, ?, ?, ?)").run("WH-UNREADABLE-1", "2026-11-01T11:12:00.000Z", "", "", "", "refused, unreadable event");
 		db.close();
 		const missing = cli(["webhook", "replay", "--event", "WH-NOPE"]);
 		assert.equal(missing.code, 1);
 		assert.equal(JSON.parse(missing.stdout).error.code, "EVENT_NOT_FOUND");
+		// A recorded delivery that named no event type or resource has no envelope to rebuild.
+		const unreadable = cli(["webhook", "replay", "--event", "WH-UNREADABLE-1"]);
+		assert.equal(unreadable.code, 1);
+		assert.equal(JSON.parse(unreadable.stdout).error.code, "EVENT_NOT_REPLAYABLE");
 		const both = cli(["webhook", "replay", "--event", "WH-NOPE", "--capture", "CAP1"]);
 		assert.equal(both.code, 2);
 		assert.equal(JSON.parse(both.stdout).error.code, "INVALID_ARGUMENT");
@@ -660,7 +674,7 @@ test("webhook replay --capture builds a dev envelope under a derived or fresh ev
 			const env = { PORT: String(port), ACQUIT_DEV: "1" };
 			const first = cli(["webhook", "replay", "--capture", "5O190127TN364715T"], env);
 			assert.equal(first.code, 0);
-			assert.match(first.stdout, /^applied  CaptureCompleted  job_7Q2K  WH-CAPTURE-[0-9A-F]{8}\n$/);
+			assert.match(first.stdout, /^applied  WH-CAPTURE-[0-9A-F]{8}\n$/);
 			const derived = first.stdout.trim().split("  ").at(-1);
 			const again = cli(["webhook", "replay", "--capture", "5O190127TN364715T"], env);
 			assert.equal(again.stdout.trim().split("  ").at(-1), derived, "The same capture derives the same event id, so a second run is a redelivery.");
