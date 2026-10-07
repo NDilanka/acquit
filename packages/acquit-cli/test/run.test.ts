@@ -21,7 +21,8 @@ import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from ".
 import { PROVIDER_SPECS } from "../src/operator.ts";
 import type { Provider } from "../src/operator.ts";
 import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafeScopedConfig, checkoutGitArgs, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
-import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
+import type { JobCheckout } from "../src/gitstate.ts";
+import { makeSecretDir, secretGuard, workRepoUrl, writeAskpass } from "../src/workrepo.ts";
 import { pushHead, localHead } from "../src/submit.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
@@ -86,6 +87,9 @@ type RecordingGit = GitRun & { readonly calls: { readonly args: readonly string[
  * gets the one side effect prepareWorkRepo trusts: the `gitdir:` link `--separate-git-dir` writes. */
 function fakeGit(answers: { numstat?: string; untracked?: string; head?: string; origin?: string } = {}): RecordingGit {
 	const calls: { args: readonly string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
+	// The origin a state checkout cloned from the job's work repo carries: the one URL the state
+	// policy keeps, and the one the CLI names on every token call.
+	const origin = answers.origin ?? workRepoUrl(workRepo);
 	const run: GitRun = (args, env) => {
 		calls.push({ args: [...args], env });
 		const line = args.join(" ");
@@ -103,7 +107,10 @@ function fakeGit(answers: { numstat?: string; untracked?: string; head?: string;
 		if (line.includes("diff --numstat")) return { status: 0, stdout: answers.numstat ?? "", stderr: "" };
 		if (line.includes("ls-files")) return { status: 0, stdout: answers.untracked ?? "", stderr: "" };
 		if (line.includes("rev-parse HEAD")) return { status: 0, stdout: `${answers.head ?? "b".repeat(40)}\n`, stderr: "" };
-		if (line.includes("config --get remote.origin.url")) return { status: 0, stdout: `${answers.origin ?? ""}\n`, stderr: "" };
+		// The scan reads git's resolved config list, so the fake answers with the one entry the CLI's
+		// own clone writes there.
+		if (line.includes("config --list --show-scope")) return { status: 0, stdout: `local\0remote.origin.url\n${origin}\0`, stderr: "" };
+		if (line.includes("config --get-all remote.origin.url")) return { status: 0, stdout: `${origin}\n`, stderr: "" };
 		if (line.includes("config user.email")) return { status: 0, stdout: "", stderr: "" };
 		return { status: 0, stdout: "", stderr: "" };
 	};
@@ -407,10 +414,12 @@ test("the git child env strips every inherited GIT_* and SSH_ASKPASS and reads n
 		assert.equal(statSync(env.GIT_CONFIG_GLOBAL!).mode & 0o777, 0o600);
 		assert.equal(statSync(join(root, "acquit", "work")).mode & 0o777, 0o700);
 		// Command-line config outranks any local config: hooks, fsmonitor, credentials, ssh, TLS
-		// verification, and any proxy are all settled before git reads the checkout's own config.
+		// verification, any proxy, and every kind of submodule recursion are all settled before git
+		// reads the checkout's own config.
 		assert.deepEqual(gitGuardArgs({ XDG_STATE_HOME: root }), ["-c", `core.hooksPath=${join(root, "acquit", "hooks")}`,
 			"-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "core.sshCommand=",
-			"-c", "http.sslVerify=true", "-c", "http.proxy="]);
+			"-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "submodule.recurse=false",
+			"-c", "fetch.recurseSubmodules=false", "-c", "push.recurseSubmodules=no"]);
 		assert.equal(statSync(join(root, "acquit", "hooks")).isDirectory(), true);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -654,7 +663,7 @@ test("the unsafe-config refusal names an operator's own git directory and its --
 		assert.equal(spawnSync("git", ["clone", "--quiet", bare, own], { encoding: "utf8" }).status, 0);
 		const gitDir = join(own, ".git");
 		assert.equal(git(["-C", own, "config", "--local", "url.https://evil.example/.insteadOf", bare]).status, 0);
-		assert.throws(() => assertSafeScopedConfig(git, { gitDir, workTree: own }, env, "own"),
+		assert.throws(() => assertSafeScopedConfig(git, { gitDir, workTree: own }, env, "own", bare),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(gitDir)
 				&& error.message.includes("git config --local --unset") && error.message.includes("url.https://evil.example/.insteadof"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -682,7 +691,7 @@ test("a planted pushInsteadOf is refused, and the decoy it names never receives 
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("a state gitdir's origin must name github, and a remote the CLI did not write refuses", () => {
+test("a state gitdir's origin is exactly the one URL the CLI cloned, and a remote the CLI did not write refuses", () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-remote-url-"));
 	try {
 		const { bare, frozen, git } = workRepoFixture(root);
@@ -694,36 +703,40 @@ test("a state gitdir's origin must name github, and a remote the CLI did not wri
 		writeFileSync(join(work, "money.ts"), "const DECIMALS = 3;\n");
 		const commit = submissionCommit(git, checkout, frozen, "fix", env);
 		assert.notEqual(commit, null);
-		const origin = (value: string): void => {
-			assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.url", value]).status, 0, value);
+		const origin = (...values: readonly string[]): void => {
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", "remote.origin.url"]).status, 0);
+			for (const value of values) assert.equal(git(["--git-dir", state, "config", "--local", "--add", "remote.origin.url", value]).status, 0, value);
 		};
-		// The clone's own origin is the fixture's local bare path: no host, so no host to steer to.
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
-		// The CLI writes remote.origin.url, so its value is judged: a github.com URL passes in both
-		// spellings, the scp-like one included.
+		// The clone's own origin is the one URL this checkout was cloned from.
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), []);
+		// A github.com URL is not this checkout's origin: only the exact URL passes, and the token
+		// call names that URL, so a lookalike or a different host cannot steer it.
 		origin("https://github.com/acquit-forks/invoice-app-7q2k.git");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
-		origin("github.com:acquit-forks/invoice-app-7q2k");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), []);
-		// Any other host could carry the scoped push somewhere the job's work repo is not, including
-		// an scp-like value with no userinfo prefix.
-		origin("https://evil.example/invoice-app-7q2k.git");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.url"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
 		assert.throws(() => pushWork(git, checkout, bare, commit!, env),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.origin.url"));
+		// The same URL in another spelling passes: the comparison trims a trailing slash and `.git`.
+		origin(`${bare}/`);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), []);
+		// A second value refuses even when the first one is the real URL, and even when both are.
+		origin(bare, "https://evil.example/repo.git");
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		origin(bare, bare);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		// Any other host refuses, scp-like values with no userinfo prefix included.
 		origin("evil.example:repo");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.url"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
 		origin("evil.example:repo.git");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.url"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
 		// A second remote is config the CLI did not write: a state checkout keeps remote.origin.url
 		// alone, so `remote.work.url` refuses even when it names github.com.
 		origin(bare);
 		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.url", "https://github.com/acquit-forks/invoice-app-7q2k.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.work.url"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.work.url"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the off-github remote URL rule leaves an operator's own checkout alone; a rewrite still refuses it", () => {
+test("an operator's own checkout's remotes are theirs; a rewrite still refuses it", () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-own-remote-"));
 	try {
 		const { bare, git } = workRepoFixture(root);
@@ -734,13 +747,13 @@ test("the off-github remote URL rule leaves an operator's own checkout alone; a 
 		// The scoped push names the work-repo URL explicitly, so a remote in the operator's own
 		// checkout cannot steer it: their remotes are theirs.
 		assert.equal(git(["-C", own, "config", "--local", "remote.evil.url", "https://evil.example/invoice-app-7q2k.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
-		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own"));
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), []);
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own", bare));
 		// Every rewrite stays refused everywhere, the own checkout included: those rewrite the URL
 		// the scoped push names, not the checkout's own.
 		assert.equal(git(["-C", own, "config", "--local", `url.https://evil.example/.insteadOf`, bare]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["url.https://evil.example/.insteadof"]);
-		assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), ["url.https://evil.example/.insteadof"]);
+		assert.throws(() => assertSafeScopedConfig(git, location, env, "own", bare),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("git config --local --unset"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -769,7 +782,7 @@ test("URL-scoped and plain http config keys refuse a scoped push on a state chec
 		];
 		for (const [key, value] of unsafe) {
 			config(key, value);
-			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [key.toLowerCase()], key);
+			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), [key.toLowerCase()], key);
 			assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, env),
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
 			assert.equal(git(["--git-dir", state, "config", "--local", "--unset", key]).status, 0, key);
@@ -778,7 +791,7 @@ test("URL-scoped and plain http config keys refuse a scoped push on a state chec
 		// verification is settled by the guard's `-c` overrides. So a true sslVerify is config the CLI
 		// did not write here and refuses with the rest.
 		config("http.sslVerify", "true");
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslverify"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["http.sslverify"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -802,28 +815,28 @@ test("git decides which sslVerify spellings are false, so empty, 00, 0x0, and 0k
 		// to a URL-scoped key. A hand-written list of false spellings caught only the last one.
 		for (const value of ["", "00", "0x0", "0k", "false"]) {
 			config("http.sslVerify", value);
-			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["http.sslverify"], JSON.stringify(value));
-			assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
+			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), ["http.sslverify"], JSON.stringify(value));
+			assert.throws(() => assertSafeScopedConfig(git, location, env, "own", bare),
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("http.sslverify"), JSON.stringify(value));
 			unset("http.sslVerify");
 		}
 		// The URL-scoped empty value is the same false, and no guard override outranks it.
 		config("http.https://evil.example/.sslVerify", "");
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["http.https://evil.example/.sslverify"]);
-		assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), ["http.https://evil.example/.sslverify"]);
+		assert.throws(() => assertSafeScopedConfig(git, location, env, "own", bare),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("http.https://evil.example/.sslverify"));
 		unset("http.https://evil.example/.sslVerify");
 		// Every spelling git reads as true passes, and a key present with no value is true to git.
 		for (const value of ["true", "yes", "on", "1"]) {
 			config("http.sslVerify", value);
-			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), [], value);
+			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), [], value);
 			unset("http.sslVerify");
 		}
 		writeFileSync(join(own, ".git", "config"), `${readFileSync(join(own, ".git", "config"), "utf8")}\n[http]\n\tsslVerify\n`);
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), []);
 		// git cannot read this one as a boolean at all, and an answer that is not true refuses.
 		config("http.sslVerify", "banana");
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), ["http.sslverify"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), ["http.sslverify"]);
 		// A state checkout never gets to that judgement: the CLI writes no http key into its own
 		// clone, so the key refuses there whatever value it holds.
 		const state = stateGitDir("job_7Q2K", env);
@@ -831,7 +844,7 @@ test("git decides which sslVerify spellings are false, so empty, 00, 0x0, and 0k
 		prepareWorkRepo(git, checkout, bare, frozen, env);
 		for (const value of ["true", "false", ""]) {
 			assert.equal(git(["--git-dir", state, "config", "--local", "http.sslVerify", value]).status, 0, JSON.stringify(value));
-			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslverify"], JSON.stringify(value));
+			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["http.sslverify"], JSON.stringify(value));
 			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", "http.sslVerify"]).status, 0);
 		}
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -849,14 +862,14 @@ test("a planted sslCAInfo or sslCAPath refuses plain and URL-scoped", () => {
 		// precondition and outcome as sslVerify=false, so both names refuse in both shapes.
 		for (const key of ["http.sslCAInfo", "http.https://evil.example/.sslCAInfo", "http.sslCAPath", "http.https://evil.example/.sslCAPath"]) {
 			assert.equal(git(["--git-dir", state, "config", "--local", key, "/tmp/planted-ca"]).status, 0, key);
-			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [key.toLowerCase()], key);
+			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), [key.toLowerCase()], key);
 			assert.throws(() => pushWork(git, checkout, bare, "a".repeat(40) as CommitSha, env),
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
 			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", key]).status, 0, key);
 		}
 		// A config-file spelling git normalizes on read refuses the same way.
 		writeFileSync(join(state, "config"), `${readFileSync(join(state, "config"), "utf8")}\n[HTTP]\n\tSSLCaInfo = /tmp/planted-ca\n`);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["http.sslcainfo"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["http.sslcainfo"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -879,8 +892,8 @@ test("a fresh state checkout the CLI cloned and seeded holds no key the state po
 		assert.ok(listed.includes("remote.origin.url"), listed.join(", "));
 		assert.ok(listed.includes("remote.origin.fetch"), listed.join(", "));
 		assert.ok(listed.includes("user.name") && listed.includes("user.email"), listed.join(", "));
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [], `the clone wrote ${listed.join(", ")}`);
-		assert.doesNotThrow(() => assertSafeScopedConfig(git, checkout, env, "state"));
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), [], `the clone wrote ${listed.join(", ")}`);
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, checkout, env, "state", bare));
 		// A rerun reads the same checkout again and fetches through the scoped token, so the rerun
 		// branch scans the location it is about to fetch from: this proves the allowlist matches the
 		// checkout the CLI itself produced, not only the one it had just cloned.
@@ -888,6 +901,13 @@ test("a fresh state checkout the CLI cloned and seeded holds no key the state po
 		try {
 			const askpass = writeAskpass(secret.path, "ghs_CANARY_STATE_ALLOW");
 			assert.doesNotThrow(() => prepareWorkRepo(git, checkout, bare, frozen, env, askpass.env));
+			// The scoped push names the same URL the clone wrote, so the exact-origin rule keeps a
+			// checkout the CLI itself produced and the token call runs.
+			writeFileSync(join(checkout.workTree, "money.ts"), "const DECIMALS = 3;\n");
+			const commit = submissionCommit(git, checkout, frozen, "fix", env);
+			assert.notEqual(commit, null);
+			assert.doesNotThrow(() => pushWork(git, checkout, bare, commit!, env, askpass.env));
+			assert.equal(git(["--git-dir", bare, "rev-parse", `refs/heads/submissions/${commit}`]).status, 0);
 		} finally { secret.remove(); }
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -908,20 +928,20 @@ test("a state checkout keeps only the clone's own keys, so any other key refuses
 		for (const key of ["remote.origin.proxy", "remote.origin.proxyAuthMethod", "remote.origin.pushurl",
 			"remote.origin.vcs", "core.fsmonitor", "gc.auto", "foo.bar", "include.path"]) {
 			assert.equal(git(["--git-dir", state, "config", "--local", key, "http://127.0.0.1:1/"]).status, 0, key);
-			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), [key.toLowerCase()], key);
-			assert.throws(() => assertSafeScopedConfig(git, checkout, env, "state"),
+			assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), [key.toLowerCase()], key);
+			assert.throws(() => assertSafeScopedConfig(git, checkout, env, "state", bare),
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
 			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", key]).status, 0, key);
 		}
 		// A second remote is unlisted whatever it names, even when its URL names github.com: only the
 		// remote the clone wrote has a value rule that knows which URLs the job's work repo can be at.
 		assert.equal(git(["--git-dir", state, "config", "--local", "remote.work.pushurl", "https://evil.example/repo.git"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.work.pushurl"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.work.pushurl"]);
 		assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", "remote.work.pushurl"]).status, 0);
 		// The clone's own origin keeps a value rule: the refspec the rerun fetch reads is the one the
 		// clone wrote, so any other refspec refuses.
 		assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]).status, 0);
-		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state"), ["remote.origin.fetch"]);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.fetch"]);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -946,8 +966,8 @@ test("an operator's own checkout keeps the keys that do not steer the scoped tok
 		config("core.editor", "vim");
 		config("color.ui", "auto");
 		config("push.default", "simple");
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
-		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own"));
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), []);
+		assert.doesNotThrow(() => assertSafeScopedConfig(git, location, env, "own", bare));
 		// Each of these can move the scoped token, add a header to its request, turn off the
 		// verification of where it goes, or run code on the machine that holds it. A remote nickname
 		// cannot hold a slash, so a URL-named remote's own `.url` refuses too.
@@ -962,13 +982,13 @@ test("an operator's own checkout keeps the keys that do not steer the scoped tok
 			["url.https://evil.example/.pushInsteadOf", "https://github.com/"],
 			["remote.https://evil.example/repo.git.url", "https://evil.example/repo.git"]] as const) {
 			config(key, value);
-			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), [key.toLowerCase()], key);
-			assert.throws(() => assertSafeScopedConfig(git, location, env, "own"),
+			assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), [key.toLowerCase()], key);
+			assert.throws(() => assertSafeScopedConfig(git, location, env, "own", bare),
 				(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes(key.toLowerCase()), key);
 			unset(key);
 		}
 		// A refusal is per key, never a verdict on the checkout: the kept keys are still there.
-		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own"), []);
+		assert.deepEqual(unsafeGitConfigKeys(git, location, env, "own", bare), []);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -1031,6 +1051,37 @@ function carriedCanary(records: readonly { readonly authorization: string }[], c
 	});
 }
 
+/**
+ * A plain-HTTP remote in its own process that records every request and answers 401, so a git child
+ * that dials it asks the CLI's askpass. A fetch is synchronous, so an in-process server could never
+ * answer it. The host is the lookalike form's target too: `http://github.com\@127.0.0.1:<port>/...`
+ * reads as github.com to WHATWG's URL parser and as 127.0.0.1 to git and curl.
+ */
+async function recordingHttpRemote(root: string): Promise<{ readonly port: number; readonly url: string; readonly agentUrl: string;
+	readonly requests: () => readonly { readonly url: string; readonly authorization: string }[]; readonly stop: () => void }> {
+	const log = join(root, "requests.log");
+	writeFileSync(log, "");
+	const child = spawn(process.execPath, ["--input-type=module", "-e",
+		"import { appendFileSync } from 'node:fs';\n"
+		+ "import { createServer } from 'node:http';\n"
+		+ "const server = createServer((request, response) => {\n"
+		+ `	appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url: request.url ?? "", authorization: request.headers.authorization ?? "" }) + "\\n");\n`
+		+ "	response.writeHead(401, { 'WWW-Authenticate': 'Basic realm=\"acquit-test\"' });\n"
+		+ "	response.end();\n"
+		+ "});\n"
+		+ "server.listen(0, '127.0.0.1', () => console.log(server.address().port));\n"],
+		{ stdio: ["ignore", "pipe", "pipe"] });
+	const port = await printedPort(child);
+	return {
+		port,
+		url: `http://127.0.0.1:${port}/invoice-app-7q2k.git`,
+		agentUrl: `http://127.0.0.1:${port}/agent.git`,
+		requests: () => readFileSync(log, "utf8").split("\n").filter(line => line !== "")
+			.map(line => JSON.parse(line) as { readonly url: string; readonly authorization: string }),
+		stop: () => child.kill("SIGKILL"),
+	};
+}
+
 test("worktree config the push reads refuses through pushWork and pushHead, and no request leaves", async () => {
 	const root = mkdtempSync(join(tmpdir(), "acquit-run-worktree-config-"));
 	const remote = await selfSignedRemote(root);
@@ -1041,6 +1092,9 @@ test("worktree config the push reads refuses through pushWork and pushHead, and 
 		const state = stateGitDir("job_7Q2K", env);
 		const checkout = { gitDir: state, workTree: join(root, "work") };
 		prepareWorkRepo(git, checkout, bare, frozen, env);
+		// The scoped push this test guards names the self-signed remote, so the checkout's origin is
+		// that URL: the state scan judges the origin against the exact URL the token call names.
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.url", remote.url]).status, 0);
 		writeFileSync(join(checkout.workTree, "money.ts"), "const DECIMALS = 3;\n");
 		const commit = submissionCommit(git, checkout, frozen, "fix", env);
 		assert.notEqual(commit, null);
@@ -1118,6 +1172,141 @@ test("a rerun fetch refuses the planted worktree config before the scoped token 
 		assert.throws(() => prepareWorkRepo(git, checkout, bare, frozen, env, askpass.env),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("extensions.worktreeconfig"));
 		assert.equal(remote.requests().length, refused);
+	} finally {
+		remote.stop();
+		secret.remove();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the rerun fetch never recurses into a work-tree submodule, so the scoped token stays with the work repo", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-submodule-"));
+	const remote = await recordingHttpRemote(root);
+	const secret = makeSecretDir();
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const canary = "ghs_CANARY_SUBMODULE";
+		const askpass = writeAskpass(secret.path, canary);
+		// Each arm gets its own bare work repo with one submission ref, which is the r14 shape: git's
+		// on-demand recursion is not uniform across several new submission refs, so a shared remote
+		// would weaken every arm below.
+		const bareFor = (name: string): string => {
+			mkdirSync(join(root, name), { recursive: true });
+			const copy = join(root, name, "invoice-app-7Q2K.git");
+			assert.equal(spawnSync("git", ["clone", "--quiet", "--bare", bare, copy]).status, 0);
+			return copy;
+		};
+		// What the sandboxed agent writes into its work tree during run 1: a nested repo whose origin
+		// is a host the agent controls, plus the .gitmodules that makes git treat it as a submodule.
+		// The nested HEAD names a commit it does not hold, so an on-demand fetch must ask that origin.
+		const plantRun1 = (jobId: string, armBare: string, gitmodulesExtra = ""): JobCheckout => {
+			const checkout = { gitDir: stateGitDir(jobId, env), workTree: join(root, `work-${jobId}`) };
+			prepareWorkRepo(git, checkout, armBare, frozen, env);
+			const sub = join(checkout.workTree, "sub");
+			mkdirSync(sub);
+			assert.equal(git(["-C", sub, "init", "--quiet", "-b", "main"], env).status, 0);
+			writeFileSync(join(sub, "x"), "x\n");
+			assert.equal(git(["-C", sub, "add", "-A"], env).status, 0);
+			assert.equal(git(["-C", sub, "-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "--quiet", "-m", "sub"], env).status, 0);
+			assert.equal(git(["-C", sub, "remote", "add", "origin", remote.agentUrl], env).status, 0);
+			writeFileSync(join(sub, ".git", "refs", "heads", "main"), `${"1".repeat(40)}\n`);
+			writeFileSync(join(checkout.workTree, ".gitmodules"), `[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n${gitmodulesExtra}`);
+			const commit = submissionCommit(git, checkout, frozen, "run 1", env);
+			assert.notEqual(commit, null);
+			pushWork(git, checkout, armBare, commit!, env, askpass.env);
+			return checkout;
+		};
+		// The fixed arm: the rerun fetch names the work-repo URL and never recurses, so the planted
+		// host is never dialed and the canary never leaves the CLI.
+		const fixBare = bareFor("fix");
+		const fixed = plantRun1("job_FIX", fixBare);
+		const mark = remote.requests().length;
+		prepareWorkRepo(git, fixed, fixBare, frozen, env, askpass.env);
+		assert.equal(remote.requests().length, mark, "the rerun fetch dialed the planted host");
+		// The work-tree .gitmodules can turn recursion back on for a fetch that does not name the
+		// flag; the guard config and the flag both outrank it, so this arm stays at zero too.
+		const modulesBare = bareFor("fix-modules");
+		const fixedModules = plantRun1("job_FIXMOD", modulesBare, "\tfetchRecurseSubmodules = true\n");
+		const modulesMark = remote.requests().length;
+		prepareWorkRepo(git, fixedModules, modulesBare, frozen, env, askpass.env);
+		assert.equal(remote.requests().length, modulesMark, "a planted .gitmodules re-enabled recursion");
+		// Control: the old fetch shape (a remote name git resolves from config, no flag) dials the
+		// planted host and sends the canary, so the zero-hit arms prove the fix and not a dead server.
+		const controlBare = bareFor("control");
+		const control = plantRun1("job_CTRL", controlBare);
+		const controlMark = remote.requests().length;
+		const oldShape = spawnSync("git", ["--git-dir", control.gitDir, "--work-tree", control.workTree, "fetch", "--quiet", "--no-tags", "origin"],
+			{ encoding: "utf8", env: { ...env, ...askpass.env }, timeout: 60_000 });
+		const fresh = remote.requests().slice(controlMark);
+		assert.ok(fresh.length > 0, `the old fetch shape never dialed the planted host: ${oldShape.stderr}`);
+		assert.equal(carriedCanary(fresh, canary), true, "the old fetch shape never sent the canary");
+	} finally {
+		remote.stop();
+		secret.remove();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a lookalike origin first and the real URL last refuses, and no request reaches the lookalike host", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-run-origin-lookalike-"));
+	const remote = await recordingHttpRemote(root);
+	const secret = makeSecretDir();
+	try {
+		const { bare, frozen, git } = workRepoFixture(root);
+		const env = hardenedEnv(root);
+		const state = stateGitDir("job_7Q2K", env);
+		const checkout = { gitDir: state, workTree: join(root, "work") };
+		prepareWorkRepo(git, checkout, bare, frozen, env);
+		writeFileSync(join(checkout.workTree, "money.ts"), "const DECIMALS = 3;\n");
+		const commit = submissionCommit(git, checkout, frozen, "fix", env);
+		assert.notEqual(commit, null);
+		const canary = "ghs_CANARY_ORIGIN_LOOKALIKE";
+		const askpass = writeAskpass(secret.path, canary);
+		const setOrigin = (...values: readonly string[]): void => {
+			assert.equal(git(["--git-dir", state, "config", "--local", "--unset-all", "remote.origin.url"]).status, 0);
+			for (const value of values) assert.equal(git(["--git-dir", state, "config", "--local", "--add", "remote.origin.url", value]).status, 0, value);
+		};
+		// WHATWG's URL parser reads this value's host as github.com; git and curl read 127.0.0.1.
+		const lookalike = `http://github.com\\@127.0.0.1:${remote.port}/o/w.git`;
+		// A single lookalike value refuses the scan, the scoped push, and the rerun's own origin check.
+		setOrigin(lookalike);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		assert.throws(() => assertSafeScopedConfig(git, checkout, env, "state", bare),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.origin.url"));
+		assert.throws(() => pushWork(git, checkout, bare, commit!, env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.origin.url"));
+		assert.throws(() => prepareWorkRepo(git, checkout, bare, frozen, env, askpass.env),
+			(error: CliError) => error.code === "DIR_NOT_WORK_REPO");
+		assert.equal(remote.requests().length, 0, "a request reached the lookalike host");
+		// The lookalike first and the real URL last: `config --get` used to read the last value while
+		// the fetch used the first, so the scan passed and the token went to the lookalike's host.
+		setOrigin(lookalike, bare);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		assert.throws(() => pushWork(git, checkout, bare, commit!, env),
+			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("remote.origin.url"));
+		assert.throws(() => prepareWorkRepo(git, checkout, bare, frozen, env, askpass.env),
+			(error: CliError) => error.code === "DIR_NOT_WORK_REPO");
+		assert.equal(remote.requests().length, 0, "a request reached the lookalike host");
+		// Control: the old shape (the fetch resolves `origin` from config and takes its first value)
+		// dials the lookalike and sends the canary, so the zero-request arms are the refusal.
+		const mark = remote.requests().length;
+		const oldShape = spawnSync("git", ["--git-dir", state, "--work-tree", checkout.workTree, "fetch", "--quiet", "--no-tags", "origin"],
+			{ encoding: "utf8", env: { ...env, ...askpass.env }, timeout: 60_000 });
+		const fresh = remote.requests().slice(mark);
+		assert.ok(fresh.length > 0, `the old shape never dialed the lookalike: ${oldShape.stderr}`);
+		assert.equal(carriedCanary(fresh, canary), true, "the old shape never sent the canary");
+		// A plain off-github value refuses, the real URL first with the lookalike last still refuses,
+		// and two values are two values even when both are the real URL: the clone writes exactly one.
+		setOrigin("https://evil.example/invoice-app-7q2k.git");
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		setOrigin(bare, lookalike);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		setOrigin(bare, bare);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), ["remote.origin.url"]);
+		// The one URL the CLI cloned passes.
+		setOrigin(bare);
+		assert.deepEqual(unsafeGitConfigKeys(git, checkout, env, "state", bare), []);
 	} finally {
 		remote.stop();
 		secret.remove();
@@ -1252,7 +1441,7 @@ test("a scan that reads a system or global config refuses, because the CLI hides
 		// leaves the operator's home config visible is not the env the push uses, and git naming that
 		// scope is the only sign, so the scan refuses instead of judging a file the push never reads.
 		assert.throws(() => assertSafeScopedConfig(git, { gitDir: join(own, ".git"), workTree: own },
-			{ HOME: home, GIT_CONFIG_NOSYSTEM: "1" }, "own"),
+			{ HOME: home, GIT_CONFIG_NOSYSTEM: "1" }, "own", bare),
 			(error: CliError) => error.code === "GIT_CONFIG_UNSAFE" && error.message.includes("global") && error.message.includes("user.name"));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -1306,6 +1495,9 @@ test("the scoped submit push outlives the scan's own bound when a remote answers
 		const state = stateGitDir("job_7Q2K", env);
 		const checkout = { gitDir: state, workTree: join(root, "work") };
 		prepareWorkRepo(git, checkout, bare, frozen, env);
+		// The scoped push names the slow remote, so the checkout's origin is that URL: the state scan
+		// judges the origin against the exact URL the token call names before the push runs.
+		assert.equal(git(["--git-dir", state, "config", "--local", "remote.origin.url", remote.url]).status, 0);
 		writeFileSync(join(checkout.workTree, "money.ts"), "const DECIMALS = 3;\n");
 		const commit = submissionCommit(git, checkout, frozen, "fix", env);
 		assert.notEqual(commit, null);
@@ -1812,6 +2004,17 @@ test("in a full run, only clone, fetch, and push carry the askpass, each after t
 		const deps = { client: fakeClient(), provider: keyPort(keyCanary), docker: fakeDocker(), git, print: () => {}, now: () => 0, env };
 		const kindOf = (args: readonly string[]): string => args.includes("clone") ? "clone"
 			: args.includes("fetch") ? "fetch" : args.includes("push") ? "push" : "local";
+		// The destination a token call names: the clone's URL argument, or the first non-option word
+		// after fetch/push. The assertions below require it to be the CLI-minted URL, so a token call
+		// that names a remote (`origin`) or any other word instead fails this test.
+		const destinationOf = (args: readonly string[]): string | null => {
+			const at = args.findIndex(arg => arg === "clone" || arg === "fetch" || arg === "push");
+			if (at === -1) return null;
+			if (args[at] === "clone") return args.at(-2) ?? null;
+			for (let index = at + 1; index < args.length; index++) if (!args[index].startsWith("-")) return args[index];
+			return null;
+		};
+		const minted = workRepoUrl(workRepo);
 		const runs: (typeof git.calls)[] = [];
 		// A fresh run clones: the one token call with no git directory to scan yet.
 		let mark = git.calls.length;
@@ -1838,6 +2041,21 @@ test("in a full run, only clone, fetch, and push carry the askpass, each after t
 				});
 				assert.equal(scanned, true, `no scan before ${call.args.join(" ")}`);
 			}
+			// Every token call names the exact work-repo URL the CLI minted, never a remote name git
+			// resolves from config, so no key in a scanned checkout can steer the token.
+			for (const call of calls.filter(call => call.env?.GIT_ASKPASS !== undefined)) {
+				assert.equal(destinationOf(call.args), minted, `a token call named a remote: ${call.args.join(" ")}`);
+				// No token call can recurse into a submodule: the guard config is on every one, and the
+				// fetch names the flag that outranks a planted .gitmodules.
+				for (const key of ["submodule.recurse=false", "fetch.recurseSubmodules=false", "push.recurseSubmodules=no"]) {
+					assert.ok(call.args.includes(key), `token call without ${key}: ${call.args.join(" ")}`);
+				}
+				// The minted URL is https, so the token call settles the transport as https only.
+				assert.ok(call.args.includes("protocol.allow=never") && call.args.includes("protocol.https.allow=always"),
+					`token call without the https-only transport: ${call.args.join(" ")}`);
+			}
+			const fetch = calls.find(call => kindOf(call.args) === "fetch");
+			if (fetch !== undefined) assert.ok(fetch.args.includes("--no-recurse-submodules"), fetch.args.join(" "));
 			const clone = calls.find(call => kindOf(call.args) === "clone");
 			if (clone !== undefined) {
 				// The exempt clone is the fresh one only: a new CLI-created git directory and no template.
@@ -1924,10 +2142,17 @@ test("a planted work-tree .git and pre-push hook never reach run's push", async 
 		const command = join(root, "fix.sh");
 		writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 		const calls: { readonly args: readonly string[]; readonly env: NodeJS.ProcessEnv | undefined }[] = [];
-		// The child git is real; only the work-repo URL the API names is redirected to the local bare repo.
+		// The child git is real; only the work-repo URL the API names is redirected to the local bare
+		// repo. The https-only transport guard the CLI adds for that URL follows the redirect to the
+		// transport the stand-in uses, and the clone's origin is re-written to the URL the real clone
+		// would have written, which is the one the scan judges the checkout against.
 		const gitPort: GitRun = (args, env) => {
 			calls.push({ args: [...args], env });
-			return git(args.map(arg => arg === github ? bare : arg), env);
+			const result = git(args.map(arg => arg === github ? bare
+				: arg === "protocol.https.allow=always" ? "protocol.file.allow=always" : arg), env);
+			const at = args.indexOf("--separate-git-dir");
+			if (at !== -1 && result.status === 0) git(["--git-dir", args[at + 1], "config", "--local", "remote.origin.url", github], env);
+			return result;
 		};
 		// The "agent" writes the fix, then plants git metadata in the work tree and a hook in the state
 		// gitdir. None of it may reach the host's commit or push.
