@@ -68,12 +68,23 @@ test("a plain forward is an http URL on port 80, with no userinfo", () => {
 
 test("a forward strips connection management, proxy credentials, and whatever Connection names", () => {
 	assert.deepEqual(forwardHeaders({
-		host: "registry.npmjs.org", accept: "*/*", "user-agent": "curl/8",
+		accept: "*/*", "user-agent": "curl/8",
 		connection: "keep-alive, X-Hop", "x-hop": "drop", "keep-alive": "timeout=5",
 		"proxy-authorization": "Basic Zm9v", "proxy-connection": "keep-alive",
 		te: "trailers", trailer: "x-trailer", "transfer-encoding": "chunked", upgrade: "websocket",
-	}), { host: "registry.npmjs.org", accept: "*/*", "user-agent": "curl/8" });
+	}), { accept: "*/*", "user-agent": "curl/8" });
 	// Node delivers a repeated header as an array; every name it lists is dropped too.
 	assert.deepEqual(forwardHeaders({ connection: ["close", "X-Secret"], "x-secret": "drop", "x-keep": "keep" }),
 		{ "x-keep": "keep" });
+});
+
+test("a forward drops the caller's host and any repeated or comma-joined content-length", () => {
+	// The proxy dials the allowlisted host itself, so Node derives Host from the dial target; a
+	// caller's host would name a different origin upstream.
+	assert.deepEqual(forwardHeaders({ host: "registry.npmjs.org", accept: "*/*" }), { accept: "*/*" });
+	assert.deepEqual(forwardHeaders({ host: "evil.example", "content-length": "5", accept: "*/*" }),
+		{ "content-length": "5", accept: "*/*" });
+	// A repeated or comma-joined length is the smuggling shape, never a length this hop can trust.
+	assert.deepEqual(forwardHeaders({ "content-length": ["5", "6"], accept: "*/*" }), { accept: "*/*" });
+	assert.deepEqual(forwardHeaders({ "content-length": "5, 6", accept: "*/*" }), { accept: "*/*" });
 });

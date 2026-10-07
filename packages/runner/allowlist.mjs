@@ -58,7 +58,11 @@ export function allowedForward(url) {
 const HOP_BY_HOP = new Set(["connection", "proxy-authorization", "proxy-connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade"]);
 
 /** The request headers a forward copies upstream. Everything hop-by-hop is dropped, including any
- * header `Connection` names, so a request cannot smuggle one past the proxy's own hop. */
+ * header `Connection` names, so a request cannot smuggle one past the proxy's own hop. The caller's
+ * `host` is dropped too: the proxy dials the allowlisted host itself, and Node derives Host from the
+ * dial target, so keeping the caller's value would name a different origin upstream. A repeated or
+ * comma-joined `content-length` is the request-smuggling shape, never a length this hop can trust,
+ * so it is dropped and the body is framed by this hop instead. */
 export function forwardHeaders(headers) {
 	const drop = new Set(HOP_BY_HOP);
 	const connection = headers.connection;
@@ -69,6 +73,9 @@ export function forwardHeaders(headers) {
 	const kept = {};
 	for (const [name, value] of Object.entries(headers)) {
 		if (value === undefined || drop.has(name.toLowerCase())) continue;
+		const lower = name.toLowerCase();
+		if (lower === "host") continue;
+		if (lower === "content-length" && (Array.isArray(value) || String(value).includes(","))) continue;
 		kept[name] = value;
 	}
 	return kept;
