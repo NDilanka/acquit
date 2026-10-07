@@ -13,10 +13,12 @@ import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
 import { runDiff } from "../src/diff.ts";
 import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEmptyWorkTreeGitShadow, formatDuration, gitCli,
-	globalGitIdentity, networkConnectArgs, networkCreateArgs, parseRunArgs, prepareWorkRepo, providerKeyFromEnv, proxyRunArgs, pushWork,
+	globalGitIdentity, networkConnectArgs, networkCreateArgs, parseRunArgs, prepareWorkRepo, providerFromEnv, proxyRunArgs, pushWork,
 	renderFinished, renderPreparing, renderRunning, runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, seedCommitIdentity, signalGuard,
 	submissionCommit } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
+import { PROVIDER_SPECS } from "../src/operator.ts";
+import type { Provider } from "../src/operator.ts";
 import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafePushConfig, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, writeAskpass } from "../src/workrepo.ts";
 import { pushHead, localHead } from "../src/submit.ts";
@@ -146,7 +148,8 @@ function fakeClient(options: { job?: JobProjection; operatorId?: string; workRep
 	};
 }
 
-const keyPort = (key: string | null) => ({ async getProviderKey() { return key; } });
+const keyPort = (key: string | null, provider: Provider = "anthropic", model: string | null = null) =>
+	({ async getProvider() { return { provider, model }; }, async getKey() { return key; } });
 
 // ---- argument parsing -------------------------------------------------------------------------
 
@@ -192,9 +195,14 @@ test("--runner and --command must agree, and --command alone selects the command
 		(error: CliError) => error.code === "USAGE");
 });
 
-test("the provider-key default reads ACQUIT_PROVIDER_KEY and answers null when it is absent", async () => {
-	assert.equal(await providerKeyFromEnv({ ACQUIT_PROVIDER_KEY: keyCanary }).getProviderKey(), keyCanary);
-	assert.equal(await providerKeyFromEnv({}).getProviderKey(), null);
+test("the provider default reads ACQUIT_PROVIDER, its model, and ACQUIT_PROVIDER_KEY", async () => {
+	const port = providerFromEnv({ ACQUIT_PROVIDER: "openrouter", ACQUIT_PROVIDER_MODEL: "deepseek/deepseek-v4.1-flash",
+		ACQUIT_PROVIDER_KEY: keyCanary });
+	assert.deepEqual(await port.getProvider(), { provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" });
+	assert.equal(await port.getKey(), keyCanary);
+	const bare = providerFromEnv({});
+	assert.deepEqual(await bare.getProvider(), { provider: "anthropic", model: null });
+	assert.equal(await bare.getKey(), null);
 });
 
 // ---- output rendering -------------------------------------------------------------------------
@@ -253,6 +261,15 @@ test("durations render as the tutorial prints them", () => {
 
 test("the command runner prints its script instead of a provider key", () => {
 	assert.equal(renderRunning("ts-bugfixer", "command", "/tmp/fix.sh"), "Running ts-bugfixer with the command runner: /tmp/fix.sh");
+});
+
+test("the running line names the provider and the model for openrouter", () => {
+	assert.equal(renderRunning("ts-bugfixer", "claude-code", null), "Running ts-bugfixer with your Anthropic key");
+	assert.equal(renderRunning("ts-bugfixer", "claude-code", null, "openrouter", "deepseek/deepseek-v4.1-flash"),
+		"Running ts-bugfixer with your OpenRouter key, model deepseek/deepseek-v4.1-flash");
+	// No stored model pins the provider's own default.
+	assert.equal(renderRunning("ts-bugfixer", "claude-code", null, "openrouter", null),
+		"Running ts-bugfixer with your OpenRouter key, model deepseek/deepseek-v4.1-flash");
 });
 
 // ---- changed files ----------------------------------------------------------------------------
@@ -888,9 +905,9 @@ test("sandbox names are prefixed with acquit-runner-<job> and every network is p
 	assert.deepEqual(egressNetworkCreateArgs(names.egress),
 		["network", "create", "-o", "com.docker.network.bridge.enable_icc=false", names.egress]);
 	assert.deepEqual(networkConnectArgs(names.network, names.proxy), ["network", "connect", names.network, names.proxy]);
-	const proxy = proxyRunArgs(names.proxy, names.egress, "acquit/runner-node20");
+	const proxy = proxyRunArgs(names.proxy, names.egress, "acquit/runner-node20", "api.anthropic.com");
 	assert.deepEqual(proxy, ["run", "--detach", "--rm", "--name", names.proxy, "--network", names.egress, "--pull=never",
-		"acquit/runner-node20", "node", "/runner/proxy.mjs"]);
+		"-e", "ACQUIT_PROVIDER_HOST=api.anthropic.com", "acquit/runner-node20", "node", "/runner/proxy.mjs"]);
 	// The proxy never joins the default bridge, where unrelated containers could reach it.
 	assert.equal(proxy.includes("bridge"), false);
 	assert.deepEqual(cleanupArgs(names), [["rm", "--force", names.runner], ["rm", "--force", names.proxy],
@@ -901,11 +918,15 @@ test("the runner container gets the internal network, the proxy, and no secret i
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
-		providerKey: keyCanary, instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: 1002, gid: 1002 };
+		runner: "claude-code", provider: "anthropic", providerKey: keyCanary, providerModel: null,
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: 1002, gid: 1002 };
 	const args = runnerRunArgs(plan);
 	const proxy = `http://${names.proxy}:8888`;
 	for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) assert.equal(args.includes(`${name}=${proxy}`), true, name);
 	assert.equal(args.includes("NODE_USE_ENV_PROXY=1"), true);
+	// The agent talks to its provider through the proxy and calls nothing else home, whatever the
+	// provider is.
+	assert.equal(args.includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), true);
 	assert.equal(args.includes(names.network), true);
 	assert.equal(args[args.indexOf("--network") + 1], names.network);
 	assert.equal(args.includes("type=bind,source=/tmp/acquit-run-work,target=/work"), true);
@@ -923,14 +944,39 @@ test("the runner container gets the internal network, the proxy, and no secret i
 	assert.equal(args.some(arg => arg.includes(tokenCanary)), false);
 });
 
+test("an openrouter runner gets its key variable by name and the provider's fixed environment", () => {
+	const names = sandboxNames("job_7Q2K");
+	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: "/tmp/acquit-run-work", argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
+		runner: "claude-code", provider: "openrouter", providerKey: keyCanary, providerModel: null,
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+	const args = runnerRunArgs(plan);
+	// The key variable is named with no value; the fixed environment is non-secret by construction.
+	assert.equal(args[args.indexOf("ANTHROPIC_AUTH_TOKEN") - 1], "-e");
+	assert.equal(args.includes(`ANTHROPIC_AUTH_TOKEN=${keyCanary}`), false);
+	assert.equal(args.includes("ANTHROPIC_API_KEY="), true);
+	for (const [name, value] of Object.entries(PROVIDER_SPECS.openrouter.fixedEnv(null))) assert.equal(args.includes(`${name}=${value}`), true, name);
+	assert.equal(args.includes("ANTHROPIC_BASE_URL=https://openrouter.ai/api"), true);
+	assert.equal(args.includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), true);
+	assert.equal(args.some(arg => arg.includes(keyCanary)), false);
+	// A stored model pins every Claude Code model variable the provider spec names.
+	const pinned = runnerRunArgs({ ...plan, providerModel: "deepseek/deepseek-v4.1-flash" });
+	for (const name of ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"]) {
+		assert.equal(pinned.includes(`${name}=deepseek/deepseek-v4.1-flash`), true, name);
+	}
+});
+
 test("the command runner mounts its script read-only, runs it with sh, and names no provider key", () => {
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: "/tmp/acquit-run-work", argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		runner: "command", provider: "anthropic", providerKey: null, providerModel: null,
+		instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	const args = runnerRunArgs(plan);
 	assert.equal(args.includes("--env-file"), false);
 	assert.equal(args.includes("ANTHROPIC_API_KEY"), false);
+	assert.equal(args.includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), false);
 	assert.equal(args.includes("type=bind,source=/tmp/fix.sh,target=/acquit/command.sh,readonly"), true);
 	assert.deepEqual(args.slice(args.indexOf("--exec")), ["--exec", "/bin/sh", "/acquit/command.sh"]);
 });
@@ -946,7 +992,8 @@ test("the provider key rides only in the docker child's environment, never argv 
 	const docker = fakeDocker();
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: sandboxWorkTree(t), argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
-		providerKey: keyCanary, instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+		runner: "claude-code", provider: "anthropic", providerKey: keyCanary, providerModel: null,
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
 	assert.equal(await runAgentInSandbox(plan, docker), 0);
 	const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
 	assert.equal(runner >= 0, true);
@@ -954,6 +1001,29 @@ test("the provider key rides only in the docker child's environment, never argv 
 	assert.equal(docker.envs[runner]?.ANTHROPIC_API_KEY, keyCanary);
 	for (const [index, env] of docker.envs.entries()) {
 		if (index !== runner) assert.equal(env?.ANTHROPIC_API_KEY, undefined, `call ${docker.calls[index].join(" ")}`);
+	}
+	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
+});
+
+test("an openrouter sandbox points the proxy at openrouter.ai and puts the key in ANTHROPIC_AUTH_TOKEN", async t => {
+	const names = sandboxNames("job_7Q2K");
+	const docker = fakeDocker();
+	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: sandboxWorkTree(t), argv: agentArgv("claude-code", "Fix the rounding.", null), commandPath: null,
+		runner: "claude-code", provider: "openrouter", providerKey: keyCanary, providerModel: "deepseek/deepseek-v4.1-flash",
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+	assert.equal(await runAgentInSandbox(plan, docker), 0);
+	const proxy = docker.calls.findIndex(args => args[0] === "run" && args.includes("--detach"));
+	assert.equal(proxy >= 0, true);
+	assert.equal(docker.calls[proxy].includes("ACQUIT_PROVIDER_HOST=openrouter.ai"), true);
+	const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
+	assert.equal(runner >= 0, true);
+	// The key variable the provider table names carries the value; the other provider's variable
+	// stays out of every child entirely.
+	assert.equal(docker.envs[runner]?.ANTHROPIC_AUTH_TOKEN, keyCanary);
+	for (const [index, env] of docker.envs.entries()) {
+		assert.equal(env?.ANTHROPIC_AUTH_TOKEN, index === runner ? keyCanary : undefined, `call ${docker.calls[index].join(" ")}`);
+		assert.equal(env?.ANTHROPIC_API_KEY, undefined, `call ${docker.calls[index].join(" ")}`);
 	}
 	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
 });
@@ -991,14 +1061,14 @@ test("the sandbox creates its egress network, starts the proxy on it, and remove
 	const names = sandboxNames("job_7Q2K");
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: sandboxWorkTree(t), argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		runner: "command", provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	assert.equal(await runAgentInSandbox(plan, docker), 0);
 	const verbs = docker.calls.map(args => args.join(" "));
 	assert.deepEqual(verbs, [
 		`rm --force ${names.runner}`, `rm --force ${names.proxy}`, `network rm ${names.network}`, `network rm ${names.egress}`,
 		`network create --internal ${names.network}`,
 		`network create -o com.docker.network.bridge.enable_icc=false ${names.egress}`,
-		`run --detach --rm --name ${names.proxy} --network ${names.egress} --pull=never acquit/runner-node20 node /runner/proxy.mjs`,
+		`run --detach --rm --name ${names.proxy} --network ${names.egress} --pull=never -e ACQUIT_PROVIDER_HOST=api.anthropic.com acquit/runner-node20 node /runner/proxy.mjs`,
 		`network connect ${names.network} ${names.proxy}`,
 		docker.calls[8].join(" "),
 		`rm --force ${names.runner}`, `rm --force ${names.proxy}`, `network rm ${names.network}`, `network rm ${names.egress}`,
@@ -1024,7 +1094,7 @@ test("a planted work-tree .git symlink is unlinked before the runner mounts the 
 		} });
 		const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 			dir: work, argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: null,
-			providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+			runner: "command", provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 		assert.equal(await runAgentInSandbox(plan, docker), 0);
 		// The link itself is gone; the directory it named is untouched.
 		assert.equal(lstatSync(join(work, ".git")).isSymbolicLink(), false);
@@ -1043,7 +1113,7 @@ test("a failed runner start still removes the containers and both networks", asy
 	const docker = fakeDocker({ failOn: args => args[0] === "run" && args.includes("--rm") });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: sandboxWorkTree(t), argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		runner: "command", provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "DOCKER_UNAVAILABLE");
 	const verbs = docker.calls.map(args => args.join(" "));
 	assert.equal(verbs.at(-4), `rm --force ${names.runner}`);
@@ -1058,7 +1128,7 @@ test("a failed sandbox setup refuses by name, bounds the docker output, and stil
 		output: `Error response from daemon: pull access denied for ${tokenCanary}@example.invalid/runner\n`.repeat(20) });
 	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		dir: sandboxWorkTree(t), argv: agentArgv("command", "ignored", "/acquit/command.sh"), commandPath: "/tmp/fix.sh",
-		providerKey: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
+		runner: "command", provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: "job_7Q2K", uid: null, gid: null };
 	await assert.rejects(runAgentInSandbox(plan, docker), (error: CliError) => error.code === "SANDBOX_SETUP_FAILED"
 		&& error.message.includes("125") && error.message.length < 500 && !error.message.includes("\n")
 		&& !error.message.includes(tokenCanary));
@@ -1109,7 +1179,7 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 			}
 			return git(args, env);
 		};
-		await runRun(runOptions({ dir: work }), { client, providerKey: keyPort(keyCanary), docker, git: gitPort,
+		await runRun(runOptions({ dir: work }), { client, provider: keyPort(keyCanary), docker, git: gitPort,
 			print: line => printed.push(line), now: () => times.shift() ?? 308_000,
 			env: { PATH: process.env.PATH, XDG_STATE_HOME: stateHome, ACQUIT_TOKEN: "session-canary", ACQUIT_PROVIDER_KEY: keyCanary,
 				// Every one of these must be gone from the git child's environment.
@@ -1172,6 +1242,34 @@ test("run prints the tutorial's lines, keeps both secrets out of argv and the lo
 		assert.equal(dockerLines.some(line => line.includes(`--name acquit-runner-job_7Q2K`)), true);
 		assert.equal(dockerLines.at(-1), "network rm acquit-runner-job_7Q2K-egress");
 		assert.equal(printed.join("\n").includes(tokenCanary) || printed.join("\n").includes(keyCanary), false);
+	} finally {
+		rmSync(work, { recursive: true, force: true });
+		rmSync(stateHome, { recursive: true, force: true });
+	}
+});
+
+test("an openrouter run names the model and gives the proxy and the runner the openrouter provider", async () => {
+	const work = mkdtempSync(join(tmpdir(), "acquit-run-openrouter-"));
+	const stateHome = mkdtempSync(join(tmpdir(), "acquit-run-openrouter-state-"));
+	try {
+		const git = fakeGit({ numstat: "", head: "c".repeat(40) });
+		const docker = fakeDocker();
+		const printed: string[] = [];
+		await runRun(runOptions({ dir: work }), { client: fakeClient(),
+			provider: keyPort(keyCanary, "openrouter", "deepseek/deepseek-v4.1-flash"), docker, git,
+			print: line => printed.push(line), now: () => 0, env: { PATH: process.env.PATH, XDG_STATE_HOME: stateHome } });
+		assert.equal(printed.includes("Running ts-bugfixer with your OpenRouter key, model deepseek/deepseek-v4.1-flash"), true, printed.join("\n"));
+		// The proxy is told the provider host the provider table names, and the runner gets the
+		// provider's own key variable by name.
+		const proxy = docker.calls.findIndex(args => args[0] === "run" && args.includes("--detach"));
+		assert.equal(proxy >= 0, true);
+		assert.equal(docker.calls[proxy].includes("ACQUIT_PROVIDER_HOST=openrouter.ai"), true, docker.calls[proxy].join(" "));
+		const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
+		assert.equal(runner >= 0, true);
+		assert.equal(docker.envs[runner]?.ANTHROPIC_AUTH_TOKEN, keyCanary);
+		for (const [index, env] of docker.envs.entries()) assert.equal(env?.ANTHROPIC_API_KEY, undefined, docker.calls[index].join(" "));
+		assert.equal(printed.join("\n").includes(keyCanary), false);
+		assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
 	} finally {
 		rmSync(work, { recursive: true, force: true });
 		rmSync(stateHome, { recursive: true, force: true });
@@ -1241,7 +1339,7 @@ test("a planted work-tree .git and pre-push hook never reach run's push", async 
 		const printed: string[] = [];
 		// The contract's frozen commit is the fixture's, so the clone and checkout are the same history.
 		const job = jobView({ contract: { repository: "maya-client/invoice-app", frozenAt: frozen, frozenTests: 48, hiddenTests: 6, protectedPaths: [] } });
-		await runRun(runOptions({ dir: work, runner: "command", command }), { client: fakeClient({ job }), providerKey: keyPort(null),
+		await runRun(runOptions({ dir: work, runner: "command", command }), { client: fakeClient({ job }), provider: keyPort(null),
 			docker, git: gitPort, print: line => printed.push(line), now: () => 0,
 			env: { PATH: process.env.PATH, XDG_STATE_HOME: stateHome } });
 		const head = git(["--git-dir", stateDir, "rev-parse", "HEAD"]).stdout.trim();
@@ -1289,7 +1387,7 @@ test("run refuses a job the session does not own before it touches git or docker
 	const docker = fakeDocker();
 	const git = fakeGit();
 	await assert.rejects(runRun(runOptions({ dir: "/tmp" }), { client: fakeClient({ job: jobView({ lockedTo: "other-ops" }) }),
-		providerKey: keyPort(keyCanary), docker, git, print: () => {} }), (error: CliError) => error.code === "NOT_OWNER");
+		provider: keyPort(keyCanary), docker, git, print: () => {} }), (error: CliError) => error.code === "NOT_OWNER");
 	assert.equal(docker.calls.length, 0);
 	assert.equal(git.calls.length, 0);
 });
@@ -1298,7 +1396,7 @@ test("claude-code without a provider key refuses by name and starts nothing", as
 	const docker = fakeDocker();
 	const git = fakeGit();
 	const client = fakeClient();
-	await assert.rejects(runRun(runOptions({ dir: "/tmp" }), { client, providerKey: keyPort(null), docker, git, print: () => {} }),
+	await assert.rejects(runRun(runOptions({ dir: "/tmp" }), { client, provider: keyPort(null), docker, git, print: () => {} }),
 		(error: CliError) => error.code === "PROVIDER_KEY_MISSING");
 	assert.equal(docker.calls.length, 0);
 	assert.equal(client.posts.length, 0);
@@ -1307,7 +1405,7 @@ test("claude-code without a provider key refuses by name and starts nothing", as
 test("a command runner whose script is missing refuses by name", async () => {
 	const client = fakeClient();
 	await assert.rejects(runRun(runOptions({ runner: "command", command: "/nonexistent/acquit-fix.sh" }),
-		{ client, providerKey: keyPort(null), docker: fakeDocker(), git: fakeGit(), print: () => {} }),
+		{ client, provider: keyPort(null), docker: fakeDocker(), git: fakeGit(), print: () => {} }),
 		(error: CliError) => error.code === "COMMAND_MISSING");
 	assert.equal(client.posts.length, 0);
 });
@@ -1315,7 +1413,7 @@ test("a command runner whose script is missing refuses by name", async () => {
 test("run refuses an agent whose stored runner is not one this CLI runs", async () => {
 	const job = jobView({ bids: { operators: [{ id: "bid_7Q2K", operator: "devon-ops" as OperatorId, handle: "devon-ops", label: "INDEPENDENT",
 		price: 40000, eta: 48, agent: "ts-bugfixer", runner: "codex", pitch: "p", paidReceipts: 0, status: "ACCEPTED" }], house: null } });
-	await assert.rejects(runRun(runOptions(), { client: fakeClient({ job }), providerKey: keyPort(null), docker: fakeDocker(), git: fakeGit(), print: () => {} }),
+	await assert.rejects(runRun(runOptions(), { client: fakeClient({ job }), provider: keyPort(null), docker: fakeDocker(), git: fakeGit(), print: () => {} }),
 		(error: CliError) => error.code === "RUNNER_UNSUPPORTED");
 });
 
@@ -1379,7 +1477,7 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 		].join("\n"), { mode: 0o755 });
 		const names = sandboxNames(`smoke_${process.pid}`);
 		const plan: RunnerPlan = { names, image, proxyImage: image, dir: root, argv: agentArgv("command", "ignored", "/acquit/command.sh"),
-			commandPath: script, providerKey: null, instruction: null, jobId: `smoke_${process.pid}`,
+			commandPath: script, runner: "command", provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: `smoke_${process.pid}`,
 			uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
 		const output: string[] = [];
 		const code = await runAgentInSandbox(plan, (await import("../src/run.ts")).dockerCli(),

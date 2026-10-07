@@ -17,8 +17,10 @@ block below is asserted against `docs/tutorial.md` character for character by
   raced approvals mint one session and two raced polls hand it over once. The session lives seven days.
 - `cli-operator-init` reads `GET /api/me/onboarding` for the merchant status the server already holds,
   opens PayPal onboarding when it is still pending, waits for `READY`, then reads the provider key from
-  a prompt or from stdin (`--provider-key-stdin`) and stores it in the OS keychain. The key never
-  reaches a file, a log line, argv, the environment, or the API.
+  a prompt or from stdin (`--provider-key-stdin`) and stores it in the OS keychain. `--provider
+  openrouter` (or answering `openrouter` at the provider prompt, which then asks for the model) also
+  stores the model it pins as `acquit:provider-model`, defaulting to `deepseek/deepseek-v4.1-flash`.
+  The key never reaches a file, a log line, argv, the environment, or the API.
 - `cli-agent-create` reads the prompt file, sends its SHA-256 digest and the tool list to
   `POST /api/me/agents`, and prints the line count. The prompt stays on the operator's machine.
 - `cli-jobs-list` renders `GET /api/jobs` as the tutorial's table. `cli-bid` sends one `PlaceBid`
@@ -65,7 +67,9 @@ Preconditions:
 - **Initialize the operator.** Run `acquit operator init --provider anthropic --provider-key-stdin`
   with a key on stdin. Require the three steps and `Bid credits: 30 (weekly allowance)`, then search
   the lane's data folder for the key: it must not be there. On Linux, `keyctl search @u user
-  acquit:provider-key` names the entry. Save `operator-init.png`.
+  acquit:provider-key` names the entry. An OpenRouter run is the same command with `--provider
+  openrouter` and optionally `--model <id>`; the model lands in `acquit:provider-model`. Save
+  `operator-init.png`.
 - **Create the agent.** Write the tutorial's five-line prompt and run `acquit agent create`. Require
   `Prompt: prompts/ts-bugfixer.md (5 lines)`. Save `agent-create.png`.
 - **Bid.** Run the tutorial's `acquit bid`. Require `Credits spent: 10 (20 left this week)` and
@@ -92,11 +96,15 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
   work tree's `.git` is an empty directory the sandbox mounts a readable read-only tmpfs over, so the
   agent never sees git metadata.
 - `run-claude-code` runs Claude Code with the operator's key, read from the OS keychain that
-  `acquit operator init` filled.
+  `acquit operator init` filled. Anthropic is the default and behaves exactly as before; an operator
+  who stored an OpenRouter key runs the same runner through `https://openrouter.ai/api`, with the
+  stored model pinned on every Claude Code model variable and the key in `ANTHROPIC_AUTH_TOKEN`.
 - `run-command` runs the script the operator names, mounted read-only at `/acquit/command.sh`.
 - `run-egress` keeps the container on an internal network whose only route out is the allowlisting
-  proxy: `registry.npmjs.org` and `api.anthropic.com` only, CONNECT to port 443 and plain HTTP to
-  port 80. The proxy joins a dedicated per-run `acquit-runner-<job>-egress` network created with
+  proxy: `registry.npmjs.org` and the run's provider host only (`api.anthropic.com`, or
+  `openrouter.ai` when the operator stored an OpenRouter key; the proxy refuses any other
+  `ACQUIT_PROVIDER_HOST`), CONNECT to port 443 and plain HTTP to port 80. The proxy joins a dedicated
+  per-run `acquit-runner-<job>-egress` network created with
   `com.docker.network.bridge.enable_icc=false`; it never joins the shared bridge.
 - `run-changed-files` counts added lines against the frozen commit and pushes the commit to
   `refs/heads/submissions/<sha>`, the ref `acquit submit` expects. Uncommitted work is folded into
@@ -148,7 +156,9 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   `WORK_REPO_TOKEN_FAILED` mint is never a fallback. Run already pushed the commit to its submission
   ref, so submit's push is an up-to-date no-op.
 - **claude-code.** Run `acquit run <job> --runner claude-code` with a stored key. Without a key, the
-  CLI refuses `PROVIDER_KEY_MISSING` before it starts anything.
+  CLI refuses `PROVIDER_KEY_MISSING` before it starts anything. An operator who stored an OpenRouter
+  key runs the same command through OpenRouter: the run line names
+  `OpenRouter key, model <id>`, and the proxy allows `openrouter.ai` instead of `api.anthropic.com`.
 - **Strangers are refused.** A session that is not the job's locked operator gets
   `403 { error: "NOT_OWNER" }` from the token route before any clone or container.
 
@@ -171,13 +181,16 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   never record anything under `.git`.
 - Host-side git names a job's state checkout explicitly — the state git directory and the work tree —
   and never reads the operator's global or system config there: every command sets an empty
-  `core.hooksPath` and disables the fsmonitor, credential helper, and ssh command. An operator's own
-  checkout (a `--dir` the state git directory does not record) is used as-is through discovery; a
-  push from it with the operator's own credential keeps the operator's git environment and its
-  credential helper, while a push the CLI's scoped token drives is hardened there too. A git directory
+  `core.hooksPath` and disables the fsmonitor, credential helper, and ssh command, and settles TLS
+  verification and any proxy with its own `-c` overrides. An own checkout (a `--dir` the state git
+  directory does not record) is read through discovery with those guard overrides still applied; a
+  push with the operator's own credential keeps the operator's git environment and credential helper,
+  minus the `ACQUIT_*` variables, while a push driven by the scoped token is hardened. A git directory
   that holds config the CLI did not write refuses the scoped push (`GIT_CONFIG_UNSAFE`) instead of
-  letting the scoped token meet a URL rewrite or a credential helper; the refusal names the directory
-  and its remedy.
+  letting the scoped token meet a URL rewrite, an http proxy, or a credential helper; the refusal
+  names the directory and its remedy. The off-github `remote.*.url` rule applies to the state checkout
+  alone: the scoped push names the work-repo URL explicitly, so an operator's own remotes cannot
+  steer it, while every `insteadOf`/`pushInsteadOf`/`pushurl` rewrite refuses everywhere.
 - `--runner command` needs `--command`, and a missing script refuses `COMMAND_MISSING`.
 - The first run right after funding can answer `WORK_REPO_NOT_READY` while GitHub creates the work
   repo. Rerun in about 30 seconds.
@@ -215,10 +228,10 @@ lanes, seeds the head lane, and reports:
 `GET /api/jobs` with the token from `ACQUIT_TOKEN` (never argv), and writes `<evidence>/run-start.json`
 instead of `cli.json`. `--run-lane` must be 1 or more (lane 0 is the real database) and the pair is
 required together. Blockers it can meet alone: `RUN_TOKEN_MISSING`, `RUN_LANE_UNREACHABLE`,
-`RUN_TOKEN_REJECTED`, `RUN_JOB_UNKNOWN`, `RUN_JOB_NOT_FUNDED`. Each sample child gets its own
-`XDG_STATE_HOME` (`LOCALAPPDATA` on Windows) under the probe's temp root, so it never meets the
-measured lane's state git directory, and the sweep removes that root with the state home in it. It
-sweeps only the `acquit-runner-<job>` objects and temp roots its own samples made.
+`RUN_TOKEN_REJECTED`, `RUN_JOB_UNKNOWN`, `RUN_JOB_NOT_FUNDED`. Every sample of one measurement shares the probe's own `XDG_STATE_HOME`
+(`LOCALAPPDATA` on Windows) under the probe's temp root, so it never meets the measured lane's state
+git directory, and the sweep removes that root with the state home in it. It sweeps only the
+`acquit-runner-<job>` objects and temp roots its own samples made.
 
 Rules: fail if the head `--help` median exceeds the trunk median by more than 20 percent, or if the
 `jobs list` median exceeds 800 ms, or if the warm run-start median exceeds 30 seconds. A live-lane run

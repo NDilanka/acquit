@@ -1,13 +1,39 @@
-// The one egress allowlist the runner's proxy reads. A host alone is not enough: the right host on
-// another port is still egress the sandbox was never meant to have, so CONNECT is 443 only and a
-// plain HTTP forward is an http URL on port 80 only. An https absolute-form forward is refused rather
-// than downgraded or tunneled from the plain path: 443 belongs to CONNECT alone.
+// The one egress allowlist a proxy reads. A host alone is not enough: the right host on another port
+// is still egress the sandbox was never meant to have, so CONNECT is 443 only and a plain HTTP
+// forward is an http URL on port 80 only. An https absolute-form forward is refused rather than
+// downgraded or tunneled from the plain path: 443 belongs to CONNECT alone.
+//
+// The allowed hosts are the package registry plus the one provider host the CLI named in
+// ACQUIT_PROVIDER_HOST (the stored provider's host, or Anthropic's when none is stored). The named
+// value is checked against the hosts the CLI's provider table can carry; anything else is refused,
+// so an environment value can never widen egress beyond known providers.
 
-export const ALLOWED_HOSTS = new Set(["registry.npmjs.org", "api.anthropic.com"]);
+export const REGISTRY_HOST = "registry.npmjs.org";
+/** The provider the sandbox allowed before OpenRouter existed, and the default when none is named. */
+export const DEFAULT_PROVIDER_HOST = "api.anthropic.com";
+
+/** The provider hosts the CLI's provider table can name. This file is the copy that runs inside the
+ * proxy image, which carries no CLI code, so the two lists move together. */
+const PROVIDER_HOSTS = new Set([DEFAULT_PROVIDER_HOST, "openrouter.ai"]);
+
+/** The provider host this proxy allows, from the value the CLI passed. An absent value is the
+ * default provider; a value outside the provider table's hosts is refused (null). */
+export function providerHost(value) {
+	const named = String(value ?? "").trim().toLowerCase().replace(/\.$/, "");
+	if (named === "") return DEFAULT_PROVIDER_HOST;
+	return PROVIDER_HOSTS.has(named) ? named : null;
+}
+
+/** The exact hosts one proxy allows: the registry plus its provider host. Null refuses every host,
+ * which is what proxy.mjs exits on before it listens. */
+export function allowedHosts(value) {
+	const provider = providerHost(value);
+	return provider === null ? null : new Set([REGISTRY_HOST, provider]);
+}
 
 /** Exact host names only: a suffix match would let a lookalike through. */
-export function allowedHost(host) {
-	return ALLOWED_HOSTS.has(String(host ?? "").toLowerCase().replace(/\.$/, ""));
+export function allowedHost(host, hosts) {
+	return hosts.has(String(host ?? "").toLowerCase().replace(/\.$/, ""));
 }
 
 /** A CONNECT authority: `host:port`, `host`, `[v6]:port`, or `[v6]`. Null when it is not one. A
@@ -35,9 +61,9 @@ export function parseAuthority(authority) {
 }
 
 /** CONNECT only to 443. */
-export function allowedConnect(authority) {
+export function allowedConnect(authority, hosts) {
 	const target = parseAuthority(authority);
-	return target !== null && target.port === 443 && allowedHost(target.host);
+	return target !== null && target.port === 443 && allowedHost(target.host, hosts);
 }
 
 /** The one word a denial log prints for a CONNECT authority: the parsed host and port only. The raw
@@ -49,9 +75,9 @@ export function authorityLabel(authority) {
 
 /** A plain forward only of an absolute-form http URL to an allowlisted host on port 80, with no
  * userinfo: forwarding `user:pass@host` upstream would hand the caller's secret onward. */
-export function allowedForward(url) {
+export function allowedForward(url, hosts) {
 	return url.protocol === "http:" && url.username === "" && url.password === ""
-		&& (url.port === "" || url.port === "80") && allowedHost(url.hostname);
+		&& (url.port === "" || url.port === "80") && allowedHost(url.hostname, hosts);
 }
 
 /** Hop-by-hop headers a proxy must not forward. `Connection` adds names to this set. */

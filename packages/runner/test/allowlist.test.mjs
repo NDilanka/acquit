@@ -1,19 +1,46 @@
 // The egress allowlist is a scheme, a host, and a port: a lookalike host never matches, and neither
-// does the right host on a port or scheme the proxy does not forward. No Docker here; the proxy
-// module imports this one.
+// does the right host on a port or scheme the proxy does not forward. The host set is the registry
+// plus the one provider host the CLI named, and a provider outside the known table refuses the set.
+// No Docker here; the proxy module imports this one.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedConnect, allowedForward, allowedHost, authorityLabel, forwardHeaders, parseAuthority } from "../allowlist.mjs";
+import { allowedConnect, allowedForward, allowedHost, allowedHosts, authorityLabel, forwardHeaders, parseAuthority, providerHost } from "../allowlist.mjs";
 
-test("only the registry and the provider hosts are allowed, exactly", () => {
-	assert.equal(allowedHost("registry.npmjs.org"), true);
-	assert.equal(allowedHost("api.anthropic.com"), true);
-	assert.equal(allowedHost("REGISTRY.NPMJS.ORG"), true);
-	assert.equal(allowedHost("registry.npmjs.org."), true);
-	assert.equal(allowedHost("registry.npmjs.org.evil.example"), false);
-	assert.equal(allowedHost("evilregistry.npmjs.org"), false);
-	assert.equal(allowedHost("registry.npmjs.org:443"), false);
-	assert.equal(allowedHost(""), false);
+test("only the registry and the provider host are allowed, exactly", () => {
+	const hosts = allowedHosts(undefined);
+	assert.equal(allowedHost("registry.npmjs.org", hosts), true);
+	assert.equal(allowedHost("api.anthropic.com", hosts), true);
+	assert.equal(allowedHost("REGISTRY.NPMJS.ORG", hosts), true);
+	assert.equal(allowedHost("registry.npmjs.org.", hosts), true);
+	assert.equal(allowedHost("registry.npmjs.org.evil.example", hosts), false);
+	assert.equal(allowedHost("evilregistry.npmjs.org", hosts), false);
+	assert.equal(allowedHost("registry.npmjs.org:443", hosts), false);
+	assert.equal(allowedHost("", hosts), false);
+});
+
+test("the provider host is the one the run named, and only a provider the table knows", () => {
+	// The CLI passes the run's provider host; nothing named is Anthropic, and every other value is
+	// refused rather than trusted, so an environment value can never widen egress.
+	assert.equal(providerHost(undefined), "api.anthropic.com");
+	assert.equal(providerHost(""), "api.anthropic.com");
+	assert.equal(providerHost("api.anthropic.com"), "api.anthropic.com");
+	assert.equal(providerHost("openrouter.ai"), "openrouter.ai");
+	assert.equal(providerHost("OPENROUTER.AI."), "openrouter.ai");
+	assert.equal(providerHost("evil.example"), null);
+	assert.equal(providerHost("openrouter.ai.evil.example"), null);
+	assert.equal(providerHost("registry.npmjs.org"), null);
+	assert.equal(allowedHosts("evil.example"), null);
+});
+
+test("under openrouter, api.anthropic.com is denied and openrouter.ai is allowed", () => {
+	const hosts = allowedHosts("openrouter.ai");
+	assert.deepEqual([...hosts].sort(), ["openrouter.ai", "registry.npmjs.org"]);
+	assert.equal(allowedConnect("openrouter.ai:443", hosts), true);
+	assert.equal(allowedConnect("api.anthropic.com:443", hosts), false);
+	assert.equal(allowedConnect("openrouter.ai:80", hosts), false);
+	assert.equal(allowedConnect("registry.npmjs.org:443", hosts), true);
+	assert.equal(allowedForward(new URL("http://openrouter.ai/v1/messages"), hosts), true);
+	assert.equal(allowedForward(new URL("http://api.anthropic.com/v1/messages"), hosts), false);
 });
 
 test("a CONNECT authority parses host:port, a bare host, and IPv6 brackets", () => {
@@ -40,19 +67,21 @@ test("a denial names the parsed host and port, never the raw authority", () => {
 });
 
 test("CONNECT is allowed only to 443", () => {
-	assert.equal(allowedConnect("registry.npmjs.org:443"), true);
-	assert.equal(allowedConnect("registry.npmjs.org"), true);
-	assert.equal(allowedConnect("registry.npmjs.org:81"), false);
-	assert.equal(allowedConnect("registry.npmjs.org:8443"), false);
-	assert.equal(allowedConnect("api.anthropic.com:8443"), false);
-	assert.equal(allowedConnect("example.com:443"), false);
-	assert.equal(allowedConnect("registry.npmjs.org.evil.example:443"), false);
-	assert.equal(allowedConnect("registry.npmjs.org:not-a-port"), false);
-	assert.equal(allowedConnect("user:secret@registry.npmjs.org:443"), false);
+	const hosts = allowedHosts(undefined);
+	assert.equal(allowedConnect("registry.npmjs.org:443", hosts), true);
+	assert.equal(allowedConnect("registry.npmjs.org", hosts), true);
+	assert.equal(allowedConnect("registry.npmjs.org:81", hosts), false);
+	assert.equal(allowedConnect("registry.npmjs.org:8443", hosts), false);
+	assert.equal(allowedConnect("api.anthropic.com:8443", hosts), false);
+	assert.equal(allowedConnect("example.com:443", hosts), false);
+	assert.equal(allowedConnect("registry.npmjs.org.evil.example:443", hosts), false);
+	assert.equal(allowedConnect("registry.npmjs.org:not-a-port", hosts), false);
+	assert.equal(allowedConnect("user:secret@registry.npmjs.org:443", hosts), false);
 });
 
 test("a plain forward is an http URL on port 80, with no userinfo", () => {
-	const forward = raw => allowedForward(new URL(raw));
+	const hosts = allowedHosts(undefined);
+	const forward = raw => allowedForward(new URL(raw), hosts);
 	assert.equal(forward("http://registry.npmjs.org/"), true);
 	assert.equal(forward("http://registry.npmjs.org:80/"), true);
 	assert.equal(forward("http://api.anthropic.com/path?query=1"), true);

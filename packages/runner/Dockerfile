@@ -1,7 +1,7 @@
 # The operator's runner sandbox. `acquit run` starts this image on a per-job internal network with
 # the allowlisting proxy as the only route out; the clone is bind-mounted at /work, the provider key
-# arrives only in the docker child's environment (`-e ANTHROPIC_API_KEY`, name only), and nothing in
-# the image holds a credential or a repository.
+# arrives only in the docker child's environment (`-e ANTHROPIC_API_KEY` or `-e ANTHROPIC_AUTH_TOKEN`,
+# name only), and nothing in the image holds a credential or a repository.
 FROM node:24-bookworm-slim
 
 # git is what the agent inspects its clone with, and curl is how a command runner reaches the proxy

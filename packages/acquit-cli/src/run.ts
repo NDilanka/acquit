@@ -26,6 +26,8 @@ import { CliError, resolveToken } from "./client.ts";
 import type { ApiClient, StoredLogin } from "./client.ts";
 import { assertSafePushConfig, gitGuardArgs, hardenedGitEnv, recordedWorkTree, stateGitDir, stripGitEnv, writeWorkTreeMarker } from "./gitstate.ts";
 import type { JobCheckout } from "./gitstate.ts";
+import { PROVIDER_SPECS, storedProvider } from "./operator.ts";
+import type { Provider, ProviderPort } from "./operator.ts";
 import { pushError, submissionRef } from "./submit.ts";
 import { childEnv, makeSecretDir, parseWorkRepo, workRepoUrl, writeAskpass } from "./workrepo.ts";
 
@@ -107,18 +109,21 @@ export function parseRunArgs(argv: readonly string[], env: NodeJS.ProcessEnv = p
 		() => login?.token ?? null), instruction, runner, command, image, proxyImage: env.ACQUIT_RUNNER_PROXY_IMAGE?.trim() || image };
 }
 
-// ---- the provider-key seam --------------------------------------------------------------------
+// ---- the provider seam ------------------------------------------------------------------------
 
 /**
- * The key seam the CLI injects. The root wires the OS keychain here when the branches combine; the
- * env default is the unit-test and development path, so a run never reaches for a file on its own.
+ * The provider seam the CLI injects. The root wires the OS keychain here when the branches combine;
+ * the env default is the unit-test and development path, so a run never reaches for a file on its
+ * own.
  */
-export interface ProviderKeyPort {
-	getProviderKey(): Promise<string | null>;
-}
-
-export function providerKeyFromEnv(env: NodeJS.ProcessEnv = process.env): ProviderKeyPort {
-	return { async getProviderKey() { return env.ACQUIT_PROVIDER_KEY?.trim() || null; } };
+export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): ProviderPort {
+	return {
+		async getProvider() {
+			const model = env.ACQUIT_PROVIDER_MODEL?.trim();
+			return { provider: storedProvider(env.ACQUIT_PROVIDER?.trim()), model: model ? model : null };
+		},
+		async getKey() { return env.ACQUIT_PROVIDER_KEY?.trim() || null; },
+	};
 }
 
 // ---- output rendering -------------------------------------------------------------------------
@@ -143,10 +148,16 @@ export function renderPreparing(start: RunStart): string {
 	return lines.join("\n");
 }
 
-export function renderRunning(agent: string, runner: RunnerKind, command: string | null): string {
-	return runner === "claude-code"
-		? `Running ${agent} with your Anthropic key`
-		: `Running ${agent} with the command runner: ${command ?? ""}`;
+/** The provider's label, and the model it pins when it pins one: the line `acquit run` prints just
+ * before the sandbox starts. Anthropic names no model, so its line reads as it always did. */
+export function renderRunning(agent: string, runner: RunnerKind, command: string | null,
+	provider: Provider = "anthropic", model: string | null = null): string {
+	if (runner !== "claude-code") return `Running ${agent} with the command runner: ${command ?? ""}`;
+	const spec = PROVIDER_SPECS[provider];
+	const pinned = model ?? spec.defaultModel;
+	return pinned === null
+		? `Running ${agent} with your ${spec.label} key`
+		: `Running ${agent} with your ${spec.label} key, model ${pinned}`;
 }
 
 export type ChangedFile = { readonly path: string; readonly added: number; readonly binary: boolean };
@@ -466,9 +477,11 @@ export function egressNetworkCreateArgs(egress: string): readonly string[] {
 }
 
 /** The proxy is the one container with a route out: its own per-run egress network, plus the internal
- * network the runner joins. It never attaches to the shared bridge. */
-export function proxyRunArgs(proxy: string, egress: string, image: string): readonly string[] {
-	return ["run", "--detach", "--rm", "--name", proxy, "--network", egress, "--pull=never", image, "node", "/runner/proxy.mjs"];
+ * network the runner joins. It never attaches to the shared bridge. The host it allows is a value
+ * from the provider table, and allowlist.mjs refuses to widen it from the environment. */
+export function proxyRunArgs(proxy: string, egress: string, image: string, providerHost: string): readonly string[] {
+	return ["run", "--detach", "--rm", "--name", proxy, "--network", egress, "--pull=never",
+		"-e", `ACQUIT_PROVIDER_HOST=${providerHost}`, image, "node", "/runner/proxy.mjs"];
 }
 
 export function networkConnectArgs(network: string, proxy: string): readonly string[] {
@@ -483,9 +496,16 @@ export type RunnerPlan = {
 	/** The agent command, executed by /runner/run.mjs inside the container. */
 	readonly argv: readonly string[];
 	readonly commandPath: string | null;
-	/** The value the runner container's ANTHROPIC_API_KEY gets, or null for the command runner. It is
-	 * never an argv word: `-e ANTHROPIC_API_KEY` names it and the docker child's env carries it. */
+	/** The runner the argv belongs to; claude-code alone gets the no-phone-home switch. */
+	readonly runner: RunnerKind;
+	/** The provider this run credits: whose one host the proxy allows, and whose key variable and
+	 * fixed environment the container gets. */
+	readonly provider: Provider;
+	/** The value the container's key variable gets, or null for a runner that needs no key. It is
+	 * never an argv word: `-e <keyVar>` names it and the docker child's env carries it. */
 	readonly providerKey: string | null;
+	/** The model pinned on the provider's model variables; null when the provider pins none. */
+	readonly providerModel: string | null;
 	readonly instruction: string | null;
 	readonly jobId: string;
 	readonly uid: number | null;
@@ -497,13 +517,17 @@ export function runnerRunArgs(plan: RunnerPlan): readonly string[] {
 	mountSafe("work tree", plan.dir);
 	if (plan.commandPath !== null) mountSafe("command script", plan.commandPath);
 	const proxy = `http://${plan.names.proxy}:${PROXY_PORT}`;
+	const spec = PROVIDER_SPECS[plan.provider];
 	const args = ["run", "--rm", "--name", plan.names.runner, "--network", plan.names.network, "--pull=never"];
 	if (plan.uid !== null && plan.gid !== null) args.push("--user", `${plan.uid}:${plan.gid}`);
 	for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) args.push("-e", `${name}=${proxy}`);
 	// Node 24's global fetch honors the proxy variables only when this is set.
 	args.push("-e", "NODE_USE_ENV_PROXY=1", "-e", "HOME=/tmp", "-e", `ACQUIT_JOB=${plan.jobId}`);
+	// The provider is the one endpoint the proxy allows; the model CLI makes no other call home.
+	if (plan.runner === "claude-code") args.push("-e", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1");
 	if (plan.instruction !== null) args.push("-e", `ACQUIT_INSTRUCTION=${plan.instruction}`);
-	if (plan.providerKey !== null) args.push("-e", "ANTHROPIC_API_KEY");
+	if (plan.providerKey !== null) args.push("-e", spec.keyVar);
+	for (const [name, value] of Object.entries(spec.fixedEnv(plan.providerModel))) args.push("-e", `${name}=${value}`);
 	args.push("--mount", `type=bind,source=${plan.dir},target=/work`);
 	// The job's git directory is never inside the work tree; the shadow keeps even a stray `.git`
 	// from being read or written by the agent. Docker takes a tmpfs root's mode from the directory
@@ -587,10 +611,13 @@ export async function runAgentInSandbox(plan: RunnerPlan, docker: DockerPort,
 		await cleanupSandbox(docker, plan.names);
 		await setup(networkCreateArgs(plan.names.network), "Creating the sandbox network");
 		await setup(egressNetworkCreateArgs(plan.names.egress), "Creating the sandbox egress network");
-		await setup(proxyRunArgs(plan.names.proxy, plan.names.egress, plan.proxyImage), "Starting the egress proxy");
+		await setup(proxyRunArgs(plan.names.proxy, plan.names.egress, plan.proxyImage, PROVIDER_SPECS[plan.provider].host), "Starting the egress proxy");
 		await setup(networkConnectArgs(plan.names.network, plan.names.proxy), "Attaching the proxy to the sandbox network");
 		const runner = { ...options, ...(onOutput === undefined ? {} : { onOutput }) };
-		if (plan.providerKey !== null) runner.env = { ...(env ?? process.env), ANTHROPIC_API_KEY: plan.providerKey };
+		if (plan.providerKey !== null) {
+			const keyVar = PROVIDER_SPECS[plan.provider].keyVar;
+			runner.env = { ...(env ?? process.env), [keyVar]: plan.providerKey };
+		}
 		// The work tree's `.git` is a path a previous run's agent owned: re-make it an empty real
 		// directory immediately before the runner mounts the read-only tmpfs over it, so a planted
 		// symlink can never make runc mount the shadow on the link's target inside the container.
@@ -634,7 +661,7 @@ export function defaultInstruction(view: Pick<JobProjection, "title">): string {
 
 export type RunDeps = {
 	readonly client: ApiClient;
-	readonly providerKey: ProviderKeyPort;
+	readonly provider: ProviderPort;
 	readonly docker?: DockerPort;
 	readonly git?: GitRun;
 	readonly print?: (line: string) => void;
@@ -666,9 +693,14 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 			+ "Pass --runner command --command <script>.");
 	}
 	const commandPath = runner === "command" ? resolveCommand(options.command ?? "") : null;
+	// The provider is read for every runner: the proxy allows its one host even for a command runner.
+	const stored = await deps.provider.getProvider();
+	const provider = stored.provider;
+	const spec = PROVIDER_SPECS[provider];
+	const model = spec.defaultModel === null ? null : stored.model ?? spec.defaultModel;
 	let providerKey: string | null = null;
 	if (runner === "claude-code") {
-		providerKey = await deps.providerKey.getProviderKey();
+		providerKey = await deps.provider.getKey();
 		if (providerKey === null || providerKey === "") {
 			throw new CliError("PROVIDER_KEY_MISSING", "No model provider key. Run `acquit operator init` to store one in your OS keychain.");
 		}
@@ -698,11 +730,12 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		// inherited GIT_* variable.
 		seedCommitIdentity(git, checkout, globalGitIdentity(git, stripGitEnv(child)), gitEnv);
 		const instruction = options.instruction ?? defaultInstruction(view);
-		print(renderRunning(String(accepted.agent), runner, commandPath));
+		print(renderRunning(String(accepted.agent), runner, commandPath, provider, model));
 		const plan: RunnerPlan = { names, image: options.image, proxyImage: options.proxyImage, dir,
 			// The script is mounted at /acquit/command.sh; the host path is only the mount source.
 			argv: agentArgv(runner, instruction, commandPath === null ? null : "/acquit/command.sh"), commandPath,
-			providerKey, instruction, jobId: view.id, uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
+			runner, provider, providerKey, providerModel: model, instruction, jobId: view.id,
+			uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
 		const started = now();
 		const code = await runAgentInSandbox(plan, docker, (chunk, stream) => {
 			if (stream === "stderr") process.stderr.write(chunk); else process.stdout.write(chunk);

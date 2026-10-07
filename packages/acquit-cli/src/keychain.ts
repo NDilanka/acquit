@@ -1,4 +1,5 @@
 // Where the model provider key lives: the OS credential store, never a file, a log line, or argv.
+// The provider name and the model it pins are stored beside it; neither is a secret.
 //
 //   Windows -> Windows Credential Manager, through the PasswordVault API in PowerShell. The secret
 //              arrives on the script's stdin, so it never enters the process table.
@@ -15,9 +16,10 @@
 import { spawnSync } from "node:child_process";
 import { CliError } from "./client.ts";
 
-/** The two entries an initialized operator holds: which provider, and its key. */
+/** The three entries an initialized operator holds: which provider, its key, and the model it pins. */
 export const PROVIDER = "acquit:provider";
 export const PROVIDER_KEY = "acquit:provider-key";
+export const PROVIDER_MODEL = "acquit:provider-model";
 
 /**
  * The Linux key permission mask: possessor all; user read, write, search, link — the minimal mask
@@ -140,14 +142,6 @@ export function platformKeychain(platform: NodeJS.Platform = process.platform, c
 	if (platform === "win32") return windowsKeychain(call);
 	if (platform === "darwin") return macKeychain(call);
 	return linuxKeychain(call);
-}
-
-/** The seam the runner's `run.ts` consumes: the model provider key, or null when none is stored. */
-export type ProviderKeyPort = { getProviderKey(): Promise<string | null> };
-
-/** Wires the OS keychain behind the runner's provider-key port; the root passes this to `run.ts`. */
-export function providerKeyPort(keychain: Keychain): ProviderKeyPort {
-	return { async getProviderKey() { return keychain.get(PROVIDER_KEY); } };
 }
 
 /** The in-memory store the unit tests inject. Nothing here touches a disk or a process. */

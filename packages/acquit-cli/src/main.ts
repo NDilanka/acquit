@@ -8,9 +8,9 @@ import { assertSubjectAllowed, ChildSubjectRefused, verifierSubjectEnv } from ".
 import { apiClient, CliError, readLogin, saveLogin } from "./client.ts";
 import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
 import { openBrowser, parseLoginArgs, runLogin } from "./login.ts";
-import { parseOperatorArgs, runOperatorInit } from "./operator.ts";
+import { parseOperatorArgs, providerPort, runOperatorInit } from "./operator.ts";
 import type { AskAnswer } from "./operator.ts";
-import { platformKeychain, providerKeyPort } from "./keychain.ts";
+import { platformKeychain } from "./keychain.ts";
 import { parseRunArgs, runRun } from "./run.ts";
 import { parseAgentArgs, runAgentCreate } from "./agent.ts";
 import { parseJobsArgs, runJobsList } from "./jobs.ts";
@@ -83,7 +83,7 @@ registerCommand({
 
 registerCommand({
 	name: "operator",
-	usage: "acquit operator init [--provider anthropic] [--provider-key-stdin] [--api <url>]",
+	usage: "acquit operator init [--provider anthropic|openrouter] [--model <id>] [--provider-key-stdin] [--api <url>]",
 	async run(argv, context) {
 		const options = parseOperatorArgs(argv, context.env);
 		const client = apiClient({ baseUrl: options.apiUrl, token: options.token });
@@ -151,7 +151,7 @@ registerCommand({
 	async run(argv, context) {
 		const options = parseRunArgs(argv, context.env, undefined, stored(context.env));
 		await runRun(options, { client: apiClient({ baseUrl: options.apiUrl, token: options.token }),
-			providerKey: providerKeyPort(platformKeychain()) });
+			provider: providerPort(platformKeychain()) });
 		return 0;
 	},
 });

@@ -19,10 +19,10 @@ import { parseBidArgs, runBid } from "../src/bid.ts";
 import { runDiff } from "../src/diff.ts";
 import { runJobsList } from "../src/jobs.ts";
 import { usd, utcMinutes } from "../src/format.ts";
-import { linuxKeychain, macKeychain, memoryKeychain, providerKeyPort, windowsKeychain } from "../src/keychain.ts";
+import { linuxKeychain, macKeychain, memoryKeychain, windowsKeychain } from "../src/keychain.ts";
 import { runLogin } from "../src/login.ts";
 import { main } from "../src/main.ts";
-import { parseOperatorArgs, runOperatorInit } from "../src/operator.ts";
+import { parseOperatorArgs, providerPort, runOperatorInit } from "../src/operator.ts";
 import { runReceipts, weeklyCreditsLine } from "../src/receipts.ts";
 import { renderSubmission } from "../src/submit.ts";
 
@@ -179,7 +179,7 @@ test("operator init prints the tutorial's block, stores the provider key in the 
 	const opened: string[] = [];
 	const written: string[] = [];
 	const questions: string[] = [];
-	await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+	await runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client, keychain, open: url => opened.push(url), write: text => written.push(text),
 		ask: async (question, secret) => { questions.push(question); return { value: secret ? key : "anthropic", echoed: false }; },
 		readStdin: () => "", sleep: async () => {}, now: () => 0,
@@ -189,6 +189,8 @@ test("operator init prints the tutorial's block, stores the provider key in the 
 	assert.deepEqual(questions, ["\tProvider (anthropic): ", "\tAPI key: "]);
 	assert.equal(keychain.get("acquit:provider-key"), key);
 	assert.equal(keychain.get("acquit:provider"), "anthropic");
+	// The Anthropic flow writes no model entry: nothing is pinned beyond the key.
+	assert.equal(keychain.get("acquit:provider-model"), null);
 });
 
 test("operator init does not write back the provider answer a cooked terminal already echoed", async () => {
@@ -199,7 +201,7 @@ test("operator init does not write back the provider answer a cooked terminal al
 		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
 	const key = "k".repeat(28);
 	const written: string[] = [];
-	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client: fakeClient({ "/api/me/onboarding": [pending, ready] }), keychain: memoryKeychain(), open: () => {},
 		write: text => written.push(text),
 		// A cooked-mode TTY echoes the typed line itself, so the answer must not be written again. The
@@ -218,7 +220,7 @@ test("operator init rewrites the blank provider answer a cooked terminal echoed 
 		account: "sandbox Business account (payouts enabled)", identityVerified: true,
 		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
 	const written: string[] = [];
-	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client: fakeClient({ "/api/me/onboarding": [pending, ready] }), keychain: memoryKeychain(), open: () => {},
 		write: text => written.push(text),
 		// An empty answer is defaulted to anthropic; the terminal echoed a bare prompt line, so the CLI
@@ -230,6 +232,91 @@ test("operator init rewrites the blank provider answer a cooked terminal echoed 
 	assert.equal(written.join(""), (tutorialBlock("1/3 Payouts") + "\n")
 		.replace(`${bare}anthropic\n`, `${bare}\x1b[1A\r${bare}anthropic\n`));
 	assert.equal(transcript, tutorialBlock("1/3 Payouts"));
+});
+
+test("operator init parses openrouter with its model, and refuses a model without that provider", () => {
+	const options = parseOperatorArgs(["init", "--provider", "openrouter", "--model", "deepseek/deepseek-v4.1-flash",
+		"--provider-key-stdin"], { ACQUIT_TOKEN: "t" });
+	assert.equal(options.provider, "openrouter");
+	assert.equal(options.model, "deepseek/deepseek-v4.1-flash");
+	assert.equal(options.keyOnStdin, true);
+	assert.equal(options.token, "t");
+	assert.throws(() => parseOperatorArgs(["init", "--model", "deepseek/deepseek-v4.1-flash"], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "USAGE");
+	assert.throws(() => parseOperatorArgs(["init", "--provider", "anthropic", "--model", "deepseek/deepseek-v4.1-flash"], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "USAGE");
+	assert.throws(() => parseOperatorArgs(["init", "--provider", "openrouter", "--model", "  "], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "USAGE");
+	assert.throws(() => parseOperatorArgs(["init", "--provider", "mistral"], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "USAGE");
+});
+
+test("operator init accepts openrouter interactively, asks for the model, and stores all three entries", async () => {
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const key = "k".repeat(28);
+	const keychain = memoryKeychain();
+	const questions: string[] = [];
+	const written: string[] = [];
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: text => written.push(text),
+		// The provider prompt admits openrouter; the model prompt then takes a blank as the default.
+		ask: async (question, secret) => {
+			questions.push(question);
+			if (secret) return { value: key, echoed: false };
+			if (question.includes("Provider")) return { value: "openrouter", echoed: false };
+			return { value: "", echoed: false };
+		},
+		readStdin: () => "", sleep: async () => {}, now: () => 0,
+	});
+	assert.deepEqual(questions, ["\tProvider (anthropic): ", "\tModel (deepseek/deepseek-v4.1-flash): ", "\tAPI key: "]);
+	assert.equal(keychain.get("acquit:provider"), "openrouter");
+	assert.equal(keychain.get("acquit:provider-model"), "deepseek/deepseek-v4.1-flash");
+	assert.equal(keychain.get("acquit:provider-key"), key);
+	const modelLine = "\tModel (deepseek/deepseek-v4.1-flash): deepseek/deepseek-v4.1-flash";
+	assert.equal(written.join("").includes(`${modelLine}\n`), true, written.join(""));
+	assert.equal(transcript.split(modelLine).length - 1, 1, "the transcript keeps one model line");
+});
+
+test("operator init --provider openrouter --model stores the model without asking anything", async () => {
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const key = "k".repeat(28);
+	const keychain = memoryKeychain();
+	const questions: string[] = [];
+	const written: string[] = [];
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash",
+		keyOnStdin: true, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: text => written.push(text),
+		ask: async question => { questions.push(question); return { value: key, echoed: false }; },
+		readStdin: () => `${key}\n`, sleep: async () => {}, now: () => 0,
+	});
+	assert.deepEqual(questions, []);
+	assert.equal(keychain.get("acquit:provider"), "openrouter");
+	assert.equal(keychain.get("acquit:provider-model"), "deepseek/deepseek-v4.1-flash");
+	assert.equal(keychain.get("acquit:provider-key"), key);
+	// The non-interactive transcript names the provider and the model it stored.
+	assert.equal(transcript.includes("\tProvider (anthropic): openrouter"), true, transcript);
+	assert.equal(transcript.includes("\tModel (deepseek/deepseek-v4.1-flash): deepseek/deepseek-v4.1-flash"), true, transcript);
+	assert.equal(written.join("").includes("\tProvider (anthropic): openrouter\n"), true, written.join(""));
+});
+
+test("operator init --provider openrouter without --model stores the provider's default", async () => {
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const key = "k".repeat(28);
+	const keychain = memoryKeychain();
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: "openrouter", model: null,
+		keyOnStdin: true, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: () => {},
+		ask: async () => { throw new Error("a stated provider must not be asked about"); },
+		readStdin: () => `${key}\n`, sleep: async () => {}, now: () => 0,
+	});
+	assert.equal(keychain.get("acquit:provider-model"), "deepseek/deepseek-v4.1-flash");
+	assert.equal(transcript.includes("\tModel (deepseek/deepseek-v4.1-flash): deepseek/deepseek-v4.1-flash"), true, transcript);
 });
 
 test("askQuestion suppresses the echo only when both the reading end and the screen are terminals", () => {
@@ -256,17 +343,18 @@ test("askQuestion suppresses the echo only when both the reading end and the scr
 
 test("operator init refuses an OpenAI provider key no runner can use", async () => {
 	assert.throws(() => parseOperatorArgs(["init", "--provider", "openai"], { ACQUIT_TOKEN: "t" }),
-		(error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic key runs today.");
+		(error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic or OpenRouter key runs today.");
 	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
 		account: "sandbox Business account (payouts enabled)", identityVerified: true,
 		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
 	const keychain = memoryKeychain();
-	await assert.rejects(runOperatorInit({ apiUrl: API, token: "t", provider: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+	await assert.rejects(runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: () => {},
 		ask: async (_question, secret) => ({ value: secret ? "sk-ant-canary" : "openai", echoed: false }), readStdin: () => "", sleep: async () => {}, now: () => 0,
-	}), (error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic key runs today.");
+	}), (error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic or OpenRouter key runs today.");
 	assert.equal(keychain.get("acquit:provider-key"), null);
 	assert.equal(keychain.get("acquit:provider"), null);
+	assert.equal(keychain.get("acquit:provider-model"), null);
 });
 
 test("the Linux keychain hands the secret to keyctl on stdin, never on argv", () => {
@@ -320,9 +408,16 @@ test("the Linux keychain reads the stored key back through keyctl search and pip
 	assert.equal(linuxKeychain(missing).get("acquit:provider-key"), null);
 });
 
-test("the provider key port reads acquit:provider-key through the injected keychain", async () => {
-	assert.equal(await providerKeyPort(memoryKeychain({ "acquit:provider-key": "sk-ant-canary" })).getProviderKey(), "sk-ant-canary");
-	assert.equal(await providerKeyPort(memoryKeychain()).getProviderKey(), null);
+test("the provider port reads the stored provider, its model, and its key", async () => {
+	const stored = providerPort(memoryKeychain({ "acquit:provider": "openrouter", "acquit:provider-model": "deepseek/deepseek-v4.1-flash",
+		"acquit:provider-key": "sk-or-canary" }));
+	assert.deepEqual(await stored.getProvider(), { provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" });
+	assert.equal(await stored.getKey(), "sk-or-canary");
+	// Nothing stored, or a name this build does not know, is Anthropic with no model pinned.
+	assert.deepEqual(await providerPort(memoryKeychain()).getProvider(), { provider: "anthropic", model: null });
+	assert.equal(await providerPort(memoryKeychain()).getKey(), null);
+	assert.deepEqual(await providerPort(memoryKeychain({ "acquit:provider": "openai", "acquit:provider-model": "  " })).getProvider(),
+		{ provider: "anthropic", model: null });
 });
 
 test("a keychain failure that echoes the secret in its output redacts it from the error", () => {
