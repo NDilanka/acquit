@@ -16,8 +16,10 @@ export function JobPage({ id }: { id: string }) {
   const [suite, setSuite] = useState<RepoIssue["suite"] | null>(null);
   const [checkout, setCheckout] = useState<BidView | null>(null);
   const [confirm, setConfirm] = useState<BidView | null>(null);
+  const [confirmApprove, setConfirmApprove] = useState(false);
   const accept = useIntent();
   const cancel = useIntent();
+  const approve = useIntent();
   const isClient = user.role === "CLIENT";
   const fundingRetry = location.search.get("funding") === "retry";
 
@@ -37,8 +39,9 @@ export function JobPage({ id }: { id: string }) {
     void load();
   }, [load]);
 
-  // Fast poll while waiting for the PayPal order; slow poll while bids may still arrive or a verdict is due.
-  const polling = checkout !== null ? 1000 : job?.status === "OPEN" || job?.phase === "VERIFYING" ? 4000 : null;
+  // Fast poll while waiting for a PayPal order or release; slow poll while bids may still arrive or a verdict is due.
+  const polling =
+    checkout !== null || job?.phase === "RELEASE_PENDING" ? 1000 : job?.status === "OPEN" || job?.phase === "VERIFYING" ? 4000 : null;
   useEffect(() => {
     if (polling === null) return;
     const t = window.setInterval(() => void load(), polling);
@@ -72,6 +75,8 @@ export function JobPage({ id }: { id: string }) {
   const locked = lockedBid(job);
   const funding = job.status === "OPEN" && job.phase === "FUNDING";
   const canCancel = isClient && job.status === "OPEN" && !funding && checkout === null;
+  const mergeCommit = job.status === "VERIFIED" && job.phase === "AWAITING_CLIENT" ? job.mergeCommit : null;
+  const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
 
   const doAccept = async (bid: BidView) => {
     const outcome = await accept.send(`accept:${bid.id}`, (): UserCommand => ({
@@ -90,6 +95,19 @@ export function JobPage({ id }: { id: string }) {
     if (!window.confirm("Cancel this job? Bidders get their credits back.")) return;
     const outcome = await cancel.send(`cancel:${job.id}`, (): UserCommand => ({ type: "CancelJob", jobId: job.id }));
     if (outcome) await load();
+  };
+
+  const doApprove = async (commit: string) => {
+    const outcome = await approve.send(`approve:${job.id}:${commit}`, (): UserCommand => ({
+      type: "Approve",
+      jobId: job.id,
+      mergeCommit: commit,
+    }));
+    if (outcome?.result.kind === "JOB") setJob(outcome.result.job);
+    const fresh = await load();
+    // Another tab may have approved first. The refusal (REVIEW_CLOSED, or WRONG_STATE once PAID) then means success.
+    if (!outcome && fresh && (fresh.status === "PAID" || fresh.phase === "RELEASE_PENDING")) approve.setError(null);
+    setConfirmApprove(false);
   };
 
   return (
@@ -146,6 +164,21 @@ export function JobPage({ id }: { id: string }) {
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
+          {isClient && mergeCommit && (
+            <section className="card pad">
+              <h2>Client review</h2>
+              <p className="muted">
+                The verifier passed commit <b className="mono">{short(mergeCommit)}</b>.
+                {job.reviewEndsAt && <> If you do nothing, Acquit releases the payment at {utc(job.reviewEndsAt)}.</>}
+              </p>
+              <div className="act">
+                <button className="btn green" disabled={approve.busy} onClick={() => setConfirmApprove(true)}>
+                  Approve and release
+                </button>
+              </div>
+            </section>
+          )}
+          {approve.error && !confirmApprove && <div className="alert">{approve.error}</div>}
           {judgedStatuses.includes(job.status) && <Verifier job={job} />}
 
           {!isClient && job.status === "OPEN" && !funding && !job.bids.operators.some((b) => b.handle === user.handle) && (
@@ -180,7 +213,9 @@ export function JobPage({ id }: { id: string }) {
             <div className="kv">
               <span>Attempts</span>
               <b className="num">
-                {job.attempts.used} used, {job.attempts.left} left
+                {job.receipt
+                  ? `${job.receipt.attemptsUsed} used`
+                  : `${job.attempts.used} used, ${job.attempts.left} left`}
               </b>
             </div>
           </div>
@@ -199,6 +234,44 @@ export function JobPage({ id }: { id: string }) {
               <button className="btn ghost" onClick={() => setConfirm(null)}>Back</button>
               <button className="btn green" disabled={accept.busy} onClick={() => void doAccept(confirm)}>
                 {accept.busy ? "Creating order…" : "Accept and pay with PayPal"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmApprove && mergeCommit && (
+        <div className="scrim" onClick={() => !approve.busy && setConfirmApprove(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Approve and release {held ? usd(held.cents) : "the escrow"}?</h3>
+            <p>
+              PayPal releases the escrow: {locked ? <b>{locked.handle}</b> : "the operator"} is paid for the job and the rest covers the
+              fees. Acquit merges commit <b className="mono">{short(mergeCommit)}</b>
+              {job.pullRequest !== null && <> (pull request #{job.pullRequest})</>}. This cannot be undone.
+            </p>
+            <div className="rows">
+              {held && (
+                <div>
+                  <span>Held in escrow</span>
+                  <b className="num">{usd(held.cents)}</b>
+                </div>
+              )}
+              {locked && (
+                <div>
+                  <span>Job price, paid to {locked.handle} less the operator fee</span>
+                  <b className="num">{usd(locked.price)}</b>
+                </div>
+              )}
+              <div>
+                <span>Commit to merge</span>
+                <b className="mono">{mergeCommit}</b>
+              </div>
+            </div>
+            {approve.error && <div className="alert">{approve.error}</div>}
+            <div className="act">
+              <button className="btn ghost" disabled={approve.busy} onClick={() => setConfirmApprove(false)}>Back</button>
+              <button className="btn green" disabled={approve.busy} onClick={() => void doApprove(mergeCommit)}>
+                {approve.busy ? "Releasing…" : "Approve and release"}
               </button>
             </div>
           </div>
@@ -333,14 +406,40 @@ function Checkout({ bid, approveUrl, redirecting }: { bid: BidView | null; appro
 }
 
 function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) {
+  const { receipt, contract } = job;
+  const refund = job.ledger.find((line) => line.kind === "REFUND");
+  const pr = receipt?.pullRequest ?? job.pullRequest;
   return (
     <section className="card pad statuspanel">
       <pre className="mono">
         {`Status: ${job.status}\n`}
         {locked ? `Operator: ${locked.handle}\n` : ""}
         {`Escrow: ${job.escrow}${locked && job.escrow === "HELD" ? `, locked to ${locked.handle}` : ""}`}
+        {receipt ? `\nReceipt: ${receipt.id}` : ""}
       </pre>
-      {job.pullRequest !== null && <p>Pull request #{job.pullRequest}</p>}
+      {pr !== null &&
+        (contract ? (
+          <p>
+            Pull request{" "}
+            <a href={`https://github.com/${contract.repository}/pull/${pr}`} target="_blank" rel="noreferrer">
+              {contract.repository}#{pr}
+            </a>
+          </p>
+        ) : (
+          <p>Pull request #{pr}</p>
+        ))}
+      {receipt && (
+        <p className="muted">
+          Paid {usd(receipt.paid)} at {utc(receipt.releasedAt)}. Frozen tests {receipt.frozen.passed}/{receipt.frozen.expected}, hidden
+          tests {receipt.hidden.passed}/{receipt.hidden.expected}, attempts {receipt.attemptsUsed} of {job.attempts.used + job.attempts.left}.
+          Approved commit <span className="mono">{short(receipt.mergeCommit)}</span>.
+        </p>
+      )}
+      {refund && (
+        <p>
+          Refunded <b className="num">{usd(refund.cents)}</b> to the client at {utc(refund.at)}.
+        </p>
+      )}
     </section>
   );
 }
@@ -353,7 +452,6 @@ type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readon
 );
 
 type VerifierFields = {
-  readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
   readonly attempts: {
     readonly used: number;
     readonly left: number;
@@ -369,7 +467,7 @@ const short = (sha: string) => sha.slice(0, 7);
 const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
 
 function Verifier({ job }: { job: JobView }) {
-  // api-types.ts does not mirror the projection's history, pending, failure, or contract fields.
+  // api-types.ts does not mirror the projection's history, pending, or failure fields.
   const { attempts, contract } = job as JobView & VerifierFields;
   const total = attempts.used + attempts.left;
   const { pending, failure, history } = attempts;
