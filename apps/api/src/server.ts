@@ -5,9 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
-import { VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
+import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages/core/src/github.ts";
+import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, devEnabled, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
@@ -16,6 +17,9 @@ const baseSettings = config();
 const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? createRemoteVerifier(verifierEnv) : undefined,
 	paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
+// The runner's own App client. The core holds one for its outbox; this one mints the per-run
+// credential the operator CLI asks for, and it keeps the same bounded, redacted calls.
+const githubApp = createGitHubApp(githubEnv);
 const db = new DatabaseSync(settings.databaseUrl);
 // The CLI login exchange's one-time codes. The row never holds the code itself: the digest is the key,
 // so a leaked database file is not a set of live sign-in links. The token is minted at approval and
@@ -356,6 +360,36 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 		receipts.sort((left, right) => String(right.releasedAt).localeCompare(String(left.releasedAt)));
 		json(res, 200, { receipts, nextCursor: null }); return;
+	}
+	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
+	if (tokenMatch && method === "POST") {
+		// The operator's runner asks for one credential per run. Only the operator the job is locked to
+		// can have it, and the answer names the job's work repo, so the CLI never guesses a repository.
+		const jobId = validJobId(decodeURIComponent(tokenMatch[1]));
+		const result = await acquit.query(current.actor, { type: "Job", jobId });
+		if (result.kind !== "JOB") {
+			json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403,
+				{ error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
+			return;
+		}
+		if (current.actor.role !== "OPERATOR" || result.job.lockedTo === null || result.job.lockedTo !== current.actor.operatorId) {
+			json(res, 403, { error: "NOT_OWNER", detail: `Job ${jobId} is not locked to this operator.` });
+			return;
+		}
+		if (!githubEnv.appId.trim()) {
+			json(res, 503, { error: "GITHUB_NOT_CONFIGURED",
+				detail: "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run." });
+			return;
+		}
+		const repository = `${githubEnv.organization}/${workRepoName(clientRepository, jobId)}`;
+		try {
+			const token = await githubApp.installationToken(githubEnv.organization);
+			json(res, 200, { repository, token });
+		} catch (error) {
+			json(res, 502, { error: "WORK_REPO_TOKEN_FAILED",
+				detail: error instanceof GitHubAppError ? boundedDetail(error.message) : "GitHub refused a credential for the work repo." });
+		}
+		return;
 	}
 	if (url.pathname === "/api/me/operator" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Operator" });

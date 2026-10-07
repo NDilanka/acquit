@@ -71,6 +71,25 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.
 
+## Work repo credentials (operator run)
+
+`acquit run` clones the job's work repo and pushes the agent's commit there, so it asks the API for
+the credential rather than reading a GitHub App key on the operator's machine.
+
+`POST /api/jobs/:id/work-repo-token` (operator session only).
+
+- The job must be locked to the calling operator (`job.lockedTo` equals the session's operator id);
+  any other caller is refused `403 { error: "NOT_OWNER" }`. A job the caller cannot read answers
+  `404 { error: "NOT_FOUND" }` or its query refusal.
+- The API mints one GitHub App installation token for the organization that holds the work repos,
+  and answers `200 { repository, token }`. `repository` is the full `owner/name` of the job's work
+  repo (`<organization>/<client repo name>-<job id>`); the CLI builds the git URL from it and never
+  guesses a repository.
+- With the App unconfigured the route answers `503 { error: "GITHUB_NOT_CONFIGURED" }`; a GitHub
+  refusal answers `502 { error: "WORK_REPO_TOKEN_FAILED", detail }` with the token redacted.
+- The token is never logged. It is the same kind of App installation credential the lane script
+  mints, and it expires within the hour.
+
 ## Funding (PayPal sandbox)
 
 1. `AcceptBid` commits, the job enters OPEN FUNDING, and the outbox creates the order. The API drains the outbox inline after the commit, so the order usually exists before the response returns.
