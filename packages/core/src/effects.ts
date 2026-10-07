@@ -118,6 +118,8 @@ export interface Store {
 	listJobs(): Promise<readonly JobRow[]>;
 	listOperators(): Promise<readonly OperatorRow[]>;
 	receiptCounts(): Promise<ReadonlyMap<OperatorId, number>>;
+	/** One operator's `paid_receipts`, read at the moment a grant needs it. 0 when the row holds none. */
+	receiptCount(operator: OperatorId): Promise<number>;
 	readJob(jobId: JobId): Promise<JobRow | null>;
 	readOperator(operator: OperatorId): Promise<OperatorRow | null>;
 	readCredits(operator: OperatorId): Promise<CreditAccount>;
@@ -665,16 +667,17 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 export async function runDueTimers(ports: Ports): Promise<number> {
 	// TODO For each due row, apply TimerDue with the stored wakeAt. A stale wakeAt is a no-op.
 	const now = ports.clock.now();
-	const receipts = await ports.store.receiptCounts();
 	let changed = 0;
 	for (const operator of await ports.store.listOperators()) {
 		if (operator.kind === "HOUSE") continue;
 		const account = await ports.store.readCredits(operator.id);
 		// The grant belongs to the ISO week. A tick grants when the account lacks the current week's
 		// key and its previous grant's week has ended, whatever day it runs; a week no tick ran in is
-		// never back-filled, and the receipt count is read at the moment the grant is written.
+		// never back-filled, and the receipt count is read per operator right before the grant is
+		// written, so a receipt that settled since the tick began still counts for this week.
 		if (!grantDue(account, now)) continue;
-		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts: receipts.get(operator.id) ?? 0, at: now });
+		const paidReceipts = await ports.store.receiptCount(operator.id);
+		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;
 		const result = await ports.store.commit({ job: null, operator: null, credits: [{ expectedVersion: account.version, account: next }],
 			outbox: [], settlement: null, request: null, delivery: null });

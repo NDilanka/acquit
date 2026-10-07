@@ -12,6 +12,8 @@ import { instant, hours, parseBidId, parseJobId } from "../src/ids.ts";
 import type { AgentId, ClientId, Instant, JobId, MerchantId, OperatorId, Version } from "../src/ids.ts";
 import { applyJobCommand, TERMS, wakeAt } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
+import { runDueTimers } from "../src/effects.ts";
+import type { Ports, Store } from "../src/effects.ts";
 import { usd } from "../src/ledger.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Bps } from "../src/paypal.ts";
@@ -263,4 +265,29 @@ test("a client cancel returns the spent credits with CLIENT_CANCEL", () => {
 	assert.equal(plan.credits[0].balance.allowance, 30);
 	assert.deepEqual(plan.credits[0].lines.at(-1), { kind: "RETURN", key: `return:${devonBid}`,
 		split: { allowance: 10, purchased: 0 }, reason: "CLIENT_CANCEL", at: now });
+});
+
+test("the grant counts the receipt read when it is written, not a snapshot from the tick's start", async () => {
+	const store = new SqliteStore(":memory:");
+	const grantAt = nextCreditGrant(now);
+	const account = granted(devon, now);
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(devon, 0, JSON.stringify(operatorRow(devon, 1)), 1);
+	store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+	// A receipt settled after the tick's own first read: the operator row already holds 1 while the map
+	// a tick-start snapshot would have returned still holds 0. The grant must read the live row.
+	const stale = Object.create(store) as Store;
+	stale.receiptCounts = async () => new Map([[devon, 0]]);
+	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	const ports: Ports = { store: stale, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => grantAt },
+		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented }, alerts: { raise: unimplemented },
+		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
+	try {
+		await runDueTimers(ports);
+		const after = await store.readCredits(devon);
+		assert.equal(after.balance.allowance, 40, "30 plus 10 for the receipt the operator row holds when the grant is written");
+		assert.deepEqual(after.lines.slice(-2), [
+			{ kind: "EXPIRE", key: `expire:${creditWeek(grantAt)}`, credits: 30, at: grantAt },
+			{ kind: "GRANT", key: `grant:${creditWeek(grantAt)}`, credits: 40, at: grantAt },
+		]);
+	} finally { store.close(); }
 });

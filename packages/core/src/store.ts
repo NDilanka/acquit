@@ -151,6 +151,10 @@ export class SqliteStore implements Store {
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
 	}
+	async receiptCount(id: OperatorId): Promise<number> {
+		const row = this.db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(id);
+		return row ? Number(row.paid_receipts) : 0;
+	}
 	async jobForResource(resource: string): Promise<JobId | null> {
 		const row = this.db.prepare("SELECT job_id FROM resources WHERE id = ?").get(resource);
 		return row ? String(row.job_id) as JobId : null;
