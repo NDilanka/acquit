@@ -165,6 +165,12 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		if (segments[0] === "repos" && segments.length === 3) {
 			const found = state.repos.get(repository);
 			if (method === "GET") return found ? json(response, 200, found) : json(response, 404, { message: "Not Found" });
+			if (method === "DELETE" && found) {
+				// GitHub answers 204 with no body for a repository it removed.
+				state.repos.delete(repository);
+				response.writeHead(204);
+				return response.end();
+			}
 			if (method === "PATCH" && found) {
 				if (typeof body.name === "string") {
 					state.repos.delete(repository);
@@ -350,6 +356,10 @@ for (const harness of HARNESSES) {
 		const other = await app.port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
 		assert.equal(other.repository, `${ORG}/demo-def456`);
 		assert.notEqual(other.repository, created.repository);
+		// The expiry sweep removes the visitor's own fork, and a second removal finds it absent.
+		assert.equal(await app.port.deleteClientRepo(created.repository), "DELETED");
+		assert.equal(await app.port.deleteClientRepo(created.repository), "ABSENT");
+		assert.equal(await app.port.deleteClientRepo(other.repository), "DELETED");
 	});
 
 	test(`the verified commit is one pull request and a second call adopts it (${harness.name})`, async t => {
@@ -847,6 +857,20 @@ test("a visitor's name already taken by a repository this client did not create 
 	// The refused name is never forked over and nothing is renamed, deleted, or written.
 	assert.deepEqual(stub.state.forks, []);
 	assert.deepEqual(repoMutations(stub), []);
+});
+
+test("the sweep never deletes a repository this client did not create", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, `${ORG}/demo-abc123`, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.deleteClientRepo(`${ORG}/demo-abc123`));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.repos.has(`${ORG}/demo-abc123`), true);
+	// A repository this client did create is removed, and a name that is not there is already gone.
+	await port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
+	assert.equal(await port.deleteClientRepo(`${ORG}/demo-def456`), "DELETED");
+	assert.equal(await port.deleteClientRepo(`${ORG}/demo-def456`), "ABSENT");
+	assert.equal(stub.state.repos.has(`${ORG}/demo-def456`), false);
 });
 
 test("a fork this client created converges after its ref move failed", async t => {
