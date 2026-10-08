@@ -213,4 +213,7 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
 	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
 	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH)).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
+	// The deployment's own file is the allowed path through the environment policy, not the example.
+	assert.deepEqual(loadHiddenCases({ ACQUIT_HIDDEN_CASES: PRIVATE_CASES_PATH }).map(entry => entry.id),
+		["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
 });
