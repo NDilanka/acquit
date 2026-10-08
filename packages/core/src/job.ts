@@ -839,9 +839,17 @@ function settlementMismatch<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>>
 	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }], refused: "SETTLEMENT_MISMATCH" };
 }
 
+/**
+ * Whether this viewer may drive a job's own controls (its funding source and its clock): its client,
+ * and nobody else, the visitor's own operator included. The controls are not table edges, so this is
+ * the one rule they share.
+ */
+export function mayControlJob(row: JobRow, viewer: Actor): boolean {
+	return viewer.role === "CLIENT" && viewer.clientId === row.client && (viewer.tenant ?? null) === (row.tenant ?? null);
+}
+
 /** The escrow this row still holds, in every state that can hold one. */
-function heldEscrowOf(row: JobRow): HeldEscrow | null {
-	const state = row.state;
+function heldEscrowOf(row: JobRow): HeldEscrow | null {	const state = row.state;
 	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return state.escrow;
 	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") return state.phase.checkout.escrow;
 	return null;

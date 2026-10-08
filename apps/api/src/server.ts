@@ -10,6 +10,7 @@ import { visitorCap } from "../../../packages/core/src/caps.ts";
 import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
+import { mayControlJob } from "../../../packages/core/src/job.ts";
 import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
 import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
@@ -428,8 +429,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const jobId = validJobId(decodeURIComponent(action[1]));
 		const row = storedRow(jobId);
 		if (!row) { json(res, 404, { error: "NOT_FOUND" }); return; }
-		if (!current.visitor || row.client !== current.visitor.clientHandle) {
-			json(res, 403, { error: "NOT_VISITOR_JOB", detail: "This action reaches only a job your own demo owns." }); return;
+		// The controls belong to the job's own client. The visitor's operator, another visitor's client,
+		// and every tenant-less session are refused here, by the same core rule the table applies.
+		if (!mayControlJob(row, current.actor)) {
+			json(res, 403, { error: "NOT_VISITOR_JOB", detail: "This action reaches only a job your own demo's client owns." }); return;
 		}
 		const input = object(await body(req));
 		if (action[2] === "funding") {
