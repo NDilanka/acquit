@@ -10,7 +10,7 @@ import { generateKeyPairSync, createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -299,6 +299,21 @@ test("the API's own writes wait for the lane's write lock instead of failing the
 			holder.close();
 		}
 	});
+});
+
+test("a demo the caps refuse leaves no fork behind", async () => {
+	await apiFixture(false, async (url, databasePath) => {
+		for (let index = 0; index < 3; index++) {
+			assert.equal((await post(url, "/api/demo", {})).status, 201);
+		}
+		// The address's day is spent: the fourth visitor is refused by code, and the App is never asked.
+		const refused = await post(url, "/api/demo", {});
+		assert.equal(refused.status, 429);
+		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_IP_DAY" });
+		const calls = (await readFile(join(dirname(databasePath), "fetch.log"), "utf8")).trim().split("\n").filter(line => line !== "");
+		const forks = calls.map(line => JSON.parse(line) as { readonly url: string }).filter(call => call.url.endsWith("/forks"));
+		assert.equal(forks.length, 3, `A refused visitor never reaches the App, so three forks are made: ${calls.length} calls.`);
+	}, true);
 });
 
 test("one visitor's job is invisible and untouchable to another visitor", async () => {

@@ -2,11 +2,18 @@
 // the contract will freeze. Core owns these rows; the API owns the session that names them.
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { closeAcquit, createAcquit } from "../src/acquit.ts";
 import { instant } from "../src/ids.ts";
 import type { MerchantId } from "../src/ids.ts";
+import { usd } from "../src/ledger.ts";
+import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { insertVisitor, newVisitorId, principalOf, readVisitor, repositoryForClient, visitorHandles, visitorOfHandle } from "../src/visitors.ts";
+import { exampleContract } from "./hidden-fixture.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const merchant = "sandbox-seller" as MerchantId;
@@ -59,4 +66,25 @@ test("two visitors never collide on an id, a handle, or a repository name", () =
 		assert.match(handles.operator, /^guest-[0-9a-f]{12}-ops$/);
 		ids.add(id);
 	}
+});
+
+test("a fork that fails leaves the visitor FAILED, kept for the sweep, and no session", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-provision-"));
+	const path = join(root, "acquit.db");
+	const service = createAcquit({ databaseUrl: path, hiddenContract: exampleContract, demo: { merchant }, clock: { now: () => now },
+		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
+			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
+		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
+	const store = new SqliteStore(path);
+	try {
+		const { provisionDemoVisitor } = await import("../src/acquit.ts");
+		const id = newVisitorId();
+		const failed = await provisionDemoVisitor(service, { id, ipKey: "ip-a", fork: async () => { throw new Error("GitHub answered 500."); } });
+		assert.equal(failed.kind, "FAILED");
+		// The row is reserved before the fork and kept after it fails: nothing the App was asked for is untracked.
+		const row = readVisitor(store.db, id);
+		assert.equal(row?.state, "FAILED");
+		assert.equal(row?.repository, null);
+		assert.equal(principalOf(store.db, visitorHandles(id).client)?.visitorId, id);
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
