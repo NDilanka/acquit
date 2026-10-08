@@ -51,6 +51,7 @@ export type VisitorReservation =
 export type NewVisitor = {
 	readonly id: VisitorId;
 	readonly ipKey: string;
+	/** The repository the App forks for this visitor, bound once its answer arrives. Null when there is none. */
 	readonly repository: string | null;
 	/** The sandbox seller the visitor's operator is paid through. */
 	readonly merchant: MerchantId;
@@ -146,13 +147,14 @@ export function sweepVisitor(db: DatabaseSync, id: VisitorId): void {
  * reservation that spends its address's allowance for the day. The check and the rows it guards share
  * that transaction, so two creations at once cannot both pass the last slot of an address's day. An
  * existing id is refused rather than overwritten, so a retried create can never take over another
- * visitor. A refusal writes nothing and names the cap.
+ * visitor. A refusal writes nothing and names the cap. The row is PROVISIONING: its repository is
+ * bound when the App's answer arrives, so the reservation is always written before anything is forked.
  */
 export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorReservation {
 	const handles = visitorHandles(input.id);
 	const expiresAt = new Date(Date.parse(input.now) + VISITOR_TTL_MS).toISOString() as Instant;
 	const visitor: VisitorRow = { id: input.id, createdAt: input.now, expiresAt, ipKey: input.ipKey,
-		clientHandle: handles.client, operatorHandle: handles.operator, repository: input.repository, state: "ACTIVE" };
+		clientHandle: handles.client, operatorHandle: handles.operator, repository: null, state: "PROVISIONING" };
 	const operator: OperatorRow = { id: handles.operator as OperatorId, handle: handles.operator, kind: "INDEPENDENT",
 		version: 0 as Version, payouts: { kind: "READY", merchant: input.merchant, connectedAt: input.now } };
 	const agentId = `${handles.operator}-agent`;
@@ -185,9 +187,25 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 	return { kind: "RESERVED", visitor };
 }
 
-/** The row a reservation holds, for a caller that already knows the caps allow it. Throws when they refuse. */
+/**
+ * Binds the repository the App answered with to the reserved visitor and marks it ACTIVE. Null is a
+ * deployment with no App: the visitor opens jobs on the deployment's own repository.
+ */
+export function bindVisitorRepository(db: DatabaseSync, id: VisitorId, repository: string | null): VisitorRow {
+	db.prepare("UPDATE visitors SET repository = ?, state = 'ACTIVE' WHERE id = ?").run(repository, id);
+	const visitor = readVisitor(db, id);
+	if (visitor === null) throw new Error("Visitor missing after binding its repository");
+	return visitor;
+}
+
+/** Marks a reserved visitor FAILED, keeping any repository its fork already named for the sweep. */
+export function failVisitor(db: DatabaseSync, id: VisitorId, repository: string | null): void {
+	db.prepare("UPDATE visitors SET repository = ?, state = 'FAILED' WHERE id = ?").run(repository, id);
+}
+
+/** The row a reservation holds, bound to its repository: for a caller that already knows what the App answered. */
 export function insertVisitor(db: DatabaseSync, input: NewVisitor): VisitorRow {
 	const reserved = reserveVisitor(db, input);
 	if (reserved.kind === "CAPPED") throw new Error(`The caps refused this visitor: ${reserved.reason}`);
-	return reserved.visitor;
+	return bindVisitorRepository(db, input.id, input.repository);
 }

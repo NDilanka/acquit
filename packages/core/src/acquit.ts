@@ -16,9 +16,9 @@ import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
-import { reserveVisitor } from "./visitors.ts";
+import { bindVisitorRepository, failVisitor, reserveVisitor } from "./visitors.ts";
 import type { VisitorRow } from "./visitors.ts";
-import { unconfiguredVerifier } from "./verifier.ts";
+import { boundedDetail, unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
 
 export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, VisitorId } from "./ids.ts";
@@ -260,24 +260,47 @@ export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId):
 
 /** What the demo route hands the core: the visitor's own id (its repository name derives from it), the request's address digest, and the repository the App forked for it. */
 export type NewDemoVisitor = { readonly id: VisitorId; readonly ipKey: string; readonly repository: string | null };
+/** What the App answered when it was asked for the visitor's repository, or that there is no App to ask. */
+export type VisitorFork =
+	| { readonly kind: "FORKED"; readonly repository: string }
+	| { readonly kind: "NO_APP" };
 export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: VisitorRow }
 	| { readonly kind: "NOT_CONFIGURED" }
-	/** The caps refused this visitor before its row existed: one closed code names the allowance. */
-	| { readonly kind: "CAPPED"; readonly reason: CapRefusal };
+	/** The caps refused this visitor before anything was forked: one closed code names the allowance. */
+	| { readonly kind: "CAPPED"; readonly reason: CapRefusal }
+	/** The fork refused: the row is FAILED and kept, with any repository it named, for the sweep. */
+	| { readonly kind: "FAILED"; readonly detail: string };
 
 /**
- * Mints one visitor's whole identity. The route owns the repository provisioning and the session; this
- * owns the rows, so the visitor's handles, operator, agent, grant, and the reservation that spends its
- * address's allowance are created together or not at all. The caps are checked inside that transaction,
- * so no caller and no second worker can mint a visitor the table refuses.
+ * Mints one visitor's whole identity in the one order that never leaves a fork untracked: the demo
+ * configuration is checked and the visitor is reserved — PROVISIONING, counted by the caps, its row and
+ * principals written — before the App is asked for anything. Then the fork is made, its answer bound to
+ * the row, and the row marked ACTIVE. A fork that refuses marks the row FAILED and keeps any repository
+ * the answer named, so the sweep still takes it. The route owns the session; this owns the rows.
  */
-export async function createDemoVisitor(service: Acquit, input: NewDemoVisitor): Promise<DemoVisitorResult> {
+export async function provisionDemoVisitor(service: Acquit, input: { readonly id: VisitorId; readonly ipKey: string;
+	readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
-	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey,
-		repository: input.repository, merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
-	return reserved.kind === "CAPPED" ? { kind: "CAPPED", reason: reserved.reason } : { kind: "CREATED", visitor: reserved.visitor };
+	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey, repository: null,
+		merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
+	if (reserved.kind === "CAPPED") return { kind: "CAPPED", reason: reserved.reason };
+	let forked: VisitorFork | null = null;
+	try {
+		forked = await input.fork();
+		return { kind: "CREATED", visitor: bindVisitorRepository(runtime.store.db, input.id,
+			forked.kind === "NO_APP" ? null : forked.repository) };
+	} catch (error) {
+		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : null);
+		return { kind: "FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) };
+	}
+}
+
+/** The reserve-then-bind path for a caller that already holds the repository, and for fixtures. */
+export async function createDemoVisitor(service: Acquit, input: NewDemoVisitor): Promise<DemoVisitorResult> {
+	return provisionDemoVisitor(service, { id: input.id, ipKey: input.ipKey,
+		fork: async () => input.repository === null ? { kind: "NO_APP" } : { kind: "FORKED", repository: input.repository } });
 }
 export function closeAcquit(service: Acquit): void {
 	runtimes.get(service)?.store.close();

@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { createAcquit, closeAcquit, createDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
+import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase } from "../../../packages/core/src/store.ts";
@@ -233,30 +233,30 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { users: SEEDED_USERS }); return;
 	}
 	// Start my demo: one visitor, one disposable client repository forked by the App, and a session for
-	// its client. The caps are checked inside the transaction that writes the visitor, so no second
-	// request can slip past them, and a refusal names its allowance and writes nothing.
+	// its client. The configuration and the caps come first, and the visitor's row is written before the
+	// App is asked for anything, so a refused visitor never leaves a fork behind and a fork that fails is
+	// still tracked by the sweep.
 	if (url.pathname === "/api/demo" && method === "POST") {
 		const ipKey = ipKeyOf(req);
 		const id = newVisitorId();
-		let repository: string | null = null;
-		try {
-			repository = (await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) })).repository;
-		} catch (error) {
-			// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
-			// repository, which is the only path that exists then. Every other refusal is named, never
-			// papered over: a visitor whose own repository was not made must not fall back to a shared one.
-			if (!(error instanceof GitHubAppNotConfigured)) {
-				json(res, 502, { error: "DEMO_REPOSITORY_FAILED",
-					detail: error instanceof GitHubAppError ? boundedDetail(error.message) : "The GitHub App could not fork this visitor's repository." });
-				return;
+		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: async () => {
+			try {
+				const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
+				return { kind: "FORKED", repository: forked.repository };
+			} catch (error) {
+				// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
+				// repository, which is the only path that exists then. Every other refusal is named, never
+				// papered over: a visitor whose own repository was not made must not fall back to a shared one.
+				if (error instanceof GitHubAppNotConfigured) return { kind: "NO_APP" };
+				throw error;
 			}
-		}
-		const created = await createDemoVisitor(acquit, { id, ipKey, repository });
+		} });
 		if (created.kind === "CAPPED") { json(res, 429, { error: created.reason }); return; }
 		if (created.kind === "NOT_CONFIGURED") {
 			json(res, 503, { error: "DEMO_NOT_CONFIGURED", detail: "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through." });
 			return;
 		}
+		if (created.kind === "FAILED") { json(res, 502, { error: "DEMO_REPOSITORY_FAILED", detail: created.detail }); return; }
 		const token = mintSession(created.visitor.clientHandle);
 		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 		json(res, 201, { user: { handle: created.visitor.clientHandle, role: "CLIENT" }, visitor: visitorJson(created.visitor), token });
