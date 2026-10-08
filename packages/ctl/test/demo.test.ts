@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { generateKeyPairSync, createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -52,41 +53,73 @@ const githubAppEnv = (): Record<string, string> => {
 		ACQUIT_GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
 };
 
-async function apiFixture(dev: boolean, run: (url: string, databasePath: string) => Promise<void>, github = false): Promise<void> {
-	const root = fileURLToPath(new URL("../../..", import.meta.url));
-	const dir = await mkdtemp(join(tmpdir(), "acquit-demo-test-"));
-	const log = join(dir, "fetch.log");
-	const databasePath = join(dir, "acquit.db");
+/** One free port on the loopback, handed out and released before the child binds it. */
+async function freePort(): Promise<number> {
 	const listener = createServer();
 	await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
 	const port = (listener.address() as { port: number }).port;
 	await new Promise<void>(resolve => listener.close(() => resolve()));
+	return port;
+}
+/** One isolated API child, listening on its own port and reaching only the two stubs. */
+async function startApi(root: string, dir: string, dev: boolean, github = false): Promise<{ readonly child: ChildProcess; readonly url: string }> {
+	const port = await freePort();
 	const child = spawn(process.execPath, ["--import", preload("Date.now=()=>1760000000000"), "--import", preload(fetchStub), "apps/api/src/server.ts"],
 		{ cwd: root, stdio: "ignore", env: {
 			...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
 			ACQUIT_HIDDEN_CASES: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url)),
-			DATABASE_PATH: databasePath, PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
-			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: log,
+			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
+			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: join(dir, "fetch.log"),
 			// The GitHub App is this test's own choice, never the developer's .env: without one the App
 			// refuses by name and the visitor falls back to the deployment's repository, and with one every
 			// fork is answered by the stub below and never by github.com.
 			ACQUIT_GITHUB_APP_ID: "", ACQUIT_GITHUB_APP_PRIVATE_KEY: "", ACQUIT_GITHUB_APP_ORG: "", ACQUIT_GITHUB_API_BASE: "",
 			...(github ? githubAppEnv() : {}),
 		} });
+	const url = `http://127.0.0.1:${port}`;
+	const deadline = Date.now() + 15_000;
+	while (!(await reachable(`${url}/api/session`))) {
+		assert.equal(child.exitCode, null, "The isolated test API exited early.");
+		assert(Date.now() < deadline, "The isolated test API failed readiness.");
+		await sleep(50);
+	}
+	return { child, url };
+}
+async function apiFixture(dev: boolean, run: (url: string, databasePath: string) => Promise<void>, github = false): Promise<void> {
+	const root = fileURLToPath(new URL("../../..", import.meta.url));
+	const dir = await mkdtemp(join(tmpdir(), "acquit-demo-test-"));
+	const databasePath = join(dir, "acquit.db");
+	const children: ChildProcess[] = [];
 	try {
-		const deadline = Date.now() + 15_000;
-		const url = `http://127.0.0.1:${port}`;
-		while (!(await reachable(`${url}/api/session`))) {
-			assert.equal(child.exitCode, null, "The isolated test API exited early.");
-			assert(Date.now() < deadline, "The isolated test API failed readiness.");
-			await sleep(50);
-		}
-		await run(url, databasePath);
+		const api = await startApi(root, dir, dev, github);
+		children.push(api.child);
+		await run(api.url, databasePath);
+		const log = join(dir, "fetch.log");
 		const calls = (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(line => line !== "");
 		assert.equal(calls.every(line => ["https://api-m.sandbox.paypal.com/", `${GITHUB_BASE}/`].some(base => JSON.parse(line).url.startsWith(base))), true,
 			`The isolated test API reached ${calls.join(", ")}`);
 	} finally {
-		await releaseSpawned(child);
+		for (const child of children) await releaseSpawned(child);
+		await rm(dir, { recursive: true, force: true });
+	}
+}
+/**
+ * Two API processes against one lane database, which is what a deployment behind more than one
+ * worker looks like. A cap check that is not inside the committing transaction lets both processes
+ * pass it at once; the same check inside BEGIN IMMEDIATE cannot.
+ */
+async function racingApiFixture(run: (urls: readonly string[], databasePath: string) => Promise<void>): Promise<void> {
+	const root = fileURLToPath(new URL("../../..", import.meta.url));
+	const dir = await mkdtemp(join(tmpdir(), "acquit-race-test-"));
+	const children: ChildProcess[] = [];
+	try {
+		const first = await startApi(root, dir, false);
+		children.push(first.child);
+		const second = await startApi(root, dir, false);
+		children.push(second.child);
+		await run([first.url, second.url], join(dir, "acquit.db"));
+	} finally {
+		for (const child of children) await releaseSpawned(child);
 		await rm(dir, { recursive: true, force: true });
 	}
 }
@@ -228,6 +261,25 @@ test("public mode mints no session from a visitor handle, and dev mode keeps see
 		assert.deepEqual(await (await fetch(`${url}/api/users`)).json(),
 			{ users: [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] });
 		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null });
+	});
+});
+
+test("a cap holds when parallel requests race it on one lane", async () => {
+	await racingApiFixture(async urls => {
+		const visitor = await (await post(urls[0], "/api/demo", {})).json() as DemoBody;
+		const repository = visitor.visitor.repository ?? "maya-client/invoice-app";
+		const open = (url: string) => post(url, "/api/commands", { key: randomUUID(), command: { type: "OpenJob", repository,
+			issueNumber: 12, budget: 40000, deliveryEndsAt: "2025-10-20T12:00:00.000Z" } }, visitor.token);
+		// Eight opens across two processes: the visitor's allowance is three, whatever the interleaving.
+		const opened = await Promise.all(Array.from({ length: 8 }, (_, index) => open(urls[index % 2])));
+		const outcomes = await Promise.all(opened.map(async response => await response.json() as { outcome: { kind: string; reason?: string } }));
+		assert.equal(outcomes.filter(outcome => outcome.outcome.kind === "COMMITTED").length, 3);
+		assert.deepEqual(outcomes.filter(outcome => outcome.outcome.kind === "DENIED").map(outcome => outcome.outcome.reason),
+			["CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS"]);
+		// The address's day holds the same way: this visitor is one, so two more may be created, ever.
+		const created = await Promise.all(Array.from({ length: 10 }, (_, index) => post(urls[index % 2], "/api/demo", {})));
+		assert.equal(created.filter(response => response.status === 201).length, 2);
+		assert.deepEqual(created.filter(response => response.status !== 201).map(response => response.status), [429, 429, 429, 429, 429, 429, 429, 429]);
 	});
 });
 
