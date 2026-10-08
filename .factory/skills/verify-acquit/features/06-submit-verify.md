@@ -54,7 +54,9 @@ Preconditions:
 - The judge decides with the deployment's private case file: `ACQUIT_HIDDEN_CASES` is the absolute
   path to a JSON `{"version":1,"cases":[...]}` file holding six `hidden:N` cases. A boot without it
   refuses `VERIFIER_CONFIG_MISSING`; `ACQUIT_DEV=1` falls back to the committed example
-  `packages/verifier/fixtures/hidden-cases.example.json`. The API derives the contract's manifest
+  `packages/verifier/fixtures/hidden-cases.example.json`. Outside a dev process, a named file that
+  parses to the example's contract, a copy or a symlink included, refuses `VERIFIER_CONFIG_INVALID`.
+  The API derives the contract's manifest
   digest from that file at boot, so the file and the deployment's contract move together. The file is
   gitignored and is never mounted into the subject. Never print it or copy it into the repository.
 

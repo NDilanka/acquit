@@ -3,7 +3,8 @@
 // the contract (ids and digest) at boot and drops the cases; only the verifier keeps them in memory.
 //
 // The committed example under fixtures/ is the development fallback. Every case in it is public in
-// the repository's history, so no deployment may run on it without ACQUIT_DEV=1.
+// the repository's history, so no deployment may run on it without ACQUIT_DEV=1, and a named file
+// that parses to the example's contract refuses the same way.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -107,7 +108,8 @@ export function loadHiddenCasesFromFile(path: string): readonly HiddenCase[] {
 /**
  * The environment policy. A named file is the deployment's private store. Without one, only an
  * explicit development process falls back to the committed example; everything else refuses by name
- * before the process listens.
+ * before the process listens. Outside a development process a named file that parses to the example
+ * refuses too, because its cases are public history whatever the file is called.
  */
 export function loadHiddenCases(env: NodeJS.ProcessEnv = process.env): readonly HiddenCase[] {
 	const named = env[HIDDEN_CASES_ENV]?.trim() ?? "";
@@ -117,5 +119,16 @@ export function loadHiddenCases(env: NodeJS.ProcessEnv = process.env): readonly 
 			"Set it to the absolute path of this deployment's private hidden-case file. ACQUIT_DEV=1 falls back to the committed example.");
 	}
 	if (!isAbsolute(named)) refuse(`Give an absolute path, not ${named}.`);
-	return loadHiddenCasesFromFile(named);
+	const cases = loadHiddenCasesFromFile(named);
+	if (env.ACQUIT_DEV !== "1" && hiddenContractOf(cases).digest === publicExampleDigest()) {
+		refuse(`${named} parses to the committed public example. Name this deployment's own private cases, or set ACQUIT_DEV=1 for a development run.`);
+	}
+	return cases;
+}
+
+/** The digest that identifies the committed public example, read once. */
+let exampleDigest: Digest | null = null;
+function publicExampleDigest(): Digest {
+	exampleDigest ??= hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest;
+	return exampleDigest;
 }
