@@ -76,3 +76,27 @@ test("advancing one job's clock moves its row, its wake time, and its own effect
 		assert.equal(shiftJobClock(store.db, "job_MISSING" as JobId, day), null);
 	} finally { store.close(); }
 });
+
+test("a refused outbox write leaves the job's clock exactly where it was", () => {
+	const store = new SqliteStore(":memory:");
+	const insert = (row: JobRow, wakeAt: string) => store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)")
+		.run(row.id, row.version, JSON.stringify(row), wakeAt);
+	insert(openRow("job_A"), "2026-10-09T12:00:00.000Z");
+	const ready = { kind: "READY", runAt: "2026-10-06T12:30:00.000Z" };
+	store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run("effect_A",
+		JSON.stringify({ key: "effect_A", payloadDigest: "d", effect: { kind: "CREATE_ORDER", jobId: "job_A", round: 1 }, state: ready }),
+		JSON.stringify(ready), "2026-10-06T12:30:00.000Z");
+	// The outbox write refuses after the job row's own write. Both are one write: neither may land.
+	const refusing = {
+		prepare: (sql: string) => sql.startsWith("UPDATE outbox") ? { run: () => { throw new Error("outbox write refused"); } }
+			: store.db.prepare(sql),
+		exec: (sql: string) => store.db.exec(sql),
+	} as unknown as Parameters<typeof shiftJobClock>[0];
+	const stored = () => ({ ...store.db.prepare("SELECT version, wake_at FROM jobs WHERE id = ?").get("job_A") as { version: number; wake_at: string } });
+	const effectRow = () => ({ ...store.db.prepare("SELECT state, due_at FROM outbox WHERE key = ?").get("effect_A") as { state: string; due_at: string } });
+	try {
+		assert.throws(() => shiftJobClock(refusing, "job_A" as JobId, day), /outbox write refused/);
+		assert.deepEqual(stored(), { version: 1, wake_at: "2026-10-09T12:00:00.000Z" });
+		assert.deepEqual(effectRow(), { state: JSON.stringify(ready), due_at: "2026-10-06T12:30:00.000Z" });
+	} finally { store.close(); }
+});
