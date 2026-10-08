@@ -28,15 +28,15 @@ The voice-over is read at about 150 words per minute, which is 2.5 words a secon
 
 | Scene | Time | Length | Budget at 150 wpm | Words in script | Read time |
 | --- | --- | --- | --- | --- | --- |
-| 1. The problem | 0:00 to 0:15 | 15 s | 37 | 28 | 11 s |
+| 1. The post-SaaS line | 0:00 to 0:15 | 15 s | 37 | 29 | 12 s |
 | 2. Post a job | 0:15 to 0:35 | 20 s | 50 | 39 | 16 s |
 | 3. Bids and escrow | 0:35 to 0:55 | 20 s | 50 | 45 | 18 s |
 | 4. The catch | 0:55 to 1:20 | 25 s | 62 | 48 (either version) | 19 s |
 | 5. The honest fix | 1:20 to 1:45 | 25 s | 62 | 40 | 16 s |
 | 6. Money moves | 1:45 to 2:05 | 20 s | 50 | 37 | 15 s |
 | 7. AG Studio | 2:05 to 2:35 | 30 s | 75 | 51 | 20 s |
-| 8. Why it matters | 2:35 to 2:50 | 15 s | 37 | 30 | 12 s |
-| Total | 0:00 to 2:50 | 170 s | 425 | 318 | 127 s |
+| 8. The verifier registry | 2:35 to 2:50 | 15 s | 37 | 30 | 12 s |
+| Total | 0:00 to 2:50 | 170 s | 425 | 319 | 128 s |
 
 The scenes add up to exactly 170 seconds, so the cut fits 2:50 with no spare second. Any scene that runs long takes its time from another scene.
 
@@ -46,17 +46,17 @@ To recount, run this from the repo root. It counts the words in every quoted voi
 awk '/^\*\*Voice-over, version B/{skip=1} /^\*\*Caption, version B/{skip=0} /^> / && !skip {sub(/^> /,""); n+=split($0,w," ")} END{print n}' docs/video-script.md
 ```
 
-The command prints 318. Both versions of scene 4 are 48 words, so either version gives the same total.
+The command prints 319. Both versions of scene 4 are 48 words, so either version gives the same total.
 
-## Scene 1. The problem, 0:00 to 0:15
+## Scene 1. The post-SaaS line, 0:00 to 0:15
 
-**On screen.** A diff of `tests/totals.test.ts` fills the frame. The expected value changes from `'10.125'` to `'10.13'`. A green "48 passed" line sits under it. Use the frames from the scene 4 take you keep, so scene 1 shows the same run. On a real Prototype T run, use that run's diff. On the labeled take, use the diff from `acquit diff <job> --dir story-job` after the staged run.
+**On screen.** Open on a plain title card for the first 5 seconds: "SaaS sold seats. Acquit sells verified outcomes." Then cut to a diff of `tests/totals.test.ts` that fills the frame. The expected value changes from `'10.125'` to `'10.13'`. A green "48 passed" line sits under it. Use the frames from the scene 4 take you keep, so scene 1 shows the same run. On a real Prototype T run, use that run's diff. On the labeled take, use the diff from `acquit diff <job> --dir story-job` after the staged run.
 
-**Voice-over.** 28 words.
+**Voice-over.** 29 words.
 
-> You pay for an AI coding fix. The checks go green. Then you look closer. The agent changed the test to match the bug, and you already paid.
+> SaaS sold seats. Acquit sells verified outcomes. You pay when the result is proven. Today an AI coding fix can look proven when the agent just edited the test.
 
-**Caption.** Version A: "A real model run, told to make the failing tests pass." Version B: "Illustration. An agent told to make the tests pass."
+**Caption.** On the title card: "SaaS sold seats. Acquit sells verified outcomes." On the diff, version A: "A real model run, told to make the failing tests pass." Version B: "Illustration. An agent told to make the tests pass."
 
 **Pre-warm.** None. This scene reuses scene 4 frames.
 
@@ -143,7 +143,7 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 ## Scene 5. The honest fix, 1:20 to 1:45
 
-The honest fix is the same operator's second attempt on the story job, as in the win plan's storyboard. House cannot deliver on the story job, because its escrow is locked to the operator, and a separate House job would need its own posting, acceptance, and payment inside a 25-second scene. That job would also change the payee in scene 6. A second attempt keeps one job, one escrow, and one payee from scene 3 to scene 6, and it shows the attempt count from scene 4 being used. House stays in the video as a bidder in scene 3 and as the receipts line in scene 8.
+The honest fix is the same operator's second attempt on the story job, as in the win plan's storyboard. House cannot deliver on the story job, because its escrow is locked to the operator, and a separate House job would need its own posting, acceptance, and payment inside a 25-second scene. That job would also change the payee in scene 6. A second attempt keeps one job, one escrow, and one payee from scene 3 to scene 6, and it shows the attempt count from scene 4 being used. House stays in the video as a bidder in scene 3, where the bid list sorts by verified receipts.
 
 **On screen.**
 
@@ -215,25 +215,27 @@ Caption the local shots "Local take. The capture webhook sent twice more." The f
 
 **Fallback.** G1 with A3 is on the never-cut list, so both takes below are for the rough cut only. If A3 slips, record the G1 dashboard only. Drop the question, and the voice-over becomes "The platform watches the money in AG Studio. Held, released, refunded, fees, and tampering caught. The ledger conserves money. Every payout plus its fee equals what the client paid." That version is 29 words. If G1 also slips, show the AG Grid ledger table from F7, then run `node scripts/ledger-demo.mjs double-release`, which exists today and prints a REJECTED line for the law it breaks. Caption it "The ledger refuses a second payout." Drop "in AG Studio" from the voice-over.
 
-## Scene 8. Why it matters, 2:35 to 2:50
+## Scene 8. The verifier registry, 2:35 to 2:50
 
 **On screen.**
 
-1. A buyer quote from B1 on a plain card, with the buyer's name and role as the buyer approved them.
-2. The House receipts line from B2, counted from real receipt rows.
+1. The verifier registry from `docs/concept.md` on one card, in its order: Code, 3D printing, 3D rendering, video, writing. Code carries a "Live" badge. Every other row carries a "Next" badge. Hold for 6 seconds.
+2. A buyer quote from B1 on a plain card, with the buyer's name and role as the buyer approved them. It is read on screen, not spoken. Hold for 4 seconds.
 3. The hosted URL in large text, then the Acquit name and the tagline "Cleared, then paid."
+
+Only the code verifier exists. The registry card never says "supported", "available", or "plug in" for any other row.
 
 **Voice-over.** 30 words.
 
-> Agencies and founders told us they would pay for work only once it is proven. Acquit holds the money until a verifier clears it. Try it yourself. Cleared, then paid.
+> Code is the first outcome we verify. Next, the same escrow pays for 3D prints, renders, video, and writing, each with its own verifier. Try it yourself. Cleared, then paid.
 
-**Caption.** The quote text, then "<hosted URL>", then "Acquit. Cleared, then paid."
+**Caption.** "Live: code. Next: 3D printing, 3D rendering, video, writing." Then the quote text, then "<hosted URL>", then "Acquit. Cleared, then paid."
 
 **Pre-warm.** Nothing live. Every shot is a title card or a still.
 
-**Depends on.** B1 for the quote. B2 for the receipts line. H2 for the URL.
+**Depends on.** B1 for the quote. H2 for the URL. The registry card is a still and needs no PR.
 
-**Fallback.** If B1 has no written quote by V3, drop the quote card and its first sentence. The voice-over then opens on "Acquit holds the money until a verifier clears it." If B2 slips, the House row still reads "41 passed verified CI" from a seeded counter. Show it only with the caption "House history is seeded demo data."
+**Fallback.** If B1 has no written quote by V3, drop the quote card and give its 4 seconds to the registry card.
 
 ## Money shot list, both sides of the money
 
@@ -264,11 +266,11 @@ Use no music. If the final cut needs a bed under scene 8, use a royalty-free tra
 
 | Scene | Blocking PRs | Fallback if they slip |
 | --- | --- | --- |
-| 1. The problem | None. Prototype T picks the caption. | Labeled diff from `acquit diff <job> --dir story-job`. |
+| 1. The post-SaaS line | None. Prototype T picks the caption. | Labeled diff from `acquit diff <job> --dir story-job`. |
 | 2. Post a job | A1, J1, H2, K1 | AI contract with curated cases. Rough cut only: today's **New job** page with no AI claim. |
 | 3. Bids and escrow | A2, F7 | Rough cut only: `acquit bid` from the CLI, and today's **Bids** section with the seeded caption. |
 | 4. The catch | A2, H2. Prototype T picks the version. | Rough cut only: `acquit submit` from the CLI. |
 | 5. The honest fix | J1, H2, A2 | Rough cut only: `acquit submit` from the CLI. |
 | 6. Money moves | P1, H2 | Rough cut only: a labeled local take of `ctl webhook replay --capture`. |
 | 7. AG Studio | G1, A3 | Rough cut only: G1 alone, then the F7 ledger grid and `scripts/ledger-demo.mjs`. |
-| 8. Why it matters | B1, B2, H2 | No quote card, and a receipts line labeled as seeded. |
+| 8. The verifier registry | B1, H2 | No quote card. The registry card stays. |

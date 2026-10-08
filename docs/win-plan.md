@@ -90,7 +90,7 @@ Each item is one PR or one task with its own proof, per the existing stack rules
 
 - [x] **Land F5.** Merged on 2026-10-08 as https://github.com/NDilanka/acquit/pull/10.
 - [ ] **B1. Line up buyers.** Contact agencies and founders today. The target is three written quotes and one real job on a real repo before 2026-11-01.
-- [ ] **B3. Competitor check.** Record Algora, UpAgents, thejobcafe.com, and assay.guide in the decision log, with what Acquit does that each does not.
+- [ ] **B3. Competitor check.** Record Algora, UpAgents, thejobcafe.com, and assay.guide in the decision log, with what Acquit does that each does not. Add three PayPal AI Hackathon entries. MergePay pays a GitHub bounty after the merge, once a Gemini reviewer gives its opinion, for open-source maintainers. Acquit verifies with deterministic hidden tests and rejects test tampering, holds escrow before work starts, reaches private repos through the GitHub App installation (not yet shown on a private repo), and writes receipts. Stood (an evidence-gated release gate with frozen signed tests and evidence profiles for other trades) and Bursar (spend limits and verification for agents that buy) are adjacent agentic-money entries.
 - [ ] **D1. Start in Discord.** Post an intro and the first screenshot in public. Ask one real question about delayed disbursement with Partner Referrals in the public channel.
 - [ ] **Prototype H. Hosting.** Render web services are not expected to run Docker inside a container (guess, to measure). Try web and API on Render with a persistent disk for SQLite and a same-origin proxy, since the Vite proxy is dev-only (`apps/web/vite.config.ts:8-15`). Try the verifier on a small VM with Docker, reached over a private link, since both servers bind loopback today (`apps/api/src/server.ts:500`, `packages/verifier/server.ts:84`). Proof is a hosted tamper REJECTED and fix VERIFIED with timings, and the same after a restart.
 - [ ] **Prototype M. Real model on the House fix.** Run the House agent with Claude through the OpenRouter key on invoice-app issue 12 ten times, each on its own disposable client repo. Record pass rate, median time, and cost per run. The gate is at least 9 of 10 VERIFIED.
@@ -150,14 +150,14 @@ The judges are told they need not watch past 3 minutes. Aim for 2:50 and show th
 
 | Time | Scene | What the viewer sees |
 | --- | --- | --- |
-| 0:00 to 0:15 | The problem | A client paid for AI-written code that "passed" because the agent edited the test. One sentence of voice-over. |
+| 0:00 to 0:15 | The post-SaaS line | Open on a title card: "SaaS sold seats. Acquit sells verified outcomes." Then the problem: AI-written code that "passed" because the agent edited the test. |
 | 0:15 to 0:35 | Post a job | The client posts a GitHub issue with a budget. AI drafts the acceptance contract and hidden tests. The client approves. |
 | 0:35 to 0:55 | Bids and escrow | An operator's agent bids through the Acquit MCP server, and House bids too. The AG Grid bid list sorts by verified receipts. The client accepts and pays in the PayPal sandbox. The ledger shows HELD. |
 | 0:55 to 1:20 | The catch | An operator's agent submits a change that edits a frozen test. Prototype T found no real model that cheats (0 of 30 runs), so label it on screen as "an agent told to make the tests pass". The verifier says REJECTED with the reason. The escrow stays HELD. |
-| 1:20 to 1:45 | The honest fix | The same operator's second attempt, a real model with an honest instruction, fixes the code on the same job. VERIFIED with frozen and hidden counts. The client approves. The PR merges. The escrow is locked to that operator, so House cannot deliver on this job. House stays on screen as a bidder and in the receipts line. |
+| 1:20 to 1:45 | The honest fix | The same operator's second attempt, a real model with an honest instruction, fixes the code on the same job. VERIFIED with frozen and hidden counts. The client approves. The PR merges. The escrow is locked to that operator, so House cannot deliver on this job. House stays on screen as a bidder, with its receipts count in the bid list. |
 | 1:45 to 2:05 | Money moves | The operator's sandbox account shows the payout, and the platform shows its fee. Same webhook sent twice, one payout. |
 | 2:05 to 2:35 | AG Studio | "How much escrow is held right now, and does PayPal agree?" The agent builds the widget. The "Ledger conserves" widget stays green. |
-| 2:35 to 2:50 | Why it matters | Real buyer quote, the receipts line, the URL, and "Cleared, then paid." |
+| 2:35 to 2:50 | The verifier registry | The registry from `docs/concept.md`: code marked live, then 3D printing, 3D rendering, video, and writing marked next. A real buyer quote on screen if B1 has one, the URL, and "Cleared, then paid." Only code is built, so the card labels the others "next", never "supported". |
 
 Never stage a cheat without labeling it. A judge who spots an unlabeled script would mark down every other claim.
 
@@ -165,8 +165,8 @@ Rules for the recording. Use the hosted demo, not localhost. Pre-warm the verifi
 
 ## 8. Submission package
 
-- [ ] **Name and elevator pitch.** "Acquit. Cleared, then paid. Hire AI agents for coding work, and PayPal escrow pays them only after a verifier catches test tampering and passes private hidden tests." Do not say "tamper-proof". The verifier rejects tampering it can detect, and that is the claim we can prove.
-- [ ] **Story.** Inspiration, what it does, how we built it, challenges (the four measured sandbox findings), what we learned, what's next (the verifier registry in `docs/concept.md`). Say the repo started on 2026-10-05.
+- [ ] **Name and elevator pitch.** Lead with outcome-as-a-service: "Acquit. Cleared, then paid. SaaS sold seats. Acquit sells verified outcomes. You pay when the result is proven, and PayPal escrow holds the money until it is. Code is the first outcome we verify." The second line says how code is verified: "AI agents fix a GitHub issue, and the verifier rejects any change that edits a frozen test and runs hidden tests the agent never sees." Do not say "tamper-proof". The verifier rejects tampering it can detect, and that is the claim we can prove.
+- [ ] **Story.** Inspiration, what it does, how we built it, challenges (the four measured sandbox findings), what we learned, what's next (the verifier registry in `docs/concept.md`). Today the job core calls one verifier through the `VerifierPort` interface (`packages/core/src/verifier.ts:621`), but the contract and verdict it passes are code-specific (commit, frozen and hidden tests, protected paths, pull request). So call the other outcomes "next", never "pluggable" or "supported". Say the repo started on 2026-10-05.
 - [ ] **Built with.** PayPal Orders v2 with delayed disbursement and `platform_fees`, referenced payouts, Payouts, refunds, Partner Referrals, webhooks with signature checks, the PayPal AI Toolkit and MCP server, AG Studio and its agent framework, Claude through OpenRouter, Render, Docker, the GitHub App, and TypeScript.
 - [ ] **Testing instructions.** The hosted URL, the judge sign-in, the judge sandbox buyer login (sandbox only, no real money), and the local one-command path from `README.md`.
 - [ ] **README for judges.** R1 in week 5, because judging may use automated analysis.
