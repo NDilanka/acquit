@@ -24,7 +24,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] A GitHub App named `Acquit sandbox` exists with contents, issues, pull requests, and checks permissions. It is installed on the `acquit-forks` org and on the account that owns the lane client repos. Its app id and private key path are in `.env`. F3 needs this.
   - [ ] A second sandbox Business account is onboarded through Partner Referrals, and its merchant id is in `.env` as `OPERATOR_HOUSE_MERCHANT_ID`. F6 needs this.
   - [ ] Docker Desktop is running, so `docker info` exits 0. The verifier's container subject in F3 and the runner in F5 need it. On 2026-10-05 the daemon was down.
-  - [ ] Optional. An Anthropic API key is available for the one `claude-code` runner lane in F5.
+  - [ ] Optional. An Anthropic or OpenRouter API key is available for the one `claude-code` runner lane in F5. F5 ran it through OpenRouter.
 - [ ] Read these from trunk at program start. Re-read them at every tick.
   - [ ] `git show origin/main:docs/plan.md`
   - [ ] `git show origin/main:.factory/skills/verify-acquit/SKILL.md`
@@ -429,7 +429,7 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 **Build.**
 
 - [ ] Add `acquit login`. It opens the web app with a one-time code, waits for sign-in, and stores the token under the user profile.
-- [ ] Add `acquit operator init`. It checks PayPal onboarding for the operator's merchant, and stores the provider key in Windows Credential Manager, never in a file.
+- [ ] Add `acquit operator init`. It checks PayPal onboarding for the operator's merchant, and stores the provider key in the OS keychain, never in a file. That is Windows Credential Manager, the macOS keychain, or the Linux kernel user keyring through `keyctl`. The keyring is memory only, so after a reboot the operator runs `init` again.
 - [ ] Add `acquit agent create`, `jobs list`, `bid`, `diff`, and `receipts` with the tutorial's output blocks.
 - [ ] Add `acquit run`. It clones the work repo with a scoped token, starts the runner container with network limited to the package registry and the model provider, and runs the agent. It supports runner `claude-code` and runner `command`, which runs a script the operator names.
 
@@ -447,14 +447,14 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 
 - [ ] Lane 1. Regression lane against trunk. Trunk has only `acquit submit`, so record that. At head, run login, bid, run, and submit on one job. Save `cli-path.png`. Pass when every printed block matches `docs/tutorial.md` except ids, times, and durations.
 - [ ] Lane 2. Run `acquit login` and finish sign-in in the lane's browser. Save `login.png`. Pass when the terminal prints `Signed in as devon-ops (operator)`.
-- [ ] Lane 3. Run `acquit operator init`. Save `operator-init.png`. Pass when it prints the three steps and `Bid credits: 30 (weekly allowance)`, and a search of the lane's data folder finds no provider key.
+- [ ] Lane 3. Run `acquit operator init`. Save `operator-init.png`. Pass when it prints the three steps and `Bid credits: 30 (weekly allowance)`, and a search of the lane's data folder finds no provider key. When the seed has payouts READY, the CLI skips "Opening PayPal onboarding in your browser...", and that still passes.
 - [ ] Lane 4. Run `acquit agent create ts-bugfixer` with the tutorial's prompt file. Save `agent-create.png`. Pass when it prints `Prompt: prompts/ts-bugfixer.md (5 lines)`.
 - [ ] Lane 5. Run `acquit jobs list`. Save `jobs-list.png`. Pass when the header and the job row match the tutorial's columns.
 - [ ] Lane 6. Run `acquit run` with a `command` runner that edits `tests/totals.test.ts`. Save `run-tamper.png`. Pass when it prints `Changed files: tests/totals.test.ts (1 line)` and a request from the container to `example.com` fails.
 - [ ] Lane 7. Run `acquit diff` after lane 6. Save `diff.png`. Pass when it prints the tutorial's test diff.
 - [ ] Lane 8. Run `acquit run --instruction` with a `command` runner that fixes `src/money.ts`, then `acquit submit`. Save `run-fix-submit.png`. Pass when submit prints the VERIFIED block.
 - [ ] Lane 9. After the client approves, run `acquit receipts`. Save `receipts.png`. Pass when it prints the receipt line and `Weekly bid credits: 40 from Monday (30 + 10 for 1 receipt)`.
-- [ ] Lane 10. If an Anthropic key is available, run `acquit run` with the `claude-code` runner on a fresh job. Save `claude-run.png`. Pass when the agent finishes and the changed files are under `src/` or `tests/`. Without a key, report BLOCKED with that reason.
+- [ ] Lane 10. If an Anthropic or OpenRouter key is available, run `acquit run` with the `claude-code` runner on a fresh job. Save `claude-run.png`. Pass when the agent finishes, the changed files are under `src/` or `tests/`, and submit reaches VERIFIED or a named verdict. Without a key, report BLOCKED with that reason.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 

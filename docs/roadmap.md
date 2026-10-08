@@ -12,7 +12,7 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | gf-skeleton | Build the walking skeleton | done | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | done | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | done | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
-| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, F2, and F4 merged on 2026-10-07 (#1 to #4, #6, #8). F5 is next. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
+| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, F2, and F4 merged on 2026-10-07 (#1 to #4, #6, #8). F5 merged on 2026-10-08 (#10). F6 is next, ordered by `docs/win-plan.md`. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
 | Step 8 (id not printed) | Open the PR, babysit, ship | in progress. The root lands PRs since 2026-10-07. | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
 | Step 9 (id not printed) | Maintain the verification skill | pending | Daily from 2026-10-23 | A daily run reports `clean`, `changed`, or `blocked`. |
 
@@ -410,6 +410,9 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-07 | F4 passed its gate and landed as #8. PlaceBid median 2.3 ms at trunk and head, and `tick` over 200 jobs median 2.2 ms. All 10 lanes passed on disposable client repos. | The plan's rules are 20 percent over trunk and 200 ms. | https://github.com/NDilanka/acquit/pull/8 |
 | 2026-10-07 | The weekly credit grant belongs to the ISO week. The first tick of a week grants once on any day, and a missed week is not back-filled. | Granting on every tick burned the next Monday's key, and granting only on a Monday dropped a whole week when the process was down that day. | https://github.com/NDilanka/acquit/pull/8 |
 | 2026-10-07 | The arbiter's hackathon surface is the dev-only `POST /api/dev/arbiter`, open to any signed-in session when `ACQUIT_DEV=1`. | A real arbiter role and console are out of scope for the hackathon, and the route is off outside dev. | https://github.com/NDilanka/acquit/pull/8 |
+| 2026-10-08 | F5 passed its gate and landed as #10. Head `--help` start 1.11 times trunk, `jobs list` median 195 ms, and warm `runStart` median 0.6 s. All 10 lanes passed on disposable client repos. | The plan's rules are 20 percent over trunk, 800 ms, and 30 seconds. It took 17 rounds, most of them closing host git and token paths the sandbox could reach. | https://github.com/NDilanka/acquit/pull/10 |
+| 2026-10-08 | The operator CLI stores the provider key in the OS keychain: Windows Credential Manager, the macOS keychain, or the Linux kernel user keyring. Lane 10 runs `claude-code` through OpenRouter. | The tutorial promises the OS keychain, and the build machine is Linux. There was no Anthropic key, and OpenRouter serves the same runner. | https://github.com/NDilanka/acquit/pull/10 |
+| 2026-10-08 | The remaining work follows `docs/win-plan.md`: target 1st place plus Best Use of AG Grid, one project, a public hosted demo, and four in-product AI pieces. Display-only PRs run three live lanes. Secret rotation lands before the demo goes public. | The operator approved it on 2026-10-08. AI not visible in the demo was a Stage One risk. | `docs/win-plan.md` |
 
 ## How to update this doc
 
