@@ -574,8 +574,17 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const orgToken = await tokenFor(organization);
 		const readRepo = () => call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
 		const found = await readRepo();
-		if (found.status !== 200) await forkInto(organization, repository, name, source, orgToken);
-		else if (!isOurFork(found.body, repository, request.repository)) {
+		if (found.status !== 200) {
+			const outcome = await forkInto(organization, repository, name, source, orgToken);
+			if (outcome === "existed") {
+				// The name was taken between the read and the fork. Read it once more and adopt it only when it
+				// carries the ownership marker: a repository this client did not fork is never adopted.
+				const raced = await readRepo();
+				if (!isOurFork(raced.body, repository, request.repository)) {
+					throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this visitor creates. Nothing was moved.`);
+				}
+			}
+		} else if (!isOurFork(found.body, repository, request.repository)) {
 			// The same ownership marker the work repo carries. A visitor's name is not a claim on someone
 			// else's repository: a mismatch refuses by name and moves nothing.
 			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this visitor creates. Nothing was moved.`);
