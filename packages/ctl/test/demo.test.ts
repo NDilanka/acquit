@@ -99,7 +99,8 @@ const openOutcome = async (url: string, token: string, repository: string, budge
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
 	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
 type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null;
-	readonly deliveryEndsAt: string; readonly contract: { readonly repository: string } | null } };
+	readonly deliveryEndsAt: string; readonly contract: { readonly repository: string } | null };
+	readonly handles: Readonly<Record<string, string>> };
 /** One job of the visitor's own, opened by its client principal: the fixture repository and issue 12. */
 async function openVisitorJob(url: string, token: string, repository = "maya-client/invoice-app"): Promise<string> {
 	const response = await post(url, "/api/commands", { key: randomUUID(), command: { type: "OpenJob",
@@ -193,6 +194,33 @@ test("public mode mints no session from a visitor handle, and dev mode keeps see
 		assert.deepEqual(await (await fetch(`${url}/api/users`)).json(),
 			{ users: [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] });
 		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null });
+	});
+});
+
+test("one visitor's job is invisible and untouchable to another visitor", async () => {
+	await apiFixture(false, async url => {
+		const first = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const second = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const jobId = await openVisitorJob(url, first.token);
+		// Reading another visitor's job is refused, not served because the job is OPEN.
+		const stranger = await fetch(`${url}/api/jobs/${jobId}`, { headers: { Authorization: `Bearer ${second.token}` } });
+		assert.equal(stranger.status, 403);
+		assert.equal((await stranger.json() as { error: string }).error, "NOT_OWNER");
+		// Listing never names another visitor's job.
+		const list = await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${second.token}` } })
+			.then(response => response.json() as Promise<{ jobs: { id: string }[] }>);
+		assert.equal(list.jobs.some(job => job.id === jobId), false);
+		// The other visitor's operator cannot bid on it, even though the job is OPEN and takes bids.
+		await post(url, "/api/demo/switch", {}, second.token);
+		const me = await fetch(`${url}/api/me/operator`, { headers: { Authorization: `Bearer ${second.token}` } })
+			.then(response => response.json() as Promise<{ agents: { id: string }[] }>);
+		const bid = await post(url, "/api/commands", { key: randomUUID(), command: { type: "PlaceBid", jobId,
+			price: 40000, eta: 48, agent: me.agents[0].id, pitch: "cross-visitor" } }, second.token);
+		assert.equal(bid.status, 409);
+		assert.deepEqual(await bid.json(), { outcome: { kind: "DENIED", reason: "NOT_OWNER" } });
+		// The owner's own view never names the other visitor's operator.
+		const mine = await jobOf(url, jobId, first.token);
+		assert.equal(Object.values(mine.body.handles).includes(second.visitor.operator), false);
 	});
 });
 
