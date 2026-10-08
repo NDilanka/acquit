@@ -15,6 +15,7 @@ import { CAPS, capWindowStart, jobCap, modelRunCap, visitorCap } from "../src/ca
 import type { CapCounts } from "../src/caps.ts";
 import { instant, parseRequestKey } from "../src/ids.ts";
 import type { ClientId, CommitSha, JobId, MerchantId, OperatorId } from "../src/ids.ts";
+import { shiftJobClock } from "../src/job-clock.ts";
 import { usd } from "../src/ledger.ts";
 import type { UsdCents } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
@@ -110,6 +111,50 @@ test("the store counts a visitor's own use and the deployment's from committed r
 		// The seeded client is not a visitor's, and nobody else's job is counted for this client.
 		assert.equal((await service.capCounts({ clientId: "maya-client" as ClientId, ipKey: null })).visitor, false);
 		assert.equal((await service.capCounts({ clientId: null, ipKey: "ip-b" })).jobs, 0);
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
+/** Puts a stored row into work under one operator's escrow: the only state a Submit reads. */
+function inWorkRow(store: SqliteStore, jobId: JobId, operator: string): void {
+	const row = store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId) as { json: string };
+	const job = JSON.parse(row.json) as Record<string, unknown>;
+	store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state: { status: "IN_PROGRESS",
+		escrow: { payee: { bidId: "bid_escrow", operator, payee: merchant, agent: "ts-bugfixer", price: 40000, eta: 48 },
+			quote: {}, capture: {}, book: [], cutoffAt: "2026-11-01T00:00:00.000Z" },
+		attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } }), jobId);
+}
+
+test("a run stays counted after its job settles and after the job's clock moves", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-caps-"));
+	const path = join(root, "acquit.db");
+	const service = serviceAt(path);
+	const store = new SqliteStore(path);
+	try {
+		const created = await createDemoVisitor(service, { id: newVisitorId(), ipKey: "ip-a", repository: null });
+		assert.equal(created.kind, "CREATED");
+		const visitor = created.visitor;
+		const client: Actor = { role: "CLIENT", clientId: visitor.clientHandle as ClientId, tenant: visitor.id };
+		const operator: Actor = { role: "OPERATOR", operatorId: visitor.operatorHandle as OperatorId, tenant: visitor.id };
+		const opened = await service.execute(client, parseRequestKey(randomUUID()), { type: "OpenJob", repository: deployment,
+			issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
+		const jobId = jobIdOf(opened);
+		inWorkRow(store, jobId, visitor.operatorHandle);
+		const submitted = await service.execute(operator, parseRequestKey(randomUUID()),
+			{ type: "Submit", jobId, sourceCommit: "d".repeat(40) as CommitSha });
+		assert.equal(submitted.kind, "COMMITTED");
+		const counts = () => service.capCounts({ clientId: visitor.clientHandle as ClientId, ipKey: null });
+		assert.equal((await counts()).runs, 1);
+		// The job's own clock moves two days. A run is a fact of the deployment's day, not of this row's.
+		assert.notEqual(shiftJobClock(store.db, jobId, 2 * 86_400_000), null);
+		assert.equal((await counts()).runsToday, 1);
+		// A settled row carries no attempt fields at all; the run it spent is still spent.
+		const asState = (status: string): void => {
+			const row = store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId) as { json: string };
+			const job = JSON.parse(row.json) as Record<string, unknown>;
+			store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state: { status } }), jobId);
+		};
+		asState("PAID"); assert.equal((await counts()).runs, 1);
+		asState("REFUNDED"); assert.equal((await counts()).runs, 1);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
