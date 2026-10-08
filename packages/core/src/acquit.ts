@@ -8,6 +8,7 @@ import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, Mercha
 import { projectJob } from "./job.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
+import type { JobFundingMode } from "./funding.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import type { HiddenContract } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
@@ -87,6 +88,11 @@ export interface JobView {
 	readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
 	/** The client that owns the job, served to that client's own session and null to every other viewer. */
 	readonly client: ClientId | null;
+	/**
+	 * The funding source this job's accept will use, served to the owning client and null to every other
+	 * viewer. Null for that client too when nobody chose for the job: the deployment's default applies.
+	 */
+	readonly funding: JobFundingMode | null;
 	readonly lockedTo: OperatorId | null;
 	/** The owning client's own gate: true exactly when this viewer is that client and the review is open. */
 	readonly viewerCanApprove: boolean;

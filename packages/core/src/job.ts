@@ -23,6 +23,7 @@ import type {
 } from "./ids.ts";
 import { reduceLedger, refundTreasury, releaseTreasury } from "./ledger.ts";
 import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
+import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
@@ -273,6 +274,11 @@ export type JobRow<S extends JobState = JobState> = {
 	 * any arbiter decision and on rows stored before F4. The route bounds its length; the domain keeps it.
 	 */
 	readonly arbiterNote?: string;
+	/**
+	 * The funding source the job's client chose, read at the store boundary from beside the row. Absent
+	 * on a raw row and null on a job nobody chose for, where the deployment's default applies.
+	 */
+	readonly funding?: JobFundingMode | null;
 	readonly state: S;
 };
 
@@ -1134,6 +1140,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
 		// The owning client is named only to its own session. Everyone else reads null.
 		client: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.client : null,
+		// The funding source is that client's own choice, so it is served to the same viewer alone.
+		funding: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.funding ?? null : null,
 		// The page gates Approve on this answer, not on the viewer's role. The edge is still the guard.
 		viewerCanApprove: viewer.role === "CLIENT" && viewer.clientId === row.client &&
 			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",

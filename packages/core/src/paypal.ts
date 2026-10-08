@@ -418,10 +418,10 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
 			if (call.kind === "CREATE_ORDER") {
-				// Legacy payloads always mean checkout; runtime toggles cannot change
-				// the payment source bound to a queued order/request-id.
+				// The mode is bound per job before this call: the visitor's own route wrote it, or the
+				// deployment's default applied. This boundary is sandbox-only, so the test card is the
+				// judge's own path to a funded escrow, not a toggle a production run could reach.
 				const fundingMode = call.fundingMode ?? "checkout";
-				if (fundingMode === "card" && process.env.ACQUIT_DEV !== "1") return { kind: "PERMANENT_FAILURE", reason: "DEV_DISABLED" };
 				const json = object(await request("POST", "/v2/checkout/orders", call.payee, {
 					intent: "CAPTURE", purchase_units: [{
 						reference_id: call.jobId, custom_id: call.jobId, description: "Acquit verified coding work",

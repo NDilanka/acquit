@@ -21,6 +21,11 @@ import { appendFileSync } from "node:fs";
 globalThis.fetch = async (input, init) => {
 	appendFileSync(process.env.STUB_FETCH_LOG, JSON.stringify({ method: init?.method ?? "GET", url: String(input) }) + "\\n");
 	if (String(input).startsWith("https://api-m.sandbox.paypal.com/v1/oauth2/token")) return Response.json({ access_token: "isolated-test-token", expires_in: 300 });
+	// One order is created and never captured, so a job that accepted a bid stays in FUNDING with its
+	// payment source bound, which is the state the funding choice must be refused in.
+	if (String(input).startsWith("https://api-m.sandbox.paypal.com/v2/checkout/orders") && init?.method === "POST") {
+		return Response.json({ id: "ORDER-JUDGE-1", links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-JUDGE-1" }] });
+	}
 	return Response.json({ name: "RESOURCE_NOT_FOUND", debug_id: "isolated" }, { status: 404 });
 };
 `;

@@ -55,8 +55,8 @@ test("advancing one job's clock moves its row, its wake time, and its own effect
 	store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run("effect_B", effect("job_B", ready), JSON.stringify(ready), "2026-10-06T12:30:00.000Z");
 	store.db.prepare("INSERT INTO outbox VALUES (?, ?, ?, ?)").run("effect_lease", effect("job_A", leased), JSON.stringify(leased), "2026-10-06T12:01:00.000Z");
 	const rowOf = (id: string) => JSON.parse(String(store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)!.json)) as JobRow;
-	const stored = (id: string) => store.db.prepare("SELECT version, wake_at FROM jobs WHERE id = ?").get(id) as { version: number; wake_at: string };
-	const effectRow = (key: string) => store.db.prepare("SELECT state, due_at FROM outbox WHERE key = ?").get(key) as { state: string; due_at: string };
+	const stored = (id: string) => ({ ...store.db.prepare("SELECT version, wake_at FROM jobs WHERE id = ?").get(id) as { version: number; wake_at: string } });
+	const effectRow = (key: string) => ({ ...store.db.prepare("SELECT state, due_at FROM outbox WHERE key = ?").get(key) as { state: string; due_at: string } });
 	try {
 		const before = rowOf("job_B");
 		const shifted = shiftJobClock(store.db, "job_A" as JobId, day);

@@ -6,6 +6,10 @@ import { createAcquit, closeAcquit, createDemoVisitor, handlePayPalReturn, hours
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages/core/src/github.ts";
+import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
+import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
+import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
+import type { JobRow } from "../../../packages/core/src/job.ts";
 import { principalOf, readVisitor } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
@@ -361,12 +365,51 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			parsed = { key: parseRequestKey(text(input.key, "request key")), command: parseCommand(input.command) };
 		} catch (error) { json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return; }
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
+		// A visitor's job funds with the test card unless its client chooses otherwise: a judge has no
+		// sandbox buyer account, and the card is the one path to a funded escrow without one.
+		if (current.visitor && parsed.command.type === "OpenJob" && outcome.kind !== "DENIED" && outcome.result.kind === "JOB")
+			defaultJobFunding(db, outcome.result.job.id, "card", clock.now());
 		// A bid the operator cannot afford carries when credits return, so the bid form can say it.
 		if (outcome.kind === "DENIED" && outcome.reason === "INSUFFICIENT_CREDITS") {
 			const credits = await acquit.query(current.actor, { type: "Credits" });
 			json(res, 409, { outcome, credits: credits.kind === "CREDITS" ? credits.credits : null }); return;
 		}
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
+	}
+	/**
+	 * Judge mode's two job actions. Both are scoped to the caller's own visitor: a job another visitor
+	 * owns is refused by name, so neither the card nor the clock can reach across visitors, and neither
+	 * touches the process-wide development controls.
+	 */
+	const action = url.pathname.match(/^\/api\/jobs\/([^/]+)\/(funding|clock)$/);
+	if (action && method === "POST") {
+		const jobId = validJobId(decodeURIComponent(action[1]));
+		const row = storedRow(jobId);
+		if (!row) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		if (!current.visitor || row.client !== current.visitor.clientHandle) {
+			json(res, 403, { error: "NOT_VISITOR_JOB", detail: "This action reaches only a job your own demo owns." }); return;
+		}
+		const input = object(await body(req));
+		if (action[2] === "funding") {
+			if (Object.keys(input).some(key => key !== "mode") || (input.mode !== "card" && input.mode !== "checkout")) throw new BadBody("Expected card or checkout");
+			// The source is chosen while the job still takes bids. An accepted bid has already bound the
+			// order's payment source, so a later choice would be a claim this job cannot honour.
+			if (!(row.state.status === "OPEN" && row.state.phase.kind === "BIDDING")) {
+				json(res, 409, { error: "FUNDING_BOUND", detail: "This job's funding was fixed when its client accepted a bid." }); return;
+			}
+			setJobFunding(db, jobId, input.mode as JobFundingMode, clock.now());
+			json(res, 200, { mode: input.mode }); return;
+		}
+		if (Object.keys(input).some(key => key !== "advanceMs")) throw new BadBody("Unsupported clock field");
+		const advanceMs = integer(input.advanceMs, "advanceMs", 365 * 86400000);
+		// The job's own instants move, never the deployment's clock: another visitor's job is untouched.
+		if (shiftJobClock(db, jobId, advanceMs) === null) {
+			json(res, 409, { error: "JOB_CHANGED", detail: "The job moved while its clock was advanced. Retry." }); return;
+		}
+		await acquit.tick();
+		const advanced = await acquit.query(current.actor, { type: "Job", jobId });
+		if (advanced.kind !== "JOB") { json(res, 403, { error: advanced.kind === "DENIED" ? advanced.reason : "NOT_FOUND" }); return; }
+		json(res, 200, { job: advanced.job, handles: operatorHandles(), now: clock.now() }); return;
 	}
 	if (url.pathname === "/api/dev/clock" && method === "POST") {
 		const input = object(await body(req));
@@ -548,6 +591,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 function validJobId(raw: string): ReturnType<typeof parseJobId> {
 	try { return parseJobId(raw); } catch { throw new BadBody("Invalid job id"); }
+}
+/** The stored row as the domain typed it: enough to read an owner, a status, and a phase without a load. */
+function storedRow(jobId: ReturnType<typeof parseJobId>): JobRow | null {
+	const record = db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId);
+	return record ? JSON.parse(String(record.json)) as JobRow : null;
 }
 /** Operator ids become handles here so the CLI never prints a bare id where a person's handle belongs. */
 function operatorHandles(): Record<string, string> {

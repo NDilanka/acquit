@@ -12,6 +12,7 @@ import type { OperatorRow } from "./operator.ts";
 import type { AgentId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
 import { logBare } from "./log.ts";
+import { jobFunding } from "./funding.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
 
 export function openDatabase(path: string): DatabaseSync {
@@ -36,6 +37,7 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE TABLE IF NOT EXISTS requests (actor TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(actor, key));
 		CREATE TABLE IF NOT EXISTS outbox (key TEXT PRIMARY KEY, json TEXT NOT NULL, state TEXT NOT NULL, due_at TEXT);
 		CREATE INDEX IF NOT EXISTS outbox_due ON outbox(due_at);
+		CREATE TABLE IF NOT EXISTS job_funding (job_id TEXT PRIMARY KEY, mode TEXT NOT NULL, set_at TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, job_id TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY);
 		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL);
@@ -132,13 +134,18 @@ function storedFailure(value: unknown): RunFailure | null {
 		: { name: "CONTRACT_MISMATCH" as const, detail: boundedDetail(raw.reason) };
 	return { runId: raw.runId, sourceCommit: raw.sourceCommit, at: raw.at, ...named } as unknown as RunFailure;
 }
-function due(state: OutboxState): string | null {
+export function outboxDue(state: OutboxState): string | null {
 	return state.kind === "READY" ? state.runAt : state.kind === "LEASED" ? state.leaseUntil : state.kind === "UNCERTAIN" ? state.reconcileAt : null;
 }
 export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
 	constructor(path: string) { this.db = openDatabase(path); }
-	async readJob(id: JobId): Promise<JobRow | null> { const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)); return row ? storedJob(row) : null; }
+	// The job's own funding source lives beside the row, not in it: a command that read a row before a
+	// choice was stored must not be able to write a stale copy back over it.
+	async readJob(id: JobId): Promise<JobRow | null> {
+		const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id));
+		return row ? storedJob({ ...row, funding: jobFunding(this.db, id) }) : null;
+	}
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
 	async readCredits(id: OperatorId): Promise<CreditAccount> {
@@ -154,7 +161,14 @@ export class SqliteStore implements Store {
 		this.db.prepare("UPDATE requests SET result = ? WHERE actor = ? AND key = ? AND digest = ?")
 			.run(JSON.stringify(request.result), request.actor, request.key, request.payloadDigest);
 	}
-	async listJobs(): Promise<readonly JobRow[]> { return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => storedJob(JSON.parse(String(row.json)) as JobRow)); }
+	async listJobs(): Promise<readonly JobRow[]> {
+		const modes = new Map(this.db.prepare("SELECT job_id, mode FROM job_funding").all().map(row => [String(row.job_id), String(row.mode)]));
+		return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => {
+			const job = JSON.parse(String(row.json)) as JobRow;
+			const mode = modes.get(String(job.id));
+			return storedJob({ ...job, funding: mode === "checkout" || mode === "card" ? mode : null });
+		});
+	}
 	async listOperators(): Promise<readonly OperatorRow[]> { return this.db.prepare("SELECT json FROM operators").all().map(row => JSON.parse(String(row.json)) as OperatorRow); }
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
@@ -226,7 +240,7 @@ export class SqliteStore implements Store {
 				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
 				if (!counted.changes) console.warn(`paid receipt not counted: no operators row for ${logBare(change.paidReceipt)}`);
 			}
-			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
+			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), outboxDue(row.state));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
 			if (change.delivery) this.db.prepare("INSERT INTO deliveries VALUES (?)").run(change.delivery);
@@ -248,7 +262,7 @@ export class SqliteStore implements Store {
 		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	private updateEffect(key: OperationKey, state: OutboxState): void {
-		this.db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(state), due(state), key);
+		this.db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(state), outboxDue(state), key);
 	}
 	async recordEffect(key: OperationKey, state: OutboxState): Promise<void> { this.updateEffect(key, state); }
 	close(): void { this.db.close(); }

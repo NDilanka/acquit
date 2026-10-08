@@ -1794,7 +1794,8 @@ test("a reimbursement webhook that does not pay the debt is refused", async () =
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
 		assert.equal(recordedOutcome(harness.store, "WH-PAYOUT-1"), "refused, the job did not take this settlement");
-		assert.deepEqual(await harness.row(), refunded.next);
+		// The read boundary carries the job's own funding source beside the row; nobody chose one here.
+		assert.deepEqual(await harness.row(), { ...refunded.next, funding: null });
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 

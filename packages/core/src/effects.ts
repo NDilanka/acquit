@@ -182,7 +182,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		} else if (command.type === "AcceptBid") {
 			const bid = row?.bids.find(b => b.id === command.bidId);
 			if (!bid) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel), fundingMode: ports.fundingMode?.() ?? "checkout" };
+			// The job's own choice wins; a job nobody chose for funds with the deployment's mode.
+			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel),
+				fundingMode: row?.funding ?? ports.fundingMode?.() ?? "checkout" };
 		} else if (command.type === "CancelJob") {
 			const accounts = new Map<OperatorId, CreditAccount>();
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));

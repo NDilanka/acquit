@@ -21,12 +21,32 @@ There is no password login in the skeleton. A dev picker signs in as a seeded us
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null }` |
-| POST | `/api/session` | `{ handle: "maya-client" \| "devon-ops" }` | `{ user, token }` and the cookie |
+| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null, visitor }` |
+| POST | `/api/session` | `{ handle: "maya-client" \| "devon-ops" }` | `{ user, visitor, token }` and the cookie. Public mode refuses a seeded handle `403 { error: "SEEDED_LOGIN_DISABLED" }` and any other handle `403 { error: "SESSION_MINT_DISABLED" }`; dev mode keeps the seeded sign-in |
 | DELETE | `/api/session` | | `204` |
-| GET | `/api/users` | | `{ users: [{ handle, role }] }` for the picker |
+| GET | `/api/users` | | `{ users: [{ handle, role }] }`. Dev mode: the seeded picker. Public mode: the caller's own pair only, `401` without a session |
 
 Every other `/api` route returns `401 { error: "UNAUTHENTICATED" }` without a session.
+
+## Judge mode (visitors)
+
+Public mode is `ACQUIT_DEV` unset. A session resolves through the `principals` table, never through the seeded constants, and a handle whose visitor row is gone stops resolving.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/demo` | `{}` | `201 { user, visitor, token }` and the cookie. Creates the visitor's client and operator principals, its operator with one agent and the first weekly grant, and mints the client's session. `503 { error: "DEMO_NOT_CONFIGURED" }` without a demo merchant |
+| POST | `/api/demo/switch` | `{}` | `{ user, visitor, token }`: moves this session between the visitor's own two principals. `403 { error: "NOT_DEMO_VISITOR" }` for any session that is not a visitor's |
+
+`visitor` is `{ id, client, operator, repository, expiresAt }`. Every `/api/dev/*` route and the arbiter stay refused in public mode (`403 { error: "DEV_DISABLED" }`).
+
+Two job actions are scoped to the caller's own visitor. Both read the stored job first: an unknown id is `404 { error: "NOT_FOUND" }`, and a job whose `client` is not the calling visitor's client handle is `403 { error: "NOT_VISITOR_JOB" }`.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/jobs/:id/funding` | `{ mode: "checkout" \| "card" }` | `200 { mode }`. `400` for any other mode. `409 { error: "FUNDING_BOUND" }` once the job has left `BIDDING`, because an accepted bid already bound the order's payment source |
+| POST | `/api/jobs/:id/clock` | `{ advanceMs }` (positive, at most 365 days) | `200 { job, handles, now }`, the same body `GET /api/jobs/:id` serves, after the job's own instants moved and `Acquit.tick` ran. `400` for anything else. `409 { error: "JOB_CHANGED" }` if the row moved under the shift |
+
+Advancing one job's clock moves that job's stored instants, its wake time, and its own pending effects' due times. Another job's row, deadlines, review windows, and outbox are never touched: the deployment's own clock is not moved and no other job's timer changes. A leased effect stays where it is, because that lease is another worker's hold rather than this job's timeline.
 
 ## Commands
 
@@ -65,7 +85,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 |---|---|---|
 | GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form |
 | GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor }` |
-| GET | `/api/jobs/:id` | `{ job: JobView }` |
+| GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
 
@@ -99,10 +119,13 @@ rather than reading a GitHub App key on the operator's machine.
 ## Funding (PayPal sandbox)
 
 1. `AcceptBid` commits, the job enters OPEN FUNDING, and the outbox creates the order. The API drains the outbox inline after the commit, so the order usually exists before the response returns.
-2. The web app polls `GET /api/jobs/:id` about once a second until `job.approveUrl` is set, then sends the browser there.
-3. The order's return URL is `<webOrigin>/paypal/return?jobId=<id>` and its cancel URL is `<webOrigin>/paypal/cancel?jobId=<id>`. Both are API routes reached through the proxy.
-4. `GET /paypal/return` re-reads the order from PayPal, records `BuyerApproved`, captures, records `CaptureCompleted`, and redirects `302` to `/jobs/<id>`. It is idempotent: a second visit redirects without a second capture.
-5. `GET /paypal/cancel` redirects `302` to `/jobs/<id>` and leaves the job in FUNDING until the checkout window closes.
+2. The payment source is bound per job, chosen before the accept: the job's own stored `funding` (`POST /api/jobs/:id/funding`) wins, and a job nobody chose for funds with the deployment's mode (`/api/dev/fund-mode` in dev, checkout in public). A visitor's job starts on the test card, because a judge holds no sandbox buyer account. The process holds no funding toggle that could reach another job.
+3. The web app polls `GET /api/jobs/:id` about once a second until `job.approveUrl` is set, then sends the browser there.
+4. The order's return URL is `<webOrigin>/paypal/return?jobId=<id>` and its cancel URL is `<webOrigin>/paypal/cancel?jobId=<id>`. Both are API routes reached through the proxy.
+5. `GET /paypal/return` re-reads the order from PayPal, records `BuyerApproved`, captures, records `CaptureCompleted`, and redirects `302` to `/jobs/<id>`. It is idempotent: a second visit redirects without a second capture.
+6. `GET /paypal/cancel` redirects `302` to `/jobs/<id>` and leaves the job in FUNDING until the checkout window closes.
+
+A card order is created and captured by the API itself: the test card needs no buyer approval, so the accept usually reaches `IN_PROGRESS` before the response returns. The boundary is sandbox-only (`apiBase` is the sandbox host), which is why the card path is reachable in public mode for a visitor's own job.
 
 When capture completes the job is `IN_PROGRESS`, `escrow: "HELD"`, and `ledger` is `[{ kind: "HELD", cents: 42000, at }]`.
 
