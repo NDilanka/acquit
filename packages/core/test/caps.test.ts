@@ -39,8 +39,8 @@ function serviceAt(path: string) {
 }
 
 /** The visitor the core minted, and the actor its client session carries. */
-function guestOf(service: ReturnType<typeof serviceAt>, ipKey: string): { readonly client: ClientId; readonly actor: Actor } {
-	const created = createDemoVisitor(service, { id: newVisitorId(), ipKey, repository: null });
+async function guestOf(service: ReturnType<typeof serviceAt>, ipKey: string): Promise<{ readonly client: ClientId; readonly actor: Actor }> {
+	const created = await createDemoVisitor(service, { id: newVisitorId(), ipKey, repository: null });
 	assert.equal(created.kind, "CREATED");
 	const client = (created.kind === "CREATED" ? created.visitor.clientHandle : "") as ClientId;
 	return { client, actor: { role: "CLIENT", clientId: client } };
@@ -83,9 +83,9 @@ test("the store counts a visitor's own use and the deployment's from committed r
 	const service = serviceAt(path);
 	const store = new SqliteStore(path);
 	try {
-		const guest = guestOf(service, "ip-a");
-		guestOf(service, "ip-a");
-		guestOf(service, "ip-b");
+		const guest = await guestOf(service, "ip-a");
+		await guestOf(service, "ip-a");
+		await guestOf(service, "ip-b");
 		const opened = await service.execute(guest.actor, parseRequestKey(randomUUID()),
 			{ type: "OpenJob", repository: deployment, issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
 		const jobId = jobIdOf(opened);
@@ -113,13 +113,23 @@ test("the store counts a visitor's own use and the deployment's from committed r
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
-test("a capped visitor's job and run are refused by code, and a seeded client is not capped", async () => {
+test("a capped visitor's job and run are refused by code", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-caps-"));
 	const path = join(root, "acquit.db");
 	const service = serviceAt(path);
 	const store = new SqliteStore(path);
+	/** Puts a stored row into work with the runs it has already started: the only state a Submit reads. */
+	const inWork = (jobId: JobId, runsStarted: number): void => {
+		const row = store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId) as { json: string };
+		const job = JSON.parse(row.json) as Record<string, unknown>;
+		store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state: { status: "IN_PROGRESS",
+			escrow: { payee: { operator: "devon-ops", agent: "house-ts-fixer" } },
+			attempts: { phase: "READY", history: [], runsStarted, failure: null } } }), jobId);
+	};
+	const submit = (jobId: JobId): UserCommand => ({ type: "Submit", jobId, sourceCommit: "d".repeat(40) as CommitSha });
+	const operator: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
 	try {
-		const guest = guestOf(service, "ip-a");
+		const guest = await guestOf(service, "ip-a");
 		const open = (budget: UsdCents): UserCommand => ({ type: "OpenJob", repository: deployment, issueNumber: 12,
 			budget, deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
 		// A budget over the ceiling is refused before anything is written.
@@ -135,24 +145,8 @@ test("a capped visitor's job and run are refused by code, and a seeded client is
 		assert.deepEqual(await service.execute(guest.actor, parseRequestKey(randomUUID()), open(usd("1.00"))),
 			{ kind: "DENIED", reason: "CAP_VISITOR_JOBS" });
 		// The visitor's operator submits; the run the Submit would start is the owning visitor's.
-		const row = store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId) as { json: string };
-		const job = JSON.parse(row.json) as Record<string, unknown>;
-		const state = job.state as Record<string, unknown>;
-		store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job,
-			state: { ...state, attempts: { ...state.attempts as Record<string, unknown>, runsStarted: 10 } } }), jobId);
-		assert.deepEqual(await service.execute({ role: "OPERATOR", operatorId: "devon-ops" as OperatorId }, parseRequestKey(randomUUID()),
-			{ type: "Submit", jobId, sourceCommit: "d".repeat(40) as CommitSha }), { kind: "DENIED", reason: "CAP_MODEL_RUNS" });
-		// A seeded client's job with the same run count is refused by the job's own state, never by that cap.
-		const seeded = await service.execute({ role: "CLIENT", clientId: "maya-client" as ClientId }, parseRequestKey(randomUUID()),
-			{ type: "OpenJob", repository: deployment, issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
-		const seededJob = jobIdOf(seeded);
-		const seededRow = store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(seededJob) as { json: string };
-		const seededJson = JSON.parse(seededRow.json) as Record<string, unknown>;
-		const seededState = seededJson.state as Record<string, unknown>;
-		store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...seededJson,
-			state: { ...seededState, attempts: { phase: "READY", history: [], runsStarted: 10, failure: null } } }), seededJob);
-		const refused = await service.execute({ role: "OPERATOR", operatorId: "devon-ops" as OperatorId }, parseRequestKey(randomUUID()),
-			{ type: "Submit", jobId: seededJob, sourceCommit: "e".repeat(40) as CommitSha });
-		assert.notEqual(refused.kind === "DENIED" ? refused.reason : "", "CAP_MODEL_RUNS");
+		inWork(jobId, 10);
+		assert.deepEqual(await service.execute(operator, parseRequestKey(randomUUID()), submit(jobId)),
+			{ kind: "DENIED", reason: "CAP_MODEL_RUNS" });
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });

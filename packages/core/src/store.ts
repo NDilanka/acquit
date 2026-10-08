@@ -9,8 +9,10 @@ import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from ".
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
-import type { AgentId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
+import type { AgentId, ClientId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
+import type { CapCounts } from "./caps.ts";
+import type { UsdCents } from "./ledger.ts";
 import { logBare } from "./log.ts";
 import { jobFunding } from "./funding.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
@@ -180,6 +182,37 @@ export class SqliteStore implements Store {
 	async jobForResource(resource: string): Promise<JobId | null> {
 		const row = this.db.prepare("SELECT job_id FROM resources WHERE id = ?").get(resource);
 		return row ? String(row.job_id) as JobId : null;
+	}
+	/**
+	 * The caps' counters, from committed rows and nothing else. A visitor's own use is its lifetime,
+	 * because a visitor lives one day; the deployment's run count is windowed by the runs a row can
+	 * date, which is the judged runs it holds, the run waiting for a verdict, and the last failed one.
+	 */
+	async capCounts(input: { readonly clientId: ClientId | null; readonly ipKey: string | null; readonly since: Instant }): Promise<CapCounts> {
+		const visitors = this.db.prepare("SELECT COUNT(*) AS total, SUM(ip_key = ?) AS from_ip FROM visitors WHERE created_at > ?")
+			.get(input.ipKey ?? "", input.since) as { readonly total?: unknown; readonly from_ip?: unknown };
+		const principal = input.clientId === null ? undefined
+			: this.db.prepare("SELECT visitor_id FROM principals WHERE handle = ?").get(input.clientId) as { readonly visitor_id?: unknown } | undefined;
+		let jobs = 0;
+		let budget = 0;
+		let runs = 0;
+		let runsToday = 0;
+		for (const stored of this.db.prepare("SELECT json FROM jobs").all()) {
+			const job = JSON.parse(String(stored.json)) as { readonly client?: unknown; readonly contract?: { readonly budget?: unknown };
+				readonly state?: { readonly attempts?: { readonly history?: readonly { readonly verdict?: { readonly at?: unknown } }[];
+					readonly pending?: { readonly submittedAt?: unknown }; readonly failure?: { readonly at?: unknown }; readonly runsStarted?: unknown } } };
+			const attempts = job.state?.attempts;
+			const dated = [attempts?.pending?.submittedAt, attempts?.failure?.at,
+				...(attempts?.history ?? []).map(record => record.verdict?.at)].filter(at => typeof at === "string" && at > input.since);
+			runsToday += dated.length;
+			if (input.clientId === null || job.client !== input.clientId) continue;
+			jobs += 1;
+			budget += typeof job.contract?.budget === "number" ? job.contract.budget : 0;
+			runs += typeof attempts?.runsStarted === "number" ? attempts.runsStarted : 0;
+		}
+		return { visitor: principal?.visitor_id !== null && principal?.visitor_id !== undefined,
+			visitorsFromIp: Number(visitors.from_ip ?? 0), visitorsToday: Number(visitors.total ?? 0),
+			jobs, budget: budget as UsdCents, runs, runsToday };
 	}
 	/**
 	 * The canonical envelope of one delivery, keyed by PayPal's event id. The row keeps the fields of the

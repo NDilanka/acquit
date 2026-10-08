@@ -3,6 +3,8 @@
 
 import { randomUUID } from "node:crypto";
 import type { Actor, JobView } from "./acquit.ts";
+import { jobCap, modelRunCap } from "./caps.ts";
+import type { CapCounts, CapRefusal } from "./caps.ts";
 import { reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { addHours, hours, instant, parseBidId, parseJobId, parseReceiptId } from "./ids.ts";
@@ -321,14 +323,17 @@ export type DomainFailure =
 	| "VERIFIER_PENDING"
 	| "ARTIFACT_CHANGED"
 	| "REVIEW_CLOSED"
-	| "PAYMENT_IN_PROGRESS";
+	| "PAYMENT_IN_PROGRESS"
+	/** Judge mode's caps, one closed code per allowance: see caps.ts for the table behind them. */
+	| CapRefusal;
 
 /** Rows the shell loads before calling the table. The table never reads storage. */
 export type Loaded =
 	| { readonly kind: "NONE" }
-	| { readonly kind: "OPEN_JOB"; readonly contract: AcceptanceContract; readonly title: string }
+	| { readonly kind: "OPEN_JOB"; readonly contract: AcceptanceContract; readonly title: string; readonly counts: CapCounts }
 	| { readonly kind: "PLACE_BID"; readonly operator: OperatorRow; readonly agent: Agent; readonly credits: CreditAccount }
 	| { readonly kind: "ACCEPT_BID"; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
+	| { readonly kind: "SUBMIT"; readonly counts: CapCounts }
 	| { readonly kind: "BIDDER_CREDITS"; readonly accounts: ReadonlyMap<OperatorId, CreditAccount> };
 
 export type Facts = { readonly actor: TrustedActor; readonly now: Instant; readonly loaded: Loaded };
@@ -445,6 +450,9 @@ function transitionTable(): {
 			if (facts.actor.role !== "CLIENT" || facts.loaded.kind !== "OPEN_JOB") return "NOT_OWNER";
 			if (command.deliveryEndsAt <= facts.now) return "DEADLINE_PASSED";
 			if (command.deliveryEndsAt > addHours(facts.now, hours(14 * 24))) return "DEADLINE_TOO_FAR";
+			// Judge mode's job caps: how many the visitor already has, and what it may promise for one more.
+			const capped = jobCap(facts.loaded.counts, command.budget);
+			if (capped !== null) return capped;
 			return { next: { id: parseJobId(`job_${randomUUID()}`), version: 0 as Version,
 				client: facts.actor.clientId, title: facts.loaded.title, contract: facts.loaded.contract,
 				openedAt: facts.now, bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } },
@@ -556,6 +564,10 @@ function transitionTable(): {
 			if (attempts.phase === "VERIFYING") return attempts.pending.sourceCommit === command.sourceCommit ? unchanged(row) : "VERIFIER_PENDING";
 			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
 			if (attempts.history.length >= TERMS.maxAttempts) return "ATTEMPTS_EXHAUSTED";
+			// The run this Submit would start is one model run for the job's owning client, and the
+			// deployment's free tier is a day-wide budget. Judge mode's counters come from the loader.
+			const capped = facts.loaded.kind === "SUBMIT" ? modelRunCap(facts.loaded.counts) : null;
+			if (capped !== null) return capped;
 			const ordinal = (attempts.history.length + 1) as Ordinal;
 			const run = attempts.runsStarted + 1;
 			const pending: PendingAttempt = { ordinal, run, runId: verifierRunId(row.id, run), sourceCommit: command.sourceCommit,

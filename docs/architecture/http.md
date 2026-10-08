@@ -48,6 +48,22 @@ Two job actions are scoped to the caller's own visitor. Both read the stored job
 
 Advancing one job's clock moves that job's stored instants, its wake time, and its own pending effects' due times. Another job's row, deadlines, review windows, and outbox are never touched: the deployment's own clock is not moved and no other job's timer changes. A leased effect stays where it is, because that lease is another worker's hold rather than this job's timeline.
 
+### Caps
+
+`packages/core/src/caps.ts` is the one table. Each row is a limit, the counter it reads, and the closed code that names its refusal; the counters come from committed rows and a cap check never writes. The window is one rolling day, so no timezone decides when a judge's day ends.
+
+| Code | Limit | Counts | Where it binds |
+|---|---|---|---|
+| `CAP_VISITORS_IP_DAY` | 3 | visitors created from one address in 24 h | `POST /api/demo` |
+| `CAP_VISITORS_DAY` | 50 | visitors created in 24 h | `POST /api/demo` |
+| `CAP_VISITOR_JOBS` | 3 | one visitor's jobs | `OpenJob` |
+| `CAP_AMOUNT` | 100000 cents | one job's budget | `OpenJob` |
+| `CAP_SPEND_DAY` | 200000 cents | one visitor's job budgets in 24 h | `OpenJob` |
+| `CAP_MODEL_RUNS` | 10 | one visitor's verifier runs in 24 h | `Submit` |
+| `CAP_MODEL_RUNS_DAY` | 1000 | verifier runs in 24 h (the free tier's day) | `Submit` |
+
+`POST /api/demo` answers `429 { error }` with the code, and it checks the caps before it forks, so a refused visitor leaves no repository behind. A capped command is a `409` with the same `{ outcome: { kind: "DENIED", reason } }` shape every refusal has. The visitor caps bind a visitor's own client only: dev mode's seeded client is the operator's own, and the day-wide run cap binds the whole deployment because the free tier belongs to the key. Attempts per job stay `TERMS.maxAttempts`, which the table already enforced.
+
 ## Commands
 
 One route carries every user command, matching `Acquit.execute`.

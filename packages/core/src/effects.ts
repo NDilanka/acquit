@@ -4,10 +4,12 @@
 
 import { createHash } from "node:crypto";
 import type { CommandOutcome, Actor, PublicResult, UserCommand } from "./acquit.ts";
+import { capWindowStart } from "./caps.ts";
+import type { CapCounts } from "./caps.ts";
 import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
-import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
+import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
@@ -24,6 +26,11 @@ import type { WebhookEventRow } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
 
 export type Effect = JobEffect | OperatorEffect;
+
+/** Judge mode's counters for one client at one instant, read from committed rows and never written. */
+function capCounts(ports: Ports, clientId: ClientId | null, now: Instant): Promise<CapCounts> {
+	return ports.store.capCounts({ clientId, ipKey: null, since: capWindowStart(now) });
+}
 
 /** Deterministic, never random. `${jobId}:release`, `${jobId}:capture:${round}`, `${jobId}:verify:${run}`. */
 export type OperationKey = Branded<string, "OperationKey">;
@@ -127,6 +134,8 @@ export interface Store {
 	readRequest(actor: string, key: RequestKey): Promise<RecordedRequest | null>;
 	finishRequest(request: RecordedRequest): Promise<void>;
 	jobForResource(resource: string): Promise<JobId | null>;
+	/** The counters judge mode's caps read: one client's own use, and the deployment's day. */
+	capCounts(input: { readonly clientId: ClientId | null; readonly ipKey: string | null; readonly since: Instant }): Promise<CapCounts>;
 	recordWebhookEvent(event: WebhookEventRow): Promise<void>;
 	dueJobs(now: Instant): Promise<readonly { readonly jobId: JobId; readonly wakeAt: Instant }[]>;
 	commit(change: AtomicCommit): Promise<"COMMITTED" | "VERSION_CONFLICT" | "REQUEST_REPLAY" | "DELIVERY_REPLAY">;
@@ -174,8 +183,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			// the deployment's own. Either way the contract freezes exactly the repository this command named.
 			const clientRepository = actor.role === "CLIENT" ? actor.repository ?? ports.clientRepository : ports.clientRepository;
 			if (command.repository !== clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, contract: {
-				definitionOfDone: frozenDefinition(clientRepository, ports.hiddenContract), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, counts: await capCounts(ports, actor.role === "CLIENT" ? actor.clientId : null, now),
+				contract: { definitionOfDone: frozenDefinition(clientRepository, ports.hiddenContract), budget: command.budget,
+					deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
 			const operator = await ports.store.readOperator(actor.operatorId);
@@ -192,6 +202,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			const accounts = new Map<OperatorId, CreditAccount>();
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));
 			loaded = { kind: "BIDDER_CREDITS", accounts };
+		} else if (command.type === "Submit" && row) {
+			// The run a Submit would start counts against the job's owning client and the deployment's day.
+			loaded = { kind: "SUBMIT", counts: await capCounts(ports, row.client, now) };
 		}
 		const plan = applyJobCommand(row, command as JobCommand, { actor, now, loaded });
 		if (typeof plan === "string") return { kind: "DENIED", reason: plan };
