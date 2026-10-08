@@ -1,9 +1,11 @@
 // Judge mode's session boundary, driven over HTTP against the real API: public mode refuses the
 // seeded handles, "Start my demo" mints a visitor whose two principals are the only pair it can read
-// or switch between, and dev mode keeps today's seeded sign-in.
+// or switch between, and dev mode keeps today's seeded sign-in. The visitor's own job is the only
+// job its card funding and its clock reach.
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -62,6 +64,31 @@ const post = (url: string, path: string, body: unknown, token?: string) => fetch
 	headers: { "Content-Type": "application/json", ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }) }, body: JSON.stringify(body) });
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
 	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
+type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null; readonly deliveryEndsAt: string } };
+/** One job of the visitor's own, opened by its client principal: the fixture repository and issue 12. */
+async function openVisitorJob(url: string, token: string): Promise<string> {
+	const response = await post(url, "/api/commands", { key: randomUUID(), command: { type: "OpenJob",
+		repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000, deliveryEndsAt: "2025-10-20T12:00:00.000Z" } }, token);
+	const body = await response.json() as { outcome: { kind: string; result?: { job: { id: string } } } };
+	assert.equal(body.outcome.kind, "COMMITTED", JSON.stringify(body));
+	return body.outcome.result!.job.id;
+}
+const jobOf = async (url: string, jobId: string, token: string): Promise<{ status: number; body: JobBody }> => {
+	const response = await fetch(`${url}/api/jobs/${jobId}`, { headers: { Authorization: `Bearer ${token}` } });
+	return { status: response.status, body: await response.json() as JobBody };
+};
+/** The visitor's operator bids on its own client's job, and the session returns to the client. */
+async function placeBid(url: string, token: string, jobId: string): Promise<string> {
+	await post(url, "/api/demo/switch", {}, token);
+	const me = await fetch(`${url}/api/me/operator`, { headers: { Authorization: `Bearer ${token}` } })
+		.then(response => response.json() as Promise<{ agents: { id: string }[] }>);
+	const response = await post(url, "/api/commands", { key: randomUUID(), command: { type: "PlaceBid", jobId,
+		price: 40000, eta: 48, agent: me.agents[0].id, pitch: "judge mode fixture" } }, token);
+	const body = await response.json() as { outcome: { kind: string; result?: { bid?: string } } };
+	assert.equal(body.outcome.kind, "COMMITTED", JSON.stringify(body));
+	await post(url, "/api/demo/switch", {}, token);
+	return body.outcome.result!.bid!;
+}
 
 test("public mode refuses a seeded handle and mints a visitor through Start my demo", async () => {
 	await apiFixture(false, async url => {
@@ -131,5 +158,67 @@ test("public mode mints no session from a visitor handle, and dev mode keeps see
 		assert.deepEqual(await (await fetch(`${url}/api/users`)).json(),
 			{ users: [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] });
 		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null });
+	});
+});
+
+test("a visitor's job funds with the test card until its client chooses otherwise, and the choice binds at accept", async () => {
+	await apiFixture(false, async url => {
+		const visitor = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const other = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const jobId = await openVisitorJob(url, visitor.token);
+		// A judge has no sandbox buyer account, so a visitor's job starts on the test card.
+		const fresh = await jobOf(url, jobId, visitor.token);
+		assert.equal(fresh.status, 200);
+		assert.equal(fresh.body.job.funding, "card");
+		// An open job is public to read, but its funding is served to its own client and its choice is refused to everyone else.
+		const stranger = await jobOf(url, jobId, other.token);
+		assert.equal(stranger.status, 200);
+		assert.equal(stranger.body.job.funding, null);
+		assert.equal((await post(url, `/api/jobs/${jobId}/funding`, { mode: "checkout" }, other.token)).status, 403);
+		assert.equal((await post(url, `/api/jobs/${jobId}/funding`, { mode: "checkout" }, other.token)
+			.then(response => response.json() as Promise<{ error: string }>)).error, "NOT_VISITOR_JOB");
+		// The client may switch to the sandbox checkout while the job still takes bids.
+		const chosen = await post(url, `/api/jobs/${jobId}/funding`, { mode: "checkout" }, visitor.token);
+		assert.equal(chosen.status, 200);
+		assert.deepEqual(await chosen.json(), { mode: "checkout" });
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.funding, "checkout");
+		// An accepted bid binds the source: the order is queued with what the job held, and the choice is closed.
+		const bidId = await placeBid(url, visitor.token, jobId);
+		const accepted = await post(url, "/api/commands", { key: randomUUID(), command: { type: "AcceptBid", jobId, bidId } }, visitor.token);
+		assert.equal(accepted.status, 200);
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.phase, "FUNDING");
+		const bound = await post(url, `/api/jobs/${jobId}/funding`, { mode: "card" }, visitor.token);
+		assert.equal(bound.status, 409);
+		assert.equal((await bound.json() as { error: string }).error, "FUNDING_BOUND");
+		// An unknown job, and a mode outside the closed set.
+		assert.equal((await post(url, "/api/jobs/job_NOPE/funding", { mode: "card" }, visitor.token)).status, 404);
+		assert.equal((await post(url, `/api/jobs/${jobId}/funding`, { mode: "cash" }, visitor.token)).status, 400);
+	});
+});
+
+test("a visitor advances its own job's clock and no other visitor's", async () => {
+	const day = 86_400_000;
+	await apiFixture(false, async url => {
+		const first = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const second = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const mine = await openVisitorJob(url, first.token);
+		const theirs = await openVisitorJob(url, second.token);
+		assert.equal((await fetch(`${url}/api/jobs/${mine}/clock`, { method: "POST",
+			headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advanceMs: day }) })).status, 401);
+		assert.equal((await post(url, "/api/jobs/job_NOPE/clock", { advanceMs: day }, first.token)).status, 404);
+		const refused = await post(url, `/api/jobs/${mine}/clock`, { advanceMs: day }, second.token);
+		assert.equal(refused.status, 403);
+		assert.equal((await refused.json() as { error: string }).error, "NOT_VISITOR_JOB");
+		const before = (await jobOf(url, theirs, second.token)).body.job.deliveryEndsAt;
+		const advanced = await post(url, `/api/jobs/${mine}/clock`, { advanceMs: day }, first.token);
+		assert.equal(advanced.status, 200);
+		const body = await advanced.json() as JobBody;
+		assert.equal(body.job.deliveryEndsAt, "2025-10-19T12:00:00.000Z");
+		// The job's own page reads the moved deadline, and the other visitor's job is exactly where it was.
+		assert.equal((await jobOf(url, mine, first.token)).body.job.deliveryEndsAt, "2025-10-19T12:00:00.000Z");
+		assert.equal((await jobOf(url, theirs, second.token)).body.job.deliveryEndsAt, before);
+		// A clock that is not a positive whole number of milliseconds is refused before anything moves.
+		assert.equal((await post(url, `/api/jobs/${mine}/clock`, { advanceMs: 0 }, first.token)).status, 400);
+		assert.equal((await post(url, `/api/jobs/${mine}/clock`, { advanceMs: -day }, first.token)).status, 400);
 	});
 });
