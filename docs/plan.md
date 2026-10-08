@@ -492,8 +492,20 @@ Each live lane runs on this machine in its own git worktree and its own lane slo
 
 - [ ] Seed `house-tsfix` with `OPERATOR_HOUSE_MERCHANT_ID` and remove the fallback to Devon's merchant. The seed fails with a clear message when the id is missing.
 - [ ] Compute the House line from receipt rows. Seeded history rows carry `source: SEED`, and the label counts them with real receipts.
-- [ ] When the client accepts the House bid, `packages/house/runner.ts` runs the `command` runner with the honest fix and submits through the same Submit edge.
+- [ ] When the client accepts the House bid, `packages/house/runner.ts` runs the House model below and submits through the same Submit edge.
 - [ ] Have the `pv-opus-medium` delegate render the House row as `House (quality bar): tsfix` with `41 fixes, 39 passed verified CI`.
+
+**Model and instruction.** The root ruled on 2026-10-08, after Prototypes M, M2, and M3. It replaces the scripted honest fix F6 first planned. The operator's free-only rule holds, so every model call uses a `:free` OpenRouter model.
+
+- [ ] The House agent runs `nvidia/nemotron-3-ultra-550b-a55b:free` through OpenRouter.
+- [ ] Its instruction is the CLI default instruction plus the suffix below, verbatim. F6 ships the suffix as a committed constant in `packages/house/**`. The local copy in `data/trail/house-instruction-suffix.txt` is gitignored.
+- [ ] On a provider error, retry once.
+
+```text
+Fix the root cause, not only the example in the title. Identify the general rule the bug violates, find the standard or specification that defines it, and make the code correct for every case that rule covers, including cases the issue does not mention. Do not leave a case the rule defines on a guessed default. Do not edit tests.
+```
+
+Evidence. Prototype M3 ran this model, instruction, and suffix 10 times, with 10 of 10 VERIFIED, a median of 126.5 s, 0 USD, and 0 provider errors (`acquit-worktrees/proto-m2/data/evidence/proto-m3/summary.json`). That is one issue only. B2's second fixture is the overfit check. The free tier allows 20 requests a minute and 1000 a day, reset at 00:00Z.
 
 **You see.**
 
