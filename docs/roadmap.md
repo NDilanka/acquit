@@ -136,6 +136,13 @@ Results, 2026-10-05. Each folder has a `RESULT.md` with raw output.
 - **c.** Neither variant alone was enough. Path protection (A) rejected a fix that also touched a test. The frozen overlay (B) verified a tree that differs from what merges. Decision: run on frozen inputs (B), reject protected-path changes in the merge diff (A), and require every test to complete. Residual: source code that replaces a test matcher passed both, so assertions must run outside the submitted code's process. See `scratch/verifier/RESULT.md`.
 - **d.** Three layouts. Decision: variant 2, proof first, for choosing a bid. After a bid is accepted, the page switches to variant 3, the ledger spine. Screenshots are in `scratch/job-page/shots/`.
 
+Results, 2026-10-08. Prototype M from `docs/win-plan.md` week 1, a real model on the House fix for invoice-app issue 12. The gate is at least 9 of 10 VERIFIED.
+
+- **M.** Claude Sonnet 5.5 through OpenRouter on paid credit. All 8 runs that reached a verdict were VERIFIED, with a median of 24.5 s and 0.048 USD per run. Runs 9 and 10 ended in HTTP 402 because the credit ran out, so they are not model results. The gate is unmet for credit reasons. The operator's free-only rule then ruled paid models out. See `acquit-worktrees/proto-m/data/evidence/proto-m/summary.json`.
+- **M2.** Free models with the CLI default instruction. The laguna model went 3 of 10 and `nvidia/nemotron-3-ultra-550b-a55b:free` went 2 of 10. Every rejection was hidden case 6 (JPY). An instruction that named the ISO 4217 decimal rule went 9 of 10, but the root ruled it out because it encodes the hidden test. The free tier measured 20 requests a minute and 1000 a day, reset at 00:00Z. See `acquit-worktrees/proto-m2/data/evidence/proto-m2/`.
+- **M3.** `nvidia/nemotron-3-ultra-550b-a55b:free` with the CLI default instruction plus an issue-agnostic suffix. 10 of 10 VERIFIED, a median of 126.5 s, 0 USD, and 0 provider errors. See `acquit-worktrees/proto-m2/data/evidence/proto-m3/summary.json`.
+- **Ruling.** The House agent runs the M3 model, instruction, and suffix, and retries once on a provider error. The suffix text and the rule live in `docs/plan.md` F6. M3 covered one issue only, so B2's second fixture is the overfit check.
+
 Watch out:
 
 - Don't ship prototype code. Hand the chosen direction to `/architect` or the Feature playbook for the real build.
