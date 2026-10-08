@@ -38,6 +38,8 @@ export function shiftJobInstants<S extends JobState>(row: JobRow<S>, advanceMs: 
  * command already in flight against the old row loses its compare-and-set and re-reads the shift.
  * A leased effect stays where it is: that lease is another worker's hold, not this job's timeline.
  * The total advanced so far moves with the same write, so the job's own view can say how far it went.
+ * The row's move and its own effects' moves are one transaction: a refused effect update rolls the
+ * shift back, so the clock and its outbox never disagree about how far time went.
  */
 export function shiftJobClock(db: DatabaseSync, jobId: JobId, advanceMs: number): JobRow | null {
 	const record = db.prepare("SELECT json, version FROM jobs WHERE id = ?").get(jobId);
@@ -45,19 +47,26 @@ export function shiftJobClock(db: DatabaseSync, jobId: JobId, advanceMs: number)
 	const row = JSON.parse(String(record.json)) as JobRow;
 	const next = { ...shiftJobInstants(row, advanceMs), version: (row.version + 1) as Version,
 		clockShiftMs: (row.clockShiftMs ?? 0) + advanceMs };
-	const updated = db.prepare("UPDATE jobs SET version = ?, json = ?, wake_at = ? WHERE id = ? AND version = ?")
-		.run(next.version, JSON.stringify(next), wakeAt(next), jobId, row.version);
-	if (!updated.changes) return null;
-	for (const effect of db.prepare("SELECT key, json, state FROM outbox").all()) {
-		const stored = JSON.parse(String(effect.json)) as { effect?: { jobId?: string } };
-		if (stored.effect?.jobId !== jobId) continue;
-		const state = JSON.parse(String(effect.state)) as OutboxState;
-		const nextState: OutboxState = state.kind === "READY" ? { ...state, runAt: instant(moved(state.runAt, advanceMs)) }
-			: state.kind === "UNCERTAIN" ? { ...state, reconcileAt: instant(moved(state.reconcileAt, advanceMs)) }
-			: state;
-		// A lease is another worker's hold on this effect, not part of the job's own timeline.
-		if (nextState === state) continue;
-		db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(nextState), outboxDue(nextState), String(effect.key));
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const updated = db.prepare("UPDATE jobs SET version = ?, json = ?, wake_at = ? WHERE id = ? AND version = ?")
+			.run(next.version, JSON.stringify(next), wakeAt(next), jobId, row.version);
+		if (!updated.changes) { db.exec("ROLLBACK"); return null; }
+		for (const effect of db.prepare("SELECT key, json, state FROM outbox").all()) {
+			const stored = JSON.parse(String(effect.json)) as { effect?: { jobId?: string } };
+			if (stored.effect?.jobId !== jobId) continue;
+			const state = JSON.parse(String(effect.state)) as OutboxState;
+			const nextState: OutboxState = state.kind === "READY" ? { ...state, runAt: instant(moved(state.runAt, advanceMs)) }
+				: state.kind === "UNCERTAIN" ? { ...state, reconcileAt: instant(moved(state.reconcileAt, advanceMs)) }
+				: state;
+			// A lease is another worker's hold on this effect, not part of the job's own timeline.
+			if (nextState === state) continue;
+			db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(nextState), outboxDue(nextState), String(effect.key));
+		}
+		db.exec("COMMIT");
+	} catch (error) {
+		db.exec("ROLLBACK");
+		throw error;
 	}
 	return next;
 }
