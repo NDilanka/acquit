@@ -88,8 +88,14 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>, git
 		await rm(dir, { recursive: true, force: true });
 	}
 }
-const post = (url: string, path: string, body: unknown, token?: string) => fetch(`${url}${path}`, { method: "POST",
-	headers: { "Content-Type": "application/json", ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }) }, body: JSON.stringify(body) });
+const post = (url: string, path: string, body: unknown, token?: string, headers: Record<string, string> = {}) => fetch(`${url}${path}`, { method: "POST",
+	headers: { "Content-Type": "application/json", ...headers, ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }) }, body: JSON.stringify(body) });
+/** One OpenJob whose outcome is read, not asserted: the caps refuse by code. */
+const openOutcome = async (url: string, token: string, repository: string, budget: number) => {
+	const response = await post(url, "/api/commands", { key: randomUUID(), command: { type: "OpenJob", repository,
+		issueNumber: 12, budget, deliveryEndsAt: "2025-10-20T12:00:00.000Z" } }, token);
+	return { status: response.status, body: await response.json() as { outcome: { kind: string; reason?: string } } };
+};
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
 	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
 type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null;
@@ -272,4 +278,38 @@ test("Start my demo forks the visitor's own client repository and binds it into 
 		const other = await (await post(url, "/api/demo", {})).json() as DemoBody;
 		assert.notEqual(other.visitor.repository, visitor.visitor.repository);
 	}, true);
+});
+
+test("a visitor's own caps bind: its jobs, what one may promise, and the address's day", async () => {
+	await apiFixture(false, async url => {
+		const first = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const second = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		await post(url, "/api/demo", {});
+		// Three visitors from one address is the day's allowance; the fourth is refused by code.
+		const refused = await post(url, "/api/demo", {});
+		assert.equal(refused.status, 429);
+		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_IP_DAY" });
+		// A budget over the ceiling is refused, and so is a fourth job: the visitor has three.
+		const repository = first.visitor.repository ?? "maya-client/invoice-app";
+		assert.deepEqual((await openOutcome(url, first.token, repository, 100001)).body,
+			{ outcome: { kind: "DENIED", reason: "CAP_AMOUNT" } });
+		for (const budget of [40000, 40000, 40000]) assert.equal((await openOutcome(url, first.token, repository, budget)).status, 200);
+		assert.deepEqual((await openOutcome(url, first.token, repository, 1)).body,
+			{ outcome: { kind: "DENIED", reason: "CAP_VISITOR_JOBS" } });
+		// The other visitor is untouched by the first one's caps.
+		assert.equal((await openOutcome(url, second.token, second.visitor.repository ?? "maya-client/invoice-app", 40000)).status, 200);
+	});
+});
+
+test("the deployment's visitor day is capped across addresses, and it is a rolling day", async () => {
+	await apiFixture(false, async url => {
+		// Each visitor comes from its own address, so only the deployment's day can bind.
+		for (let index = 0; index < 50; index++) {
+			const created = await post(url, "/api/demo", {}, undefined, { "X-Forwarded-For": `10.0.0.${index + 1}` });
+			assert.equal(created.status, 201, `visitor ${index + 1}`);
+		}
+		const refused = await post(url, "/api/demo", {}, undefined, { "X-Forwarded-For": "10.0.0.99" });
+		assert.equal(refused.status, 429);
+		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_DAY" });
+	});
 });
