@@ -6,7 +6,7 @@ import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase } from "../../../packages/core/src/store.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
-import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
+import { chooseJobFunding, defaultJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
 import { mayControlJob } from "../../../packages/core/src/job.ts";
@@ -437,13 +437,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const input = object(await body(req));
 		if (action[2] === "funding") {
 			if (Object.keys(input).some(key => key !== "mode") || (input.mode !== "card" && input.mode !== "checkout")) throw new BadBody("Expected card or checkout");
-			// The source is chosen while the job still takes bids. An accepted bid has already bound the
-			// order's payment source, so a later choice would be a claim this job cannot honour.
-			if (!(row.state.status === "OPEN" && row.state.phase.kind === "BIDDING")) {
+			// The source is chosen in one transaction against the row this request read: a choice that
+			// races an accept loses to the accept's own version, and an accept that follows a choice
+			// queues the order with what the choice stored.
+			const chosen = chooseJobFunding(db, { jobId, expectedVersion: row.version, mode: input.mode as JobFundingMode, at: clock.now() });
+			if (chosen === "CHOSEN") { json(res, 200, { mode: input.mode }); return; }
+			if (chosen === "NOT_FOUND") { json(res, 404, { error: "NOT_FOUND" }); return; }
+			// An accepted bid has already bound the order's payment source, so a later choice would be a
+			// claim this job cannot honour.
+			if (chosen === "FUNDING_BOUND") {
 				json(res, 409, { error: "FUNDING_BOUND", detail: "This job's funding was fixed when its client accepted a bid." }); return;
 			}
-			setJobFunding(db, jobId, input.mode as JobFundingMode, clock.now());
-			json(res, 200, { mode: input.mode }); return;
+			json(res, 409, { error: "JOB_CHANGED", detail: "The job moved while its funding was chosen. Retry." }); return;
 		}
 		if (Object.keys(input).some(key => key !== "advanceMs")) throw new BadBody("Unsupported clock field");
 		const advanceMs = integer(input.advanceMs, "advanceMs", 365 * 86400000);

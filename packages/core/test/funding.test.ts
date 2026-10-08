@@ -7,7 +7,7 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { executeCommand } from "../src/effects.ts";
 import type { Ports } from "../src/effects.ts";
-import { defaultJobFunding, jobFunding, setJobFunding } from "../src/funding.ts";
+import { chooseJobFunding, defaultJobFunding, jobFunding } from "../src/funding.ts";
 import { hours, instant, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, ClientId, Digest, JobId, MerchantId, OperatorId, OrderId, Version } from "../src/ids.ts";
 import { applyJobCommand } from "../src/job.ts";
@@ -88,7 +88,9 @@ test("a job funds with the mode its client chose, and a job nobody chose for fun
 		// The client chose the test card for the first job before accepting a bid on it.
 		const cardJob = jobIdOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
 		assert.equal(jobFunding(f.store.db, cardJob), null, "A fresh job carries no preference.");
-		setJobFunding(f.store.db, cardJob, "card", now);
+		const fresh = await f.store.readJob(cardJob);
+		assert(fresh);
+		assert.equal(chooseJobFunding(f.store.db, { jobId: cardJob, expectedVersion: fresh.version, mode: "card", at: now }), "CHOSEN");
 		assert.equal(jobFunding(f.store.db, cardJob), "card");
 		assert.equal((await f.store.readJob(cardJob))?.funding, "card", "The loaded row carries the job's own mode.");
 		const cardBid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: cardJob, price: usd("400.00"),
@@ -113,15 +115,17 @@ test("the mode a job queues is the one stored when the bid was accepted, not one
 	try {
 		const jobId = await bidAndAccept(f);
 		assert.deepEqual(f.orders, ["checkout"]);
-		// The order is already queued: changing the preference cannot rewrite it.
-		setJobFunding(f.store.db, jobId, "card", now);
+		// The order is already queued: the job no longer takes a choice, and the queued order keeps its mode.
+		const row = await f.store.readJob(jobId);
+		assert(row);
+		assert.equal(chooseJobFunding(f.store.db, { jobId, expectedVersion: row.version, mode: "card", at: now }), "FUNDING_BOUND");
+		assert.equal(jobFunding(f.store.db, jobId), null, "the refused choice stored nothing");
 		assert.deepEqual(f.orders, ["checkout"], "A queued order keeps the mode it was created under.");
 	} finally { f.store.close(); }
 });
 test("a funding choice and an accept cannot both land on one job", async () => {
 	const f = fixture();
 	try {
-		const { chooseJobFunding } = await import("../src/funding.ts");
 		const jobId = jobIdOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
 		const placed = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId, price: usd("400.00"),
 			eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "funding race" });
@@ -136,13 +140,18 @@ test("a funding choice and an accept cannot both land on one job", async () => {
 			{ actor: maya, now, loaded: { kind: "ACCEPT_BID", quote: quote400, fundingMode: "checkout" } });
 		if (typeof stalePlan === "string") throw new Error(stalePlan);
 		// The client's choice lands first, on the row the accept's loader read.
-		setJobFunding(f.store.db, jobId, "card", now);
+		assert.equal(chooseJobFunding(f.store.db, { jobId, expectedVersion: loaded.version, mode: "card", at: now }), "CHOSEN");
 		// The stale plan's write must not land: the mode it froze is no longer the job's mode, so its
 		// transaction refuses the version it read and the caller re-plans from the fresh row.
 		const refused = await f.store.commit({ job: { expectedVersion: loaded.version, row: stalePlan.next, wakeAt: null }, operator: null,
 			credits: [], outbox: [], settlement: null, request: null, delivery: null });
 		assert.deepEqual(refused, { kind: "VERSION_CONFLICT" }, "an accept must not land a mode the job no longer holds");
-		assert.equal((await f.store.readJob(jobId))?.state.phase.kind, "BIDDING", "the refused accept moved nothing");
+		const after = await f.store.readJob(jobId);
+		assert(after);
+		assert.equal(after.state.status === "OPEN" ? after.state.phase.kind : after.state.status, "BIDDING", "the refused accept moved nothing");
+		// A second choice read against the same stale row refuses the version it read, since the job moved
+		// under it for a reason the choice cannot see.
+		assert.equal(chooseJobFunding(f.store.db, { jobId, expectedVersion: loaded.version, mode: "checkout", at: now }), "JOB_CHANGED");
 		// The retry reads the fresh row and the mode it now holds, and its order carries the card.
 		const fresh = await f.store.readJob(jobId);
 		assert(fresh);
@@ -154,8 +163,12 @@ test("a funding choice and an accept cannot both land on one job", async () => {
 			credits: [], outbox: [], settlement: null, request: null, delivery: null }), { kind: "COMMITTED" });
 		const order = retried.effects[0];
 		assert.equal(order.kind === "CREATE_ORDER" ? order.fundingMode : null, "card", "the order queues the mode the job held at its accept");
-		// A choice that read the row before the accept committed is refused by name, and writes nothing.
+		// A choice that arrives after the accept is refused by name, whatever row it read: the order the
+		// accept queued is the one the job's mode belongs to, and the refusal writes nothing.
+		const settled = await f.store.readJob(jobId);
+		assert(settled);
 		assert.equal(chooseJobFunding(f.store.db, { jobId, expectedVersion: loaded.version, mode: "checkout", at: now }), "FUNDING_BOUND");
-		assert.equal(jobFunding(f.store.db, jobId), "card", "the refused choice left the job's mode alone");
+		assert.equal(chooseJobFunding(f.store.db, { jobId, expectedVersion: settled.version, mode: "checkout", at: now }), "FUNDING_BOUND");
+		assert.equal(jobFunding(f.store.db, jobId), "card", "the refused choices left the job's mode alone");
 	} finally { f.store.close(); }
 });
