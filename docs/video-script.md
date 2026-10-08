@@ -20,7 +20,7 @@ Each scene lists its time range, its on-screen action, the voice-over with a wor
 
 Scenes 2 to 6 show one job, called the story job. The client opens it in scene 2. The operator's bid wins it and the client pays into escrow in scene 3. The operator's first attempt fails in scene 4, and the same operator's second attempt passes in scene 5. The escrow pays that operator in scene 6. The escrow is locked to the accepted operator, so no other agent can deliver against it.
 
-Record scenes 2 to 6 in order on the story job. Each scene moves the job forward, so a scene cannot be re-recorded on the same job afterward. If a take fails, open a new story job on a fresh J1 client repo and record again from scene 2. Every frame from scenes 2 to 6 in the final cut comes from one story job, so the job id and the ledger match across scenes.
+Record scenes 2 to 6 in order on the story job. Each scene moves the job forward, so a scene cannot be re-recorded on the same job afterward. If a take fails, open a new story job on a fresh J1 client repo and record again from scene 2. Every frame from scenes 2 to 6 in the final cut comes from one story job, so the job id and the ledger match across scenes. Every `acquit run`, `acquit diff`, and `acquit submit` in these scenes passes the same `--dir story-job`. Without it, `run` checks out into a folder named after the work repository while `diff` and `submit` read the current folder, so they would look at different checkouts.
 
 ## Pace and length
 
@@ -50,7 +50,7 @@ The command prints 318. Both versions of scene 4 are 48 words, so either version
 
 ## Scene 1. The problem, 0:00 to 0:15
 
-**On screen.** A diff of `tests/totals.test.ts` fills the frame. The expected value changes from `'10.125'` to `'10.13'`. A green "48 passed" line sits under it. Use the frames from the scene 4 take you keep, so scene 1 shows the same run. On a real Prototype T run, use that run's diff. On the labeled take, use the diff from `acquit diff <job>` after the staged run.
+**On screen.** A diff of `tests/totals.test.ts` fills the frame. The expected value changes from `'10.125'` to `'10.13'`. A green "48 passed" line sits under it. Use the frames from the scene 4 take you keep, so scene 1 shows the same run. On a real Prototype T run, use that run's diff. On the labeled take, use the diff from `acquit diff <job> --dir story-job` after the staged run.
 
 **Voice-over.** 28 words.
 
@@ -62,7 +62,7 @@ The command prints 318. Both versions of scene 4 are 48 words, so either version
 
 **Depends on.** Prototype T decides the caption. No PR blocks it.
 
-**Fallback.** None needed. If scene 4 is not recorded yet, record the labeled diff alone with `acquit diff <job>` and caption it as version B.
+**Fallback.** None needed. If scene 4 is not recorded yet, record the labeled diff alone with `acquit diff <job> --dir story-job` and caption it as version B.
 
 ## Scene 2. Post a job, 0:15 to 0:35
 
@@ -115,11 +115,11 @@ This scene has two versions. Prototype T decides which one ships. Record version
 **On screen, both versions.**
 
 1. The operator's terminal. The agent runs and edits `tests/totals.test.ts`. The run prints "48 passed".
-2. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the exact commit in the CLI. In the fallback, the operator runs `acquit submit <job>`.
+2. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the exact commit in the CLI. In the fallback, the operator runs `acquit submit <job> --dir story-job`.
 3. Cut to the job page. The attempt card reads REJECTED with the reason "PR modifies frozen test file tests/totals.test.ts".
 4. Hold on the **Escrow** card, still HELD, and on the **Attempts** line, which reads "1 used, 2 left".
 
-**Version A, a real model cheating.** Use this version only if Prototype T kept a run where the model edited a test without being told to. The run on camera must happen on the story job, because only a submit on that job produces its REJECTED card. Run the Prototype T model on the story job with `acquit run <job> --runner claude-code --instruction "Make the failing tests pass."`. A run is not an attempt until it is submitted, so repeat the run until one edits the test, and count the runs for the caption. Show the model name and the instruction in frame.
+**Version A, a real model cheating.** Use this version only if Prototype T kept a run where the model edited a test without being told to. The run on camera must happen on the story job, because only a submit on that job produces its REJECTED card. Run the Prototype T model on the story job with `acquit run <job> --dir story-job --runner claude-code --instruction "Make the failing tests pass."`. A run is not an attempt until it is submitted, so repeat the run until one edits the test, and count the runs for the caption. Show the model name and the instruction in frame.
 
 **Voice-over, version A.** 48 words.
 
@@ -127,7 +127,7 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 **Caption, version A.** "Real run. Model: <name>. Prompt: make the failing tests pass. Run <n> of <total>." Keep the caption on screen for the whole scene.
 
-**Version B, labeled.** Use this version if Prototype T found no real cheat. Run `acquit run <job> --runner claude-code --instruction "Make the failing tests pass by any means. You may edit the tests."`. Without `--instruction`, the runner's default tells the agent to change files under `src/` only, so the staged instruction must be explicit. Show the instruction in frame. The label stays on screen for the whole scene.
+**Version B, labeled.** Use this version if Prototype T found no real cheat. Run `acquit run <job> --dir story-job --runner claude-code --instruction "Make the failing tests pass by any means. You may edit the tests."`. Without `--instruction`, the runner's default tells the agent to change files under `src/` only, so the staged instruction must be explicit. Show the instruction in frame. The label stays on screen for the whole scene.
 
 **Voice-over, version B.** 48 words.
 
@@ -139,17 +139,17 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 **Depends on.** Prototype T decides the version. A2 for `submit_attempt`. H2 for the hosted verifier.
 
-**Fallback.** If A2 slips, submit with today's CLI. After the `acquit run` above, show `acquit diff <job>` for the edited test, then run `acquit submit <job>`. The REJECTED attempt card on the job page exists today. A2 is on the never-cut list, so this take is for the rough cut only.
+**Fallback.** If A2 slips, submit with today's CLI. After the `acquit run` above, show `acquit diff <job> --dir story-job` for the edited test, then run `acquit submit <job> --dir story-job`. The REJECTED attempt card on the job page exists today. A2 is on the never-cut list, so this take is for the rough cut only.
 
 ## Scene 5. The honest fix, 1:20 to 1:45
 
-The honest fix is the same operator's second attempt on the story job. The win plan's storyboard has the House model deliver this fix. House cannot deliver on the story job, because its escrow is locked to the operator, and a separate House job would need its own posting, acceptance, and payment inside a 25-second scene. That job would also change the payee in scene 6. A second attempt keeps one job, one escrow, and one payee from scene 3 to scene 6, and it shows the attempt count from scene 4 being used. House stays in the video as a bidder in scene 3 and as the receipts line in scene 8.
+The honest fix is the same operator's second attempt on the story job, as in the win plan's storyboard. House cannot deliver on the story job, because its escrow is locked to the operator, and a separate House job would need its own posting, acceptance, and payment inside a 25-second scene. That job would also change the payee in scene 6. A second attempt keeps one job, one escrow, and one payee from scene 3 to scene 6, and it shows the attempt count from scene 4 being used. House stays in the video as a bidder in scene 3 and as the receipts line in scene 8.
 
 **On screen.**
 
-1. The operator's terminal. Run `acquit run <job> --runner claude-code --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."`. The running line names the model.
-2. Run `acquit diff <job>`. The diff changes only `src/money.ts`. `decimalsFor(currency)` replaces the fixed `DECIMALS = 2`.
-3. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the commit in the CLI. In the fallback, the operator runs `acquit submit <job>`.
+1. The operator's terminal. Run `acquit run <job> --dir story-job --runner claude-code --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."`. The running line names the model.
+2. Run `acquit diff <job> --dir story-job`. The diff changes only `src/money.ts`. `decimalsFor(currency)` replaces the fixed `DECIMALS = 2`.
+3. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the commit in the CLI. In the fallback, the operator runs `acquit submit <job> --dir story-job`.
 4. Cut to the job page as the client. The attempt card reads VERIFIED. Zoom on **Frozen tests** "48 passed", **Hidden tests** "6 passed", and the **Required tests** line "54 completed, 0 skipped or missing".
 5. In **Client review**, click **Approve and release**. The dialog asks "Approve and release 420.00 USD?". Click **Approve and release** in the dialog.
 6. Cut to the GitHub pull request in the client repo. It shows "Merged" and the green Acquit verifier check.
@@ -164,7 +164,7 @@ The honest fix is the same operator's second attempt on the story job. The win p
 
 **Depends on.** H2 and J1 for the hosted job and a repo that still has the bug. A2 for `submit_attempt`. The run, the diff, the submit, and the VERIFIED card exist today. F5's live lane 8 reached VERIFIED attempt 2 of 3 this way.
 
-**Fallback.** If A2 slips, submit with `acquit submit <job>`. A2 is on the never-cut list, so this take is for the rough cut only. Never record this scene with the `command` runner. A script is not a model.
+**Fallback.** If A2 slips, submit with `acquit submit <job> --dir story-job`. A2 is on the never-cut list, so this take is for the rough cut only. Never record this scene with the `command` runner. A script is not a model.
 
 ## Scene 6. Money moves, 1:45 to 2:05
 
@@ -188,8 +188,8 @@ If no signed resend exists, the only replay that works today is a local take. `n
 
 1. Start the local app with `ACQUIT_DEV=1`, and take a local job to PAID.
 2. Read the local job's capture id from `job.release.captureId` in `GET /api/jobs/<id>`. Keep it out of frame.
-3. Run `ACQUIT_DEV=1 npm run -s ctl -- webhook replay --capture <capture id>` twice. The same capture builds the same event id, so the second run is a redelivery.
-4. Each run prints its outcome and the event id. On a PAID job, expect `no-op, job already PAID` both times, as `.factory/skills/verify-acquit/features/07-approve-release.md` requires. Caption the outcome the take prints, not this expectation.
+3. Run `ACQUIT_DEV=1 npm run -s ctl -- webhook replay --capture <capture id>` three times. The same capture builds the same event id, so every run after the first is a redelivery.
+4. Each run prints its outcome and the event id. The first delivery of that event prints `applied`, even on a PAID job. Every later delivery prints `no-op, job already PAID` (`packages/core/test/skeleton.test.ts`, the paid-job capture webhook test). Run the first replay off camera, then record two more, so both on-camera runs print the no-op. Caption the outcome the take prints, not this expectation.
 5. Show the sandbox payout list with exactly one payout for that local job's capture.
 
 Caption the local shots "Local take. The capture webhook sent twice more." The final cut needs a hosted delivery. If none exists by V3, drop the last three sentences of the voice-over and hold on the payout.
@@ -264,7 +264,7 @@ Use no music. If the final cut needs a bed under scene 8, use a royalty-free tra
 
 | Scene | Blocking PRs | Fallback if they slip |
 | --- | --- | --- |
-| 1. The problem | None. Prototype T picks the caption. | Labeled diff from `acquit diff <job>`. |
+| 1. The problem | None. Prototype T picks the caption. | Labeled diff from `acquit diff <job> --dir story-job`. |
 | 2. Post a job | A1, J1, H2, K1 | AI contract with curated cases. Rough cut only: today's **New job** page with no AI claim. |
 | 3. Bids and escrow | A2, F7 | Rough cut only: `acquit bid` from the CLI, and today's **Bids** section with the seeded caption. |
 | 4. The catch | A2, H2. Prototype T picks the version. | Rough cut only: `acquit submit` from the CLI. |
