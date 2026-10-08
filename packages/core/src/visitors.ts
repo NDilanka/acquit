@@ -152,14 +152,16 @@ export function sweepVisitor(db: DatabaseSync, id: VisitorId): void {
  * reservation that spends its address's allowance for the day. The check and the rows it guards share
  * that transaction, so two creations at once cannot both pass the last slot of an address's day. An
  * existing id is refused rather than overwritten, so a retried create can never take over another
- * visitor. A refusal writes nothing and names the cap. The row is PROVISIONING: its repository is
- * bound when the App's answer arrives, so the reservation is always written before anything is forked.
+ * visitor. A refusal writes nothing and names the cap. The row is PROVISIONING and already names the
+ * repository the fork will create, so a process that dies before the App answers still leaves the
+ * sweep a name to remove; the bind replaces it with the App's own answer.
  */
 export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorReservation {
 	const handles = visitorHandles(input.id);
 	const expiresAt = new Date(Date.parse(input.now) + VISITOR_TTL_MS).toISOString() as Instant;
 	const visitor: VisitorRow = { id: input.id, createdAt: input.now, expiresAt, ipKey: input.ipKey,
-		clientHandle: handles.client, operatorHandle: handles.operator, repository: null, repositoryId: null, state: "PROVISIONING" };
+		clientHandle: handles.client, operatorHandle: handles.operator, repository: input.repository,
+		repositoryId: input.repositoryId ?? null, state: "PROVISIONING" };
 	const operator: OperatorRow = { id: handles.operator as OperatorId, handle: handles.operator, kind: "INDEPENDENT",
 		version: 0 as Version, payouts: { kind: "READY", merchant: input.merchant, connectedAt: input.now } };
 	const agentId = `${handles.operator}-agent`;

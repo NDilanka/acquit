@@ -16,7 +16,7 @@ import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
-import { bindVisitorRepository, failVisitor, reserveVisitor } from "./visitors.ts";
+import { bindVisitorRepository, failVisitor, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
 import type { VisitorRow } from "./visitors.ts";
 import { boundedDetail, unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
@@ -252,11 +252,11 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			return ticking;
 		},
 	};
-	runtimes.set(service, { ports, store, demo: config.demo });
+	runtimes.set(service, { ports, store, demo: config.demo, organization: config.github.organization });
 	return service;
 }
 
-const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore; demo: AcquitConfig["demo"] }>();
+const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore; demo: AcquitConfig["demo"]; organization: string }>();
 /** HTTP-only checkout boundary: re-read the provider, never trust URL token/PayerID. */
 export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId): Promise<boolean> {
 	const runtime = runtimes.get(service);
@@ -280,16 +280,20 @@ export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: Vi
 /**
  * Mints one visitor's whole identity in the one order that never leaves a fork untracked: the demo
  * configuration is checked and the visitor is reserved — PROVISIONING, counted by the caps, its row and
- * principals written — before the App is asked for anything. Then the fork is made, its answer bound to
- * the row, and the row marked ACTIVE. A fork that refuses marks the row FAILED and keeps any repository
- * the answer named, so the sweep still takes it. The route owns the session; this owns the rows.
+ * principals written — before the App is asked for anything. The row names the repository the fork will
+ * create before the App is asked, because the name is deterministic: a process that dies between the
+ * fork and the bind still leaves the sweep a name to remove. Then the fork is made, its answer bound to
+ * the row, and the row marked ACTIVE. A fork that refuses marks the row FAILED and keeps the repository
+ * name, so the sweep still takes it. The route owns the session; this owns the rows.
  */
 export async function provisionDemoVisitor(service: Acquit, input: { readonly id: VisitorId; readonly ipKey: string;
 	readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
-	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey, repository: null,
+	// Without an App there is no fork and no repository; the route answers NO_APP and the bind clears it.
+	const repository = runtime.organization ? `${runtime.organization}/${visitorRepositoryName(input.id)}` : null;
+	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey, repository,
 		merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
 	if (reserved.kind === "CAPPED") return { kind: "CAPPED", reason: reserved.reason };
 	let forked: VisitorFork | null = null;
@@ -298,7 +302,7 @@ export async function provisionDemoVisitor(service: Acquit, input: { readonly id
 		return { kind: "CREATED", visitor: forked.kind === "NO_APP" ? bindVisitorRepository(runtime.store.db, input.id, null)
 			: bindVisitorRepository(runtime.store.db, input.id, forked.repository, forked.id) };
 	} catch (error) {
-		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : null,
+		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : repository,
 			forked?.kind === "FORKED" ? forked.id : null);
 		return { kind: "FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) };
 	}
