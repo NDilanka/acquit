@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,7 +15,9 @@ import { test } from "node:test";
 import { reachable, releaseSpawned, sleep } from "../src/process.ts";
 
 const preload = (source: string) => `data:text/javascript,${encodeURIComponent(source)}`;
-/** The one network boundary of the isolated API: every fetch is recorded, and only PayPal answers. */
+/** The stub GitHub this fixture's App talks to. Never a real host, never reached off this machine. */
+const GITHUB_BASE = "https://api.github.test";
+/** The one network boundary of the isolated API: every fetch is recorded, and only the two stubs answer. */
 const fetchStub = `
 import { appendFileSync } from "node:fs";
 globalThis.fetch = async (input, init) => {
@@ -26,14 +28,30 @@ globalThis.fetch = async (input, init) => {
 	if (String(input).startsWith("https://api-m.sandbox.paypal.com/v2/checkout/orders") && init?.method === "POST") {
 		return Response.json({ id: "ORDER-JUDGE-1", links: [{ rel: "approve", href: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER-JUDGE-1" }] });
 	}
+	if (String(input).startsWith("${GITHUB_BASE}/")) {
+		const path = new URL(String(input)).pathname;
+		if (path === "/app/installations") return Response.json([{ id: 42, account: { login: "acquit-forks", type: "Organization" } }]);
+		if (path === "/app/installations/42/access_tokens") return Response.json({ token: "ghs_stub", expires_at: new Date(Date.now() + 3600000).toISOString() }, { status: 201 });
+		if (init?.method === "POST" && /^\\/repos\\/[^/]+\\/[^/]+\\/forks$/.test(path)) {
+			const body = JSON.parse(init.body);
+			return Response.json({ full_name: body.organization + "/" + body.name, fork: true, parent: { full_name: "maya-client/invoice-app" } }, { status: 202 });
+		}
+		return Response.json({ message: "Not Found" }, { status: 404 });
+	}
 	return Response.json({ name: "RESOURCE_NOT_FOUND", debug_id: "isolated" }, { status: 404 });
 };
 `;
 type VisitorBody = { readonly id: string; readonly client: string; readonly operator: string;
 	readonly repository: string | null; readonly expiresAt: string };
 type DemoBody = { readonly user: { readonly handle: string; readonly role: string }; readonly visitor: VisitorBody; readonly token: string };
+/** The visitor's own repository is forked by the App, so this fixture needs the App's three names. */
+const githubAppEnv = (): Record<string, string> => {
+	const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+	return { ACQUIT_GITHUB_APP_ID: "4242", ACQUIT_GITHUB_APP_ORG: "acquit-forks", ACQUIT_GITHUB_API_BASE: GITHUB_BASE,
+		ACQUIT_GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+};
 
-async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Promise<void> {
+async function apiFixture(dev: boolean, run: (url: string) => Promise<void>, github = false): Promise<void> {
 	const root = fileURLToPath(new URL("../../..", import.meta.url));
 	const dir = await mkdtemp(join(tmpdir(), "acquit-demo-test-"));
 	const log = join(dir, "fetch.log");
@@ -47,6 +65,11 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Pr
 			ACQUIT_HIDDEN_CASES: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url)),
 			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
 			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: log,
+			// The GitHub App is this test's own choice, never the developer's .env: without one the App
+			// refuses by name and the visitor falls back to the deployment's repository, and with one every
+			// fork is answered by the stub below and never by github.com.
+			ACQUIT_GITHUB_APP_ID: "", ACQUIT_GITHUB_APP_PRIVATE_KEY: "", ACQUIT_GITHUB_APP_ORG: "", ACQUIT_GITHUB_API_BASE: "",
+			...(github ? githubAppEnv() : {}),
 		} });
 	try {
 		const deadline = Date.now() + 15_000;
@@ -58,7 +81,7 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>): Pr
 		}
 		await run(url);
 		const calls = (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(line => line !== "");
-		assert.equal(calls.every(line => JSON.parse(line).url.startsWith("https://api-m.sandbox.paypal.com/")), true,
+		assert.equal(calls.every(line => ["https://api-m.sandbox.paypal.com/", `${GITHUB_BASE}/`].some(base => JSON.parse(line).url.startsWith(base))), true,
 			`The isolated test API reached ${calls.join(", ")}`);
 	} finally {
 		await releaseSpawned(child);
@@ -69,11 +92,12 @@ const post = (url: string, path: string, body: unknown, token?: string) => fetch
 	headers: { "Content-Type": "application/json", ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }) }, body: JSON.stringify(body) });
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
 	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
-type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null; readonly deliveryEndsAt: string } };
+type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null;
+	readonly deliveryEndsAt: string; readonly contract: { readonly repository: string } | null } };
 /** One job of the visitor's own, opened by its client principal: the fixture repository and issue 12. */
-async function openVisitorJob(url: string, token: string): Promise<string> {
+async function openVisitorJob(url: string, token: string, repository = "maya-client/invoice-app"): Promise<string> {
 	const response = await post(url, "/api/commands", { key: randomUUID(), command: { type: "OpenJob",
-		repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000, deliveryEndsAt: "2025-10-20T12:00:00.000Z" } }, token);
+		repository, issueNumber: 12, budget: 40000, deliveryEndsAt: "2025-10-20T12:00:00.000Z" } }, token);
 	const body = await response.json() as { outcome: { kind: string; result?: { job: { id: string } } } };
 	assert.equal(body.outcome.kind, "COMMITTED", JSON.stringify(body));
 	return body.outcome.result!.job.id;
@@ -226,4 +250,26 @@ test("a visitor advances its own job's clock and no other visitor's", async () =
 		assert.equal((await post(url, `/api/jobs/${mine}/clock`, { advanceMs: 0 }, first.token)).status, 400);
 		assert.equal((await post(url, `/api/jobs/${mine}/clock`, { advanceMs: -day }, first.token)).status, 400);
 	});
+});
+
+test("Start my demo forks the visitor's own client repository and binds it into its job", async () => {
+	await apiFixture(false, async url => {
+		const visitor = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		// The App forks the deployment's client repository under the visitor's own name: no PAT, no shared repo.
+		assert.equal(visitor.visitor.repository, `acquit-forks/demo-${visitor.visitor.id.slice(2)}`);
+		// The post form reads the repository this visitor may open a job on.
+		const repos = await fetch(`${url}/api/repos`, { headers: { Authorization: `Bearer ${visitor.token}` } })
+			.then(response => response.json() as Promise<{ repos: { repository: string }[] }>);
+		assert.deepEqual(repos.repos.map(repo => repo.repository), [visitor.visitor.repository]);
+		// The contract freezes the visitor's own repository, and the deployment's is refused for that client.
+		const jobId = await openVisitorJob(url, visitor.token, visitor.visitor.repository ?? "");
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.contract?.repository, visitor.visitor.repository);
+		const refused = await post(url, "/api/commands", { key: randomUUID(), command: { type: "OpenJob",
+			repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000, deliveryEndsAt: "2025-10-20T12:00:00.000Z" } }, visitor.token);
+		assert.equal(refused.status, 409);
+		assert.deepEqual(await refused.json(), { outcome: { kind: "DENIED", reason: "NOT_FOUND" } });
+		// Every visitor forks its own: two visitors never share one repository name.
+		const other = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		assert.notEqual(other.visitor.repository, visitor.visitor.repository);
+	}, true);
 });

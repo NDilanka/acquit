@@ -340,6 +340,18 @@ for (const harness of HARNESSES) {
 		assert.notEqual(other.repository, created.repository);
 	});
 
+	test(`a visitor's repository is one fork per visitor name, and a second call adopts it (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const request = { repository: CLIENT, name: "demo-abc123" };
+		const created = await app.port.createClientRepo(request);
+		assert.deepEqual(created, { repository: `${ORG}/demo-abc123`, remote: `https://github.com/${ORG}/demo-abc123.git` });
+		assert.deepEqual(await app.port.createClientRepo(request), created);
+		const other = await app.port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
+		assert.equal(other.repository, `${ORG}/demo-def456`);
+		assert.notEqual(other.repository, created.repository);
+	});
+
 	test(`the verified commit is one pull request and a second call adopts it (${harness.name})`, async t => {
 		const app = await harness.make();
 		t.after(app.close);
@@ -822,6 +834,18 @@ test("a fork GitHub names differently is refused by name and never renamed", asy
 	assert.match(failure.detail, new RegExp(other));
 	assert.equal(stub.state.repos.has(WORK_REPO), false);
 	assert.equal(stub.state.repos.has(other), true);
+	assert.deepEqual(repoMutations(stub), []);
+});
+
+test("a visitor's name already taken by a repository this client did not create is refused", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, `${ORG}/demo-abc123`, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.createClientRepo({ repository: CLIENT, name: "demo-abc123" }));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.match(failure.detail, /demo-abc123/);
+	// The refused name is never forked over and nothing is renamed, deleted, or written.
+	assert.deepEqual(stub.state.forks, []);
 	assert.deepEqual(repoMutations(stub), []);
 });
 
