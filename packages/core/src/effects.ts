@@ -738,12 +738,18 @@ export function digest(value: unknown): Digest { return createHash("sha256").upd
 function outboxRow(effect: Effect, now: Instant): OutboxRow {
 	return { key: operationKey(effect), effect, payloadDigest: digest(effect), state: { kind: "READY", runAt: now } };
 }
+/** The House's missing rows are a fact of the deployment, not of the tick: this line is said once per process. */
+let houseRowsMissing = false;
 async function placeHouseBid(ports: Ports, job: JobRow): Promise<void> {
 	const hex = digest(`house-bid:${job.id}`);
 	const key = parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
-	await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: job.tenant ?? null }, key,
+	const outcome = await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: job.tenant ?? null }, key,
 		{ type: "PlaceBid", jobId: job.id, price: job.contract.budget, eta: hours(24),
 			agent: "house-ts-fixer" as AgentId, pitch: "House quality bar: focused TypeScript fixes against the frozen suite." });
+	if (outcome.kind === "DENIED" && outcome.reason === "NOT_FOUND" && !houseRowsMissing) {
+		houseRowsMissing = true;
+		console.warn("Acquit: the House operator house-tsfix has no rows, so no House bid was placed. Seed the database to give the House its operator and agent. This is logged once per process.");
+	}
 }
 
 export async function confirmFunding(ports: Ports, actor: Actor, jobId: JobId): Promise<boolean> {
