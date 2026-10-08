@@ -860,6 +860,26 @@ test("a visitor's name already taken by a repository this client did not create 
 	assert.deepEqual(repoMutations(stub), []);
 });
 
+test("a visitor's name taken between the read and the fork is adopted only with the ownership marker", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const name = "demo-abc123";
+	// The read misses the fork another request created in the same instant, and the fork answers "already
+	// exists". The name now holds a repository this client did not create: it is refused, never adopted.
+	stub.refuse({ method: "GET", path: `/repos/${ORG}/${name}`, status: 404, message: "Not Found", once: true });
+	plant(stub, `${ORG}/${name}`, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.createClientRepo({ repository: CLIENT, name }));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.match(failure.detail, /demo-abc123/);
+	assert.deepEqual(stub.state.forks, [], "no second fork is made for a name already taken");
+	// The same race with this visitor's own fork at the name: the retry re-reads and adopts it.
+	plant(stub, `${ORG}/${name}`, { forkOf: CLIENT, commits: [], main: null });
+	stub.refuse({ method: "GET", path: `/repos/${ORG}/${name}`, status: 404, message: "Not Found", once: true });
+	const adopted = await port.createClientRepo({ repository: CLIENT, name });
+	assert.equal(adopted.repository, `${ORG}/${name}`);
+	assert.deepEqual(stub.state.forks, []);
+});
+
 test("the sweep never deletes a repository this client did not create", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
