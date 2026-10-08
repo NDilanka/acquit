@@ -201,3 +201,35 @@ test("a capped visitor's job and run are refused by code, and a tenant-less clie
 		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).jobs, 0);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
+
+test("a tenant-less job's eleventh submit is not refused by the visitor run cap", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-caps-"));
+	const path = join(root, "acquit.db");
+	const service = serviceAt(path);
+	const store = new SqliteStore(path);
+	try {
+		const own: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
+		const opened = await service.execute(own, parseRequestKey(randomUUID()), { type: "OpenJob", repository: deployment,
+			issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
+		assert.equal(opened.kind, "COMMITTED");
+		const jobId = jobIdOf(opened);
+		// The deployment's own client has spent ten runs already, and the row is in work for devon-ops.
+		const row = store.db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId) as { json: string };
+		const job = JSON.parse(row.json) as Record<string, unknown>;
+		store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state: { status: "IN_PROGRESS",
+			escrow: { payee: { bidId: "bid_escrow", operator: "devon-ops", payee: merchant, agent: "ts-bugfixer", price: 40000, eta: 48 },
+				quote: {}, capture: { orderId: "ORDER-CAPS-3", captureId: "CAPTURE-CAPS-3" }, book: [], cutoffAt: "2026-11-01T00:00:00.000Z" },
+			attempts: { phase: "READY", history: [], runsStarted: 10, failure: null } } }), jobId);
+		for (let run = 1; run <= 10; run++) {
+			store.db.prepare("INSERT INTO cap_reservations VALUES (?, ?, ?, ?, ?)")
+				.run("RUN", "maya-client", `${jobId}:verify:${run}`, 0, noon);
+		}
+		const operator: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
+		const submitted = await service.execute(operator, parseRequestKey(randomUUID()),
+			{ type: "Submit", jobId, sourceCommit: "d".repeat(40) as CommitSha });
+		assert.equal(submitted.kind, "COMMITTED");
+		// A run outside any visitor's world spends no cap: the ten stale rows stay the whole count.
+		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).runs, 10);
+		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).runsToday, 10);
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
