@@ -13,6 +13,7 @@ import { commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { quote } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
+import { exampleContract } from "./hidden-fixture.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Verdict, VerifierRunId } from "../src/verifier.ts";
 import type { Actor } from "../src/acquit.ts";
@@ -47,7 +48,7 @@ function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
 	return { id: parseJobId("job_review"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
-		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition(), terms: TERMS },
+		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition("maya-client/invoice-app", exampleContract), terms: TERMS },
 		bids: [{ id: lockedPayee.bidId, operator: lockedPayee.operator, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
 			agent: lockedPayee.agent, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
 			respondBy: instant("2026-10-09T12:00:00Z"), status: "ACCEPTED" }],
@@ -226,7 +227,7 @@ test("a missed arbiter deadline commits the alert row the outbox raises", async 
 	store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
 	const raised: string[] = [];
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => resolveBy },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => resolveBy },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented },
 		alerts: { raise: async effect => { raised.push(effect.reason); } },
 		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
@@ -262,7 +263,7 @@ test("a settled release counts the payee's receipt once, and the Monday grant co
 	store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(approved.next.id, approved.next.version, JSON.stringify(approved.next), wakeAt(approved.next));
 	let current: Instant = now;
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => current },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => current },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented },
 		alerts: { raise: unimplemented },
 		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };

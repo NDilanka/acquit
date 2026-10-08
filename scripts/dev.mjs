@@ -15,6 +15,11 @@ const verifierEnv = {
   ACQUIT_VERIFIER_RUN_SECRET: process.env.ACQUIT_VERIFIER_RUN_SECRET ?? randomBytes(32).toString('hex'),
   ACQUIT_VERIFIER_CALLBACK_SECRET: process.env.ACQUIT_VERIFIER_CALLBACK_SECRET ?? randomBytes(32).toString('hex'),
   ACQUIT_VERIFIER_CALLBACK_URL: `http://127.0.0.1:${apiPort}/api/verifier/callback`,
+  // The judge needs this deployment's hidden cases. A run with ACQUIT_DEV=1 uses the committed
+  // example; any other run must name its own private file in the environment or .env and refuses at
+  // boot without one. This script never sets ACQUIT_DEV.
+  ACQUIT_HIDDEN_CASES: process.env.ACQUIT_HIDDEN_CASES ?? (process.env.ACQUIT_DEV === '1'
+    ? fileURLToPath(new URL('../packages/verifier/fixtures/hidden-cases.example.json', import.meta.url)) : undefined),
 };
 const children = [
   spawn(process.execPath, ['apps/api/src/server.ts'], { cwd: root, stdio: 'inherit',

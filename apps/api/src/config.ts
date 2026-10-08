@@ -5,8 +5,10 @@ import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
+import type { HiddenContract } from "../../../packages/core/src/seed-data.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 import { apiVerifierEnv, clientRepositoryEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
+import { hiddenContractOf, loadHiddenCases } from "../../../packages/verifier/hidden.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
@@ -35,10 +37,16 @@ export const githubEnv = githubAppEnv();
  * repository its App is installed on; absent, the demo fixture is used and the tutorial's text holds.
  */
 export const clientRepository = clientRepositoryEnv();
+/**
+ * The deployment's hidden-case contract, derived once here from ACQUIT_HIDDEN_CASES (or, under
+ * ACQUIT_DEV=1, from the committed example). The cases themselves are dropped at this line: only the
+ * verifier holds them, and a deployment without the file refuses at boot with VERIFIER_CONFIG_MISSING.
+ */
+export const hiddenContract: HiddenContract = hiddenContractOf(loadHiddenCases());
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
-	return { databaseUrl: databasePath, clientRepository, paypal: {
+	return { databaseUrl: databasePath, clientRepository, hiddenContract, paypal: {
 		webOrigin,
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,

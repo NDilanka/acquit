@@ -14,15 +14,16 @@ import { frozenDefinition } from "../src/seed-data.ts";
 import type { VerifierRunRequest } from "../src/verifier.ts";
 import { createRunSource, SourceUnavailable } from "../../verifier/fetch.ts";
 import type { GitResult, RunSourceOptions } from "../../verifier/fetch.ts";
+import { exampleContract } from "./hidden-fixture.ts";
 
 const token = "ghs_live_proof_token";
 const submitted = "5cccb66515313caed72e4af329a62fc011139426" as CommitSha;
-const frozen = frozenDefinition().frozenAt;
+const frozen = frozenDefinition("maya-client/invoice-app", exampleContract).frozenAt;
 const jobId = parseJobId("job_source") as JobId;
 
 function request(repository = "maya-client/invoice-app"): VerifierRunRequest {
 	return { runId: "run_source_1" as VerifierRunRequest["runId"], jobId, ordinal: 1, sourceCommit: submitted,
-		definitionOfDone: { ...frozenDefinition(), issue: { ...frozenDefinition().issue, repository } } };
+		definitionOfDone: { ...frozenDefinition(repository, exampleContract) } };
 }
 
 /** A git runner that records what it was asked, with the mirror's config file as it stands at the call. */

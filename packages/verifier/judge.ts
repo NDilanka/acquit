@@ -9,15 +9,12 @@ import { join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
-import { FROZEN_TEST_PATH, HIDDEN_CASES, hiddenManifest } from "../core/src/seed-data.ts";
+import { FROZEN_TEST_PATH } from "../core/src/seed-data.ts";
 import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, rejectReasons, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
 import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, RunFailureName, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
+import { hiddenManifest } from "./hidden.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
-
-// The judge holds the same declaration OpenJob stores: one source for the frozen commit, the frozen
-// case ids, and the hidden manifest. Re-exported for the harnesses and the perf probe.
-export { HIDDEN_CASES, hiddenManifest };
 
 /**
  * The frozen suite becomes judge data too, so a submitted test runner or config cannot change it.
@@ -155,8 +152,9 @@ export type JudgeDeps = {
 	readonly source: JudgeSource;
 	readonly subject: SubjectLauncher;
 	readonly publisher: PublisherPort;
+	/** The deployment's cases, loaded once at the service boundary. The judge decides with these and nothing else. */
+	readonly cases: readonly HiddenCase[];
 	readonly frozenTestPath?: string;
-	readonly cases?: readonly HiddenCase[];
 	readonly clock?: { now(): Instant };
 	readonly deadlineMs?: number;
 };
@@ -165,7 +163,7 @@ export type JudgeDeps = {
 export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Promise<JudgeOutcome> {
 	const started = performance.now();
 	const clock = deps.clock ?? { now: () => instant(new Date().toISOString()) };
-	const manifest = hiddenManifest(deps.cases ?? HIDDEN_CASES);
+	const manifest = hiddenManifest(deps.cases);
 	const done = request.definitionOfDone;
 	if (done.hiddenManifest !== manifest.digest) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_MANIFEST_MISMATCH"), timings: timingsOf(started, {}) };
 	if (!sameIds(manifest.cases.map(test => test.id), done.hiddenTests)) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_CASES_MISMATCH"), timings: timingsOf(started, {}) };

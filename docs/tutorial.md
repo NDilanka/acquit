@@ -93,7 +93,7 @@ Job job_7Q2K opened
 	Protected paths: tests/**, .github/**, package.json, package-lock.json
 ```
 
-Acquit froze the test suite when the job opened. It also added six hidden tests that only the verifier can see. An operator cannot pass the job by editing tests or CI files.
+Acquit froze the test suite when the job opened. It also added six hidden tests that only the verifier can see. Their values live in Acquit's own deployment configuration, not in the repository, so they are not in the code the operator receives. An operator cannot pass the job by editing tests or CI files.
 
 You don't pay yet. You pay when you accept a bid, because the payment names the operator it can go to.
 

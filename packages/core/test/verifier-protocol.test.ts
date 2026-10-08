@@ -15,8 +15,9 @@ import type { CommitSha, JobId, TestId } from "../src/ids.ts";
 import { SUBJECT_ERROR_CHARS, SUBJECT_FRAME_BYTES, parseSubjectTranscript } from "../src/verifier.ts";
 import type { DefinitionOfDone, HiddenCase, SubjectCall, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { BOOTSTRAP_LIMITS } from "../../verifier/bootstrap.ts";
-import { gitSource, hiddenManifest, runJudge } from "../../verifier/judge.ts";
+import { gitSource, runJudge } from "../../verifier/judge.ts";
 import type { JudgeSource } from "../../verifier/judge.ts";
+import { hiddenManifest } from "../../verifier/hidden.ts";
 import { ChildSubjectRefused, childProcessSubject, dockerArgs, dockerReachable, dockerSubject, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
 import type { SubjectRun } from "../../verifier/subject.ts";
 

@@ -1,11 +1,11 @@
-// The demo fixture, declared once. OpenJob stores frozenDefinition() and the judge reads the same
-// HIDDEN_CASES and hiddenManifest(), so a stored contract can never name a frozen commit, a test id,
-// or a manifest the judge does not hold. The frozen commit, the frozen file, and the six hidden cases
-// all live here. F6 rebases this declaration onto the shared fixture.
+// The demo fixture, declared once. OpenJob stores frozenDefinition(), built from the deployment's
+// HiddenContract, so a stored contract can never name a frozen commit, a test id, or a manifest the
+// judge does not hold. The frozen commit and the frozen file live here; the hidden cases themselves
+// live in the deployment's private store (packages/verifier/hidden.ts), never in this package. F6
+// rebases this declaration onto the shared fixture.
 
-import { createHash } from "node:crypto";
 import type { CommitSha, Digest, TestId } from "./ids.ts";
-import type { DefinitionOfDone, Glob, HiddenCase } from "./verifier.ts";
+import type { DefinitionOfDone, Glob } from "./verifier.ts";
 
 /** The frozen commit of the client repo, and the file whose 48 cases the judge extracts from it. */
 export const FROZEN_AT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
@@ -27,27 +27,18 @@ export const ISSUE = {
 } as const;
 export const SEEDED_USERS = [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] as const;
 
-/** The judge's own copy of the six hidden cases. This data never enters a submitted tree. */
-export const HIDDEN_CASES: readonly HiddenCase[] = [
-	{ id: "hidden:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 1.234 }], "KWD"], expected: "1.234" },
-	{ id: "hidden:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 2.345 }], "BHD"], expected: "2.345" },
-	{ id: "hidden:3" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 7.891 }], "OMR"], expected: "7.891" },
-	{ id: "hidden:4" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 4.567 }], "JOD"], expected: "4.567" },
-	{ id: "hidden:5" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 10 }, { amount: 0.625 }], "KWD"], expected: "10.625" },
-	{ id: "hidden:6" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: 10.125 }], "JPY"], expected: "10" },
-];
+/**
+ * What the deployment derived from its private hidden-case file: the ids the contract names, and the
+ * digest that binds them to the cases the verifier holds. Core never holds the cases themselves.
+ */
+export type HiddenContract = { readonly ids: readonly TestId[]; readonly digest: Digest };
 
-/** Binds the contract recorded at OpenJob to the cases this judge actually holds. */
-export function hiddenManifest(cases: readonly HiddenCase[] = HIDDEN_CASES): { readonly cases: readonly HiddenCase[]; readonly digest: Digest } {
-	return { cases, digest: createHash("sha256").update(JSON.stringify(cases)).digest("hex") as Digest };
-}
-
-/** The contract OpenJob freezes, naming the deployment's client repository rather than a constant. */
-export function frozenDefinition(repository: string = ISSUE.repository): DefinitionOfDone {
+/** The contract OpenJob freezes, naming the deployment's client repository and its hidden cases. */
+export function frozenDefinition(repository: string, hidden: HiddenContract): DefinitionOfDone {
 	return { issue: { repository, number: 12, title: ISSUE.issues[0].title },
 		frozenAt: FROZEN_AT,
 		frozenTests: Array.from({ length: 48 }, (_, i) => `frozen:${i + 1}` as TestId),
-		hiddenTests: HIDDEN_CASES.map(test => test.id),
-		hiddenManifest: hiddenManifest().digest,
+		hiddenTests: hidden.ids,
+		hiddenManifest: hidden.digest,
 		protectedPaths: PROTECTED_PATHS };
 }

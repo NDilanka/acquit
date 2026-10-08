@@ -51,6 +51,14 @@ Preconditions:
 - The form and the contract name the deployment's client repository (`ACQUIT_CLIENT_REPOSITORY`; the
   demo default is `maya-client/invoice-app`). This doc writes `<client repo>` for it.
 - `ACQUIT_TOKEN` holds Devon's session token. Never print it.
+- The judge decides with the deployment's private case file: `ACQUIT_HIDDEN_CASES` is the absolute
+  path to a JSON `{"version":1,"cases":[...]}` file holding six `hidden:N` cases. A boot without it
+  refuses `VERIFIER_CONFIG_MISSING`; `ACQUIT_DEV=1` falls back to the committed example
+  `packages/verifier/fixtures/hidden-cases.example.json`. Outside a dev process, a named file that
+  parses to the example's contract, a copy or a symlink included, refuses `VERIFIER_CONFIG_INVALID`.
+  The API derives the contract's manifest
+  digest from that file at boot, so the file and the deployment's contract move together. The file is
+  gitignored and is never mounted into the subject. Never print it or copy it into the repository.
 
 - **Reject a tampered test.** Run the printed `acquit submit` command with `--dir <lane repo>`. Require
   stdout to match the tutorial's block: `Submitted job_X (attempt 1 of 3)`, `Verifier result: REJECTED`,
@@ -93,7 +101,8 @@ Preconditions:
   log, that is a failure of the run, not a passing test.
 - A module inside the subject process shares the subject's stdin and stdout, so it can read the run
   nonce and write frames of its own. What it cannot reach is an expected value: the 48 frozen values
-  are in the submitted tree by construction, and the six hidden values exist only in the judge. A
+  are in the submitted tree by construction, and the six hidden values live in the deployment's
+  private case file, which is not in the repository and is never mounted into the subject. A
   forged transcript therefore has to answer the hidden cases correctly, which is the same thing as
   fixing the code. The judge refuses any frame that does not echo the run nonce, and the duplicate-id
   rule refuses a forged reply that races the bootstrap.

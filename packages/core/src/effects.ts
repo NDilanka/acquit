@@ -18,6 +18,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookEnvelope, WebhookResourceKind } from "./paypal.ts";
 import { frozenDefinition, ISSUE } from "./seed-data.ts";
+import type { HiddenContract } from "./seed-data.ts";
 import { isStoreBusy } from "./store.ts";
 import type { WebhookEventRow } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
@@ -138,6 +139,8 @@ export type Ports = {
 	readonly feeModel: ProcessorFeeModel;
 	/** The deployment's client repository: the one OpenJob accepts and freezes into the contract. */
 	readonly clientRepository: string;
+	/** The deployment's hidden cases, as the contract core may store: their ids and their digest, never the cases. */
+	readonly hiddenContract: HiddenContract;
 	readonly store: Store;
 	readonly paypal: PayPal;
 	readonly verifier: VerifierPort;
@@ -169,7 +172,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		if (command.type === "OpenJob") {
 			if (command.repository !== ports.clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
 			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, contract: {
-				definitionOfDone: frozenDefinition(ports.clientRepository), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+				definitionOfDone: frozenDefinition(ports.clientRepository, ports.hiddenContract), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
 			const operator = await ports.store.readOperator(actor.operatorId);

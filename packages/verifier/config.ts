@@ -19,6 +19,7 @@ export const VERIFIER_NAMES = {
 	concurrency: "ACQUIT_VERIFIER_CONCURRENCY",
 	runDeadlineMs: "ACQUIT_VERIFIER_RUN_DEADLINE_MS",
 	clientRepository: "ACQUIT_CLIENT_REPOSITORY",
+	hiddenCases: "ACQUIT_HIDDEN_CASES",
 } as const;
 export type VerifierKey = keyof typeof VERIFIER_NAMES;
 

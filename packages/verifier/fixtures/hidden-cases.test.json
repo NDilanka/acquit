@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "cases": [
+    { "id": "hidden:1", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 2.25 }], "USD"], "expected": "2.25" },
+    { "id": "hidden:2", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 3.5 }], "EUR"], "expected": "3.50" },
+    { "id": "hidden:3", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 4.75 }], "GBP"], "expected": "4.75" },
+    { "id": "hidden:4", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 1234 }], "JPY"], "expected": "1234" },
+    { "id": "hidden:5", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 6.5 }], "CHF"], "expected": "6.50" },
+    { "id": "hidden:6", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 7 }], "AUD"], "expected": "7.00" }
+  ]
+}

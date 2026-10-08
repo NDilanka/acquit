@@ -9,6 +9,7 @@ import { projectJob } from "./job.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
+import type { HiddenContract } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
@@ -146,6 +147,11 @@ export type AcquitConfig = {
 	readonly databaseUrl: string;
 	/** The repository a job's contract names. Parsed from ACQUIT_CLIENT_REPOSITORY at the deployment boundary. */
 	readonly clientRepository?: string;
+	/**
+	 * The deployment's hidden cases as a contract: their ids and the digest of the cases themselves.
+	 * The deployment derives it at boot from its private file; core never holds the cases.
+	 */
+	readonly hiddenContract: HiddenContract;
 	readonly clock?: Clock;
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
@@ -162,7 +168,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 	const store = new SqliteStore(config.databaseUrl);
 	const github = createGitHubApp(config.github);
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
-		clientRepository: config.clientRepository ?? DEMO_CLIENT_REPOSITORY,
+		clientRepository: config.clientRepository ?? DEMO_CLIENT_REPOSITORY, hiddenContract: config.hiddenContract,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
 		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,
 			pullRequest: effect.pullRequest, mergeCommit: effect.mergeCommit }, requestId) },

@@ -29,9 +29,11 @@ import { closeAcquit, createAcquit } from "../src/acquit.ts";
 import type { Actor, CommandOutcome } from "../src/acquit.ts";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { createLocalVerifier, createRemoteVerifier } from "../../verifier/ci.ts";
-import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
+import { gitSource } from "../../verifier/judge.ts";
+import { hiddenManifest } from "../../verifier/hidden.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { renderSubmission } from "../../acquit-cli/src/submit.ts";
+import { exampleCases, exampleContract } from "./hidden-fixture.ts";
 
 const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
 	fileURLToPath(new URL("../../../../../acquit/scratch/verifier/invoice-app", import.meta.url))]
@@ -58,7 +60,7 @@ function heldRow(): JobRow {
 		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-11-08T10:00:00Z"),
 			definitionOfDone: { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
 				frozenAt: frozenCommit, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
-				hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(c => c.id),
+				hiddenManifest: hiddenManifest(exampleCases).digest, hiddenTests: exampleCases.map(test => test.id),
 				protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never },
 			terms: TERMS },
 		bids: [{ id: "bid_submit" as never, operator: "devon-ops" as OperatorId, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
@@ -76,9 +78,9 @@ test("Submit on the tamper-test commit prints the tutorial's REJECTED block, the
 		settlement: null, delivery: null, request: null });
 	let deliver!: (request: VerifierRunRequest, verdict: Verdict) => Promise<void>;
 	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-		clock: { now: () => now }, callbackSecret: secret, onVerdict: (request, verdict) => deliver(request, verdict) });
+		cases: exampleCases, clock: { now: () => now }, callbackSecret: secret, onVerdict: (request, verdict) => deliver(request, verdict) });
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, verifier, github: { merge: unimplemented },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => now }, verifier, github: { merge: unimplemented },
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
 	deliver = async (request, verdict) => {
 		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report: { kind: "VERDICT", verdict } });
@@ -132,9 +134,9 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 	await store.commit({ job: { expectedVersion: null, row, wakeAt: wakeAt(row) }, operator: null, credits: [], outbox: [],
 		settlement: null, delivery: null, request: null });
 	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-		clock: { now: () => now }, callbackSecret: secret });
+		cases: exampleCases, clock: { now: () => now }, callbackSecret: secret });
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, verifier, github: { merge: unimplemented },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => now }, verifier, github: { merge: unimplemented },
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(row.id, 1), sourceCommit: tamperCommit,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, at: now };
@@ -173,7 +175,7 @@ test("a store locked past its busy timeout answers 503 so the report is retried,
 	await store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null, credits: [],
 		outbox: [], settlement: null, delivery: null, request: null });
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => now },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => now },
 		verifier: createRemoteVerifier({ ciUrl: "http://127.0.0.1:1", runSecret: secret, callbackSecret: secret }),
 		github: { merge: unimplemented }, alerts: { raise: async () => {} },
 		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
@@ -224,7 +226,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 		await store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: [], outbox: [], settlement: null, delivery: null, request: null });
 		store.close();
-		const service = createAcquit({ databaseUrl: wiredUrl, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, paypal, verifier,
+		const service = createAcquit({ databaseUrl: wiredUrl, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => now }, paypal, verifier,
 			github: { appId: "", privateKey: "", organization: "" }, verifierPort: createRemoteVerifier(verifier) });
 		try {
 			const applied = await service.handleVerifierCallback(signedReport(row.id));
@@ -240,7 +242,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 			assert.deepEqual(await (await service.handleVerifierCallback(signedReport(row.id))).json(), { ok: true, applied: false });
 		} finally { closeAcquit(service); }
 
-		const bare = createAcquit({ databaseUrl: join(root, "bare.db"), clientRepository: "maya-client/invoice-app", clock: { now: () => now }, paypal,
+		const bare = createAcquit({ databaseUrl: join(root, "bare.db"), clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => now }, paypal,
 			verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
 		try { assert.equal((await bare.handleVerifierCallback(signedReport(parseJobId("job_7Q2K")))).status, 401); }
 		finally { closeAcquit(bare); }
