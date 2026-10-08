@@ -286,6 +286,12 @@ export type JobRow<S extends JobState = JobState> = {
 	 * on a raw row and null on a job nobody chose for, where the deployment's default applies.
 	 */
 	readonly funding?: JobFundingMode | null;
+	/**
+	 * The total this job's own clock has been advanced by, in milliseconds. Absent on rows stored before
+	 * the lever existed, which is the same as zero; `shiftJobClock` adds to it in the same write that
+	 * moves the row's instants.
+	 */
+	readonly clockShiftMs?: number;
 	readonly state: S;
 };
 
@@ -1173,6 +1179,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		client: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.client : null,
 		// The funding source is that client's own choice, so it is served to the same viewer alone.
 		funding: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.funding ?? null : null,
+		// The clock this client advanced is that client's own lever too, so it reads it and nobody else does.
+		clockShiftMs: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.clockShiftMs ?? 0 : null,
 		// The page gates Approve on this answer, not on the viewer's role. The edge is still the guard.
 		viewerCanApprove: viewer.role === "CLIENT" && viewer.clientId === row.client &&
 			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",

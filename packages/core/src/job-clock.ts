@@ -37,12 +37,14 @@ export function shiftJobInstants<S extends JobState>(row: JobRow<S>, advanceMs: 
  * Moves one job's clock and leaves it due for the next tick. The version moves with the write, so a
  * command already in flight against the old row loses its compare-and-set and re-reads the shift.
  * A leased effect stays where it is: that lease is another worker's hold, not this job's timeline.
+ * The total advanced so far moves with the same write, so the job's own view can say how far it went.
  */
 export function shiftJobClock(db: DatabaseSync, jobId: JobId, advanceMs: number): JobRow | null {
 	const record = db.prepare("SELECT json, version FROM jobs WHERE id = ?").get(jobId);
 	if (!record) return null;
 	const row = JSON.parse(String(record.json)) as JobRow;
-	const next = { ...shiftJobInstants(row, advanceMs), version: (row.version + 1) as Version };
+	const next = { ...shiftJobInstants(row, advanceMs), version: (row.version + 1) as Version,
+		clockShiftMs: (row.clockShiftMs ?? 0) + advanceMs };
 	const updated = db.prepare("UPDATE jobs SET version = ?, json = ?, wake_at = ? WHERE id = ? AND version = ?")
 		.run(next.version, JSON.stringify(next), wakeAt(next), jobId, row.version);
 	if (!updated.changes) return null;

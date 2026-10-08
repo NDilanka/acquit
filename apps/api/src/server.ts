@@ -267,7 +267,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	if (url.pathname === "/api/session") {
 		if (method === "GET") { const current = session(req); json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
-			visitor: current?.visitor ? visitorJson(current.visitor) : null }); return; }
+			visitor: current?.visitor ? visitorJson(current.visitor) : null,
+			// The deployment's own sign-in shape, so a page draws the public one or the seeded picker
+			// without probing a second route for it.
+			mode: devEnabled ? "dev" : "public" }); return; }
 		if (method === "POST") {
 			const handle = text(object(await body(req)).handle, "handle");
 			if (!devEnabled) {

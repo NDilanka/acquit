@@ -100,6 +100,12 @@ export interface JobView {
 	 * viewer. Null for that client too when nobody chose for the job: the deployment's default applies.
 	 */
 	readonly funding: JobFundingMode | null;
+	/**
+	 * How far this job's own clock has been advanced by its client, in milliseconds: the job's instants
+	 * were moved back by this much, so its own now is the deployment's now plus this. Served to the owning
+	 * client alone, and 0 there for a job nobody has advanced.
+	 */
+	readonly clockShiftMs: number | null;
 	readonly lockedTo: OperatorId | null;
 	/** The owning client's own gate: true exactly when this viewer is that client and the review is open. */
 	readonly viewerCanApprove: boolean;

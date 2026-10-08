@@ -21,7 +21,7 @@ There is no password login in the skeleton. A dev picker signs in as a seeded us
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null, visitor }` |
+| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null, visitor, mode: "public" \| "dev" }`. `mode` is the deployment's own sign-in shape, so a page draws the public one or the seeded picker without probing a second route |
 | POST | `/api/session` | `{ handle: "maya-client" \| "devon-ops" }` | `{ user, visitor, token }` and the cookie. Public mode refuses a seeded handle `403 { error: "SEEDED_LOGIN_DISABLED" }` and any other handle `403 { error: "SESSION_MINT_DISABLED" }`; dev mode keeps the seeded sign-in |
 | DELETE | `/api/session` | | `204` |
 | GET | `/api/users` | | `{ users: [{ handle, role }] }`. Dev mode: the seeded picker. Public mode: the caller's own pair only, `401` without a session |
@@ -48,7 +48,7 @@ Two job actions are scoped to the caller's own visitor. Both read the stored job
 | POST | `/api/jobs/:id/funding` | `{ mode: "checkout" \| "card" }` | `200 { mode }`. `400` for any other mode. `409 { error: "FUNDING_BOUND" }` once the job has left `BIDDING`, because an accepted bid already bound the order's payment source |
 | POST | `/api/jobs/:id/clock` | `{ advanceMs }` (positive, at most 365 days) | `200 { job, handles, now }`, the same body `GET /api/jobs/:id` serves, after the job's own instants moved and `Acquit.tick` ran. `400` for anything else. `409 { error: "JOB_CHANGED" }` if the row moved under the shift |
 
-Advancing one job's clock moves that job's stored instants, its wake time, and its own pending effects' due times. Another job's row, deadlines, review windows, and outbox are never touched: the deployment's own clock is not moved and no other job's timer changes. A leased effect stays where it is, because that lease is another worker's hold rather than this job's timeline.
+Advancing one job's clock moves that job's stored instants, its wake time, and its own pending effects' due times. Another job's row, deadlines, review windows, and outbox are never touched: the deployment's own clock is not moved and no other job's timer changes. A leased effect stays where it is, because that lease is another worker's hold rather than this job's timeline. The job's own view carries the total advanced so far as `job.clockShiftMs`, to that job's client alone.
 
 ### Caps
 
@@ -103,7 +103,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 |---|---|---|
 | GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form. A visitor's own fork replaces the deployment's repository for that session |
 | GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor }` |
-| GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies |
+| GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
 
