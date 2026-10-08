@@ -5,11 +5,12 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { reachable, releaseSpawned, sleep } from "../src/process.ts";
@@ -51,10 +52,11 @@ const githubAppEnv = (): Record<string, string> => {
 		ACQUIT_GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
 };
 
-async function apiFixture(dev: boolean, run: (url: string) => Promise<void>, github = false): Promise<void> {
+async function apiFixture(dev: boolean, run: (url: string, databasePath: string) => Promise<void>, github = false): Promise<void> {
 	const root = fileURLToPath(new URL("../../..", import.meta.url));
 	const dir = await mkdtemp(join(tmpdir(), "acquit-demo-test-"));
 	const log = join(dir, "fetch.log");
+	const databasePath = join(dir, "acquit.db");
 	const listener = createServer();
 	await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
 	const port = (listener.address() as { port: number }).port;
@@ -63,7 +65,7 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>, git
 		{ cwd: root, stdio: "ignore", env: {
 			...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
 			ACQUIT_HIDDEN_CASES: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url)),
-			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
+			DATABASE_PATH: databasePath, PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
 			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: log,
 			// The GitHub App is this test's own choice, never the developer's .env: without one the App
 			// refuses by name and the visitor falls back to the deployment's repository, and with one every
@@ -79,7 +81,7 @@ async function apiFixture(dev: boolean, run: (url: string) => Promise<void>, git
 			assert(Date.now() < deadline, "The isolated test API failed readiness.");
 			await sleep(50);
 		}
-		await run(url);
+		await run(url, databasePath);
 		const calls = (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(line => line !== "");
 		assert.equal(calls.every(line => ["https://api-m.sandbox.paypal.com/", `${GITHUB_BASE}/`].some(base => JSON.parse(line).url.startsWith(base))), true,
 			`The isolated test API reached ${calls.join(", ")}`);
@@ -142,6 +144,22 @@ test("public mode refuses a seeded handle and mints a visitor through Start my d
 		const signed = await sessionOf(url, body.token);
 		assert.deepEqual(signed.user, { handle: body.visitor.client, role: "CLIENT" });
 		assert.equal(signed.visitor?.id, body.visitor.id);
+	});
+});
+
+test("public mode refuses a seeded session that an earlier run left behind", async () => {
+	await apiFixture(false, async (url, databasePath) => {
+		// A seeded handle's session, exactly as a dev-mode run mints it: a row with no visitor.
+		const token = "seeded-session-token";
+		const db = new DatabaseSync(databasePath);
+		try {
+			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)")
+				.run(createHash("sha256").update(token).digest("hex"), "maya-client", "2025-10-20T12:00:00.000Z");
+		} finally { db.close(); }
+		const restored = await fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } });
+		assert.equal(restored.status, 200);
+		assert.deepEqual(await restored.json(), { user: null, visitor: null });
+		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
 	});
 });
 
