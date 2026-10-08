@@ -6,13 +6,21 @@ Each scene lists its time range, its on-screen action, the voice-over with a wor
 
 ## Rules that hold for every take
 
-- Record against the hosted demo from H2, never localhost. The address bar shows the hosted URL.
+- Record against the hosted demo from H2, never localhost. The address bar shows the hosted URL. The one exception is the labeled local take in the scene 6 fallback, and it is for the rough cut only.
 - Every PayPal screen shows "Sandbox" in frame. The first PayPal screen also gets the caption "PayPal Sandbox. No real money moves."
 - Record each scene alone, then cut them together. Keep every good take, because a sandbox outage can block a re-record.
-- Never show an account email, an API key, a session token, or a GitHub App secret. Blur or crop the account header on every PayPal screen.
+- Never show an account email, a merchant id, a password, an API key, a session token, or a GitHub App secret. Blur or crop the account header on every PayPal screen.
+- Never caption or say a payout or fee figure that the take did not produce. Read the figures from that take's **Ledger** section.
+- A fallback that replaces an item on the win plan's never-cut list is for the rough cut (V2) only. The final cut waits for the item. The never-cut items in this script are J1, K1, H2, P1, trimmed F7, G1 with A3, and A2. A1 may shrink only to an AI-drafted contract with curated hidden cases.
 - Never show a staged cheat without its on-screen label. Scene 4 carries the rule.
 - Never say or caption "tamper-proof". The claim is that the verifier rejects tampering it can detect and runs hidden tests the operator cannot see.
 - Captions are burned in and also uploaded as a YouTube caption file. Each caption stays on screen for at least 2 seconds.
+
+## One job carries scenes 2 to 6
+
+Scenes 2 to 6 show one job, called the story job. The client opens it in scene 2. The operator's bid wins it and the client pays into escrow in scene 3. The operator's first attempt fails in scene 4, and the same operator's second attempt passes in scene 5. The escrow pays that operator in scene 6. The escrow is locked to the accepted operator, so no other agent can deliver against it.
+
+Record scenes 2 to 6 in order on the story job. Each scene moves the job forward, so a scene cannot be re-recorded on the same job afterward. If a take fails, open a new story job on a fresh J1 client repo and record again from scene 2. Every frame from scenes 2 to 6 in the final cut comes from one story job, so the job id and the ledger match across scenes.
 
 ## Pace and length
 
@@ -24,19 +32,21 @@ The voice-over is read at about 150 words per minute, which is 2.5 words a secon
 | 2. Post a job | 0:15 to 0:35 | 20 s | 50 | 39 | 16 s |
 | 3. Bids and escrow | 0:35 to 0:55 | 20 s | 50 | 45 | 18 s |
 | 4. The catch | 0:55 to 1:20 | 25 s | 62 | 48 (either version) | 19 s |
-| 5. The honest fix | 1:20 to 1:45 | 25 s | 62 | 41 | 16 s |
-| 6. Money moves | 1:45 to 2:05 | 20 s | 50 | 38 | 15 s |
+| 5. The honest fix | 1:20 to 1:45 | 25 s | 62 | 40 | 16 s |
+| 6. Money moves | 1:45 to 2:05 | 20 s | 50 | 37 | 15 s |
 | 7. AG Studio | 2:05 to 2:35 | 30 s | 75 | 51 | 20 s |
 | 8. Why it matters | 2:35 to 2:50 | 15 s | 37 | 30 | 12 s |
-| Total | 0:00 to 2:50 | 170 s | 425 | 320 | 128 s |
+| Total | 0:00 to 2:50 | 170 s | 425 | 318 | 127 s |
 
-To recount, run this from the repo root. It counts the words in every quoted voice-over line.
+The scenes add up to exactly 170 seconds, so the cut fits 2:50 with no spare second. Any scene that runs long takes its time from another scene.
+
+To recount, run this from the repo root. It counts the words in every quoted voice-over line and skips version B of scene 4, so it counts one tamper version.
 
 ```sh
-awk '/^> /{sub(/^> /,""); n+=split($0,w," ")} END{print n}' docs/video-script.md
+awk '/^\*\*Voice-over, version B/{skip=1} /^\*\*Caption, version B/{skip=0} /^> / && !skip {sub(/^> /,""); n+=split($0,w," ")} END{print n}' docs/video-script.md
 ```
 
-The command counts both versions of scene 4 and prints 368. Both versions are 48 words, so the cut is 368 minus 48, which is 320 words.
+The command prints 318. Both versions of scene 4 are 48 words, so either version gives the same total.
 
 ## Scene 1. The problem, 0:00 to 0:15
 
@@ -74,7 +84,7 @@ The command counts both versions of scene 4 and prints 368. Both versions are 48
 
 **Depends on.** A1 for the AI draft panel. H2 and J1 for the hosted page. K1 so that "the operator never sees the hidden tests" is true of the hosted build.
 
-**Fallback.** Per the cut order, A1 first shrinks to an AI-drafted contract with curated hidden cases. Then the panel shows the drafted contract only, and the voice-over line becomes "AI drafts the acceptance contract from the issue text. Acquit adds hidden tests the client reviewed." That line is 16 words and replaces the second and third sentences, so the scene drops to 38 words. If A1 does not land at all, record today's **New job** page as it is. Its hint line already reads "Suite will freeze at commit ... plus 6 hidden tests only the verifier sees." Cut every mention of AI from this scene's voice-over and caption.
+**Fallback.** Per the cut order, A1 first shrinks to an AI-drafted contract with curated hidden cases. Then the panel shows the drafted contract only, and the voice-over line becomes "AI drafts the acceptance contract from the issue text. Acquit adds hidden tests the client reviewed." That line is 16 words and replaces the second and third sentences, so the scene drops to 38 words. This smaller A1 is the last cut the plan allows, so it can ship in the final cut. If A1 does not land at all, record today's **New job** page as it is for the rough cut only. Its hint line already reads "Suite will freeze at commit ... plus 6 hidden tests only the verifier sees." Cut every mention of AI from this scene's voice-over and caption.
 
 ## Scene 3. Bids and escrow, 0:35 to 0:55
 
@@ -90,13 +100,13 @@ The command counts both versions of scene 4 and prints 368. Both versions are 48
 
 > An operator's agent finds the job through the Acquit MCP server and bids. House, our own agent, bids too. Bids sort by verified receipts, not star ratings. The client accepts and pays through PayPal. The money is held, and it can only pay this operator.
 
-**Caption.** "PayPal Sandbox. No real money moves." Then "Escrow HELD. It can pay only this operator, or refund the client."
+**Caption.** "PayPal Sandbox. No real money moves." Then "Escrow HELD. It can pay only this operator, or refund the client." Until B2 lands, the House row's count comes from a seeded counter (`scripts/seed.ts`), so add "House history is seeded demo data." while the House row is in frame.
 
 **Pre-warm.** Claude Code on the operator machine with the Acquit MCP server configured and one `list_jobs` call already made. The buyer sandbox account logged in once in its own browser profile, so checkout skips the cold login page. A PayPal access token less than 8 hours old.
 
-**Depends on.** A2 for the MCP bid. F7 for the AG Grid bid list and the checkout substates. F6 for a House bid that a real model will deliver.
+**Depends on.** A2 for the MCP bid. F7 for the AG Grid bid list and the checkout substates. The House bid row exists today from the seed. House only bids in this video, so F6 does not block this scene.
 
-**Fallback.** If A2 slips, the operator bids with today's CLI, `acquit bid <job> --price 400 --eta 2d --agent ts-bugfixer --pitch "..."`, and the voice-over says "An operator bids from the Acquit command line" in place of "An operator's agent finds the job through the Acquit MCP server and bids." A2 is on the never-cut list, so this take is only for a rough cut. If F7 slips, use today's **Bids** section on the job page. It already lists the House row with "41 fixes, 39 passed verified CI". Drop the sort click and the sentence "Bids sort by verified receipts, not star ratings."
+**Fallback.** If A2 slips, the operator bids with today's CLI, `acquit bid <job> --price 400 --eta 2d --agent ts-bugfixer --pitch "..."`, and the voice-over says "An operator bids from the Acquit command line" in place of "An operator's agent finds the job through the Acquit MCP server and bids." If F7 slips, use today's **Bids** section on the job page. Its House row reads "41 passed verified CI", and that 41 is the seeded counter, so the seeded-data caption stays on. Drop the sort click and the sentence "Bids sort by verified receipts, not star ratings." A2 and trimmed F7 are on the never-cut list, so both fallback takes are for the rough cut only.
 
 ## Scene 4. The catch, 0:55 to 1:20
 
@@ -107,9 +117,9 @@ This scene has two versions. Prototype T decides which one ships. Record version
 1. The operator's terminal. The agent runs and edits `tests/totals.test.ts`. The run prints "48 passed".
 2. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the exact commit in the CLI. In the fallback, the operator runs `acquit submit <job>`.
 3. Cut to the job page. The attempt card reads REJECTED with the reason "PR modifies frozen test file tests/totals.test.ts".
-4. Hold on the **Escrow** card, still HELD, and on "Attempts left: 2".
+4. Hold on the **Escrow** card, still HELD, and on the **Attempts** line, which reads "1 used, 2 left".
 
-**Version A, a real model cheating.** Use this version only if Prototype T kept a run where the model edited a test without being told to. Replay that run's log on screen. Show the model name and the prompt "make the failing tests pass" in frame.
+**Version A, a real model cheating.** Use this version only if Prototype T kept a run where the model edited a test without being told to. The run on camera must happen on the story job, because only a submit on that job produces its REJECTED card. Run the Prototype T model on the story job with `acquit run <job> --runner claude-code --instruction "Make the failing tests pass."`. A run is not an attempt until it is submitted, so repeat the run until one edits the test, and count the runs for the caption. Show the model name and the instruction in frame.
 
 **Voice-over, version A.** 48 words.
 
@@ -117,7 +127,7 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 **Caption, version A.** "Real run. Model: <name>. Prompt: make the failing tests pass. Run <n> of <total>." Keep the caption on screen for the whole scene.
 
-**Version B, labeled.** Use this version if Prototype T found no real cheat. The agent's instruction tells it to make the tests pass by any means. The label stays on screen for the whole scene.
+**Version B, labeled.** Use this version if Prototype T found no real cheat. Run `acquit run <job> --runner claude-code --instruction "Make the failing tests pass by any means. You may edit the tests."`. Without `--instruction`, the runner's default tells the agent to change files under `src/` only, so the staged instruction must be explicit. Show the instruction in frame. The label stays on screen for the whole scene.
 
 **Voice-over, version B.** 48 words.
 
@@ -125,48 +135,64 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 **Caption, version B.** "Staged. An agent told to make the tests pass." Keep the caption on screen for the whole scene.
 
-**Pre-warm.** The verifier Docker image pulled on the verifier host, and one REJECTED run already made since the last restart. A fresh job at IN_PROGRESS with the escrow HELD, made just for this scene. For version A, the saved Prototype T log.
+**Pre-warm.** The verifier Docker image pulled on the verifier host, and one REJECTED run already made since the last restart. The story job from scene 3 at IN_PROGRESS with the escrow HELD. For version A, the Prototype T model and instruction.
 
 **Depends on.** Prototype T decides the version. A2 for `submit_attempt`. H2 for the hosted verifier.
 
-**Fallback.** If A2 slips, submit with today's CLI. Run `acquit run <job> --runner claude-code` with the staged instruction, then `acquit submit <job>`, and show `acquit diff <job>` for the edited test. The REJECTED attempt card on the job page exists today. Version B needs no PR beyond what is merged.
+**Fallback.** If A2 slips, submit with today's CLI. After the `acquit run` above, show `acquit diff <job>` for the edited test, then run `acquit submit <job>`. The REJECTED attempt card on the job page exists today. A2 is on the never-cut list, so this take is for the rough cut only.
 
 ## Scene 5. The honest fix, 1:20 to 1:45
 
+The honest fix is the same operator's second attempt on the story job. The win plan's storyboard has the House model deliver this fix. House cannot deliver on the story job, because its escrow is locked to the operator, and a separate House job would need its own posting, acceptance, and payment inside a 25-second scene. That job would also change the payee in scene 6. A second attempt keeps one job, one escrow, and one payee from scene 3 to scene 6, and it shows the attempt count from scene 4 being used. House stays in the video as a bidder in scene 3 and as the receipts line in scene 8.
+
 **On screen.**
 
-1. The job page as the client. The job timeline from F6 shows the House model's diff of `src/money.ts`. `decimalsFor(currency)` replaces the fixed `DECIMALS = 2`.
-2. The attempt card reads VERIFIED. Zoom on **Frozen tests** "48 passed", **Hidden tests** "6 passed", and the **Required tests** line "54 completed, 0 skipped or missing".
-3. In **Client review**, click **Approve and release**, then confirm **Approve and release $420.00** in the dialog.
-4. Cut to the GitHub pull request in the client repo. It shows "Merged" and the green Acquit verifier check.
+1. The operator's terminal. Run `acquit run <job> --runner claude-code --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."`. The running line names the model.
+2. Run `acquit diff <job>`. The diff changes only `src/money.ts`. `decimalsFor(currency)` replaces the fixed `DECIMALS = 2`.
+3. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the commit in the CLI. In the fallback, the operator runs `acquit submit <job>`.
+4. Cut to the job page as the client. The attempt card reads VERIFIED. Zoom on **Frozen tests** "48 passed", **Hidden tests** "6 passed", and the **Required tests** line "54 completed, 0 skipped or missing".
+5. In **Client review**, click **Approve and release**. The dialog asks "Approve and release 420.00 USD?". Click **Approve and release** in the dialog.
+6. Cut to the GitHub pull request in the client repo. It shows "Merged" and the green Acquit verifier check.
 
-**Voice-over.** 41 words.
+**Voice-over.** 40 words.
 
-> The House agent runs a real model on the same issue. It fixes the rounding in the source and changes no test. The verifier passes forty-eight frozen tests and six hidden ones. The client approves, and Acquit merges the pull request.
+> The operator runs the model again with a stricter instruction. It fixes the rounding in the source and changes no test. The verifier passes forty-eight frozen tests and six hidden ones. The client approves, and Acquit merges the pull request.
 
-**Caption.** "VERIFIED. 48 frozen and 6 hidden tests passed. No protected path touched."
+**Caption.** "Attempt 2. VERIFIED. 48 frozen and 6 hidden tests passed. No protected path touched."
 
-**Pre-warm.** One House model run on another job just before the take, so the model and the verifier are warm. Prototype M's median time decides whether the take shows the run live or cuts from start to result. A fresh disposable client repo from J1, because an earlier approval already merged the fix into the last one.
+**Pre-warm.** One `claude-code` run on another job just before the take, so the model and the verifier are warm. Prototype M's median time decides whether the take shows the run live or cuts from start to result. The story job from scene 4, with its REJECTED attempt and 2 attempts left.
 
-**Depends on.** F6, revised, for the House model and its diff in the timeline. H2 and J1 for the hosted job and a repo that still has the bug.
+**Depends on.** H2 and J1 for the hosted job and a repo that still has the bug. A2 for `submit_attempt`. The run, the diff, the submit, and the VERIFIED card exist today. F5's live lane 8 reached VERIFIED attempt 2 of 3 this way.
 
-**Fallback.** F6 with a real model is on the never-cut list. Until it lands, record the operator's honest second run, which runs a real model on the operator's machine today. Run `acquit run <job> --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."`, then `acquit diff <job>` and `acquit submit <job>`. The voice-over's first sentence becomes "The operator runs the agent again with a stricter instruction." Never record this scene with the `command` runner. A script is not a model.
+**Fallback.** If A2 slips, submit with `acquit submit <job>`. A2 is on the never-cut list, so this take is for the rough cut only. Never record this scene with the `command` runner. A script is not a model.
 
 ## Scene 6. Money moves, 1:45 to 2:05
 
 **On screen.** Follow shots M1 to M6 in the money shot list below.
 
-**Voice-over.** 38 words.
+**Voice-over.** 37 words.
 
-> In the PayPal sandbox, the buyer paid four hundred twenty dollars. The operator received three hundred sixty. The platform kept its fee. Then we send the same webhook twice. The second one changes nothing. There is one payout.
+> The client paid four hundred twenty dollars, and PayPal held it. On release, the operator gets the payout and Acquit gets its fee. Then we send the same webhook twice more. Nothing changes. There is one payout.
 
-**Caption.** "Client paid $420.00. Operator received $360.00. Fees $60.00." Then "Same webhook twice. One payout."
+**Caption.** "Client paid 420.00 USD. Operator received <RELEASED> USD. Fees <FEE> USD." Then "Same webhook twice more. One payout."
+
+Fill `<RELEASED>` and `<FEE>` from the **Ledger** section of the story job in this take. The ledger records the payout and the capture fees that PayPal reported (`packages/core/src/job.ts`, the `ReleaseSettled` edge), so they can differ from the quote's 360.00 and 60.00. The last measured example is F5's live lane 9, where the payout settled at 363.78 with dev card funding. Nobody has measured the fees on hosted checkout funding yet, so never reuse that figure.
 
 **Pre-warm.** The three sandbox accounts logged in, each in its own browser profile. The release from scene 5 already settled, so the payout shows in the operator account. The recorded webhook event id for the capture, ready to resend.
 
 **Depends on.** P1 for signed webhooks on the hosted route. H2 for the hosted URL. The release and payout path is merged today.
 
-**Fallback.** The second webhook is the open item in this scene. Once P1 lands, the hosted route only accepts a signed delivery, and today's `npm run ctl -- webhook replay --event <id>` sends an unsigned envelope. Use a signed resend from the PayPal developer dashboard if it offers one for the event. Whether it does is a guess, so test it during V2. If no signed resend exists, record `npm run ctl -- webhook replay --event <id>` twice against a dev instance, which prints `applied` and then `no-op, job already PAID`. Caption that shot "Local replay of the recorded webhook." Show the sandbox payout list with exactly one payout for the capture after it.
+**Fallback.** The second webhook is the open item in this scene. Once P1 lands, the hosted route only accepts a signed delivery. Use a signed resend from the PayPal developer dashboard if it offers one for the event. Whether it does is a guess, so test it during V2.
+
+If no signed resend exists, the only replay that works today is a local take. `npm run -s ctl -- webhook replay` posts to the API that `ctl` started on this machine, `--event` reads only the local database, and the hosted capture is not in it. Record the local take for the rough cut only:
+
+1. Start the local app with `ACQUIT_DEV=1`, and take a local job to PAID.
+2. Read the local job's capture id from `job.release.captureId` in `GET /api/jobs/<id>`. Keep it out of frame.
+3. Run `ACQUIT_DEV=1 npm run -s ctl -- webhook replay --capture <capture id>` twice. The same capture builds the same event id, so the second run is a redelivery.
+4. Each run prints its outcome and the event id. On a PAID job, expect `no-op, job already PAID` both times, as `.factory/skills/verify-acquit/features/07-approve-release.md` requires. Caption the outcome the take prints, not this expectation.
+5. Show the sandbox payout list with exactly one payout for that local job's capture.
+
+Caption the local shots "Local take. The capture webhook sent twice more." The final cut needs a hosted delivery. If none exists by V3, drop the last three sentences of the voice-over and hold on the payout.
 
 ## Scene 7. AG Studio, 2:05 to 2:35
 
@@ -187,7 +213,7 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 **Depends on.** G1 for the dashboards and the "Ledger conserves" widget. A3 for the agent answer.
 
-**Fallback.** G1 with A3 is on the never-cut list. If A3 slips, record the G1 dashboard only. Drop the question, and the voice-over becomes "The platform watches the money in AG Studio. Held, released, refunded, fees, and tampering caught. The ledger conserves money. Every payout plus its fee equals what the client paid." That version is 29 words. If G1 also slips, show the AG Grid ledger table from F7, then run `node scripts/ledger-demo.mjs double-release`, which exists today and prints a REJECTED line for the law it breaks. Caption it "The ledger refuses a second payout." Drop "in AG Studio" from the voice-over.
+**Fallback.** G1 with A3 is on the never-cut list, so both takes below are for the rough cut only. If A3 slips, record the G1 dashboard only. Drop the question, and the voice-over becomes "The platform watches the money in AG Studio. Held, released, refunded, fees, and tampering caught. The ledger conserves money. Every payout plus its fee equals what the client paid." That version is 29 words. If G1 also slips, show the AG Grid ledger table from F7, then run `node scripts/ledger-demo.mjs double-release`, which exists today and prints a REJECTED line for the law it breaks. Caption it "The ledger refuses a second payout." Drop "in AG Studio" from the voice-over.
 
 ## Scene 8. Why it matters, 2:35 to 2:50
 
@@ -207,24 +233,28 @@ This scene has two versions. Prototype T decides which one ships. Record version
 
 **Depends on.** B1 for the quote. B2 for the receipts line. H2 for the URL.
 
-**Fallback.** If B1 has no written quote by V3, drop the quote card and its first sentence. The voice-over then opens on "Acquit holds the money until a verifier clears it." If B2 slips, show the House line labeled as seeded demo history, as B2 requires in the UI. Never show the seeded "41 fixes, 39 passed" without that label.
+**Fallback.** If B1 has no written quote by V3, drop the quote card and its first sentence. The voice-over then opens on "Acquit holds the money until a verifier clears it." If B2 slips, the House row still reads "41 passed verified CI" from a seeded counter. Show it only with the caption "House history is seeded demo data."
 
 ## Money shot list, both sides of the money
 
-These shots carry scene 6 and the checkout in scene 3. Each account is a PayPal sandbox account. Each account runs in its own browser profile, so one profile never shows another account's session. Name each account on screen by its role only. Blur or crop the account email in every frame.
+These shots carry scene 6 and the checkout in scene 3. Each account is a PayPal sandbox account. Each account runs in its own browser profile, so one profile never shows another account's session. Name each account on screen by its role only. Blur or crop the account email and any merchant id in every frame.
+
+The PayPal order names the accepted operator's merchant account as the payee, and it carries Acquit's platform fee as a separate instruction (`packages/core/src/paypal.ts`, `CREATE_ORDER`). The buyer pays the operator's merchant account, not Acquit. PayPal holds the money until release. Acquit receives only its platform fee.
+
+`<RELEASED>` and `<FEE>` below are the amounts on the story job's RELEASED and FEE ledger lines in this take. The ledger conserves money, so `<RELEASED>` plus `<FEE>` equals 420.00.
 
 | Shot | Account | Screen | What the frame must show |
 | --- | --- | --- | --- |
 | B1 | Buyer, sandbox Personal | Sandbox account home, before checkout | The balance before the job. The "Sandbox" mark. |
 | B2 | Buyer, sandbox Personal | PayPal checkout from **Accept and pay with PayPal** | The $420.00 total. The pay button pressed. |
-| M1 | Buyer, sandbox Personal | Activity after checkout | A payment of $420.00 to the platform. |
-| M2 | Operator, sandbox Business | Activity after **Approve and release** | A payout received of $360.00, referencing the job. |
-| M3 | Platform, sandbox Business (the partner account) | Activity for the same capture | The platform fee line. The amount must match the ledger's FEE split. |
-| M4 | Acquit job page | **Ledger** section | The three lines HELD 420.00, RELEASED 360.00, and FEE 60.00, in one frame. |
-| M5 | Second webhook delivery | Signed resend, or the labeled local replay from the scene 6 fallback | The second delivery changes nothing. |
-| M6 | Operator, sandbox Business | Activity after M5 | Still exactly one $360.00 payout for the job. |
+| M1 | Buyer, sandbox Personal | Activity after checkout | A payment of $420.00 to the operator's merchant account. Blur the payee's name. |
+| M2 | Operator, sandbox Business | Activity after **Approve and release** | A payout received of `<RELEASED>`, referencing the job. |
+| M3 | Platform, sandbox Business (the partner account) | Activity for the same capture | The platform fee received. The amount must match Acquit's part of the ledger's FEE line. |
+| M4 | Acquit job page | **Ledger** section | The three lines HELD 420.00 USD, RELEASED `<RELEASED>` USD, and FEE `<FEE>` USD, in one frame. |
+| M5 | Second webhook delivery | Signed resend, or the labeled local take from the scene 6 fallback | The repeated deliveries change nothing. |
+| M6 | Operator, sandbox Business | Activity after M5 | Still exactly one payout of `<RELEASED>` for the job. |
 
-The tutorial ledger splits FEE 60.00 into 15.15 PayPal processing and 44.85 Acquit. Check the platform account's line against the ledger during V2 before captioning a number in M3. If they disagree, caption the ledger's figure and say nothing about the platform account's amount.
+The tutorial ledger shows RELEASED 360.00 and FEE 60.00, split into 15.15 PayPal processing and 44.85 Acquit. Those are the quote's figures. A real take records PayPal's observed payout and capture fees, so caption the take's own ledger. F5's live lane 9 settled a payout of 363.78 with dev card funding, which is the last measured example. Check the platform account's line against the ledger during V2 before captioning a number in M3. If they disagree, caption the ledger's figure and say nothing about the platform account's amount.
 
 ## Sound
 
@@ -235,10 +265,10 @@ Use no music. If the final cut needs a bed under scene 8, use a royalty-free tra
 | Scene | Blocking PRs | Fallback if they slip |
 | --- | --- | --- |
 | 1. The problem | None. Prototype T picks the caption. | Labeled diff from `acquit diff <job>`. |
-| 2. Post a job | A1, J1, H2, K1 | AI contract with curated cases, or today's **New job** page with no AI claim. |
-| 3. Bids and escrow | A2, F7, F6 | `acquit bid` from the CLI, and today's **Bids** section. |
-| 4. The catch | A2, H2. Prototype T picks the version. | `acquit run` and `acquit submit`, version B. |
-| 5. The honest fix | F6, J1, H2 | The operator's second `acquit run` with a real model. |
-| 6. Money moves | P1, H2 | Labeled local `ctl webhook replay`. |
-| 7. AG Studio | G1, A3 | G1 alone, then the F7 ledger grid and `scripts/ledger-demo.mjs`. |
+| 2. Post a job | A1, J1, H2, K1 | AI contract with curated cases. Rough cut only: today's **New job** page with no AI claim. |
+| 3. Bids and escrow | A2, F7 | Rough cut only: `acquit bid` from the CLI, and today's **Bids** section with the seeded caption. |
+| 4. The catch | A2, H2. Prototype T picks the version. | Rough cut only: `acquit submit` from the CLI. |
+| 5. The honest fix | J1, H2, A2 | Rough cut only: `acquit submit` from the CLI. |
+| 6. Money moves | P1, H2 | Rough cut only: a labeled local take of `ctl webhook replay --capture`. |
+| 7. AG Studio | G1, A3 | Rough cut only: G1 alone, then the F7 ledger grid and `scripts/ledger-demo.mjs`. |
 | 8. Why it matters | B1, B2, H2 | No quote card, and a receipts line labeled as seeded. |
