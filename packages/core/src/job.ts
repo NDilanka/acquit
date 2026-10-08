@@ -583,11 +583,12 @@ function transitionTable(): {
 			const pending: PendingAttempt = { ordinal, run, runId, sourceCommit: command.sourceCommit,
 				submittedAt: facts.now, runEndsAt: instant(new Date(Date.parse(facts.now) + VERIFIER_RUN_MINUTES * 60_000).toISOString()) };
 			// The run this Submit starts is a reservation too, spent here and never released: a job that later
-			// settles, refunds, or moves its clock cannot hand the deployment's free tier a run back.
+			// settles, refunds, or moves its clock cannot hand the deployment's free tier a run back. Only a
+			// visitor's run is capped: the deployment's own client has no visitor allowance to protect.
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, attempts: { phase: "VERIFYING", history: attempts.history, runsStarted: run, pending, failure: attempts.failure } } },
 				credits: [], effects: [{ kind: "START_VERIFIER", jobId: row.id, attempt: pending }],
-				reservations: [{ kind: "RUN", scope: row.tenant ?? row.client, ref: runId, cents: 0 as UsdCents, at: facts.now }] };
+				reservations: row.tenant === null ? [] : [{ kind: "RUN", scope: row.tenant, ref: runId, cents: 0 as UsdCents, at: facts.now }] };
 		} },
 		VerifierFinished: { by: "SYSTEM", apply: (row, command, facts) => {
 			const attempts = row.state.attempts;
