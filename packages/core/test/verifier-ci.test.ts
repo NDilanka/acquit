@@ -13,7 +13,9 @@ import type { DefinitionOfDone, Verdict, VerifierRunId, VerifierRunRequest } fro
 import { createLocalVerifier, createRemoteVerifier, parseCallbackBody, parseVerdict } from "../../verifier/ci.ts";
 import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER } from "../../verifier/signing.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
-import { gitSource, hiddenManifest } from "../../verifier/judge.ts";
+import { gitSource } from "../../verifier/judge.ts";
+import { hiddenManifest } from "../../verifier/hidden.ts";
+import { exampleCases } from "./hidden-fixture.ts";
 
 const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
 	fileURLToPath(new URL("../../../../../acquit/scratch/verifier/invoice-app", import.meta.url))]
@@ -22,7 +24,7 @@ const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
 const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const definition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
 	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
-	hiddenManifest: hiddenManifest().digest, hiddenTests: hiddenManifest().cases.map(c => c.id),
+	hiddenManifest: hiddenManifest(exampleCases).digest, hiddenTests: exampleCases.map(test => test.id),
 	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
 
 const verifiedReport = { jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: { result: "VERIFIED", runId: "run_ci_1", sourceCommit: FROZEN_COMMIT,
@@ -134,7 +136,7 @@ test("the remote verifier signs the run body with a timestamp and refuses a non-
 
 test("the local verifier runs the judge once per run id and hands the verdict to its listener", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
 	const seen: Verdict[] = [];
-	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(),
+	const verifier = createLocalVerifier({ source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(), cases: exampleCases,
 		clock: { now: () => instant("2026-10-06T12:00:00Z") }, onVerdict: async (_request, verdict) => { seen.push(verdict); } });
 	const head = spawnSync("git", ["-C", FIXTURE!, "rev-parse", "fix-honest^{commit}"], { encoding: "utf8" }).stdout.trim() as CommitSha;
 	const request: VerifierRunRequest = { runId: "run_ci_honest" as VerifierRunId, jobId: "job_ci_honest" as JobId, ordinal: 1,

@@ -14,7 +14,7 @@ import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import { boundedDetail, boundedVerdict } from "../core/src/verifier.ts";
-import type { DefinitionOfDone, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
+import type { DefinitionOfDone, HiddenCase, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { JudgeOutcome, JudgeSource } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { SubjectLauncher } from "./subject.ts";
@@ -45,6 +45,8 @@ export type VerifierServiceDeps = {
 	readonly callback: { readonly url: string; readonly secret: string };
 	readonly subject: SubjectLauncher;
 	readonly publisher: PublisherPort;
+	/** The deployment's hidden cases, loaded once at boot from the private file. */
+	readonly cases: readonly HiddenCase[];
 	/** Builds the read-only source for one run. Production fetches the commits from GitHub. */
 	readonly source: (request: VerifierRunRequest) => Promise<RunSource>;
 	readonly clock?: { now(): Instant };
@@ -175,7 +177,7 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		try {
 			built = await deps.source(record.request);
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
-				deadlineMs: deps.subjectDeadlineMs });
+				cases: deps.cases, deadlineMs: deps.subjectDeadlineMs });
 			// What the run view and the callback carry is bounded and redacted here, once, for every source.
 			record.outcome = outcome.kind === "VERDICT" ? { ...outcome, verdict: boundedVerdict(outcome.verdict) }
 				: { ...outcome, failure: { ...outcome.failure, detail: boundedDetail(outcome.failure.detail) } };

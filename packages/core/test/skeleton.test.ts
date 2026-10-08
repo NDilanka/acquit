@@ -14,6 +14,8 @@ import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId
 import { createPayPal, parseCapture, parseWebhookEnvelope, quote } from "../src/paypal.ts";
 import type { Bps, PayPal, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
 import { frozenDefinition } from "../src/seed-data.ts";
+import type { HiddenContract } from "../src/seed-data.ts";
+import { exampleContract } from "./hidden-fixture.ts";
 import { GitHubAppError } from "../src/github.ts";
 import type { GitHubFailureCode } from "../src/github.ts";
 import { SqliteStore } from "../src/store.ts";
@@ -30,6 +32,11 @@ const merchant = "sandbox-seller" as MerchantId;
 const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
 const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
 const requestKey = () => parseRequestKey(randomUUID());
+/**
+ * A deployment contract that is deliberately not the example's: OpenJob must store the contract it
+ * is configured with, never a set compiled into this package.
+ */
+const deploymentContract: HiddenContract = { ids: exampleContract.ids, digest: "c0".repeat(32) as Digest };
 function emptyAccount(operator = "devon-ops" as OperatorId): CreditAccount {
 	return { operator, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
 }
@@ -69,7 +76,7 @@ function fixture() {
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
 	/** What the route's re-read answers for one resource id. An id the test never registers is unknown to PayPal. */
 	const reads = new Map<string, ResourceRead>();
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", clock: { now: () => currentNow }, verifier: { start: unimplemented, parseCallback: unimplemented },
+	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: deploymentContract, clock: { now: () => currentNow }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal: {
 			dispatch: async call => {
 				dispatches++;
@@ -104,7 +111,7 @@ test("createAcquit uses its injected Clock to expire checkout after three hours"
 	const databaseUrl = join(root, "clock.db");
 	const f = fixture();
 	let currentNow = now;
-	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", clock: { now: () => currentNow },
+	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", hiddenContract: deploymentContract, clock: { now: () => currentNow },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243",
 			clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -172,7 +179,7 @@ test("sandbox card funding passes through the real order and CaptureCompleted ed
 		reads++;
 		return Response.json(wire);
 	};
-	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, paypal: {
+	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", hiddenContract: deploymentContract, clock: { now: () => now }, paypal: {
 		apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5253", clientId: "test", secret: "test",
 		webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => "card",
 	}, verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -227,7 +234,7 @@ test("credits grant 30, spend 10 once, then refuse insufficient funds", () => {
 });
 test("AcceptBid emits CREATE_ORDER naming the chosen payee and no ledger", () => {
 	const row: JobRow = { id: parseJobId("job_test"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
-		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: frozenDefinition(), terms: TERMS },
+		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: frozenDefinition("maya-client/invoice-app", deploymentContract), terms: TERMS },
 		bids: [{ id: parseBidId("bid_test"), operator: "devon-ops" as OperatorId, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
 			agent: "ts-bugfixer" as AgentId, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
 			respondBy: instant("2026-10-09T12:00:00Z"), status: "PENDING" }],
@@ -455,7 +462,7 @@ function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
 	return { id: parseJobId("job_submit"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
-		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition(), terms: TERMS },
+		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition("maya-client/invoice-app", deploymentContract), terms: TERMS },
 		bids: [{ id: lockedPayee.bidId, operator: lockedPayee.operator, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
 			agent: lockedPayee.agent, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
 			respondBy: instant("2026-10-09T12:00:00Z"), status: "ACCEPTED" }],
@@ -669,7 +676,7 @@ test("a stored contract without a frozen definition of done parses to null and p
 		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(frozen.id, frozen.version, JSON.stringify(stored), later);
 		const row = await store.readJob(frozen.id);
 		if (!row) throw new Error("Stored job missing");
-		assert.deepEqual(storedDefinitionOfDone(frozen), frozenDefinition());
+		assert.deepEqual(storedDefinitionOfDone(frozen), frozenDefinition("maya-client/invoice-app", deploymentContract));
 		assert.equal(storedDefinitionOfDone(row), null);
 		assert.equal(row.contract.definitionOfDone, null);
 		const view = projectJob(row, devon, new Map());
@@ -759,7 +766,12 @@ test("the outbox starts the run it reserved and provisions the work repo by requ
 	try {
 		const startKey = enqueue(reserved.effects[0]);
 		assert.equal(await runOutboxOnce(ports, startKey), "WORKED");
-		assert.deepEqual(starts, [{ runId: "run_submit_1", jobId: held.id, ordinal: 1, sourceCommit, definitionOfDone: frozenDefinition() }]);
+		assert.deepEqual(starts, [{ runId: "run_submit_1", jobId: held.id, ordinal: 1, sourceCommit, definitionOfDone: frozenDefinition("maya-client/invoice-app", deploymentContract) }]);
+		// The stored contract carries the deployment's digest and ids, never a set compiled into core.
+		const stored = starts[0].definitionOfDone;
+		assert.equal(stored.hiddenManifest, deploymentContract.digest);
+		assert.deepEqual(stored.hiddenTests, deploymentContract.ids);
+		assert.notEqual(stored.hiddenManifest, exampleContract.digest);
 		assert.equal(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(startKey)!.state)).kind, "CONFIRMED");
 		const repoKey = enqueue({ kind: "CREATE_WORK_REPO", jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" as CommitSha });
 		assert.equal(await runOutboxOnce(ports, repoKey), "WORKED");

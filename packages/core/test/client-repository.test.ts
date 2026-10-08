@@ -16,6 +16,7 @@ import type { JobProjection } from "../src/job.ts";
 import { usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { clientRepositoryEnv } from "../../verifier/config.ts";
+import { exampleContract } from "./hidden-fixture.ts";
 
 const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
 const demo = "maya-client/invoice-app";
@@ -41,7 +42,7 @@ test("a factory with no client repository named opens the demo one, never nothin
 	// A caller that omits the field must still get the demo repository the old code froze; an
 	// undefined repository would deny every OpenJob with NOT_FOUND.
 	const root = await mkdtemp(join(tmpdir(), "acquit-client-default-"));
-	const service = createAcquit({ databaseUrl: join(root, "acquit.db"),
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), hiddenContract: exampleContract,
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -55,7 +56,7 @@ test("a factory with no client repository named opens the demo one, never nothin
 
 test("OpenJob freezes the deployment's repository and refuses any other", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-client-repo-"));
-	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), clientRepository: live,
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), clientRepository: live, hiddenContract: exampleContract,
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });

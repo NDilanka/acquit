@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,6 +20,8 @@ import { dockerArgs } from "../../verifier/subject.ts";
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
+/** The K1 live-proof deployment file, written 0600 and gitignored. Its expected values are never printed. */
+const PRIVATE_CASES_PATH = fileURLToPath(new URL("../../../data/private/hidden-cases.json", import.meta.url));
 const six = () => Array.from({ length: 6 }, (_, index) => sampleCase(index + 1));
 const manifest = (cases: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1, cases, ...extra });
 const invalid = (text: string, what: string) => {
@@ -103,7 +105,7 @@ test("the environment names a file, and that file alone decides the contract", (
 });
 
 test("frozenDefinition stores the contract it is handed", () => {
-	const contract: HiddenContract = { ids: ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"] as readonly TestId[],
+	const contract: HiddenContract = { ids: ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"].map(id => id as TestId),
 		digest: "ab".repeat(32) as Digest };
 	const done = seedData.frozenDefinition("owner/repo", contract);
 	assert.equal(done.hiddenManifest, contract.digest);
@@ -130,4 +132,24 @@ test("the verifier service refuses to start without the deployment's cases", () 
 	assert.equal(child.status, 1);
 	assert.match(child.stderr, /VERIFIER_CONFIG_MISSING/);
 	assert.match(child.stderr, new RegExp(HIDDEN_CASES_ENV));
+});
+
+// The lever walks every tracked file and prints counts only. On the committed example it must find
+// the values, which is what proves the check can see them; on a deployment's private file it must
+// find none. The private file is gitignored, so its absence is a skip, never a pass.
+const lever = (manifest: string) => spawnSync(process.execPath, [fileURLToPath(new URL("../../../scripts/check-hidden-private.mjs", import.meta.url)), manifest],
+	{ encoding: "utf8", timeout: 120_000 });
+
+test("the check script finds the public example in the repository", () => {
+	const result = lever(EXAMPLE_HIDDEN_CASES_PATH);
+	assert.equal(result.status, 1, result.stderr);
+	assert.match(result.stdout, /cases=6 files=\d+ total=[1-9]\d*/);
+});
+
+test("the check script finds nothing from a deployment's private file", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this checkout." }, () => {
+	const result = lever(PRIVATE_CASES_PATH);
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
+	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH)).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
 });

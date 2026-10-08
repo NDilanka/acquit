@@ -8,8 +8,9 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
-import { githubAppEnv, serviceConfig } from "./config.ts";
+import { githubAppEnv, serviceConfig, VerifierConfigError } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
+import { loadHiddenCases } from "./hidden.ts";
 import { createVerifierService, BODY_LIMIT_BYTES } from "./service.ts";
 import type { VerifierService } from "./service.ts";
 import { assertSubjectAllowed, subjectFor, verifierSubjectEnv } from "./subject.ts";
@@ -17,6 +18,7 @@ import { assertSubjectAllowed, subjectFor, verifierSubjectEnv } from "./subject.
 /** The production wiring: the Docker subject (or the child one under ACQUIT_DEV), the real App client, and a GitHub source. */
 export function createProductionService(): { readonly service: VerifierService; readonly port: number; readonly subject: string } {
 	const config = serviceConfig();
+	const cases = loadHiddenCases();
 	const selection = verifierSubjectEnv();
 	assertSubjectAllowed(selection);
 	const github = githubAppEnv();
@@ -24,7 +26,7 @@ export function createProductionService(): { readonly service: VerifierService; 
 	const app = createGitHubApp(github);
 	return { port: config.port, subject: selection.subject,
 		service: createVerifierService({ runSecret: config.runSecret, callback: { url: config.callbackUrl, secret: config.callbackSecret },
-			subject: subjectFor(selection), publisher: app,
+			subject: subjectFor(selection), publisher: app, cases,
 			source: createRunSource({ organization: github.organization ?? "", tokenFor: owner => app.installationToken(owner) }),
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };
 }
@@ -68,7 +70,14 @@ function tooLarge(request: IncomingMessage, response: ServerResponse): void {
 }
 
 async function main(): Promise<void> {
-	const { service, port, subject } = createProductionService();
+	let built: { readonly service: VerifierService; readonly port: number; readonly subject: string };
+	try { built = createProductionService(); }
+	catch (error) {
+		// A configuration refusal names its code and the environment variable, never a value, and exits before the port is bound.
+		if (error instanceof VerifierConfigError) { console.error(`Acquit verifier: ${error.code}: ${error.message}`); process.exit(1); }
+		throw error;
+	}
+	const { service, port, subject } = built;
 	const missing = missingGitHubNames(githubAppEnv());
 	const server = createServer(createHttpShell(service, port));
 	let stopping = false;

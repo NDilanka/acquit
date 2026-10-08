@@ -19,8 +19,9 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createFakeGitHubApp } from "../../packages/core/src/github.ts";
 import { instant } from "../../packages/core/src/ids.ts";
-import { frozenDefinition } from "../../packages/core/src/seed-data.ts";
-import { gitSource, hiddenManifest, runJudge } from "../../packages/verifier/judge.ts";
+import { frozenDefinition, DEMO_CLIENT_REPOSITORY } from "../../packages/core/src/seed-data.ts";
+import { gitSource, runJudge } from "../../packages/verifier/judge.ts";
+import { EXAMPLE_HIDDEN_CASES_PATH, hiddenContractOf, loadHiddenCasesFromFile } from "../../packages/verifier/hidden.ts";
 import { childProcessSubject, dockerReachable, dockerSubject } from "../../packages/verifier/subject.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -56,8 +57,10 @@ if (values.subject === "docker" && !dockerReachable()) {
 if (values.subject === "child" && !values.dev) {
 	await blocked("CHILD_SUBJECT_NEEDS_DEV", "The child-process subject is the unit-test path. Pass --dev to acknowledge that.");
 }
-const definition = frozenDefinition();
-const manifest = hiddenManifest();
+// The probe is a development run: it judges with the committed example. A deployment names its own
+// private file in ACQUIT_HIDDEN_CASES, and that file is never in the repository.
+const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH);
+const definition = frozenDefinition(DEMO_CLIENT_REPOSITORY, hiddenContractOf(cases));
 const head = branch => spawnSync("git", ["-C", fixture, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim();
 assert.equal(spawnSync("git", ["-C", fixture, "cat-file", "-e", `${definition.frozenAt}^{commit}`]).status, 0,
 	`The fixture does not carry the contract's frozen commit ${definition.frozenAt}.`);
@@ -68,7 +71,7 @@ const samples = { "fix-honest": [], "tamper-test": [] };
 async function one(branch, warm) {
 	const started = performance.now();
 	const outcome = await runJudge({ runId: `run_perf_${branch}_${samples[branch].length + 1}`, jobId: "job_perf", ordinal: 1,
-		sourceCommit: head(branch), definitionOfDone: definition }, { source, subject, publisher: createFakeGitHubApp(),
+		sourceCommit: head(branch), definitionOfDone: definition }, { source, subject, publisher: createFakeGitHubApp(), cases,
 		clock: { now: () => instant(new Date().toISOString()) } });
 	const wallMs = performance.now() - started;
 	assert.equal(outcome.kind, "VERDICT", `${branch} produced no verdict`);
