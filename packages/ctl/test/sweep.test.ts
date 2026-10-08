@@ -68,8 +68,8 @@ test("sweep reports an expired visitor on a dry run, then removes its repository
 		assert.deepEqual(report.repositories, [{ repository: "acquit-forks/demo-old", outcome: "DELETED" }]);
 		assert.deepEqual(report.kept, []);
 		const after = new SqliteStore(path);
-		assert.equal(readVisitor(after.db, expired.id), null);
-		assert.equal(readVisitor(after.db, staying.id)?.id, staying.id);
+		assert.equal(readVisitor(after.db, expired.id)?.state, "SWEPT");
+		assert.equal(readVisitor(after.db, staying.id)?.state, "ACTIVE");
 		after.close();
 		// Idempotent: a second sweep has nothing left to do.
 		assert.deepEqual(await sweep({}, ctx), { databasePath: path, swept: [], repositories: [], kept: [] });

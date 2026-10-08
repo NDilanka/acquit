@@ -27,7 +27,7 @@ const live = instant(new Date().toISOString());
 const long = instant(new Date(Date.now() - 3 * 86_400_000).toISOString());
 const now = instant(new Date().toISOString());
 
-test("a sweep deletes an expired visitor's repository, forgets its rows, and leaves a live visitor alone", async () => {
+test("a sweep deletes an expired visitor's repository, marks its row SWEPT, and leaves a live visitor alone", async () => {
 	const store = new SqliteStore(":memory:");
 	const app = createFakeGitHubApp();
 	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old", merchant, now: long });
@@ -36,10 +36,13 @@ test("a sweep deletes an expired visitor's repository, forgets its rows, and lea
 	await app.createClientRepo({ repository: source, name: "demo-live" });
 	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
 	assert.deepEqual(report, { swept: [expired.id], repositories: [{ repository: "acquit-forks/demo-old", outcome: "DELETED" }], kept: [] });
-	assert.equal(readVisitor(store.db, expired.id), null);
-	assert.equal(principalOf(store.db, expired.clientHandle), null);
-	assert.equal(principalOf(store.db, expired.operatorHandle), null);
+	// The row stays as the record of a visitor that lived: it is marked, not deleted, so the jobs it opened
+	// still resolve their client and operator.
+	assert.equal(readVisitor(store.db, expired.id)?.state, "SWEPT");
+	assert.equal(principalOf(store.db, expired.clientHandle)?.visitorId, expired.id);
+	assert.equal(principalOf(store.db, expired.operatorHandle)?.visitorId, expired.id);
 	assert.equal(readVisitor(store.db, staying.id)?.id, staying.id);
+	assert.equal(readVisitor(store.db, staying.id)?.state, "ACTIVE");
 	assert.equal(principalOf(store.db, staying.clientHandle)?.visitorId, staying.id);
 	assert.equal(app.clientRepos.has("demo-old"), false);
 	assert.equal(app.clientRepos.has("demo-live"), true);
@@ -48,13 +51,13 @@ test("a sweep deletes an expired visitor's repository, forgets its rows, and lea
 	store.close();
 });
 
-test("a repository that is already gone is not a failure, and the visitor is still forgotten", async () => {
+test("a repository that is already gone is not a failure, and the visitor is still marked", async () => {
 	const store = new SqliteStore(":memory:");
 	const app = createFakeGitHubApp();
 	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-gone", merchant, now: long });
 	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
 	assert.deepEqual(report, { swept: [expired.id], repositories: [{ repository: "acquit-forks/demo-gone", outcome: "ABSENT" }], kept: [] });
-	assert.equal(readVisitor(store.db, expired.id), null);
+	assert.equal(readVisitor(store.db, expired.id)?.state, "SWEPT");
 	store.close();
 });
 

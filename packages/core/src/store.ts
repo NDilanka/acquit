@@ -45,7 +45,8 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, handle TEXT NOT NULL, expires_at TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS visitors (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
-			ip_key TEXT NOT NULL, client_handle TEXT NOT NULL, operator_handle TEXT NOT NULL, repository TEXT);
+			ip_key TEXT NOT NULL, client_handle TEXT NOT NULL, operator_handle TEXT NOT NULL, repository TEXT,
+			state TEXT NOT NULL DEFAULT 'ACTIVE');
 		CREATE INDEX IF NOT EXISTS visitors_expiry ON visitors(expires_at);
 		CREATE TABLE IF NOT EXISTS principals (handle TEXT PRIMARY KEY, role TEXT NOT NULL, visitor_id TEXT);
 		-- Judge mode's spends, append-only. One row per act, written in the transaction that commits it,
@@ -54,6 +55,11 @@ export function openDatabase(path: string): DatabaseSync {
 			cents INTEGER NOT NULL, at_wall TEXT NOT NULL, PRIMARY KEY(kind, ref));
 		CREATE INDEX IF NOT EXISTS cap_reservations_window ON cap_reservations(kind, scope, at_wall);
 	`);
+	// A database that already holds visitor rows keeps them: CREATE TABLE IF NOT EXISTS leaves an old
+	// shape alone, so a column added after the fact is added here. A row from before this column is a
+	// visitor that was provisioned, so ACTIVE is what it means.
+	const visitorColumns = new Set(db.prepare("SELECT name FROM pragma_table_info('visitors')").all().map(row => String(row.name)));
+	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
 	// The seeded handles are principals with no visitor: the rows every session resolves through, so
 	// the SEEDED_USERS constant is a seed, never an authentication source.
 	for (const user of SEEDED_USERS) db.prepare("INSERT OR IGNORE INTO principals VALUES (?, ?, NULL)").run(user.handle, user.role);
