@@ -83,6 +83,26 @@ test("without an App nothing is forgotten, because the repository would be left 
 	store.close();
 });
 
+test("the sweep refuses a name whose repository is no longer the visitor's fork", async () => {
+	const store = new SqliteStore(":memory:");
+	const app = createFakeGitHubApp();
+	const forked = await app.createClientRepo({ repository: source, name: "demo-abc123" });
+	// The name holds a repository of the same source that is not this visitor's fork: only the id tells.
+	const replaced = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: forked.repository,
+		repositoryId: (forked.id ?? 0) + 1, merchant, now: long });
+	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
+	assert.deepEqual(report.swept, []);
+	assert.deepEqual(report.kept, [{ id: replaced.id, repository: forked.repository, reason: "GITHUB_FORK_MISMATCH" }]);
+	assert.equal(app.clientRepos.has("demo-abc123"), true, "nothing is deleted");
+	assert.equal(readVisitor(store.db, replaced.id)?.state, "ACTIVE");
+	// The visitor whose recorded id is the fork's own is swept.
+	const mine = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: forked.repository,
+		repositoryId: forked.id, merchant, now: long });
+	assert.deepEqual((await sweepExpiredVisitors({ db: store.db, app, source, now })).swept, [mine.id]);
+	assert.equal(app.clientRepos.has("demo-abc123"), false);
+	store.close();
+});
+
 /** How many rows one table holds for one key. The sweep's whole claim is which rows it leaves. */
 const rowsOf = (store: SqliteStore, table: string, where: string, key: string): number =>
 	Number((store.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get(key) as { readonly n: number }).n);
