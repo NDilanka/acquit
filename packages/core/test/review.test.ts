@@ -24,8 +24,8 @@ import type { OperatorRow } from "../src/operator.ts";
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const merchant = "sandbox-seller" as MerchantId;
-const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
-const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
+const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
+const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
 const arbiter: Actor = { role: "ARBITER", staffId: "staff-arbiter" as StaffId };
 const sourceCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const judgedCommit = "5cccb66515313caed72e4af329a62fc011139426" as CommitSha;
@@ -47,7 +47,7 @@ function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
 		sellerNet: usd("360.00"), capturedAt: now };
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
-	return { id: parseJobId("job_review"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
+	return { id: parseJobId("job_review"), version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition("maya-client/invoice-app", exampleContract), terms: TERMS },
 		bids: [{ id: lockedPayee.bidId, operator: lockedPayee.operator, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
 			agent: lockedPayee.agent, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
@@ -106,7 +106,7 @@ test("a dispute naming a moved head is ARTIFACT_CHANGED, a closed window is REVI
 	assert.equal(applyJobCommand(row, { type: "Dispute", jobId: row.id, mergeCommit: judgedCommit, reason: disputeReason }, userFacts(devon)),
 		"NOT_OWNER");
 	assert.equal(applyJobCommand(row, { type: "Dispute", jobId: row.id, mergeCommit: judgedCommit, reason: disputeReason },
-		userFacts({ role: "CLIENT", clientId: "other-client" as ClientId })), "NOT_OWNER");
+		userFacts({ role: "CLIENT", clientId: "other-client" as ClientId, tenant: null })), "NOT_OWNER");
 });
 
 test("the arbiter upholding a dispute releases with ARBITER_UPHELD and the paid row keeps the authority", () => {

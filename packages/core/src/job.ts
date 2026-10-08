@@ -3,6 +3,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Actor, JobView } from "./acquit.ts";
+import type { Reservation } from "./caps.ts";
 import { reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { addHours, hours, instant, parseBidId, parseJobId, parseReceiptId } from "./ids.ts";
@@ -20,9 +21,11 @@ import type {
 	OrderId,
 	ReceiptId,
 	Version,
+	VisitorId,
 } from "./ids.ts";
 import { reduceLedger, refundTreasury, releaseTreasury } from "./ledger.ts";
 import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
+import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
@@ -264,6 +267,11 @@ export type JobRow<S extends JobState = JobState> = {
 	readonly id: JobId;
 	readonly version: Version;
 	readonly client: ClientId;
+	/**
+	 * The visitor that opened this job, or null for the deployment's own seeded world. Frozen at
+	 * OpenJob from the actor's tenant, and the only field core's visibility and command gates read.
+	 */
+	readonly tenant: VisitorId | null;
 	readonly title: string;
 	readonly contract: AcceptanceContract;
 	readonly openedAt: Instant;
@@ -273,6 +281,17 @@ export type JobRow<S extends JobState = JobState> = {
 	 * any arbiter decision and on rows stored before F4. The route bounds its length; the domain keeps it.
 	 */
 	readonly arbiterNote?: string;
+	/**
+	 * The funding source the job's client chose, read at the store boundary from beside the row. Absent
+	 * on a raw row and null on a job nobody chose for, where the deployment's default applies.
+	 */
+	readonly funding?: JobFundingMode | null;
+	/**
+	 * The total this job's own clock has been advanced by, in milliseconds. Absent on rows stored before
+	 * the lever existed, which is the same as zero; `shiftJobClock` adds to it in the same write that
+	 * moves the row's instants.
+	 */
+	readonly clockShiftMs?: number;
 	readonly state: S;
 };
 
@@ -330,12 +349,14 @@ export type Facts = { readonly actor: TrustedActor; readonly now: Instant; reado
 /** A plan's own word for an observation it did not take. Only a settlement refusal sets it. */
 export type Refusal = "SETTLEMENT_MISMATCH";
 
-/** effects.ts commits the row, credit accounts, outbox rows, and the request record atomically. */
+/** effects.ts commits the row, credit accounts, outbox rows, the request record, and the caps together. */
 export type Plan<Next> = {
 	readonly next: Next;
 	readonly credits: readonly CreditAccount[];
 	readonly effects: readonly JobEffect[];
 	readonly refused?: Refusal;
+	/** The caps this write spends, checked and written in the committing transaction. See caps.ts. */
+	readonly reservations?: readonly Reservation[];
 };
 
 export type Edge<Before, Payload, After, By extends Role> = {
@@ -439,10 +460,16 @@ function transitionTable(): {
 			if (facts.actor.role !== "CLIENT" || facts.loaded.kind !== "OPEN_JOB") return "NOT_OWNER";
 			if (command.deliveryEndsAt <= facts.now) return "DEADLINE_PASSED";
 			if (command.deliveryEndsAt > addHours(facts.now, hours(14 * 24))) return "DEADLINE_TOO_FAR";
-			return { next: { id: parseJobId(`job_${randomUUID()}`), version: 0 as Version,
-				client: facts.actor.clientId, title: facts.loaded.title, contract: facts.loaded.contract,
+			const id = parseJobId(`job_${randomUUID()}`);
+			const tenant = facts.actor.tenant;
+			// Judge mode's job caps are reservations: they are checked and written inside the transaction
+			// that commits this job, so two opens at once cannot both pass the last slot. A client with no
+			// tenant, the deployment's own, opens jobs outside the caps.
+			return { next: { id, version: 0 as Version,
+				client: facts.actor.clientId, tenant, title: facts.loaded.title, contract: facts.loaded.contract,
 				openedAt: facts.now, bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } },
-				credits: [], effects: [] };
+				credits: [], effects: [],
+				reservations: tenant === null ? [] : [{ kind: "JOB", scope: tenant, ref: id, cents: command.budget, at: facts.now }] };
 		} },
 		PlaceBid: { by: "OPERATOR", apply: (row, command, facts) => {
 			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
@@ -552,11 +579,16 @@ function transitionTable(): {
 			if (attempts.history.length >= TERMS.maxAttempts) return "ATTEMPTS_EXHAUSTED";
 			const ordinal = (attempts.history.length + 1) as Ordinal;
 			const run = attempts.runsStarted + 1;
-			const pending: PendingAttempt = { ordinal, run, runId: verifierRunId(row.id, run), sourceCommit: command.sourceCommit,
+			const runId = verifierRunId(row.id, run);
+			const pending: PendingAttempt = { ordinal, run, runId, sourceCommit: command.sourceCommit,
 				submittedAt: facts.now, runEndsAt: instant(new Date(Date.parse(facts.now) + VERIFIER_RUN_MINUTES * 60_000).toISOString()) };
+			// The run this Submit starts is a reservation too, spent here and never released: a job that later
+			// settles, refunds, or moves its clock cannot hand the deployment's free tier a run back. Only a
+			// visitor's run is capped: the deployment's own client has no visitor allowance to protect.
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, attempts: { phase: "VERIFYING", history: attempts.history, runsStarted: run, pending, failure: attempts.failure } } },
-				credits: [], effects: [{ kind: "START_VERIFIER", jobId: row.id, attempt: pending }] };
+				credits: [], effects: [{ kind: "START_VERIFIER", jobId: row.id, attempt: pending }],
+				reservations: row.tenant === null ? [] : [{ kind: "RUN", scope: row.tenant, ref: runId, cents: 0 as UsdCents, at: facts.now }] };
 		} },
 		VerifierFinished: { by: "SYSTEM", apply: (row, command, facts) => {
 			const attempts = row.state.attempts;
@@ -683,7 +715,7 @@ function transitionTable(): {
 				: row.state.status === "VERIFIED" || row.state.status === "REFUNDED" ? row.state.history : [];
 			// The arbiter's note survives the settlement when there was one; a deadline refund has none and
 			// the key stays absent, so a row read back from the store deep-equals the row that produced it.
-			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, title: row.title,
+			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, tenant: row.tenant, title: row.title,
 				contract: row.contract, openedAt: row.openedAt, bids: row.bids,
 				...(row.arbiterNote === undefined ? {} : { arbiterNote: row.arbiterNote }),
 				state: { status: "REFUNDED", payee: escrow.payee, book, reason: intent.reason, refund,
@@ -815,9 +847,17 @@ function settlementMismatch<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>>
 	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }], refused: "SETTLEMENT_MISMATCH" };
 }
 
+/**
+ * Whether this viewer may drive a job's own controls (its funding source and its clock): its client,
+ * and nobody else, the visitor's own operator included. The controls are not table edges, so this is
+ * the one rule they share.
+ */
+export function mayControlJob(row: JobRow, viewer: Actor): boolean {
+	return viewer.role === "CLIENT" && viewer.clientId === row.client && (viewer.tenant ?? null) === (row.tenant ?? null);
+}
+
 /** The escrow this row still holds, in every state that can hold one. */
-function heldEscrowOf(row: JobRow): HeldEscrow | null {
-	const state = row.state;
+function heldEscrowOf(row: JobRow): HeldEscrow | null {	const state = row.state;
 	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return state.escrow;
 	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") return state.phase.checkout.escrow;
 	return null;
@@ -906,6 +946,10 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	if (facts.actor.role !== table[command.type].by) return "NOT_OWNER";
 	if (command.type === "OpenJob") return row === null ? table.OpenJob.apply(null, command, facts) : "WRONG_STATE";
 	if (!row || row.id !== command.jobId) return "NOT_FOUND";
+	// The tenant gate comes before any edge: a command from another visitor's world is refused whole,
+	// whatever the command is and whichever phase the row holds. The arbiter and the system paths
+	// (PayPal, verifier, timer, outbox) are the only readers and writers outside a tenant.
+	if (facts.actor.role !== "SYSTEM" && facts.actor.role !== "ARBITER" && (facts.actor.tenant ?? null) !== (row.tenant ?? null)) return "NOT_OWNER";
 	if (facts.actor.role === "CLIENT" && row.client !== facts.actor.clientId) return "NOT_OWNER";
 	if (command.type === "CaptureCompleted" && row.state.status !== "OPEN") return unchanged(row);
 	if (command.type === "TimerDue") return table.TimerDue.apply(row, command, facts);
@@ -1134,6 +1178,10 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
 		// The owning client is named only to its own session. Everyone else reads null.
 		client: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.client : null,
+		// The funding source is that client's own choice, so it is served to the same viewer alone.
+		funding: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.funding ?? null : null,
+		// The clock this client advanced is that client's own lever too, so it reads it and nobody else does.
+		clockShiftMs: viewer.role === "CLIENT" && viewer.clientId === row.client ? row.clockShiftMs ?? 0 : null,
 		// The page gates Approve on this answer, not on the viewer's role. The edge is still the guard.
 		viewerCanApprove: viewer.role === "CLIENT" && viewer.clientId === row.client &&
 			state.status === "VERIFIED" && state.review.phase === "AWAITING_CLIENT",

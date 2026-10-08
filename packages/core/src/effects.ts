@@ -4,10 +4,11 @@
 
 import { createHash } from "node:crypto";
 import type { CommandOutcome, Actor, PublicResult, UserCommand } from "./acquit.ts";
+import type { CapRefusal, Reservation } from "./caps.ts";
 import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
-import type { AgentId, Branded, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
+import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
@@ -111,7 +112,21 @@ export type AtomicCommit = {
 	readonly settlement: { readonly key: OperationKey; readonly state: OutboxState } | null;
 	readonly request: RecordedRequest | null;
 	readonly delivery: string | null;
+	/**
+	 * The caps this write spends, checked and written inside its own BEGIN IMMEDIATE. A write that would
+	 * pass a limit is refused whole with the closed code, before anything else is written. A write with
+	 * no cap to spend omits the list.
+	 */
+	readonly reservations?: readonly Reservation[];
 };
+
+/** What one commit did. CAPPED names the allowance this write would have passed, and writes nothing. */
+export type CommitResult =
+	| { readonly kind: "COMMITTED" }
+	| { readonly kind: "VERSION_CONFLICT" }
+	| { readonly kind: "REQUEST_REPLAY" }
+	| { readonly kind: "DELIVERY_REPLAY" }
+	| { readonly kind: "CAPPED"; readonly reason: CapRefusal };
 
 /** One SQLite database. Private to this package. */
 export interface Store {
@@ -129,7 +144,7 @@ export interface Store {
 	jobForResource(resource: string): Promise<JobId | null>;
 	recordWebhookEvent(event: WebhookEventRow): Promise<void>;
 	dueJobs(now: Instant): Promise<readonly { readonly jobId: JobId; readonly wakeAt: Instant }[]>;
-	commit(change: AtomicCommit): Promise<"COMMITTED" | "VERSION_CONFLICT" | "REQUEST_REPLAY" | "DELIVERY_REPLAY">;
+	commit(change: AtomicCommit): Promise<CommitResult>;
 	leaseEffect(now: Instant, until: Instant, key?: OperationKey): Promise<OutboxRow | null>;
 	recordEffect(key: OperationKey, state: OutboxState): Promise<void>;
 }
@@ -170,9 +185,13 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
 		if (command.type === "OpenJob") {
-			if (command.repository !== ports.clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, contract: {
-				definitionOfDone: frozenDefinition(ports.clientRepository, ports.hiddenContract), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs on
+			// the deployment's own. Either way the contract freezes exactly the repository this command named.
+			const clientRepository = actor.role === "CLIENT" ? actor.repository ?? ports.clientRepository : ports.clientRepository;
+			if (command.repository !== clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
+			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title,
+				contract: { definitionOfDone: frozenDefinition(clientRepository, ports.hiddenContract), budget: command.budget,
+					deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
 			const operator = await ports.store.readOperator(actor.operatorId);
@@ -182,7 +201,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		} else if (command.type === "AcceptBid") {
 			const bid = row?.bids.find(b => b.id === command.bidId);
 			if (!bid) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel), fundingMode: ports.fundingMode?.() ?? "checkout" };
+			// The job's own choice wins; a job nobody chose for funds with the deployment's mode.
+			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel),
+				fundingMode: row?.funding ?? ports.fundingMode?.() ?? "checkout" };
 		} else if (command.type === "CancelJob") {
 			const accounts = new Map<OperatorId, CreditAccount>();
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));
@@ -203,9 +224,12 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
 			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)), settlement: null, delivery: null,
+			reservations: plan.reservations ?? [],
 			request: { actor: actorKey, key, payloadDigest, result },
 		});
-		if (committed !== "COMMITTED") continue;
+		// The caps refused this act whole: the transaction wrote nothing, and the closed code is the answer.
+		if (committed.kind === "CAPPED") return { kind: "DENIED", reason: committed.reason };
+		if (committed.kind !== "COMMITTED") continue;
 		if (command.type === "OpenJob") await placeHouseBid(ports, plan.next);
 		// Drain only this command's own effects, not somebody else's checkout.
 		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
@@ -261,9 +285,10 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)),
 			settlement: settlement === null ? null : { key: settlement.key, state: settlementOf(settlement, plan.refused ?? null, now) },
+			reservations: plan.reservations ?? [],
 			request: null, delivery });
-		if (committed === "COMMITTED" || committed === "DELIVERY_REPLAY") {
-			return { outcome: committed, refused: committed === "COMMITTED" ? plan.refused ?? null : null };
+		if (committed.kind === "COMMITTED" || committed.kind === "DELIVERY_REPLAY") {
+			return { outcome: committed.kind, refused: committed.kind === "COMMITTED" ? plan.refused ?? null : null };
 		}
 	}
 	throw new Error("System command busy");
@@ -683,8 +708,8 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		const next = reduceCredits(account, { kind: "Grant", week: creditWeek(now), paidReceipts, at: now });
 		if (next === "INSUFFICIENT_CREDITS" || next === account) continue;
 		const result = await ports.store.commit({ job: null, operator: null, credits: [{ expectedVersion: account.version, account: next }],
-			outbox: [], settlement: null, request: null, delivery: null });
-		if (result === "COMMITTED") changed++;
+			outbox: [], settlement: null, request: null, delivery: null, reservations: [] });
+		if (result.kind === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {
 		if (row.state.status === "OPEN" && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
@@ -713,12 +738,18 @@ export function digest(value: unknown): Digest { return createHash("sha256").upd
 function outboxRow(effect: Effect, now: Instant): OutboxRow {
 	return { key: operationKey(effect), effect, payloadDigest: digest(effect), state: { kind: "READY", runAt: now } };
 }
+/** The House's missing rows are a fact of the deployment, not of the tick: this line is said once per process. */
+let houseRowsMissing = false;
 async function placeHouseBid(ports: Ports, job: JobRow): Promise<void> {
 	const hex = digest(`house-bid:${job.id}`);
 	const key = parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
-	await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId }, key,
+	const outcome = await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: job.tenant ?? null }, key,
 		{ type: "PlaceBid", jobId: job.id, price: job.contract.budget, eta: hours(24),
 			agent: "house-ts-fixer" as AgentId, pitch: "House quality bar: focused TypeScript fixes against the frozen suite." });
+	if (outcome.kind === "DENIED" && outcome.reason === "NOT_FOUND" && !houseRowsMissing) {
+		houseRowsMissing = true;
+		console.warn("Acquit: the House operator house-tsfix has no rows, so no House bid was placed. Seed the database to give the House its operator and agent. This is logged once per process.");
+	}
 }
 
 export async function confirmFunding(ports: Ports, actor: Actor, jobId: JobId): Promise<boolean> {

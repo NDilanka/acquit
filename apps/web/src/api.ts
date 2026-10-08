@@ -1,13 +1,17 @@
 import type {
   CommandResponse,
   CreditAccountView,
+  FundingMode,
+  JobResponse,
   JobView,
   OperatorView,
+  SessionResponse,
+  SessionUser,
+  SignedInResponse,
   UserCommand,
 } from "./api-types";
 
-export type Role = "CLIENT" | "OPERATOR";
-export type SessionUser = { handle: string; role: Role };
+export type { SessionUser };
 
 export type RepoIssue = {
   number: number;
@@ -18,12 +22,14 @@ export type Repo = { repository: string; issues: RepoIssue[] };
 export type AgentSummary = { id: string; name: string; runner: string };
 
 export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    readonly detail?: string,
-  ) {
+  readonly status: number;
+  readonly code: string;
+  readonly detail?: string;
+  constructor(status: number, code: string, detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -56,8 +62,10 @@ function isOutcome(data: unknown): boolean {
 }
 
 export const api = {
-  session: () => request<{ user: SessionUser | null }>("GET", "/api/session"),
-  signIn: (handle: string) => request<{ user: SessionUser; token: string }>("POST", "/api/session", { handle }),
+  session: () => request<SessionResponse>("GET", "/api/session"),
+  signIn: (handle: string) => request<SignedInResponse>("POST", "/api/session", { handle }),
+  startDemo: () => request<SignedInResponse>("POST", "/api/demo", {}),
+  switchDemo: () => request<SignedInResponse>("POST", "/api/demo/switch", {}),
   signOut: () => request<void>("DELETE", "/api/session"),
   users: () => request<{ users: SessionUser[] }>("GET", "/api/users"),
   repos: () => request<{ repos: Repo[] }>("GET", "/api/repos"),
@@ -66,7 +74,11 @@ export const api = {
       "GET",
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),
-  job: (id: string) => request<{ job: JobView }>("GET", `/api/jobs/${encodeURIComponent(id)}`),
+  job: (id: string) => request<JobResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
+  setFunding: (id: string, mode: FundingMode) =>
+    request<{ mode: FundingMode }>("POST", `/api/jobs/${encodeURIComponent(id)}/funding`, { mode }),
+  advanceJobClock: (id: string, advanceMs: number) =>
+    request<JobResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/clock`, { advanceMs }),
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   command: (key: string, command: UserCommand) => request<CommandResponse>("POST", "/api/commands", { key, command }),

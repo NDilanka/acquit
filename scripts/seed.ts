@@ -17,7 +17,9 @@ const store = new SqliteStore(settings.databaseUrl);
 const now = instant(new Date().toISOString());
 try {
 	store.db.exec("BEGIN IMMEDIATE");
-	for (const table of ["sessions", "deliveries", "resources", "outbox", "requests", "jobs", "agents", "credits", "operators"]) store.db.exec(`DELETE FROM ${table}`);
+	for (const table of ["sessions", "deliveries", "resources", "outbox", "requests", "job_funding", "jobs", "agents", "credits", "operators", "visitors", "cap_reservations"]) store.db.exec(`DELETE FROM ${table}`);
+	// The seeded principals are the two rows every fresh database holds. A visitor's principals go with it.
+	store.db.exec("DELETE FROM principals WHERE visitor_id IS NOT NULL");
 	for (const seed of [
 		{ handle: "devon-ops", kind: "INDEPENDENT" as const, merchant: devonMerchant, agent: "ts-bugfixer", receipts: 0 },
 		{ handle: "house-tsfix", kind: "HOUSE" as const, merchant: houseMerchant, agent: "house-ts-fixer", receipts: 41 },

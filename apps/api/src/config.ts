@@ -43,10 +43,15 @@ export const clientRepository = clientRepositoryEnv();
  * verifier holds them, and a deployment without the file refuses at boot with VERIFIER_CONFIG_MISSING.
  */
 export const hiddenContract: HiddenContract = hiddenContractOf(loadHiddenCases());
+/**
+ * The sandbox seller a judge-mode visitor's operator is paid through. Absent refuses POST /api/demo by
+ * name rather than minting an operator that cannot be paid.
+ */
+const demoMerchant = process.env.OPERATOR_DEVON_MERCHANT_ID?.trim() ?? "";
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
-	return { databaseUrl: databasePath, clientRepository, hiddenContract, paypal: {
+	return { databaseUrl: databasePath, clientRepository, hiddenContract, demo: demoMerchant ? { merchant: demoMerchant as MerchantId } : undefined, paypal: {
 		webOrigin,
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,

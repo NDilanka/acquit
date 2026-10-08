@@ -1,6 +1,7 @@
 declare const brand: unique symbol;
 export type Branded<T, Name extends string> = T & { readonly [brand]: Name };
 
+export type VisitorId = Branded<string, "VisitorId">;
 export type JobId = Branded<string, "JobId">;
 export type BidId = Branded<string, "BidId">;
 export type ClientId = Branded<string, "ClientId">;
@@ -25,6 +26,11 @@ export type CaptureId = Branded<string, "PayPalCaptureId">;
 export type PayoutItemId = Branded<string, "PayPalPayoutItemId">;
 export type PayoutBatchId = Branded<string, "PayPalPayoutBatchId">;
 export type RefundId = Branded<string, "PayPalRefundId">;
+
+export function parseVisitorId(raw: string): VisitorId {
+	if (!/^v_[0-9a-f]{12}$/.test(raw)) throw new Error("Invalid visitor id");
+	return raw as VisitorId;
+}
 
 export function parseJobId(raw: string): JobId {
 	if (!/^job_[A-Za-z0-9_-]{4,80}$/.test(raw)) throw new Error("Invalid job id");

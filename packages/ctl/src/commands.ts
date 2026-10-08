@@ -3,6 +3,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
+import { instant } from "../../core/src/ids.ts";
 import type { StoredBookRaw } from "../../core/src/job.ts";
 import { logBare } from "../../core/src/log.ts";
 import { alive, captured, childListener, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
@@ -111,6 +112,30 @@ export async function jobList(_parsed: Parsed, ctx: Context): Promise<Result> {
 	const { rows } = await readStoredJobs(ctx.databasePath);
 	return { jobs: rows.map(row => ({ id: row.id, status: row.state.status })) };
 }
+/**
+ * The expiry sweep. A visitor lives 24 hours and its repository must not outlive it, so this removes
+ * each expired visitor's own fork and then its rows, through the App the deployment already holds: no
+ * personal access token, and a repository this deployment did not fork is refused rather than deleted.
+ * A refusal keeps the visitor for the next run, so the sweep is safe to repeat as often as wanted.
+ */
+export async function sweep(parsed: Parsed, ctx: Context): Promise<Result> {
+	const run = await readState(ctx);
+	const path = run?.databasePath ?? ctx.databasePath;
+	const [store, { expiredVisitors }, { sweepExpiredVisitors }, { createGitHubApp }, { clientRepositoryEnv, githubAppEnv }] = await Promise.all([
+		import("../../core/src/store.ts"), import("../../core/src/visitors.ts"), import("../../core/src/sweep.ts"),
+		import("../../core/src/github.ts"), import("../../verifier/config.ts")]);
+	const sqlite = new store.SqliteStore(path);
+	const now = instant(new Date().toISOString());
+	try {
+		if (parsed["dry-run"]) {
+			const expired = expiredVisitors(sqlite.db, now);
+			return { databasePath: path, expired: expired.map(visitor => ({ id: visitor.id, repository: visitor.repository, expiresAt: visitor.expiresAt })),
+				hint: "A real sweep deletes each expired visitor's repository through the GitHub App, then its rows." };
+		}
+		const report = await sweepExpiredVisitors({ db: sqlite.db, app: createGitHubApp(githubAppEnv()), source: clientRepositoryEnv(), now });
+		return { databasePath: path, ...report };
+	} finally { sqlite.close(); }
+}
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);
 	return devPost(ctx, "fund-mode", { mode: parsed.mode });
@@ -168,7 +193,8 @@ function captureDelivery(capture: string, fresh: boolean): WebhookDelivery {
 	return { eventId, source: "built", envelope: JSON.stringify({ id: eventId, event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: capture } }) };
 }
 async function probes(api: number, web: number, verifier?: number) {
-	const [apiPort, webPort, apiReady, webReady, verifierReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/users`), reachable(`http://127.0.0.1:${web}/`),
+	// The session route answers 200 unauthenticated in both modes; the seeded user list is dev-only.
+	const [apiPort, webPort, apiReady, webReady, verifierReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/session`), reachable(`http://127.0.0.1:${web}/`),
 		verifier === undefined ? Promise.resolve(true) : reachable(`http://127.0.0.1:${verifier}/healthz`)]);
 	return { apiPort, webPort, apiReady, webReady, verifierReady };
 }
@@ -355,7 +381,7 @@ export async function seedDb(parsed: Parsed, ctx: Context): Promise<Result> {
 async function app(ctx: Context, webRequired = false): Promise<{ api: number; web: number }> {
 	const run = await readState(ctx);
 	const ports = { api: run?.api.port ?? ctx.apiPort, web: run?.web.port ?? ctx.webPort };
-	if (!(await reachable(`http://127.0.0.1:${ports.api}/api/users`)) || (webRequired && !(await reachable(`http://127.0.0.1:${ports.web}/`)))) {
+	if (!(await reachable(`http://127.0.0.1:${ports.api}/api/session`)) || (webRequired && !(await reachable(`http://127.0.0.1:${ports.web}/`)))) {
 		throw new CliError("APP_NOT_RUNNING", "The required Acquit app endpoints are not ready.", "Run npm run -s ctl -- start.");
 	}
 	return ports;

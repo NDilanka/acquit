@@ -1,23 +1,27 @@
+import type { CapRefusal } from "./caps.ts";
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
-import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
+import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
+import type { JobFundingMode } from "./funding.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
 import type { HiddenContract } from "./seed-data.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
-import { unconfiguredVerifier } from "./verifier.ts";
+import { bindVisitorRepository, failVisitor, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
+import type { VisitorRow } from "./visitors.ts";
+import { boundedDetail, unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
 
-export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
+export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, VisitorId } from "./ids.ts";
 export { hours, instant, parseBidId, parseJobId, parseRequestKey } from "./ids.ts";
 export type { UsdCents, LedgerLine } from "./ledger.ts";
 export { formatUsd, usd } from "./ledger.ts";
@@ -26,13 +30,18 @@ export type { JobStatus, Receipt } from "./job.ts";
 export { ISSUE, SEEDED_USERS } from "./seed-data.ts";
 
 export type Actor =
-	| { readonly role: "CLIENT"; readonly clientId: ClientId }
-	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId }
+	/**
+	 * Every principal carries the visitor it belongs to, or null for the deployment's own seeded world.
+	 * Core scopes every read, list, bid, and command to this: an actor with a tenant acts on that
+	 * tenant's jobs alone, and a tenant-less actor never reaches a visitor's job.
+	 */
+	| { readonly role: "CLIENT"; readonly clientId: ClientId; readonly tenant: VisitorId | null; readonly repository?: string }
+	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId; readonly tenant: VisitorId | null }
 	| { readonly role: "ARBITER"; readonly staffId: StaffId };
 
 export type UserCommand = UserJobCommand | OperatorCommand;
 
-export type Failure = DomainFailure | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";
+export type Failure = DomainFailure | CapRefusal | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";
 
 export type PublicResult =
 	| { readonly kind: "JOB"; readonly job: JobProjection }
@@ -53,7 +62,8 @@ export type Query =
 	| { readonly type: "Credits" };
 
 export type QueryResult =
-	| { readonly kind: "JOB"; readonly job: JobView }
+	/** A single job carries its full projection, so a reader of one job sees its frozen contract. */
+	| { readonly kind: "JOB"; readonly job: JobProjection }
 	| { readonly kind: "JOBS"; readonly jobs: readonly JobView[]; readonly nextCursor: string | null }
 	| { readonly kind: "RECEIPTS"; readonly receipts: readonly Receipt[]; readonly nextCursor: string | null }
 	| { readonly kind: "OPERATOR"; readonly operator: OperatorView }
@@ -85,6 +95,17 @@ export interface JobView {
 	readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
 	/** The client that owns the job, served to that client's own session and null to every other viewer. */
 	readonly client: ClientId | null;
+	/**
+	 * The funding source this job's accept will use, served to the owning client and null to every other
+	 * viewer. Null for that client too when nobody chose for the job: the deployment's default applies.
+	 */
+	readonly funding: JobFundingMode | null;
+	/**
+	 * How far this job's own clock has been advanced by its client, in milliseconds: the job's instants
+	 * were moved back by this much, so its own now is the deployment's now plus this. Served to the owning
+	 * client alone, and 0 there for a job nobody has advanced.
+	 */
+	readonly clockShiftMs: number | null;
 	readonly lockedTo: OperatorId | null;
 	/** The owning client's own gate: true exactly when this viewer is that client and the review is open. */
 	readonly viewerCanApprove: boolean;
@@ -161,6 +182,11 @@ export type AcquitConfig = {
 	readonly verifierPort?: VerifierPort;
 	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
 	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
+	/**
+	 * Judge mode. The merchant is the sandbox seller a visitor's operator is paid through; without it
+	 * the demo route refuses by name, because a visitor that cannot be paid cannot bid.
+	 */
+	readonly demo?: { readonly merchant: MerchantId };
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
@@ -182,18 +208,21 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
+			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
+			// and the system paths are the only cross-tenant readers, and they are never a session.
+			const sameWorld = (row: JobRow) => actor.role === "ARBITER" || (actor.tenant ?? null) === (row.tenant ?? null);
 			switch (query.type) {
 				case "Job": {
 					const row = await store.readJob(query.jobId);
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
-					const mayRead = row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
-						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER";
+					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
+						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
 					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}
 				case "OpenJobs": {
-					const jobs = (await store.listJobs()).filter(row => row.state.status === "OPEN" ||
+					const jobs = (await store.listJobs()).filter(row => sameWorld(row) && (row.state.status === "OPEN" ||
 						actor.role === "CLIENT" && row.client === actor.clientId ||
-						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId));
+						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId)));
 					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts)), nextCursor: null };
 				}
 				case "Operator": {
@@ -223,16 +252,66 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			return ticking;
 		},
 	};
-	runtimes.set(service, { ports, store });
+	runtimes.set(service, { ports, store, demo: config.demo, organization: config.github.organization });
 	return service;
 }
 
-const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore }>();
+const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore; demo: AcquitConfig["demo"]; organization: string }>();
 /** HTTP-only checkout boundary: re-read the provider, never trust URL token/PayerID. */
 export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId): Promise<boolean> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	return confirmFunding(runtime.ports, actor, jobId);
+}
+
+/** What the demo route hands the core: the visitor's own id (its repository name derives from it), the request's address digest, and the repository the App forked for it. */
+export type NewDemoVisitor = { readonly id: VisitorId; readonly ipKey: string; readonly repository: string | null };
+/** What the App answered when it was asked for the visitor's repository, or that there is no App to ask. */
+export type VisitorFork =
+	| { readonly kind: "FORKED"; readonly repository: string; readonly id: number | null }
+	| { readonly kind: "NO_APP" };
+export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: VisitorRow }
+	| { readonly kind: "NOT_CONFIGURED" }
+	/** The caps refused this visitor before anything was forked: one closed code names the allowance. */
+	| { readonly kind: "CAPPED"; readonly reason: CapRefusal }
+	/** The fork refused: the row is FAILED and kept, with any repository it named, for the sweep. */
+	| { readonly kind: "FAILED"; readonly detail: string };
+
+/**
+ * Mints one visitor's whole identity in the one order that never leaves a fork untracked: the demo
+ * configuration is checked and the visitor is reserved — PROVISIONING, counted by the caps, its row and
+ * principals written — before the App is asked for anything. The row names the repository the fork will
+ * create before the App is asked, because the name is deterministic: a process that dies between the
+ * fork and the bind still leaves the sweep a name to remove. Then the fork is made, its answer bound to
+ * the row, and the row marked ACTIVE. A fork that refuses marks the row FAILED and keeps the repository
+ * name, so the sweep still takes it. The route owns the session; this owns the rows.
+ */
+export async function provisionDemoVisitor(service: Acquit, input: { readonly id: VisitorId; readonly ipKey: string;
+	readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
+	const runtime = runtimes.get(service);
+	if (!runtime) throw new Error("Unknown Acquit service");
+	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
+	// Without an App there is no fork and no repository; the route answers NO_APP and the bind clears it.
+	const repository = runtime.organization ? `${runtime.organization}/${visitorRepositoryName(input.id)}` : null;
+	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey, repository,
+		merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
+	if (reserved.kind === "CAPPED") return { kind: "CAPPED", reason: reserved.reason };
+	let forked: VisitorFork | null = null;
+	try {
+		forked = await input.fork();
+		return { kind: "CREATED", visitor: forked.kind === "NO_APP" ? bindVisitorRepository(runtime.store.db, input.id, null)
+			: bindVisitorRepository(runtime.store.db, input.id, forked.repository, forked.id) };
+	} catch (error) {
+		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : repository,
+			forked?.kind === "FORKED" ? forked.id : null);
+		return { kind: "FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) };
+	}
+}
+
+/** The reserve-then-bind path for a caller that already holds the repository, and for fixtures. */
+export async function createDemoVisitor(service: Acquit, input: NewDemoVisitor): Promise<DemoVisitorResult> {
+	return provisionDemoVisitor(service, { id: input.id, ipKey: input.ipKey,
+		fork: async () => input.repository === null ? { kind: "NO_APP" } : { kind: "FORKED", repository: input.repository, id: null } });
 }
 export function closeAcquit(service: Acquit): void {
 	runtimes.get(service)?.store.close();

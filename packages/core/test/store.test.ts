@@ -131,7 +131,7 @@ function storedOpenCheckoutRefundRow(id: string, reason?: unknown) {
 
 test("a PAID row's release authority reads as one of the five, or null", async () => {
 	const store = new SqliteStore(":memory:");
-	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
+	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId, tenant: null };
 	try {
 		for (const [id, authority] of [["job_paid_missing", undefined], ["job_paid_unknown", "NOT_AN_AUTHORITY"], ["job_paid_authority", "REVIEW_SILENCE"]] as const) {
 			const row = storedPaidRow(id, authority);
@@ -157,7 +157,7 @@ test("a PAID row's release authority reads as one of the five, or null", async (
 
 test("a refund reason reads as one of the five, or null", async () => {
 	const store = new SqliteStore(":memory:");
-	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
+	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId, tenant: null };
 	try {
 		for (const [id, reason] of [["job_refunded_missing", undefined], ["job_refunded_unknown", "NOT_A_REASON"], ["job_refunded_reason", "DELIVERY_DEADLINE"]] as const) {
 			const row = storedRefundedRow(id, reason);
@@ -200,7 +200,7 @@ test("a refund reason reads as one of the five, or null", async () => {
 
 test("a refund reason reads as null on a verified review intent and an open checkout intent", async () => {
 	const store = new SqliteStore(":memory:");
-	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId };
+	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId, tenant: null };
 	try {
 		for (const [id, reason] of [["job_review_missing", undefined], ["job_review_unknown", "NOT_A_REASON"], ["job_review_reason", "ARBITER_REFUND"]] as const) {
 			const row = storedVerifiedRefundPendingRow(id, reason);
@@ -254,7 +254,7 @@ test("a PAID commit whose payee has no operators row commits, counts nothing, an
 		// the count stays put, and one line names the operator for the log.
 		const committed = await store.commit({ job: { expectedVersion: row.version as Version, row: row as unknown as JobRow, wakeAt: null },
 			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
-		assert.equal(committed, "COMMITTED");
+		assert.deepEqual(committed, { kind: "COMMITTED" });
 		assert.equal((await store.readJob("job_paid_no_operator" as JobId))?.state.status, "PAID");
 		assert.equal((await store.receiptCounts()).get(payee), undefined, "no operators row means no receipt to count");
 		assert.equal(lines.length, 1);
@@ -307,6 +307,6 @@ test("a VERSION_CONFLICT commit with a paid receipt set counts no receipt", asyn
 	store.db.prepare("UPDATE jobs SET version = ? WHERE id = ?").run(row.version + 1, row.id);
 	const committed = await store.commit({ job: { expectedVersion: row.version as Version, row: row as unknown as JobRow, wakeAt: null },
 		operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
-	assert.equal(committed, "VERSION_CONFLICT");
+	assert.deepEqual(committed, { kind: "VERSION_CONFLICT" });
 	assert.equal((await store.receiptCounts()).get(payee), 0, "the lost CAS rolls the receipt count back with the row");
 });

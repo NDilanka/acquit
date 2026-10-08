@@ -18,7 +18,7 @@ import type { Bps } from "../src/paypal.ts";
 import { clientRepositoryEnv } from "../../verifier/config.ts";
 import { exampleContract } from "./hidden-fixture.ts";
 
-const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
+const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 const demo = "maya-client/invoice-app";
 const live = "NDilanka/invoice-app";
 
@@ -51,6 +51,28 @@ test("a factory with no client repository named opens the demo one, never nothin
 			{ type: "OpenJob", repository: demo, issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
 		assert.equal(committed.kind, "COMMITTED");
 		assert.equal(committed.kind === "COMMITTED" && committed.result.kind === "JOB" ? committed.result.job.contract?.repository : null, demo);
+	} finally { closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
+test("OpenJob freezes the repository the caller's own visitor holds, and refuses any other", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-visitor-repo-"));
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), clientRepository: live, hiddenContract: exampleContract,
+		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
+			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
+		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
+	const visitorRepo = "acquit-forks/demo-abc123";
+	const guest: Actor = { role: "CLIENT", clientId: "guest-abc123-client" as ClientId, tenant: null, repository: visitorRepo };
+	const open = (repository: string): UserCommand => ({ type: "OpenJob", repository, issueNumber: 12, budget: usd("400.00"),
+		deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
+	const jobOf = (outcome: CommandOutcome): JobProjection | null => outcome.kind === "COMMITTED" && outcome.result.kind === "JOB" ? outcome.result.job : null;
+	try {
+		// The visitor's own repository replaces the deployment's for that client alone.
+		const committed = await service.execute(guest, parseRequestKey(randomUUID()), open(visitorRepo));
+		assert.equal(committed.kind, "COMMITTED");
+		assert.equal(jobOf(committed)?.contract?.repository, visitorRepo);
+		assert.deepEqual(await service.execute(guest, parseRequestKey(randomUUID()), open(live)), { kind: "DENIED", reason: "NOT_FOUND" });
+		// And the deployment's own client cannot name the visitor's repository.
+		assert.deepEqual(await service.execute(maya, parseRequestKey(randomUUID()), open(visitorRepo)), { kind: "DENIED", reason: "NOT_FOUND" });
 	} finally { closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 

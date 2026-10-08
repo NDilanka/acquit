@@ -50,6 +50,7 @@ npm run -s ctl -- status           # read-only health check
 npm run -s ctl -- seed-db --dry-run
 npm run -s ctl -- login --test-user maya-client --save
 npm run -s ctl -- screenshot --as maya-client --path /
+npm run -s ctl -- sweep --dry-run   # expired demo visitors and their repositories
 npm run -s ctl -- stop --dry-run
 ```
 

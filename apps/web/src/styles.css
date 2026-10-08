@@ -139,3 +139,15 @@ pre { margin: 0; white-space: pre-wrap; }
 .modal { width: min(480px, calc(100vw - 32px)); background: #fff; border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); padding: 24px; }
 .modal h3 { margin: 0 0 4px; font-size: 18px; }
 .modal p { margin: 0; color: var(--muted); }
+
+.demobar { background: var(--green-bg); border-bottom: 1px solid var(--green-line); font-size: 13px; }
+.demobar .wrap { padding: 8px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+.demobar .alert { margin: 0; padding: 4px 10px; }
+.seg { display: inline-flex; border: 1px solid var(--green-line); border-radius: 8px; overflow: hidden; background: var(--card); }
+.seg button { border: 0; background: transparent; padding: 5px 12px; font-weight: 600; font-size: 13px; color: var(--ink-2); }
+.seg button + button { border-left: 1px solid var(--green-line); }
+.seg button.on { background: var(--green); color: #fff; cursor: default; }
+.seg button[disabled]:not(.on) { color: var(--faint); cursor: not-allowed; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; }
+.choice input { margin-top: 3px; }
+.choice small { display: block; color: var(--muted); }

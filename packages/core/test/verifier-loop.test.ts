@@ -44,7 +44,7 @@ const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const tamperCommit = "fcecc9f38a9c5dbdd8b62851bc0b22dbbddf0a06" as CommitSha;
 const honestCommit = "5cccb66515313caed72e4af329a62fc011139426" as CommitSha;
 const merchant = "sandbox-seller" as MerchantId;
-const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
+const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const secret = "loop-secret";
 
@@ -55,7 +55,7 @@ function heldRow(): JobRow {
 		sellerNet: usd("360.00"), capturedAt: now };
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
-	return { id: parseJobId("job_7Q2K"), version: 1 as Version, client: "maya-client" as ClientId,
+	return { id: parseJobId("job_7Q2K"), version: 1 as Version, client: "maya-client" as ClientId, tenant: null,
 		title: "Totals round wrong for 3-decimal currencies", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-11-08T10:00:00Z"),
 			definitionOfDone: { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },

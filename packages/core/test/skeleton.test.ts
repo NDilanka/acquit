@@ -31,8 +31,8 @@ import { fileURLToPath } from "node:url";
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const merchant = "sandbox-seller" as MerchantId;
-const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
-const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
+const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
+const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
 const requestKey = () => parseRequestKey(randomUUID());
 /**
  * A deployment contract that is deliberately not the example's: OpenJob must store the contract it
@@ -237,7 +237,7 @@ test("credits grant 30, spend 10 once, then refuse insufficient funds", () => {
 	assert.equal(reduceCredits(initial, { kind: "Grant", week: creditWeek(now), paidReceipts: 1, at: now }), initial);
 });
 test("AcceptBid emits CREATE_ORDER naming the chosen payee and no ledger", () => {
-	const row: JobRow = { id: parseJobId("job_test"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
+	const row: JobRow = { id: parseJobId("job_test"), version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: frozenDefinition("maya-client/invoice-app", deploymentContract), terms: TERMS },
 		bids: [{ id: parseBidId("bid_test"), operator: "devon-ops" as OperatorId, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
 			agent: "ts-bugfixer" as AgentId, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
@@ -465,7 +465,7 @@ function heldRow(deliveryEndsAt = instant("2026-10-13T12:00:00Z")): JobRow {
 		sellerNet: usd("360.00"), capturedAt: now };
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
-	return { id: parseJobId("job_submit"), version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
+	return { id: parseJobId("job_submit"), version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt, definitionOfDone: frozenDefinition("maya-client/invoice-app", deploymentContract), terms: TERMS },
 		bids: [{ id: lockedPayee.bidId, operator: lockedPayee.operator, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
 			agent: lockedPayee.agent, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
@@ -509,7 +509,7 @@ test("a second Submit of the same commit while VERIFYING is a no-op, and a diffe
 	assert.equal(applyJobCommand(started.next, { type: "Submit", jobId: row.id, sourceCommit: "f".repeat(40) as CommitSha },
 		{ actor: devon, now, loaded: { kind: "NONE" } }), "VERIFIER_PENDING");
 	assert.equal(applyJobCommand(heldRow(), { type: "Submit", jobId: "job_submit" as JobId, sourceCommit },
-		{ actor: { role: "OPERATOR", operatorId: "other-ops" as OperatorId }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
+		{ actor: { role: "OPERATOR", operatorId: "other-ops" as OperatorId, tenant: null }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
 });
 
 test("a rejection returns the job to READY with one attempt used, and the third rejection selects the refund", () => {
@@ -1059,7 +1059,7 @@ test("Approve names the verified artifact, emits one RELEASE, and refuses a seco
 	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: "f".repeat(40) as CommitSha },
 		{ actor: maya, now, loaded: { kind: "NONE" } }), "ARTIFACT_CHANGED");
 	assert.equal(applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit },
-		{ actor: { role: "OPERATOR", operatorId: "devon-ops" as OperatorId }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
+		{ actor: { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
 	const plan = applyJobCommand(verified, { type: "Approve", jobId: verified.id, mergeCommit: approvedCommit }, { actor: maya, now, loaded: { kind: "NONE" } });
 	if (typeof plan === "string") throw new Error(plan);
 	const state = plan.next.state as Extract<typeof plan.next.state, { status: "VERIFIED" }>;
@@ -1125,7 +1125,7 @@ test("ReleaseSettled builds the receipt, the paid book, and the merge from the o
 test("the view gates Approve on ownership and serves the attempts a settled job used", () => {
 	const verified = verifiedRow();
 	assert.equal(projectJob(verified, maya, new Map()).viewerCanApprove, true);
-	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId }, new Map()).viewerCanApprove, false);
+	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId, tenant: null }, new Map()).viewerCanApprove, false);
 	assert.equal(projectJob(verified, devon, new Map()).viewerCanApprove, false);
 	// The release is already selected, so there is nothing left to approve.
 	assert.equal(projectJob(approvedRow(), maya, new Map()).viewerCanApprove, false);
@@ -1143,7 +1143,7 @@ test("the view gates Approve on ownership and serves the attempts a settled job 
 test("the view names the owning client only to that client's own session", () => {
 	const verified = verifiedRow();
 	assert.equal(projectJob(verified, maya, new Map()).client, "maya-client");
-	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId }, new Map()).client, null);
+	assert.equal(projectJob(verified, { role: "CLIENT", clientId: "other-client" as ClientId, tenant: null }, new Map()).client, null);
 	assert.equal(projectJob(verified, devon, new Map()).client, null);
 	assert.equal(projectJob(verified, { role: "ARBITER", staffId: "staff-1" as StaffId }, new Map()).client, null);
 });
@@ -1794,7 +1794,8 @@ test("a reimbursement webhook that does not pay the debt is refused", async () =
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
 		assert.equal(recordedOutcome(harness.store, "WH-PAYOUT-1"), "refused, the job did not take this settlement");
-		assert.deepEqual(await harness.row(), refunded.next);
+		// The read boundary carries the job's own funding source beside the row; nobody chose one here.
+		assert.deepEqual(await harness.row(), { ...refunded.next, funding: null });
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 

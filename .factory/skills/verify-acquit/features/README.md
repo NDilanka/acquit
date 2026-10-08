@@ -39,7 +39,7 @@ A drive of one feature or entry point does not verify the other entries. Report 
 ## Features
 
 - [00. Isolate lanes and control development time](00-control-lanes.md) covers process ownership, origin isolation, the clock, and sandbox card funding.
-- [01. Sign in as a seeded user](01-sign-in.md) covers the browser picker, role switching, and control CLI login.
+- [01. Sign in as a seeded user](01-sign-in.md) covers the browser picker, role switching, session restore, the public-mode entry, and control CLI login.
 - [02. Post a job](02-post-job.md) covers issue selection, budget, deadline, and the opened job.
 - [03. Bid on a job](03-bid-job.md) covers job-page and operator-dashboard bidding and the credit debit.
 - [04. Post a job, accept a bid, and fund escrow](04-fund-escrow.md) covers real sandbox checkout and optional buyer approval.
@@ -50,3 +50,4 @@ A drive of one feature or entry point does not verify the other entries. Report 
 - [09. Open a dispute and let the arbiter decide](09-dispute.md) covers the paused review clock, both arbiter outcomes, the rework, and the missed arbiter deadline with its alert.
 - [10. Bid credits, the weekly grant, and the return](10-credits.md) covers the bid charge, the cancel and no-response returns, the weekly grant, the cap, and the no-credits denial.
 - [11. The operator CLI, from sign-in to receipts](11-operator-cli.md) covers `login`, `operator init`, `agent create`, `jobs list`, `bid`, `diff`, `receipts`, and `submit`, and records `run` as the runner round's.
+- [12. Judge mode: Start my demo, the account switch, and a visitor's own job controls](12-judge-mode.md) covers public-mode sign-in, the client/operator switch, the refusal messages, the per-job payment method, and the per-job clock.

@@ -148,7 +148,7 @@ test("ledger --job reads another client's HELD book and pins the tutorial text a
 		assert.deepEqual(JSON.parse(json.stdout).data.jobs, [{ id: row.id, laws: "OK", law: null, ledger: held }]);
 		// projectJob is the API's ledger projection; switching the owner must not change the stored array.
 		const mayaRow = { ...row, client: "maya-client" };
-		const apiJob = projectJob(mayaRow as never, { role: "CLIENT", clientId: "maya-client" as never }, new Map());
+		const apiJob = projectJob(mayaRow as never, { role: "CLIENT", clientId: "maya-client" as never, tenant: null }, new Map());
 		assert.deepEqual(JSON.parse(json.stdout).data.jobs[0].ledger, apiJob.ledger);
 	});
 });
@@ -585,6 +585,8 @@ createServer((req, res) => {
 	req.on("end", () => {
 		const body = Buffer.concat(chunks).toString("utf8");
 		if (req.url === "/api/users") { res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"users":[]}'); return; }
+		// The liveness route the control CLI probes before any command that needs the app.
+		if (req.url === "/api/session") { res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"user":null,"visitor":null}'); return; }
 		seen += 1;
 		appendFileSync(process.env.STUB_LOG, JSON.stringify({ method: req.method, url: req.url, type: req.headers["content-type"], body }) + "\\n");
 		const outcome = seen === 1 ? "applied" : "no-op, job already PAID";

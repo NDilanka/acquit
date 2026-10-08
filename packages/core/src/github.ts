@@ -88,6 +88,33 @@ export type PublishedPullRequest = {
 export type WorkRepoRequest = { readonly jobId: JobId; readonly repository: string; readonly frozenCommit: CommitSha };
 export type PublishRequest = { readonly jobId: JobId; readonly repository: string; readonly sourceCommit: CommitSha; readonly checkName: string };
 
+/** One client repository to fork: the deployment's source, and the name the fork takes in the organization. */
+export type ClientRepoRequest = { readonly repository: string; readonly name: string };
+
+/** One client repository to remove: the fork's own name, the source it must be a fork of, and the
+ * repository id the visitor's row recorded, when it has one. */
+export type ClientRepoDeleteRequest = { readonly repository: string; readonly source: string; readonly id: number | null };
+
+/** The fork a visitor's own jobs freeze. Its remote is derived, never stored. The id is GitHub's own,
+ * recorded so the sweep can tell this fork from another repository that later takes the same name. */
+export type ClientRepo = { readonly repository: string; readonly remote: string; readonly id: number | null };
+
+/** What removing a visitor's repository found: this client's own fork, or a name already gone. */
+export type ClientRepoRemoval = "DELETED" | "ABSENT";
+
+/**
+ * What judge mode needs: one disposable client repository per visitor, forked into the App's
+ * organization, and removed with the visitor. The App alone makes and unmakes them: no personal access
+ * token, and no repository this client did not create is ever adopted or deleted.
+ */
+export interface ClientRepoPort {
+	/** Idempotent per name: a retry adopts this client's own fork instead of creating a second repository. */
+	createClientRepo(request: ClientRepoRequest): Promise<ClientRepo>;
+	/** Idempotent per name: a repository that is already gone is ABSENT, and one this client did not fork, or
+	 * whose id is not the recorded one, is refused. */
+	deleteClientRepo(request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval>;
+}
+
 /** What the core's outbox needs. */
 export interface WorkRepoPort {
 	/** Idempotent per job: a retry adopts the existing repository instead of creating a second one. */
@@ -138,7 +165,7 @@ export interface TokenPort {
 	installationToken(owner: string, repositories?: readonly string[]): Promise<string>;
 }
 
-export interface GitHubAppPort extends WorkRepoPort, PublisherPort, MergerPort, TokenPort {}
+export interface GitHubAppPort extends WorkRepoPort, PublisherPort, MergerPort, TokenPort, ClientRepoPort {}
 
 /** Boundary parse. A partial config is not an error here; it selects the fail-fast adapter. */
 export function parseGitHubAppConfig(input: GitHubAppConfigInput | undefined): GitHubAppConfig | null {
@@ -163,7 +190,8 @@ export function missingGitHubNames(input: GitHubAppConfigInput | undefined): rea
 /** Every call refuses immediately. It never starts a request it cannot authenticate. */
 export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({}).join(", ")}.`): GitHubAppPort {
 	const fail = (): never => { throw new GitHubAppNotConfigured(detail); };
-	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), merge: async () => fail(), installationToken: async () => fail() };
+	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), merge: async () => fail(),
+		createClientRepo: async () => fail(), deleteClientRepo: async () => fail(), installationToken: async () => fail() };
 }
 
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
@@ -266,8 +294,8 @@ async function readBounded(response: Response, spec: Call): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-/** The durable ownership marker for a job's work repository: a fork of exactly this source, under exactly this name. */
-function isOurWorkRepo(record: unknown, repository: string, source: string): boolean {
+/** The durable ownership marker for a repository this client forked: a fork of exactly this source, under exactly this name. */
+function isOurFork(record: unknown, repository: string, source: string): boolean {
 	const shape = record as { full_name?: unknown; fork?: unknown; parent?: unknown } | null;
 	if (shape === null || typeof shape !== "object") return false;
 	if (String(shape.full_name ?? "").toLowerCase() !== repository.toLowerCase()) return false;
@@ -482,9 +510,10 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		throw refusal(422, answer.body, answer.headers, spec);
 	};
 
-	/** Creates this job's fork. Answers "created" only when this call's 202 named the repository it asked for. */
-	const forkWorkRepo = async (organization: string, repository: string, name: string,
-		source: { readonly owner: string; readonly name: string }, orgToken: string): Promise<"created" | "existed"> => {
+	/** Creates this repository's fork. Answers "created" only when this call's 202 named the repository it asked
+	 * for, with the answer's own record; "existed" means the name was taken and the record is null. */
+	const forkInto = async (organization: string, repository: string, name: string,
+		source: { readonly owner: string; readonly name: string }, orgToken: string): Promise<{ readonly outcome: "created" | "existed"; readonly record: unknown }> => {
 		// The target org's installation makes the fork: GitHub checks administration on the org plus the App's
 		// read access to the source, and it refuses the source installation's token.
 		const spec: Call = { method: "POST", path: `/repos/${source.owner}/${source.name}/forks`, allow: [202, 403, 422],
@@ -497,12 +526,18 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 				// GitHub ignored the requested name. This client never renames a repository it did not name itself.
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `The fork answered ${created}, not ${repository}. Nothing was renamed or moved.`, { status: 202 });
 			}
-			return "created";
+			return { outcome: "created", record: answer.body };
 		}
 		// A taken name is GitHub's "already exists" answer. The repository at the name decides what happens next.
-		if (/already exists/i.test(said(answer.body))) return "existed";
+		if (/already exists/i.test(said(answer.body))) return { outcome: "existed", record: null };
 		if (answer.status === 403) throw refusal(403, answer.body, answer.headers, spec);
 		throw new GitHubAppError("GITHUB_HTTP_ERROR", `POST ${spec.path} answered 422: ${said(answer.body) || "the fork was refused"}.`, { status: 422 });
+	};
+
+	/** GitHub's own repository id, when the answer carries one. A record without it is not a reason to refuse. */
+	const idOf = (value: unknown): number | null => {
+		const found = value !== null && typeof value === "object" ? (value as Record<string, unknown>).id : undefined;
+		return typeof found === "number" && Number.isSafeInteger(found) && found > 0 ? found : null;
 	};
 
 	const createWorkRepo = async (request: WorkRepoRequest): Promise<WorkRepo> => {
@@ -515,12 +550,12 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const orgToken = await tokenFor(organization);
 		const readRepo = () => call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
 		const found = await readRepo();
-		const outcome = found.status === 200 ? "existed" : await forkWorkRepo(organization, repository, name, source, orgToken);
+		const outcome = found.status === 200 ? "existed" : (await forkInto(organization, repository, name, source, orgToken)).outcome;
 		if (outcome === "existed") {
 			// Adopt the repository only when it carries the ownership marker: the exact fork parent plus the
 			// job-unique name. A repository this client did not create is never moved, and never written to.
 			const record = found.status === 200 ? found.body : (await readRepo()).body;
-			if (!isOurWorkRepo(record, repository, request.repository)) {
+			if (!isOurFork(record, repository, request.repository)) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this job creates. Nothing was moved.`);
 			}
 		}
@@ -533,6 +568,69 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 				permission: "contents: write", body: { sha: commit, force: true } });
 		}
 		return { repository, remote: `https://github.com/${repository}.git`, branch: WORK_REPO_BRANCH, commit };
+	};
+
+	/**
+	 * One disposable client repository per visitor: the deployment's source forked under the visitor's
+	 * own name in the organization. A retry adopts this client's own fork and never creates a second
+	 * repository; a name some other repository already holds is refused instead of written over.
+	 */
+	const createClientRepo = async (request: ClientRepoRequest): Promise<ClientRepo> => {
+		const organization = checkedOwner(parsed.organization);
+		const source = splitRepository(request.repository);
+		// The visitor's name is a repository name, never a path: it is refused before it enters a URL.
+		const name = checkedRepositoryName(request.name);
+		const repository = `${organization}/${name}`;
+		const orgToken = await tokenFor(organization);
+		const readRepo = () => call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
+		const found = await readRepo();
+		let record: unknown = found.status === 200 ? found.body : null;
+		if (record === null) {
+			const forked = await forkInto(organization, repository, name, source, orgToken);
+			if (forked.outcome === "created") record = forked.record;
+			else {
+				// The name was taken between the read and the fork. Read it once more and adopt it only when it
+				// carries the ownership marker: a repository this client did not fork is never adopted.
+				record = (await readRepo()).body;
+				if (!isOurFork(record, repository, request.repository)) {
+					throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this visitor creates. Nothing was moved.`);
+				}
+			}
+		} else if (!isOurFork(record, repository, request.repository)) {
+			// The same ownership marker the work repo carries. A visitor's name is not a claim on someone
+			// else's repository: a mismatch refuses by name and moves nothing.
+			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this visitor creates. Nothing was moved.`);
+		}
+		return { repository, remote: `https://github.com/${repository}.git`, id: idOf(record) };
+	};
+
+	/**
+	 * Removes one visitor's own fork, with the same ownership marker the create writes: the fork of
+	 * exactly this source, under exactly this name. A name this client did not fork is refused and never
+	 * deleted, and one that is already gone is ABSENT, so a retried sweep converges instead of failing
+	 * on work it already did.
+	 */
+	const deleteClientRepo = async (request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval> => {
+		const target = splitRepository(request.repository);
+		splitRepository(request.source);
+		const organization = checkedOwner(parsed.organization);
+		if (target.owner.toLowerCase() !== organization.toLowerCase()) {
+			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not a repository in ${organization}. Nothing was deleted.`);
+		}
+		const orgToken = await tokenFor(organization);
+		const found = await call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${request.repository}`, allow: [200, 404], permission: "administration: write" });
+		if (found.status === 404) return "ABSENT";
+		if (!isOurFork(found.body, request.repository, request.source)) {
+			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not the fork of ${request.source} this deployment created. Nothing was deleted.`);
+		}
+		if (request.id !== null && idOf(found.body) !== request.id) {
+			// The name now holds a different repository, forked from the same source. A visitor's fork is one
+			// repository, identified by GitHub's own id: another one at the same name is never deleted for it.
+			throw new GitHubAppError("GITHUB_FORK_MISMATCH",
+				`${request.repository} is not the repository this visitor forked (id ${request.id}). Nothing was deleted.`);
+		}
+		await call(`Bearer ${orgToken}`, { method: "DELETE", path: `/repos/${request.repository}`, allow: [204], permission: "administration: write" });
+		return "DELETED";
 	};
 
 	const findOrOpenPullRequest = async (request: PublishRequest, branch: string, headOwner: string, clientToken: string): Promise<number> => {
@@ -678,6 +776,8 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	};
 	return {
 		async createWorkRepo(request) { return createWorkRepo(request); },
+		async createClientRepo(request) { return createClientRepo(request); },
+		async deleteClientRepo(request) { return deleteClientRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
 		async merge(request) { return merge(request); },
 		async installationToken(owner, repositories) { return tokenFor(checkedOwner(owner), repositories); },
@@ -689,6 +789,7 @@ export type GitHubCall = { readonly kind: "CREATE_WORK_REPO" | "PUBLISH_VERIFIED
 export type FakeGitHubApp = GitHubAppPort & {
 	readonly calls: readonly GitHubCall[];
 	readonly workRepos: ReadonlyMap<JobId, WorkRepo>;
+	readonly clientRepos: ReadonlyMap<string, ClientRepo>;
 	readonly pullRequests: ReadonlyMap<JobId, PublishedPullRequest>;
 };
 
@@ -697,10 +798,11 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 	const organization = options.organization ?? "acquit-forks";
 	const calls: GitHubCall[] = [];
 	const workRepos = new Map<JobId, WorkRepo>();
+	const clientRepos = new Map<string, ClientRepo>();
 	const pullRequests = new Map<JobId, PublishedPullRequest>();
 	let nextPullRequest = options.firstPullRequest ?? 13;
 	return {
-		calls, workRepos, pullRequests,
+		calls, workRepos, pullRequests, clientRepos,
 		async installationToken(owner, repositories) {
 			const scope = tokenScope(repositories);
 			return `fake-installation-token-${checkedOwner(owner)}${scope === null ? "" : `-${scope.join("+")}`}`;
@@ -714,6 +816,28 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 				branch: "main", commit: request.frozenCommit };
 			workRepos.set(request.jobId, created);
 			return created;
+		},
+		async createClientRepo(request) {
+			// One fork per name, the same rule the real client keeps: a second call adopts the first fork.
+			const existing = clientRepos.get(request.name);
+			if (existing !== undefined) return existing;
+			const repository = `${organization}/${request.name}`;
+			const created: ClientRepo = { repository, remote: `https://github.com/${repository}.git`, id: 1000 + clientRepos.size };
+			clientRepos.set(request.name, created);
+			return created;
+		},
+		async deleteClientRepo(request) {
+			// Only a fork this fake made is removed, and a name it never made is already gone. The id the
+			// caller recorded must be the repository's own: a different repository at the name is refused.
+			const name = request.repository.split("/").at(-1) ?? request.repository;
+			const existing = clientRepos.get(name);
+			if (existing === undefined) return "ABSENT";
+			if (request.id !== null && existing.id !== request.id) {
+				throw new GitHubAppError("GITHUB_FORK_MISMATCH",
+					`${request.repository} is not the repository this visitor forked (id ${request.id}). Nothing was deleted.`);
+			}
+			clientRepos.delete(name);
+			return "DELETED";
 		},
 		async publishVerified(request, requestId) {
 			calls.push({ kind: "PUBLISH_VERIFIED", jobId: request.jobId, requestId });

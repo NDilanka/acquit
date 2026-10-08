@@ -21,12 +21,50 @@ There is no password login in the skeleton. A dev picker signs in as a seeded us
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null }` |
-| POST | `/api/session` | `{ handle: "maya-client" \| "devon-ops" }` | `{ user, token }` and the cookie |
+| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null, visitor, mode: "public" \| "dev" }`. `mode` is the deployment's own sign-in shape, so a page draws the public one or the seeded picker without probing a second route |
+| POST | `/api/session` | `{ handle: "maya-client" \| "devon-ops" }` | `{ user, visitor, token }` and the cookie. Public mode refuses a seeded handle `403 { error: "SEEDED_LOGIN_DISABLED" }` and any other handle `403 { error: "SESSION_MINT_DISABLED" }`; dev mode keeps the seeded sign-in |
 | DELETE | `/api/session` | | `204` |
-| GET | `/api/users` | | `{ users: [{ handle, role }] }` for the picker |
+| GET | `/api/users` | | `{ users: [{ handle, role }] }`. Dev mode: the seeded picker. Public mode: the caller's own pair only, `401` without a session |
 
 Every other `/api` route returns `401 { error: "UNAUTHENTICATED" }` without a session.
+
+## Judge mode (visitors)
+
+Public mode is `ACQUIT_DEV` unset. A session resolves through the `principals` table, never through the seeded constants, and a handle whose visitor row is gone stops resolving.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/demo` | `{}` | `201 { user, visitor, token }` and the cookie. The GitHub App forks the visitor's own client repository first, then this creates its client and operator principals, its operator with one agent and the first weekly grant, and mints the client's session. `503 { error: "DEMO_NOT_CONFIGURED" }` without a demo merchant, `502 { error: "DEMO_REPOSITORY_FAILED" }` when the App refuses the fork. Without an App configured the visitor's `repository` is null and it opens jobs on the deployment's own repository, which is the only path that exists then |
+| POST | `/api/demo/switch` | `{}` | `{ user, visitor, token }`: moves this session between the visitor's own two principals. `403 { error: "NOT_DEMO_VISITOR" }` for any session that is not a visitor's |
+
+`visitor` is `{ id, client, operator, repository, expiresAt }`. The repository is `acquit-forks/demo-<id>` when the App forked one: the visitor's client is the only principal that may open a job on it, and `GET /api/repos` serves it in place of the deployment's own. A visitor's job freezes it into the contract, so its work repo is named after the visitor's fork and never after the deployment's repository. Every `/api/dev/*` route and the arbiter stay refused in public mode (`403 { error: "DEV_DISABLED" }`).
+
+A visitor lives 24 hours. `npm run -s ctl -- sweep` removes each expired visitor's own repository through the App and then its rows; a repository the deployment cannot remove (or a missing App) keeps the visitor, so the next run retries exactly that work, and a repository that is already gone is not a failure. The sweep is safe to run as often as wanted.
+
+Two job actions are scoped to the caller's own visitor. Both read the stored job first: an unknown id is `404 { error: "NOT_FOUND" }`, and a job whose `client` is not the calling visitor's client handle is `403 { error: "NOT_VISITOR_JOB" }`.
+
+| Method | Path | Body | Response |
+|---|---|---|---|
+| POST | `/api/jobs/:id/funding` | `{ mode: "checkout" \| "card" }` | `200 { mode }`. `400` for any other mode. `409 { error: "FUNDING_BOUND" }` once the job has left `BIDDING`, because an accepted bid already bound the order's payment source |
+| POST | `/api/jobs/:id/clock` | `{ advanceMs }` (positive, at most 365 days) | `200 { job, handles, now }`, the same body `GET /api/jobs/:id` serves, after the job's own instants moved and `Acquit.tick` ran. `400` for anything else. `409 { error: "JOB_CHANGED" }` if the row moved under the shift |
+
+Advancing one job's clock moves that job's stored instants, its wake time, and its own pending effects' due times. Another job's row, deadlines, review windows, and outbox are never touched: the deployment's own clock is not moved and no other job's timer changes. A leased effect stays where it is, because that lease is another worker's hold rather than this job's timeline. The job's own view carries the total advanced so far as `job.clockShiftMs`, to that job's client alone.
+
+### Caps
+
+`packages/core/src/caps.ts` is the one table. Each row is a limit, the counter it reads, and the closed code that names its refusal; the counters come from committed rows and a cap check never writes. The window is one rolling day, so no timezone decides when a judge's day ends.
+
+| Code | Limit | Counts | Where it binds |
+|---|---|---|---|
+| `CAP_VISITORS_IP_DAY` | 3 | visitors created from one address in 24 h | `POST /api/demo` |
+| `CAP_VISITORS_DAY` | 50 | visitors created in 24 h | `POST /api/demo` |
+| `CAP_VISITOR_JOBS` | 3 | one visitor's jobs | `OpenJob` |
+| `CAP_AMOUNT` | 100000 cents | one job's budget | `OpenJob` |
+| `CAP_SPEND_DAY` | 200000 cents | one visitor's job budgets in 24 h | `OpenJob` |
+| `CAP_MODEL_RUNS` | 10 | one visitor's verifier runs in 24 h | `Submit` |
+| `CAP_MODEL_RUNS_DAY` | 1000 | verifier runs in 24 h (the free tier's day) | `Submit` |
+
+`POST /api/demo` answers `429 { error }` with the code, and it checks the caps before it forks, so a refused visitor leaves no repository behind. A capped command is a `409` with the same `{ outcome: { kind: "DENIED", reason } }` shape every refusal has. The visitor caps bind a visitor's own client only: dev mode's seeded client is the operator's own, and the day-wide run cap binds the whole deployment because the free tier belongs to the key. Attempts per job stay `TERMS.maxAttempts`, which the table already enforced.
 
 ## Commands
 
@@ -63,9 +101,9 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form |
+| GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form. A visitor's own fork replaces the deployment's repository for that session |
 | GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor }` |
-| GET | `/api/jobs/:id` | `{ job: JobView }` |
+| GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
 
@@ -87,7 +125,9 @@ rather than reading a GitHub App key on the operator's machine.
   the least privilege a run and submit exercise. A credential handed to one operator cannot push to
   another job's work repo. It answers `200 { repository, token }`; `repository` is the full
   `owner/name` of the job's work repo (`<organization>/<client repo name>-<job id>`), so the CLI
-  builds the git URL from it and never guesses a repository.
+  builds the git URL from it and never guesses a repository. The client repo name is read from the
+  repository the job's contract froze, so a visitor's work repo is named after its own fork rather
+  than the deployment's repository.
 - With the App unconfigured the route answers `503 { error: "GITHUB_NOT_CONFIGURED" }`. GitHub
   answers `422` to the scoped mint while the work repo does not exist yet (the window between funding
   and the outbox creating the fork), and the route answers that as
@@ -99,10 +139,13 @@ rather than reading a GitHub App key on the operator's machine.
 ## Funding (PayPal sandbox)
 
 1. `AcceptBid` commits, the job enters OPEN FUNDING, and the outbox creates the order. The API drains the outbox inline after the commit, so the order usually exists before the response returns.
-2. The web app polls `GET /api/jobs/:id` about once a second until `job.approveUrl` is set, then sends the browser there.
-3. The order's return URL is `<webOrigin>/paypal/return?jobId=<id>` and its cancel URL is `<webOrigin>/paypal/cancel?jobId=<id>`. Both are API routes reached through the proxy.
-4. `GET /paypal/return` re-reads the order from PayPal, records `BuyerApproved`, captures, records `CaptureCompleted`, and redirects `302` to `/jobs/<id>`. It is idempotent: a second visit redirects without a second capture.
-5. `GET /paypal/cancel` redirects `302` to `/jobs/<id>` and leaves the job in FUNDING until the checkout window closes.
+2. The payment source is bound per job, chosen before the accept: the job's own stored `funding` (`POST /api/jobs/:id/funding`) wins, and a job nobody chose for funds with the deployment's mode (`/api/dev/fund-mode` in dev, checkout in public). A visitor's job starts on the test card, because a judge holds no sandbox buyer account. The process holds no funding toggle that could reach another job.
+3. The web app polls `GET /api/jobs/:id` about once a second until `job.approveUrl` is set, then sends the browser there.
+4. The order's return URL is `<webOrigin>/paypal/return?jobId=<id>` and its cancel URL is `<webOrigin>/paypal/cancel?jobId=<id>`. Both are API routes reached through the proxy.
+5. `GET /paypal/return` re-reads the order from PayPal, records `BuyerApproved`, captures, records `CaptureCompleted`, and redirects `302` to `/jobs/<id>`. It is idempotent: a second visit redirects without a second capture.
+6. `GET /paypal/cancel` redirects `302` to `/jobs/<id>` and leaves the job in FUNDING until the checkout window closes.
+
+A card order is created and captured by the API itself: the test card needs no buyer approval, so the accept usually reaches `IN_PROGRESS` before the response returns. The boundary is sandbox-only (`apiBase` is the sandbox host), which is why the card path is reachable in public mode for a visitor's own job.
 
 When capture completes the job is `IN_PROGRESS`, `escrow: "HELD"`, and `ledger` is `[{ kind: "HELD", cents: 42000, at }]`.
 

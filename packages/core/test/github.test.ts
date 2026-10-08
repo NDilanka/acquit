@@ -45,7 +45,7 @@ async function refusal(work: Promise<unknown>): Promise<Refusal> {
 	assert.fail("expected the call to refuse by name");
 }
 
-type StubRepo = { full_name: string; name: string; owner: string; default_branch: string; fork: boolean;
+type StubRepo = { id: number; full_name: string; name: string; owner: string; default_branch: string; fork: boolean;
 	parent: { full_name: string } | null };
 type StubPull = { number: number; head: string; branch: string; state: string; title: string; body: string;
 	merged: boolean; merge_commit_sha: string | null };
@@ -154,7 +154,7 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			// A taken name answers 403 "Name already exists on this account", the live API's answer for a fork.
 			if (state.repos.has(requested)) return json(response, 403, { message: "Name already exists on this account" });
 			const target = forkAs ?? requested;
-			const created: StubRepo = { full_name: target, name: target.split("/")[1]!, owner: String(body.organization),
+			const created: StubRepo = { id: 1000 + state.repos.size, full_name: target, name: target.split("/")[1]!, owner: String(body.organization),
 				default_branch: "main", fork: true, parent: { full_name: repository } };
 			state.repos.set(target, created);
 			state.commits.set(target, new Set(state.commits.get(repository) ?? []));
@@ -165,6 +165,13 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		if (segments[0] === "repos" && segments.length === 3) {
 			const found = state.repos.get(repository);
 			if (method === "GET") return found ? json(response, 200, found) : json(response, 404, { message: "Not Found" });
+			if (method === "DELETE" && found) {
+				// GitHub answers 204 with no body for a repository it removed.
+				state.repos.delete(repository);
+				response.writeHead(204);
+				response.end();
+				return;
+			}
 			if (method === "PATCH" && found) {
 				if (typeof body.name === "string") {
 					state.repos.delete(repository);
@@ -301,7 +308,7 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 		url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
 		state,
 		seed(repository, commits, refs) {
-			state.repos.set(repository, { full_name: repository, name: repository.split("/")[1]!, owner: repository.split("/")[0]!,
+			state.repos.set(repository, { id: 500 + state.repos.size, full_name: repository, name: repository.split("/")[1]!, owner: repository.split("/")[0]!,
 				default_branch: "main", fork: false, parent: null });
 			state.commits.set(repository, new Set(commits));
 			for (const [branch, sha] of Object.entries(refs)) state.refs.set(`${repository}:${branch}`, sha);
@@ -338,6 +345,24 @@ for (const harness of HARNESSES) {
 		const other = await app.port.createWorkRepo({ ...workRepoRequest, jobId: OTHER_JOB }, "req-3");
 		assert.equal(other.repository, `${ORG}/invoice-app-8Z3P`);
 		assert.notEqual(other.repository, created.repository);
+	});
+
+	test(`a visitor's repository is one fork per visitor name, and a second call adopts it (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const request = { repository: CLIENT, name: "demo-abc123" };
+		const created = await app.port.createClientRepo(request);
+		assert.equal(created.repository, `${ORG}/demo-abc123`);
+		assert.equal(created.remote, `https://github.com/${ORG}/demo-abc123.git`);
+		assert.equal(typeof created.id, "number", "the fork's own GitHub id is recorded");
+		assert.deepEqual(await app.port.createClientRepo(request), created);
+		const other = await app.port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
+		assert.equal(other.repository, `${ORG}/demo-def456`);
+		assert.notEqual(other.repository, created.repository);
+		// The expiry sweep removes the visitor's own fork, and a second removal finds it absent.
+		assert.equal(await app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }), "DELETED");
+		assert.equal(await app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }), "ABSENT");
+		assert.equal(await app.port.deleteClientRepo({ repository: other.repository, source: CLIENT, id: null }), "DELETED");
 	});
 
 	test(`the verified commit is one pull request and a second call adopts it (${harness.name})`, async t => {
@@ -800,7 +825,7 @@ async function withThief(): Promise<{ url: string; seen: string[]; close: () => 
 function plant(stub: Stub, repository: string, options: { readonly forkOf: string | null;
 	readonly commits: readonly string[]; readonly main: string | null }): void {
 	const [owner, name] = repository.split("/") as [string, string];
-	stub.state.repos.set(repository, { full_name: repository, name, owner, default_branch: "main",
+	stub.state.repos.set(repository, { id: 700 + stub.state.repos.size, full_name: repository, name, owner, default_branch: "main",
 		fork: options.forkOf !== null, parent: options.forkOf === null ? null : { full_name: options.forkOf } });
 	stub.state.commits.set(repository, new Set(options.commits));
 	if (options.main !== null) stub.state.refs.set(`${repository}:main`, options.main);
@@ -823,6 +848,72 @@ test("a fork GitHub names differently is refused by name and never renamed", asy
 	assert.equal(stub.state.repos.has(WORK_REPO), false);
 	assert.equal(stub.state.repos.has(other), true);
 	assert.deepEqual(repoMutations(stub), []);
+});
+
+test("a visitor's name already taken by a repository this client did not create is refused", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, `${ORG}/demo-abc123`, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.createClientRepo({ repository: CLIENT, name: "demo-abc123" }));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.match(failure.detail, /demo-abc123/);
+	// The refused name is never forked over and nothing is renamed, deleted, or written.
+	assert.deepEqual(stub.state.forks, []);
+	assert.deepEqual(repoMutations(stub), []);
+});
+
+test("a visitor's name taken between the read and the fork is adopted only with the ownership marker", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const name = "demo-abc123";
+	// The read misses the fork another request created in the same instant, and the fork answers "already
+	// exists". The name now holds a repository this client did not create: it is refused, never adopted.
+	stub.refuse({ method: "GET", path: `/repos/${ORG}/${name}`, status: 404, message: "Not Found", once: true });
+	plant(stub, `${ORG}/${name}`, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.createClientRepo({ repository: CLIENT, name }));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.match(failure.detail, /demo-abc123/);
+	assert.deepEqual(stub.state.forks, [], "no second fork is made for a name already taken");
+	// The same race with this visitor's own fork at the name: the retry re-reads and adopts it.
+	plant(stub, `${ORG}/${name}`, { forkOf: CLIENT, commits: [], main: null });
+	stub.refuse({ method: "GET", path: `/repos/${ORG}/${name}`, status: 404, message: "Not Found", once: true });
+	const adopted = await port.createClientRepo({ repository: CLIENT, name });
+	assert.equal(adopted.repository, `${ORG}/${name}`);
+	assert.deepEqual(stub.state.forks, []);
+});
+
+test("a fork is deleted only while the repository id is the one the visitor forked", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const created = await port.createClientRepo({ repository: CLIENT, name: "demo-abc123" });
+	assert.equal(typeof created.id, "number", "the fork's answer carries the repository id");
+	// The visitor's fork is gone and another repository of the same source holds the name: the ownership
+	// marker cannot tell those two apart, the id can.
+	plant(stub, created.repository, { forkOf: CLIENT, commits: [], main: null });
+	const failure = await refusal(port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: created.id }));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.match(failure.detail, /demo-abc123/);
+	assert.equal(stub.state.repos.has(created.repository), true, "nothing is deleted");
+	// A visitor row from before the id was recorded still deletes by the marker alone.
+	assert.equal(await port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }), "DELETED");
+	// And the fork this client did make, with the id it recorded, is deleted.
+	const again = await port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
+	assert.equal(await port.deleteClientRepo({ repository: again.repository, source: CLIENT, id: again.id }), "DELETED");
+	assert.equal(stub.state.repos.has(again.repository), false);
+});
+
+test("the sweep never deletes a repository this client did not create", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	plant(stub, `${ORG}/demo-abc123`, { forkOf: null, commits: [], main: null });
+	const failure = await refusal(port.deleteClientRepo({ repository: `${ORG}/demo-abc123`, source: CLIENT, id: null }));
+	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.repos.has(`${ORG}/demo-abc123`), true);
+	// A repository this client did create is removed, and a name that is not there is already gone.
+	await port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
+	assert.equal(await port.deleteClientRepo({ repository: `${ORG}/demo-def456`, source: CLIENT, id: null }), "DELETED");
+	assert.equal(await port.deleteClientRepo({ repository: `${ORG}/demo-def456`, source: CLIENT, id: null }), "ABSENT");
+	assert.equal(stub.state.repos.has(`${ORG}/demo-def456`), false);
 });
 
 test("a fork this client created converges after its ref move failed", async t => {

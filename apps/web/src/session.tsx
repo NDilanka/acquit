@@ -1,7 +1,10 @@
 import { createContext, useContext } from "react";
-import type { SessionUser } from "./api";
+import type { SessionUser, VisitorView } from "./api-types";
 
-export const SessionContext = createContext<{ user: SessionUser; signOut: () => void } | null>(null);
+/** A signed-in browser. `visitor` is set only for a judge-mode demo session. */
+export type Session = { readonly user: SessionUser; readonly visitor: VisitorView | null };
+
+export const SessionContext = createContext<(Session & { signOut: () => void }) | null>(null);
 
 export function useSession() {
   const ctx = useContext(SessionContext);

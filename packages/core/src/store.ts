@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, RecordedRequest } from "./effects.ts";
+import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, RecordedRequest } from "./effects.ts";
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
@@ -9,9 +9,13 @@ import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from ".
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
-import type { AgentId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
+import type { AgentId, ClientId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
+import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
+import type { UsdCents } from "./ledger.ts";
 import { logBare } from "./log.ts";
+import { jobFunding } from "./funding.ts";
+import { SEEDED_USERS } from "./seed-data.ts";
 
 export function openDatabase(path: string): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -35,11 +39,32 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE TABLE IF NOT EXISTS requests (actor TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(actor, key));
 		CREATE TABLE IF NOT EXISTS outbox (key TEXT PRIMARY KEY, json TEXT NOT NULL, state TEXT NOT NULL, due_at TEXT);
 		CREATE INDEX IF NOT EXISTS outbox_due ON outbox(due_at);
+		CREATE TABLE IF NOT EXISTS job_funding (job_id TEXT PRIMARY KEY, mode TEXT NOT NULL, set_at TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, job_id TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY);
 		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, handle TEXT NOT NULL, expires_at TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS visitors (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+			ip_key TEXT NOT NULL, client_handle TEXT NOT NULL, operator_handle TEXT NOT NULL, repository TEXT,
+			repository_id INTEGER, state TEXT NOT NULL DEFAULT 'ACTIVE');
+		CREATE INDEX IF NOT EXISTS visitors_expiry ON visitors(expires_at);
+		CREATE TABLE IF NOT EXISTS principals (handle TEXT PRIMARY KEY, role TEXT NOT NULL, visitor_id TEXT);
+		-- Judge mode's spends, append-only. One row per act, written in the transaction that commits it,
+		-- so a cap check and the write it guards cannot be split by another worker.
+		CREATE TABLE IF NOT EXISTS cap_reservations (kind TEXT NOT NULL, scope TEXT NOT NULL, ref TEXT NOT NULL,
+			cents INTEGER NOT NULL, at_wall TEXT NOT NULL, PRIMARY KEY(kind, ref));
+		CREATE INDEX IF NOT EXISTS cap_reservations_window ON cap_reservations(kind, scope, at_wall);
 	`);
+	// A database that already holds visitor rows keeps them: CREATE TABLE IF NOT EXISTS leaves an old
+	// shape alone, so a column added after the fact is added here. A row from before this column is a
+	// visitor that was provisioned, so ACTIVE is what it means, and a row with no repository id is swept
+	// by the ownership marker alone.
+	const visitorColumns = new Set(db.prepare("SELECT name FROM pragma_table_info('visitors')").all().map(row => String(row.name)));
+	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
+	if (!visitorColumns.has("repository_id")) db.exec("ALTER TABLE visitors ADD COLUMN repository_id INTEGER");
+	// The seeded handles are principals with no visitor: the rows every session resolves through, so
+	// the SEEDED_USERS constant is a seed, never an authentication source.
+	for (const user of SEEDED_USERS) db.prepare("INSERT OR IGNORE INTO principals VALUES (?, ?, NULL)").run(user.handle, user.role);
 	return db;
 }
 
@@ -57,7 +82,7 @@ export function isStoreBusy(error: unknown): boolean {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
+	const parsed = { ...row, tenant: row.tenant ?? null, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
 		state: storedRefund(storedPaid(storedMerge(row.state))) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
@@ -124,13 +149,18 @@ function storedFailure(value: unknown): RunFailure | null {
 		: { name: "CONTRACT_MISMATCH" as const, detail: boundedDetail(raw.reason) };
 	return { runId: raw.runId, sourceCommit: raw.sourceCommit, at: raw.at, ...named } as unknown as RunFailure;
 }
-function due(state: OutboxState): string | null {
+export function outboxDue(state: OutboxState): string | null {
 	return state.kind === "READY" ? state.runAt : state.kind === "LEASED" ? state.leaseUntil : state.kind === "UNCERTAIN" ? state.reconcileAt : null;
 }
 export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
 	constructor(path: string) { this.db = openDatabase(path); }
-	async readJob(id: JobId): Promise<JobRow | null> { const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id)); return row ? storedJob(row) : null; }
+	// The job's own funding source lives beside the row, not in it: a command that read a row before a
+	// choice was stored must not be able to write a stale copy back over it.
+	async readJob(id: JobId): Promise<JobRow | null> {
+		const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id));
+		return row ? storedJob({ ...row, funding: jobFunding(this.db, id) }) : null;
+	}
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
 	async readCredits(id: OperatorId): Promise<CreditAccount> {
@@ -146,7 +176,14 @@ export class SqliteStore implements Store {
 		this.db.prepare("UPDATE requests SET result = ? WHERE actor = ? AND key = ? AND digest = ?")
 			.run(JSON.stringify(request.result), request.actor, request.key, request.payloadDigest);
 	}
-	async listJobs(): Promise<readonly JobRow[]> { return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => storedJob(JSON.parse(String(row.json)) as JobRow)); }
+	async listJobs(): Promise<readonly JobRow[]> {
+		const modes = new Map(this.db.prepare("SELECT job_id, mode FROM job_funding").all().map(row => [String(row.job_id), String(row.mode)]));
+		return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => {
+			const job = JSON.parse(String(row.json)) as JobRow;
+			const mode = modes.get(String(job.id));
+			return storedJob({ ...job, funding: mode === "checkout" || mode === "card" ? mode : null });
+		});
+	}
 	async listOperators(): Promise<readonly OperatorRow[]> { return this.db.prepare("SELECT json FROM operators").all().map(row => JSON.parse(String(row.json)) as OperatorRow); }
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
@@ -177,25 +214,31 @@ export class SqliteStore implements Store {
 	async dueJobs(now: Instant): Promise<readonly { jobId: JobId; wakeAt: Instant }[]> {
 		return this.db.prepare("SELECT id, wake_at FROM jobs WHERE wake_at <= ?").all(now).map(row => ({ jobId: String(row.id) as JobId, wakeAt: String(row.wake_at) as Instant }));
 	}
-	async commit(change: AtomicCommit): Promise<"COMMITTED" | "VERSION_CONFLICT" | "REQUEST_REPLAY" | "DELIVERY_REPLAY"> {
+	async commit(change: AtomicCommit): Promise<CommitResult> {
 		this.db.exec("BEGIN IMMEDIATE");
 		try {
 			if (change.request && this.db.prepare("SELECT 1 FROM requests WHERE actor = ? AND key = ?").get(change.request.actor, change.request.key)) {
-				this.db.exec("ROLLBACK"); return "REQUEST_REPLAY";
+				this.db.exec("ROLLBACK"); return { kind: "REQUEST_REPLAY" };
 			}
 			if (change.delivery && this.db.prepare("SELECT 1 FROM deliveries WHERE id = ?").get(change.delivery)) {
-				this.db.exec("ROLLBACK"); return "DELIVERY_REPLAY";
+				this.db.exec("ROLLBACK"); return { kind: "DELIVERY_REPLAY" };
+			}
+			// The cap check and its write share this one transaction, so two workers cannot both pass a
+			// limit that neither has spent yet. A refusal rolls back before anything else is written.
+			for (const reservation of change.reservations ?? []) {
+				const refused = reservationRefusal(reservation, capUsage(this.db, { scope: reservation.scope, since: capWindowStart(reservation.at) }));
+				if (refused !== null) { this.db.exec("ROLLBACK"); return { kind: "CAPPED", reason: refused }; }
 			}
 			if (change.operator) throw new Error("not implemented");
 			if (change.job) {
 				const { row, expectedVersion } = change.job;
 				if (expectedVersion === null) {
 					const result = this.db.prepare("INSERT OR IGNORE INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), change.job.wakeAt);
-					if (!result.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+					if (!result.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 				} else {
 					const result = this.db.prepare("UPDATE jobs SET version = ?, json = ?, wake_at = ? WHERE id = ? AND version = ?")
 						.run(row.version, JSON.stringify(row), change.job.wakeAt, row.id, expectedVersion);
-					if (!result.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+					if (!result.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 				}
 				for (const resource of jobResources(row)) this.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(resource, row.id);
 			}
@@ -203,7 +246,7 @@ export class SqliteStore implements Store {
 				const account = credit.account;
 				const updated = this.db.prepare("UPDATE credits SET version = ?, json = ? WHERE id = ? AND version = ?")
 					.run(account.version, JSON.stringify(account), account.operator, credit.expectedVersion);
-				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+				if (!updated.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 			}
 			// The count moves with the PAID row or not at all: exactly the write that settles the release
 			// sets it, so a redelivery or a refused settlement can never count the receipt twice. The id
@@ -218,12 +261,18 @@ export class SqliteStore implements Store {
 				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
 				if (!counted.changes) console.warn(`paid receipt not counted: no operators row for ${logBare(change.paidReceipt)}`);
 			}
-			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), due(row.state));
+			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), outboxDue(row.state));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
 			if (change.delivery) this.db.prepare("INSERT INTO deliveries VALUES (?)").run(change.delivery);
+			// The act's spend lands with the act. The primary key makes a reservation as idempotent as
+			// the commit that carries it: one act can never be counted twice.
+			for (const reservation of change.reservations ?? []) {
+				this.db.prepare("INSERT OR IGNORE INTO cap_reservations VALUES (?, ?, ?, ?, ?)")
+					.run(reservation.kind, reservation.scope, reservation.ref, reservation.cents, reservation.at);
+			}
 			this.db.exec("COMMIT");
-			return "COMMITTED";
+			return { kind: "COMMITTED" };
 		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	async leaseEffect(now: Instant, until: Instant, key?: OperationKey): Promise<OutboxRow | null> {
@@ -240,7 +289,7 @@ export class SqliteStore implements Store {
 		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	private updateEffect(key: OperationKey, state: OutboxState): void {
-		this.db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(state), due(state), key);
+		this.db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(state), outboxDue(state), key);
 	}
 	async recordEffect(key: OperationKey, state: OutboxState): Promise<void> { this.updateEffect(key, state); }
 	close(): void { this.db.close(); }

@@ -1,4 +1,4 @@
-import { clockAdvance, fundMode, jobList, ledger, login, screenshot, seedDb, start, status, stop, webhookReplay } from "./commands.ts";
+import { clockAdvance, fundMode, jobList, ledger, login, screenshot, seedDb, start, status, stop, sweep, webhookReplay } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -45,6 +45,8 @@ export const registry: Command[] = [
 		examples: ["ledger --job job_7Q2K", "ledger --all --check"], destructive: false, run: ledger },
 	{ name: "jobs", summary: "List every stored job in the lane database.", usage: "jobs",
 		flags: [], examples: ["jobs"], destructive: false, run: jobList },
+	{ name: "sweep", summary: "Delete expired visitors' own repositories and their rows.", usage: "sweep [--dry-run]",
+		flags: [], examples: ["sweep --dry-run", "sweep"], destructive: true, run: sweep },
 	{ name: "login", summary: "Create a local development session for a seeded handle.", usage: "login --test-user <handle> [--save]",
 		flags: [{ name: "test-user", type: "string", summary: "Development handle from GET /api/users.", required: true },
 			{ name: "save", type: "boolean", summary: "Save the local token to data/ctl/sessions/<handle>.json.", default: false }],

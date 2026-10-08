@@ -1,6 +1,6 @@
 # Sign in as a seeded user
 
-Choose a seeded client or operator without a password. The control CLI can also create a Bearer session for read-only proof queries.
+In dev mode (`ACQUIT_DEV=1`), choose a seeded client or operator without a password. In public mode (`ACQUIT_DEV` unset) the page shows `Start my demo` instead; that path is [judge mode](12-judge-mode.md). The control CLI can also create a Bearer session for read-only proof queries.
 
 ## Sub-features
 
@@ -8,6 +8,8 @@ Choose a seeded client or operator without a password. The control CLI can also 
 - `signin-operator` opens the operator job list as `devon-ops`.
 - `signin-switch` signs out and chooses the other role.
 - `signin-cli` saves a session for authenticated API reads.
+- `signin-public` (public mode) shows the heading `Try Acquit with your own demo` and one `Start my demo` button, never the picker. The page decides by `GET /api/session` `mode`: `dev` loads the seeded list from `GET /api/users`, `public` shows only the demo button.
+- `signin-restore` reloads the page and stays signed in through `GET /api/session`, which also restores a demo's visitor.
 
 ## How to get to it (user POV)
 
@@ -34,4 +36,5 @@ Preconditions:
 - Seed reset invalidates browser cookies and CLI tokens. Sign in after seeding.
 - `login --save` prints a token in its JSON result. Always capture that result in memory.
 - The picker is development auth, not GitHub OAuth or production sign-up.
+- Public mode refuses `POST /api/session` with a seeded handle as `403 SEEDED_LOGIN_DISABLED`. The web shows that code as `Seeded sign-in is off on this deployment. Start a demo instead. (SEEDED_LOGIN_DISABLED)`.
 - CLI login does not sign the verification browser in. Verify both entry points separately.

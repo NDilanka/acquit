@@ -1,11 +1,18 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
-import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
+import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
-import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages/core/src/github.ts";
+import { openDatabase } from "../../../packages/core/src/store.ts";
+import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
+import { chooseJobFunding, defaultJobFunding } from "../../../packages/core/src/funding.ts";
+import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
+import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
+import { mayControlJob } from "../../../packages/core/src/job.ts";
+import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
+import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
+import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
@@ -21,7 +28,10 @@ const acquit = createAcquit(settings);
 // The runner's own App client. The core holds one for its outbox; this one mints the per-run
 // credential the operator CLI asks for, and it keeps the same bounded, redacted calls.
 const githubApp = createGitHubApp(githubEnv);
-const db = new DatabaseSync(settings.databaseUrl);
+// The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
+// and the journal mode come with it, so a second worker's write waits for the lock instead of failing
+// the request that carries it.
+const db = openDatabase(settings.databaseUrl);
 // The CLI login exchange's one-time codes. The row never holds the code itself: the digest is the key,
 // so a leaked database file is not a set of live sign-in links. It holds the challenge the CLI minted
 // (the digest of a verifier only the CLI has) and the token the browser's approval mints, handed over
@@ -38,7 +48,6 @@ const CLI_SESSION_TTL_MS = 7 * 86_400_000;
 const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
-const user = (handle: string) => SEEDED_USERS.find(user => user.handle === handle);
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 /** The challenge a CLI stores for a code: base64url(sha256(verifier)), the verifier never leaving the CLI. */
 const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
@@ -48,16 +57,46 @@ function sameChallenge(left: string, right: string): boolean {
 	const b = Buffer.from(right, "utf8");
 	return a.length === b.length && timingSafeEqual(a, b);
 }
+/**
+ * The session's principal, resolved through the `principals` table, never through SEEDED_USERS: a
+ * seeded handle is a row with no visitor, and a visitor's handle is a row that names it. A principal
+ * whose visitor row is gone is refused here, so a deleted visitor's cookie dies with its rows.
+ */
 function session(req: IncomingMessage) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
 	if (!token) return null;
 	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), clock.now());
-	const selected = record ? user(String(record.handle)) : null;
-	return selected ? { user: selected, token, actor: selected.role === "CLIENT"
-		? { role: "CLIENT", clientId: selected.handle as ClientId } as Actor
-		: { role: "OPERATOR", operatorId: selected.handle as OperatorId } as Actor } : null;
+	if (!record) return null;
+	const principal = principalOf(db, String(record.handle));
+	if (!principal) return null;
+	// Public mode has one way in: Start my demo. A principal with no visitor belongs to the seeded
+	// world, so its session is refused here, not only at the mint: an old cookie dies with the mode.
+	if (!devEnabled && principal.visitorId === null) return null;
+	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
+	// A visitor past its expiry is no principal at all, whatever its session row still says: the demo
+	// ends when the visitor does, so the API refuses it here rather than waiting for the sweep.
+	if (principal.visitorId !== null && (visitor === null || visitor.expiresAt <= clock.now())) return null;
+	const actor: Actor = principal.role === "CLIENT"
+		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
+			...(visitor?.repository ? { repository: visitor.repository } : {}) }
+		: { role: "OPERATOR", operatorId: principal.handle as OperatorId, tenant: principal.visitorId };
+	return { handle: principal.handle, role: principal.role, visitor, token, actor };
+}
+/** The visitor as the web reads it: both of its handles, its repository, and when the demo ends. */
+function visitorJson(visitor: VisitorRow): { id: string; client: string; operator: string; repository: string | null; expiresAt: string } {
+	return { id: visitor.id, client: visitor.clientHandle, operator: visitor.operatorHandle, repository: visitor.repository, expiresAt: visitor.expiresAt };
+}
+/**
+ * The request's address as a digest, never the address. The API binds loopback behind the deployment's
+ * proxy, which sets X-Forwarded-For; the first hop is the caller.
+ */
+function ipKeyOf(req: IncomingMessage): string {
+	const forwarded = req.headers["x-forwarded-for"];
+	const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
+	const address = first || req.socket.remoteAddress || "unknown";
+	return createHash("sha256").update(address).digest("hex").slice(0, 16);
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
 	res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -65,7 +104,17 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 }
 /** One browser or CLI session. The raw token is handed out once; the row keeps only its digest. */
 function insertSession(token: string, handle: string): void {
-	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString());
+	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, sessionExpiry(handle));
+}
+/**
+ * The session's own deadline: a week, or the visitor's own expiry when that comes first. A visitor
+ * lives a day, so its cookie must not outlive it; a seeded handle keeps the week.
+ */
+function sessionExpiry(handle: string): string {
+	const week = new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString();
+	const principal = principalOf(db, handle);
+	const visitor = principal?.visitorId ? readVisitor(db, principal.visitorId) : null;
+	return visitor !== null && visitor.expiresAt < week ? visitor.expiresAt : week;
 }
 function mintSession(handle: string): string {
 	const token = randomBytes(32).toString("base64url");
@@ -172,18 +221,73 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (origin && ![webOrigin, webAlias.origin, `http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) {
 		json(res, 403, { error: "ORIGIN_DENIED" }); return;
 	}
-	if (url.pathname === "/api/users" && method === "GET") { json(res, 200, { users: SEEDED_USERS }); return; }
+	if (url.pathname === "/api/users" && method === "GET") {
+		// Public mode has one pair per session: the caller's own. The seeded list is a development fixture.
+		if (!devEnabled) {
+			const current = session(req);
+			if (!current?.visitor) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
+			json(res, 200, { users: [{ handle: current.visitor.clientHandle, role: "CLIENT" },
+				{ handle: current.visitor.operatorHandle, role: "OPERATOR" }] });
+			return;
+		}
+		json(res, 200, { users: SEEDED_USERS }); return;
+	}
+	// Start my demo: one visitor, one disposable client repository forked by the App, and a session for
+	// its client. The configuration and the caps come first, and the visitor's row is written before the
+	// App is asked for anything, so a refused visitor never leaves a fork behind and a fork that fails is
+	// still tracked by the sweep.
+	if (url.pathname === "/api/demo" && method === "POST") {
+		const ipKey = ipKeyOf(req);
+		const id = newVisitorId();
+		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: async () => {
+			try {
+				const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
+				return { kind: "FORKED", repository: forked.repository, id: forked.id };
+			} catch (error) {
+				// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
+				// repository, which is the only path that exists then. Every other refusal is named, never
+				// papered over: a visitor whose own repository was not made must not fall back to a shared one.
+				if (error instanceof GitHubAppNotConfigured) return { kind: "NO_APP" };
+				throw error;
+			}
+		} });
+		if (created.kind === "CAPPED") { json(res, 429, { error: created.reason }); return; }
+		if (created.kind === "NOT_CONFIGURED") {
+			json(res, 503, { error: "DEMO_NOT_CONFIGURED", detail: "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through." });
+			return;
+		}
+		if (created.kind === "FAILED") { json(res, 502, { error: "DEMO_REPOSITORY_FAILED", detail: created.detail }); return; }
+		const token = mintSession(created.visitor.clientHandle);
+		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+		json(res, 201, { user: { handle: created.visitor.clientHandle, role: "CLIENT" }, visitor: visitorJson(created.visitor), token });
+		return;
+	}
 	if (url.pathname.startsWith("/api/dev/") && !devEnabled) {
 		json(res, 403, { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }); return;
 	}
 	if (url.pathname === "/api/session") {
-		if (method === "GET") { json(res, 200, { user: session(req)?.user ?? null }); return; }
+		if (method === "GET") { const current = session(req); json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
+			visitor: current?.visitor ? visitorJson(current.visitor) : null,
+			// The deployment's own sign-in shape, so a page draws the public one or the seeded picker
+			// without probing a second route for it.
+			mode: devEnabled ? "dev" : "public" }); return; }
 		if (method === "POST") {
-			const selected = user(text(object(await body(req)).handle, "handle"));
+			const handle = text(object(await body(req)).handle, "handle");
+			if (!devEnabled) {
+				// Public mode mints sessions only through Start my demo. A seeded handle is named as such;
+				// every other handle is refused the same way, so a visitor handle is never a credential.
+				const principal = principalOf(db, handle);
+				json(res, 403, { error: principal && principal.visitorId === null ? "SEEDED_LOGIN_DISABLED" : "SESSION_MINT_DISABLED",
+					detail: "Start my demo mints the only session in public mode." });
+				return;
+			}
+			const selected = principalOf(db, handle);
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
+			const selectedVisitor = selected.visitorId === null ? null : readVisitor(db, selected.visitorId);
 			const token = mintSession(selected.handle);
 			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
-			json(res, 200, { user: selected, token }); return;
+			json(res, 200, { user: { handle: selected.handle, role: selected.role },
+				visitor: selectedVisitor ? visitorJson(selectedVisitor) : null, token }); return;
 		}
 		if (method === "DELETE") {
 			const current = session(req);
@@ -278,13 +382,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (!delivered) {
 			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
 		}
-		const selected = user(String(row.handle));
+		const selected = principalOf(db, String(row.handle));
 		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
 	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
-	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [{ ...ISSUE, repository: clientRepository }] }); return; }
+	// The visitor's client/operator switch. It moves this session's principal inside the visitor that
+	// owns it, and it can never name a handle the session's visitor does not hold.
+	if (url.pathname === "/api/demo/switch" && method === "POST") {
+		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
+		const toClient = current.handle !== current.visitor.clientHandle;
+		const target = toClient ? current.visitor.clientHandle : current.visitor.operatorHandle;
+		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
+		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
+		return;
+	}
+	if (url.pathname === "/api/repos" && method === "GET") {
+		// The one repository this session may open a job on: the visitor's own fork when it has one.
+		json(res, 200, { repos: [{ ...ISSUE, repository: current.visitor?.repository ?? clientRepository }] });
+		return;
+	}
 	if (url.pathname === "/api/commands" && method === "POST") {
 		let parsed: { key: ReturnType<typeof parseRequestKey>; command: UserCommand };
 		try {
@@ -293,12 +411,58 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			parsed = { key: parseRequestKey(text(input.key, "request key")), command: parseCommand(input.command) };
 		} catch (error) { json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return; }
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
+		// A visitor's job funds with the test card unless its client chooses otherwise: a judge has no
+		// sandbox buyer account, and the card is the one path to a funded escrow without one.
+		if (current.visitor && parsed.command.type === "OpenJob" && outcome.kind !== "DENIED" && outcome.result.kind === "JOB")
+			defaultJobFunding(db, outcome.result.job.id, "card", clock.now());
 		// A bid the operator cannot afford carries when credits return, so the bid form can say it.
 		if (outcome.kind === "DENIED" && outcome.reason === "INSUFFICIENT_CREDITS") {
 			const credits = await acquit.query(current.actor, { type: "Credits" });
 			json(res, 409, { outcome, credits: credits.kind === "CREDITS" ? credits.credits : null }); return;
 		}
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
+	}
+	/**
+	 * Judge mode's two job actions. Both are scoped to the caller's own visitor: a job another visitor
+	 * owns is refused by name, so neither the card nor the clock can reach across visitors, and neither
+	 * touches the process-wide development controls.
+	 */
+	const action = url.pathname.match(/^\/api\/jobs\/([^/]+)\/(funding|clock)$/);
+	if (action && method === "POST") {
+		const jobId = validJobId(decodeURIComponent(action[1]));
+		const row = storedRow(jobId);
+		if (!row) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		// The controls belong to the job's own client. The visitor's operator, another visitor's client,
+		// and every tenant-less session are refused here, by the same core rule the table applies.
+		if (!mayControlJob(row, current.actor)) {
+			json(res, 403, { error: "NOT_VISITOR_JOB", detail: "This action reaches only a job your own demo's client owns." }); return;
+		}
+		const input = object(await body(req));
+		if (action[2] === "funding") {
+			if (Object.keys(input).some(key => key !== "mode") || (input.mode !== "card" && input.mode !== "checkout")) throw new BadBody("Expected card or checkout");
+			// The source is chosen in one transaction against the row this request read: a choice that
+			// races an accept loses to the accept's own version, and an accept that follows a choice
+			// queues the order with what the choice stored.
+			const chosen = chooseJobFunding(db, { jobId, expectedVersion: row.version, mode: input.mode as JobFundingMode, at: clock.now() });
+			if (chosen === "CHOSEN") { json(res, 200, { mode: input.mode }); return; }
+			if (chosen === "NOT_FOUND") { json(res, 404, { error: "NOT_FOUND" }); return; }
+			// An accepted bid has already bound the order's payment source, so a later choice would be a
+			// claim this job cannot honour.
+			if (chosen === "FUNDING_BOUND") {
+				json(res, 409, { error: "FUNDING_BOUND", detail: "This job's funding was fixed when its client accepted a bid." }); return;
+			}
+			json(res, 409, { error: "JOB_CHANGED", detail: "The job moved while its funding was chosen. Retry." }); return;
+		}
+		if (Object.keys(input).some(key => key !== "advanceMs")) throw new BadBody("Unsupported clock field");
+		const advanceMs = integer(input.advanceMs, "advanceMs", 365 * 86400000);
+		// The job's own instants move, never the deployment's clock: another visitor's job is untouched.
+		if (shiftJobClock(db, jobId, advanceMs) === null) {
+			json(res, 409, { error: "JOB_CHANGED", detail: "The job moved while its clock was advanced. Retry." }); return;
+		}
+		await acquit.tick();
+		const advanced = await acquit.query(current.actor, { type: "Job", jobId });
+		if (advanced.kind !== "JOB") { json(res, 403, { error: advanced.kind === "DENIED" ? advanced.reason : "NOT_FOUND" }); return; }
+		json(res, 200, { job: advanced.job, handles: jobHandles(advanced.job), now: clock.now() }); return;
 	}
 	if (url.pathname === "/api/dev/clock" && method === "POST") {
 		const input = object(await body(req));
@@ -343,15 +507,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const token = transaction(db, () => {
 			const minted = randomBytes(32).toString("base64url");
 			const claimed = db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ? AND handle IS NULL AND expires_at > ?")
-				.run(current.user.handle, minted, digest, clock.now());
+				.run(current.handle, minted, digest, clock.now());
 			if (claimed.changes !== 1) return null;
-			insertSession(minted, current.user.handle);
+			insertSession(minted, current.handle);
 			return minted;
 		});
 		if (token === null) {
 			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
 		}
-		json(res, 200, { handle: current.user.handle, role: current.user.role }); return;
+		json(res, 200, { handle: current.handle, role: current.role }); return;
 	}
 	if (url.pathname === "/api/jobs" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
@@ -362,7 +526,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles(), now: clock.now() });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -396,8 +560,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (db.prepare("SELECT owner FROM agents WHERE id = ?").get(agent.name)) {
 			json(res, 409, { error: "AGENT_EXISTS", detail: `Agent ${agent.name} is already registered.` }); return;
 		}
-		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.user.handle,
-			JSON.stringify({ id: agent.name, owner: current.user.handle, name: agent.name, runner: agent.runner,
+		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.handle,
+			JSON.stringify({ id: agent.name, owner: current.handle, name: agent.name, runner: agent.runner,
 				promptDigest: agent.promptDigest, tools: agent.tools }));
 		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
 	}
@@ -435,7 +599,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				detail: "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run." });
 			return;
 		}
-		const name = workRepoName(clientRepository, jobId);
+		// The name derives from the repository the job's contract froze, which for a visitor is its own
+		// fork: a visitor's work repo is never named after the deployment's repository.
+		const name = workRepoName(result.job.contract?.repository ?? clientRepository, jobId);
 		const repository = `${githubEnv.organization}/${name}`;
 		try {
 			// One credential per job: the mint names this job's work repo and carries only the
@@ -481,12 +647,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 function validJobId(raw: string): ReturnType<typeof parseJobId> {
 	try { return parseJobId(raw); } catch { throw new BadBody("Invalid job id"); }
 }
-/** Operator ids become handles here so the CLI never prints a bare id where a person's handle belongs. */
-function operatorHandles(): Record<string, string> {
+/** The stored row as the domain typed it: enough to read an owner, a status, and a phase without a load. */
+function storedRow(jobId: ReturnType<typeof parseJobId>): JobRow | null {
+	const record = db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId);
+	return record ? JSON.parse(String(record.json)) as JobRow : null;
+}
+/**
+ * The handles one job's own view names: its bidders and the operator it is locked to, and nothing
+ * else. The map can therefore never resolve an operator the viewer's tenant has no business seeing.
+ */
+function jobHandles(job: JobProjection): Record<string, string> {
+	const ids = new Set<string>();
+	for (const bid of job.bids.operators) ids.add(bid.operator);
+	if (job.bids.house) ids.add(job.bids.house.operator);
+	if (job.lockedTo) ids.add(job.lockedTo);
+	if (!ids.size) return {};
 	const handles: Record<string, string> = {};
-	for (const row of db.prepare("SELECT id, json FROM operators").all()) {
-		const operator = JSON.parse(String(row.json)) as { handle?: string };
-		if (typeof operator.handle === "string") handles[String(row.id)] = operator.handle;
+	for (const id of ids) {
+		const record = db.prepare("SELECT json FROM operators WHERE id = ?").get(id);
+		if (!record) continue;
+		const operator = JSON.parse(String(record.json)) as { handle?: string };
+		if (typeof operator.handle === "string") handles[id] = operator.handle;
 	}
 	return handles;
 }

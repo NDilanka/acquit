@@ -107,7 +107,37 @@ export interface JobView {
   readonly release: ReleaseEvidence | null;
   readonly receipt: Receipt | null;
   readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
+  /** The source this job's accept will use, served to the owning client only. Null when the deployment's default applies. */
+  readonly funding: FundingMode | null;
+  /** How far the owning client moved this job's own clock in total, 0 when unmoved. Null for every other viewer. */
+  readonly clockShiftMs: number | null;
 }
+
+export type FundingMode = "card" | "checkout";
+
+/** `GET /api/jobs/:id`, and `POST /api/jobs/:id/clock` after the job's own time moved. */
+export type JobResponse = { readonly job: JobView; readonly handles: Readonly<Record<string, string>>; readonly now: Instant };
+
+/** A judge-mode visitor: its own client and operator handles, its forked repository, and when the demo ends. */
+export interface VisitorView {
+  readonly id: string;
+  readonly client: string;
+  readonly operator: string;
+  /** Null when the deployment has no GitHub App, so the visitor's jobs open on the deployment's repository. */
+  readonly repository: string | null;
+  readonly expiresAt: Instant;
+}
+
+export type SessionUser = { readonly handle: string; readonly role: "CLIENT" | "OPERATOR" };
+
+/** `public` offers only Start my demo; `dev` offers the seeded picker. */
+export type DeploymentMode = "public" | "dev";
+
+/** `GET /api/session`. `visitor` is null for a seeded session. */
+export type SessionResponse = { readonly user: SessionUser | null; readonly visitor: VisitorView | null; readonly mode: DeploymentMode };
+
+/** `POST /api/session`, `POST /api/demo`, and `POST /api/demo/switch`. */
+export type SignedInResponse = { readonly user: SessionUser; readonly visitor: VisitorView | null; readonly token: string };
 
 export interface OperatorView {
   readonly id: string;
