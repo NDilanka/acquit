@@ -68,6 +68,9 @@ function session(req: IncomingMessage) {
 	if (!record) return null;
 	const principal = principalOf(db, String(record.handle));
 	if (!principal) return null;
+	// Public mode has one way in: Start my demo. A principal with no visitor belongs to the seeded
+	// world, so its session is refused here, not only at the mint: an old cookie dies with the mode.
+	if (!devEnabled && principal.visitorId === null) return null;
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
 	if (principal.visitorId !== null && visitor === null) return null;
 	const actor: Actor = principal.role === "CLIENT"
