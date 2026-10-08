@@ -101,7 +101,26 @@ const reasons: Record<string, string> = {
   PAYMENT_IN_PROGRESS: "A payment is in progress for this job.",
   KEY_REUSED_WITH_DIFFERENT_PAYLOAD: "This request was already sent with different values. Reload and try again.",
   BUSY: "The server is busy with this job. Try again in a moment.",
+  CAP_VISITORS_IP_DAY: "This network has started as many demos as it can today. Try again tomorrow.",
+  CAP_VISITORS_DAY: "Today's demos are all taken: the daily limit is reached. Try again tomorrow.",
+  CAP_VISITOR_JOBS: "This demo has opened as many jobs as a demo can.",
+  CAP_AMOUNT: "That budget is higher than a demo job allows.",
+  CAP_SPEND_DAY: "This demo has reached its daily limit for job budgets.",
+  CAP_MODEL_RUNS: "This demo has used its verifier runs for today.",
+  CAP_MODEL_RUNS_DAY: "The verifier has reached its daily limit for every demo. Try again tomorrow.",
+  DEMO_NOT_CONFIGURED: "Demos are not set up on this deployment yet.",
+  DEMO_REPOSITORY_FAILED: "GitHub could not create your demo repository. Try again in a moment.",
+  SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Start a demo instead.",
+  NOT_DEMO_VISITOR: "Only a demo session can switch between client and operator.",
+  NOT_VISITOR_JOB: "Only the demo that owns this job can change it.",
+  FUNDING_BOUND: "The payment method was fixed when a bid was accepted.",
+  JOB_CHANGED: "The job changed while its clock moved. Try again.",
 };
+
+/** An HTTP error code: the plain sentence when the code is known, else the API's own detail. */
+export function refusalText(code: string, detail?: string): string {
+  return reasons[code] || !detail ? denied(code) : `${code}: ${detail}`;
+}
 
 /** `credits` arrives only with an INSUFFICIENT_CREDITS refusal, so the message can say when credits return. */
 export function denied(reason: string, credits?: CreditAccountView | null): string {

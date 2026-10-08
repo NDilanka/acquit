@@ -1,30 +1,54 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type SessionUser } from "../api";
+import { errorText } from "../demo";
+import type { Session } from "../session";
 
-export function SignIn({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
-  const [users, setUsers] = useState<SessionUser[] | null>(null);
+/** Dev mode serves the seeded picker; public mode answers the unauthenticated user list with 401. */
+type Mode = { kind: "loading" } | { kind: "picker"; users: SessionUser[] } | { kind: "demo" };
+
+export function SignIn({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
+  const [mode, setMode] = useState<Mode>({ kind: "loading" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .users()
-      .then((r) => setUsers(r.users))
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : `Cannot reach the API: ${String(e)}`));
+      .then((r) => setMode({ kind: "picker", users: r.users }))
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 401) setMode({ kind: "demo" });
+        else setError(errorText(e));
+      });
   }, []);
 
-  const pick = async (handle: string) => {
-    setBusy(handle);
+  const run = async (label: string, start: () => Promise<Session>) => {
+    setBusy(label);
     setError(null);
     try {
-      const r = await api.signIn(handle);
-      onSignedIn(r.user);
+      onSignedIn(await start());
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(null);
     }
   };
+
+  if (mode.kind === "demo") {
+    return (
+      <div className="signin card">
+        <div className="eyebrow">Judge mode</div>
+        <h1>Try Acquit with your own demo</h1>
+        <p className="muted">
+          You get a client and an operator of your own and a fresh copy of the demo repository. Nobody else sees your jobs. Payments
+          run against the PayPal sandbox, and the demo ends after 24 hours.
+        </p>
+        {error && <div className="alert">{error}</div>}
+        <button className="btn green" disabled={busy !== null} onClick={() => void run("demo", () => api.startDemo())}>
+          {busy ? "Starting your demo…" : "Start my demo"}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="signin card">
@@ -34,18 +58,19 @@ export function SignIn({ onSignedIn }: { onSignedIn: (user: SessionUser) => void
         The skeleton has no passwords. Pick a user; payments run against the PayPal sandbox.
       </p>
       {error && <div className="alert">{error}</div>}
-      {!users && !error && <p className="muted">Loading users…</p>}
+      {mode.kind === "loading" && !error && <p className="muted">Loading users…</p>}
       <div className="userlist">
-        {users?.map((u) => (
-          <button key={u.handle} className="userpick" disabled={busy !== null} onClick={() => void pick(u.handle)}>
-            <i>{u.handle.slice(0, 2).toUpperCase()}</i>
-            <span>
-              <b>{u.handle}</b>
-              <small>{u.role === "CLIENT" ? "Client: I want work done" : "Operator: I deliver work"}</small>
-            </span>
-            {busy === u.handle && <small className="muted">Signing in…</small>}
-          </button>
-        ))}
+        {mode.kind === "picker" &&
+          mode.users.map((u) => (
+            <button key={u.handle} className="userpick" disabled={busy !== null} onClick={() => void run(u.handle, () => api.signIn(u.handle))}>
+              <i>{u.handle.slice(0, 2).toUpperCase()}</i>
+              <span>
+                <b>{u.handle}</b>
+                <small>{u.role === "CLIENT" ? "Client: I want work done" : "Operator: I deliver work"}</small>
+              </span>
+              {busy === u.handle && <small className="muted">Signing in…</small>}
+            </button>
+          ))}
       </div>
     </div>
   );

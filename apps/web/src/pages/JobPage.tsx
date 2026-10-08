@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { BidView, JobView, MergeProgress, UserCommand } from "../api-types";
+import type { BidView, FundingMode, JobView, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
+import { CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link, useRouter } from "../router";
@@ -9,7 +10,7 @@ import { houseName, lockedBid, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 
 export function JobPage({ id }: { id: string }) {
-  const { user } = useSession();
+  const { user, visitor } = useSession();
   const { location } = useRouter();
   const [job, setJob] = useState<JobView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,8 +44,10 @@ export function JobPage({ id }: { id: string }) {
   }, [load]);
 
   // Fast poll while waiting for a PayPal order or release; slow poll while bids may still arrive, a verdict is due, or the merge runs.
+  // A card order captures without a redirect, so the checkout wait ends once the job leaves OPEN.
+  const awaitingOrder = checkout !== null && job?.status === "OPEN";
   const polling =
-    checkout !== null || job?.phase === "RELEASE_PENDING"
+    awaitingOrder || job?.phase === "RELEASE_PENDING"
       ? 1000
       : job?.status === "OPEN" ||
           job?.phase === "VERIFYING" ||
@@ -90,6 +93,7 @@ export function JobPage({ id }: { id: string }) {
   const disputeCommit = job.viewerCanDispute && !job.dispute ? job.mergeCommit : null;
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
+  const controls = demoControls(job, visitor);
 
   const doAccept = async (bid: BidView) => {
     const outcome = await accept.send(`accept:${bid.id}`, (): UserCommand => ({
@@ -189,11 +193,12 @@ export function JobPage({ id }: { id: string }) {
           )}
           {accept.error && <div className="alert">{accept.error}</div>}
 
-          {(checkout || (funding && isClient)) && (
+          {job.status === "OPEN" && (checkout || (funding && isClient)) && (
             <Checkout
               bid={checkout ?? locked}
               approveUrl={job.approveUrl}
               redirecting={checkout !== null}
+              card={job.funding === "card"}
             />
           )}
 
@@ -287,6 +292,8 @@ export function JobPage({ id }: { id: string }) {
         </div>
 
         <aside>
+          {controls.funding && <FundingChoice job={job} onChosen={() => void load()} />}
+          {controls.clock && <JobClock job={job} onAdvanced={setJob} />}
           <div className="card pad">
             <h2>Escrow</h2>
             <div className="kv">
@@ -334,13 +341,16 @@ export function JobPage({ id }: { id: string }) {
         <div className="scrim" onClick={() => setConfirm(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Accept {confirm.label === "HOUSE" ? `House: ${houseName(confirm.handle)}` : confirm.handle}?</h3>
-            <p>Acquit creates a PayPal order that can pay only this operator. You pay now; money is released on verified proof.</p>
+            <p>
+              Acquit creates a PayPal order that can pay only this operator. You pay now
+              {job.funding === "card" ? " with the sandbox test card" : ""}; money is released on verified proof.
+            </p>
             <Breakdown price={confirm.price} />
             {accept.error && <div className="alert">{accept.error}</div>}
             <div className="act">
               <button className="btn ghost" onClick={() => setConfirm(null)}>Back</button>
               <button className="btn green" disabled={accept.busy} onClick={() => void doAccept(confirm)}>
-                {accept.busy ? "Creating order…" : "Accept and pay with PayPal"}
+                {accept.busy ? "Creating order…" : job.funding === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal"}
               </button>
             </div>
           </div>
@@ -485,10 +495,88 @@ function Breakdown({ price }: { price: number }) {
   );
 }
 
-function Checkout({ bid, approveUrl, redirecting }: { bid: BidView | null; approveUrl: string | null; redirecting: boolean }) {
+const FUNDING_CHOICES: readonly { mode: FundingMode; label: string; note: string }[] = [
+  { mode: "card", label: "Sandbox test card", note: "Acquit charges a PayPal sandbox test card when you accept. No PayPal login." },
+  { mode: "checkout", label: "PayPal checkout", note: "You approve the order on PayPal's sandbox site with a sandbox buyer account." },
+];
+
+function FundingChoice({ job, onChosen }: { job: JobView; onChosen: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const choose = async (mode: FundingMode) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setFunding(job.id, mode);
+      onChosen();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card pad">
+      <h2>Payment method</h2>
+      <p className="muted small">How you pay when you accept a bid. Only this job changes.</p>
+      {FUNDING_CHOICES.map((c) => (
+        <label key={c.mode} className="choice">
+          <input
+            type="radio"
+            name="funding"
+            checked={job.funding === c.mode}
+            disabled={busy}
+            onChange={() => void choose(c.mode)}
+          />
+          <span>
+            <b>{c.label}</b>
+            <small>{c.note}</small>
+          </span>
+        </label>
+      ))}
+      {error && <div className="alert">{error}</div>}
+    </div>
+  );
+}
+
+function JobClock({ job, onAdvanced }: { job: JobView; onAdvanced: (job: JobView) => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [moved, setMoved] = useState<string | null>(null);
+  const advance = async (step: (typeof CLOCK_STEPS)[number]) => {
+    setBusy(step.label);
+    setError(null);
+    try {
+      const r = await withJobChangedRetry(() => api.advanceJobClock(job.id, step.ms));
+      onAdvanced(r.job);
+      setMoved(step.label.replace("Advance", "Moved this job forward"));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="card pad">
+      <h2>Job clock</h2>
+      <p className="muted small">Skip ahead on this job's deadlines and review window. Other jobs keep their own time.</p>
+      <div className="act">
+        {CLOCK_STEPS.map((s) => (
+          <button key={s.label} className="btn ghost sm" disabled={busy !== null} onClick={() => void advance(s)}>
+            {busy === s.label ? "Moving…" : s.label}
+          </button>
+        ))}
+      </div>
+      {moved && !error && <p className="muted small">{moved}.</p>}
+      {error && <div className="alert">{error}</div>}
+    </div>
+  );
+}
+
+function Checkout({ bid, approveUrl, redirecting, card }: { bid: BidView | null; approveUrl: string | null; redirecting: boolean; card: boolean }) {
   return (
     <section className="card pad checkout">
-      <h2>PayPal sandbox checkout</h2>
+      <h2>{card ? "Sandbox test card payment" : "PayPal sandbox checkout"}</h2>
       <p className="muted">
         {bid ? (
           <>
@@ -500,7 +588,7 @@ function Checkout({ bid, approveUrl, redirecting }: { bid: BidView | null; appro
       </p>
       {bid && <Breakdown price={bid.price} />}
       {redirecting ? (
-        <p className="muted">{approveUrl ? "Sending you to PayPal…" : "Creating the PayPal order…"}</p>
+        <p className="muted">{card ? "Charging the sandbox test card…" : approveUrl ? "Sending you to PayPal…" : "Creating the PayPal order…"}</p>
       ) : approveUrl ? (
         <a className="btn green" href={approveUrl}>
           Resume PayPal checkout
