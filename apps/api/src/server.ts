@@ -72,7 +72,9 @@ function session(req: IncomingMessage) {
 	// world, so its session is refused here, not only at the mint: an old cookie dies with the mode.
 	if (!devEnabled && principal.visitorId === null) return null;
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
-	if (principal.visitorId !== null && visitor === null) return null;
+	// A visitor past its expiry is no principal at all, whatever its session row still says: the demo
+	// ends when the visitor does, so the API refuses it here rather than waiting for the sweep.
+	if (principal.visitorId !== null && (visitor === null || visitor.expiresAt <= clock.now())) return null;
 	const actor: Actor = principal.role === "CLIENT"
 		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
 			...(visitor?.repository ? { repository: visitor.repository } : {}) }
@@ -99,7 +101,17 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 }
 /** One browser or CLI session. The raw token is handed out once; the row keeps only its digest. */
 function insertSession(token: string, handle: string): void {
-	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString());
+	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, sessionExpiry(handle));
+}
+/**
+ * The session's own deadline: a week, or the visitor's own expiry when that comes first. A visitor
+ * lives a day, so its cookie must not outlive it; a seeded handle keeps the week.
+ */
+function sessionExpiry(handle: string): string {
+	const week = new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString();
+	const principal = principalOf(db, handle);
+	const visitor = principal?.visitorId ? readVisitor(db, principal.visitorId) : null;
+	return visitor !== null && visitor.expiresAt < week ? visitor.expiresAt : week;
 }
 function mintSession(handle: string): string {
 	const token = randomBytes(32).toString("base64url");
