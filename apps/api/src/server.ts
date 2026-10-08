@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, createDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
+import { openDatabase } from "../../../packages/core/src/store.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
 import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
@@ -28,7 +28,10 @@ const acquit = createAcquit(settings);
 // The runner's own App client. The core holds one for its outbox; this one mints the per-run
 // credential the operator CLI asks for, and it keeps the same bounded, redacted calls.
 const githubApp = createGitHubApp(githubEnv);
-const db = new DatabaseSync(settings.databaseUrl);
+// The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
+// and the journal mode come with it, so a second worker's write waits for the lock instead of failing
+// the request that carries it.
+const db = openDatabase(settings.databaseUrl);
 // The CLI login exchange's one-time codes. The row never holds the code itself: the digest is the key,
 // so a leaked database file is not a set of live sign-in links. It holds the challenge the CLI minted
 // (the digest of a verifier only the CLI has) and the token the browser's approval mints, handed over

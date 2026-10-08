@@ -283,6 +283,24 @@ test("a cap holds when parallel requests race it on one lane", async () => {
 	});
 });
 
+test("the API's own writes wait for the lane's write lock instead of failing the request", async () => {
+	await apiFixture(true, async (url, databasePath) => {
+		// Another worker holds the lane's write lock while this sign-in arrives. Every write in core waits
+		// for the lock; the API's own session write must wait the same way, not fail the caller's sign-in.
+		const holder = new DatabaseSync(databasePath);
+		holder.exec("PRAGMA busy_timeout = 5000");
+		holder.exec("BEGIN IMMEDIATE");
+		const release = setTimeout(() => holder.exec("COMMIT"), 400);
+		try {
+			const signed = await post(url, "/api/session", { handle: "maya-client" });
+			assert.equal(signed.status, 200, `The sign-in answers ${signed.status}: ${await signed.text()}`);
+		} finally {
+			clearTimeout(release);
+			holder.close();
+		}
+	});
+});
+
 test("one visitor's job is invisible and untouchable to another visitor", async () => {
 	await apiFixture(false, async url => {
 		const first = await (await post(url, "/api/demo", {})).json() as DemoBody;
