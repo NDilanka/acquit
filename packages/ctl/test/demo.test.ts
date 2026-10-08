@@ -134,7 +134,8 @@ const openOutcome = async (url: string, token: string, repository: string, budge
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
 	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
 type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null;
-	readonly deliveryEndsAt: string; readonly contract: { readonly repository: string } | null };
+	readonly deliveryEndsAt: string; readonly clockShiftMs: number | null;
+	readonly contract: { readonly repository: string } | null };
 	readonly handles: Readonly<Record<string, string>> };
 /** One job of the visitor's own, opened by its client principal: the fixture repository and issue 12. */
 async function openVisitorJob(url: string, token: string, repository = "maya-client/invoice-app"): Promise<string> {
@@ -419,6 +420,38 @@ test("a visitor advances its own job's clock and no other visitor's", async () =
 		// A clock that is not a positive whole number of milliseconds is refused before anything moves.
 		assert.equal((await post(url, `/api/jobs/${mine}/clock`, { advanceMs: 0 }, first.token)).status, 400);
 		assert.equal((await post(url, `/api/jobs/${mine}/clock`, { advanceMs: -day }, first.token)).status, 400);
+	});
+});
+
+test("a job's own view carries the clock its client advanced, and only to that client", async () => {
+	await apiFixture(false, async url => {
+		const visitor = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const jobId = await openVisitorJob(url, visitor.token);
+		// A fresh job has not been advanced: its own client reads zero.
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.clockShiftMs, 0);
+		// The visitor's operator reads the job it bid on, but never its client's own clock.
+		await placeBid(url, visitor.token, jobId);
+		await post(url, "/api/demo/switch", {}, visitor.token);
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.clockShiftMs, null, "an operator's view carries no client clock");
+		await post(url, "/api/demo/switch", {}, visitor.token);
+		// Each advance adds to the shift the client's own view reports.
+		assert.equal((await post(url, `/api/jobs/${jobId}/clock`, { advanceMs: 86_400_000 }, visitor.token)).status, 200);
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.clockShiftMs, 86_400_000);
+		assert.equal((await post(url, `/api/jobs/${jobId}/clock`, { advanceMs: 3_600_000 }, visitor.token)).status, 200);
+		assert.equal((await jobOf(url, jobId, visitor.token)).body.job.clockShiftMs, 90_000_000);
+	});
+});
+
+test("the session route names the mode it serves, so the page knows which sign-in it has", async () => {
+	await apiFixture(false, async url => {
+		const anonymous = await fetch(`${url}/api/session`);
+		assert.equal(anonymous.status, 200);
+		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "public" });
+	});
+	await apiFixture(true, async url => {
+		const anonymous = await fetch(`${url}/api/session`);
+		assert.equal(anonymous.status, 200);
+		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "dev" });
 	});
 });
 
