@@ -91,17 +91,25 @@ export type PublishRequest = { readonly jobId: JobId; readonly repository: strin
 /** One client repository to fork: the deployment's source, and the name the fork takes in the organization. */
 export type ClientRepoRequest = { readonly repository: string; readonly name: string };
 
+/** One client repository to remove: the fork's own name, and the source it must be a fork of. */
+export type ClientRepoDeleteRequest = { readonly repository: string; readonly source: string };
+
 /** The fork a visitor's own jobs freeze. Its remote is derived, never stored. */
 export type ClientRepo = { readonly repository: string; readonly remote: string };
 
+/** What removing a visitor's repository found: this client's own fork, or a name already gone. */
+export type ClientRepoRemoval = "DELETED" | "ABSENT";
+
 /**
  * What judge mode needs: one disposable client repository per visitor, forked into the App's
- * organization. The App alone makes it: no personal access token, and no repository this client did
- * not create is ever adopted.
+ * organization, and removed with the visitor. The App alone makes and unmakes them: no personal access
+ * token, and no repository this client did not create is ever adopted or deleted.
  */
 export interface ClientRepoPort {
 	/** Idempotent per name: a retry adopts this client's own fork instead of creating a second repository. */
 	createClientRepo(request: ClientRepoRequest): Promise<ClientRepo>;
+	/** Idempotent per name: a repository that is already gone is ABSENT, and one this client did not fork is refused. */
+	deleteClientRepo(request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval>;
 }
 
 /** What the core's outbox needs. */
@@ -180,7 +188,7 @@ export function missingGitHubNames(input: GitHubAppConfigInput | undefined): rea
 export function unconfiguredGitHubApp(detail = `Missing ${missingGitHubNames({}).join(", ")}.`): GitHubAppPort {
 	const fail = (): never => { throw new GitHubAppNotConfigured(detail); };
 	return { createWorkRepo: async () => fail(), publishVerified: async () => fail(), merge: async () => fail(),
-		createClientRepo: async () => fail(), installationToken: async () => fail() };
+		createClientRepo: async () => fail(), deleteClientRepo: async () => fail(), installationToken: async () => fail() };
 }
 
 const base64url = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
@@ -575,6 +583,29 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		return { repository, remote: `https://github.com/${repository}.git` };
 	};
 
+	/**
+	 * Removes one visitor's own fork, with the same ownership marker the create writes: the fork of
+	 * exactly this source, under exactly this name. A name this client did not fork is refused and never
+	 * deleted, and one that is already gone is ABSENT, so a retried sweep converges instead of failing
+	 * on work it already did.
+	 */
+	const deleteClientRepo = async (request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval> => {
+		const target = splitRepository(request.repository);
+		splitRepository(request.source);
+		const organization = checkedOwner(parsed.organization);
+		if (target.owner.toLowerCase() !== organization.toLowerCase()) {
+			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not a repository in ${organization}. Nothing was deleted.`);
+		}
+		const orgToken = await tokenFor(organization);
+		const found = await call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${request.repository}`, allow: [200, 404], permission: "administration: write" });
+		if (found.status === 404) return "ABSENT";
+		if (!isOurFork(found.body, request.repository, request.source)) {
+			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not the fork of ${request.source} this deployment created. Nothing was deleted.`);
+		}
+		await call(`Bearer ${orgToken}`, { method: "DELETE", path: `/repos/${request.repository}`, allow: [204], permission: "administration: write" });
+		return "DELETED";
+	};
+
 	const findOrOpenPullRequest = async (request: PublishRequest, branch: string, headOwner: string, clientToken: string): Promise<number> => {
 		const head = `${headOwner}:${branch}`;
 		const list = async (): Promise<{ number?: unknown; state?: unknown }[]> => {
@@ -719,6 +750,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	return {
 		async createWorkRepo(request) { return createWorkRepo(request); },
 		async createClientRepo(request) { return createClientRepo(request); },
+		async deleteClientRepo(request) { return deleteClientRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
 		async merge(request) { return merge(request); },
 		async installationToken(owner, repositories) { return tokenFor(checkedOwner(owner), repositories); },
@@ -766,6 +798,13 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			const created: ClientRepo = { repository, remote: `https://github.com/${repository}.git` };
 			clientRepos.set(request.name, created);
 			return created;
+		},
+		async deleteClientRepo(request) {
+			// Only a fork this fake made is removed, and a name it never made is already gone.
+			const name = request.repository.split("/").at(-1) ?? request.repository;
+			if (!clientRepos.has(name)) return "ABSENT";
+			clientRepos.delete(name);
+			return "DELETED";
 		},
 		async publishVerified(request, requestId) {
 			calls.push({ kind: "PUBLISH_VERIFIED", jobId: request.jobId, requestId });

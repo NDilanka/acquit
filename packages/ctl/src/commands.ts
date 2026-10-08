@@ -3,6 +3,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
+import { instant } from "../../core/src/ids.ts";
 import type { StoredBookRaw } from "../../core/src/job.ts";
 import { logBare } from "../../core/src/log.ts";
 import { alive, captured, childListener, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
@@ -110,6 +111,30 @@ export async function ledger(parsed: Parsed, ctx: Context): Promise<Result> {
 export async function jobList(_parsed: Parsed, ctx: Context): Promise<Result> {
 	const { rows } = await readStoredJobs(ctx.databasePath);
 	return { jobs: rows.map(row => ({ id: row.id, status: row.state.status })) };
+}
+/**
+ * The expiry sweep. A visitor lives 24 hours and its repository must not outlive it, so this removes
+ * each expired visitor's own fork and then its rows, through the App the deployment already holds: no
+ * personal access token, and a repository this deployment did not fork is refused rather than deleted.
+ * A refusal keeps the visitor for the next run, so the sweep is safe to repeat as often as wanted.
+ */
+export async function sweep(parsed: Parsed, ctx: Context): Promise<Result> {
+	const run = await readState(ctx);
+	const path = run?.databasePath ?? ctx.databasePath;
+	const [store, { expiredVisitors }, { sweepExpiredVisitors }, { createGitHubApp }, { clientRepositoryEnv, githubAppEnv }] = await Promise.all([
+		import("../../core/src/store.ts"), import("../../core/src/visitors.ts"), import("../../core/src/sweep.ts"),
+		import("../../core/src/github.ts"), import("../../verifier/config.ts")]);
+	const sqlite = new store.SqliteStore(path);
+	const now = instant(new Date().toISOString());
+	try {
+		if (parsed["dry-run"]) {
+			const expired = expiredVisitors(sqlite.db, now);
+			return { databasePath: path, expired: expired.map(visitor => ({ id: visitor.id, repository: visitor.repository, expiresAt: visitor.expiresAt })),
+				hint: "A real sweep deletes each expired visitor's repository through the GitHub App, then its rows." };
+		}
+		const report = await sweepExpiredVisitors({ db: sqlite.db, app: createGitHubApp(githubAppEnv()), source: clientRepositoryEnv(), now });
+		return { databasePath: path, ...report };
+	} finally { sqlite.close(); }
 }
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
 	if (!["card", "checkout"].includes(String(parsed.mode))) throw new CliError("INVALID_ARGUMENT", "Use card or checkout.", "Run npm run -s ctl -- fund-mode card.", 2);

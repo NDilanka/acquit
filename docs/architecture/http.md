@@ -39,6 +39,8 @@ Public mode is `ACQUIT_DEV` unset. A session resolves through the `principals` t
 
 `visitor` is `{ id, client, operator, repository, expiresAt }`. The repository is `acquit-forks/demo-<id>` when the App forked one: the visitor's client is the only principal that may open a job on it, and `GET /api/repos` serves it in place of the deployment's own. A visitor's job freezes it into the contract, so its work repo is named after the visitor's fork and never after the deployment's repository. Every `/api/dev/*` route and the arbiter stay refused in public mode (`403 { error: "DEV_DISABLED" }`).
 
+A visitor lives 24 hours. `npm run -s ctl -- sweep` removes each expired visitor's own repository through the App and then its rows; a repository the deployment cannot remove (or a missing App) keeps the visitor, so the next run retries exactly that work, and a repository that is already gone is not a failure. The sweep is safe to run as often as wanted.
+
 Two job actions are scoped to the caller's own visitor. Both read the stored job first: an unknown id is `404 { error: "NOT_FOUND" }`, and a job whose `client` is not the calling visitor's client handle is `403 { error: "NOT_VISITOR_JOB" }`.
 
 | Method | Path | Body | Response |
