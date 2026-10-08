@@ -6,7 +6,6 @@ import { createAcquit, closeAcquit, createDemoVisitor, handlePayPalReturn, hours
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
-import { visitorCap } from "../../../packages/core/src/caps.ts";
 import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
@@ -231,12 +230,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { users: SEEDED_USERS }); return;
 	}
 	// Start my demo: one visitor, one disposable client repository forked by the App, and a session for
-	// its client. The caps come first, so a refused visitor never leaves a forked repository behind.
+	// its client. The caps are checked inside the transaction that writes the visitor, so no second
+	// request can slip past them, and a refusal names its allowance and writes nothing.
 	if (url.pathname === "/api/demo" && method === "POST") {
 		const ipKey = ipKeyOf(req);
-		const counts = await acquit.capCounts({ clientId: null, ipKey });
-		const capped = visitorCap(counts);
-		if (capped !== null) { json(res, 429, { error: capped }); return; }
 		const id = newVisitorId();
 		let repository: string | null = null;
 		try {

@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Store, AtomicCommit, OutboxRow, OutboxState, OperationKey, RecordedRequest } from "./effects.ts";
+import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, RecordedRequest } from "./effects.ts";
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
@@ -11,7 +11,7 @@ import type { RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, ClientId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
-import type { CapCounts } from "./caps.ts";
+import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
 import type { UsdCents } from "./ledger.ts";
 import { logBare } from "./log.ts";
 import { jobFunding } from "./funding.ts";
@@ -48,6 +48,11 @@ export function openDatabase(path: string): DatabaseSync {
 			ip_key TEXT NOT NULL, client_handle TEXT NOT NULL, operator_handle TEXT NOT NULL, repository TEXT);
 		CREATE INDEX IF NOT EXISTS visitors_expiry ON visitors(expires_at);
 		CREATE TABLE IF NOT EXISTS principals (handle TEXT PRIMARY KEY, role TEXT NOT NULL, visitor_id TEXT);
+		-- Judge mode's spends, append-only. One row per act, written in the transaction that commits it,
+		-- so a cap check and the write it guards cannot be split by another worker.
+		CREATE TABLE IF NOT EXISTS cap_reservations (kind TEXT NOT NULL, scope TEXT NOT NULL, ref TEXT NOT NULL,
+			cents INTEGER NOT NULL, at_wall TEXT NOT NULL, PRIMARY KEY(kind, ref));
+		CREATE INDEX IF NOT EXISTS cap_reservations_window ON cap_reservations(kind, scope, at_wall);
 	`);
 	// The seeded handles are principals with no visitor: the rows every session resolves through, so
 	// the SEEDED_USERS constant is a seed, never an authentication source.
@@ -184,37 +189,6 @@ export class SqliteStore implements Store {
 		return row ? String(row.job_id) as JobId : null;
 	}
 	/**
-	 * The caps' counters, from committed rows and nothing else. A visitor's own use is its lifetime,
-	 * because a visitor lives one day; the deployment's run count is windowed by the runs a row can
-	 * date, which is the judged runs it holds, the run waiting for a verdict, and the last failed one.
-	 */
-	async capCounts(input: { readonly clientId: ClientId | null; readonly ipKey: string | null; readonly since: Instant }): Promise<CapCounts> {
-		const visitors = this.db.prepare("SELECT COUNT(*) AS total, SUM(ip_key = ?) AS from_ip FROM visitors WHERE created_at > ?")
-			.get(input.ipKey ?? "", input.since) as { readonly total?: unknown; readonly from_ip?: unknown };
-		const principal = input.clientId === null ? undefined
-			: this.db.prepare("SELECT visitor_id FROM principals WHERE handle = ?").get(input.clientId) as { readonly visitor_id?: unknown } | undefined;
-		let jobs = 0;
-		let budget = 0;
-		let runs = 0;
-		let runsToday = 0;
-		for (const stored of this.db.prepare("SELECT json FROM jobs").all()) {
-			const job = JSON.parse(String(stored.json)) as { readonly client?: unknown; readonly contract?: { readonly budget?: unknown };
-				readonly state?: { readonly attempts?: { readonly history?: readonly { readonly verdict?: { readonly at?: unknown } }[];
-					readonly pending?: { readonly submittedAt?: unknown }; readonly failure?: { readonly at?: unknown }; readonly runsStarted?: unknown } } };
-			const attempts = job.state?.attempts;
-			const dated = [attempts?.pending?.submittedAt, attempts?.failure?.at,
-				...(attempts?.history ?? []).map(record => record.verdict?.at)].filter(at => typeof at === "string" && at > input.since);
-			runsToday += dated.length;
-			if (input.clientId === null || job.client !== input.clientId) continue;
-			jobs += 1;
-			budget += typeof job.contract?.budget === "number" ? job.contract.budget : 0;
-			runs += typeof attempts?.runsStarted === "number" ? attempts.runsStarted : 0;
-		}
-		return { visitor: principal?.visitor_id !== null && principal?.visitor_id !== undefined,
-			visitorsFromIp: Number(visitors.from_ip ?? 0), visitorsToday: Number(visitors.total ?? 0),
-			jobs, budget: budget as UsdCents, runs, runsToday };
-	}
-	/**
 	 * The canonical envelope of one delivery, keyed by PayPal's event id. The row keeps the fields of the
 	 * latest delivery under that id, never the body. The route is unauthenticated, so the table is
 	 * bounded on insert: the newest deliveries by receipt time, and nothing older than the window.
@@ -232,25 +206,31 @@ export class SqliteStore implements Store {
 	async dueJobs(now: Instant): Promise<readonly { jobId: JobId; wakeAt: Instant }[]> {
 		return this.db.prepare("SELECT id, wake_at FROM jobs WHERE wake_at <= ?").all(now).map(row => ({ jobId: String(row.id) as JobId, wakeAt: String(row.wake_at) as Instant }));
 	}
-	async commit(change: AtomicCommit): Promise<"COMMITTED" | "VERSION_CONFLICT" | "REQUEST_REPLAY" | "DELIVERY_REPLAY"> {
+	async commit(change: AtomicCommit): Promise<CommitResult> {
 		this.db.exec("BEGIN IMMEDIATE");
 		try {
 			if (change.request && this.db.prepare("SELECT 1 FROM requests WHERE actor = ? AND key = ?").get(change.request.actor, change.request.key)) {
-				this.db.exec("ROLLBACK"); return "REQUEST_REPLAY";
+				this.db.exec("ROLLBACK"); return { kind: "REQUEST_REPLAY" };
 			}
 			if (change.delivery && this.db.prepare("SELECT 1 FROM deliveries WHERE id = ?").get(change.delivery)) {
-				this.db.exec("ROLLBACK"); return "DELIVERY_REPLAY";
+				this.db.exec("ROLLBACK"); return { kind: "DELIVERY_REPLAY" };
+			}
+			// The cap check and its write share this one transaction, so two workers cannot both pass a
+			// limit that neither has spent yet. A refusal rolls back before anything else is written.
+			for (const reservation of change.reservations ?? []) {
+				const refused = reservationRefusal(reservation, capUsage(this.db, { scope: reservation.scope, since: capWindowStart(reservation.at) }));
+				if (refused !== null) { this.db.exec("ROLLBACK"); return { kind: "CAPPED", reason: refused }; }
 			}
 			if (change.operator) throw new Error("not implemented");
 			if (change.job) {
 				const { row, expectedVersion } = change.job;
 				if (expectedVersion === null) {
 					const result = this.db.prepare("INSERT OR IGNORE INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), change.job.wakeAt);
-					if (!result.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+					if (!result.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 				} else {
 					const result = this.db.prepare("UPDATE jobs SET version = ?, json = ?, wake_at = ? WHERE id = ? AND version = ?")
 						.run(row.version, JSON.stringify(row), change.job.wakeAt, row.id, expectedVersion);
-					if (!result.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+					if (!result.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 				}
 				for (const resource of jobResources(row)) this.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(resource, row.id);
 			}
@@ -258,7 +238,7 @@ export class SqliteStore implements Store {
 				const account = credit.account;
 				const updated = this.db.prepare("UPDATE credits SET version = ?, json = ? WHERE id = ? AND version = ?")
 					.run(account.version, JSON.stringify(account), account.operator, credit.expectedVersion);
-				if (!updated.changes) { this.db.exec("ROLLBACK"); return "VERSION_CONFLICT"; }
+				if (!updated.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 			}
 			// The count moves with the PAID row or not at all: exactly the write that settles the release
 			// sets it, so a redelivery or a refused settlement can never count the receipt twice. The id
@@ -277,8 +257,14 @@ export class SqliteStore implements Store {
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
 			if (change.delivery) this.db.prepare("INSERT INTO deliveries VALUES (?)").run(change.delivery);
+			// The act's spend lands with the act. The primary key makes a reservation as idempotent as
+			// the commit that carries it: one act can never be counted twice.
+			for (const reservation of change.reservations ?? []) {
+				this.db.prepare("INSERT OR IGNORE INTO cap_reservations VALUES (?, ?, ?, ?, ?)")
+					.run(reservation.kind, reservation.scope, reservation.ref, reservation.cents, reservation.at);
+			}
 			this.db.exec("COMMIT");
-			return "COMMITTED";
+			return { kind: "COMMITTED" };
 		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	async leaseEffect(now: Instant, until: Instant, key?: OperationKey): Promise<OutboxRow | null> {

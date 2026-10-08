@@ -1,5 +1,4 @@
-import { capWindowStart, visitorCap } from "./caps.ts";
-import type { CapCounts, CapRefusal } from "./caps.ts";
+import type { CapRefusal } from "./caps.ts";
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
@@ -17,7 +16,7 @@ import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
-import { insertVisitor } from "./visitors.ts";
+import { reserveVisitor } from "./visitors.ts";
 import type { VisitorRow } from "./visitors.ts";
 import { unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
@@ -42,7 +41,7 @@ export type Actor =
 
 export type UserCommand = UserJobCommand | OperatorCommand;
 
-export type Failure = DomainFailure | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";
+export type Failure = DomainFailure | CapRefusal | "KEY_REUSED_WITH_DIFFERENT_PAYLOAD" | "BUSY";
 
 export type PublicResult =
 	| { readonly kind: "JOB"; readonly job: JobProjection }
@@ -149,11 +148,6 @@ export interface Acquit {
 	/** Authenticates ownership and commits one whole domain action. The key is bound to the payload digest. */
 	execute(actor: Actor, key: RequestKey, command: UserCommand): Promise<CommandOutcome>;
 	query(actor: Actor, query: Query): Promise<QueryResult>;
-	/**
-	 * Judge mode's counters, read from committed rows at this service's clock. The demo route asks this
-	 * before it forks a repository, because a visitor the caps refuse must not leave one behind.
-	 */
-	capCounts(input: { readonly clientId: ClientId | null; readonly ipKey: string | null }): Promise<CapCounts>;
 	/** Verifies, re-reads the resource, and applies it. Safe to deliver any number of times. */
 	handlePayPalWebhook(request: Request): Promise<Response>;
 	handleVerifierCallback(request: Request): Promise<Response>;
@@ -206,7 +200,6 @@ export function createAcquit(config: AcquitConfig): Acquit {
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
 		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
-		capCounts: input => ports.store.capCounts({ ...input, since: capWindowStart(clock.now()) }),
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
 			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
@@ -274,18 +267,17 @@ export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: Vi
 
 /**
  * Mints one visitor's whole identity. The route owns the repository provisioning and the session; this
- * owns the rows, so the visitor's handles, operator, agent, and grant are created together or not at all.
- * The caps are checked here as well as at the route, so no caller can mint a visitor the table refuses.
+ * owns the rows, so the visitor's handles, operator, agent, grant, and the reservation that spends its
+ * address's allowance are created together or not at all. The caps are checked inside that transaction,
+ * so no caller and no second worker can mint a visitor the table refuses.
  */
 export async function createDemoVisitor(service: Acquit, input: NewDemoVisitor): Promise<DemoVisitorResult> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
-	const now = runtime.ports.clock.now();
-	const capped = visitorCap(await runtime.ports.store.capCounts({ clientId: null, ipKey: input.ipKey, since: capWindowStart(now) }));
-	if (capped !== null) return { kind: "CAPPED", reason: capped };
-	return { kind: "CREATED", visitor: insertVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey,
-		repository: input.repository, merchant: runtime.demo.merchant, now }) };
+	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey,
+		repository: input.repository, merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
+	return reserved.kind === "CAPPED" ? { kind: "CAPPED", reason: reserved.reason } : { kind: "CREATED", visitor: reserved.visitor };
 }
 export function closeAcquit(service: Acquit): void {
 	runtimes.get(service)?.store.close();

@@ -5,10 +5,13 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
+import type { CapRefusal } from "./caps.ts";
 import { creditWeek, reduceCredits } from "./credits.ts";
 import type { CreditAccount, Credits } from "./credits.ts";
 import { parseVisitorId } from "./ids.ts";
 import type { AgentId, Instant, MerchantId, OperatorId, Version, VisitorId } from "./ids.ts";
+import type { UsdCents } from "./ledger.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 
 /** A visitor's whole demo life. Long enough for a judge to read the page, short enough to sweep daily. */
@@ -31,6 +34,11 @@ export type Principal = {
 	readonly role: "CLIENT" | "OPERATOR";
 	readonly visitorId: VisitorId | null;
 };
+
+/** What reserving one visitor's identity did: the row it wrote, or the cap that refused it, unwritten. */
+export type VisitorReservation =
+	| { readonly kind: "RESERVED"; readonly visitor: VisitorRow }
+	| { readonly kind: "CAPPED"; readonly reason: CapRefusal };
 
 export type NewVisitor = {
 	readonly id: VisitorId;
@@ -117,10 +125,13 @@ export function deleteVisitor(db: DatabaseSync, id: VisitorId): void {
 
 /**
  * Creates the visitor's whole identity in one transaction: the row, its two principals, its operator
- * (READY on the deployment's sandbox seller), its one agent, and its first weekly grant. An existing
- * id is refused rather than overwritten, so a retried create can never take over another visitor.
+ * (READY on the deployment's sandbox seller), its one agent, its first weekly grant, and the
+ * reservation that spends its address's allowance for the day. The check and the rows it guards share
+ * that transaction, so two creations at once cannot both pass the last slot of an address's day. An
+ * existing id is refused rather than overwritten, so a retried create can never take over another
+ * visitor. A refusal writes nothing and names the cap.
  */
-export function insertVisitor(db: DatabaseSync, input: NewVisitor): VisitorRow {
+export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorReservation {
 	const handles = visitorHandles(input.id);
 	const expiresAt = new Date(Date.parse(input.now) + VISITOR_TTL_MS).toISOString() as Instant;
 	const visitor: VisitorRow = { id: input.id, createdAt: input.now, expiresAt, ipKey: input.ipKey,
@@ -135,6 +146,11 @@ export function insertVisitor(db: DatabaseSync, input: NewVisitor): VisitorRow {
 	if (account === "INSUFFICIENT_CREDITS") throw new Error("Visitor grant failed");
 	db.exec("BEGIN IMMEDIATE");
 	try {
+		// The allowance is re-read inside the write transaction, so the answer this transaction commits on
+		// is the answer of the rows it is about to write.
+		const refused = reservationRefusal({ kind: "VISITOR", scope: input.ipKey, ref: input.id, cents: 0 as UsdCents, at: input.now },
+			capUsage(db, { scope: input.ipKey, since: capWindowStart(input.now) }));
+		if (refused !== null) { db.exec("ROLLBACK"); return { kind: "CAPPED", reason: refused }; }
 		db.prepare("INSERT INTO visitors VALUES (?, ?, ?, ?, ?, ?, ?)")
 			.run(visitor.id, visitor.createdAt, visitor.expiresAt, visitor.ipKey, visitor.clientHandle, visitor.operatorHandle, visitor.repository);
 		db.prepare("INSERT INTO principals VALUES (?, ?, ?)").run(visitor.clientHandle, "CLIENT", visitor.id);
@@ -142,10 +158,19 @@ export function insertVisitor(db: DatabaseSync, input: NewVisitor): VisitorRow {
 		db.prepare("INSERT INTO operators VALUES (?, ?, ?, 0)").run(operator.id, operator.version, JSON.stringify(operator));
 		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
 		db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
+		db.prepare("INSERT INTO cap_reservations VALUES (?, ?, ?, ?, ?)")
+			.run("VISITOR", input.ipKey, input.id, 0, input.now);
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");
 		throw error;
 	}
-	return visitor;
+	return { kind: "RESERVED", visitor };
+}
+
+/** The row a reservation holds, for a caller that already knows the caps allow it. Throws when they refuse. */
+export function insertVisitor(db: DatabaseSync, input: NewVisitor): VisitorRow {
+	const reserved = reserveVisitor(db, input);
+	if (reserved.kind === "CAPPED") throw new Error(`The caps refused this visitor: ${reserved.reason}`);
+	return reserved.visitor;
 }
