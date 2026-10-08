@@ -9,10 +9,11 @@ Post a `400` USD job as Maya, bid as Devon, and accept Devon's bid. Acquit creat
 - `fund-checkout` redirects to the real sandbox order and freezes the correct payee and quote.
 - `fund-resume` reopens an awaiting-approval checkout from the job page.
 - `fund-held` completes buyer approval when credentials are available.
+- `fund-choice` (judge mode only) picks this job's payment method on the job page before a bid is accepted. See [judge mode](12-judge-mode.md).
 
 ## How to get to it (user POV)
 
-- Choose `Accept` on Devon's bid at `/jobs/:id`, then `Accept and pay with PayPal`.
+- Choose `Accept` on Devon's bid at `/jobs/:id`, then `Accept and pay with PayPal`. When the job's payment method is the test card (a judge-mode visitor's default), the confirm button reads `Accept and pay with the test card` and the page shows `Sandbox test card payment` with `Charging the sandbox test card…` until the job leaves `OPEN`.
 - Reopen a funding job and choose `Resume PayPal checkout`.
 - Finish payment in PayPal sandbox and return to the job page.
 
@@ -39,3 +40,4 @@ Preconditions:
 - The buyer password is not stored in the repo. Do not seek it in the PayPal dashboard.
 - Public `lockedTo` stays null until money is held. The stored funding choice proves the payee before approval.
 - Do not manually invoke `/paypal/return` to fake approval. Return must follow the real purchase.
+- Dev mode shows no `Payment method` or `Job clock` card on the job page. The process-wide `ctl fund-mode` and `ctl clock advance` stay the dev controls.
