@@ -120,7 +120,7 @@ function inWorkRow(store: SqliteStore, jobId: JobId, operator: string): void {
 	const job = JSON.parse(row.json) as Record<string, unknown>;
 	store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state: { status: "IN_PROGRESS",
 		escrow: { payee: { bidId: "bid_escrow", operator, payee: merchant, agent: "ts-bugfixer", price: 40000, eta: 48 },
-			quote: {}, capture: {}, book: [], cutoffAt: "2026-11-01T00:00:00.000Z" },
+			quote: {}, capture: { orderId: "ORDER-CAPS-1", captureId: "CAPTURE-CAPS-1" }, book: [], cutoffAt: "2026-11-01T00:00:00.000Z" },
 		attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } } }), jobId);
 }
 
