@@ -168,7 +168,8 @@ function captureDelivery(capture: string, fresh: boolean): WebhookDelivery {
 	return { eventId, source: "built", envelope: JSON.stringify({ id: eventId, event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: capture } }) };
 }
 async function probes(api: number, web: number, verifier?: number) {
-	const [apiPort, webPort, apiReady, webReady, verifierReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/users`), reachable(`http://127.0.0.1:${web}/`),
+	// The session route answers 200 unauthenticated in both modes; the seeded user list is dev-only.
+	const [apiPort, webPort, apiReady, webReady, verifierReady] = await Promise.all([portOpen(api), portOpen(web), reachable(`http://127.0.0.1:${api}/api/session`), reachable(`http://127.0.0.1:${web}/`),
 		verifier === undefined ? Promise.resolve(true) : reachable(`http://127.0.0.1:${verifier}/healthz`)]);
 	return { apiPort, webPort, apiReady, webReady, verifierReady };
 }
@@ -355,7 +356,7 @@ export async function seedDb(parsed: Parsed, ctx: Context): Promise<Result> {
 async function app(ctx: Context, webRequired = false): Promise<{ api: number; web: number }> {
 	const run = await readState(ctx);
 	const ports = { api: run?.api.port ?? ctx.apiPort, web: run?.web.port ?? ctx.webPort };
-	if (!(await reachable(`http://127.0.0.1:${ports.api}/api/users`)) || (webRequired && !(await reachable(`http://127.0.0.1:${ports.web}/`)))) {
+	if (!(await reachable(`http://127.0.0.1:${ports.api}/api/session`)) || (webRequired && !(await reachable(`http://127.0.0.1:${ports.web}/`)))) {
 		throw new CliError("APP_NOT_RUNNING", "The required Acquit app endpoints are not ready.", "Run npm run -s ctl -- start.");
 	}
 	return ports;

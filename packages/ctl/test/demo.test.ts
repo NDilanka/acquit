@@ -75,7 +75,7 @@ test("public mode refuses a seeded handle and mints a visitor through Start my d
 		assert.equal(body.user.handle, body.visitor.client);
 		assert.notEqual(body.visitor.client, body.visitor.operator);
 		assert.equal(body.visitor.repository, null);
-		assert.equal(Date.parse(body.visitor.expiresAt) - Date.parse("2026-10-06T12:00:00Z"), 86_400_000);
+		assert.equal(Date.parse(body.visitor.expiresAt), 1_760_000_000_000 + 86_400_000);
 		const signed = await sessionOf(url, body.token);
 		assert.deepEqual(signed.user, { handle: body.visitor.client, role: "CLIENT" });
 		assert.equal(signed.visitor?.id, body.visitor.id);
@@ -88,10 +88,10 @@ test("a visitor reads only its own pair and switches between its two principals"
 		const second = await (await post(url, "/api/demo", {})).json() as DemoBody;
 		const users = await fetch(`${url}/api/users`, { headers: { Authorization: `Bearer ${first.token}` } });
 		assert.equal(users.status, 200);
-		assert.deepEqual(await users.json(), { users: [{ handle: first.visitor.client, role: "CLIENT" },
+		const mine = await users.json() as { users: { handle: string; role: string }[] };
+		assert.deepEqual(mine, { users: [{ handle: first.visitor.client, role: "CLIENT" },
 			{ handle: first.visitor.operator, role: "OPERATOR" }] });
 		// The other visitor's pair is never visible through the first visitor's session.
-		const mine = await users.json() as { users: { handle: string }[] };
 		assert.equal(mine.users.some(user => user.handle === second.visitor.client || user.handle === second.visitor.operator), false);
 		const switched = await post(url, "/api/demo/switch", {}, first.token);
 		assert.equal(switched.status, 200);

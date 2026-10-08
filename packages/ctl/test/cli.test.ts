@@ -585,6 +585,8 @@ createServer((req, res) => {
 	req.on("end", () => {
 		const body = Buffer.concat(chunks).toString("utf8");
 		if (req.url === "/api/users") { res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"users":[]}'); return; }
+		// The liveness route the control CLI probes before any command that needs the app.
+		if (req.url === "/api/session") { res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"user":null,"visitor":null}'); return; }
 		seen += 1;
 		appendFileSync(process.env.STUB_LOG, JSON.stringify({ method: req.method, url: req.url, type: req.headers["content-type"], body }) + "\\n");
 		const outcome = seen === 1 ? "applied" : "no-op, job already PAID";

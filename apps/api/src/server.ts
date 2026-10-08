@@ -2,10 +2,12 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
+import { createAcquit, closeAcquit, createDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages/core/src/github.ts";
+import { principalOf, readVisitor } from "../../../packages/core/src/visitors.ts";
+import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
@@ -38,7 +40,6 @@ const CLI_SESSION_TTL_MS = 7 * 86_400_000;
 const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
-const user = (handle: string) => SEEDED_USERS.find(user => user.handle === handle);
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 /** The challenge a CLI stores for a code: base64url(sha256(verifier)), the verifier never leaving the CLI. */
 const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
@@ -48,16 +49,39 @@ function sameChallenge(left: string, right: string): boolean {
 	const b = Buffer.from(right, "utf8");
 	return a.length === b.length && timingSafeEqual(a, b);
 }
+/**
+ * The session's principal, resolved through the `principals` table, never through SEEDED_USERS: a
+ * seeded handle is a row with no visitor, and a visitor's handle is a row that names it. A principal
+ * whose visitor row is gone is refused here, so a deleted visitor's cookie dies with its rows.
+ */
 function session(req: IncomingMessage) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
 	if (!token) return null;
 	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), clock.now());
-	const selected = record ? user(String(record.handle)) : null;
-	return selected ? { user: selected, token, actor: selected.role === "CLIENT"
-		? { role: "CLIENT", clientId: selected.handle as ClientId } as Actor
-		: { role: "OPERATOR", operatorId: selected.handle as OperatorId } as Actor } : null;
+	if (!record) return null;
+	const principal = principalOf(db, String(record.handle));
+	if (!principal) return null;
+	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
+	if (principal.visitorId !== null && visitor === null) return null;
+	const actor: Actor = principal.role === "CLIENT" ? { role: "CLIENT", clientId: principal.handle as ClientId }
+		: { role: "OPERATOR", operatorId: principal.handle as OperatorId };
+	return { handle: principal.handle, role: principal.role, visitor, token, actor };
+}
+/** The visitor as the web reads it: both of its handles, its repository, and when the demo ends. */
+function visitorJson(visitor: VisitorRow): { id: string; client: string; operator: string; repository: string | null; expiresAt: string } {
+	return { id: visitor.id, client: visitor.clientHandle, operator: visitor.operatorHandle, repository: visitor.repository, expiresAt: visitor.expiresAt };
+}
+/**
+ * The request's address as a digest, never the address. The API binds loopback behind the deployment's
+ * proxy, which sets X-Forwarded-For; the first hop is the caller.
+ */
+function ipKeyOf(req: IncomingMessage): string {
+	const forwarded = req.headers["x-forwarded-for"];
+	const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
+	const address = first || req.socket.remoteAddress || "unknown";
+	return createHash("sha256").update(address).digest("hex").slice(0, 16);
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
 	res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -172,18 +196,52 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (origin && ![webOrigin, webAlias.origin, `http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) {
 		json(res, 403, { error: "ORIGIN_DENIED" }); return;
 	}
-	if (url.pathname === "/api/users" && method === "GET") { json(res, 200, { users: SEEDED_USERS }); return; }
+	if (url.pathname === "/api/users" && method === "GET") {
+		// Public mode has one pair per session: the caller's own. The seeded list is a development fixture.
+		if (!devEnabled) {
+			const current = session(req);
+			if (!current?.visitor) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
+			json(res, 200, { users: [{ handle: current.visitor.clientHandle, role: "CLIENT" },
+				{ handle: current.visitor.operatorHandle, role: "OPERATOR" }] });
+			return;
+		}
+		json(res, 200, { users: SEEDED_USERS }); return;
+	}
+	// Start my demo: one visitor, its own repository (bound in unit 3), and a session for its client.
+	if (url.pathname === "/api/demo" && method === "POST") {
+		const created = createDemoVisitor(acquit, { ipKey: ipKeyOf(req), repository: null });
+		if (created.kind === "NOT_CONFIGURED") {
+			json(res, 503, { error: "DEMO_NOT_CONFIGURED", detail: "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through." });
+			return;
+		}
+		const token = mintSession(created.visitor.clientHandle);
+		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+		json(res, 201, { user: { handle: created.visitor.clientHandle, role: "CLIENT" }, visitor: visitorJson(created.visitor), token });
+		return;
+	}
 	if (url.pathname.startsWith("/api/dev/") && !devEnabled) {
 		json(res, 403, { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }); return;
 	}
 	if (url.pathname === "/api/session") {
-		if (method === "GET") { json(res, 200, { user: session(req)?.user ?? null }); return; }
+		if (method === "GET") { const current = session(req); json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
+			visitor: current?.visitor ? visitorJson(current.visitor) : null }); return; }
 		if (method === "POST") {
-			const selected = user(text(object(await body(req)).handle, "handle"));
+			const handle = text(object(await body(req)).handle, "handle");
+			if (!devEnabled) {
+				// Public mode mints sessions only through Start my demo. A seeded handle is named as such;
+				// every other handle is refused the same way, so a visitor handle is never a credential.
+				const principal = principalOf(db, handle);
+				json(res, 403, { error: principal && principal.visitorId === null ? "SEEDED_LOGIN_DISABLED" : "SESSION_MINT_DISABLED",
+					detail: "Start my demo mints the only session in public mode." });
+				return;
+			}
+			const selected = principalOf(db, handle);
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
+			const selectedVisitor = selected.visitorId === null ? null : readVisitor(db, selected.visitorId);
 			const token = mintSession(selected.handle);
 			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
-			json(res, 200, { user: selected, token }); return;
+			json(res, 200, { user: { handle: selected.handle, role: selected.role },
+				visitor: selectedVisitor ? visitorJson(selectedVisitor) : null, token }); return;
 		}
 		if (method === "DELETE") {
 			const current = session(req);
@@ -278,12 +336,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (!delivered) {
 			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
 		}
-		const selected = user(String(row.handle));
+		const selected = principalOf(db, String(row.handle));
 		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
 	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
+	// The visitor's client/operator switch. It moves this session's principal inside the visitor that
+	// owns it, and it can never name a handle the session's visitor does not hold.
+	if (url.pathname === "/api/demo/switch" && method === "POST") {
+		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
+		const toClient = current.handle !== current.visitor.clientHandle;
+		const target = toClient ? current.visitor.clientHandle : current.visitor.operatorHandle;
+		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
+		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
+		return;
+	}
 	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [{ ...ISSUE, repository: clientRepository }] }); return; }
 	if (url.pathname === "/api/commands" && method === "POST") {
 		let parsed: { key: ReturnType<typeof parseRequestKey>; command: UserCommand };
@@ -343,15 +411,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const token = transaction(db, () => {
 			const minted = randomBytes(32).toString("base64url");
 			const claimed = db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ? AND handle IS NULL AND expires_at > ?")
-				.run(current.user.handle, minted, digest, clock.now());
+				.run(current.handle, minted, digest, clock.now());
 			if (claimed.changes !== 1) return null;
-			insertSession(minted, current.user.handle);
+			insertSession(minted, current.handle);
 			return minted;
 		});
 		if (token === null) {
 			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
 		}
-		json(res, 200, { handle: current.user.handle, role: current.user.role }); return;
+		json(res, 200, { handle: current.handle, role: current.role }); return;
 	}
 	if (url.pathname === "/api/jobs" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
@@ -396,8 +464,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (db.prepare("SELECT owner FROM agents WHERE id = ?").get(agent.name)) {
 			json(res, 409, { error: "AGENT_EXISTS", detail: `Agent ${agent.name} is already registered.` }); return;
 		}
-		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.user.handle,
-			JSON.stringify({ id: agent.name, owner: current.user.handle, name: agent.name, runner: agent.runner,
+		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.handle,
+			JSON.stringify({ id: agent.name, owner: current.handle, name: agent.name, runner: agent.runner,
 				promptDigest: agent.promptDigest, tools: agent.tools }));
 		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
 	}

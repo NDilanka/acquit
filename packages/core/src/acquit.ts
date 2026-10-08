@@ -4,7 +4,7 @@ import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCall
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
-import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, OperatorId, RequestKey, StaffId } from "./ids.ts";
+import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId } from "./ids.ts";
 import { projectJob } from "./job.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
@@ -14,6 +14,8 @@ import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
+import { insertVisitor, newVisitorId } from "./visitors.ts";
+import type { VisitorRow } from "./visitors.ts";
 import { unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
 
@@ -161,6 +163,11 @@ export type AcquitConfig = {
 	readonly verifierPort?: VerifierPort;
 	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
 	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
+	/**
+	 * Judge mode. The merchant is the sandbox seller a visitor's operator is paid through; without it
+	 * the demo route refuses by name, because a visitor that cannot be paid cannot bid.
+	 */
+	readonly demo?: { readonly merchant: MerchantId };
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
@@ -223,16 +230,32 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			return ticking;
 		},
 	};
-	runtimes.set(service, { ports, store });
+	runtimes.set(service, { ports, store, demo: config.demo });
 	return service;
 }
 
-const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore }>();
+const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore; demo: AcquitConfig["demo"] }>();
 /** HTTP-only checkout boundary: re-read the provider, never trust URL token/PayerID. */
 export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId): Promise<boolean> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	return confirmFunding(runtime.ports, actor, jobId);
+}
+
+/** What the demo route hands the core: the request's address digest and the visitor's own repository. */
+export type NewDemoVisitor = { readonly ipKey: string; readonly repository: string | null };
+export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: VisitorRow } | { readonly kind: "NOT_CONFIGURED" };
+
+/**
+ * Mints one visitor's whole identity. The route owns the repository provisioning and the session; this
+ * owns the rows, so the visitor's handles, operator, agent, and grant are created together or not at all.
+ */
+export function createDemoVisitor(service: Acquit, input: NewDemoVisitor): DemoVisitorResult {
+	const runtime = runtimes.get(service);
+	if (!runtime) throw new Error("Unknown Acquit service");
+	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
+	return { kind: "CREATED", visitor: insertVisitor(runtime.store.db, { id: newVisitorId(), ipKey: input.ipKey,
+		repository: input.repository, merchant: runtime.demo.merchant, now: runtime.ports.clock.now() }) };
 }
 export function closeAcquit(service: Acquit): void {
 	runtimes.get(service)?.store.close();

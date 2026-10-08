@@ -50,7 +50,7 @@ async function apiFixture(dev: boolean, run: (url: string, databasePath: string,
 	try {
 		const deadline = Date.now() + 15_000;
 		const url = `http://127.0.0.1:${port}`;
-		while (!(await reachable(`${url}/api/users`))) {
+		while (!(await reachable(`${url}/api/session`))) {
 			assert.equal(child.exitCode, null, "The isolated test API exited early.");
 			assert(Date.now() < deadline, "The isolated test API failed readiness.");
 			await sleep(50);
@@ -131,7 +131,8 @@ test("development routes require the flag and the configured lane origin", async
 	});
 });
 test("a job stored before the frozen contract serves through GET /api/jobs/:id", async () => {
-	await apiFixture(false, async (url, databasePath) => {
+	// Public mode refuses seeded sign-in, so every fixture whose subject is not the mode boots dev.
+	await apiFixture(true, async (url, databasePath) => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const at = "2026-11-01T11:12:00.000Z";
 		const held = [{ kind: "HELD", cents: 42000, at }];
@@ -157,7 +158,7 @@ test("a job stored before the frozen contract serves through GET /api/jobs/:id",
 	});
 });
 test("the Approve command releases for the client and is denied to the operator", async () => {
-	await apiFixture(false, async (url, databasePath, calls) => {
+	await apiFixture(true, async (url, databasePath, calls) => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const at = "2026-11-01T11:12:00.000Z";
 		const mergeCommit = "5cccb66515313caed72e4af329a62fc011139426";
@@ -278,7 +279,7 @@ test("the dispute and arbiter routes bound their text and the dispute owner", as
 	});
 });
 test("a bid the operator cannot afford answers with the credit balance and the next grant", async () => {
-	await apiFixture(false, async (url, databasePath) => {
+	await apiFixture(true, async (url, databasePath) => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const at = "2026-11-01T11:12:00.000Z";
 		const operator = { id: "devon-ops", handle: "devon-ops", kind: "INDEPENDENT", version: 0,
@@ -306,7 +307,7 @@ test("a bid the operator cannot afford answers with the credit balance and the n
 	});
 });
 test("a BEGIN the lock refuses fails that request and leaves the API serving the next one", async () => {
-	await apiFixture(false, async (url, databasePath) => {
+	await apiFixture(true, async (url, databasePath) => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const signedIn = await fetch(`${url}/api/session`, { method: "POST", body: JSON.stringify({ handle: "devon-ops" }) });
 		assert.equal(signedIn.status, 200);
