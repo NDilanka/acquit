@@ -112,7 +112,7 @@ const reasons: Record<string, string> = {
   DEMO_REPOSITORY_FAILED: "GitHub could not create your demo repository. Try again in a moment.",
   SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Start a demo instead.",
   NOT_DEMO_VISITOR: "Only a demo session can switch between client and operator.",
-  NOT_VISITOR_JOB: "Only the demo that owns this job can change it.",
+  NOT_VISITOR_JOB: "Only the demo's client can change this job.",
   FUNDING_BOUND: "The payment method was fixed when a bid was accepted.",
   JOB_CHANGED: "The job changed while its clock moved. Try again.",
 };

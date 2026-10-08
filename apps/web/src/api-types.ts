@@ -109,6 +109,8 @@ export interface JobView {
   readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
   /** The source this job's accept will use, served to the owning client only. Null when the deployment's default applies. */
   readonly funding: FundingMode | null;
+  /** How far the owning client moved this job's own clock in total, 0 when unmoved. Null for every other viewer. */
+  readonly clockShiftMs: number | null;
 }
 
 export type FundingMode = "card" | "checkout";
@@ -128,8 +130,11 @@ export interface VisitorView {
 
 export type SessionUser = { readonly handle: string; readonly role: "CLIENT" | "OPERATOR" };
 
+/** `public` offers only Start my demo; `dev` offers the seeded picker. */
+export type DeploymentMode = "public" | "dev";
+
 /** `GET /api/session`. `visitor` is null for a seeded session. */
-export type SessionResponse = { readonly user: SessionUser | null; readonly visitor: VisitorView | null };
+export type SessionResponse = { readonly user: SessionUser | null; readonly visitor: VisitorView | null; readonly mode: DeploymentMode };
 
 /** `POST /api/session`, `POST /api/demo`, and `POST /api/demo/switch`. */
 export type SignedInResponse = { readonly user: SessionUser; readonly visitor: VisitorView | null; readonly token: string };

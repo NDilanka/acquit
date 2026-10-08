@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BidView, FundingMode, JobView, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
-import { CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
+import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link, useRouter } from "../router";
@@ -93,7 +93,7 @@ export function JobPage({ id }: { id: string }) {
   const disputeCommit = job.viewerCanDispute && !job.dispute ? job.mergeCommit : null;
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
-  const controls = demoControls(job, visitor);
+  const controls = demoControls(job, { user, visitor });
 
   const doAccept = async (bid: BidView) => {
     const outcome = await accept.send(`accept:${bid.id}`, (): UserCommand => ({
@@ -511,6 +511,8 @@ function FundingChoice({ job, onChosen }: { job: JobView; onChosen: () => void }
       onChosen();
     } catch (e) {
       setError(errorText(e));
+      // An accept bound the funding in the meantime, so the reload closes this card on the job's real state.
+      if (e instanceof ApiError && e.code === "FUNDING_BOUND") onChosen();
     } finally {
       setBusy(false);
     }
@@ -560,6 +562,7 @@ function JobClock({ job, onAdvanced }: { job: JobView; onAdvanced: (job: JobView
     <div className="card pad">
       <h2>Job clock</h2>
       <p className="muted small">Skip ahead on this job's deadlines and review window. Other jobs keep their own time.</p>
+      <p><b>{clockAhead(job.clockShiftMs ?? 0)}</b></p>
       <div className="act">
         {CLOCK_STEPS.map((s) => (
           <button key={s.label} className="btn ghost sm" disabled={busy !== null} onClick={() => void advance(s)}>

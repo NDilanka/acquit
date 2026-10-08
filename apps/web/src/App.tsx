@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "./api";
-import type { VisitorView } from "./api-types";
+import type { DeploymentMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
 import { Link, match, useRouter } from "./router";
 import { SessionContext, useSession, type Session } from "./session";
@@ -13,12 +13,16 @@ import { CliLogin } from "./pages/CliLogin";
 
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [mode, setMode] = useState<DeploymentMode | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .session()
-      .then((r) => setSession(r.user ? { user: r.user, visitor: r.visitor } : null))
+      .then((r) => {
+        setMode(r.mode);
+        setSession(r.user ? { user: r.user, visitor: r.visitor } : null);
+      })
       .catch((e: unknown) => {
         setError(e instanceof ApiError ? e.message : `Cannot reach the API: ${String(e)}`);
         setSession(null);
@@ -49,7 +53,7 @@ export function App() {
             <Routes key={session.user.handle} />
           </SessionContext.Provider>
         ) : (
-          <SignIn onSignedIn={(s) => { setError(null); setSession(s); }} />
+          mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
         )}
       </main>
     </>
