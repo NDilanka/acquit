@@ -230,7 +230,7 @@ test("a rejection with hundreds of protected paths still ends the job REJECTED",
 		assert.deepEqual(view?.attempts.history.map(attempt => [attempt.ordinal, attempt.result]), [[1, "REJECTED"]]);
 		assert.ok((view?.attempts.reasons.length ?? 0) > 0 && (view?.attempts.reasons.length ?? 0) < 600);
 		assert.deepEqual(view?.attempts.history.map(attempt => attempt.reasonsTruncated), [584]);
-		assert.equal(renderSubmission(view!, () => "devon-ops").includes("\tand 584 more reasons not shown"), true);
+		assert.equal(renderSubmission(view!, () => "devon-ops", view!.attempts.history[0].at).includes("\tand 584 more reasons not shown"), true);
 	} finally {
 		api.kill("SIGTERM");
 		await once(api, "exit");
@@ -340,7 +340,7 @@ test("the service judges a clean commit and posts a callback the real API applie
 		const view = await jobView(base, token, row.id);
 		assert.equal(view?.pullRequest, 13);
 		assert.deepEqual(view?.attempts.history.map(attempt => [attempt.ordinal, attempt.result]), [[1, "VERIFIED"]]);
-		assert.equal(renderSubmission(view!, () => "devon-ops"), [
+		assert.equal(renderSubmission(view!, () => "devon-ops", view!.attempts.history.at(-1)!.at), [
 			"Submitted job_7Q2K (attempt 1 of 3)",
 			"Verifier result: VERIFIED",
 			"\tFrozen tests: 48 passed (suite frozen at a3b6ead)",

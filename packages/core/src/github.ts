@@ -125,11 +125,17 @@ export interface MergerPort {
 }
 
 /**
- * What a caller outside this client's own operations needs: one installation token per owner, minted
- * with the same bounded, redacted, rate-limit-aware calls. The verifier's git fetch is that caller.
+ * What a caller outside this client's own operations needs: installation tokens, minted with the same
+ * bounded, redacted, rate-limit-aware calls. The verifier's git fetch is one caller; the API's
+ * work-repo route is the scoped one.
  */
 export interface TokenPort {
-	installationToken(owner: string): Promise<string>;
+	/**
+	 * One token per owner and scope. With `repositories` the token is scoped to exactly those repository
+	 * names and carries the least privilege a run and submit need; without it, the owner's own
+	 * installation token. The scope is part of the cache key, so a token is never served for another.
+	 */
+	installationToken(owner: string, repositories?: readonly string[]): Promise<string>;
 }
 
 export interface GitHubAppPort extends WorkRepoPort, PublisherPort, MergerPort, TokenPort {}
@@ -192,6 +198,17 @@ const checkedOwner = (owner: unknown): string => typeof owner === "string" && OW
 const checkedRepositoryName = (name: unknown): string => typeof name === "string" && REPOSITORY_NAME.test(name) ? name : invalid("The repository name", name);
 const checkedCommit = (commit: unknown): CommitSha => typeof commit === "string" && COMMIT_SHA.test(commit) ? commit as CommitSha : invalid("The commit", commit);
 const checkedCheckName = (name: unknown): string => typeof name === "string" && name.trim().length > 0 ? name : invalid("The check name", name);
+
+/**
+ * The repository names a mint is scoped to, validated at the boundary. Absent means the owner's own
+ * installation token; an empty scope is refused rather than widened, because a caller that named no
+ * repository must not receive the token for all of them.
+ */
+function tokenScope(repositories: readonly string[] | undefined): readonly string[] | null {
+	if (repositories === undefined) return null;
+	if (!Array.isArray(repositories) || repositories.length === 0) invalid("The repository scope", repositories);
+	return repositories.map(name => checkedRepositoryName(name));
+}
 
 /**
  * The deployment's client repository, read at the config boundary. OpenJob freezes it into the
@@ -259,8 +276,11 @@ function isOurWorkRepo(record: unknown, repository: string, source: string): boo
 	return String(parent ?? "").toLowerCase() === source.toLowerCase();
 }
 
-/** One token per owner, refreshed shortly before GitHub expires it. */
+/** One token per owner and scope, refreshed shortly before GitHub expires it. */
 const REFRESH_MARGIN_MS = 60_000;
+
+/** The least privilege a run and submit exercise on their work repo: read it and push to it. */
+const SCOPED_TOKEN_PERMISSIONS = { contents: "write", metadata: "read" } as const;
 
 /** The work repository's branch, held at the frozen commit the submitter starts from. */
 const WORK_REPO_BRANCH = "main";
@@ -372,10 +392,14 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		return installations;
 	};
 
-	const tokenFor = async (owner: string): Promise<string> => {
-		const cached = tokens.get(owner);
+	const tokenFor = async (owner: string, repositories?: readonly string[]): Promise<string> => {
+		const scope = tokenScope(repositories);
+		// The scope is part of the key: a token minted for one repository is never handed out for
+		// another one, or for the whole owner.
+		const key = scope === null ? owner : `${owner}\u0000${scope.join("\u0000")}`;
+		const cached = tokens.get(key);
 		if (cached && cached.expiresAtMs - REFRESH_MARGIN_MS > Date.now()) return cached.token;
-		const running = minting.get(owner);
+		const running = minting.get(key);
 		if (running) return running;
 		const mint = (async () => {
 			const list = await installationsOf();
@@ -385,15 +409,18 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 				installations = null;
 				throw new GitHubAppError("GITHUB_INSTALLATION_MISSING", `The App has no installation on ${owner}. Install the App on ${owner} before this call.`);
 			}
-			const answer = await appCall({ method: "POST", path: `/app/installations/${installation.id}/access_tokens`, allow: [201] });
+			// A scoped mint names the repositories and the permissions; GitHub refuses a repository the
+			// installation cannot see yet, which is how a work repo before its funding answers.
+			const answer = await appCall({ method: "POST", path: `/app/installations/${installation.id}/access_tokens`, allow: [201],
+				...(scope === null ? {} : { body: { repositories: scope, permissions: SCOPED_TOKEN_PERMISSIONS } }) });
 			const token = textOf(answer.body, "token");
 			if (token === null) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `The installation token for ${owner} carried no token.`);
 			const expiresAt = Date.parse(textOf(answer.body, "expires_at") ?? "");
-			tokens.set(owner, { token, expiresAtMs: Number.isFinite(expiresAt) ? expiresAt : 0 });
+			tokens.set(key, { token, expiresAtMs: Number.isFinite(expiresAt) ? expiresAt : 0 });
 			return token;
 		})();
-		minting.set(owner, mint);
-		try { return await mint; } finally { minting.delete(owner); }
+		minting.set(key, mint);
+		try { return await mint; } finally { minting.delete(key); }
 	};
 
 	const splitRepository = (repository: unknown): { readonly owner: string; readonly name: string } => {
@@ -653,7 +680,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		async createWorkRepo(request) { return createWorkRepo(request); },
 		async publishVerified(request) { return publishVerified(request); },
 		async merge(request) { return merge(request); },
-		async installationToken(owner) { return tokenFor(checkedOwner(owner)); },
+		async installationToken(owner, repositories) { return tokenFor(checkedOwner(owner), repositories); },
 	};
 }
 
@@ -674,7 +701,10 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 	let nextPullRequest = options.firstPullRequest ?? 13;
 	return {
 		calls, workRepos, pullRequests,
-		async installationToken(owner) { return `fake-installation-token-${checkedOwner(owner)}`; },
+		async installationToken(owner, repositories) {
+			const scope = tokenScope(repositories);
+			return `fake-installation-token-${checkedOwner(owner)}${scope === null ? "" : `-${scope.join("+")}`}`;
+		},
 		async createWorkRepo(request, requestId) {
 			calls.push({ kind: "CREATE_WORK_REPO", jobId: request.jobId, requestId });
 			const existing = workRepos.get(request.jobId);

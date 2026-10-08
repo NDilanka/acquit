@@ -1,13 +1,15 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
-import { VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
+import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages/core/src/github.ts";
+import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, devEnabled, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { transaction } from "./transaction.ts";
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
@@ -16,11 +18,36 @@ const baseSettings = config();
 const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? createRemoteVerifier(verifierEnv) : undefined,
 	paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
 const acquit = createAcquit(settings);
+// The runner's own App client. The core holds one for its outbox; this one mints the per-run
+// credential the operator CLI asks for, and it keeps the same bounded, redacted calls.
+const githubApp = createGitHubApp(githubEnv);
 const db = new DatabaseSync(settings.databaseUrl);
+// The CLI login exchange's one-time codes. The row never holds the code itself: the digest is the key,
+// so a leaked database file is not a set of live sign-in links. It holds the challenge the CLI minted
+// (the digest of a verifier only the CLI has) and the token the browser's approval mints, handed over
+// exactly once.
+db.exec(`CREATE TABLE IF NOT EXISTS cli_codes (
+	digest TEXT PRIMARY KEY, challenge TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+	handle TEXT, token TEXT, delivered_at TEXT)`);
+// A table from before the challenge column keeps its rows; the next sign-in writes one.
+if (!(db.prepare("PRAGMA table_info(cli_codes)").all() as { name?: unknown }[]).some(column => column.name === "challenge")) {
+	db.exec("ALTER TABLE cli_codes ADD COLUMN challenge TEXT");
+}
+const CLI_CODE_TTL_MS = 10 * 60_000;
+const CLI_SESSION_TTL_MS = 7 * 86_400_000;
+const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
 const user = (handle: string) => SEEDED_USERS.find(user => user.handle === handle);
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
+/** The challenge a CLI stores for a code: base64url(sha256(verifier)), the verifier never leaving the CLI. */
+const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
+/** Both sides are fixed-length base64url digests, so the comparison is constant-time. */
+function sameChallenge(left: string, right: string): boolean {
+	const a = Buffer.from(left, "utf8");
+	const b = Buffer.from(right, "utf8");
+	return a.length === b.length && timingSafeEqual(a, b);
+}
 function session(req: IncomingMessage) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
@@ -35,6 +62,15 @@ function session(req: IncomingMessage) {
 function json(res: ServerResponse, status: number, value: unknown): void {
 	res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
 	res.end(JSON.stringify(value));
+}
+/** One browser or CLI session. The raw token is handed out once; the row keeps only its digest. */
+function insertSession(token: string, handle: string): void {
+	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString());
+}
+function mintSession(handle: string): string {
+	const token = randomBytes(32).toString("base64url");
+	insertSession(token, handle);
+	return token;
 }
 function redirect(res: ServerResponse, path: string): void { res.writeHead(302, { Location: path, "Cache-Control": "no-store" }); res.end(); }
 class BadBody extends Error {}
@@ -145,8 +181,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (method === "POST") {
 			const selected = user(text(object(await body(req)).handle, "handle"));
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
-			const token = randomBytes(32).toString("base64url");
-			db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), selected.handle, new Date(Date.parse(clock.now()) + 7 * 86400000).toISOString());
+			const token = mintSession(selected.handle);
 			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 			json(res, 200, { user: selected, token }); return;
 		}
@@ -199,6 +234,53 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			body: raw }));
 		json(res, response.status, await response.json()); return;
 	}
+	// The CLI login exchange. The CLI holds the code and polls with it; the browser holds the session
+	// and approves. Both routes are unauthenticated by design: the code is a 256-bit bearer secret with
+	// a ten-minute life, bound to the verifier the CLI keeps, and the token is minted only when a
+	// signed-in browser approves it.
+	if (url.pathname === "/api/cli/codes" && method === "POST") {
+		let challenge: string;
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "challenge")) throw new BadBody("Unsupported field");
+			challenge = text(input.challenge, "challenge", 64);
+			if (!CLI_CHALLENGE.test(challenge)) throw new BadBody("challenge must be base64url(sha256(verifier))");
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const now = clock.now();
+		db.prepare("DELETE FROM cli_codes WHERE expires_at <= ?").run(now);
+		const code = randomBytes(32).toString("base64url");
+		const expiresAt = new Date(Date.parse(now) + CLI_CODE_TTL_MS).toISOString();
+		db.prepare("INSERT INTO cli_codes (digest, challenge, created_at, expires_at) VALUES (?, ?, ?, ?)")
+			.run(tokenDigest(code), challenge, now, expiresAt);
+		json(res, 201, { code, url: `${webOrigin}/cli?code=${encodeURIComponent(code)}`, expiresAt }); return;
+	}
+	if (url.pathname.startsWith("/api/cli/codes/") && method === "GET") {
+		const digest = tokenDigest(decodeURIComponent(url.pathname.slice("/api/cli/codes/".length)));
+		const row = db.prepare("SELECT challenge, handle, token, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
+		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
+		// The verifier travels in a header, never the URL, and only its digest is on the row: a code
+		// read from the process table (the browser opener's argv) is useless without it.
+		const verifier = req.headers["x-acquit-verifier"];
+		if (typeof verifier !== "string" || typeof row.challenge !== "string" || !sameChallenge(challengeOf(verifier), row.challenge)) {
+			json(res, 403, { error: "VERIFIER_MISMATCH" }); return;
+		}
+		if (row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
+		if (!row.handle) {
+			// A pending code has no claim to race, so its expiry is read here and reported.
+			if (String(row.expires_at) <= clock.now()) { json(res, 410, { error: "CLI_CODE_EXPIRED" }); return; }
+			json(res, 200, { status: "PENDING" }); return;
+		}
+		// One delivery under concurrency: the conditional update claims the row, or it changes nothing.
+		// The expiry rides in the claim, so a code that lapses before the update cannot deliver.
+		const delivered = transaction(db, () =>
+			db.prepare("UPDATE cli_codes SET delivered_at = ? WHERE digest = ? AND delivered_at IS NULL AND expires_at > ?")
+				.run(clock.now(), digest, clock.now()).changes === 1);
+		if (!delivered) {
+			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
+		}
+		const selected = user(String(row.handle));
+		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
+	}
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
@@ -244,6 +326,33 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			{ type: "ResolveDispute", jobId: validJobId(text(input.jobId, "job id")), verdict, note: text(input.note, "note") });
 		json(res, outcome.kind === "DENIED" ? 409 : 200, { outcome }); return;
 	}
+	if (url.pathname === "/api/cli/approve" && method === "POST") {
+		let code: string;
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "code")) throw new BadBody("Unsupported field");
+			code = text(input.code, "code", 200);
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const digest = tokenDigest(code);
+		const row = db.prepare("SELECT handle, expires_at, delivered_at FROM cli_codes WHERE digest = ?").get(digest);
+		if (!row) { json(res, 404, { error: "CLI_CODE_UNKNOWN" }); return; }
+		if (row.handle || row.delivered_at) { json(res, 410, { error: "CLI_CODE_USED" }); return; }
+		// One approval under concurrency: the conditional update mints the session and claims the code
+		// in the same transaction, so a raced second approval mints nothing and is refused. The expiry
+		// rides in the claim, so a code that lapses before the update cannot be approved.
+		const token = transaction(db, () => {
+			const minted = randomBytes(32).toString("base64url");
+			const claimed = db.prepare("UPDATE cli_codes SET handle = ?, token = ? WHERE digest = ? AND handle IS NULL AND expires_at > ?")
+				.run(current.user.handle, minted, digest, clock.now());
+			if (claimed.changes !== 1) return null;
+			insertSession(minted, current.user.handle);
+			return minted;
+		});
+		if (token === null) {
+			json(res, 410, { error: String(row.expires_at) <= clock.now() ? "CLI_CODE_EXPIRED" : "CLI_CODE_USED" }); return;
+		}
+		json(res, 200, { handle: current.user.handle, role: current.user.role }); return;
+	}
 	if (url.pathname === "/api/jobs" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
 		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
@@ -253,8 +362,98 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles() });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles(), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
+		return;
+	}
+	if (url.pathname === "/api/me/onboarding" && method === "GET") {
+		// The merchant status the server already holds, so the CLI never talks to PayPal with a secret.
+		const result = await acquit.query(current.actor, { type: "Operator" });
+		if (result.kind !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const credits = await acquit.query(current.actor, { type: "Credits" });
+		json(res, 200, { onboarding: { handle: result.operator.handle, payouts: result.operator.payouts,
+			onboardingUrl: result.operator.onboardingUrl,
+			account: result.operator.payouts === "READY" ? "sandbox Business account (payouts enabled)" : null,
+			identityVerified: result.operator.payouts === "READY",
+			credits: credits.kind === "CREDITS" ? { ...credits.credits, paidReceipts: result.operator.paidReceipts } : null } }); return;
+	}
+	if (url.pathname === "/api/me/agents" && method === "POST") {
+		// The prompt itself never leaves the operator's machine: the row keeps only its digest.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		let agent: { name: string; runner: "claude-code" | "codex"; promptDigest: string; tools: readonly string[] };
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => !["name", "runner", "promptDigest", "tools"].includes(key))) throw new BadBody("Unsupported field");
+			const name = text(input.name, "agent name", 40);
+			if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new BadBody("Agent names are lowercase letters, digits, and dashes");
+			const runner = text(input.runner, "runner", 20);
+			if (runner !== "claude-code" && runner !== "codex") throw new BadBody("Runner must be claude-code or codex");
+			const promptDigest = text(input.promptDigest, "prompt digest", 64);
+			if (!/^[0-9a-f]{64}$/.test(promptDigest)) throw new BadBody("Prompt digest must be a SHA-256 hex digest");
+			if (!Array.isArray(input.tools) || input.tools.length > 16) throw new BadBody("Tools must be a list of at most 16 names");
+			agent = { name, runner, promptDigest, tools: input.tools.map(tool => text(tool, "tool", 40)) };
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		if (db.prepare("SELECT owner FROM agents WHERE id = ?").get(agent.name)) {
+			json(res, 409, { error: "AGENT_EXISTS", detail: `Agent ${agent.name} is already registered.` }); return;
+		}
+		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.user.handle,
+			JSON.stringify({ id: agent.name, owner: current.user.handle, name: agent.name, runner: agent.runner,
+				promptDigest: agent.promptDigest, tools: agent.tools }));
+		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
+	}
+	if (url.pathname === "/api/me/receipts" && method === "GET") {
+		// A receipt lives on its PAID job row, so the route reads the rows the operator was paid for.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const receipts: Record<string, unknown>[] = [];
+		for (const row of db.prepare("SELECT json FROM jobs").all()) {
+			const job = JSON.parse(String(row.json)) as { contract?: { definitionOfDone?: { issue?: { repository?: unknown } } };
+				state?: { status?: unknown; payee?: { operator?: unknown }; receipt?: Record<string, unknown> } };
+			if (job.state?.status !== "PAID" || job.state.payee?.operator !== current.actor.operatorId || !job.state.receipt) continue;
+			receipts.push({ ...job.state.receipt, repository: String(job.contract?.definitionOfDone?.issue?.repository ?? clientRepository) });
+		}
+		receipts.sort((left, right) => String(right.releasedAt).localeCompare(String(left.releasedAt)));
+		json(res, 200, { receipts, nextCursor: null }); return;
+	}
+	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
+	if (tokenMatch && method === "POST") {
+		// The operator's runner asks for one credential per run. Only the operator the job is locked to
+		// can have it, the answer names the job's work repo, and the credential is scoped to that one
+		// repository, so the CLI never guesses a repository and never holds a key to another job's.
+		const jobId = validJobId(decodeURIComponent(tokenMatch[1]));
+		const result = await acquit.query(current.actor, { type: "Job", jobId });
+		if (result.kind !== "JOB") {
+			json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403,
+				{ error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
+			return;
+		}
+		if (current.actor.role !== "OPERATOR" || result.job.lockedTo === null || result.job.lockedTo !== current.actor.operatorId) {
+			json(res, 403, { error: "NOT_OWNER", detail: `Job ${jobId} is not locked to this operator.` });
+			return;
+		}
+		if (!githubEnv.appId.trim()) {
+			json(res, 503, { error: "GITHUB_NOT_CONFIGURED",
+				detail: "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run." });
+			return;
+		}
+		const name = workRepoName(clientRepository, jobId);
+		const repository = `${githubEnv.organization}/${name}`;
+		try {
+			// One credential per job: the mint names this job's work repo and carries only the
+			// permissions a run and submit need, so an operator holding it cannot push elsewhere.
+			const token = await githubApp.installationToken(githubEnv.organization, [name]);
+			json(res, 200, { repository, token });
+		} catch (error) {
+			if (error instanceof GitHubAppError && error.status === 422) {
+				// GitHub refuses a scoped mint while the work repo is not visible to the installation,
+				// which is the state between funding and the outbox creating the fork. The CLI already
+				// retries that condition, so it answers the same not-ready refusal a missing clone does.
+				json(res, 503, { error: "WORK_REPO_NOT_READY",
+					detail: `The work repository ${repository} is not visible to the GitHub App yet. It is created shortly after funding, so retry in about 30 seconds.` });
+				return;
+			}
+			json(res, 502, { error: "WORK_REPO_TOKEN_FAILED",
+				detail: error instanceof GitHubAppError ? boundedDetail(error.message) : "GitHub refused a credential for the work repo." });
+		}
 		return;
 	}
 	if (url.pathname === "/api/me/operator" && method === "GET") {
@@ -268,7 +467,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	if (url.pathname === "/api/me/credits" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Credits" });
-		if (result.kind === "CREDITS") json(res, 200, { credits: result.credits });
+		if (result.kind === "CREDITS") {
+			// paidReceipts lets the CLI spell the next week's allowance the way the tutorial does.
+			const counted = current.actor.role === "OPERATOR"
+				? db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(current.actor.operatorId) : undefined;
+			json(res, 200, { credits: { ...result.credits, paidReceipts: counted ? Number(counted.paid_receipts) : 0 } });
+		}
 		else json(res, 403, { error: "NOT_OWNER" });
 		return;
 	}

@@ -7,6 +7,7 @@ import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
 import { OperatorHome } from "./pages/OperatorHome";
+import { CliLogin } from "./pages/CliLogin";
 
 export function App() {
   const [user, setUser] = useState<SessionUser | null | undefined>(undefined);
@@ -61,6 +62,8 @@ function Routes() {
       return <JobPage key={route.id} id={route.id} />;
     case "operator":
       return <OperatorHome />;
+    case "cli":
+      return <CliLogin />;
     case "notFound":
       return (
         <div className="card pad">
