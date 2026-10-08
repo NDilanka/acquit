@@ -147,6 +147,22 @@ test("public mode refuses a seeded handle and mints a visitor through Start my d
 	});
 });
 
+test("a visitor's session dies with its visitor, and never outlives it", async () => {
+	await apiFixture(false, async (url, databasePath) => {
+		const created = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const db = new DatabaseSync(databasePath);
+		try {
+			// The session's own deadline is at most the visitor's: no cookie outlives the demo.
+			const row = db.prepare("SELECT expires_at FROM sessions WHERE handle = ?").get(created.visitor.client) as { expires_at: string };
+			assert.equal(row.expires_at, created.visitor.expiresAt);
+			// Once the visitor's own expiry passes, the session is refused even though its row stands.
+			db.prepare("UPDATE visitors SET expires_at = ? WHERE id = ?").run("2025-10-08T12:00:00.000Z", created.visitor.id);
+		} finally { db.close(); }
+		assert.deepEqual(await sessionOf(url, created.token), { user: null, visitor: null });
+		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${created.token}` } })).status, 401);
+	});
+});
+
 test("public mode refuses a seeded session that an earlier run left behind", async () => {
 	await apiFixture(false, async (url, databasePath) => {
 		// A seeded handle's session, exactly as a dev-mode run mints it: a row with no visitor.
