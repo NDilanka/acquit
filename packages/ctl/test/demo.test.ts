@@ -258,6 +258,22 @@ test("one visitor's job is invisible and untouchable to another visitor", async 
 	});
 });
 
+test("the visitor's operator cannot choose funding or move its client's clock", async () => {
+	await apiFixture(false, async url => {
+		const visitor = await (await post(url, "/api/demo", {})).json() as DemoBody;
+		const jobId = await openVisitorJob(url, visitor.token);
+		// The same visitor, acting as its operator: the job is in the visitor's world, but the controls
+		// belong to its client alone.
+		await post(url, "/api/demo/switch", {}, visitor.token);
+		const funding = await post(url, `/api/jobs/${jobId}/funding`, { mode: "checkout" }, visitor.token);
+		assert.equal(funding.status, 403);
+		assert.equal((await funding.json() as { error: string }).error, "NOT_VISITOR_JOB");
+		const clock = await post(url, `/api/jobs/${jobId}/clock`, { advanceMs: 86_400_000 }, visitor.token);
+		assert.equal(clock.status, 403);
+		assert.equal((await clock.json() as { error: string }).error, "NOT_VISITOR_JOB");
+	});
+});
+
 test("a visitor's job funds with the test card until its client chooses otherwise, and the choice binds at accept", async () => {
 	await apiFixture(false, async url => {
 		const visitor = await (await post(url, "/api/demo", {})).json() as DemoBody;
