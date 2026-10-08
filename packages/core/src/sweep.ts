@@ -9,7 +9,8 @@ import type { Instant } from "./ids.ts";
 import { expiredVisitors, sweepVisitor } from "./visitors.ts";
 
 /** What the sweep needs of the App, and nothing else. */
-export type ClientRepoDeleter = { deleteClientRepo(request: { readonly repository: string; readonly source: string }): Promise<ClientRepoRemoval> };
+export type ClientRepoDeleter = { deleteClientRepo(request: { readonly repository: string; readonly source: string;
+	readonly id: number | null }): Promise<ClientRepoRemoval> };
 
 export type SweepReport = {
 	/** The visitors whose repository is gone, whose sessions are deleted, and whose row now reads SWEPT. */
@@ -39,7 +40,8 @@ export async function sweepExpiredVisitors(input: { readonly db: DatabaseSync; r
 	for (const visitor of expiredVisitors(input.db, input.now)) {
 		if (visitor.repository !== null) {
 			try {
-				repositories.push({ repository: visitor.repository, outcome: await input.app.deleteClientRepo({ repository: visitor.repository, source: input.source }) });
+				repositories.push({ repository: visitor.repository, outcome: await input.app.deleteClientRepo({ repository: visitor.repository,
+					source: input.source, id: visitor.repositoryId }) });
 			} catch (error) {
 				kept.push({ id: visitor.id, repository: visitor.repository, reason: reasonOf(error) });
 				continue;

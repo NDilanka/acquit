@@ -31,7 +31,7 @@ test("sweep reports an expired visitor on a dry run, then removes its repository
 			response.writeHead(201); response.end(JSON.stringify({ token: "ghs_sweep", expires_at: new Date(Date.now() + 3_600_000).toISOString() })); return;
 		}
 		if (url === "/repos/acquit-forks/demo-old" && request.method === "GET") {
-			response.writeHead(200); response.end(JSON.stringify({ full_name: "acquit-forks/demo-old", fork: true,
+			response.writeHead(200); response.end(JSON.stringify({ id: 7001, full_name: "acquit-forks/demo-old", fork: true,
 				parent: { full_name: "maya-client/invoice-app" } })); return;
 		}
 		if (url === "/repos/acquit-forks/demo-old" && request.method === "DELETE") { response.writeHead(204); response.end(); return; }
@@ -42,7 +42,7 @@ test("sweep reports an expired visitor on a dry run, then removes its repository
 	const dir = await mkdtemp(join(tmpdir(), "acquit-sweep-"));
 	const path = join(dir, "acquit.db");
 	const store = new SqliteStore(path);
-	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old",
+	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old", repositoryId: 7001,
 		merchant, now: instant(new Date(Date.now() - 3 * 86_400_000).toISOString()) });
 	const staying = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: "acquit-forks/demo-live",
 		merchant, now: instant(new Date().toISOString()) });

@@ -262,7 +262,7 @@ export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId):
 export type NewDemoVisitor = { readonly id: VisitorId; readonly ipKey: string; readonly repository: string | null };
 /** What the App answered when it was asked for the visitor's repository, or that there is no App to ask. */
 export type VisitorFork =
-	| { readonly kind: "FORKED"; readonly repository: string }
+	| { readonly kind: "FORKED"; readonly repository: string; readonly id: number | null }
 	| { readonly kind: "NO_APP" };
 export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: VisitorRow }
 	| { readonly kind: "NOT_CONFIGURED" }
@@ -289,10 +289,11 @@ export async function provisionDemoVisitor(service: Acquit, input: { readonly id
 	let forked: VisitorFork | null = null;
 	try {
 		forked = await input.fork();
-		return { kind: "CREATED", visitor: bindVisitorRepository(runtime.store.db, input.id,
-			forked.kind === "NO_APP" ? null : forked.repository) };
+		return { kind: "CREATED", visitor: forked.kind === "NO_APP" ? bindVisitorRepository(runtime.store.db, input.id, null)
+			: bindVisitorRepository(runtime.store.db, input.id, forked.repository, forked.id) };
 	} catch (error) {
-		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : null);
+		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : null,
+			forked?.kind === "FORKED" ? forked.id : null);
 		return { kind: "FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) };
 	}
 }
@@ -300,7 +301,7 @@ export async function provisionDemoVisitor(service: Acquit, input: { readonly id
 /** The reserve-then-bind path for a caller that already holds the repository, and for fixtures. */
 export async function createDemoVisitor(service: Acquit, input: NewDemoVisitor): Promise<DemoVisitorResult> {
 	return provisionDemoVisitor(service, { id: input.id, ipKey: input.ipKey,
-		fork: async () => input.repository === null ? { kind: "NO_APP" } : { kind: "FORKED", repository: input.repository } });
+		fork: async () => input.repository === null ? { kind: "NO_APP" } : { kind: "FORKED", repository: input.repository, id: null } });
 }
 export function closeAcquit(service: Acquit): void {
 	runtimes.get(service)?.store.close();

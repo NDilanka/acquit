@@ -242,7 +242,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: async () => {
 			try {
 				const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
-				return { kind: "FORKED", repository: forked.repository };
+				return { kind: "FORKED", repository: forked.repository, id: forked.id };
 			} catch (error) {
 				// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
 				// repository, which is the only path that exists then. Every other refusal is named, never

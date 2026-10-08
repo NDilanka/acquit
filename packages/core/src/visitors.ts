@@ -34,6 +34,8 @@ export type VisitorRow = {
 	readonly operatorHandle: string;
 	/** The visitor's own client repository, provisioned through the App. Null before it is bound. */
 	readonly repository: string | null;
+	/** GitHub's own id for that repository, recorded at the fork, so the sweep deletes that one and no other. */
+	readonly repositoryId: number | null;
 	readonly state: VisitorState;
 };
 
@@ -53,6 +55,8 @@ export type NewVisitor = {
 	readonly ipKey: string;
 	/** The repository the App forks for this visitor, bound once its answer arrives. Null when there is none. */
 	readonly repository: string | null;
+	/** GitHub's own id for that repository, when the caller has it. */
+	readonly repositoryId?: number | null;
 	/** The sandbox seller the visitor's operator is paid through. */
 	readonly merchant: MerchantId;
 	readonly now: Instant;
@@ -73,7 +77,7 @@ export function visitorRepositoryName(id: VisitorId): string {
 	return `demo-${id.slice(2)}`;
 }
 
-const VISITOR_COLUMNS = "id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, state";
+const VISITOR_COLUMNS = "id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id, state";
 
 const stateOf = (value: unknown): VisitorState => {
 	const state = String(value);
@@ -84,6 +88,7 @@ const row = (value: Record<string, unknown>): VisitorRow => ({
 	id: parseVisitorId(String(value.id)), createdAt: String(value.created_at) as Instant, expiresAt: String(value.expires_at) as Instant,
 	ipKey: String(value.ip_key), clientHandle: String(value.client_handle), operatorHandle: String(value.operator_handle),
 	repository: value.repository === null || value.repository === undefined ? null : String(value.repository),
+	repositoryId: typeof value.repository_id === "number" ? value.repository_id : null,
 	state: stateOf(value.state),
 });
 
@@ -154,7 +159,7 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 	const handles = visitorHandles(input.id);
 	const expiresAt = new Date(Date.parse(input.now) + VISITOR_TTL_MS).toISOString() as Instant;
 	const visitor: VisitorRow = { id: input.id, createdAt: input.now, expiresAt, ipKey: input.ipKey,
-		clientHandle: handles.client, operatorHandle: handles.operator, repository: null, state: "PROVISIONING" };
+		clientHandle: handles.client, operatorHandle: handles.operator, repository: null, repositoryId: null, state: "PROVISIONING" };
 	const operator: OperatorRow = { id: handles.operator as OperatorId, handle: handles.operator, kind: "INDEPENDENT",
 		version: 0 as Version, payouts: { kind: "READY", merchant: input.merchant, connectedAt: input.now } };
 	const agentId = `${handles.operator}-agent`;
@@ -170,8 +175,9 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 		const refused = reservationRefusal({ kind: "VISITOR", scope: input.ipKey, ref: input.id, cents: 0 as UsdCents, at: input.now },
 			capUsage(db, { scope: input.ipKey, since: capWindowStart(input.now) }));
 		if (refused !== null) { db.exec("ROLLBACK"); return { kind: "CAPPED", reason: refused }; }
-		db.prepare("INSERT INTO visitors VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-			.run(visitor.id, visitor.createdAt, visitor.expiresAt, visitor.ipKey, visitor.clientHandle, visitor.operatorHandle, visitor.repository, visitor.state);
+		db.prepare("INSERT INTO visitors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(visitor.id, visitor.createdAt, visitor.expiresAt, visitor.ipKey, visitor.clientHandle, visitor.operatorHandle,
+				visitor.repository, visitor.repositoryId, visitor.state);
 		db.prepare("INSERT INTO principals VALUES (?, ?, ?)").run(visitor.clientHandle, "CLIENT", visitor.id);
 		db.prepare("INSERT INTO principals VALUES (?, ?, ?)").run(visitor.operatorHandle, "OPERATOR", visitor.id);
 		db.prepare("INSERT INTO operators VALUES (?, ?, ?, 0)").run(operator.id, operator.version, JSON.stringify(operator));
@@ -188,24 +194,24 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 }
 
 /**
- * Binds the repository the App answered with to the reserved visitor and marks it ACTIVE. Null is a
- * deployment with no App: the visitor opens jobs on the deployment's own repository.
+ * Binds the repository the App answered with, and its GitHub id, to the reserved visitor and marks it
+ * ACTIVE. Null is a deployment with no App: the visitor opens jobs on the deployment's own repository.
  */
-export function bindVisitorRepository(db: DatabaseSync, id: VisitorId, repository: string | null): VisitorRow {
-	db.prepare("UPDATE visitors SET repository = ?, state = 'ACTIVE' WHERE id = ?").run(repository, id);
+export function bindVisitorRepository(db: DatabaseSync, id: VisitorId, repository: string | null, repositoryId: number | null = null): VisitorRow {
+	db.prepare("UPDATE visitors SET repository = ?, repository_id = ?, state = 'ACTIVE' WHERE id = ?").run(repository, repositoryId, id);
 	const visitor = readVisitor(db, id);
 	if (visitor === null) throw new Error("Visitor missing after binding its repository");
 	return visitor;
 }
 
 /** Marks a reserved visitor FAILED, keeping any repository its fork already named for the sweep. */
-export function failVisitor(db: DatabaseSync, id: VisitorId, repository: string | null): void {
-	db.prepare("UPDATE visitors SET repository = ?, state = 'FAILED' WHERE id = ?").run(repository, id);
+export function failVisitor(db: DatabaseSync, id: VisitorId, repository: string | null, repositoryId: number | null = null): void {
+	db.prepare("UPDATE visitors SET repository = ?, repository_id = ?, state = 'FAILED' WHERE id = ?").run(repository, repositoryId, id);
 }
 
 /** The row a reservation holds, bound to its repository: for a caller that already knows what the App answered. */
 export function insertVisitor(db: DatabaseSync, input: NewVisitor): VisitorRow {
 	const reserved = reserveVisitor(db, input);
 	if (reserved.kind === "CAPPED") throw new Error(`The caps refused this visitor: ${reserved.reason}`);
-	return bindVisitorRepository(db, input.id, input.repository);
+	return bindVisitorRepository(db, input.id, input.repository, input.repositoryId ?? null);
 }

@@ -36,7 +36,7 @@ globalThis.fetch = async (input, init) => {
 		if (path === "/app/installations/42/access_tokens") return Response.json({ token: "ghs_stub", expires_at: new Date(Date.now() + 3600000).toISOString() }, { status: 201 });
 		if (init?.method === "POST" && /^\\/repos\\/[^/]+\\/[^/]+\\/forks$/.test(path)) {
 			const body = JSON.parse(init.body);
-			return Response.json({ full_name: body.organization + "/" + body.name, fork: true, parent: { full_name: "maya-client/invoice-app" } }, { status: 202 });
+			return Response.json({ id: 9001, full_name: body.organization + "/" + body.name, fork: true, parent: { full_name: "maya-client/invoice-app" } }, { status: 202 });
 		}
 		return Response.json({ message: "Not Found" }, { status: 404 });
 	}
