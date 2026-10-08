@@ -18,7 +18,7 @@ import type { Bps } from "../src/paypal.ts";
 import { clientRepositoryEnv } from "../../verifier/config.ts";
 import { exampleContract } from "./hidden-fixture.ts";
 
-const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
+const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 const demo = "maya-client/invoice-app";
 const live = "NDilanka/invoice-app";
 
@@ -61,7 +61,7 @@ test("OpenJob freezes the repository the caller's own visitor holds, and refuses
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
 	const visitorRepo = "acquit-forks/demo-abc123";
-	const guest: Actor = { role: "CLIENT", clientId: "guest-abc123-client" as ClientId, repository: visitorRepo };
+	const guest: Actor = { role: "CLIENT", clientId: "guest-abc123-client" as ClientId, tenant: null, repository: visitorRepo };
 	const open = (repository: string): UserCommand => ({ type: "OpenJob", repository, issueNumber: 12, budget: usd("400.00"),
 		deliveryEndsAt: instant("2026-10-12T12:00:00Z") });
 	const jobOf = (outcome: CommandOutcome): JobProjection | null => outcome.kind === "COMMITTED" && outcome.result.kind === "JOB" ? outcome.result.job : null;

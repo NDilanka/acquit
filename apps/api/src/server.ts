@@ -10,7 +10,7 @@ import { visitorCap } from "../../../packages/core/src/caps.ts";
 import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
-import type { JobRow } from "../../../packages/core/src/job.ts";
+import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
 import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
@@ -71,8 +71,9 @@ function session(req: IncomingMessage) {
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
 	if (principal.visitorId !== null && visitor === null) return null;
 	const actor: Actor = principal.role === "CLIENT"
-		? { role: "CLIENT", clientId: principal.handle as ClientId, ...(visitor?.repository ? { repository: visitor.repository } : {}) }
-		: { role: "OPERATOR", operatorId: principal.handle as OperatorId };
+		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
+			...(visitor?.repository ? { repository: visitor.repository } : {}) }
+		: { role: "OPERATOR", operatorId: principal.handle as OperatorId, tenant: principal.visitorId };
 	return { handle: principal.handle, role: principal.role, visitor, token, actor };
 }
 /** The visitor as the web reads it: both of its handles, its repository, and when the demo ends. */
@@ -435,7 +436,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		await acquit.tick();
 		const advanced = await acquit.query(current.actor, { type: "Job", jobId });
 		if (advanced.kind !== "JOB") { json(res, 403, { error: advanced.kind === "DENIED" ? advanced.reason : "NOT_FOUND" }); return; }
-		json(res, 200, { job: advanced.job, handles: operatorHandles(), now: clock.now() }); return;
+		json(res, 200, { job: advanced.job, handles: jobHandles(advanced.job), now: clock.now() }); return;
 	}
 	if (url.pathname === "/api/dev/clock" && method === "POST") {
 		const input = object(await body(req));
@@ -499,7 +500,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: operatorHandles(), now: clock.now() });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -625,12 +626,22 @@ function storedRow(jobId: ReturnType<typeof parseJobId>): JobRow | null {
 	const record = db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId);
 	return record ? JSON.parse(String(record.json)) as JobRow : null;
 }
-/** Operator ids become handles here so the CLI never prints a bare id where a person's handle belongs. */
-function operatorHandles(): Record<string, string> {
+/**
+ * The handles one job's own view names: its bidders and the operator it is locked to, and nothing
+ * else. The map can therefore never resolve an operator the viewer's tenant has no business seeing.
+ */
+function jobHandles(job: JobProjection): Record<string, string> {
+	const ids = new Set<string>();
+	for (const bid of job.bids.operators) ids.add(bid.operator);
+	if (job.bids.house) ids.add(job.bids.house.operator);
+	if (job.lockedTo) ids.add(job.lockedTo);
+	if (!ids.size) return {};
 	const handles: Record<string, string> = {};
-	for (const row of db.prepare("SELECT id, json FROM operators").all()) {
-		const operator = JSON.parse(String(row.json)) as { handle?: string };
-		if (typeof operator.handle === "string") handles[String(row.id)] = operator.handle;
+	for (const id of ids) {
+		const record = db.prepare("SELECT json FROM operators WHERE id = ?").get(id);
+		if (!record) continue;
+		const operator = JSON.parse(String(record.json)) as { handle?: string };
+		if (typeof operator.handle === "string") handles[id] = operator.handle;
 	}
 	return handles;
 }

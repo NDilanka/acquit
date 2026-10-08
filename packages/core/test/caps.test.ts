@@ -43,7 +43,7 @@ async function guestOf(service: ReturnType<typeof serviceAt>, ipKey: string): Pr
 	const created = await createDemoVisitor(service, { id: newVisitorId(), ipKey, repository: null });
 	assert.equal(created.kind, "CREATED");
 	const client = (created.kind === "CREATED" ? created.visitor.clientHandle : "") as ClientId;
-	return { client, actor: { role: "CLIENT", clientId: client } };
+	return { client, actor: { role: "CLIENT", clientId: client, tenant: null } };
 }
 
 const jobIdOf = (outcome: CommandOutcome): JobId =>
@@ -127,7 +127,7 @@ test("a capped visitor's job and run are refused by code", async () => {
 			attempts: { phase: "READY", history: [], runsStarted, failure: null } } }), jobId);
 	};
 	const submit = (jobId: JobId): UserCommand => ({ type: "Submit", jobId, sourceCommit: "d".repeat(40) as CommitSha });
-	const operator: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
+	const operator: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
 	try {
 		const guest = await guestOf(service, "ip-a");
 		const open = (budget: UsdCents): UserCommand => ({ type: "OpenJob", repository: deployment, issueNumber: 12,

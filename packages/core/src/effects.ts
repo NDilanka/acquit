@@ -734,7 +734,7 @@ function outboxRow(effect: Effect, now: Instant): OutboxRow {
 async function placeHouseBid(ports: Ports, job: JobRow): Promise<void> {
 	const hex = digest(`house-bid:${job.id}`);
 	const key = parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
-	await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId }, key,
+	await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: job.tenant ?? null }, key,
 		{ type: "PlaceBid", jobId: job.id, price: job.contract.budget, eta: hours(24),
 			agent: "house-ts-fixer" as AgentId, pitch: "House quality bar: focused TypeScript fixes against the frozen suite." });
 }

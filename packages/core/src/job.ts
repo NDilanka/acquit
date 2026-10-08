@@ -22,6 +22,7 @@ import type {
 	OrderId,
 	ReceiptId,
 	Version,
+	VisitorId,
 } from "./ids.ts";
 import { reduceLedger, refundTreasury, releaseTreasury } from "./ledger.ts";
 import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryEntry, UsdCents } from "./ledger.ts";
@@ -267,6 +268,11 @@ export type JobRow<S extends JobState = JobState> = {
 	readonly id: JobId;
 	readonly version: Version;
 	readonly client: ClientId;
+	/**
+	 * The visitor that opened this job, or null for the deployment's own seeded world. Frozen at
+	 * OpenJob from the actor's tenant, and the only field core's visibility and command gates read.
+	 */
+	readonly tenant: VisitorId | null;
 	readonly title: string;
 	readonly contract: AcceptanceContract;
 	readonly openedAt: Instant;
@@ -454,7 +460,7 @@ function transitionTable(): {
 			const capped = jobCap(facts.loaded.counts, command.budget);
 			if (capped !== null) return capped;
 			return { next: { id: parseJobId(`job_${randomUUID()}`), version: 0 as Version,
-				client: facts.actor.clientId, title: facts.loaded.title, contract: facts.loaded.contract,
+				client: facts.actor.clientId, tenant: facts.actor.tenant, title: facts.loaded.title, contract: facts.loaded.contract,
 				openedAt: facts.now, bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } },
 				credits: [], effects: [] };
 		} },
@@ -701,7 +707,7 @@ function transitionTable(): {
 				: row.state.status === "VERIFIED" || row.state.status === "REFUNDED" ? row.state.history : [];
 			// The arbiter's note survives the settlement when there was one; a deadline refund has none and
 			// the key stays absent, so a row read back from the store deep-equals the row that produced it.
-			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, title: row.title,
+			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, tenant: row.tenant, title: row.title,
 				contract: row.contract, openedAt: row.openedAt, bids: row.bids,
 				...(row.arbiterNote === undefined ? {} : { arbiterNote: row.arbiterNote }),
 				state: { status: "REFUNDED", payee: escrow.payee, book, reason: intent.reason, refund,
@@ -924,6 +930,10 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	if (facts.actor.role !== table[command.type].by) return "NOT_OWNER";
 	if (command.type === "OpenJob") return row === null ? table.OpenJob.apply(null, command, facts) : "WRONG_STATE";
 	if (!row || row.id !== command.jobId) return "NOT_FOUND";
+	// The tenant gate comes before any edge: a command from another visitor's world is refused whole,
+	// whatever the command is and whichever phase the row holds. The arbiter and the system paths
+	// (PayPal, verifier, timer, outbox) are the only readers and writers outside a tenant.
+	if (facts.actor.role !== "SYSTEM" && facts.actor.role !== "ARBITER" && (facts.actor.tenant ?? null) !== (row.tenant ?? null)) return "NOT_OWNER";
 	if (facts.actor.role === "CLIENT" && row.client !== facts.actor.clientId) return "NOT_OWNER";
 	if (command.type === "CaptureCompleted" && row.state.status !== "OPEN") return unchanged(row);
 	if (command.type === "TimerDue") return table.TimerDue.apply(row, command, facts);

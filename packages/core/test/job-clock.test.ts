@@ -13,7 +13,7 @@ const day = 86_400_000;
 const at = "2026-10-06T12:00:00.000Z";
 /** One open job with a bid, an escrow cutoff, and a book line: every kind of instant the domain stores. */
 function openRow(id: string): JobRow {
-	return { id: id as JobId, version: 1 as JobRow["version"], client: "maya-client" as JobRow["client"], title: "Totals round wrong",
+	return { id: id as JobId, version: 1 as JobRow["version"], client: "maya-client" as JobRow["client"], tenant: null, title: "Totals round wrong",
 		contract: { definitionOfDone: null, budget: 40000 as JobRow["contract"]["budget"], deliveryEndsAt: "2026-10-10T12:00:00.000Z" as JobRow["contract"]["deliveryEndsAt"],
 			terms: {} as JobRow["contract"]["terms"] },
 		openedAt: at as JobRow["openedAt"],

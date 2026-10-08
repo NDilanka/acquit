@@ -8,7 +8,7 @@ import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { JobFundingMode } from "./funding.ts";
 import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
@@ -31,9 +31,13 @@ export type { JobStatus, Receipt } from "./job.ts";
 export { ISSUE, SEEDED_USERS } from "./seed-data.ts";
 
 export type Actor =
-	/** A visitor's client carries the repository the App forked for it: the only one OpenJob accepts from it. */
-	| { readonly role: "CLIENT"; readonly clientId: ClientId; readonly repository?: string }
-	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId }
+	/**
+	 * Every principal carries the visitor it belongs to, or null for the deployment's own seeded world.
+	 * Core scopes every read, list, bid, and command to this: an actor with a tenant acts on that
+	 * tenant's jobs alone, and a tenant-less actor never reaches a visitor's job.
+	 */
+	| { readonly role: "CLIENT"; readonly clientId: ClientId; readonly tenant: VisitorId | null; readonly repository?: string }
+	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId; readonly tenant: VisitorId | null }
 	| { readonly role: "ARBITER"; readonly staffId: StaffId };
 
 export type UserCommand = UserJobCommand | OperatorCommand;
@@ -205,18 +209,21 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		capCounts: input => ports.store.capCounts({ ...input, since: capWindowStart(clock.now()) }),
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
+			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
+			// and the system paths are the only cross-tenant readers, and they are never a session.
+			const sameWorld = (row: JobRow) => actor.role === "ARBITER" || (actor.tenant ?? null) === (row.tenant ?? null);
 			switch (query.type) {
 				case "Job": {
 					const row = await store.readJob(query.jobId);
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
-					const mayRead = row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
-						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER";
+					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
+						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
 					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}
 				case "OpenJobs": {
-					const jobs = (await store.listJobs()).filter(row => row.state.status === "OPEN" ||
+					const jobs = (await store.listJobs()).filter(row => sameWorld(row) && (row.state.status === "OPEN" ||
 						actor.role === "CLIENT" && row.client === actor.clientId ||
-						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId));
+						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId)));
 					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts)), nextCursor: null };
 				}
 				case "Operator": {

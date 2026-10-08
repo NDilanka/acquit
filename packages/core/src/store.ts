@@ -69,7 +69,7 @@ export function isStoreBusy(error: unknown): boolean {
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
 function storedJob(row: JobRow): JobRow {
-	const parsed = { ...row, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
+	const parsed = { ...row, tenant: row.tenant ?? null, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
 		state: storedRefund(storedPaid(storedMerge(row.state))) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.

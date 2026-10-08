@@ -233,10 +233,11 @@ test("a visitor's job funds with the test card until its client chooses otherwis
 		const fresh = await jobOf(url, jobId, visitor.token);
 		assert.equal(fresh.status, 200);
 		assert.equal(fresh.body.job.funding, "card");
-		// An open job is public to read, but its funding is served to its own client and its choice is refused to everyone else.
+		// A job another visitor owns is refused whole: its funding is that client's own answer, and the
+		// stranger never reads the job at all.
 		const stranger = await jobOf(url, jobId, other.token);
-		assert.equal(stranger.status, 200);
-		assert.equal(stranger.body.job.funding, null);
+		assert.equal(stranger.status, 403);
+		assert.equal((stranger.body as unknown as { error: string }).error, "NOT_OWNER");
 		assert.equal((await post(url, `/api/jobs/${jobId}/funding`, { mode: "checkout" }, other.token)).status, 403);
 		assert.equal((await post(url, `/api/jobs/${jobId}/funding`, { mode: "checkout" }, other.token)
 			.then(response => response.json() as Promise<{ error: string }>)).error, "NOT_VISITOR_JOB");

@@ -25,7 +25,7 @@ import type { Actor } from "../src/acquit.ts";
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const merchant = "sandbox-seller" as MerchantId;
-const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
+const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 const devon = "devon-ops" as OperatorId;
 const house = "house-tsfix" as OperatorId;
 const devonBid = parseBidId("bid_devon");
@@ -49,7 +49,7 @@ function operatorRow(id: OperatorId, receipts: number): OperatorRow {
 	return { id, handle: String(id), kind: "INDEPENDENT", version: 0 as Version, payouts: { kind: "READY", merchant, connectedAt: now } };
 }
 function openRow(respondBy: Instant): JobRow {
-	return { id: jobId, version: 1 as Version, client: "maya-client" as ClientId, title: "test", openedAt: now,
+	return { id: jobId, version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: frozenDefinition("maya-client/invoice-app", exampleContract), terms: TERMS },
 		bids: [
 			{ id: houseBid, operator: house, handle: "house-tsfix", kind: "HOUSE", payee: merchant, agent: "house-ts-fixer" as AgentId,

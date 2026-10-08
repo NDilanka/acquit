@@ -21,8 +21,8 @@ import { SqliteStore } from "../src/store.ts";
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const merchant = "sandbox-seller" as MerchantId;
-const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId };
-const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId };
+const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
+const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
 const requestKey = () => parseRequestKey(randomUUID());
 const openCommand: UserCommand = { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
 	budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z") };

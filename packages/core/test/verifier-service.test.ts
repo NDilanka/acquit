@@ -562,7 +562,7 @@ function heldRow(): JobRow {
 		sellerNet: usd("360.00"), capturedAt: now };
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
-	return { id: parseJobId("job_7Q2K"), version: 1 as Version, client: "maya-client" as ClientId,
+	return { id: parseJobId("job_7Q2K"), version: 1 as Version, client: "maya-client" as ClientId, tenant: null,
 		title: "Totals round wrong for 3-decimal currencies", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2027-11-08T10:00:00Z"), definitionOfDone: definition(), terms: TERMS },
 		bids: [{ id: "bid_submit" as never, operator: "devon-ops" as OperatorId, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,

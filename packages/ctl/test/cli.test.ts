@@ -148,7 +148,7 @@ test("ledger --job reads another client's HELD book and pins the tutorial text a
 		assert.deepEqual(JSON.parse(json.stdout).data.jobs, [{ id: row.id, laws: "OK", law: null, ledger: held }]);
 		// projectJob is the API's ledger projection; switching the owner must not change the stored array.
 		const mayaRow = { ...row, client: "maya-client" };
-		const apiJob = projectJob(mayaRow as never, { role: "CLIENT", clientId: "maya-client" as never }, new Map());
+		const apiJob = projectJob(mayaRow as never, { role: "CLIENT", clientId: "maya-client" as never, tenant: null }, new Map());
 		assert.deepEqual(JSON.parse(json.stdout).data.jobs[0].ledger, apiJob.ledger);
 	});
 });
