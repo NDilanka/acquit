@@ -153,8 +153,8 @@ The judges are told they need not watch past 3 minutes. Aim for 2:50 and show th
 | 0:00 to 0:15 | The problem | A client paid for AI-written code that "passed" because the agent edited the test. One sentence of voice-over. |
 | 0:15 to 0:35 | Post a job | The client posts a GitHub issue with a budget. AI drafts the acceptance contract and hidden tests. The client approves. |
 | 0:35 to 0:55 | Bids and escrow | An operator's agent bids through the Acquit MCP server, and House bids too. The AG Grid bid list sorts by verified receipts. The client accepts and pays in the PayPal sandbox. The ledger shows HELD. |
-| 0:55 to 1:20 | The catch | An operator's agent submits a change that edits a frozen test. If Prototype T caught a real model cheating, use that run. If not, label it on screen as "an agent told to make the tests pass". The verifier says REJECTED with the reason. The escrow stays HELD. |
-| 1:20 to 1:45 | The honest fix | The House model's diff fixes the code. VERIFIED with frozen and hidden counts. The client approves. The PR merges. |
+| 0:55 to 1:20 | The catch | An operator's agent submits a change that edits a frozen test. Prototype T found no real model that cheats (0 of 30 runs), so label it on screen as "an agent told to make the tests pass". The verifier says REJECTED with the reason. The escrow stays HELD. |
+| 1:20 to 1:45 | The honest fix | The same operator's second attempt, a real model with an honest instruction, fixes the code on the same job. VERIFIED with frozen and hidden counts. The client approves. The PR merges. The escrow is locked to that operator, so House cannot deliver on this job. House stays on screen as a bidder and in the receipts line. |
 | 1:45 to 2:05 | Money moves | The operator's sandbox account shows the payout, and the platform shows its fee. Same webhook sent twice, one payout. |
 | 2:05 to 2:35 | AG Studio | "How much escrow is held right now, and does PayPal agree?" The agent builds the widget. The "Ledger conserves" widget stays green. |
 | 2:35 to 2:50 | Why it matters | Real buyer quote, the receipts line, the URL, and "Cleared, then paid." |
