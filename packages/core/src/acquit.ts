@@ -4,7 +4,7 @@ import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCall
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
-import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId } from "./ids.ts";
+import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
@@ -15,12 +15,12 @@ import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { SqliteStore } from "./store.ts";
-import { insertVisitor, newVisitorId } from "./visitors.ts";
+import { insertVisitor } from "./visitors.ts";
 import type { VisitorRow } from "./visitors.ts";
 import { unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
 
-export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey } from "./ids.ts";
+export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, VisitorId } from "./ids.ts";
 export { hours, instant, parseBidId, parseJobId, parseRequestKey } from "./ids.ts";
 export type { UsdCents, LedgerLine } from "./ledger.ts";
 export { formatUsd, usd } from "./ledger.ts";
@@ -29,7 +29,8 @@ export type { JobStatus, Receipt } from "./job.ts";
 export { ISSUE, SEEDED_USERS } from "./seed-data.ts";
 
 export type Actor =
-	| { readonly role: "CLIENT"; readonly clientId: ClientId }
+	/** A visitor's client carries the repository the App forked for it: the only one OpenJob accepts from it. */
+	| { readonly role: "CLIENT"; readonly clientId: ClientId; readonly repository?: string }
 	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId }
 	| { readonly role: "ARBITER"; readonly staffId: StaffId };
 
@@ -56,7 +57,8 @@ export type Query =
 	| { readonly type: "Credits" };
 
 export type QueryResult =
-	| { readonly kind: "JOB"; readonly job: JobView }
+	/** A single job carries its full projection, so a reader of one job sees its frozen contract. */
+	| { readonly kind: "JOB"; readonly job: JobProjection }
 	| { readonly kind: "JOBS"; readonly jobs: readonly JobView[]; readonly nextCursor: string | null }
 	| { readonly kind: "RECEIPTS"; readonly receipts: readonly Receipt[]; readonly nextCursor: string | null }
 	| { readonly kind: "OPERATOR"; readonly operator: OperatorView }
@@ -248,8 +250,8 @@ export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId):
 	return confirmFunding(runtime.ports, actor, jobId);
 }
 
-/** What the demo route hands the core: the request's address digest and the visitor's own repository. */
-export type NewDemoVisitor = { readonly ipKey: string; readonly repository: string | null };
+/** What the demo route hands the core: the visitor's own id (its repository name derives from it), the request's address digest, and the repository the App forked for it. */
+export type NewDemoVisitor = { readonly id: VisitorId; readonly ipKey: string; readonly repository: string | null };
 export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: VisitorRow } | { readonly kind: "NOT_CONFIGURED" };
 
 /**
@@ -260,7 +262,7 @@ export function createDemoVisitor(service: Acquit, input: NewDemoVisitor): DemoV
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
-	return { kind: "CREATED", visitor: insertVisitor(runtime.store.db, { id: newVisitorId(), ipKey: input.ipKey,
+	return { kind: "CREATED", visitor: insertVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey,
 		repository: input.repository, merchant: runtime.demo.merchant, now: runtime.ports.clock.now() }) };
 }
 export function closeAcquit(service: Acquit): void {

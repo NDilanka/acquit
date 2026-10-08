@@ -5,12 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import { createAcquit, closeAcquit, createDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
-import { createGitHubApp, GitHubAppError, workRepoName } from "../../../packages/core/src/github.ts";
+import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
 import { defaultJobFunding, setJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
-import { principalOf, readVisitor } from "../../../packages/core/src/visitors.ts";
+import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
@@ -69,7 +69,8 @@ function session(req: IncomingMessage) {
 	if (!principal) return null;
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
 	if (principal.visitorId !== null && visitor === null) return null;
-	const actor: Actor = principal.role === "CLIENT" ? { role: "CLIENT", clientId: principal.handle as ClientId }
+	const actor: Actor = principal.role === "CLIENT"
+		? { role: "CLIENT", clientId: principal.handle as ClientId, ...(visitor?.repository ? { repository: visitor.repository } : {}) }
 		: { role: "OPERATOR", operatorId: principal.handle as OperatorId };
 	return { handle: principal.handle, role: principal.role, visitor, token, actor };
 }
@@ -211,9 +212,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 		json(res, 200, { users: SEEDED_USERS }); return;
 	}
-	// Start my demo: one visitor, its own repository (bound in unit 3), and a session for its client.
+	// Start my demo: one visitor, one disposable client repository forked by the App, and a session for
+	// its client. The repository is forked before the row exists, so a visitor is never half-provisioned.
 	if (url.pathname === "/api/demo" && method === "POST") {
-		const created = createDemoVisitor(acquit, { ipKey: ipKeyOf(req), repository: null });
+		const id = newVisitorId();
+		let repository: string | null = null;
+		try {
+			repository = (await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) })).repository;
+		} catch (error) {
+			// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
+			// repository, which is the only path that exists then. Every other refusal is named, never
+			// papered over: a visitor whose own repository was not made must not fall back to a shared one.
+			if (!(error instanceof GitHubAppNotConfigured)) {
+				json(res, 502, { error: "DEMO_REPOSITORY_FAILED",
+					detail: error instanceof GitHubAppError ? boundedDetail(error.message) : "The GitHub App could not fork this visitor's repository." });
+				return;
+			}
+		}
+		const created = createDemoVisitor(acquit, { id, ipKey: ipKeyOf(req), repository });
 		if (created.kind === "NOT_CONFIGURED") {
 			json(res, 503, { error: "DEMO_NOT_CONFIGURED", detail: "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through." });
 			return;
@@ -356,7 +372,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
 		return;
 	}
-	if (url.pathname === "/api/repos" && method === "GET") { json(res, 200, { repos: [{ ...ISSUE, repository: clientRepository }] }); return; }
+	if (url.pathname === "/api/repos" && method === "GET") {
+		// The one repository this session may open a job on: the visitor's own fork when it has one.
+		json(res, 200, { repos: [{ ...ISSUE, repository: current.visitor?.repository ?? clientRepository }] });
+		return;
+	}
 	if (url.pathname === "/api/commands" && method === "POST") {
 		let parsed: { key: ReturnType<typeof parseRequestKey>; command: UserCommand };
 		try {
@@ -546,7 +566,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				detail: "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run." });
 			return;
 		}
-		const name = workRepoName(clientRepository, jobId);
+		// The name derives from the repository the job's contract froze, which for a visitor is its own
+		// fork: a visitor's work repo is never named after the deployment's repository.
+		const name = workRepoName(result.job.contract?.repository ?? clientRepository, jobId);
 		const repository = `${githubEnv.organization}/${name}`;
 		try {
 			// One credential per job: the mint names this job's work repo and carries only the

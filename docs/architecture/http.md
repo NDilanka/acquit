@@ -34,10 +34,10 @@ Public mode is `ACQUIT_DEV` unset. A session resolves through the `principals` t
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| POST | `/api/demo` | `{}` | `201 { user, visitor, token }` and the cookie. Creates the visitor's client and operator principals, its operator with one agent and the first weekly grant, and mints the client's session. `503 { error: "DEMO_NOT_CONFIGURED" }` without a demo merchant |
+| POST | `/api/demo` | `{}` | `201 { user, visitor, token }` and the cookie. The GitHub App forks the visitor's own client repository first, then this creates its client and operator principals, its operator with one agent and the first weekly grant, and mints the client's session. `503 { error: "DEMO_NOT_CONFIGURED" }` without a demo merchant, `502 { error: "DEMO_REPOSITORY_FAILED" }` when the App refuses the fork. Without an App configured the visitor's `repository` is null and it opens jobs on the deployment's own repository, which is the only path that exists then |
 | POST | `/api/demo/switch` | `{}` | `{ user, visitor, token }`: moves this session between the visitor's own two principals. `403 { error: "NOT_DEMO_VISITOR" }` for any session that is not a visitor's |
 
-`visitor` is `{ id, client, operator, repository, expiresAt }`. Every `/api/dev/*` route and the arbiter stay refused in public mode (`403 { error: "DEV_DISABLED" }`).
+`visitor` is `{ id, client, operator, repository, expiresAt }`. The repository is `acquit-forks/demo-<id>` when the App forked one: the visitor's client is the only principal that may open a job on it, and `GET /api/repos` serves it in place of the deployment's own. A visitor's job freezes it into the contract, so its work repo is named after the visitor's fork and never after the deployment's repository. Every `/api/dev/*` route and the arbiter stay refused in public mode (`403 { error: "DEV_DISABLED" }`).
 
 Two job actions are scoped to the caller's own visitor. Both read the stored job first: an unknown id is `404 { error: "NOT_FOUND" }`, and a job whose `client` is not the calling visitor's client handle is `403 { error: "NOT_VISITOR_JOB" }`.
 
@@ -83,7 +83,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form |
+| GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form. A visitor's own fork replaces the deployment's repository for that session |
 | GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor }` |
 | GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
@@ -107,7 +107,9 @@ rather than reading a GitHub App key on the operator's machine.
   the least privilege a run and submit exercise. A credential handed to one operator cannot push to
   another job's work repo. It answers `200 { repository, token }`; `repository` is the full
   `owner/name` of the job's work repo (`<organization>/<client repo name>-<job id>`), so the CLI
-  builds the git URL from it and never guesses a repository.
+  builds the git URL from it and never guesses a repository. The client repo name is read from the
+  repository the job's contract froze, so a visitor's work repo is named after its own fork rather
+  than the deployment's repository.
 - With the App unconfigured the route answers `503 { error: "GITHUB_NOT_CONFIGURED" }`. GitHub
   answers `422` to the scoped mint while the work repo does not exist yet (the window between funding
   and the outbox creating the fork), and the route answers that as

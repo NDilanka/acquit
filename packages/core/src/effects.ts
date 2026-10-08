@@ -170,9 +170,12 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
 		if (command.type === "OpenJob") {
-			if (command.repository !== ports.clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
+			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs on
+			// the deployment's own. Either way the contract freezes exactly the repository this command named.
+			const clientRepository = actor.role === "CLIENT" ? actor.repository ?? ports.clientRepository : ports.clientRepository;
+			if (command.repository !== clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
 			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title, contract: {
-				definitionOfDone: frozenDefinition(ports.clientRepository, ports.hiddenContract), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+				definitionOfDone: frozenDefinition(clientRepository, ports.hiddenContract), budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
 			const operator = await ports.store.readOperator(actor.operatorId);
