@@ -22,9 +22,11 @@ import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
 import { closeAcquit, createAcquit } from "../src/acquit.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { hiddenContractOf, loadHiddenCasesFromFile } from "../../verifier/hidden.ts";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -37,6 +39,8 @@ const requestKey = () => parseRequestKey(randomUUID());
  * is configured with, never a set compiled into this package.
  */
 const deploymentContract: HiddenContract = { ids: exampleContract.ids, digest: "c0".repeat(32) as Digest };
+/** The non-dev test fixture manifest: its own cases, never the committed example. */
+const testHiddenCases = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 function emptyAccount(operator = "devon-ops" as OperatorId): CreditAccount {
 	return { operator, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
 }
@@ -778,6 +782,27 @@ test("the outbox starts the run it reserved and provisions the work repo by requ
 		assert.deepEqual(created, [{ jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" }]);
 		assert.equal(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(repoKey)!.state)).kind, "CONFIRMED");
 	} finally { store.close(); base.store.close(); }
+});
+
+test("OpenJob freezes the contract derived from the deployment's own manifest", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-open-job-"));
+	try {
+		const path = join(dir, "hidden-cases.json");
+		await copyFile(testHiddenCases, path);
+		const contract = hiddenContractOf(loadHiddenCasesFromFile(path));
+		assert.notEqual(contract.digest, exampleContract.digest);
+		const f = fixture();
+		try {
+			const opened = jobOf(await executeCommand({ ...f.ports, hiddenContract: contract }, maya, requestKey(), openCommand));
+			const row = await f.store.readJob(opened.id);
+			assert(row);
+			const definition = row.contract.definitionOfDone;
+			assert(definition);
+			assert.equal(definition.hiddenManifest, contract.digest);
+			assert.deepEqual(definition.hiddenTests, contract.ids);
+			assert.notEqual(definition.hiddenManifest, exampleContract.digest);
+		} finally { f.store.close(); }
+	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("an unconfigured work repo leaves the effect waiting for a human, never hanging", async () => {	const store = new SqliteStore(":memory:");

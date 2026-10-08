@@ -4,8 +4,8 @@
 // cases, and the Docker subject mounts only the tree and the bootstrap.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,8 @@ const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
 /** The K1 live-proof deployment file, written 0600 and gitignored. Its expected values are never printed. */
 const PRIVATE_CASES_PATH = fileURLToPath(new URL("../../../data/private/hidden-cases.json", import.meta.url));
+/** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
+const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 const six = () => Array.from({ length: 6 }, (_, index) => sampleCase(index + 1));
 const manifest = (cases: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1, cases, ...extra });
 const invalid = (text: string, what: string) => {
@@ -104,6 +106,35 @@ test("the environment names a file, and that file alone decides the contract", (
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a non-dev process refuses the committed public example by name, even as a copy or a symlink", () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-hidden-example-"));
+	try {
+		// A copy whose key order and whitespace differ still parses to the example's contract.
+		const reordered = join(dir, "reordered-example.json");
+		writeFileSync(reordered, JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)
+			.map(entry => ({ expected: entry.expected, args: entry.args, target: entry.target, id: entry.id })) }, null, 2), { mode: 0o600 });
+		const linked = join(dir, "linked-example.json");
+		symlinkSync(EXAMPLE_HIDDEN_CASES_PATH, linked);
+		for (const path of [EXAMPLE_HIDDEN_CASES_PATH, reordered, linked]) {
+			for (const env of [{ ACQUIT_HIDDEN_CASES: path }, { ACQUIT_DEV: "0", ACQUIT_HIDDEN_CASES: path }]) {
+				assert.throws(() => loadHiddenCases(env), (error: unknown) => {
+					assert.ok(error instanceof VerifierConfigError, `${path} did not refuse with a config error`);
+					assert.equal(error.code, "VERIFIER_CONFIG_INVALID", `${path} refused with ${error.code}`);
+					assert.deepEqual(error.names, [HIDDEN_CASES_ENV]);
+					assert.match(error.message, /public example/);
+					return true;
+				});
+			}
+		}
+		// A development process may name the example, and the non-dev test fixture is never mistaken for it.
+		assert.deepEqual(loadHiddenCases({ ACQUIT_DEV: "1", ACQUIT_HIDDEN_CASES: EXAMPLE_HIDDEN_CASES_PATH }).map(entry => entry.id),
+			loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH).map(entry => entry.id));
+		const fixture = loadHiddenCases({ ACQUIT_HIDDEN_CASES: TEST_HIDDEN_CASES_PATH });
+		assert.deepEqual(fixture.map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+		assert.notEqual(hiddenContractOf(fixture).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("frozenDefinition stores the contract it is handed", () => {
 	const contract: HiddenContract = { ids: ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"].map(id => id as TestId),
 		digest: "ab".repeat(32) as Digest };
@@ -137,8 +168,38 @@ test("the verifier service refuses to start without the deployment's cases", () 
 // The lever walks every tracked file and prints counts only. On the committed example it must find
 // the values, which is what proves the check can see them; on a deployment's private file it must
 // find none. The private file is gitignored, so its absence is a skip, never a pass.
-const lever = (manifest: string) => spawnSync(process.execPath, [fileURLToPath(new URL("../../../scripts/check-hidden-private.mjs", import.meta.url)), manifest],
+const checkScript = fileURLToPath(new URL("../../../scripts/check-hidden-private.mjs", import.meta.url));
+const lever = (manifest: string, root?: string) => spawnSync(process.execPath, [checkScript, manifest, ...(root ? [root] : [])],
 	{ encoding: "utf8", timeout: 120_000 });
+/** A throwaway git repo whose tracked files are the given name-to-text pairs. */
+function copiedRepo(files: Record<string, string>): string {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-hidden-copy-"));
+	for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text, { mode: 0o600 });
+	execFileSync("git", ["-C", dir, "init", "-q"]);
+	execFileSync("git", ["-C", dir, "add", "-A"]);
+	return dir;
+}
+
+test("the check script sees a case spread across lines in a source copy", () => {
+	const cases = loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH);
+	const source = `const copiedCases = [\n${cases.map(entry => `  {\n    id: ${JSON.stringify(entry.id)},\n    target: ${JSON.stringify(entry.target)},\n    args: ${JSON.stringify(entry.args)},\n    expected: ${JSON.stringify(entry.expected)},\n  },`).join("\n")}\n];\n`;
+	const dir = copiedRepo({ "copied-cases.ts": source });
+	try {
+		const result = lever(TEST_HIDDEN_CASES_PATH, dir);
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.match(result.stdout, /cases=6 files=1 total=6/);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the check script sees a case spread across lines in a pretty-printed JSON copy", () => {
+	const copy = JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH) }, null, 2);
+	const dir = copiedRepo({ "copied-cases.json": copy });
+	try {
+		const result = lever(TEST_HIDDEN_CASES_PATH, dir);
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.match(result.stdout, /cases=6 files=1 total=6/);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("the check script finds the public example in the repository", () => {
 	const result = lever(EXAMPLE_HIDDEN_CASES_PATH);

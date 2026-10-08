@@ -43,8 +43,8 @@ async function apiFixture(dev: boolean, run: (url: string, databasePath: string,
 	const child = spawn(process.execPath, ["--import", preload("Date.now=()=>1760000000000"), "--import", preload(fetchStub), "apps/api/src/server.ts"],
 		{ cwd: root, stdio: "ignore", env: {
 			...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
-			// A non-dev boot needs the deployment's hidden-case file. The fixture stands in with the committed example.
-			ACQUIT_HIDDEN_CASES: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.example.json", import.meta.url)),
+			// A non-dev boot needs a hidden-case file that is not the public example. The test fixture stands in with its own cases.
+			ACQUIT_HIDDEN_CASES: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url)),
 			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test", STUB_FETCH_LOG: log,
 		} });
 	try {
