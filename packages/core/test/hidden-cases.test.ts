@@ -1,0 +1,133 @@
+// K1. The hidden cases live in a per-deployment private file, never in the repo and never on the
+// subject's mounts. This file pins the boundary: the parser refuses every malformed manifest by
+// name, a non-dev process without the environment refuses to start, the core fixture module holds no
+// cases, and the Docker subject mounts only the tree and the bootstrap.
+
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import type { Digest, TestId } from "../src/ids.ts";
+import * as seedData from "../src/seed-data.ts";
+import type { HiddenContract } from "../src/seed-data.ts";
+import { VerifierConfigError } from "../../verifier/config.ts";
+import { EXAMPLE_HIDDEN_CASES_PATH, HIDDEN_CASES_ENV, hiddenContractOf, loadHiddenCases, loadHiddenCasesFromFile, parseHiddenCases } from "../../verifier/hidden.ts";
+import { dockerArgs } from "../../verifier/subject.ts";
+
+/** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
+const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
+	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
+const six = () => Array.from({ length: 6 }, (_, index) => sampleCase(index + 1));
+const manifest = (cases: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1, cases, ...extra });
+const invalid = (text: string, what: string) => {
+	assert.throws(() => parseHiddenCases(text), (error: unknown) => {
+		assert.ok(error instanceof VerifierConfigError, `${what} did not refuse with a config error`);
+		assert.equal(error.code, "VERIFIER_CONFIG_INVALID", `${what} refused with ${error.code}`);
+		assert.deepEqual(error.names, [HIDDEN_CASES_ENV], `${what} did not name ${HIDDEN_CASES_ENV}`);
+		return true;
+	});
+};
+
+test("the core fixture module holds no hidden cases", () => {
+	assert.equal("HIDDEN_CASES" in seedData, false);
+	assert.equal("hiddenManifest" in seedData, false);
+});
+
+test("the committed example parses to the six public cases", () => {
+	const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH);
+	assert.deepEqual(cases.map(test => test.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	for (const test of cases) assert.deepEqual(test.target, { module: "src/money.ts", export: "formatTotal" });
+	assert.equal(new Set(cases.map(test => JSON.stringify(test))).size, 6);
+});
+
+test("the parser refuses every malformed manifest by name", () => {
+	invalid("{", "unparsable JSON");
+	invalid(JSON.stringify([1, 2]), "a JSON array");
+	invalid(manifest(six(), { extra: true }), "an unknown top-level field");
+	invalid(JSON.stringify({ cases: six() }), "a missing version");
+	invalid(manifest(six(), { version: 2 }), "an unknown version");
+	invalid(manifest("nope"), "a non-array cases field");
+	invalid(manifest(six().slice(0, 5)), "five cases");
+	invalid(manifest([...six(), sampleCase(7)]), "seven cases");
+	invalid(manifest([...six().slice(0, 5), "nope"]), "a non-object case");
+	invalid(manifest(six().map((entry, index) => index === 2 ? { ...entry, surprise: 1 } : entry)), "an unknown case field");
+	invalid(manifest([sampleCase(1), sampleCase(1), ...six().slice(2)]), "a duplicate id");
+	invalid(manifest([{ ...sampleCase(1), id: "hidden:0" }, ...six().slice(1)]), "a zero id");
+	invalid(manifest([{ ...sampleCase(1), id: "visible:1" }, ...six().slice(1)]), "an id from another suite");
+	invalid(manifest([...six().slice(0, 5), { ...sampleCase(6), id: "hidden:7" }]), "an id past the count");
+	invalid(manifest([{ ...sampleCase(1), target: { module: "src/money.ts" } }, ...six().slice(1)]), "a target without an export");
+	invalid(manifest([{ ...sampleCase(1), target: { module: "", export: "formatTotal" } }, ...six().slice(1)]), "an empty module");
+	invalid(manifest([{ ...sampleCase(1), args: "1.50" }, ...six().slice(1)]), "args that are not an array");
+	invalid(manifest([{ ...sampleCase(1), expected: undefined }, ...six().slice(1)]), "a missing expected value");
+	invalid(manifest([{ ...sampleCase(1), args: [[{ amount: "x".repeat(9_000) }], "USD"] }, ...six().slice(1)]), "a case past the subject frame limit");
+});
+
+test("key order in the file never changes the contract digest", () => {
+	const reordered = six().map(entry => ({ expected: entry.expected, args: entry.args, target: entry.target, id: entry.id }));
+	assert.equal(hiddenContractOf(parseHiddenCases(manifest(reordered))).digest, hiddenContractOf(parseHiddenCases(manifest(six()))).digest);
+	assert.notEqual(hiddenContractOf(parseHiddenCases(manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "1.51" } : entry)))).digest,
+		hiddenContractOf(parseHiddenCases(manifest(six()))).digest);
+});
+
+test("a non-dev process without the environment refuses by name", () => {
+	for (const env of [{}, { ACQUIT_DEV: "0" }]) {
+		assert.throws(() => loadHiddenCases(env), (error: unknown) => {
+			assert.ok(error instanceof VerifierConfigError);
+			assert.equal(error.code, "VERIFIER_CONFIG_MISSING");
+			assert.deepEqual(error.names, [HIDDEN_CASES_ENV]);
+			return true;
+		});
+	}
+	assert.throws(() => loadHiddenCases({ ACQUIT_HIDDEN_CASES: "hidden.json" }), (error: unknown) => {
+		assert.ok(error instanceof VerifierConfigError);
+		assert.equal(error.code, "VERIFIER_CONFIG_INVALID");
+		assert.deepEqual(error.names, [HIDDEN_CASES_ENV]);
+		return true;
+	});
+	const dev = loadHiddenCases({ ACQUIT_DEV: "1" });
+	assert.deepEqual(dev.map(test => test.id), loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH).map(test => test.id));
+});
+
+test("the environment names a file, and that file alone decides the contract", () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-hidden-cases-"));
+	try {
+		const path = join(dir, "hidden-cases.json");
+		writeFileSync(path, manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "9.99" } : entry)), { mode: 0o600 });
+		const loaded = loadHiddenCases({ ACQUIT_HIDDEN_CASES: path });
+		assert.deepEqual(loaded.map(test => test.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+		assert.notEqual(hiddenContractOf(loaded).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("frozenDefinition stores the contract it is handed", () => {
+	const contract: HiddenContract = { ids: ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"] as readonly TestId[],
+		digest: "ab".repeat(32) as Digest };
+	const done = seedData.frozenDefinition("owner/repo", contract);
+	assert.equal(done.hiddenManifest, contract.digest);
+	assert.deepEqual(done.hiddenTests, contract.ids);
+	assert.equal(done.issue.repository, "owner/repo");
+	assert.notEqual(done.hiddenManifest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
+});
+
+test("the Docker subject mounts only the submitted tree and the bootstrap", () => {
+	const args = dockerArgs("/tmp/tree", "acquit/runner-node20:latest", "acquit-subject-1", "/tmp/bootstrap.ts", "/tmp/container.cid");
+	const mounts = args.filter((arg, index) => args[index - 1] === "--mount");
+	assert.equal(mounts.length, 2);
+	assert.deepEqual(mounts.map(mount => mount.slice(0, mount.indexOf(",target="))), ["type=bind,source=/tmp/tree", "type=bind,source=/tmp/bootstrap.ts"]);
+	assert.deepEqual(mounts.map(mount => mount.slice(mount.indexOf(",target="))), [",target=/tree,readonly", ",target=/runner/bootstrap.ts,readonly"]);
+	assert.equal(args.some(arg => arg.includes(EXAMPLE_HIDDEN_CASES_PATH)), false);
+});
+
+test("the verifier service refuses to start without the deployment's cases", () => {
+	const server = fileURLToPath(new URL("../../verifier/server.ts", import.meta.url));
+	const child = spawnSync(process.execPath, [server], { encoding: "utf8", timeout: 15_000,
+		env: { ...process.env, ACQUIT_DEV: "0", ACQUIT_HIDDEN_CASES: "", ACQUIT_VERIFIER_PORT: "4399",
+			ACQUIT_VERIFIER_RUN_SECRET: "run-secret", ACQUIT_VERIFIER_CALLBACK_SECRET: "callback-secret",
+			ACQUIT_VERIFIER_CALLBACK_URL: "http://127.0.0.1:4398/api/verifier/callback" } });
+	assert.equal(child.status, 1);
+	assert.match(child.stderr, /VERIFIER_CONFIG_MISSING/);
+	assert.match(child.stderr, new RegExp(HIDDEN_CASES_ENV));
+});
