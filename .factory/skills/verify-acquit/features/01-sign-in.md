@@ -8,7 +8,7 @@ In dev mode (`ACQUIT_DEV=1`), choose a seeded client or operator without a passw
 - `signin-operator` opens the operator job list as `devon-ops`.
 - `signin-switch` signs out and chooses the other role.
 - `signin-cli` saves a session for authenticated API reads.
-- `signin-public` (public mode) shows the heading `Try Acquit with your own demo` and one `Start my demo` button, never the picker. The page decides by `GET /api/users`: the seeded list in dev mode, `401` in public mode.
+- `signin-public` (public mode) shows the heading `Try Acquit with your own demo` and one `Start my demo` button, never the picker. The page decides by `GET /api/session` `mode`: `dev` loads the seeded list from `GET /api/users`, `public` shows only the demo button.
 - `signin-restore` reloads the page and stays signed in through `GET /api/session`, which also restores a demo's visitor.
 
 ## How to get to it (user POV)
