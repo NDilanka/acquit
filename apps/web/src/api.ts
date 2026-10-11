@@ -2,6 +2,7 @@ import type {
   CommandResponse,
   CreditAccountView,
   FundingMode,
+  JobDetailResponse,
   JobResponse,
   JobView,
   OperatorView,
@@ -74,7 +75,7 @@ export const api = {
       "GET",
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),
-  job: (id: string) => request<JobResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
+  job: (id: string) => request<JobDetailResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
   setFunding: (id: string, mode: FundingMode) =>
     request<{ mode: FundingMode }>("POST", `/api/jobs/${encodeURIComponent(id)}/funding`, { mode }),
   advanceJobClock: (id: string, advanceMs: number) =>

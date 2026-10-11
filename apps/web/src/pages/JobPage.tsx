@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { BidView, FundingMode, JobView, MergeProgress, UserCommand } from "../api-types";
+import type { BidView, FundingMode, JobDiff, JobView, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
@@ -13,6 +13,7 @@ export function JobPage({ id }: { id: string }) {
   const { user, visitor } = useSession();
   const { location } = useRouter();
   const [job, setJob] = useState<JobView | null>(null);
+  const [diff, setDiff] = useState<JobDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [suite, setSuite] = useState<RepoIssue["suite"] | null>(null);
   const [checkout, setCheckout] = useState<BidView | null>(null);
@@ -31,9 +32,11 @@ export function JobPage({ id }: { id: string }) {
     try {
       const r = await api.job(id);
       setJob(r.job);
+      setDiff(r.diff ?? null);
       setError(null);
       return r.job;
     } catch (e) {
+      setDiff(null);
       setError(e instanceof ApiError ? (e.status === 404 ? "Job not found." : e.message) : String(e));
       return null;
     }
@@ -281,7 +284,7 @@ export function JobPage({ id }: { id: string }) {
               </p>
             </section>
           )}
-          {judgedStatuses.includes(job.status) && <Verifier job={job} />}
+          {judgedStatuses.includes(job.status) && <Verifier job={job} diff={diff} />}
 
           {!isClient && job.status === "OPEN" && !funding && !job.bids.operators.some((b) => b.handle === user.handle) && (
             <div className="card pad">
@@ -459,7 +462,7 @@ function BidRow({
       </div>
       <div className="receipts">
         {isHouse
-          ? `${bid.paidReceipts} passed verified CI`
+          ? bid.houseLine || `${bid.paidReceipts} passed verified CI`
           : `${bid.paidReceipts} verified receipt${bid.paidReceipts === 1 ? "" : "s"}`}
       </div>
       <div className="r">
@@ -685,11 +688,14 @@ const short = (sha: string) => sha.slice(0, 7);
 /** Only these statuses carry the attempt history in the job view; a PAID job's proof lives in its receipt. */
 const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
 
-function Verifier({ job }: { job: JobView }) {
+function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
   // api-types.ts does not mirror the projection's history, pending, or failure fields.
   const { attempts, contract } = job as JobView & VerifierFields;
   const total = attempts.used + attempts.left;
   const { pending, failure, history } = attempts;
+  // A diff recorded for an older run would describe work the verifier is no longer judging.
+  const latest = [pending?.sourceCommit, history[history.length - 1]?.sourceCommit];
+  const shownDiff = diff && latest.includes(diff.commit) ? diff : null;
   return (
     <section className="card bids">
       <div className="pad hd">
@@ -766,6 +772,27 @@ function Verifier({ job }: { job: JobView }) {
           </dl>
         </div>
       ))}
+      {shownDiff && (
+        <>
+          <div className="section-label">House run diff</div>
+          <div className="pad">
+            <p>
+              Commit <b className="mono">{short(shownDiff.commit)}</b>
+            </p>
+            <ul className="mono">
+              {shownDiff.files.map((f) => (
+                <li key={f.path}>
+                  {f.path} <span className="muted">{f.binary ? "binary" : `${f.added} lines`}</span>
+                </li>
+              ))}
+            </ul>
+            <details>
+              <summary>Full patch</summary>
+              <pre className="mono">{shownDiff.patch}</pre>
+            </details>
+          </div>
+        </>
+      )}
     </section>
   );
 }
