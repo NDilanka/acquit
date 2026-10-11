@@ -77,9 +77,9 @@ test("the Factory key comes from the environment first, then the laptop key file
 	const keyFile = join(home, ".config", "acquit", "factory-api-key");
 	try {
 		mkdirSync(join(home, ".config", "acquit"), { recursive: true });
-		writeFileSync(keyFile, "fk-file-key\n", { mode: 0o600 });
-		assert.equal(await factoryApiKey({ HOME: home }), "fk-file-key", "the laptop key file is read in-process");
-		writeFileSync(keyFile, "fk-line-one\nfk-line-two\n", { mode: 0o600 });
+		writeFileSync(keyFile, "file-canary-key\n", { mode: 0o600 });
+		assert.equal(await factoryApiKey({ HOME: home }), "file-canary-key", "the laptop key file is read in-process");
+		writeFileSync(keyFile, "line-canary-one\nline-canary-two\n", { mode: 0o600 });
 		assert.equal(await factoryApiKey({ HOME: home }), null, "a multi-line file is not a usable key");
 		writeFileSync(keyFile, "", { mode: 0o600 });
 		assert.equal(await factoryApiKey({ HOME: home }), null, "an empty file is not a usable key");

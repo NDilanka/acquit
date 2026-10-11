@@ -303,7 +303,7 @@ test("the droid run port starts droid exec in the sandbox with the key in-proces
 	const docker = fakeDocker(okDroidResult);
 	const run = droidRunPort({
 		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-		getKey: async () => "fk-CANARY", env: {},
+		getKey: async () => "CANARY-FACTORY-KEY", env: {},
 	});
 	const outcome = await run({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: "Fix it." });
 	assert.deepEqual(outcome, { ok: true, sessionId: "4f8b1303-23d1-442b-a8cd-f655047ff977", model: "glm-5.3-flash", factoryCredits: 663 });
@@ -315,8 +315,8 @@ test("the droid run port starts droid exec in the sandbox with the key in-proces
 	// The prompt rides the ACQUIT_INSTRUCTION env, which run.mjs writes to the file the argv names;
 	// it never becomes a bare word of the exec command the way the claude argv carries it.
 	assert.equal(argv.slice(argv.indexOf("--exec")).some(arg => arg.includes("Fix it.")), false);
-	assert.equal(docker.calls[runner].env?.FACTORY_API_KEY, "fk-CANARY");
-	assert.equal(docker.calls[runner].args.some(arg => arg.includes("fk-CANARY")), false);
+	assert.equal(docker.calls[runner].env?.FACTORY_API_KEY, "CANARY-FACTORY-KEY");
+	assert.equal(docker.calls[runner].args.some(arg => arg.includes("CANARY-FACTORY-KEY")), false);
 	// The droid runner is not a claude runner: no claude-specific switch.
 	assert.equal(argv.includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), false);
 	// The proxy was started with the hosts the droid provider needs, and only those.
@@ -339,7 +339,7 @@ test("houseRunPort picks the droid port by default and the openrouter port when 
 	const droid = fakeDocker(okDroidResult);
 	const runDroid = houseRunPort({
 		docker: droid, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-		env: { FACTORY_API_KEY: "fk-CANARY" },
+		env: { FACTORY_API_KEY: "CANARY-FACTORY-KEY" },
 	});
 	const droidOutcome = await runDroid({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: "Fix it." });
 	assert.equal(droidOutcome.ok, true);
@@ -368,8 +368,8 @@ test("a command plan runs the command sandbox under either provider, with no key
 		const docker = fakeDocker();
 		const run = houseRunPort({
 			docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
-			env: { ACQUIT_MODEL_PROVIDER: provider, FACTORY_API_KEY: "fk-CANARY" },
-			droidKey: async () => "fk-CANARY", openrouterKey: async () => "or-CANARY",
+			env: { ACQUIT_MODEL_PROVIDER: provider, FACTORY_API_KEY: "CANARY-FACTORY-KEY" },
+			droidKey: async () => "CANARY-FACTORY-KEY", openrouterKey: async () => "or-CANARY",
 		});
 		const outcome = await run({ runner: "command", jobId: target.id, workDir: "/tmp/house-work", commandPath: "/srv/house/fix.sh" });
 		assert.deepEqual(outcome, { ok: true });
@@ -377,7 +377,7 @@ test("a command plan runs the command sandbox under either provider, with no key
 		const argv = docker.calls[runner].args;
 		assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "/bin/sh", "/acquit/command.sh"]);
 		assert.equal(argv.includes("FACTORY_API_KEY"), false, `${provider}: the command runner names no key variable`);
-		assert.equal(docker.calls.flatMap(call => call.args).some(arg => arg.includes("fk-CANARY")), false);
+		assert.equal(docker.calls.flatMap(call => call.args).some(arg => arg.includes("CANARY-FACTORY-KEY")), false);
 	}
 });
 
