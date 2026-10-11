@@ -9,9 +9,10 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { defaultInstruction } from "../../acquit-cli/src/run.ts";
+import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import { houseLine } from "../../core/src/job.ts";
 import {
-	classifyModelRun, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, HOUSE_MODEL,
+	classifyModelRun, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, HOUSE_MODEL, HOUSE_OPERATOR_ID,
 	isDeliverableHouseJob, runHouseDelivery, stateStore,
 	type HouseDeliveryDeps, type HouseDeliveryState, type HouseDeliverableFacts,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
@@ -90,8 +91,8 @@ function merchantOf(db: DatabaseSync, operator: string): string | null {
 
 const suffixFile = "/home/factory-user/repos/acquit/data/trail/house-instruction-suffix.txt";
 const target: HouseTarget = {
-	id: "9e0f6b72-1111-4222-8333-444455556666", title: "Totals round wrong for 3-decimal currencies",
-	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567",
+	id: "9e0f6b72-1111-4222-8333-444455556666" as JobId, title: "Totals round wrong for 3-decimal currencies",
+	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567" as CommitSha,
 };
 const fresh: HouseDeliveryState = { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0 };
 
@@ -100,12 +101,16 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 	const plans: HouseRunPlan[] = [];
 	const commits: string[] = [];
 	const states = new Map<string, HouseDeliveryState>();
+	const record = async (plan: HouseRunPlan): Promise<HouseRunOutcome> => {
+		plans.push(plan);
+		return run === undefined ? { ok: true } : run(plan);
+	};
 	const deps: HouseDeliveryDeps = {
 		mode: { runner: "model" },
-		run: run ?? (async plan => { plans.push(plan); return { ok: true }; }),
+		run: record,
 		work: {
 			prepare: async () => ({ workDir: "/tmp/house-work" }),
-			finalize: async () => "5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b",
+			finalize: async () => "5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b" as CommitSha,
 			remove: () => {},
 		},
 		readState: async jobId => states.get(jobId) ?? fresh,
@@ -176,7 +181,7 @@ test("a runner whose calls are spent is skipped without a call or a submit", asy
 });
 
 test("a job that already submitted resubmits the same commit without a model call", async () => {
-	const committed = "aabbccdd00112233445566778899aabbccddeeff";
+	const committed = "aabbccdd00112233445566778899aabbccddeeff" as CommitSha;
 	const { deps, plans, commits, states } = fakeDeps(undefined, {
 		readState: async () => ({ ...fresh, calls: 1, submittedCommit: committed }),
 	});
@@ -241,7 +246,7 @@ test("the delivery state round-trips through a file and a fresh job starts at ze
 	try {
 		const store = stateStore(dir);
 		assert.deepEqual(await store.readState(target.id), fresh);
-		await store.writeState(target.id, { calls: 2, submittedCommit: "aabb", submitAttempts: 1, prepareFailures: 3 });
+		await store.writeState(target.id, { calls: 2, submittedCommit: "aabb" as CommitSha, submitAttempts: 1, prepareFailures: 3 });
 		assert.deepEqual(await store.readState(target.id), { calls: 2, submittedCommit: "aabb", submitAttempts: 1, prepareFailures: 3 });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
