@@ -242,12 +242,43 @@ test("the dev replay route skips verification; the signed route never does", asy
 		assert.equal(replay.status, 202);
 		assert.deepEqual(f.calls, ["read"]);
 		assert.equal((await f.store.readJob(jobId))?.state.status, "IN_PROGRESS");
+		// The replay's row is its own: an application phrase with no verdict, so a signed delivery's
+		// verified row stays distinguishable from it.
+		assert.equal(recordedOutcome(f.store, "WH-P1-6"), "applied");
 		// The signed route verifies in dev mode too: an unsigned post to it is refused, and nothing moves.
 		const held = JSON.stringify(await f.store.readJob(jobId));
 		f.verdicts.push({ kind: "REFUSED", reason: "UNSIGNED_DELIVERY" });
 		const signed = await delivered(f.ports, captureEnvelope("WH-P1-7"));
 		assert.equal(signed.status, 400);
 		assert.equal(JSON.stringify(await f.store.readJob(jobId)), held);
+	} finally { f.store.close(); }
+});
+
+test("a verified signed delivery records VERIFIED provenance when it applies", async () => {
+	const { f, jobId } = await capturingFixture();
+	try {
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		const response = await delivered(f.ports, captureEnvelope("WH-P1-15"));
+		assert.equal(response.status, 202);
+		assert.equal((await f.store.readJob(jobId))?.state.status, "IN_PROGRESS");
+		// The row and log carry the verdict PayPal gave, not only the application result: an unsigned
+		// dev replay must never be able to produce this phrase.
+		assert.equal(recordedOutcome(f.store, "WH-P1-15"), "verified, applied");
+	} finally { f.store.close(); }
+});
+
+test("a verified signed delivery records VERIFIED provenance when it is a no-op", async () => {
+	const { f, jobId } = await capturingFixture();
+	try {
+		// The first delivery applies; a second delivery of the same fact under a new id is the familiar
+		// no-op, still carrying the proof that PayPal verified it.
+		f.read(f.capture.captureId, { kind: "SETTLED", observation: { kind: "CAPTURE_COMPLETED", capture: f.capture } });
+		await delivered(f.ports, captureEnvelope("WH-P1-16"));
+		const settled = JSON.stringify(await f.store.readJob(jobId));
+		const again = await delivered(f.ports, captureEnvelope("WH-P1-17"));
+		assert.equal(again.status, 202);
+		assert.equal(JSON.stringify(await f.store.readJob(jobId)), settled);
+		assert.equal(recordedOutcome(f.store, "WH-P1-17"), "verified, no-op, job already IN_PROGRESS");
 	} finally { f.store.close(); }
 });
 
