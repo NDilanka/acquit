@@ -8,8 +8,7 @@
 		# The gate. Exactly /paypal/webhook is exempt: PayPal signs those deliveries, and the API
 		# verifies the signature against PAYPAL_WEBHOOK_ID before it applies anything. The hash is
 		# not stored here — configure.sh renders AUTH_HASH from a file staged at configure time.
-		@webhook path /paypal/webhook
-		@gate not @webhook
+		@gate not path /paypal/webhook
 		basic_auth @gate {
 			acquit AUTH_HASH
 		}
