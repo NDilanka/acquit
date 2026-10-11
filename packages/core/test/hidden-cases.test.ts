@@ -16,6 +16,8 @@ import type { HiddenContract } from "../src/seed-data.ts";
 import { VerifierConfigError } from "../../verifier/config.ts";
 import { EXAMPLE_HIDDEN_CASES_PATH, HIDDEN_CASES_ENV, hiddenContractOf, loadHiddenCases, loadHiddenCasesFromFile, parseHiddenCases } from "../../verifier/hidden.ts";
 import { dockerArgs } from "../../verifier/subject.ts";
+import { bootLine } from "../../verifier/server.ts";
+import { hiddenCasesSource } from "../../verifier/hidden.ts";
 
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
@@ -38,6 +40,13 @@ const invalid = (text: string, what: string) => {
 test("the core fixture module holds no hidden cases", () => {
 	assert.equal("HIDDEN_CASES" in seedData, false);
 	assert.equal("hiddenManifest" in seedData, false);
+});
+
+test("the verifier boot line names the hidden cases source path", () => {
+	const named = "/var/lib/acquit/hidden-cases.json";
+	assert.equal(hiddenCasesSource({ ACQUIT_HIDDEN_CASES: named, ACQUIT_DEV: "0" }), named);
+	assert.equal(hiddenCasesSource({ ACQUIT_HIDDEN_CASES: "  ", ACQUIT_DEV: "1" }), EXAMPLE_HIDDEN_CASES_PATH);
+	assert.ok(bootLine(4311, "docker", named, []).includes(named), "the boot line names the private path");
 });
 
 test("the committed example parses to the six public cases", () => {

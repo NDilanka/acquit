@@ -132,3 +132,15 @@ function publicExampleDigest(): Digest {
 	exampleDigest ??= hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest;
 	return exampleDigest;
 }
+
+/**
+ * The path the deployment's cases were loaded from, for the verifier's boot line: the named private
+ * file, or the committed example under ACQUIT_DEV=1. Only ever a path reaches a log line, never a case.
+ * The impossible third state (nothing loaded) is refused by loadHiddenCases before this is asked.
+ */
+export function hiddenCasesSource(env: NodeJS.ProcessEnv = process.env): string {
+	const named = env[HIDDEN_CASES_ENV]?.trim() ?? "";
+	if (named !== "") return named;
+	if (env.ACQUIT_DEV === "1") return EXAMPLE_HIDDEN_CASES_PATH;
+	return "";
+}

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type SessionUser } from "../api";
 import type { DeploymentMode } from "../api-types";
 import { errorText } from "../demo";
+import { JUDGE_TOUR, START_DEMO_ACTION } from "../judge-tour";
 import type { Session } from "../session";
 
 type SignedIn = (session: Session) => void;
@@ -37,9 +38,17 @@ function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
         You get a client and an operator of your own and a fresh copy of the demo repository. Nobody else sees your jobs. Payments
         run against the PayPal sandbox, and the demo ends after 24 hours.
       </p>
+      <ol className="tour">
+        {JUDGE_TOUR.map((step) => (
+          <li key={step.title}>
+            <b>{step.title}</b>
+            <span className="muted">{step.body}</span>
+          </li>
+        ))}
+      </ol>
       {error && <div className="alert">{error}</div>}
       <button className="btn green" disabled={busy !== null} onClick={() => void run("demo", () => api.startDemo())}>
-        {busy ? "Starting your demo…" : "Start my demo"}
+        {busy ? "Starting your demo…" : START_DEMO_ACTION}
       </button>
     </div>
   );
