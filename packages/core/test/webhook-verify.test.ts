@@ -151,7 +151,7 @@ test("the signed route verifies the signature before the re-read and applies on 
 		assert.deepEqual(f.calls, ["verify", "read"]);
 		const held = await f.store.readJob(jobId);
 		assert.equal(held?.state.status, "IN_PROGRESS");
-		assert.deepEqual(recordedOutcome(f.store, "WH-P1-1"), "applied");
+		assert.deepEqual(recordedOutcome(f.store, "WH-P1-1"), "verified, applied");
 		if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
 		assert.deepEqual(held.state.escrow.book, [{ kind: "HELD", cents: 42000, at: now }]);
 	} finally { f.store.close(); }
@@ -221,13 +221,13 @@ test("a verification outage answers 5xx, applies nothing, and a verified redeliv
 		// exactly once. A third delivery of the same fact under a new id is the familiar no-op.
 		const retry = await delivered(f.ports, captureEnvelope("WH-P1-4"));
 		assert.equal(retry.status, 202);
-		assert.equal(recordedOutcome(f.store, "WH-P1-4"), "applied");
+		assert.equal(recordedOutcome(f.store, "WH-P1-4"), "verified, applied");
 		const held = await f.store.readJob(jobId);
 		assert.equal(held?.state.status, "IN_PROGRESS");
 		const settled = JSON.stringify(held);
 		const again = await delivered(f.ports, captureEnvelope("WH-P1-5"));
 		assert.equal(again.status, 202);
-		assert.equal(recordedOutcome(f.store, "WH-P1-5"), "no-op, job already IN_PROGRESS");
+		assert.equal(recordedOutcome(f.store, "WH-P1-5"), "verified, no-op, job already IN_PROGRESS");
 		assert.equal(JSON.stringify(await f.store.readJob(jobId)), settled);
 	} finally { f.store.close(); }
 });

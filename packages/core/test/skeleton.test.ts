@@ -1689,7 +1689,7 @@ test("a capture webhook completes a funding the inline path never confirmed", as
 		if (held?.state.status !== "IN_PROGRESS") throw new Error("No held escrow");
 		assert.deepEqual(held.state.escrow.book, [{ kind: "HELD", cents: 42000, at: now }]);
 		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-CAPTURE-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
-			resourceType: "capture", resourceId: "TESTCAPTURE", outcome: "applied" }]);
+			resourceType: "capture", resourceId: "TESTCAPTURE", outcome: "verified, applied" }]);
 	} finally { f.store.close(); }
 });
 
@@ -1701,17 +1701,17 @@ test("a capture webhook is consumed once: a redelivery and a new event id change
 		// The job already holds this capture, so the edge is a no-op even on the first delivery of the fact.
 		assert.equal(first.status, 202);
 		assert.deepEqual(await first.json(), accepted);
-		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "applied");
+		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "verified, applied");
 		assert.deepEqual(await f.store.readJob(jobId), held);
 		const replay = await delivered(f.ports, captureEnvelope("WH-DUP-1"));
 		assert.deepEqual(await replay.json(), accepted);
-		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "no-op, job already IN_PROGRESS");
+		assert.equal(recordedOutcome(f.store, "WH-DUP-1"), "verified, no-op, job already IN_PROGRESS");
 		const newId = await delivered(f.ports, captureEnvelope("WH-DUP-2"));
 		assert.equal(newId.status, 202);
-		assert.equal(recordedOutcome(f.store, "WH-DUP-2"), "no-op, job already IN_PROGRESS");
+		assert.equal(recordedOutcome(f.store, "WH-DUP-2"), "verified, no-op, job already IN_PROGRESS");
 		assert.deepEqual(await f.store.readJob(jobId), held);
 		assert.equal(f.captureCalls(), 1);
-		assert.deepEqual(recordedEvents(f.store).map(row => [row.id, row.outcome]), [["WH-DUP-1", "no-op, job already IN_PROGRESS"], ["WH-DUP-2", "no-op, job already IN_PROGRESS"]]);
+		assert.deepEqual(recordedEvents(f.store).map(row => [row.id, row.outcome]), [["WH-DUP-1", "verified, no-op, job already IN_PROGRESS"], ["WH-DUP-2", "verified, no-op, job already IN_PROGRESS"]]);
 	} finally { f.store.close(); }
 });
 
@@ -1730,15 +1730,15 @@ test("a capture webhook on a paid job is consumed once and never touches the pai
 		const first = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
 		assert.equal(first.status, 202);
 		assert.deepEqual(await first.json(), accepted);
-		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "applied");
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "verified, applied");
 		const replay = await delivered(harness.ports, captureEnvelope("WH-PAID-1"));
 		assert.deepEqual(await replay.json(), accepted);
-		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "no-op, job already PAID");
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-1"), "verified, no-op, job already PAID");
 		const newId = await delivered(harness.ports, captureEnvelope("WH-PAID-2"));
-		assert.equal(recordedOutcome(harness.store, "WH-PAID-2"), "no-op, job already PAID");
+		assert.equal(recordedOutcome(harness.store, "WH-PAID-2"), "verified, no-op, job already PAID");
 		const after = await harness.row();
 		assert.deepEqual(after.state.status === "PAID" ? after.state.book : null, paid.state.book);
-		assert.deepEqual(recordedEvents(harness.store).map(row => [row.id, row.outcome]), [["WH-PAID-1", "no-op, job already PAID"], ["WH-PAID-2", "no-op, job already PAID"]]);
+		assert.deepEqual(recordedEvents(harness.store).map(row => [row.id, row.outcome]), [["WH-PAID-1", "verified, no-op, job already PAID"], ["WH-PAID-2", "verified, no-op, job already PAID"]]);
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
 
@@ -1754,7 +1754,7 @@ test("a webhook fact the row refuses is recorded as a refusal and leaves the job
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
 		assert.deepEqual(await f.store.readJob(jobId), held);
-		assert.equal(recordedOutcome(f.store, "WH-REFUND-1"), "refused, the job did not take this settlement");
+		assert.equal(recordedOutcome(f.store, "WH-REFUND-1"), "verified, refused, the job did not take this settlement");
 		const alerts = f.store.db.prepare("SELECT json FROM outbox").all()
 			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect)
 			.filter(effect => effect.kind === "ALERT");
@@ -1775,7 +1775,7 @@ test("a refund webhook whose retained fee the row never recorded is refused", as
 			resource_type: "refund", resource: { id: "REFUND1" } }));
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
-		assert.equal(recordedOutcome(harness.store, "WH-REFUND-FEE-1"), "refused, the job did not take this settlement");
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-FEE-1"), "verified, refused, the job did not take this settlement");
 		// The selected refund stands, and no REIMBURSE is enqueued for the fee the row did not settle.
 		assert.deepEqual(await harness.row(), refunding);
 		assert.deepEqual(harness.effectKinds(), ["ALERT"]);
@@ -1794,7 +1794,7 @@ test("a reimbursement webhook that does not pay the debt is refused", async () =
 			resource_type: "payouts_item", resource: { id: payoutItemId } }));
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
-		assert.equal(recordedOutcome(harness.store, "WH-PAYOUT-1"), "refused, the job did not take this settlement");
+		assert.equal(recordedOutcome(harness.store, "WH-PAYOUT-1"), "verified, refused, the job did not take this settlement");
 		// The read boundary carries the job's own funding source beside the row; nobody chose one here.
 		assert.deepEqual(await harness.row(), { ...refunded.next, funding: null });
 	} finally { harness.store.close(); harness.base.store.close(); }
@@ -1823,7 +1823,7 @@ test("a refund webhook the index has not seen settles through the capture the re
 		assert.deepEqual(await response.json(), accepted);
 		// The anchored job's merchant is the payee of the re-read that settles the refund.
 		assert.deepEqual(payees, [null, merchant]);
-		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "applied");
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "verified, applied");
 		const after = await harness.row();
 		assert.equal(after.version, before.version + 1);
 		assert.equal(after.state.status, "REFUNDED");
@@ -1833,7 +1833,7 @@ test("a refund webhook the index has not seen settles through the capture the re
 		// The fact settles once: a redelivery of the same event changes nothing.
 		assert.equal((await delivered(harness.ports, JSON.stringify({ id: "WH-REFUND-UNSEEN-1", event_type: "PAYMENT.CAPTURE.REFUNDED",
 			resource_type: "refund", resource: { id: "REFUND1" } }))).status, 202);
-		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "no-op, job already REFUNDED");
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-UNSEEN-1"), "verified, no-op, job already REFUNDED");
 		assert.deepEqual(await harness.row(), after);
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
@@ -1854,7 +1854,7 @@ test("a refund webhook whose anchored re-read settles another capture is refused
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
 		// The job holding the refund's capture owns the read, so its refusal is recorded, not a silent drop.
-		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ANCHOR-1"), "refused, the job did not take this settlement");
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ANCHOR-1"), "verified, refused, the job did not take this settlement");
 		assert.deepEqual(await harness.row(), before);
 		const enqueued = harness.store.db.prepare("SELECT json FROM outbox").all()
 			.map(entry => (JSON.parse(String(entry.json)) as { effect: JobEffect }).effect);
@@ -1874,7 +1874,7 @@ test("a refund webhook naming a capture no job holds stays a no-op", async () =>
 			resource_type: "refund", resource: { id: "REFUND1" } }));
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
-		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ORPHAN-1"), "no-op, no job holds this resource");
+		assert.equal(recordedOutcome(harness.store, "WH-REFUND-ORPHAN-1"), "verified, no-op, no job holds this resource");
 		assert.deepEqual(await harness.row(), before);
 	} finally { harness.store.close(); harness.base.store.close(); }
 });
@@ -1889,7 +1889,7 @@ test("a webhook whose resource PayPal does not know is refused and no job moves"
 		assert.deepEqual(await response.json(), accepted);
 		assert.deepEqual(await f.store.readJob(jobId), held);
 		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-UNKNOWN-1", eventType: "PAYMENT.CAPTURE.COMPLETED",
-			resourceType: "capture", resourceId: "CAPTURE_PAYPAL_NEVER_HAD", outcome: "refused, PayPal does not know this capture" }]);
+			resourceType: "capture", resourceId: "CAPTURE_PAYPAL_NEVER_HAD", outcome: "verified, refused, PayPal does not know this capture" }]);
 	} finally { f.store.close(); }
 });
 
@@ -1901,7 +1901,7 @@ test("an event family the deployment does not route is recorded and dropped", as
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), accepted);
 		assert.deepEqual(recordedEvents(f.store), [{ id: "WH-SALE-1", eventType: "PAYMENT.SALE.COMPLETED",
-			resourceType: "sale", resourceId: "SALE1", outcome: "no-op, event type not routed" }]);
+			resourceType: "sale", resourceId: "SALE1", outcome: "verified, no-op, event type not routed" }]);
 	} finally { f.store.close(); }
 });
 
@@ -1948,7 +1948,7 @@ test("the delivery log escapes an event id that carries a newline", async () => 
 		assert.equal(lines[0]?.includes("\n"), false);
 		assert.equal(lines[0]?.startsWith('paypal webhook "WH-1\\nINJECT"'), true);
 		// The envelope row keeps the id as it arrived: only the log is escaped.
-		assert.equal(recordedOutcome(f.store, "WH-1\nINJECT"), "refused, PayPal does not know this capture");
+		assert.equal(recordedOutcome(f.store, "WH-1\nINJECT"), "verified, refused, PayPal does not know this capture");
 	} finally { console.log = original; f.store.close(); }
 });
 
@@ -1969,7 +1969,7 @@ test("the delivery log escapes the line separators JSON.stringify leaves raw", a
 		assert.equal(lines[0]?.includes("\u2029"), false);
 		assert.equal(lines[0]?.startsWith('paypal webhook "WH-1\\u2028INJECT\\u2029END"'), true);
 		// The envelope row keeps the id as it arrived: only the log is escaped.
-		assert.equal(recordedOutcome(f.store, "WH-1\u2028INJECT\u2029END"), "refused, PayPal does not know this capture");
+		assert.equal(recordedOutcome(f.store, "WH-1\u2028INJECT\u2029END"), "verified, refused, PayPal does not know this capture");
 	} finally { console.log = original; f.store.close(); }
 });
 
@@ -1985,7 +1985,7 @@ test("a delivery body is never stored: payer fields and the raw bytes stay out o
 		const rows = f.store.db.prepare("SELECT * FROM webhook_events").all();
 		assert.equal(rows.length, 1);
 		assert.deepEqual({ ...rows[0] }, { id: "WH-PII-1", received_at: now, event_type: "PAYMENT.CAPTURE.COMPLETED",
-			resource_type: "capture", resource_id: f.capture.captureId, outcome: "applied" });
+			resource_type: "capture", resource_id: f.capture.captureId, outcome: "verified, applied" });
 		// Not one payer field, and not one raw byte of the body, is in the table.
 		const stored = JSON.stringify(rows);
 		for (const secret of ["payer@example.test", "PAYER1", "Payer", "Person", "1 Payer Street", "95131", "address_line_1", "payer_id"]) {
