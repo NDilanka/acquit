@@ -63,6 +63,17 @@ print(f"{mode} authenticated /api/users: 200 JSON")
 code, body = request("/api/session", True)
 assert code == 200 and json.loads(body)["user"] is None
 print(f"{mode} authenticated /api/session: 200 JSON, no app session")
-code, body = request("/api/dev/clock", True, "POST")
-assert code == 403 and json.loads(body)["error"] == "DEV_DISABLED"
-print(f"{mode} authenticated dev route: 403 DEV_DISABLED")
+# The dev route answers what the deployment runs: P1 ships ACQUIT_DEV=1, where the route is enabled
+# and an empty clock POST fails its body parse; public mode refuses it by name.
+probe = subprocess.run([*ssh, "grep -x 'ACQUIT_DEV=1' /etc/acquit/runtime.env || true"],
+                       text=True, capture_output=True)
+if probe.returncode:
+    raise SystemExit(f"could not read the deployed mode; no credential output")
+if probe.stdout.strip() == "ACQUIT_DEV=1":
+    code, _ = request("/api/dev/clock", True, "POST")
+    assert code == 400, f"Dev mode clock route should fail the empty body parse: {code}"
+    print(f"{mode} authenticated dev route: 400 (ACQUIT_DEV=1; the route is on, an empty POST does not parse)")
+else:
+    code, body = request("/api/dev/clock", True, "POST")
+    assert code == 403 and json.loads(body)["error"] == "DEV_DISABLED"
+    print(f"{mode} authenticated dev route: 403 DEV_DISABLED")
