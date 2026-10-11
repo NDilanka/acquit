@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { resolve } from "node:path";
 import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
@@ -15,7 +16,8 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { createHouseDelivery, houseActor } from "./house.ts";
 import { transaction } from "./transaction.ts";
 
 let clockOffset = 0;
@@ -682,6 +684,20 @@ const server = createServer((req, res) => {
 	});
 });
 server.listen(port, "127.0.0.1", () => console.log(`Acquit API: http://localhost:${port}`));
+// The deployment's House: one delivery loop on its own tick, walking held House jobs from funded to
+// submitted in this process. It submits through the same Submit edge a request would, so every guard
+// the domain applies to an operator's submit applies to the House's too.
+const houseKick = createHouseDelivery({
+	jobs: () => db.prepare("SELECT json FROM jobs").all().map(row => JSON.parse(String(row.json)) as JobRow),
+	mint: async job => {
+		const name = workRepoName(job.repository, job.id);
+		return { repository: `${githubEnv.organization}/${name}`, token: await githubApp.installationToken(githubEnv.organization, [name]) };
+	},
+	execute: command => acquit.execute(houseActor(), parseRequestKey(randomUUID()), command),
+	stateDir: resolve(databasePath, ".."),
+});
+const houseTimer = setInterval(() => { void houseKick.kick().catch(() => console.error("House delivery failed; the next tick retries.")); }, 30_000);
+houseTimer.unref();
 const timer = setInterval(() => { void acquit.tick().catch(() => console.error("Tick failed; retained durable outbox for retry.")); }, 30_000);
 timer.unref();
 let stopping = false;
@@ -689,6 +705,7 @@ function stop(): void {
 	if (stopping) return;
 	stopping = true;
 	clearInterval(timer);
+	clearInterval(houseTimer);
 	server.close(() => { db.close(); closeAcquit(acquit); });
 }
 process.on("SIGINT", stop);

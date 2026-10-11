@@ -19,7 +19,7 @@ import {
 	type DockerPort, type GitRun, type RunnerPlan,
 } from "../../acquit-cli/src/run.ts";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
-import type { JobStatus } from "../../core/src/job.ts";
+import type { JobRow, JobStatus } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 
 /** The one model the House runs, per the mission's ruling: the free tier stays free. */
@@ -106,8 +106,15 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 			deps.log(`house: ${job.id} gave up re-submitting after ${state.submitAttempts} attempts`);
 			return "FAILED";
 		}
-		await deps.submit(job.id, state.submittedCommit);
+		// The attempt is persisted before the edge is called, so a crash or a transport failure can
+		// never spin: every tick spends one bounded attempt. A denial still resolved -- the domain
+		// heard the submit -- so it counts the same.
 		await deps.writeState(job.id, { ...state, submitAttempts: state.submitAttempts + 1 });
+		try {
+			await deps.submit(job.id, state.submittedCommit);
+		} catch (error) {
+			deps.log(`house: ${job.id} submit did not land; the next tick retries (${boundedDetail(String(error))})`);
+		}
 		deps.log(`house: ${job.id} resubmitted ${state.submittedCommit.slice(0, 7)}`);
 		return "RESUBMITTED";
 	}
@@ -151,8 +158,14 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 			deps.log(`house: ${job.id} produced no changes to submit`);
 			return "NO_SUBMISSION";
 		}
-		await deps.submit(job.id, commit);
+		// The commit is persisted before the submit, so a crash mid-submit lands on the re-submit
+		// path with the commit in hand instead of a spent budget and nothing to show.
 		await deps.writeState(job.id, { ...state, calls, submittedCommit: commit, submitAttempts: state.submitAttempts + 1 });
+		try {
+			await deps.submit(job.id, commit);
+		} catch (error) {
+			deps.log(`house: ${job.id} submit did not land; the next tick resubmits (${boundedDetail(String(error))})`);
+		}
 		deps.log(`house: ${job.id} submitted ${commit.slice(0, 7)}`);
 		return "SUBMITTED";
 	} finally {
@@ -187,21 +200,16 @@ export function isDeliverableHouseJob(facts: HouseDeliverableFacts, houseOperato
 }
 
 /** Reads the facts a row scan needs off a stored JobRow. */
-export function houseFactsOf(row: {
-	readonly state: { readonly status: JobStatus } & Partial<Record<"attempts", { readonly phase: "READY" | "VERIFYING" | "REFUND_PENDING"; readonly history: readonly unknown[] }>>
-		& Partial<Record<"escrow", { readonly payee: { readonly operator: string | null } }>>;
-	readonly contract: { readonly definitionOfDone: { readonly frozenAt: CommitSha } | null };
-}): HouseDeliverableFacts {
-	const work = row.state as {
-		readonly status: JobStatus;
-		readonly attempts?: { readonly phase: "READY" | "VERIFYING" | "REFUND_PENDING"; readonly history: readonly unknown[] };
-		readonly escrow?: { readonly payee: { readonly operator: string | null } };
-	};
+export function houseFactsOf(row: JobRow): HouseDeliverableFacts {
+	if (row.state.status !== "IN_PROGRESS") {
+		return { status: row.state.status, attemptsPhase: "REFUND_PENDING", attemptsUsed: 0, lockedToOperator: null, frozenAt: null };
+	}
+	const work = row.state;
 	return {
-		status: work.status,
-		attemptsPhase: work.attempts?.phase ?? "REFUND_PENDING",
-		attemptsUsed: work.attempts?.history.length ?? 0,
-		lockedToOperator: work.escrow?.payee.operator ?? null,
+		status: "IN_PROGRESS",
+		attemptsPhase: work.attempts.phase,
+		attemptsUsed: work.attempts.history.length,
+		lockedToOperator: work.escrow.payee.operator,
 		frozenAt: row.contract.definitionOfDone?.frozenAt ?? null,
 	};
 }
