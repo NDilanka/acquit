@@ -73,4 +73,5 @@ test("honors AGENT_BROWSER_SOCKET_DIR verbatim, the way agent-browser resolves i
 test("reports a failed stream disable instead of swallowing it", async () => {
 	await assert.rejects(() => disableStream(async () => { throw new Error("browser command failed"); }), /Stream disable failed/);
 	await disableStream(async () => null);
+	await disableStream(async () => { throw new Error("Browser command failed: stream, disable. Streaming is not enabled for this session"); });
 });

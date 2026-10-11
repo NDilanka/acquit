@@ -34,8 +34,13 @@ export function streamGuard(ns, env = process.env, home = homedir()) {
 }
 
 // The stream-state check only means something when the disable command ran, so
-// a failed disable is reported instead of swallowed.
+// a failed disable is reported instead of swallowed. agent-browser answers
+// "Streaming is not enabled for this session" once a disable already
+// converged; that answer is the target state, not a failure.
 export async function disableStream(browser) {
 	try { await browser("stream", "disable"); }
-	catch (error) { throw new Error(`Stream disable failed. ${error.message}`); }
+	catch (error) {
+		if (/not enabled/i.test(error.message)) return;
+		throw new Error(`Stream disable failed. ${error.message}`);
+	}
 }
