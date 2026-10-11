@@ -438,3 +438,14 @@ test("the delivery state round-trips through a file and a fresh job starts at ze
 		assert.deepEqual(await store.readState(target.id), { calls: 2, submittedCommit: "aabb", submitAttempts: 1, prepareFailures: 3 });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("the state store accepts the job_-prefixed ids the id parser mints", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-house-state-"));
+	try {
+		const store = stateStore(dir);
+		const realId = "job_8c7501ff-c2ff-4559-b4b7-b2cd470991cf" as JobId;
+		assert.deepEqual(await store.readState(realId), fresh);
+		await store.writeState(realId, { calls: 1, submittedCommit: "ccdd" as CommitSha, submitAttempts: 0, prepareFailures: 0 });
+		assert.deepEqual(await store.readState(realId), { calls: 1, submittedCommit: "ccdd", submitAttempts: 0, prepareFailures: 0 });
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
