@@ -3,7 +3,7 @@
 // the egress proxy on 2026-10-11); no test below opens a socket.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -74,12 +74,14 @@ test("a success result without session or usage still succeeds, with nulls recor
 test("the Factory key comes from the environment first, then the laptop key file, never a log", async () => {
 	assert.equal(await factoryApiKey({ FACTORY_API_KEY: "from-env" }), "from-env", "the VM's env var wins");
 	const home = mkdtempSync(join(tmpdir(), "acquit-model-key-"));
+	const keyFile = join(home, ".config", "acquit", "factory-api-key");
 	try {
-		writeFileSync(join(home, "factory-api-key"), "fk-file-key\n", { mode: 0o600 });
+		mkdirSync(join(home, ".config", "acquit"), { recursive: true });
+		writeFileSync(keyFile, "fk-file-key\n", { mode: 0o600 });
 		assert.equal(await factoryApiKey({ HOME: home }), "fk-file-key", "the laptop key file is read in-process");
-		writeFileSync(join(home, "factory-api-key"), "fk-line-one\nfk-line-two\n", { mode: 0o600 });
+		writeFileSync(keyFile, "fk-line-one\nfk-line-two\n", { mode: 0o600 });
 		assert.equal(await factoryApiKey({ HOME: home }), null, "a multi-line file is not a usable key");
-		writeFileSync(join(home, "factory-api-key"), "", { mode: 0o600 });
+		writeFileSync(keyFile, "", { mode: 0o600 });
 		assert.equal(await factoryApiKey({ HOME: home }), null, "an empty file is not a usable key");
 	} finally { rmSync(home, { recursive: true, force: true }); }
 	assert.equal(await factoryApiKey({ HOME: "/nonexistent-acquit-home" }), null, "a missing key file yields null, never a throw");

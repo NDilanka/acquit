@@ -183,8 +183,10 @@ test("the House runner pins the provider's model and the CLI default instruction
 test("with ACQUIT_MODEL_PROVIDER=openrouter the run plan carries the nemotron :free id", async () => {
 	const { deps, plans } = fakeDeps(undefined, { mode: houseMode({ ACQUIT_MODEL_PROVIDER: "openrouter" }) });
 	await runHouseDelivery(deps, target);
-	assert.equal(plans[0]?.model, HOUSE_MODEL_OPENROUTER);
-	assert.match(plans[0]?.model ?? "", /:free$/, "the openrouter path stays on a :free id");
+	const plan = plans[0];
+	assert.equal(plan?.runner, "model");
+	assert.equal(plan?.runner === "model" ? plan.model : undefined, HOUSE_MODEL_OPENROUTER);
+	assert.match(plan?.runner === "model" ? plan.model : "", /:free$/, "the openrouter path stays on a :free id");
 });
 
 test("the House mode follows the provider switch: droid by default with glm-5.3-flash", () => {
@@ -310,9 +312,9 @@ test("the droid run port starts droid exec in the sandbox with the key in-proces
 	const argv = docker.calls[runner].args;
 	assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "droid", "exec", "--auto", "low",
 		"-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", DROID_INSTRUCTION_PATH]);
-	// The prompt rides the instruction env run.mjs writes to a file; it is not a secret, but the
-	// key is, and the key is never an argv word.
-	assert.equal(argv.some(arg => arg.includes("Fix it.")), false);
+	// The prompt rides the ACQUIT_INSTRUCTION env, which run.mjs writes to the file the argv names;
+	// it never becomes a bare word of the exec command the way the claude argv carries it.
+	assert.equal(argv.slice(argv.indexOf("--exec")).some(arg => arg.includes("Fix it.")), false);
 	assert.equal(docker.calls[runner].env?.FACTORY_API_KEY, "fk-CANARY");
 	assert.equal(docker.calls[runner].args.some(arg => arg.includes("fk-CANARY")), false);
 	// The droid runner is not a claude runner: no claude-specific switch.
@@ -336,7 +338,7 @@ test("the droid run port refuses a run without a usable Factory key, without sta
 test("houseRunPort picks the droid port by default and the openrouter port when selected", async () => {
 	const droid = fakeDocker(okDroidResult);
 	const runDroid = houseRunPort({
-		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		docker: droid, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
 		env: { FACTORY_API_KEY: "fk-CANARY" },
 	});
 	const droidOutcome = await runDroid({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: "Fix it." });
@@ -358,7 +360,7 @@ test("houseRunPort picks the droid port by default and the openrouter port when 
 	assert.equal(openrouter.calls[runner].args.includes(`ANTHROPIC_MODEL=${HOUSE_MODEL_OPENROUTER}`), true, "the run pins the plan's model id");
 	assert.equal(openrouter.calls[runner].env?.ANTHROPIC_AUTH_TOKEN, "or-CANARY");
 	assert.equal(openrouter.calls[runner].env?.FACTORY_API_KEY, undefined, "the droid key never rides the openrouter path");
-	assert.equal(openrouter.calls.flat().some(arg => arg.includes("or-CANARY")), false);
+	assert.equal(openrouter.calls.flatMap(call => call.args).some(arg => arg.includes("or-CANARY")), false);
 });
 
 test("a command plan runs the command sandbox under either provider, with no key and no droid argv", async () => {
@@ -375,7 +377,7 @@ test("a command plan runs the command sandbox under either provider, with no key
 		const argv = docker.calls[runner].args;
 		assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "/bin/sh", "/acquit/command.sh"]);
 		assert.equal(argv.includes("FACTORY_API_KEY"), false, `${provider}: the command runner names no key variable`);
-		assert.equal(argv.some(arg => arg.includes("fk-CANARY")), false);
+		assert.equal(docker.calls.flatMap(call => call.args).some(arg => arg.includes("fk-CANARY")), false);
 	}
 });
 

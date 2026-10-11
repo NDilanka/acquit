@@ -18,12 +18,15 @@ import {
 	runAgentInSandbox, sandboxNames, seedCommitIdentity, submissionCommit,
 	type ChangedFile, type DockerPort, type GitRun, type RunnerPlan,
 } from "../../acquit-cli/src/run.ts";
+import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, modelProvider } from "../../core/src/model.ts";
+import type { ModelProvider } from "../../core/src/model.ts";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import type { JobRow, JobStatus } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 
-/** The one model the House runs, per the mission's ruling: the free tier stays free. */
-export const HOUSE_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
+/** The one model the House runs on the openrouter path, per the mission's original ruling: the free
+ * tier stays free. The droid path pins glm-5.3-flash (`DROID_MODEL`), never this id. */
+export const HOUSE_MODEL_OPENROUTER = "nvidia/nemotron-3-ultra-550b-a55b:free";
 
 /** The deployment's own House operator, the one the seed creates. */
 export const HOUSE_OPERATOR_ID = "house-tsfix";
@@ -38,14 +41,32 @@ export function houseInstruction(defaultInstructionText: string): string {
 	return `${defaultInstructionText} ${HOUSE_INSTRUCTION_SUFFIX}`;
 }
 
+/** The deployment's House mode: the model the provider switch names (droid's glm-5.3-flash by
+ * default; the openrouter path keeps the nemotron :free id), or the command runner for the offline
+ * lanes under either provider. The mode comes from the environment, never from a request. */
+export function houseMode(env: NodeJS.ProcessEnv = process.env):
+	{ readonly runner: "model"; readonly provider: ModelProvider; readonly model: string }
+	| { readonly runner: "command"; readonly commandPath: string } {
+	const command = env.ACQUIT_HOUSE_COMMAND?.trim();
+	if (command) return { runner: "command", commandPath: command };
+	const provider = modelProvider(env);
+	return { runner: "model", provider, model: provider === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER };
+}
+
 // ---- the delivery series -----------------------------------------------------------------------
 
 export type HouseRunPlan =
 	| { readonly runner: "model"; readonly jobId: JobId; readonly workDir: string; readonly model: string; readonly instruction: string }
 	| { readonly runner: "command"; readonly jobId: JobId; readonly workDir: string; readonly commandPath: string };
 
-export type HouseRunOutcome = { readonly ok: true }
-	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RUN_FAILED"; readonly detail: string };
+/** A model run's outcome. A success carries what the run log records per call: the model id, the
+ * provider's session id, and the Factory credits the provider reported, when it reported them. */
+export type HouseRunOutcome = {
+	readonly ok: true;
+	readonly sessionId?: string | null;
+	readonly model?: string | null;
+	readonly factoryCredits?: number | null;
+} | { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RUN_FAILED"; readonly detail: string };
 
 export type HouseRunPort = (plan: HouseRunPlan) => Promise<HouseRunOutcome>;
 
@@ -86,8 +107,10 @@ export type HouseWorkPort = {
 };
 
 export type HouseDeliveryDeps = {
-	/** The runner this deployment runs the House with: the ruled model, or the command runner for lanes. */
-	readonly mode: { readonly runner: "model" } | { readonly runner: "command"; readonly commandPath: string };
+	/** The runner this deployment runs the House with: the model the provider switch names, or the
+	 * command runner for lanes. `houseMode` resolves it from the environment. */
+	readonly mode: { readonly runner: "model"; readonly provider: ModelProvider; readonly model: string }
+		| { readonly runner: "command"; readonly commandPath: string };
 	readonly run: HouseRunPort;
 	readonly work: HouseWorkPort;
 	readonly readState: (jobId: JobId) => Promise<HouseDeliveryState>;
@@ -144,9 +167,9 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		return "FAILED";
 	}
 	try {
-		// The instruction is the CLI default plus the ruled suffix, and the model is the ruled one.
+		// The instruction is the CLI default plus the ruled suffix, and the model is the provider's.
 		const plan: HouseRunPlan = deps.mode.runner === "model"
-			? { runner: "model", jobId: job.id, workDir: prepared.workDir, model: HOUSE_MODEL,
+			? { runner: "model", jobId: job.id, workDir: prepared.workDir, model: deps.mode.model,
 				instruction: houseInstruction(defaultInstruction({ title: job.title })) }
 			: { runner: "command", jobId: job.id, workDir: prepared.workDir, commandPath: deps.mode.commandPath };
 
@@ -159,6 +182,16 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 			calls += 1;
 			await deps.writeState(job.id, { ...state, calls });
 			outcome = await deps.run(plan);
+		}
+		if (outcome.ok === true) {
+			// The per-call record: the model id, the provider's session id, and the credits it
+			// reported. Where a provider reports none, the line is simply silent about it.
+			const parts = [
+				outcome.model === undefined || outcome.model === null ? null : `model ${outcome.model}`,
+				outcome.sessionId === undefined || outcome.sessionId === null ? null : `session ${outcome.sessionId}`,
+				outcome.factoryCredits === undefined || outcome.factoryCredits === null ? null : `credits ${outcome.factoryCredits}`,
+			].filter(part => part !== null);
+			if (parts.length > 0) deps.log(`house: ${job.id} model run: ${parts.join(", ")}`);
 		}
 		if (outcome.ok === false) {
 			deps.log(`house: ${job.id} run failed: ${outcome.reason} ${boundedDetail(outcome.detail)}`);
@@ -304,29 +337,65 @@ export type SandboxRunDeps = {
 	readonly env?: NodeJS.ProcessEnv;
 };
 
-/** The real run port: the same sandbox the CLI runs, with the OpenRouter proxy path M3 proved.
- * The command runner keeps its lane mode: no key, no provider, one /bin/sh script. */
+/** The command runner's lane mode, shared by every provider's port: no key, no provider, one
+ * /bin/sh script in the same sandbox. */
+async function commandPlanRun(deps: SandboxRunDeps, plan: Extract<HouseRunPlan, { readonly runner: "command" }>): Promise<HouseRunOutcome> {
+	const built: RunnerPlan = {
+		names: sandboxNames(plan.jobId), image: deps.image, proxyImage: deps.proxyImage, dir: plan.workDir,
+		argv: agentArgv("command", "", "/acquit/command.sh"), commandPath: plan.commandPath, runner: "command",
+		provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: plan.jobId,
+		uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null,
+	};
+	const code = await runAgentInSandbox(built, deps.docker);
+	return code === 0 ? { ok: true }
+		: { ok: false, reason: "RUN_FAILED", detail: `the command exited ${code ?? "without a status"}` };
+}
+
+/** The droid run port: the same sandbox the CLI runs, with the proxy pointed at Factory's hosts and
+ * the `droid exec` argv the shared droid client pins. The Factory key rides in-process -- the docker
+ * child's environment, by variable name on the container -- never argv, never a log. */
+export function droidRunPort(deps: SandboxRunDeps): HouseRunPort {
+	const env = deps.env ?? process.env;
+	return async plan => {
+		if (plan.runner === "command") return commandPlanRun(deps, plan);
+		const key = await deps.getKey();
+		if (key === null || key === "" || /[\r\n]/.test(key)) {
+			return { ok: false, reason: "RUN_FAILED", detail: "no usable Factory key" };
+		}
+		const built: RunnerPlan = {
+			names: sandboxNames(plan.jobId), image: deps.image, proxyImage: deps.proxyImage, dir: plan.workDir,
+			argv: droidExecArgv({ model: plan.model, workDir: "/work" }), commandPath: null, runner: "droid",
+			provider: "droid", providerKey: key, providerModel: plan.model, instruction: plan.instruction,
+			jobId: plan.jobId, uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null,
+		};
+		try {
+			const output: string[] = [];
+			const code = await runAgentInSandbox(built, deps.docker, chunk => output.push(chunk), childEnv(env));
+			const result = classifyDroidRun(code, output.join(""));
+			// The model id the run log records is the one this port pinned on the argv.
+			return result.ok ? { ok: true, sessionId: result.sessionId, model: plan.model, factoryCredits: result.factoryCredits } : result;
+		} catch (error) {
+			// A sandbox the daemon refused to build is not the provider's fault: no retry burns a call on it.
+			if (error instanceof CliError && error.code === "SANDBOX_SETUP_FAILED") {
+				return { ok: false, reason: "RUN_FAILED", detail: boundedDetail(error.message) };
+			}
+			throw error;
+		}
+	};
+}
+
+/** The OpenRouter run port: the same sandbox, with the OpenRouter proxy path the M3 prototype
+ * proved. The key comes from the session keyring, in-process like every provider key. */
 export function sandboxRunPort(deps: SandboxRunDeps): HouseRunPort {
 	const env = deps.env ?? process.env;
 	return async plan => {
-		const names = sandboxNames(plan.jobId);
-		if (plan.runner === "command") {
-			const built: RunnerPlan = {
-				names, image: deps.image, proxyImage: deps.proxyImage, dir: plan.workDir,
-				argv: agentArgv("command", "", "/acquit/command.sh"), commandPath: plan.commandPath, runner: "command",
-				provider: "anthropic", providerKey: null, providerModel: null, instruction: null, jobId: plan.jobId,
-				uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null,
-			};
-			const code = await runAgentInSandbox(built, deps.docker);
-			return code === 0 ? { ok: true }
-				: { ok: false, reason: "RUN_FAILED", detail: `the command exited ${code ?? "without a status"}` };
-		}
+		if (plan.runner === "command") return commandPlanRun(deps, plan);
 		const key = await deps.getKey();
 		if (key === null || key === "" || /[\r\n]/.test(key)) {
 			return { ok: false, reason: "RUN_FAILED", detail: "no usable OpenRouter key in the keyring" };
 		}
 		const built: RunnerPlan = {
-			names, image: deps.image, proxyImage: deps.proxyImage, dir: plan.workDir,
+			names: sandboxNames(plan.jobId), image: deps.image, proxyImage: deps.proxyImage, dir: plan.workDir,
 			argv: agentArgv("claude-code", plan.instruction, null), commandPath: null, runner: "claude-code",
 			provider: "openrouter", providerKey: key, providerModel: plan.model, instruction: plan.instruction,
 			jobId: plan.jobId, uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null,
@@ -343,6 +412,27 @@ export function sandboxRunPort(deps: SandboxRunDeps): HouseRunPort {
 			throw error;
 		}
 	};
+}
+
+/** The deployment's run port: the model provider switch picks droid (the ruled default, its key
+ * from the environment or the laptop key file) or the OpenRouter path (its key from the session
+ * keyring). Both run inside the same sandbox; the command runner keeps its lane mode under either.
+ * A3 and A1 reuse the same switch and droid client from `packages/core/src/model.ts`. */
+export type HouseRunPortDeps = {
+	readonly docker: DockerPort;
+	readonly image: string;
+	readonly proxyImage: string;
+	readonly env?: NodeJS.ProcessEnv;
+	/** Overrides for tests; the real wiring reads the Factory key source and the session keyring. */
+	readonly droidKey?: () => Promise<string | null>;
+	readonly openrouterKey?: () => Promise<string | null>;
+};
+
+export function houseRunPort(deps: HouseRunPortDeps): HouseRunPort {
+	const env = deps.env ?? process.env;
+	return modelProvider(env) === "droid"
+		? droidRunPort({ ...deps, getKey: deps.droidKey ?? (() => factoryApiKey(env)), env })
+		: sandboxRunPort({ ...deps, getKey: deps.openrouterKey ?? (async () => keyringKey()), env });
 }
 
 /** The OpenRouter key from the session keyring, the way the M3 prototype read it: one `keyctl`

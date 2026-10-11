@@ -1,8 +1,9 @@
 // The deployment's House: the API's own delivery loop. One scan per tick picks the held House jobs
 // and walks each through the delivery series in this process -- the same Submit edge every operator
-// uses, the same sandbox path the CLI runs, the OpenRouter key from the session keyring. The loop is
-// bounded from every side: one delivery at a time, two calls per job ever, ten submits per series,
-// and a scan that stops at the first in-flight delivery.
+// uses, the same sandbox path the CLI runs, the model provider switch naming droid by default and
+// the OpenRouter path when selected. The loop is bounded from every side: one delivery at a time,
+// two calls per job ever, ten submits per series, and a scan that stops at the first in-flight
+// delivery.
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +12,8 @@ import type { CommandOutcome, UserCommand } from "../../../packages/core/src/acq
 import type { JobId, CommitSha, OperatorId } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import {
-	gitWorkPort, houseFactsOf, HOUSE_OPERATOR_ID, isDeliverableHouseJob, keyringKey, runHouseDelivery,
-	sandboxRunPort, stateStore, type HouseDeliveryDeps, type HouseDeliveryState, type HouseTarget,
+	gitWorkPort, houseFactsOf, houseMode, HOUSE_OPERATOR_ID, houseRunPort, isDeliverableHouseJob, runHouseDelivery,
+	stateStore, type HouseDeliveryDeps, type HouseDeliveryState, type HouseTarget,
 } from "../../../packages/house/src/runner.ts";
 
 export type HousePorts = {
@@ -31,14 +32,6 @@ export type HousePorts = {
 	readonly git?: GitRun;
 	readonly env?: NodeJS.ProcessEnv;
 };
-
-/** The House's one mode: the ruled free tier model, or the command runner for the offline lanes.
- * The mode comes from the environment, never from a request. */
-export function houseMode(env: NodeJS.ProcessEnv = process.env):
-	{ readonly runner: "model" } | { readonly runner: "command"; readonly commandPath: string } {
-	const command = env.ACQUIT_HOUSE_COMMAND?.trim();
-	return command ? { runner: "command", commandPath: command } : { runner: "model" };
-}
 
 /** The loop. Kick it from the tick; it returns at once when a delivery is already in flight. */
 export function createHouseDelivery(ports: HousePorts): { readonly kick: () => Promise<void> } {
@@ -86,11 +79,10 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 
 	const deps: HouseDeliveryDeps = {
 		mode,
-		run: sandboxRunPort({
+		run: houseRunPort({
 			docker: dockerCli(),
 			image: ports.image ?? (env.ACQUIT_RUNNER_IMAGE?.trim() || "acquit/runner-node20"),
 			proxyImage: ports.proxyImage ?? (env.ACQUIT_RUNNER_PROXY_IMAGE?.trim() || env.ACQUIT_RUNNER_IMAGE?.trim() || "acquit/runner-node20"),
-			getKey: async () => keyringKey(),
 			env,
 		}),
 		work: gitWorkPort({

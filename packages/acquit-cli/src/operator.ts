@@ -8,12 +8,14 @@ import type { ApiClient } from "./client.ts";
 import { PROVIDER, PROVIDER_KEY, PROVIDER_MODEL } from "./keychain.ts";
 import type { Keychain } from "./keychain.ts";
 
-/** The providers a stored key can run. */
-export type Provider = "anthropic" | "openrouter";
+/** The providers a stored key can run. The app's droid runs never come from the keychain -- the
+ * switch reads `ACQUIT_MODEL_PROVIDER` and the key arrives in-process -- but the sandbox, the proxy,
+ * and the provider table they share are generic over every provider a run can name. */
+export type Provider = "anthropic" | "openrouter" | "droid";
 
 export type ProviderSpec = {
-	readonly label: string;            // "Anthropic", "OpenRouter"
-	readonly host: string;             // the one provider host the proxy allows
+	readonly label: string;            // "Anthropic", "OpenRouter", "Factory"
+	readonly hosts: readonly string[]; // the provider host(s) the proxy allows, in dial order
 	readonly keyVar: string;           // the env var that carries the key, passed by name only
 	readonly defaultModel: string | null;
 	readonly fixedEnv: (model: string | null) => Readonly<Record<string, string>>; // non-secret values
@@ -25,19 +27,21 @@ const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash";
  * The provider table `run.ts` and the proxy read: one row per runnable provider. Anthropic keeps the
  * key variable and environment Claude Code had before OpenRouter existed, so its runs are unchanged;
  * OpenRouter pins its base URL and its model on every Claude Code model variable, because the model
- * must be named before the first request. The proxy is told one host from this table by name.
+ * must be named before the first request. The proxy is told this table's hosts by name. droid needs
+ * its API and its session gateway both -- probed once through the proxy, 2026-10-11; telemetry is
+ * contacted but never required, so it stays off the list.
  */
 export const PROVIDER_SPECS: Readonly<Record<Provider, ProviderSpec>> = {
 	anthropic: {
 		label: "Anthropic",
-		host: "api.anthropic.com",
+		hosts: ["api.anthropic.com"],
 		keyVar: "ANTHROPIC_API_KEY",
 		defaultModel: null,
 		fixedEnv: () => ({}),
 	},
 	openrouter: {
 		label: "OpenRouter",
-		host: "openrouter.ai",
+		hosts: ["openrouter.ai"],
 		keyVar: "ANTHROPIC_AUTH_TOKEN",
 		defaultModel: OPENROUTER_DEFAULT_MODEL,
 		fixedEnv: model => {
@@ -52,6 +56,13 @@ export const PROVIDER_SPECS: Readonly<Record<Provider, ProviderSpec>> = {
 				CLAUDE_CODE_SUBAGENT_MODEL: pinned,
 			};
 		},
+	},
+	droid: {
+		label: "Factory",
+		hosts: ["api.factory.ai", "prem.factory.ai"],
+		keyVar: "FACTORY_API_KEY",
+		defaultModel: "glm-5.3-flash",
+		fixedEnv: () => ({}),
 	},
 };
 

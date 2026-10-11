@@ -36,7 +36,9 @@ export const DEFAULT_RUNNER_IMAGE = "acquit/runner-node20";
 /** The one port the proxy listens on inside the sandbox network. */
 const PROXY_PORT = 8888;
 
-export type RunnerKind = "claude-code" | "command";
+/** The runners a sandbox can start. `droid` builds its argv through `droidExecArgv` (the model
+ * provider switch's client), never through `agentArgv`. */
+export type RunnerKind = "claude-code" | "command" | "droid";
 
 export type RunOptions = {
 	readonly jobId: string;
@@ -152,7 +154,7 @@ export function renderPreparing(start: RunStart): string {
  * before the sandbox starts. Anthropic names no model, so its line reads as it always did. */
 export function renderRunning(agent: string, runner: RunnerKind, command: string | null,
 	provider: Provider = "anthropic", model: string | null = null): string {
-	if (runner !== "claude-code") return `Running ${agent} with the command runner: ${command ?? ""}`;
+	if (runner === "command") return `Running ${agent} with the command runner: ${command ?? ""}`;
 	const spec = PROVIDER_SPECS[provider];
 	const pinned = model ?? spec.defaultModel;
 	return pinned === null
@@ -499,9 +501,9 @@ export function egressNetworkCreateArgs(egress: string): readonly string[] {
 /** The proxy is the one container with a route out: its own per-run egress network, plus the internal
  * network the runner joins. It never attaches to the shared bridge. The host it allows is a value
  * from the provider table, and allowlist.mjs refuses to widen it from the environment. */
-export function proxyRunArgs(proxy: string, egress: string, image: string, providerHost: string): readonly string[] {
+export function proxyRunArgs(proxy: string, egress: string, image: string, providerHosts: string): readonly string[] {
 	return ["run", "--detach", "--rm", "--name", proxy, "--network", egress, "--pull=never",
-		"-e", `ACQUIT_PROVIDER_HOST=${providerHost}`, image, "node", "/runner/proxy.mjs"];
+		"-e", `ACQUIT_PROVIDER_HOST=${providerHosts}`, image, "node", "/runner/proxy.mjs"];
 }
 
 export function networkConnectArgs(network: string, proxy: string): readonly string[] {
@@ -565,7 +567,9 @@ function mountSafe(what: string, path: string): void {
 	if (path.includes(",")) throw new CliError("MOUNT_PATH_UNSAFE", `The ${what} path cannot be a Docker mount source: ${JSON.stringify(path)}`);
 }
 
-/** The agent command the container executes. Unit-tested here; run.mjs only starts it. */
+/** The agent command the container executes. Unit-tested here; run.mjs only starts it. The droid
+ * runner never passes through here: its argv is `droidExecArgv`'s, with the model and the prompt
+ * file the droid client pins. */
 export function agentArgv(runner: RunnerKind, instruction: string, commandPath: string | null): readonly string[] {
 	return runner === "claude-code"
 		// The container is the boundary: the clone is a throwaway fork and the network is the proxy.
@@ -631,7 +635,7 @@ export async function runAgentInSandbox(plan: RunnerPlan, docker: DockerPort,
 		await cleanupSandbox(docker, plan.names);
 		await setup(networkCreateArgs(plan.names.network), "Creating the sandbox network");
 		await setup(egressNetworkCreateArgs(plan.names.egress), "Creating the sandbox egress network");
-		await setup(proxyRunArgs(plan.names.proxy, plan.names.egress, plan.proxyImage, PROVIDER_SPECS[plan.provider].host), "Starting the egress proxy");
+		await setup(proxyRunArgs(plan.names.proxy, plan.names.egress, plan.proxyImage, PROVIDER_SPECS[plan.provider].hosts.join(",")), "Starting the egress proxy");
 		await setup(networkConnectArgs(plan.names.network, plan.names.proxy), "Attaching the proxy to the sandbox network");
 		const runner = { ...options, ...(onOutput === undefined ? {} : { onOutput }) };
 		if (plan.providerKey !== null) {
