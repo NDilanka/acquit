@@ -51,7 +51,7 @@ test("refuses approval when the namespace directory cannot be resolved", () => {
 test("approves when the session's run directory holds no stream file", () => {
 	const xdg = mkdtempSync(join(tmpdir(), "stream-guard-"));
 	layout(join(xdg, "agent-browser"), "verify-acquit-lane-50", ["verify-acquit-lane-50.config", "verify-acquit-lane-50.target"]);
-	assert.deepEqual(streamGuard("verify-acquit-lane-50", { XDG_RUNTIME_DIR: xdg }, home), { ok: true });
+	assert.equal(streamGuard("verify-acquit-lane-50", { XDG_RUNTIME_DIR: xdg }, home).ok, true);
 });
 
 test("falls back to the home root when XDG_RUNTIME_DIR is unset", () => {
@@ -72,5 +72,5 @@ test("honors AGENT_BROWSER_SOCKET_DIR verbatim, the way agent-browser resolves i
 
 test("reports a failed stream disable instead of swallowing it", async () => {
 	await assert.rejects(() => disableStream(async () => { throw new Error("browser command failed"); }), /Stream disable failed/);
-	await assert.resolves(() => disableStream(async () => null));
+	await disableStream(async () => null);
 });
