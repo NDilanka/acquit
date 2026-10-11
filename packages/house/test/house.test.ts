@@ -12,11 +12,12 @@ import { defaultInstruction } from "../../acquit-cli/src/run.ts";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import { houseLine } from "../../core/src/job.ts";
 import {
-	classifyModelRun, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, HOUSE_MODEL, HOUSE_OPERATOR_ID,
-	isDeliverableHouseJob, runHouseDelivery, stateStore,
+	classifyModelRun, droidRunPort, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, houseMode, HOUSE_MODEL_OPENROUTER,
+	HOUSE_OPERATOR_ID, houseRunPort, isDeliverableHouseJob, runHouseDelivery, stateStore,
 	type HouseDeliverableFacts, type HouseDelivery, type HouseDeliveryDeps, type HouseDeliveryState,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
 } from "../src/runner.ts";
+import { DROID_INSTRUCTION_PATH } from "../../core/src/model.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const ctl = join(root, "packages/ctl/src/main.ts");
@@ -138,7 +139,7 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 		return run === undefined ? { ok: true } : run(plan);
 	};
 	const deps: HouseDeliveryDeps = {
-		mode: { runner: "model" },
+		mode: houseMode({}),
 		run: record,
 		work: {
 			prepare: async () => ({ workDir: "/tmp/house-work" }),
@@ -160,8 +161,8 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 	return { deps, plans, commits, deliveries, states };
 }
 
-test("the House runner pins the ruled free model and the CLI default instruction plus the committed suffix", async () => {
-	assert.equal(HOUSE_MODEL, "nvidia/nemotron-3-ultra-550b-a55b:free");
+test("the House runner pins the provider's model and the CLI default instruction plus the committed suffix", async () => {
+	assert.equal(HOUSE_MODEL_OPENROUTER, "nvidia/nemotron-3-ultra-550b-a55b:free", "the nemotron :free id stays the openrouter path's model");
 	// The committed suffix is byte-identical to the ruling file the mission names.
 	assert.equal(HOUSE_INSTRUCTION_SUFFIX, readFileSync(suffixFile, "utf8").replace(/\n$/, ""));
 	const expected = houseInstruction(defaultInstruction({ title: target.title }));
@@ -170,13 +171,34 @@ test("the House runner pins the ruled free model and the CLI default instruction
 	assert.equal(outcome, "SUBMITTED");
 	assert.equal(plans.length, 1);
 	assert.deepEqual(plans[0], {
-		runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: HOUSE_MODEL, instruction: expected,
+		runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: expected,
 	});
 	// The delivery rides to the submit, so the job's timeline can show the run's own diff.
 	assert.equal(deliveries.length, 1);
 	assert.equal(deliveries[0]?.commit, "5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b");
 	assert.equal(deliveries[0]?.files[0]?.path, "src/totals.ts");
 	assert.match(deliveries[0]?.patch ?? "", /diff --git/);
+});
+
+test("with ACQUIT_MODEL_PROVIDER=openrouter the run plan carries the nemotron :free id", async () => {
+	const { deps, plans } = fakeDeps(undefined, { mode: houseMode({ ACQUIT_MODEL_PROVIDER: "openrouter" }) });
+	await runHouseDelivery(deps, target);
+	assert.equal(plans[0]?.model, HOUSE_MODEL_OPENROUTER);
+	assert.match(plans[0]?.model ?? "", /:free$/, "the openrouter path stays on a :free id");
+});
+
+test("the House mode follows the provider switch: droid by default with glm-5.3-flash", () => {
+	assert.deepEqual(houseMode({}), { runner: "model", provider: "droid", model: "glm-5.3-flash" });
+	assert.deepEqual(houseMode({ ACQUIT_MODEL_PROVIDER: "droid" }), { runner: "model", provider: "droid", model: "glm-5.3-flash" });
+	assert.deepEqual(houseMode({ ACQUIT_MODEL_PROVIDER: "openrouter" }),
+		{ runner: "model", provider: "openrouter", model: "nvidia/nemotron-3-ultra-550b-a55b:free" });
+});
+
+test("the command runner stays the lane mode under either provider", () => {
+	assert.deepEqual(houseMode({ ACQUIT_HOUSE_COMMAND: "/srv/house/fix.sh", ACQUIT_MODEL_PROVIDER: "droid" }),
+		{ runner: "command", commandPath: "/srv/house/fix.sh" });
+	assert.deepEqual(houseMode({ ACQUIT_HOUSE_COMMAND: "/srv/house/fix.sh", ACQUIT_MODEL_PROVIDER: "openrouter" }),
+		{ runner: "command", commandPath: "/srv/house/fix.sh" });
 });
 
 test("one provider error retries once and still submits, with both calls persisted", async () => {
@@ -252,6 +274,127 @@ test("the command runner mode makes zero model calls and still submits through t
 	assert.equal(plans.filter(plan => plan.runner === "model").length, 0, "zero model calls");
 	assert.deepEqual(plans[0], { runner: "command", jobId: target.id, workDir: "/tmp/house-work", commandPath: "/srv/house/fix.sh" });
 	assert.deepEqual(commits, [`${target.id}:5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b`]);
+});
+
+// ---- the run ports -----------------------------------------------------------------------------
+
+type FakeDockerCall = { readonly args: readonly string[]; readonly env: NodeJS.ProcessEnv | undefined };
+
+/** A DockerPort that records every call and can hand the runner a fixed stdout chunk back. */
+function fakeDocker(runnerOutput?: string) {
+	const calls: FakeDockerCall[] = [];
+	return {
+		calls,
+		run: async (args: readonly string[], options: { env?: NodeJS.ProcessEnv; onOutput?: (chunk: string) => void } = {}) => {
+			calls.push({ args, env: options.env });
+			const isRunner = args[0] === "run" && !args.includes("--detach");
+			if (isRunner && runnerOutput !== undefined) options.onOutput?.(runnerOutput);
+			return 0;
+		},
+	};
+}
+
+const okDroidResult = `{"type":"result","subtype":"success","is_error":false,"duration_ms":3467,"num_turns":1,"result":"ok",`
+	+ `"session_id":"4f8b1303-23d1-442b-a8cd-f655047ff977","usage":{"input_tokens":11029,"output_tokens":3,"factory_credits":663}}\n`;
+
+test("the droid run port starts droid exec in the sandbox with the key in-process and Factory's hosts", async () => {
+	const docker = fakeDocker(okDroidResult);
+	const run = droidRunPort({
+		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		getKey: async () => "fk-CANARY", env: {},
+	});
+	const outcome = await run({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: "Fix it." });
+	assert.deepEqual(outcome, { ok: true, sessionId: "4f8b1303-23d1-442b-a8cd-f655047ff977", model: "glm-5.3-flash", factoryCredits: 663 });
+	const runner = docker.calls.findIndex(call => call.args[0] === "run" && !call.args.includes("--detach"));
+	assert.equal(runner >= 0, true);
+	const argv = docker.calls[runner].args;
+	assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "droid", "exec", "--auto", "low",
+		"-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", DROID_INSTRUCTION_PATH]);
+	// The prompt rides the instruction env run.mjs writes to a file; it is not a secret, but the
+	// key is, and the key is never an argv word.
+	assert.equal(argv.some(arg => arg.includes("Fix it.")), false);
+	assert.equal(docker.calls[runner].env?.FACTORY_API_KEY, "fk-CANARY");
+	assert.equal(docker.calls[runner].args.some(arg => arg.includes("fk-CANARY")), false);
+	// The droid runner is not a claude runner: no claude-specific switch.
+	assert.equal(argv.includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), false);
+	// The proxy was started with the hosts the droid provider needs, and only those.
+	const proxy = docker.calls.findIndex(call => call.args[0] === "run" && call.args.includes("--detach"));
+	assert.equal(docker.calls[proxy].args.includes("ACQUIT_PROVIDER_HOST=api.factory.ai,prem.factory.ai"), true);
+});
+
+test("the droid run port refuses a run without a usable Factory key, without starting a sandbox", async () => {
+	const docker = fakeDocker();
+	const run = droidRunPort({
+		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20", getKey: async () => null, env: {},
+	});
+	const outcome = await run({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: "Fix it." });
+	assert.equal(outcome.ok, false);
+	assert.equal((outcome as { reason: string }).reason, "RUN_FAILED", "a missing key is not the provider's error, so no retry burns");
+	assert.equal(docker.calls.length, 0, "no container is started without a key");
+});
+
+test("houseRunPort picks the droid port by default and the openrouter port when selected", async () => {
+	const droid = fakeDocker(okDroidResult);
+	const runDroid = houseRunPort({
+		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		env: { FACTORY_API_KEY: "fk-CANARY" },
+	});
+	const droidOutcome = await runDroid({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "glm-5.3-flash", instruction: "Fix it." });
+	assert.equal(droidOutcome.ok, true);
+	assert.equal((droidOutcome as { sessionId?: string }).sessionId, "4f8b1303-23d1-442b-a8cd-f655047ff977");
+
+	// The openrouter path keeps its injected transport: an injected key getter and a recording
+	// DockerPort, no keyring read and no socket to openrouter.ai anywhere in this suite.
+	const openrouter = fakeDocker();
+	const runOpenrouter = houseRunPort({
+		docker: openrouter, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		env: { ACQUIT_MODEL_PROVIDER: "openrouter" }, openrouterKey: async () => "or-CANARY",
+	});
+	const openrouterOutcome = await runOpenrouter({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: HOUSE_MODEL_OPENROUTER, instruction: "Fix it." });
+	assert.equal(openrouterOutcome.ok, true);
+	const proxy = openrouter.calls.findIndex(call => call.args[0] === "run" && call.args.includes("--detach"));
+	assert.equal(openrouter.calls[proxy].args.includes("ACQUIT_PROVIDER_HOST=openrouter.ai"), true);
+	const runner = openrouter.calls.findIndex(call => call.args[0] === "run" && !call.args.includes("--detach"));
+	assert.equal(openrouter.calls[runner].args.includes(`ANTHROPIC_MODEL=${HOUSE_MODEL_OPENROUTER}`), true, "the run pins the plan's model id");
+	assert.equal(openrouter.calls[runner].env?.ANTHROPIC_AUTH_TOKEN, "or-CANARY");
+	assert.equal(openrouter.calls[runner].env?.FACTORY_API_KEY, undefined, "the droid key never rides the openrouter path");
+	assert.equal(openrouter.calls.flat().some(arg => arg.includes("or-CANARY")), false);
+});
+
+test("a command plan runs the command sandbox under either provider, with no key and no droid argv", async () => {
+	for (const provider of ["droid", "openrouter"]) {
+		const docker = fakeDocker();
+		const run = houseRunPort({
+			docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+			env: { ACQUIT_MODEL_PROVIDER: provider, FACTORY_API_KEY: "fk-CANARY" },
+			droidKey: async () => "fk-CANARY", openrouterKey: async () => "or-CANARY",
+		});
+		const outcome = await run({ runner: "command", jobId: target.id, workDir: "/tmp/house-work", commandPath: "/srv/house/fix.sh" });
+		assert.deepEqual(outcome, { ok: true });
+		const runner = docker.calls.findIndex(call => call.args[0] === "run" && !call.args.includes("--detach"));
+		const argv = docker.calls[runner].args;
+		assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "/bin/sh", "/acquit/command.sh"]);
+		assert.equal(argv.includes("FACTORY_API_KEY"), false, `${provider}: the command runner names no key variable`);
+		assert.equal(argv.some(arg => arg.includes("fk-CANARY")), false);
+	}
+});
+
+test("a successful run records its session, model, and Factory credits in the run log", async () => {
+	const lines: string[] = [];
+	const { deps } = fakeDeps(async () => ({ ok: true, sessionId: "s-9", model: "glm-5.3-flash", factoryCredits: 12 }), { log: line => lines.push(line) });
+	await runHouseDelivery(deps, target);
+	const logged = lines.join("\n");
+	assert.match(logged, /session s-9/);
+	assert.match(logged, /model glm-5.3-flash/);
+	assert.match(logged, /credits 12/);
+});
+
+test("a failed run records no session line, only the failure the series already logs", async () => {
+	const lines: string[] = [];
+	const { deps } = fakeDeps(async () => ({ ok: false, reason: "PROVIDER_ERROR", detail: "403 status code (no body)" }), { log: line => lines.push(line) });
+	await runHouseDelivery(deps, target);
+	assert.match(lines.join("\n"), /PROVIDER_ERROR/);
+	assert.doesNotMatch(lines.join("\n"), /session /);
 });
 
 test("the model run classification reads the claude result line the M3 run printed", () => {
