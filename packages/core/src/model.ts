@@ -32,10 +32,13 @@ export function modelProvider(env: NodeJS.ProcessEnv = process.env): ModelProvid
 	throw new Error(`${MODEL_PROVIDER_ENV} must be droid or openrouter, not ${JSON.stringify(env[MODEL_PROVIDER_ENV])}`);
 }
 
-/** The `droid exec` argv a model run executes inside the sandbox: low autonomy, the pinned model,
- * json output so the result can be classified, the job work tree, and the prompt by file. */
+/** The `droid exec` argv a model run executes inside the sandbox: medium autonomy, the pinned
+ * model, json output so the result can be classified, the job work tree, and the prompt by file.
+ * Medium, not low, because at low droid exec ends early with an insufficient-permission error
+ * when the model runs the required tests, and permission rules cannot cover its chained or
+ * redirected command spellings; the sandbox and egress allowlist remain the security boundary. */
 export function droidExecArgv({ model, workDir = "/work" }: { readonly model: string; readonly workDir?: string }): readonly string[] {
-	return ["droid", "exec", "--auto", "low", "-m", model, "-o", "json", "--cwd", workDir, "-f", DROID_INSTRUCTION_PATH];
+	return ["droid", "exec", "--auto", "medium", "-m", model, "-o", "json", "--cwd", workDir, "-f", DROID_INSTRUCTION_PATH];
 }
 
 // ---- the droid result --------------------------------------------------------------------------

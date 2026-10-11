@@ -72,7 +72,7 @@ The CLI refuses to start a container from a missing image; it never pulls one im
   read-only at `/acquit/command.sh` and started with `sh`. The instruction, when given, is in
   `ACQUIT_INSTRUCTION` for the script to read.
 - `droid` is the House's model runner under the default provider. It runs
-  `droid exec --auto low -m glm-5.3-flash -o json --cwd /work -f /tmp/acquit-instruction.txt` with
+  `droid exec --auto medium -m glm-5.3-flash -o json --cwd /work -f /tmp/acquit-instruction.txt` with
   the Factory key in `FACTORY_API_KEY`. The prompt file is written by `run.mjs` from the
   `ACQUIT_INSTRUCTION` env, so the prompt is never an argv word. The `-o json` result line is what
   the runner classifies: `is_error`, or a nonzero exit with no result line, is a provider error
