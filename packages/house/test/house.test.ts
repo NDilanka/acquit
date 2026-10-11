@@ -123,7 +123,7 @@ function merchantOf(db: DatabaseSync, operator: string): string | null {
 
 const suffixFile = "/home/factory-user/repos/acquit/data/trail/house-instruction-suffix.txt";
 const target: HouseTarget = {
-	id: "9e0f6b72-1111-4222-8333-444455556666" as JobId, title: "Totals round wrong for 3-decimal currencies",
+	id: "job_9e0f6b72-1111-4222-8333-444455556666" as JobId, title: "Totals round wrong for 3-decimal currencies",
 	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567" as CommitSha,
 };
 const fresh: HouseDeliveryState = { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0 };

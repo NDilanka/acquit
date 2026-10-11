@@ -260,7 +260,7 @@ export function houseFactsOf(row: JobRow): HouseDeliverableFacts {
 
 // ---- the state store ---------------------------------------------------------------------------
 
-const STATE_FILES_SAFE = /^[0-9a-fA-F-]{8,64}$/;
+const STATE_FILES_SAFE = /^job_[A-Za-z0-9_-]{4,80}$/;
 
 /** The delivery states, one small JSON file per job under one directory. */
 export function stateStore(dir: string): {
