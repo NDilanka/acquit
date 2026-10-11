@@ -514,7 +514,7 @@ export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant):
 export type WebhookOutcome =
 	| { readonly kind: "APPLIED"; readonly jobId: JobId; readonly edge: SystemJobCommand["type"]; readonly changed: boolean }
 	| { readonly kind: "NOOP"; readonly reason: "JOB_ALREADY_SETTLED" | "RESOURCE_NOT_OURS" | "UNROUTED" | "PROVIDER_HELD"; readonly jobId: JobId | null; readonly status?: JobStatus }
-	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "UNSIGNED_DELIVERY" | "VERIFICATION_FAILURE"
+	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "UNSIGNED_DELIVERY" | "VERIFICATION_FAILURE" | "VERIFICATION_INPUT_REJECTED"
 		| "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED" | "SETTLEMENT_MISMATCH"; readonly resource?: WebhookResourceKind }
 	| { readonly kind: "OUTAGE" };
 
@@ -543,6 +543,7 @@ export function webhookOutcomeText(outcome: WebhookOutcome): string {
 				case "UNREADABLE_EVENT": return "refused, unreadable event";
 				case "UNSIGNED_DELIVERY": return "refused, UNSIGNED_DELIVERY";
 				case "VERIFICATION_FAILURE": return "refused, VERIFICATION_FAILURE";
+				case "VERIFICATION_INPUT_REJECTED": return "refused, VERIFICATION_INPUT_REJECTED";
 				case "RESOURCE_UNKNOWN_TO_PROVIDER": return `refused, PayPal does not know this ${resourceNoun(outcome.resource)}`;
 				case "PROVIDER_REFUSED": return `refused, the provider refused this ${resourceNoun(outcome.resource)}`;
 				case "SETTLEMENT_MISMATCH": return "refused, the job did not take this settlement";

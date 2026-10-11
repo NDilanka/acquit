@@ -148,12 +148,14 @@ export type WebhookEnvelope =
 /**
  * The closed verdict of one delivery's signature check, asked of PayPal's verify-webhook-signature.
  * Only `VERIFIED` proceeds past the route's parse. A refusal is terminal: the delivery was not signed
- * the way PayPal signs, or PayPal named it FAILURE, and no retry changes that. An outage is the verify
- * call itself failing to answer, which PayPal's own redelivery resolves. Neither applies anything.
+ * the way PayPal signs, PayPal named it FAILURE, or PayPal rejected the verification request's own
+ * inputs (a 4xx beyond an expired token or a rate limit), and no retry changes that. An outage is the
+ * verify call itself failing to answer, which PayPal's own redelivery resolves. Neither applies
+ * anything.
  */
 export type WebhookVerifyOutcome =
 	| { readonly kind: "VERIFIED" }
-	| { readonly kind: "REFUSED"; readonly reason: "UNSIGNED_DELIVERY" | "VERIFICATION_FAILURE"; readonly detail?: string }
+	| { readonly kind: "REFUSED"; readonly reason: "UNSIGNED_DELIVERY" | "VERIFICATION_FAILURE" | "VERIFICATION_INPUT_REJECTED"; readonly detail?: string }
 	| { readonly kind: "OUTAGE"; readonly detail?: string };
 
 /**
@@ -511,8 +513,16 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 					signal: AbortSignal.timeout(15_000), redirect: "error",
 				});
 				if (!response.ok) {
-					if (response.status === 401) { token = null; tokenExpires = 0; }
-					return { kind: "OUTAGE", detail: `PayPal answered HTTP ${response.status}.` };
+					const detail = `PayPal answered HTTP ${response.status}.`;
+					// An expired token clears itself: the next delivery mints a fresh one.
+					if (response.status === 401) { token = null; tokenExpires = 0; return { kind: "OUTAGE", detail }; }
+					// Any other 4xx but a rate limit is PayPal rejecting the verification request's own
+					// inputs (a malformed cert url or transmission id): no retry of these bytes verifies,
+					// so the delivery is refused terminally. The rate limit and a 5xx are transient, and
+					// PayPal's redelivery is the retry.
+					if (response.status >= 400 && response.status < 500 && response.status !== 429)
+						return { kind: "REFUSED", reason: "VERIFICATION_INPUT_REJECTED", detail };
+					return { kind: "OUTAGE", detail };
 				}
 				const json = await response.json().catch(() => null);
 				const answer = json === null ? null : routed(() => object(json));

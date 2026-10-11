@@ -190,6 +190,21 @@ test("an unsigned delivery is refused with its reason code and applies nothing",
 	} finally { f.store.close(); }
 });
 
+test("a delivery whose verification inputs PayPal rejects is refused terminally at the route", async () => {
+	const { f, jobId } = await capturingFixture();
+	try {
+		// The verdict PayPal's own 4xx produces: the route answers the same 400 a FAILURE gets, and the
+		// reason code, not the HTTP status, is what distinguishes the two refusals in the row and log.
+		f.verdicts.push({ kind: "REFUSED", reason: "VERIFICATION_INPUT_REJECTED", detail: "PayPal answered HTTP 400." });
+		const before = JSON.stringify(await f.store.readJob(jobId));
+		const response = await delivered(f.ports, captureEnvelope("WH-P1-3b"));
+		assert.equal(response.status, 400);
+		assert.deepEqual(f.calls, ["verify"]);
+		assert.equal(JSON.stringify(await f.store.readJob(jobId)), before);
+		assert.equal(recordedOutcome(f.store, "WH-P1-3b"), "refused, VERIFICATION_INPUT_REJECTED");
+	} finally { f.store.close(); }
+});
+
 test("a verification outage answers 5xx, applies nothing, and a verified redelivery applies once", async () => {
 	const { f, jobId } = await capturingFixture();
 	try {
