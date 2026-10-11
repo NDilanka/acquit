@@ -65,14 +65,16 @@ assert code == 200 and json.loads(body)["user"] is None
 print(f"{mode} authenticated /api/session: 200 JSON, no app session")
 # The dev route answers what the deployment runs: P1 ships ACQUIT_DEV=1, where the route is enabled
 # and an empty clock POST fails its body parse; public mode refuses it by name.
-probe = subprocess.run([*ssh, "grep -x 'ACQUIT_DEV=1' /etc/acquit/runtime.env || true"],
+probe = subprocess.run([*ssh, "sudo grep -x 'ACQUIT_DEV=1' /etc/acquit/runtime.env || true"],
                        text=True, capture_output=True)
 if probe.returncode:
     raise SystemExit(f"could not read the deployed mode; no credential output")
 if probe.stdout.strip() == "ACQUIT_DEV=1":
-    code, _ = request("/api/dev/clock", True, "POST")
-    assert code == 400, f"Dev mode clock route should fail the empty body parse: {code}"
-    print(f"{mode} authenticated dev route: 400 (ACQUIT_DEV=1; the route is on, an empty POST does not parse)")
+    # Dev mode enables the route: past the mode check it asks for an app session, which a bare gate
+    # credential does not carry, so the answer is the API's own unauthenticated refusal.
+    code, body = request("/api/dev/clock", True, "POST")
+    assert code == 401 and json.loads(body)["error"] == "UNAUTHENTICATED", f"Dev mode clock route should refuse a bare gate credential: {code}"
+    print(f"{mode} authenticated dev route: 401 UNAUTHENTICATED (ACQUIT_DEV=1; the route is on and still wants an app session)")
 else:
     code, body = request("/api/dev/clock", True, "POST")
     assert code == 403 and json.loads(body)["error"] == "DEV_DISABLED"
