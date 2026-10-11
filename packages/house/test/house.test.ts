@@ -25,7 +25,7 @@ test("seed run without the House merchant id fails and writes no House operator 
 	const database = join(mkdtempSync(join(tmpdir(), "acquit-house-seed-")), "acquit.db");
 	try {
 		const run = spawnSync(process.execPath, [ctl, "seed-db", "--yes"],
-			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "" } });
+			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "" } });
 		assert.notEqual(run.status, 0, "the seed must fail without OPERATOR_HOUSE_MERCHANT_ID");
 		assert.match(`${run.stdout}\n${run.stderr}`, /OPERATOR_HOUSE_MERCHANT_ID/);
 		assert.ok(!existsSync(database) || !houseOperator(database), "a failed seed writes no house-tsfix operator");
@@ -39,7 +39,7 @@ test("seed writes the configured House merchant, different from Devon's, with 41
 	const configured = "HOUSESEEDMERCHANT";
 	try {
 		const run = spawnSync(process.execPath, [ctl, "seed-db", "--yes"],
-			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: configured } });
+			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: configured } });
 		assert.equal(run.status, 0, `the seed with the House merchant id set must pass: ${run.stderr.slice(0, 300)}`);
 		const db = new DatabaseSync(database, { readOnly: true });
 		try {

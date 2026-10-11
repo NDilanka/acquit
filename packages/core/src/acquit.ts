@@ -81,6 +81,8 @@ export interface BidView {
 	readonly runner: string;
 	readonly pitch: string;
 	readonly paidReceipts: number;
+	/** The House line counted from receipt rows ("41 fixes, 39 passed verified CI"), on House bids alone. */
+	readonly houseLine: string | null;
 	readonly status: "PENDING" | "CHOSEN" | "ACCEPTED" | "NOT_SELECTED" | "RETURNED";
 }
 
@@ -210,6 +212,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
+			const houseRows = await store.receiptRowCounts();
 			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
 			// and the system paths are the only cross-tenant readers, and they are never a session.
 			const sameWorld = (row: JobRow) => actor.role === "ARBITER" || (actor.tenant ?? null) === (row.tenant ?? null);
@@ -219,13 +222,13 @@ export function createAcquit(config: AcquitConfig): Acquit {
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
 					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
-					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts) } : { kind: "DENIED", reason: "NOT_OWNER" };
+					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}
 				case "OpenJobs": {
 					const jobs = (await store.listJobs()).filter(row => sameWorld(row) && (row.state.status === "OPEN" ||
 						actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId)));
-					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts)), nextCursor: null };
+					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows)), nextCursor: null };
 				}
 				case "Operator": {
 					if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };

@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, RecordedRequest } from "./effects.ts";
+import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, ReceiptRowCounts, RecordedRequest } from "./effects.ts";
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
@@ -54,6 +54,11 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE TABLE IF NOT EXISTS cap_reservations (kind TEXT NOT NULL, scope TEXT NOT NULL, ref TEXT NOT NULL,
 			cents INTEGER NOT NULL, at_wall TEXT NOT NULL, PRIMARY KEY(kind, ref));
 		CREATE INDEX IF NOT EXISTS cap_reservations_window ON cap_reservations(kind, scope, at_wall);
+		-- One persisted receipt row per paid job, plus the deployment's seeded history rows. The House
+		-- line is counted from these rows, never from a counter; source marks the seeded rows SEED.
+		CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, job_id TEXT, operator TEXT NOT NULL,
+			source TEXT NOT NULL, paid INTEGER NOT NULL DEFAULT 0, paid_at TEXT);
+		CREATE INDEX IF NOT EXISTS receipts_operator ON receipts(operator);
 	`);
 	// A database that already holds visitor rows keeps them: CREATE TABLE IF NOT EXISTS leaves an old
 	// shape alone, so a column added after the fact is added here. A row from before this column is a
@@ -188,6 +193,11 @@ export class SqliteStore implements Store {
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
 	}
+	/** The House line's own source: receipt rows per operator, every row and the paid ones among them. */
+	async receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>> {
+		return new Map(this.db.prepare("SELECT operator, COUNT(*) AS total, COALESCE(SUM(paid), 0) AS paid FROM receipts GROUP BY operator")
+			.all().map(row => [String(row.operator) as OperatorId, { total: Number(row.total), paid: Number(row.paid) }]));
+	}
 	async receiptCount(id: OperatorId): Promise<number> {
 		const row = this.db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(id);
 		return row ? Number(row.paid_receipts) : 0;
@@ -260,6 +270,12 @@ export class SqliteStore implements Store {
 				if (change.paidReceipt !== payee) throw new Error(`paid receipt ${logBare(change.paidReceipt)} is not the committed PAID job's payee; refusing the write`);
 				const counted = this.db.prepare("UPDATE operators SET paid_receipts = paid_receipts + 1 WHERE id = ?").run(change.paidReceipt);
 				if (!counted.changes) console.warn(`paid receipt not counted: no operators row for ${logBare(change.paidReceipt)}`);
+				// The same write appends the receipt's own row: the House line counts rows, so the row
+				// must exist exactly when the counter moves, in the same transaction. The receipt id is
+				// the key, so a replayed settlement replaces nothing but itself.
+				const receipt = committed !== null && committed.row.state.status === "PAID" ? committed.row.state.receipt : null;
+				if (receipt) this.db.prepare("INSERT OR REPLACE INTO receipts VALUES (?, ?, ?, 'JOB', 1, ?)")
+					.run(receipt.id, receipt.jobId, receipt.operator, receipt.releasedAt);
 			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), outboxDue(row.state));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);

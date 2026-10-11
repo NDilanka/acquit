@@ -377,9 +377,35 @@ export async function seedDb(parsed: Parsed, ctx: Context): Promise<Result> {
 			throw new CliError("CONFIRMATION_REQUIRED", "Resetting the database while an app is running invalidates its sessions.", "Run npm run -s ctl -- seed-db --yes to confirm the reset.");
 		}
 		const result = await captured(process.execPath, ["scripts/seed.ts"], ctx.root, { ...process.env, DATABASE_PATH: path });
-		if (result.code !== 0) throw new CliError("SEED_FAILED", "The existing seed script failed. No script output or configuration values were forwarded.", "Check PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and OPERATOR_DEVON_MERCHANT_ID in .env, then run npm run -s ctl -- seed-db --yes.");
+		if (result.code !== 0) {
+			// Names only, never a value: the seed's own missing-configuration line names the env var it
+			// needs, and that name is the one fact this refusal forwards.
+			const missing = [...`${result.stdout}\n${result.stderr}`.matchAll(/Missing configuration: ([A-Z_]+)/g)].map(match => match[1]);
+			throw new CliError("SEED_FAILED", missing.length ? `The seed script is missing configuration: ${[...new Set(missing)].join(", ")}.`
+				: "The existing seed script failed. No script output or configuration values were forwarded.",
+			"Check PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, and OPERATOR_DEVON_MERCHANT_ID in .env, then run npm run -s ctl -- seed-db --yes.");
+		}
 		return { databasePath: path, counts: await counts(path), sessionsInvalidated: true };
 	});
+}
+/**
+ * The schema migration. Opening the store applies the tracked schema (CREATE TABLE IF NOT EXISTS and
+ * the read-boundary column adds) to the database in place, so an existing database keeps every row.
+ * Idempotent: a second run opens the same schema and changes nothing. The landing runs this on the
+ * VM database after its backup.
+ */
+export async function migrate(parsed: Parsed, ctx: Context): Promise<Result> {
+	const run = await readState(ctx);
+	const path = run?.databasePath ?? ctx.databasePath;
+	const { SqliteStore } = await import("../../core/src/store.ts");
+	const store = new SqliteStore(path);
+	try {
+		const names = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
+			.map(row => String(row.name));
+		const tables = Object.fromEntries(names.map(name => [name, Number(store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get()?.n ?? 0)]));
+		return { databasePath: path, migrated: true, tables,
+			text: `Migration applied at ${path}. Tables: ${names.join(", ")}. Receipts rows: ${tables.receipts ?? "table missing"}.\n` };
+	} finally { store.close(); }
 }
 async function app(ctx: Context, webRequired = false): Promise<{ api: number; web: number }> {
 	const run = await readState(ctx);
