@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -458,11 +458,28 @@ test("the work port keeps the askpass secret alive from prepare through the push
 	try {
 		const frozen = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 		let askpassAtPush: string | null = null;
+		let askpassExistedAtPush = false;
 		const git: GitRun = (args, env) => {
-			if (args.includes("push")) askpassAtPush = env?.GIT_ASKPASS ?? null;
-			if (args[0] === "rev-parse") return { status: 0, stdout: `${frozen}\n`, stderr: "" };
+			// Every call arrives with the location and guard args prepended, so the branches match
+			// anywhere in the argv.
+			if (args.includes("push")) {
+				askpassAtPush = env?.GIT_ASKPASS ?? null;
+				// The script's own lifetime is the fact under test: read it at the push, not after.
+				askpassExistedAtPush = askpassAtPush !== null && existsSync(askpassAtPush);
+			}
+			if (args.includes("clone")) {
+				// The real clone creates both locations and the work tree's `gitdir:` link; prepare
+				// chmods the git directory and rewrites that link right after.
+				const gitDir = args[args.indexOf("--separate-git-dir") + 1];
+				const workTree = args.at(-1) as string;
+				mkdirSync(gitDir, { recursive: true, mode: 0o700 });
+				mkdirSync(workTree, { recursive: true, mode: 0o700 });
+				writeFileSync(join(workTree, ".git"), `gitdir: ${gitDir}\n`, { mode: 0o644 });
+				return { status: 0, stdout: "", stderr: "" };
+			}
+			if (args.includes("rev-parse")) return { status: 0, stdout: `${frozen}\n`, stderr: "" };
 			if (args.includes("--porcelain")) return { status: 0, stdout: " M src/money.ts\n", stderr: "" };
-			if (args[0] === "diff" && args.includes("--numstat")) return { status: 0, stdout: "2\t1\0src/money.ts\0", stderr: "" };
+			if (args.includes("--numstat")) return { status: 0, stdout: "2\t1\0src/money.ts\0", stderr: "" };
 			return { status: 0, stdout: "", stderr: "" };
 		};
 		const port = gitWorkPort({
@@ -476,7 +493,8 @@ test("the work port keeps the askpass secret alive from prepare through the push
 		const delivery = await port.finalize(target, prepared.workDir);
 		assert(delivery !== null, "the stubbed checkout is dirty, so the series has a submission");
 		assert(askpassAtPush !== null, "the push carries the askpass");
-		assert(existsSync(String(askpassAtPush)), "the askpass script still exists when the push runs");
+		assert.equal(askpassExistedAtPush, true, "the askpass script still exists when the push runs");
+		assert.equal(existsSync(String(askpassAtPush)), false, "finalize swept the secret once the push was done");
 		port.remove(target.id);
 		assert.equal(existsSync(String(askpassAtPush)), false, "remove sweeps the askpass secret");
 	} finally { rmSync(root, { recursive: true, force: true }); }

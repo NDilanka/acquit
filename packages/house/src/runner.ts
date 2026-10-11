@@ -471,6 +471,9 @@ type PreparedCheckout = {
 	readonly url: string;
 	readonly gitEnv: NodeJS.ProcessEnv;
 	readonly askpassEnv: NodeJS.ProcessEnv;
+	/** The secret directory the askpass script lives in. It must outlive prepare: the push that
+	 * reads the script runs in finalize, one model run later. Every exit path sweeps it. */
+	readonly secret: { readonly path: string; readonly remove: () => void };
 	/** The explicit git args every command on this checkout names: the state git directory and work tree. */
 	readonly checkoutGitArgs: (env: NodeJS.ProcessEnv, args: readonly string[]) => readonly string[];
 };
@@ -500,25 +503,36 @@ export function gitWorkPort(deps: GitWorkDeps): HouseWorkPort {
 				prepareWorkRepo(git, checkout, url, job.frozenAt, gitEnv, askpass.env);
 				seedCommitIdentity(git, checkout, globalGitIdentity(git, stripGitEnv(env)), gitEnv);
 				const checkoutGitArgs = (callEnv: NodeJS.ProcessEnv, args: readonly string[]) => locationGitArgs(checkout, callEnv, args);
-				sessions.set(job.id, { checkout, url, gitEnv, askpassEnv: askpass.env, checkoutGitArgs });
+				// A re-prepare replaces the session: sweep the replaced secret so no token file outlives
+				// the checkout it scoped.
+				sessions.get(job.id)?.secret.remove();
+				sessions.set(job.id, { checkout, url, gitEnv, askpassEnv: askpass.env, secret, checkoutGitArgs });
 				return { workDir: checkout.workTree };
-			} finally {
+			} catch (error) {
 				secret.remove();
+				throw error;
 			}
 		},
 		async finalize(job) {
 			const session = sessions.get(job.id);
 			if (session === undefined) throw new CliError("GIT_FAILED", `no prepared checkout for ${job.id}`);
-			const commit = submissionCommit(git, session.checkout, job.frozenAt, `Run ${job.id} with ${HOUSE_OPERATOR_ID}`, session.gitEnv);
-			if (commit === null) return null;
-			pushWork(git, session.checkout, session.url, commit, session.gitEnv, session.askpassEnv);
-			// The diff the timeline shows is read from the same checkout before it is cleaned up, so it
-			// is exactly the submitted tree's diff against the frozen commit.
-			const files = changedFiles(git, session.checkout, job.frozenAt, session.gitEnv, commit);
-			const patch = boundedPatch(git(session.checkoutGitArgs(session.gitEnv, ["diff", "--no-color", job.frozenAt, commit]), session.gitEnv));
-			return { commit, files, patch };
+			// The secret dies with the series, on every path: the push has run (or failed) by the time
+			// finalize returns, and remove() cleans up the paths that never reach here.
+			try {
+				const commit = submissionCommit(git, session.checkout, job.frozenAt, `Run ${job.id} with ${HOUSE_OPERATOR_ID}`, session.gitEnv);
+				if (commit === null) return null;
+				pushWork(git, session.checkout, session.url, commit, session.gitEnv, session.askpassEnv);
+				// The diff the timeline shows is read from the same checkout before it is cleaned up, so it
+				// is exactly the submitted tree's diff against the frozen commit.
+				const files = changedFiles(git, session.checkout, job.frozenAt, session.gitEnv, commit);
+				const patch = boundedPatch(git(session.checkoutGitArgs(session.gitEnv, ["diff", "--no-color", job.frozenAt, commit]), session.gitEnv));
+				return { commit, files, patch };
+			} finally {
+				session.secret.remove();
+			}
 		},
 		remove(jobId) {
+			sessions.get(jobId)?.secret.remove();
 			sessions.delete(jobId);
 			for (const path of [join(deps.workRoot, jobId), join(deps.stateRoot, `${jobId}.git`)]) {
 				try { rmSync(path, { recursive: true, force: true }); } catch { /* best effort */ }
