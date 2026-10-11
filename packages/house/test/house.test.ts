@@ -9,10 +9,11 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { defaultInstruction } from "../../acquit-cli/src/run.ts";
+import type { GitRun } from "../../acquit-cli/src/run.ts";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import { houseLine } from "../../core/src/job.ts";
 import {
-	classifyModelRun, droidRunPort, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, houseMode, HOUSE_MODEL_OPENROUTER,
+	classifyModelRun, droidRunPort, gitWorkPort, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, houseMode, HOUSE_MODEL_OPENROUTER,
 	HOUSE_OPERATOR_ID, houseRunPort, isDeliverableHouseJob, runHouseDelivery, stateStore,
 	type HouseDeliverableFacts, type HouseDelivery, type HouseDeliveryDeps, type HouseDeliveryState,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
@@ -448,4 +449,35 @@ test("the state store accepts the job_-prefixed ids the id parser mints", async 
 		await store.writeState(realId, { calls: 1, submittedCommit: "ccdd" as CommitSha, submitAttempts: 0, prepareFailures: 0 });
 		assert.deepEqual(await store.readState(realId), { calls: 1, submittedCommit: "ccdd", submitAttempts: 0, prepareFailures: 0 });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the work port keeps the askpass secret alive from prepare through the push", async () => {
+	// The push is the only reader of the askpass script, and it runs in finalize, long after prepare
+	// returned: the secret directory may not be removed until the series is done.
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-work-"));
+	try {
+		const frozen = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+		let askpassAtPush: string | null = null;
+		const git: GitRun = (args, env) => {
+			if (args.includes("push")) askpassAtPush = env?.GIT_ASKPASS ?? null;
+			if (args[0] === "rev-parse") return { status: 0, stdout: `${frozen}\n`, stderr: "" };
+			if (args.includes("--porcelain")) return { status: 0, stdout: " M src/money.ts\n", stderr: "" };
+			if (args[0] === "diff" && args.includes("--numstat")) return { status: 0, stdout: "2\t1\0src/money.ts\0", stderr: "" };
+			return { status: 0, stdout: "", stderr: "" };
+		};
+		const port = gitWorkPort({
+			stateRoot: join(root, "state"), workRoot: join(root, "work"),
+			mint: async () => ({ repository: "acquit-forks/invoice-app-x", token: "GHT-TEST-TOKEN" }),
+			git, env: { ...process.env },
+		});
+		const target: HouseTarget = { id: "job_7Q2K" as JobId, title: "Totals", repository: "maya-client/invoice-app", frozenAt: frozen };
+		const prepared = await port.prepare(target);
+		assert.equal(typeof prepared.workDir, "string");
+		const delivery = await port.finalize(target, prepared.workDir);
+		assert(delivery !== null, "the stubbed checkout is dirty, so the series has a submission");
+		assert(askpassAtPush !== null, "the push carries the askpass");
+		assert(existsSync(String(askpassAtPush)), "the askpass script still exists when the push runs");
+		port.remove(target.id);
+		assert.equal(existsSync(String(askpassAtPush)), false, "remove sweeps the askpass secret");
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
