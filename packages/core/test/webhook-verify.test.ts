@@ -286,7 +286,7 @@ test("a verification answer that is not SUCCESS is refused as a verification fai
 	} finally { globalThis.fetch = original; }
 });
 
-test("a network error, a PayPal 5xx, a timeout, and an unreadable answer are outages", async () => {
+test("a network error, a 5xx, a timeout, an unreadable answer, a 401, and a 429 are outages", async () => {
 	const original = globalThis.fetch;
 	try {
 		const paypal = createPayPal(configuredPayPal);
@@ -295,6 +295,8 @@ test("a network error, a PayPal 5xx, a timeout, and an unreadable answer are out
 			["timeout", () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }, "The verify call timed out."],
 			["5xx", () => Response.json({ name: "SERVICE_UNAVAILABLE" }, { status: 503 }), "PayPal answered HTTP 503."],
 			["unreadable", () => Response.json({ error: "not the verification answer" }), "PayPal's answer named no verification status."],
+			["401", () => Response.json({ error: "invalid_token" }, { status: 401 }), "PayPal answered HTTP 401."],
+			["429", () => Response.json({ name: "RATE_LIMITED" }, { status: 429 }), "PayPal answered HTTP 429."],
 		];
 		for (const [name, respond, detail] of faults) {
 			// The token endpoint answers normally in every fault: only the verify call itself fails.
@@ -302,6 +304,22 @@ test("a network error, a PayPal 5xx, a timeout, and an unreadable answer are out
 				String(input).includes("/v1/oauth2/token") ? Response.json(tokenAnswer) : respond(init ?? {})) as typeof fetch;
 			assert.deepEqual(await paypal.verifyWebhookDelivery(captureEnvelope("WH-P1-12"), new Headers(transmission)),
 				{ kind: "OUTAGE", detail }, name);
+		}
+	} finally { globalThis.fetch = original; }
+});
+
+test("a 4xx that is neither a token nor a rate-limit answer is refused terminally, not an outage", async () => {
+	const original = globalThis.fetch;
+	try {
+		const paypal = createPayPal(configuredPayPal);
+		for (const status of [400, 403]) {
+			// PayPal read the verification request itself and rejected its inputs (a malformed cert url
+			// or transmission id): no retry of these bytes verifies, so the delivery is refused.
+			globalThis.fetch = (async (input: string | URL | Request) =>
+				String(input).includes("/v1/oauth2/token") ? Response.json(tokenAnswer)
+					: Response.json({ name: "INVALID_REQUEST", message: "cert_url is malformed" }, { status })) as typeof fetch;
+			assert.deepEqual(await paypal.verifyWebhookDelivery(captureEnvelope("WH-P1-13"), new Headers(transmission)),
+				{ kind: "REFUSED", reason: "VERIFICATION_INPUT_REJECTED", detail: `PayPal answered HTTP ${status}.` }, String(status));
 		}
 	} finally { globalThis.fetch = original; }
 });
