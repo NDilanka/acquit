@@ -66,6 +66,7 @@ function fixture() {
 			reconcile: async () => ({ kind: "NOT_FOUND" }),
 			getOrder: async () => ({ kind: "NOT_FOUND" }),
 			parseWebhook: async () => ({ kind: "UNREADABLE", deliveryId: "test", detail: "no webhook in this fixture" }),
+			verifyWebhookDelivery: unimplemented,
 			readResource: async () => ({ kind: "UNKNOWN" }),
 		} };
 	return { store, ports, orders };

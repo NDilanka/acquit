@@ -158,10 +158,13 @@ export async function webhookReplay(parsed: Parsed, ctx: Context): Promise<Resul
 	if (event !== undefined && parsed["new-event-id"]) throw new CliError("INVALID_ARGUMENT", "--new-event-id belongs to --capture, not to --event.", "Run npm run -s ctl -- webhook replay --capture <capture id> --new-event-id.", 2);
 	const delivery = capture === undefined ? await recordedDelivery(ctx, event as string) : captureDelivery(capture, Boolean(parsed["new-event-id"]));
 	const ports = await app(ctx);
-	const url = `http://127.0.0.1:${ports.api}/paypal/webhook`;
+	// The dev-only replay route. The signed route verifies PayPal's signature, which a locally built
+	// envelope never carries; the API serves this one under ACQUIT_DEV alone.
+	const url = `http://127.0.0.1:${ports.api}/api/dev/paypal/webhook`;
 	let response: Response;
 	try { response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: delivery.envelope, signal: AbortSignal.timeout(120_000) }); }
 	catch { throw new CliError("APP_NOT_RUNNING", "The API stopped responding during the webhook delivery.", "Run npm run -s ctl -- start, then retry the replay."); }
+	if (response.status === 403) throw new CliError("DEV_DISABLED", "The API refused the dev replay route.", "Restart the API with ACQUIT_DEV=1, then retry the replay.");
 	const answer = await response.json().catch(() => null) as WebhookAnswer | null;
 	if (answer === null || typeof answer.received !== "boolean") throw new CliError("PROCESS_FAILED", `The webhook route answered HTTP ${response.status} without a receipt.`, "Run npm run -s ctl -- status and read the API log for this delivery.");
 	// This delivery's own record: the route writes the outcome phrase before it answers.

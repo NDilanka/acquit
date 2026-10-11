@@ -296,16 +296,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			res.writeHead(204); res.end(); return;
 		}
 	}
-	if (url.pathname === "/paypal/webhook" && method === "POST") {
-		// The body is handed over as posted: the route parses it into its canonical envelope, keeps that,
-		// and answers the same minimal receipt whatever the delivery carried.
+	if (url.pathname === "/paypal/webhook" && method === "POST" || url.pathname === "/api/dev/paypal/webhook" && method === "POST") {
+		// The signed route (PayPal) and the dev-only replay route (ACQUIT_DEV, gated above) hand the body
+		// over as posted, with PayPal's transmission headers intact on the signed one. The route parses
+		// it into its canonical envelope, keeps that, and answers the same minimal receipt whatever the
+		// delivery carried.
 		let raw: string;
 		try { raw = await rawBody(req, WEBHOOK_BODY_LIMIT_BYTES); }
 		catch (error) {
 			if (error instanceof TooLarge) { json(res, 413, { error: "WEBHOOK_BODY_TOO_LARGE" }); return; }
 			throw error;
 		}
-		const response = await acquit.handlePayPalWebhook(new Request(`http://localhost:${port}/paypal/webhook`, {
+		const handler = url.pathname === "/paypal/webhook" ? acquit.handlePayPalWebhook : acquit.handlePayPalWebhookDev;
+		const response = await handler(new Request(`http://localhost:${port}${url.pathname}`, {
 			method: "POST", headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
 			body: raw,
 		}));

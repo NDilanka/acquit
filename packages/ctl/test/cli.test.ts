@@ -632,11 +632,11 @@ test("webhook replay reposts the stored envelope and prints applied then the set
 			assert.equal(second.stdout, "no-op, job already PAID  WH-CAPTURE-1\n");
 			const json = cli(["webhook", "replay", "--event", "WH-CAPTURE-1", "--json"], env);
 			assert.deepEqual(JSON.parse(json.stdout).data, { text: "no-op, job already PAID  WH-CAPTURE-1\n", eventId: "WH-CAPTURE-1",
-				source: "recorded", status: 202, outcome: "no-op, job already PAID", posted: { url: `http://127.0.0.1:${port}/paypal/webhook`, bytes: Buffer.byteLength(rebuilt) } });
+				source: "recorded", status: 202, outcome: "no-op, job already PAID", posted: { url: `http://127.0.0.1:${port}/api/dev/paypal/webhook`, bytes: Buffer.byteLength(rebuilt) } });
 			// The route sees the envelope rebuilt from the stored fields, not a stored body, and never a token.
 			const received = (await readFile(resolve(root, "stub.log"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
 			assert.deepEqual(received.map(entry => [entry.method, entry.url, entry.type, entry.body]),
-				[["POST", "/paypal/webhook", "application/json", rebuilt], ["POST", "/paypal/webhook", "application/json", rebuilt], ["POST", "/paypal/webhook", "application/json", rebuilt]]);
+				[["POST", "/api/dev/paypal/webhook", "application/json", rebuilt], ["POST", "/api/dev/paypal/webhook", "application/json", rebuilt], ["POST", "/api/dev/paypal/webhook", "application/json", rebuilt]]);
 		});
 	});
 });

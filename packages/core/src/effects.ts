@@ -514,7 +514,9 @@ export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant):
 export type WebhookOutcome =
 	| { readonly kind: "APPLIED"; readonly jobId: JobId; readonly edge: SystemJobCommand["type"]; readonly changed: boolean }
 	| { readonly kind: "NOOP"; readonly reason: "JOB_ALREADY_SETTLED" | "RESOURCE_NOT_OURS" | "UNROUTED" | "PROVIDER_HELD"; readonly jobId: JobId | null; readonly status?: JobStatus }
-	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED" | "SETTLEMENT_MISMATCH"; readonly resource?: WebhookResourceKind };
+	| { readonly kind: "REFUSED"; readonly reason: "UNREADABLE_EVENT" | "UNSIGNED_DELIVERY" | "VERIFICATION_FAILURE" | "VERIFICATION_INPUT_REJECTED"
+		| "RESOURCE_UNKNOWN_TO_PROVIDER" | "PROVIDER_REFUSED" | "SETTLEMENT_MISMATCH"; readonly resource?: WebhookResourceKind }
+	| { readonly kind: "OUTAGE" };
 
 function resourceNoun(kind: WebhookResourceKind | undefined): string {
 	switch (kind) {
@@ -539,10 +541,14 @@ export function webhookOutcomeText(outcome: WebhookOutcome): string {
 		case "REFUSED":
 			switch (outcome.reason) {
 				case "UNREADABLE_EVENT": return "refused, unreadable event";
+				case "UNSIGNED_DELIVERY": return "refused, UNSIGNED_DELIVERY";
+				case "VERIFICATION_FAILURE": return "refused, VERIFICATION_FAILURE";
+				case "VERIFICATION_INPUT_REJECTED": return "refused, VERIFICATION_INPUT_REJECTED";
 				case "RESOURCE_UNKNOWN_TO_PROVIDER": return `refused, PayPal does not know this ${resourceNoun(outcome.resource)}`;
 				case "PROVIDER_REFUSED": return `refused, the provider refused this ${resourceNoun(outcome.resource)}`;
 				case "SETTLEMENT_MISMATCH": return "refused, the job did not take this settlement";
 			}
+		case "OUTAGE": return "outage, VERIFICATION_UNAVAILABLE";
 	}
 }
 
@@ -587,18 +593,33 @@ const settledNoop = (job: JobRow | null): WebhookOutcome =>
 	({ kind: "NOOP", reason: "JOB_ALREADY_SETTLED", jobId: job?.id ?? null, status: job?.state.status });
 
 /**
- * The webhook route. Every delivery is recorded as its canonical envelope, the named resource is re-read
- * from PayPal, and the fact that read carries is routed to the edge that owns it. The job state is the
- * guard, not the event id: a fact the job already holds is a no-op under this event id or any other, and
- * a resource PayPal does not hold is recorded as a refusal. The answer is the same minimal body whatever
- * happened, so an unauthenticated caller reads no job id, no status, and no resource existence from it.
- * The outcome phrase lives in the envelope row and the route's log.
+ * The webhook route. Every delivery is recorded as its canonical envelope, its signature is verified
+ * with PayPal after the parse and before anything is read or applied, and only then is the named
+ * resource re-read from PayPal and the fact that read carries routed to the edge that owns it. The job
+ * state is the guard, not the event id: a fact the job already holds is a no-op under this event id or
+ * any other, and a resource PayPal does not hold is recorded as a refusal. The answer is the same
+ * minimal body whatever happened, so an unauthenticated caller reads no job id, no status, and no
+ * resource existence from it. The outcome phrase lives in the envelope row and the route's log.
+ * The dev-only replay route (`devReplay`) delivers an envelope built on this host, which no one signed;
+ * it skips the verification and nothing else, and the API serves it only under ACQUIT_DEV.
  */
-export async function ingestPayPalWebhook(ports: Ports, request: Request): Promise<Response> {
-	const envelope = await ports.paypal.parseWebhook(request);
+export async function ingestPayPalWebhook(ports: Ports, request: Request, devReplay = false): Promise<Response> {
+	const raw = await request.text();
+	const envelope = await ports.paypal.parseWebhook(raw);
 	const delivery = deliveryOf(envelope);
 	if (envelope.kind === "UNREADABLE") return finish(ports, delivery, { kind: "REFUSED", reason: "UNREADABLE_EVENT" }, 400, envelope.detail);
-	if (envelope.kind === "UNROUTED") return finish(ports, delivery, { kind: "NOOP", reason: "UNROUTED", jobId: null }, 202);
+	// Only PayPal's SUCCESS proceeds past this line. A refusal is terminal (4xx), an outage leaves the
+	// retry to PayPal (5xx), and both apply nothing: nothing has been read yet, let alone routed.
+	if (!devReplay) {
+		const verdict = await ports.paypal.verifyWebhookDelivery(raw, request.headers);
+		if (verdict.kind === "REFUSED") return finish(ports, delivery, { kind: "REFUSED", reason: verdict.reason }, 400, verdict.detail);
+		if (verdict.kind === "OUTAGE") return finish(ports, delivery, { kind: "OUTAGE" }, 503, verdict.detail);
+	}
+	// Past this line the delivery is either PayPal-verified or the unsigned dev replay, and the row and
+	// log say which: only a delivery PayPal verified records the provenance.
+	const record = (outcome: WebhookOutcome, status: number, detail?: string): Promise<Response> =>
+		finish(ports, delivery, outcome, status, detail, devReplay ? undefined : "verified");
+	if (envelope.kind === "UNROUTED") return record({ kind: "NOOP", reason: "UNROUTED", jobId: null }, 202);
 	const named = await ports.store.jobForResource(envelope.resource.id);
 	let owner = named === null ? null : await ports.store.readJob(named);
 	let read = await ports.paypal.readResource(envelope.resource, owner === null ? null : payeeMerchantOf(owner));
@@ -610,21 +631,21 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request): Promi
 		owner = holding === null ? null : await ports.store.readJob(holding);
 		if (owner !== null) read = await ports.paypal.readResource(envelope.resource, payeeMerchantOf(owner));
 	}
-	if (read.kind === "UNKNOWN") return finish(ports, delivery, { kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 202,
+	if (read.kind === "UNKNOWN") return record({ kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 202,
 		`PayPal holds no ${resourceNoun(envelope.resource.kind)} ${envelope.resource.id}.`);
-	if (read.kind === "REFUSED") return finish(ports, delivery, { kind: "REFUSED", reason: "PROVIDER_REFUSED", resource: envelope.resource.kind }, 202, read.reason);
+	if (read.kind === "REFUSED") return record({ kind: "REFUSED", reason: "PROVIDER_REFUSED", resource: envelope.resource.kind }, 202, read.reason);
 	const heldBy = owner?.id ?? named;
-	if (read.kind === "HELD") return finish(ports, delivery, heldBy === null
+	if (read.kind === "HELD") return record(heldBy === null
 		? { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null } : { kind: "NOOP", reason: "PROVIDER_HELD", jobId: heldBy }, 202, read.detail);
 	// The route's own index names the job. A read an anchor found belongs to the job whose payee it was
 	// made under, and the fact's own capture or batch is the fallback.
 	const jobId = named ?? owner?.id ?? await anchorJob(ports, read.observation);
-	if (jobId === null) return finish(ports, delivery, { kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null }, 202);
+	if (jobId === null) return record({ kind: "NOOP", reason: "RESOURCE_NOT_OURS", jobId: null }, 202);
 	const command = toJobCommand(jobId, read.observation);
-	if (command === null) return finish(ports, delivery, { kind: "NOOP", reason: "UNROUTED", jobId }, 202);
+	if (command === null) return record({ kind: "NOOP", reason: "UNROUTED", jobId }, 202);
 	const before = await ports.store.readJob(jobId);
 	try {
-		return finish(ports, delivery, await applyFact(ports, command, webhookDeliveryKey(command, read.observation), before), 202);
+		return record(await applyFact(ports, command, webhookDeliveryKey(command, read.observation), before), 202);
 	} catch (error) {
 		// A busy store is transient. PayPal retries the body, and the state guard makes the retry safe.
 		if (isStoreBusy(error)) return Response.json({ error: "STORE_BUSY" }, { status: 503 });
@@ -655,10 +676,11 @@ function deliveryOf(envelope: WebhookEnvelope): Delivery {
 /**
  * Records the delivery's envelope and answers. Every accepted delivery gets the same minimal body; the
  * unreadable one is the only 4xx, and it names nothing about the provider. The outcome phrase and the
- * provider's detail go to the envelope row and the route log, never to the caller.
+ * provider's detail go to the envelope row and the route log, never to the caller. A signed delivery
+ * PayPal verified prefixes its provenance, so its row is distinguishable from an unsigned dev replay's.
  */
-async function finish(ports: Ports, delivery: Delivery, outcome: WebhookOutcome, status: number, detail?: string): Promise<Response> {
-	const text = webhookOutcomeText(outcome);
+async function finish(ports: Ports, delivery: Delivery, outcome: WebhookOutcome, status: number, detail?: string, provenance?: "verified"): Promise<Response> {
+	const text = provenance === undefined ? webhookOutcomeText(outcome) : `verified, ${webhookOutcomeText(outcome)}`;
 	await ports.store.recordWebhookEvent({ id: delivery.deliveryId, eventType: delivery.eventType, resourceType: delivery.resourceType,
 		resourceId: delivery.resourceId, receivedAt: ports.clock.now(), outcome: text });
 	// The id and the detail are provider bytes. logQuoted keeps a newline, or the line separator

@@ -146,6 +146,19 @@ export type WebhookEnvelope =
 	| { readonly kind: "UNREADABLE"; readonly deliveryId: string; readonly detail: string };
 
 /**
+ * The closed verdict of one delivery's signature check, asked of PayPal's verify-webhook-signature.
+ * Only `VERIFIED` proceeds past the route's parse. A refusal is terminal: the delivery was not signed
+ * the way PayPal signs, PayPal named it FAILURE, or PayPal rejected the verification request's own
+ * inputs (a 4xx beyond an expired token or a rate limit), and no retry changes that. An outage is the
+ * verify call itself failing to answer, which PayPal's own redelivery resolves. Neither applies
+ * anything.
+ */
+export type WebhookVerifyOutcome =
+	| { readonly kind: "VERIFIED" }
+	| { readonly kind: "REFUSED"; readonly reason: "UNSIGNED_DELIVERY" | "VERIFICATION_FAILURE" | "VERIFICATION_INPUT_REJECTED"; readonly detail?: string }
+	| { readonly kind: "OUTAGE"; readonly detail?: string };
+
+/**
  * The fresh read of one webhook resource. The route never routes the event body, and a read that names
  * no fact is not a failure: only a provider that does not hold the resource is.
  */
@@ -180,7 +193,9 @@ export interface PayPal {
 	/** Looks the call up by its correlation (order, capture, payout item, refund) before any resend. */
 	reconcile(call: PayPalCall, requestId: string): Promise<RemoteOutcome>;
 	/** Parses one delivery into its canonical envelope. No network, no trust, and the body is never kept. */
-	parseWebhook(request: Request): Promise<WebhookEnvelope>;
+	parseWebhook(raw: string): Promise<WebhookEnvelope>;
+	/** Asks PayPal whether this raw delivery is signed the way PayPal signs, with the cached token. */
+	verifyWebhookDelivery(raw: string, headers: Headers): Promise<WebhookVerifyOutcome>;
 	/** The fresh read the route routes from. `payee` is the merchant that owns the resource, when a job names one. */
 	readResource(resource: WebhookResource, payee: MerchantId | null): Promise<ResourceRead>;
 }
@@ -474,11 +489,50 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			if (call.kind === "REIMBURSE") return reimburseOutcome(call, requestId);
 			throw new Error("not implemented");
 		}, false),
-		parseWebhook: async request => {
-			const raw = await request.text();
-			return raw.length > WEBHOOK_BODY_BYTES
-				? { kind: "UNREADABLE", deliveryId: unreadableEventId(raw), detail: `The body exceeds ${WEBHOOK_BODY_BYTES} bytes.` }
-				: parseWebhookEnvelope(raw);
+		parseWebhook: async raw => raw.length > WEBHOOK_BODY_BYTES
+			? { kind: "UNREADABLE", deliveryId: unreadableEventId(raw), detail: `The body exceeds ${WEBHOOK_BODY_BYTES} bytes.` }
+			: parseWebhookEnvelope(raw),
+		// The verify call is one attempt on the cached token: whatever stops it, PayPal's own redelivery
+		// is the retry. The five transmission headers and our webhook id are the whole question, and the
+		// event travels back to PayPal as the object it arrived as.
+		verifyWebhookDelivery: async (raw, headers) => {
+			const header = (name: string): string | null => { const value = headers.get(name)?.trim(); return value ? value : null; };
+			const authAlgo = header("paypal-auth-algo");
+			const certUrl = header("paypal-cert-url");
+			const transmissionId = header("paypal-transmission-id");
+			const transmissionSig = header("paypal-transmission-sig");
+			const transmissionTime = header("paypal-transmission-time");
+			if (authAlgo === null || certUrl === null || transmissionId === null || transmissionSig === null || transmissionTime === null)
+				return { kind: "REFUSED", reason: "UNSIGNED_DELIVERY" };
+			try {
+				const response = await fetch(`${config.apiBase}/v1/notifications/verify-webhook-signature`, {
+					method: "POST", headers: { Authorization: `Bearer ${await accessToken()}`, "Content-Type": "application/json" },
+					body: JSON.stringify({ auth_algo: authAlgo, cert_url: certUrl, transmission_id: transmissionId,
+						transmission_sig: transmissionSig, transmission_time: transmissionTime, webhook_id: config.webhookId,
+						webhook_event: JSON.parse(raw) }),
+					signal: AbortSignal.timeout(15_000), redirect: "error",
+				});
+				if (!response.ok) {
+					const detail = `PayPal answered HTTP ${response.status}.`;
+					// An expired token clears itself: the next delivery mints a fresh one.
+					if (response.status === 401) { token = null; tokenExpires = 0; return { kind: "OUTAGE", detail }; }
+					// Any other 4xx but a rate limit is PayPal rejecting the verification request's own
+					// inputs (a malformed cert url or transmission id): no retry of these bytes verifies,
+					// so the delivery is refused terminally. The rate limit and a 5xx are transient, and
+					// PayPal's redelivery is the retry.
+					if (response.status >= 400 && response.status < 500 && response.status !== 429)
+						return { kind: "REFUSED", reason: "VERIFICATION_INPUT_REJECTED", detail };
+					return { kind: "OUTAGE", detail };
+				}
+				const json = await response.json().catch(() => null);
+				const answer = json === null ? null : routed(() => object(json));
+				const status = answer === null ? null : routed(() => text(answer.verification_status)) ?? null;
+				if (status !== "SUCCESS" && status !== "FAILURE") return { kind: "OUTAGE", detail: "PayPal's answer named no verification status." };
+				return status === "SUCCESS" ? { kind: "VERIFIED" }
+					: { kind: "REFUSED", reason: "VERIFICATION_FAILURE", detail: "PayPal answered verification_status FAILURE." };
+			} catch (error) {
+				return { kind: "OUTAGE", detail: error instanceof Error && error.name === "TimeoutError" ? "The verify call timed out." : "PayPal did not answer." };
+			}
 		},
 		readResource: async (resource, payee) => {
 			switch (resource.kind) {

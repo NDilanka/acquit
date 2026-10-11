@@ -302,7 +302,8 @@ async function paypalGet(path, token, payee) {
 
 async function postWebhook(raw) {
 	const started = performance.now();
-	const response = await fetch(`${apiUrl}/paypal/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: raw, signal: AbortSignal.timeout(120_000) });
+	// The dev-only replay route: these envelopes are built here, not signed by PayPal.
+	const response = await fetch(`${apiUrl}/api/dev/paypal/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: raw, signal: AbortSignal.timeout(120_000) });
 	const ms = performance.now() - started;
 	const body = await response.json().catch(() => null);
 	assert(response.ok, `The webhook route answered ${response.status}: ${body?.error ?? "no error body"}.`);
