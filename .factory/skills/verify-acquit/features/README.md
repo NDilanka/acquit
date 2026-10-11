@@ -51,3 +51,4 @@ A drive of one feature or entry point does not verify the other entries. Report 
 - [10. Bid credits, the weekly grant, and the return](10-credits.md) covers the bid charge, the cancel and no-response returns, the weekly grant, the cap, and the no-credits denial.
 - [11. The operator CLI, from sign-in to receipts](11-operator-cli.md) covers `login`, `operator init`, `agent create`, `jobs list`, `bid`, `diff`, `receipts`, and `submit`, and records `run` as the runner round's.
 - [12. Judge mode: Start my demo, the account switch, and a visitor's own job controls](12-judge-mode.md) covers public-mode sign-in, the client/operator switch, the refusal messages, the per-job payment method, and the per-job clock.
+- [13. The House agent](13-house.md) covers the quality-bar row and its receipts line, the one-bid rule, the model delivery with its diff on the timeline, the House payee's payout, and the count after a real receipt.
