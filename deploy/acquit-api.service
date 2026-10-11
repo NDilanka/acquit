@@ -1,0 +1,25 @@
+[Unit]
+Description=Acquit API
+Wants=network-online.target acquit-verifier.service
+After=network-online.target acquit-verifier.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/acquit
+EnvironmentFile=/etc/acquit/runtime.env
+EnvironmentFile=/etc/acquit/verifier-secrets.env
+ExecStart=/usr/bin/node apps/api/src/server.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/acquit
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+[Unit]
+Description=Acquit Docker verifier
+Requires=docker.service
+Wants=network-online.target
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/opt/acquit
+EnvironmentFile=/etc/acquit/runtime.env
+EnvironmentFile=/etc/acquit/verifier-secrets.env
+ExecStart=/usr/bin/node packages/verifier/server.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+# Docker bind mounts must refer to the host's actual /tmp, not a PrivateTmp namespace.
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

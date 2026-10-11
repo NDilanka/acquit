@@ -1,0 +1,37 @@
+{
+	admin 127.0.0.1:2019
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+(acquit_routes) {
+	route {
+		# The gate. Exactly /paypal/webhook is exempt: PayPal signs those deliveries, and the API
+		# verifies the signature against PAYPAL_WEBHOOK_ID before it applies anything. The hash is
+		# not stored here — configure.sh renders AUTH_HASH from a file staged at configure time.
+		@webhook path /paypal/webhook
+		@gate not @webhook
+		basic_auth @gate {
+			acquit AUTH_HASH
+		}
+		@api path /api /api/* /paypal /paypal/*
+		handle @api {
+			reverse_proxy 127.0.0.1:4310
+		}
+		handle {
+			root * /opt/acquit/apps/web/dist
+			try_files {path} /index.html
+			file_server
+		}
+	}
+}
+
+80-225-220-230.sslip.io {
+	import acquit_routes
+}
+
+# Diagnostic listener: unreachable externally, uses the identical auth and routing.
+# Production HTTPS remains on public ACME and automatically retries issuance.
+http://127.0.0.1:8080 {
+	bind 127.0.0.1
+	import acquit_routes
+}
