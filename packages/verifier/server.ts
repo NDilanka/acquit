@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
 import { githubAppEnv, serviceConfig, VerifierConfigError } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
-import { loadHiddenCases } from "./hidden.ts";
+import { hiddenCasesSource, loadHiddenCases } from "./hidden.ts";
 import { createVerifierService, BODY_LIMIT_BYTES } from "./service.ts";
 import type { VerifierService } from "./service.ts";
 import { assertSubjectAllowed, subjectFor, verifierSubjectEnv } from "./subject.ts";
@@ -62,6 +62,12 @@ export function createHttpShell(service: VerifierService, port: number): (reques
 	};
 }
 
+/** The one boot line the journal keeps. It names the hidden-cases source path, so a deployment's
+ * evidence can show which file the verifier judged from; a case value never appears. */
+export function bootLine(port: number, subject: string, hiddenCasesPath: string, missing: readonly string[]): string {
+	return `Acquit verifier: http://127.0.0.1:${port} (subject ${subject}, hidden cases ${hiddenCasesPath}, github ${missing.length ? `missing ${missing.join(", ")}` : "configured"})`;
+}
+
 /** Answers 413 and stops the request once its declared or streamed size passes the cap. */
 function tooLarge(request: IncomingMessage, response: ServerResponse): void {
 	response.writeHead(413, { "content-type": "application/json", "cache-control": "no-store", connection: "close" });
@@ -91,8 +97,8 @@ async function main(): Promise<void> {
 	process.on("SIGTERM", () => { void stop(); });
 	process.on("SIGINT", () => { void stop(); });
 	server.listen(port, "127.0.0.1", () => {
-		// Names only: a value never reaches a log line.
-		console.log(`Acquit verifier: http://127.0.0.1:${port} (subject ${subject}, github ${missing.length ? `missing ${missing.join(", ")}` : "configured"})`);
+		// Names only: a value never reaches a log line. The hidden-cases source is a path, not a value.
+		console.log(bootLine(port, subject, hiddenCasesSource(), missing));
 	});
 }
 
