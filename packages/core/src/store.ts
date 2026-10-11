@@ -60,6 +60,18 @@ export function openDatabase(path: string): DatabaseSync {
 			source TEXT NOT NULL, paid INTEGER NOT NULL DEFAULT 0, paid_at TEXT);
 		CREATE INDEX IF NOT EXISTS receipts_operator ON receipts(operator);
 	`);
+	// The backfill: a database that already settled jobs holds its receipts only inside the PAID rows.
+	// One SEED-marked row per PAID job's own receipt, so a line counted from rows sees the whole
+	// history the day the migration lands. The receipt id guards the re-run: a second migration
+	// inserts nothing new, so no job ever counts twice.
+	db.exec(`INSERT INTO receipts (id, job_id, operator, source, paid, paid_at)
+		SELECT json_extract(json, '$.state.receipt.id'), id, json_extract(json, '$.state.payee.operator'), 'SEED', 1,
+			json_extract(json, '$.state.receipt.releasedAt')
+		FROM jobs
+		WHERE json_extract(json, '$.state.status') = 'PAID'
+			AND json_extract(json, '$.state.receipt.id') IS NOT NULL
+			AND json_extract(json, '$.state.payee.operator') IS NOT NULL
+			AND NOT EXISTS (SELECT 1 FROM receipts WHERE receipts.id = json_extract(json, '$.state.receipt.id'))`);
 	// A database that already holds visitor rows keeps them: CREATE TABLE IF NOT EXISTS leaves an old
 	// shape alone, so a column added after the fact is added here. A row from before this column is a
 	// visitor that was provisioned, so ACTIVE is what it means, and a row with no repository id is swept

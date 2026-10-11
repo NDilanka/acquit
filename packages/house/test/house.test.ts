@@ -63,6 +63,37 @@ test("seed writes the configured House merchant, different from Devon's, with 41
 	} finally { rmSync(join(database, ".."), { recursive: true, force: true }); }
 });
 
+test("migrate applies to an existing database without data loss, and twice changes nothing", () => {
+	const database = join(mkdtempSync(join(tmpdir(), "acquit-house-migrate-")), "acquit.db");
+	try {
+		// A database from before the receipts table: seed one, then drop exactly what the migration adds.
+		const seeded = spawnSync(process.execPath, [ctl, "seed-db", "--yes"],
+			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "HOUSESEEDMERCHANT" } });
+		assert.equal(seeded.status, 0, `the seed for the migration test must pass: ${seeded.stderr.slice(0, 300)}`);
+		const before = new DatabaseSync(database);
+		const jobsBefore = Number(before.prepare("SELECT COUNT(*) AS n FROM jobs").get()?.n);
+		const operatorsBefore = Number(before.prepare("SELECT COUNT(*) AS n FROM operators").get()?.n);
+		before.exec("DROP INDEX IF EXISTS receipts_operator");
+		before.exec("DROP TABLE receipts");
+		before.close();
+
+		const env = { ...process.env, DATABASE_PATH: database };
+		for (const run of [1, 2]) {
+			const migrated = spawnSync(process.execPath, [ctl, "migrate"], { encoding: "utf8", timeout: 60_000, env });
+			assert.equal(migrated.status, 0, `migrate run ${run} must pass: ${migrated.stderr.slice(0, 300)}`);
+		}
+		const after = new DatabaseSync(database, { readOnly: true });
+		try {
+			assert.equal(Number(after.prepare("SELECT COUNT(*) AS n FROM jobs").get()?.n), jobsBefore, "every job row survives");
+			assert.equal(Number(after.prepare("SELECT COUNT(*) AS n FROM operators").get()?.n), operatorsBefore, "every operator row survives");
+			// The table the dropped database lacked exists again; the PAID history it lost comes back
+			// through the store's backfill, which the store suite covers with a real PAID row.
+			const tables = after.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'receipts'").all();
+			assert.equal(tables.length, 1, "the receipts table exists again");
+		} finally { after.close(); }
+	} finally { rmSync(join(database, ".."), { recursive: true, force: true }); }
+});
+
 function houseOperator(database: string): boolean {
 	const db = new DatabaseSync(database, { readOnly: true });
 	try { return db.prepare("SELECT 1 FROM operators WHERE id = ?").get("house-tsfix") !== undefined; }

@@ -241,6 +241,29 @@ test("a refund reason reads as null on a verified review intent and an open chec
 	} finally { store.close(); }
 });
 
+test("a PAID commit appends its receipt row in the same write, counted from rows", async () => {
+	const store = new SqliteStore(":memory:");
+	const payee = "devon-ops" as OperatorId;
+	const operator = { id: payee, handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+		payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: "2026-10-06T12:00:00.000Z" } };
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	const row = storedPaidRow("job_paid_row", "REVIEW_SILENCE");
+	try {
+		const committed = await store.commit({ job: { expectedVersion: null, row: row as unknown as JobRow, wakeAt: null },
+			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
+		assert.deepEqual(committed, { kind: "COMMITTED" });
+		const rows = await store.receiptRowCounts();
+		assert.deepEqual(rows.get(payee), { total: 1, paid: 1 }, "the row exists exactly when the counter moves");
+		assert.equal(Number(store.db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(payee)?.paid_receipts), 1);
+		const shape = store.db.prepare("SELECT job_id, operator, source, paid FROM receipts WHERE id = ?").get("rcpt_job_paid_row");
+		assert.deepEqual({ ...shape }, { job_id: "job_paid_row", operator: "devon-ops", source: "JOB", paid: 1 }, "the row marks itself as the job's own receipt");
+		// The receipt id is the primary key: the same settlement again replaces itself, never adds a row.
+		await store.commit({ job: { expectedVersion: row.version as Version, row: row as unknown as JobRow, wakeAt: null },
+			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
+		assert.deepEqual((await store.receiptRowCounts()).get(payee), { total: 1, paid: 1 }, "the replay never adds a row");
+	} finally { store.close(); }
+});
+
 test("a PAID commit whose payee has no operators row commits, counts nothing, and says so", async () => {
 	const store = new SqliteStore(":memory:");
 	const payee = "devon-ops" as OperatorId;
@@ -292,6 +315,37 @@ test("a commit whose paidReceipt names another operator throws and rolls the who
 		assert.equal(await store.readRequest("CLIENT:maya-client", "req_wrong_payee" as RequestKey), null);
 		assert.equal(Number(store.db.prepare("SELECT count(*) AS n FROM deliveries").get()?.n), 0);
 	} finally { store.close(); }
+});
+
+test("the migration backfills a SEED row for every PAID job an older database already settled", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-store-backfill-"));
+	const file = join(dir, "backfill.db");
+	try {
+		// An older database: a paid job and its operator, and no receipts table at all.
+		{
+			const db = openDatabase(file);
+			db.exec("DROP TABLE receipts");
+			db.exec("DROP INDEX IF EXISTS receipts_operator");
+			const operator = { id: "devon-ops", handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+				payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: "2026-10-06T12:00:00.000Z" } };
+			db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run("devon-ops", 0, JSON.stringify(operator), 1);
+			const row = storedPaidRow("job_paid_backfill", "REVIEW_SILENCE");
+			db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), null);
+			db.close();
+		}
+		// The migration applies in place, twice: the second run inserts nothing new.
+		for (const run of [1, 2]) {
+			const store = new SqliteStore(file);
+			try {
+				const backfilled = store.db.prepare("SELECT job_id, operator, source, paid FROM receipts").all();
+				assert.equal(backfilled.length, 1, `migration run ${run} leaves exactly one backfilled row`);
+				assert.deepEqual({ ...backfilled[0] }, { job_id: "job_paid_backfill", operator: "devon-ops", source: "SEED", paid: 1 });
+				const jobs = Number(store.db.prepare("SELECT COUNT(*) AS n FROM jobs").get()?.n);
+				assert.equal(jobs, 1, `migration run ${run} keeps every job row`);
+				assert.equal(Number(store.db.prepare("SELECT paid_receipts FROM operators WHERE id = 'devon-ops'").get()?.paid_receipts), 1);
+			} finally { store.close(); }
+		}
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a VERSION_CONFLICT commit with a paid receipt set counts no receipt", async () => {
