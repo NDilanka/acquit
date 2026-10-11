@@ -5,9 +5,10 @@
 FROM node:24-bookworm-slim
 
 # git is what the agent inspects its clone with, and curl is how a command runner reaches the proxy
-# without extra tooling. The base slim image carries neither.
+# without extra tooling. procps is what droid's permission preflight runs first (without ps it ends
+# exec mode before the model takes a turn). The base slim image carries none of these.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates curl \
+ && apt-get install -y --no-install-recommends git ca-certificates curl procps \
  && rm -rf /var/lib/apt/lists/*
 
 # The model CLIs the runners start. They run with the operator's key and the sandbox network; the
