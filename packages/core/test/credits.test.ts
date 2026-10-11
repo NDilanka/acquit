@@ -281,7 +281,7 @@ test("the grant counts the receipt read when it is written, not a snapshot from 
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
 	const ports: Ports = { store: stale, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => grantAt },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented }, alerts: { raise: unimplemented },
-		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
+		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, verifyWebhookDelivery: unimplemented, readResource: unimplemented } };
 	try {
 		await runDueTimers(ports);
 		const after = await store.readCredits(devon);

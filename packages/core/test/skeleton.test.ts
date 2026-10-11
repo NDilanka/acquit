@@ -91,7 +91,8 @@ function fixture() {
 			reconcile: async () => ({ kind: "NOT_FOUND" }),
 			getOrder: async () => approved ? { kind: "CONFIRMED", observation: { kind: "ORDER_APPROVED", orderId: capture.orderId } }
 				: { kind: "PENDING", checkAt: now } as RemoteOutcome,
-			parseWebhook: async request => parseWebhookEnvelope(await request.text()),
+			parseWebhook: async raw => parseWebhookEnvelope(raw),
+			verifyWebhookDelivery: async () => ({ kind: "VERIFIED" }),
 			readResource: async resource => reads.get(resource.id) ?? { kind: "UNKNOWN" },
 		} };
 	return { store, ports, capture, dispatches: () => dispatches, captureCalls: () => captureCalls,

@@ -230,7 +230,7 @@ test("a missed arbiter deadline commits the alert row the outbox raises", async 
 	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => resolveBy },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented },
 		alerts: { raise: async effect => { raised.push(effect.reason); } },
-		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
+		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, verifyWebhookDelivery: unimplemented, readResource: unimplemented } };
 	try {
 		const committed = await applySystemCommand(ports, { type: "TimerDue", jobId: row.id, expectedWakeAt: resolveBy }, null, null);
 		assert.equal(committed.outcome, "COMMITTED");
@@ -266,7 +266,7 @@ test("a settled release counts the payee's receipt once, and the Monday grant co
 	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => current },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented },
 		alerts: { raise: unimplemented },
-		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, readResource: unimplemented } };
+		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, verifyWebhookDelivery: unimplemented, readResource: unimplemented } };
 	try {
 		const command = { type: "ReleaseSettled" as const, jobId: approved.next.id, release: releaseEvidence };
 		const first = await applySystemCommand(ports, command, null, "WH-RELEASE-1");

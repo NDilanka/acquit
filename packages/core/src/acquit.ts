@@ -156,6 +156,8 @@ export interface Acquit {
 	query(actor: Actor, query: Query): Promise<QueryResult>;
 	/** Verifies, re-reads the resource, and applies it. Safe to deliver any number of times. */
 	handlePayPalWebhook(request: Request): Promise<Response>;
+	/** The dev-only replay: delivers an unsigned envelope built on this host. The API serves it under ACQUIT_DEV alone. */
+	handlePayPalWebhookDev(request: Request): Promise<Response>;
 	handleVerifierCallback(request: Request): Promise<Response>;
 	/** Timer worker. Fires due job clocks and the weekly grant, then drains the outbox. */
 	tick(): Promise<void>;
@@ -243,6 +245,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			}
 		},
 		handlePayPalWebhook: request => ingestPayPalWebhook(ports, request),
+		handlePayPalWebhookDev: request => ingestPayPalWebhook(ports, request, true),
 		handleVerifierCallback: request => ingestVerifierCallback(ports, request),
 		tick: () => {
 			if (!ticking) ticking = (async () => {

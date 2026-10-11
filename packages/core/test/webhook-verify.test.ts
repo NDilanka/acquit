@@ -9,18 +9,18 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { usd } from "../src/ledger.ts";
 import { applySystemCommand, executeCommand, ingestPayPalWebhook } from "../src/effects.ts";
-import type { CommandOutcome, Ports } from "../src/effects.ts";
+import type { Ports } from "../src/effects.ts";
 import { instant, hours, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, MerchantId, OperatorId } from "../src/ids.ts";
+import type { AgentId, CaptureId, ClientId, MerchantId, OperatorId, OrderId } from "../src/ids.ts";
 import { createPayPal, parseWebhookEnvelope } from "../src/paypal.ts";
-import type { Bps, ResourceRead } from "../src/paypal.ts";
+import type { Bps, ResourceRead, WebhookVerifyOutcome } from "../src/paypal.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import type { HiddenContract } from "../src/seed-data.ts";
 import { exampleContract } from "./hidden-fixture.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
-import type { Actor, UserCommand } from "../src/acquit.ts";
+import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -78,14 +78,14 @@ function fixture() {
 		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(row.id, credits.version, JSON.stringify(credits));
 	}
 	const capture = {
-		orderId: "TESTORDER", captureId: "TESTCAPTURE", payee: merchant,
+		orderId: "TESTORDER" as OrderId, captureId: "TESTCAPTURE" as CaptureId, payee: merchant,
 		disbursement: "DELAYED" as const, gross: usd("420.00"), processorFee: usd("15.15"),
 		platformFee: usd("44.85"), sellerNet: usd("360.00"), capturedAt: now,
 	};
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
 	const reads = new Map<string, ResourceRead>();
 	const calls: string[] = [];
-	const verdicts: unknown[] = [];
+	const verdicts: WebhookVerifyOutcome[] = [];
 	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: deploymentContract,
 		clock: { now: () => now }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal: {
@@ -95,7 +95,7 @@ function fixture() {
 				throw new Error("Unexpected test effect");
 			},
 			reconcile: unimplemented, getOrder: unimplemented,
-			parseWebhook: async request => parseWebhookEnvelope(await request.text()),
+			parseWebhook: async raw => parseWebhookEnvelope(raw),
 			readResource: async resource => { calls.push("read"); return reads.get(resource.id) ?? { kind: "UNKNOWN" }; },
 			verifyWebhookDelivery: async () => { calls.push("verify"); return verdicts.shift() ?? { kind: "VERIFIED" }; },
 		} };
@@ -121,6 +121,11 @@ const transmission = { "paypal-transmission-id": "TR-4GLX513", "paypal-transmiss
 	"paypal-transmission-sig": "recorded-signature-bytes", "paypal-auth-algo": "SHA256withRSA",
 	"paypal-cert-url": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT-RECORDED" };
 type WireCall = { readonly method: string; readonly path: string; readonly auth: string | null; readonly body: unknown };
+/** The token mint's body is a form, not JSON; a body that does not parse is recorded as its text. */
+const parsedBody = (body: unknown): unknown => {
+	if (body === undefined) return null;
+	try { return JSON.parse(String(body)); } catch { return String(body); }
+};
 /** Records every call the client makes, the token mint included, and answers from the given script. */
 function wire(answer: (url: string, init: RequestInit) => Response): { readonly calls: readonly WireCall[] } {
 	const calls: WireCall[] = [];
@@ -128,7 +133,7 @@ function wire(answer: (url: string, init: RequestInit) => Response): { readonly 
 		const url = String(input);
 		const headers = (init?.headers ?? {}) as Record<string, string>;
 		calls.push({ method: init?.method ?? "GET", path: new URL(url).pathname, auth: headers["Authorization"] ?? null,
-			body: init?.body === undefined ? null : JSON.parse(String(init.body)) });
+			body: parsedBody(init?.body) });
 		return answer(url, init ?? {});
 	}) as typeof fetch;
 	return { calls };
@@ -276,7 +281,7 @@ test("a verification answer that is not SUCCESS is refused as a verification fai
 		const paypal = createPayPal(configuredPayPal);
 		// A delivery signed under a webhook id that is not ours gets exactly this answer.
 		assert.deepEqual(await paypal.verifyWebhookDelivery(captureEnvelope("WH-P1-11"), new Headers(transmission)),
-			{ kind: "REFUSED", reason: "VERIFICATION_FAILURE" });
+			{ kind: "REFUSED", reason: "VERIFICATION_FAILURE", detail: "PayPal answered verification_status FAILURE." });
 		assert.equal(answer.calls.filter(call => call.path === "/v1/notifications/verify-webhook-signature").length, 1);
 	} finally { globalThis.fetch = original; }
 });
@@ -285,15 +290,18 @@ test("a network error, a PayPal 5xx, a timeout, and an unreadable answer are out
 	const original = globalThis.fetch;
 	try {
 		const paypal = createPayPal(configuredPayPal);
-		const outages: readonly (string | ((init: RequestInit) => Response))[] = [
-			"connect ECONNREFUSED", "timeout", "503", "unreadable",
+		const faults: readonly [string, (init: RequestInit) => Response | Promise<Response>, string][] = [
+			["connect ECONNREFUSED", () => { throw new Error("connect ECONNREFUSED"); }, "PayPal did not answer."],
+			["timeout", () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }, "The verify call timed out."],
+			["5xx", () => Response.json({ name: "SERVICE_UNAVAILABLE" }, { status: 503 }), "PayPal answered HTTP 503."],
+			["unreadable", () => Response.json({ error: "not the verification answer" }), "PayPal's answer named no verification status."],
 		];
-		for (const fault of outages) {
-			globalThis.fetch = fault === "connect ECONNREFUSED" ? (async () => { throw new Error("connect ECONNREFUSED"); }) as typeof fetch
-				: fault === "timeout" ? (async () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }) as typeof fetch
-				: fault === "503" ? (async () => Response.json({ name: "SERVICE_UNAVAILABLE" }, { status: 503 })) as typeof fetch
-				: (async () => Response.json({ error: "not the verification answer" })) as typeof fetch;
-			assert.deepEqual(await paypal.verifyWebhookDelivery(captureEnvelope("WH-P1-12"), new Headers(transmission)), { kind: "OUTAGE" }, fault);
+		for (const [name, respond, detail] of faults) {
+			// The token endpoint answers normally in every fault: only the verify call itself fails.
+			globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+				String(input).includes("/v1/oauth2/token") ? Response.json(tokenAnswer) : respond(init ?? {})) as typeof fetch;
+			assert.deepEqual(await paypal.verifyWebhookDelivery(captureEnvelope("WH-P1-12"), new Headers(transmission)),
+				{ kind: "OUTAGE", detail }, name);
 		}
 	} finally { globalThis.fetch = original; }
 });
