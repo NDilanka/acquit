@@ -69,6 +69,10 @@ pre { margin: 0; white-space: pre-wrap; }
 .alert.warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-line); }
 
 .signin { max-width: 520px; margin: 40px auto; padding: 28px; }
+.tour { margin: 18px 0 20px; padding-left: 1.4em; display: grid; gap: 12px; }
+.tour li { padding-left: 4px; overflow-wrap: anywhere; }
+.tour li::marker { font-weight: 600; color: var(--green); }
+.tour b { display: block; }
 .userlist { display: grid; gap: 10px; margin-top: 16px; }
 .userpick { display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px 14px; background: #fbfaf7; border: 1px solid var(--line); border-radius: 10px; }
 .userpick:hover { border-color: var(--line-2); background: #fff; }
