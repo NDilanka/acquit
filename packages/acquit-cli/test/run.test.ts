@@ -2484,3 +2484,11 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 		rmSync(smokeRoot, { recursive: true, force: true });
 	}
 });
+
+test("live docker smoke: the image carries the process tools the droid permission preflight runs",
+	{ skip: process.env.ACQUIT_DOCKER_TEST !== "1" }, async () => {
+	const image = process.env.ACQUIT_RUNNER_IMAGE ?? "acquit/runner-node20";
+	const probe = spawnSync("docker", ["run", "--rm", "--pull=never", "--entrypoint", "ps", image, "--version"], { encoding: "utf8", timeout: 60_000 });
+	assert.equal(probe.status, 0,
+		`droid's permission preflight dies without ps ("Executable not found in $PATH"). Rebuild the image with procps: docker build -t ${image} packages/runner`);
+});
