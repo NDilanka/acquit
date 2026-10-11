@@ -30,9 +30,9 @@ test("an unknown provider name is a configuration error, never a silent fallback
 	assert.throws(() => modelProvider({ ACQUIT_MODEL_PROVIDER: "factory" }), /ACQUIT_MODEL_PROVIDER/);
 });
 
-test("the droid client pins the ruled exec argv: auto low, the model, json output, prompt by file", () => {
+test("the droid client pins the ruled exec argv: auto medium, the model, json output, prompt by file", () => {
 	assert.deepEqual(droidExecArgv({ model: "glm-5.3-flash", workDir: "/work" }),
-		["droid", "exec", "--auto", "low", "-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", DROID_INSTRUCTION_PATH]);
+		["droid", "exec", "--auto", "medium", "-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", DROID_INSTRUCTION_PATH]);
 	assert.equal(DROID_INSTRUCTION_PATH, "/tmp/acquit-instruction.txt");
 });
 

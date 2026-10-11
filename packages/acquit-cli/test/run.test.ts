@@ -1880,9 +1880,9 @@ test("the droid provider spec names Factory's hosts, the FACTORY_API_KEY variabl
 	assert.deepEqual(Object.entries(PROVIDER_SPECS.droid.fixedEnv("glm-5.3-flash")), [], "droid pins its model on the argv, not the environment");
 });
 
-test("the droid exec assembly pins auto low, the model, json output, and the prompt file", () => {
+test("the droid exec assembly pins auto medium, the model, json output, and the prompt file", () => {
 	assert.deepEqual(droidExecArgv({ model: "glm-5.3-flash", workDir: "/work" }),
-		["droid", "exec", "--auto", "low", "-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", "/tmp/acquit-instruction.txt"]);
+		["droid", "exec", "--auto", "medium", "-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", "/tmp/acquit-instruction.txt"]);
 });
 
 test("the askpass script names its own token file and holds no token, and the env carries no token path", () => {

@@ -310,7 +310,7 @@ test("the droid run port starts droid exec in the sandbox with the key in-proces
 	const runner = docker.calls.findIndex(call => call.args[0] === "run" && !call.args.includes("--detach"));
 	assert.equal(runner >= 0, true);
 	const argv = docker.calls[runner].args;
-	assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "droid", "exec", "--auto", "low",
+	assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "droid", "exec", "--auto", "medium",
 		"-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", DROID_INSTRUCTION_PATH]);
 	// The prompt rides the ACQUIT_INSTRUCTION env, which run.mjs writes to the file the argv names;
 	// it never becomes a bare word of the exec command the way the claude argv carries it.
