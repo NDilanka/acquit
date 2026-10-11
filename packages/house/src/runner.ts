@@ -11,12 +11,12 @@ import { rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CliError } from "../../acquit-cli/src/client.ts";
-import { hardenedGitEnv, stripGitEnv, type JobCheckout } from "../../acquit-cli/src/gitstate.ts";
+import { checkoutGitArgs as locationGitArgs, hardenedGitEnv, stripGitEnv, type JobCheckout } from "../../acquit-cli/src/gitstate.ts";
 import { childEnv, makeSecretDir, workRepoUrl, writeAskpass } from "../../acquit-cli/src/workrepo.ts";
 import {
-	agentArgv, defaultInstruction, gitCli, globalGitIdentity, prepareWorkRepo, pushWork,
+	agentArgv, changedFiles, defaultInstruction, gitCli, globalGitIdentity, prepareWorkRepo, pushWork,
 	runAgentInSandbox, sandboxNames, seedCommitIdentity, submissionCommit,
-	type DockerPort, type GitRun, type RunnerPlan,
+	type ChangedFile, type DockerPort, type GitRun, type RunnerPlan,
 } from "../../acquit-cli/src/run.ts";
 import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import type { JobRow, JobStatus } from "../../core/src/job.ts";
@@ -49,6 +49,16 @@ export type HouseRunOutcome = { readonly ok: true }
 
 export type HouseRunPort = (plan: HouseRunPlan) => Promise<HouseRunOutcome>;
 
+/** What one successful run produced: the submission commit and its own diff, read from the same
+ * checkout before it is cleaned up. The patch is the plain `git diff` text, bounded. */
+export type HouseDelivery = {
+	readonly commit: CommitSha;
+	readonly files: readonly ChangedFile[];
+	readonly patch: string;
+};
+
+export const PATCH_CHARS_MAX = 100_000;
+
 export type HouseTarget = {
 	readonly id: JobId;
 	readonly title: string;
@@ -68,10 +78,10 @@ export type HouseDeliveryState = {
 };
 
 /** The work-repo side of one series: the clone at the frozen commit, and the commit-and-push that
- * produces the submission commit (null when the run left the checkout clean). */
+ * produces the submission commit with its diff (null when the run left the checkout clean). */
 export type HouseWorkPort = {
 	readonly prepare: (job: HouseTarget) => Promise<{ readonly workDir: string }>;
-	readonly finalize: (job: HouseTarget, workDir: string) => Promise<CommitSha | null>;
+	readonly finalize: (job: HouseTarget, workDir: string) => Promise<HouseDelivery | null>;
 	readonly remove: (jobId: JobId) => void;
 };
 
@@ -82,8 +92,9 @@ export type HouseDeliveryDeps = {
 	readonly work: HouseWorkPort;
 	readonly readState: (jobId: JobId) => Promise<HouseDeliveryState>;
 	readonly writeState: (jobId: JobId, state: HouseDeliveryState) => Promise<void>;
-	/** The same Submit edge every operator uses: push and Submit, which starts the verifier. */
-	readonly submit: (jobId: JobId, commit: CommitSha) => Promise<void>;
+	/** The same Submit edge every operator uses: push and Submit, which starts the verifier. The
+	 * delivery rides along the first time so the job's timeline can show the run's own diff. */
+	readonly submit: (jobId: JobId, commit: CommitSha, delivery?: HouseDelivery) => Promise<void>;
 	readonly log: (line: string) => void;
 };
 
@@ -153,20 +164,20 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 			deps.log(`house: ${job.id} run failed: ${outcome.reason} ${boundedDetail(outcome.detail)}`);
 			return "FAILED";
 		}
-		const commit = await deps.work.finalize(job, prepared.workDir);
-		if (commit === null) {
+		const delivery = await deps.work.finalize(job, prepared.workDir);
+		if (delivery === null) {
 			deps.log(`house: ${job.id} produced no changes to submit`);
 			return "NO_SUBMISSION";
 		}
 		// The commit is persisted before the submit, so a crash mid-submit lands on the re-submit
 		// path with the commit in hand instead of a spent budget and nothing to show.
-		await deps.writeState(job.id, { ...state, calls, submittedCommit: commit, submitAttempts: state.submitAttempts + 1 });
+		await deps.writeState(job.id, { ...state, calls, submittedCommit: delivery.commit, submitAttempts: state.submitAttempts + 1 });
 		try {
-			await deps.submit(job.id, commit);
+			await deps.submit(job.id, delivery.commit, delivery);
 		} catch (error) {
 			deps.log(`house: ${job.id} submit did not land; the next tick resubmits (${boundedDetail(String(error))})`);
 		}
-		deps.log(`house: ${job.id} submitted ${commit.slice(0, 7)}`);
+		deps.log(`house: ${job.id} submitted ${delivery.commit.slice(0, 7)} (${delivery.files.length} files changed)`);
 		return "SUBMITTED";
 	} finally {
 		deps.work.remove(job.id);
@@ -370,7 +381,15 @@ type PreparedCheckout = {
 	readonly url: string;
 	readonly gitEnv: NodeJS.ProcessEnv;
 	readonly askpassEnv: NodeJS.ProcessEnv;
+	/** The explicit git args every command on this checkout names: the state git directory and work tree. */
+	readonly checkoutGitArgs: (env: NodeJS.ProcessEnv, args: readonly string[]) => readonly string[];
 };
+
+/** The plain diff text, bounded: a fix diff is small, and a runaway one is truncated, never lost. */
+function boundedPatch(result: { status: number | null; stdout: string; stderr: string }): string {
+	if (result.status !== 0) return "";
+	return result.stdout.length > PATCH_CHARS_MAX ? `${result.stdout.slice(0, PATCH_CHARS_MAX)}\n... (truncated)` : result.stdout;
+}
 
 /** The real work port: the CLI's clone-at-frozen-commit and commit-and-push, driven by a scoped
  * token minted per series. The checkout's git directory lives outside the work tree, exactly as the
@@ -390,7 +409,8 @@ export function gitWorkPort(deps: GitWorkDeps): HouseWorkPort {
 				const gitEnv = hardenedGitEnv(childEnv(env));
 				prepareWorkRepo(git, checkout, url, job.frozenAt, gitEnv, askpass.env);
 				seedCommitIdentity(git, checkout, globalGitIdentity(git, stripGitEnv(env)), gitEnv);
-				sessions.set(job.id, { checkout, url, gitEnv, askpassEnv: askpass.env });
+				const checkoutGitArgs = (callEnv: NodeJS.ProcessEnv, args: readonly string[]) => locationGitArgs(checkout, callEnv, args);
+				sessions.set(job.id, { checkout, url, gitEnv, askpassEnv: askpass.env, checkoutGitArgs });
 				return { workDir: checkout.workTree };
 			} finally {
 				secret.remove();
@@ -400,8 +420,13 @@ export function gitWorkPort(deps: GitWorkDeps): HouseWorkPort {
 			const session = sessions.get(job.id);
 			if (session === undefined) throw new CliError("GIT_FAILED", `no prepared checkout for ${job.id}`);
 			const commit = submissionCommit(git, session.checkout, job.frozenAt, `Run ${job.id} with ${HOUSE_OPERATOR_ID}`, session.gitEnv);
-			if (commit !== null) pushWork(git, session.checkout, session.url, commit, session.gitEnv, session.askpassEnv);
-			return commit;
+			if (commit === null) return null;
+			pushWork(git, session.checkout, session.url, commit, session.gitEnv, session.askpassEnv);
+			// The diff the timeline shows is read from the same checkout before it is cleaned up, so it
+			// is exactly the submitted tree's diff against the frozen commit.
+			const files = changedFiles(git, session.checkout, job.frozenAt, session.gitEnv, commit);
+			const patch = boundedPatch(git(session.checkoutGitArgs(session.gitEnv, ["diff", "--no-color", job.frozenAt, commit]), session.gitEnv));
+			return { commit, files, patch };
 		},
 		remove(jobId) {
 			sessions.delete(jobId);

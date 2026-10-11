@@ -22,6 +22,8 @@ export type HousePorts = {
 	readonly mint: (job: HouseTarget) => Promise<{ readonly repository: string; readonly token: string }>;
 	/** The Submit edge, as the API's own request path runs it: one call, one outcome. */
 	readonly execute: (command: UserCommand) => Promise<CommandOutcome>;
+	/** Persists one delivery's diff for the job's timeline, before the Submit edge runs. */
+	readonly recordDiff: (jobId: JobId, commit: CommitSha, files: readonly { readonly path: string; readonly added: number; readonly binary: boolean }[], patch: string) => Promise<void>;
 	/** Where the House keeps its state files and its checkouts, e.g. beside the database. */
 	readonly stateDir: string;
 	readonly image?: string;
@@ -100,7 +102,10 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 		}),
 		readState: store.readState,
 		writeState: store.writeState,
-		submit: async (jobId: JobId, commit: CommitSha) => {
+		submit: async (jobId: JobId, commit: CommitSha, delivery) => {
+			// The diff lands before the edge: a timeline that shows the model's own diff must show it
+			// even when the submit itself needs the next tick's retry.
+			if (delivery) await ports.recordDiff(jobId, delivery.commit, delivery.files, delivery.patch);
 			// A denial still resolved -- the domain heard the submit -- so it resolves here too and
 			// the series' attempt counter stays the one bound on the loop.
 			const outcome = await ports.execute({ type: "Submit", jobId, sourceCommit: commit });

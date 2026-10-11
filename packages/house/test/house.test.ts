@@ -14,7 +14,7 @@ import { houseLine } from "../../core/src/job.ts";
 import {
 	classifyModelRun, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, HOUSE_MODEL, HOUSE_OPERATOR_ID,
 	isDeliverableHouseJob, runHouseDelivery, stateStore,
-	type HouseDeliveryDeps, type HouseDeliveryState, type HouseDeliverableFacts,
+	type HouseDeliverableFacts, type HouseDelivery, type HouseDeliveryDeps, type HouseDeliveryState,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
 } from "../src/runner.ts";
 
@@ -131,6 +131,7 @@ const fresh: HouseDeliveryState = { calls: 0, submittedCommit: null, submitAttem
 function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overrides: Partial<HouseDeliveryDeps> = {}) {
 	const plans: HouseRunPlan[] = [];
 	const commits: string[] = [];
+	const deliveries: (HouseDelivery | null)[] = [];
 	const states = new Map<string, HouseDeliveryState>();
 	const record = async (plan: HouseRunPlan): Promise<HouseRunOutcome> => {
 		plans.push(plan);
@@ -141,16 +142,22 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 		run: record,
 		work: {
 			prepare: async () => ({ workDir: "/tmp/house-work" }),
-			finalize: async () => "5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b" as CommitSha,
+			finalize: async () => ({
+				commit: "5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b" as CommitSha,
+				files: [{ path: "src/totals.ts", added: 4, binary: false }], patch: "diff --git a/src/totals.ts b/src/totals.ts\n",
+			}),
 			remove: () => {},
 		},
 		readState: async jobId => states.get(jobId) ?? fresh,
 		writeState: async (jobId, state) => { states.set(jobId, state); },
-		submit: async (jobId, commit) => { commits.push(`${jobId}:${commit}`); },
+		submit: async (jobId, commit, delivery) => {
+			commits.push(`${jobId}:${commit}`);
+			deliveries.push(delivery ?? null);
+		},
 		log: () => {},
 		...overrides,
 	};
-	return { deps, plans, commits, states };
+	return { deps, plans, commits, deliveries, states };
 }
 
 test("the House runner pins the ruled free model and the CLI default instruction plus the committed suffix", async () => {
@@ -158,13 +165,18 @@ test("the House runner pins the ruled free model and the CLI default instruction
 	// The committed suffix is byte-identical to the ruling file the mission names.
 	assert.equal(HOUSE_INSTRUCTION_SUFFIX, readFileSync(suffixFile, "utf8").replace(/\n$/, ""));
 	const expected = houseInstruction(defaultInstruction({ title: target.title }));
-	const { deps, plans } = fakeDeps();
+	const { deps, plans, deliveries } = fakeDeps();
 	const outcome = await runHouseDelivery(deps, target);
 	assert.equal(outcome, "SUBMITTED");
 	assert.equal(plans.length, 1);
 	assert.deepEqual(plans[0], {
 		runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: HOUSE_MODEL, instruction: expected,
 	});
+	// The delivery rides to the submit, so the job's timeline can show the run's own diff.
+	assert.equal(deliveries.length, 1);
+	assert.equal(deliveries[0]?.commit, "5f5b7c0a9c0e1d2b3a4f5e6d7c8b9a0f1e2d3c4b");
+	assert.equal(deliveries[0]?.files[0]?.path, "src/totals.ts");
+	assert.match(deliveries[0]?.patch ?? "", /diff --git/);
 });
 
 test("one provider error retries once and still submits, with both calls persisted", async () => {

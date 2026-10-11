@@ -45,6 +45,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS cli_codes (
 if (!(db.prepare("PRAGMA table_info(cli_codes)").all() as { name?: unknown }[]).some(column => column.name === "challenge")) {
 	db.exec("ALTER TABLE cli_codes ADD COLUMN challenge TEXT");
 }
+// The House delivery's own diff, one row per submitted run: the presentation data the job page's
+// timeline shows, recorded by the delivery loop before it submits. Not domain state: the verifier's
+// verdict stays the only thing that can move a job.
+db.exec(`CREATE TABLE IF NOT EXISTS house_diffs (
+	job_id TEXT PRIMARY KEY, commit_sha TEXT NOT NULL, files TEXT NOT NULL, patch TEXT NOT NULL)`);
+/** The recorded diff for one job's House run, or null when the job has none. */
+function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; files: unknown; patch: string } | null {
+	const row = db.prepare("SELECT commit_sha, files, patch FROM house_diffs WHERE job_id = ?").get(jobId);
+	if (!row) return null;
+	try {
+		return { commit: String(row.commit_sha), files: JSON.parse(String(row.files)), patch: String(row.patch) };
+	} catch { return null; }
+}
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
 const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
@@ -530,8 +543,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {
-		const result = await acquit.query(current.actor, { type: "Job", jobId: validJobId(decodeURIComponent(match[1])) });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), now: clock.now() });
+		const jobId = validJobId(decodeURIComponent(match[1]));
+		const result = await acquit.query(current.actor, { type: "Job", jobId });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -694,6 +708,9 @@ const houseKick = createHouseDelivery({
 		return { repository: `${githubEnv.organization}/${name}`, token: await githubApp.installationToken(githubEnv.organization, [name]) };
 	},
 	execute: command => acquit.execute(houseActor(), parseRequestKey(randomUUID()), command),
+	recordDiff: async (jobId, commit, files, patch) => {
+		db.prepare("INSERT OR REPLACE INTO house_diffs VALUES (?, ?, ?, ?)").run(jobId, commit, JSON.stringify(files), patch);
+	},
 	stateDir: resolve(databasePath, ".."),
 });
 const houseTimer = setInterval(() => { void houseKick.kick().catch(() => console.error("House delivery failed; the next tick retries.")); }, 30_000);
