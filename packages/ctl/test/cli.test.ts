@@ -716,7 +716,7 @@ test("captured commands finish when a detached descendant keeps stdout open", as
 		console.log("done");`;
 	try {
 		const result = await captured(process.execPath, ["--input-type=module", "-e", script, marker], root, process.env, 3000);
-		assert.deepEqual(result, { code: 0, stdout: "done\n" });
+		assert.deepEqual(result, { code: 0, stdout: "done\n", stderr: "" });
 		assert.equal(alive(Number(await readFile(marker, "utf8"))), true);
 	} finally {
 		if (existsSync(marker)) await killTree(Number(await readFile(marker, "utf8")));

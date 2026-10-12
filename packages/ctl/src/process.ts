@@ -253,16 +253,18 @@ export async function reachable(url: string): Promise<boolean> {
 	try { const response = await fetch(url, { signal: AbortSignal.timeout(1500) }); await response.body?.cancel(); return response.status === 200; }
 	catch { return false; }
 }
-export async function captured(executable: string, args: string[], cwd: string, env = process.env, timeout = 60_000, input?: string): Promise<{ code: number; stdout: string }> {
+export async function captured(executable: string, args: string[], cwd: string, env = process.env, timeout = 60_000, input?: string): Promise<{ code: number; stdout: string; stderr: string }> {
 	// stdout is a pipe, never a temp file. A hard kill of this CLI used to leave
 	// captured output on disk; a pipe dies with the process. Resolve on exit, not
 	// close: a cold browser daemon can inherit the stdout handle on Windows.
 	return new Promise((resolve, reject) => {
-		const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "ignore"] });
+		const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
 		const chunks: Buffer[] = [];
+		const errors: Buffer[] = [];
 		child.stdout?.on("data", chunk => chunks.push(chunk));
+		child.stderr?.on("data", chunk => errors.push(chunk));
 		if (input !== undefined) { child.stdin?.on("error", () => {}); child.stdin?.end(input); }
-		const finish = () => { clearTimeout(timer); child.stdout?.destroy(); child.stdin?.destroy(); };
+		const finish = () => { clearTimeout(timer); child.stdout?.destroy(); child.stderr?.destroy(); child.stdin?.destroy(); };
 		const timer = setTimeout(() => {
 			// The handle from this spawn is the proof; killTree only reaches its tree.
 			void killTree(child.pid ?? 0).catch(() => {});
@@ -270,7 +272,9 @@ export async function captured(executable: string, args: string[], cwd: string, 
 			reject(new CliError("PROCESS_FAILED", "The child command timed out.", "Retry the command. If it repeats, run npm run -s ctl -- status."));
 		}, timeout);
 		child.once("error", error => { finish(); reject(error); });
-		child.once("exit", code => { finish(); resolve({ code: code ?? 1, stdout: Buffer.concat(chunks).toString("utf8") }); });
+		child.once("exit", code => { finish();
+			resolve({ code: code ?? 1, stdout: Buffer.concat(chunks).toString("utf8"), stderr: Buffer.concat(errors).toString("utf8") });
+		});
 	});
 }
 export async function powershell(args: string[], cwd: string, timeout = 30_000): Promise<{ code: number; stdout: string }> {

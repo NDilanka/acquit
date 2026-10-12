@@ -1149,12 +1149,20 @@ function attemptView(record: AttemptRecord): AttemptView {
 			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: null, hidden: null, pullRequest: null };
 }
 
+/** The House bid row's line, counted from receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are rows like any other; their source marks them. */
+export function houseLine(rows: { readonly total: number; readonly paid: number } | null): string | null {
+	if (rows === null) return null;
+	return `${rows.total} fixes, ${rows.paid} passed verified CI`;
+}
+
 /** Bidding shows proof first. After accept, the ledger spine leads. */
-export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>): JobProjection {
+export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>,
+	houseRows?: ReadonlyMap<OperatorId, { readonly total: number; readonly paid: number }>): JobProjection {
 	const ranked = rankBids(row.bids, paidReceipts);
 	const viewBid = (bid: Bid) => ({ id: bid.id, operator: bid.operator, handle: bid.handle,
 		label: bid.kind, price: bid.price, eta: bid.eta, agent: String(bid.agent), runner: bid.runner,
-		pitch: bid.pitch, paidReceipts: paidReceipts.get(bid.operator) ?? 0, status: bid.status });
+		pitch: bid.pitch, paidReceipts: paidReceipts.get(bid.operator) ?? 0, status: bid.status,
+		houseLine: bid.kind === "HOUSE" ? houseLine(houseRows?.get(bid.operator) ?? { total: 0, paid: 0 }) : null });
 	const state = row.state;
 	const funding = state.status === "OPEN" && state.phase.kind === "FUNDING" ? state.phase : null;
 	const held = state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow

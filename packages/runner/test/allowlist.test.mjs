@@ -4,7 +4,7 @@
 // No Docker here; the proxy module imports this one.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allowedConnect, allowedForward, allowedHost, allowedHosts, authorityLabel, forwardHeaders, parseAuthority, providerHost } from "../allowlist.mjs";
+import { allowedConnect, allowedForward, allowedHost, allowedHosts, authorityLabel, forwardHeaders, parseAuthority, providerHosts } from "../allowlist.mjs";
 
 test("only the registry and the provider host are allowed, exactly", () => {
 	const hosts = allowedHosts(undefined);
@@ -18,18 +18,41 @@ test("only the registry and the provider host are allowed, exactly", () => {
 	assert.equal(allowedHost("", hosts), false);
 });
 
-test("the provider host is the one the run named, and only a provider the table knows", () => {
-	// The CLI passes the run's provider host; nothing named is Anthropic, and every other value is
-	// refused rather than trusted, so an environment value can never widen egress.
-	assert.equal(providerHost(undefined), "api.anthropic.com");
-	assert.equal(providerHost(""), "api.anthropic.com");
-	assert.equal(providerHost("api.anthropic.com"), "api.anthropic.com");
-	assert.equal(providerHost("openrouter.ai"), "openrouter.ai");
-	assert.equal(providerHost("OPENROUTER.AI."), "openrouter.ai");
-	assert.equal(providerHost("evil.example"), null);
-	assert.equal(providerHost("openrouter.ai.evil.example"), null);
-	assert.equal(providerHost("registry.npmjs.org"), null);
+test("the provider hosts are the ones the run named, and only providers the table knows", () => {
+	// The CLI passes the run's provider host (or comma-joined hosts); nothing named is Anthropic,
+	// and every other value is refused rather than trusted, so an environment value can never
+	// widen egress.
+	assert.deepEqual(providerHosts(undefined), ["api.anthropic.com"]);
+	assert.deepEqual(providerHosts(""), ["api.anthropic.com"]);
+	assert.deepEqual(providerHosts("api.anthropic.com"), ["api.anthropic.com"]);
+	assert.deepEqual(providerHosts("openrouter.ai"), ["openrouter.ai"]);
+	assert.deepEqual(providerHosts("OPENROUTER.AI."), ["openrouter.ai"]);
+	assert.equal(providerHosts("evil.example"), null);
+	assert.equal(providerHosts("openrouter.ai.evil.example"), null);
+	assert.equal(providerHosts("registry.npmjs.org"), null);
 	assert.equal(allowedHosts("evil.example"), null);
+});
+
+test("droid's Factory hosts are known providers, named one by one or comma-joined", () => {
+	assert.deepEqual(providerHosts("api.factory.ai"), ["api.factory.ai"]);
+	assert.deepEqual(providerHosts("prem.factory.ai"), ["prem.factory.ai"]);
+	assert.deepEqual(providerHosts("api.factory.ai,prem.factory.ai"), ["api.factory.ai", "prem.factory.ai"]);
+	assert.deepEqual(providerHosts("API.FACTORY.AI, PREM.FACTORY.AI."), ["api.factory.ai", "prem.factory.ai"]);
+	assert.equal(providerHosts("api.factory.ai,evil.example"), null, "one bad element refuses the whole value");
+	// A host droid contacts without needing (telemetry is non-fatal through the proxy) never joins.
+	assert.equal(providerHosts("telemetry.factory.ai"), null);
+});
+
+test("under the droid provider the proxy allows both Factory hosts and refuses the rest", () => {
+	const hosts = allowedHosts("api.factory.ai,prem.factory.ai");
+	assert.deepEqual([...hosts].sort(), ["api.factory.ai", "prem.factory.ai", "registry.npmjs.org"]);
+	assert.equal(allowedConnect("api.factory.ai:443", hosts), true);
+	assert.equal(allowedConnect("prem.factory.ai:443", hosts), true);
+	assert.equal(allowedConnect("registry.npmjs.org:443", hosts), true);
+	assert.equal(allowedConnect("example.com:443", hosts), false);
+	assert.equal(allowedConnect("telemetry.factory.ai:443", hosts), false);
+	assert.equal(allowedConnect("api.factory.ai:80", hosts), false);
+	assert.equal(allowedConnect("evil-api.factory.ai:443", hosts), false);
 });
 
 test("under openrouter, api.anthropic.com is denied and openrouter.ai is allowed", () => {

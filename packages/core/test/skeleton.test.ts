@@ -9,7 +9,7 @@ import type { OperationKey, OutboxState, Ports } from "../src/effects.ts";
 import { applyJobCommand, effectWanted, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, CaptureId, PayoutBatchId, PayoutItemId, RefundId, StaffId, Version, VisitorId } from "../src/ids.ts";
 import type { RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { createPayPal, parseCapture, parseWebhookEnvelope, quote } from "../src/paypal.ts";
 import type { Bps, PayPal, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome, ResourceRead } from "../src/paypal.ts";
@@ -511,6 +511,29 @@ test("a second Submit of the same commit while VERIFYING is a no-op, and a diffe
 		{ actor: devon, now, loaded: { kind: "NONE" } }), "VERIFIER_PENDING");
 	assert.equal(applyJobCommand(heldRow(), { type: "Submit", jobId: "job_submit" as JobId, sourceCommit },
 		{ actor: { role: "OPERATOR", operatorId: "other-ops" as OperatorId, tenant: null }, now, loaded: { kind: "NONE" } }), "NOT_OWNER");
+});
+
+test("a visitor House job accepts the House's Submit inside the job's tenant and refuses every other world", () => {
+	// The House bids with the job's tenant (effects.ts placeHouseBid), so its delivery on a visitor
+	// job must submit as the same tenant: the gate itself is never weakened.
+	const houseRow = (tenant: VisitorId | null): JobRow => {
+		const row = heldRow();
+		const work = row.state as Extract<JobRow["state"], { status: "IN_PROGRESS" }>;
+		return { ...row, tenant,
+			bids: row.bids.map(bid => ({ ...bid, operator: "house-tsfix" as OperatorId, handle: "house-tsfix" })),
+			state: { ...work, escrow: { ...work.escrow, payee: { ...work.escrow.payee, operator: "house-tsfix" as OperatorId } } } };
+	};
+	const visitor = "v_house" as VisitorId;
+	const submit = (row: JobRow, actor: Actor) => applyJobCommand(row, { type: "Submit", jobId: row.id, sourceCommit },
+		{ actor, now, loaded: { kind: "NONE" } });
+	const submitted = submit(houseRow(visitor), { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: visitor });
+	if (typeof submitted === "string") throw new Error(submitted);
+	const attempts = (submitted.next.state as Extract<JobRow["state"], { status: "IN_PROGRESS" }>).attempts;
+	assert.equal(attempts.phase, "VERIFYING", "the House's submit inside the job's tenant starts the verifier");
+	assert.equal(submit(houseRow(visitor), { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: null }),
+		"NOT_OWNER", "a tenant-less House still never reaches a visitor's job");
+	assert.equal(submit(houseRow(visitor), { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: "v_other" as VisitorId }),
+		"NOT_OWNER", "another visitor's world is still refused");
 });
 
 test("a rejection returns the job to READY with one attempt used, and the third rejection selects the refund", () => {

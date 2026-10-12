@@ -16,7 +16,7 @@ test("release of an unreferenced detached handle keeps the CLI alive until clean
 		console.log("released");`;
 	try {
 		const result = await captured(process.execPath, ["--input-type=module", "-e", script], root, process.env, 10000);
-		assert.deepEqual(result, { code: 0, stdout: "released\n" });
+		assert.deepEqual(result, { code: 0, stdout: "released\n", stderr: "" });
 		assert.equal(alive(Number(await readFile(join(root, "pid"), "utf8"))), false);
 	} finally { await rm(root, { recursive: true, force: true }); }
 });

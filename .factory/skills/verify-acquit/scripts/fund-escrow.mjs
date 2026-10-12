@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, appendFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +9,7 @@ import { captured as captureCommand, discarded, portOpen, runPids } from "../../
 import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
 import { dashboardPorts } from "../../../../packages/ctl/src/browser-safety.ts";
 import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
+import { browserEnvOf, disableStream, streamGuard } from "./stream-guard.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -29,11 +29,9 @@ const evidence = resolve(root, process.env.ACQUIT_EVIDENCE_DIR ?? "data/evidence
 const launch = JSON.parse(await readFile(join(evidence, "launch.json"), "utf8"));
 assert(launch.ok && launch.command === "start" && launch.data.alreadyRunning === false, "This run must start its own instance.");
 assert.equal(resolve(launch.data.databasePath), databasePath, "Refuse to drive the real database.");
-const browserEnv = { ...process.env };
-for (const name of Object.keys(browserEnv)) {
-	if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT"
-		|| /PAYPAL|SANDBOX|MERCHANT_ID|PASSWORD|SECRET|TOKEN|API_KEY/.test(name)) delete browserEnv[name];
-}
+// The sanitized environment every browser command runs under; the approval guard resolves the
+// session's runtime root from this same environment, so it inspects what the browser uses.
+const browserEnv = browserEnvOf(process.env);
 browserEnv.AGENT_BROWSER_SESSION = browserSession;
 browserEnv.AGENT_BROWSER_HEADED = "false";
 // Sandbox token + order calls can each consume their 15s timeout before a
@@ -123,13 +121,19 @@ async function approve() {
 		await refuseDashboard(ports, portOpen);
 	};
 	await checkDashboard();
-	// agent-browser 0.37.1 starts a per-session stream server at
-	// ~/.agent-browser/namespaces/<ns>/run/<ns>.stream. A synthetic experiment
-	// showed stream disable closes that port and removes the file. Do it before
-	// any credential command, and refuse if the file remains.
-	const streamFile = join(homedir(), ".agent-browser", "namespaces", browserSession, "run", `${browserSession}.stream`);
-	await browser("stream", "disable").catch(() => {});
-	if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
+	// agent-browser 0.37.1 starts a per-session stream server whose .stream file
+	// lives in the session's runtime namespace directory: under
+	// $AGENT_BROWSER_SOCKET_DIR, else $XDG_RUNTIME_DIR/agent-browser, else
+	// ~/.agent-browser, at namespaces/<ns-with-doubled-underscores-collapsed>/run/,
+	// file names keeping the original session string. A synthetic experiment
+	// showed stream disable closes that port and removes the file. Do both
+	// before any credential command, and refuse while a stream file remains.
+	const refuseStreams = async () => {
+		await disableStream(browser);
+		const guard = streamGuard(browserSession, browserEnv);
+		assert(guard.ok, `Approval refused: ${guard.reason}.`);
+	};
+	await refuseStreams();
 	// Force checkout locale even when PayPal inferred Sinhala from this host.
 	// Apply it to the order approval URL, not a later /signin redirect.
 	const funding = await api(`/api/jobs/${previous.jobId}`, "maya-client");
@@ -144,8 +148,7 @@ async function approve() {
 		// Recheck immediately before the fill. A dashboard or stream client that
 		// attaches between steps must not see the credential.
 		await checkDashboard();
-		await browser("stream", "disable").catch(() => {});
-		if (existsSync(streamFile)) throw new Error("Approval refused: the session stream file is still present. Detach stream clients and retry.");
+		await refuseStreams();
 		const command = credentialFill(selector, process.env[key]);
 		// Do not use browser(): its action journal must never receive credential input.
 		const code = await discarded(browserExecutable(), ["--config", join(evidence, "browser.json"), "--namespace", browserSession,

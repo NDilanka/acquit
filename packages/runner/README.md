@@ -16,8 +16,9 @@ The CLI refuses to start a container from a missing image; it never pulls one im
 
 ## What the sandbox is
 
-- **Image.** `acquit/runner-node20` (override with `ACQUIT_RUNNER_IMAGE`). Node 24, git, and the
-  Claude Code CLI.
+- **Image.** `acquit/runner-node20` (override with `ACQUIT_RUNNER_IMAGE`). Node 24, git, the
+  Claude Code CLI, and the droid CLI (pinned 0.238.0, installed from Factory's official release
+  channel with the published sha256 checked; x64, the AVX2 baseline build, or arm64).
 - **Clone.** The job's work repo is cloned on the host with a scoped credential and bind-mounted at
   `/work`. The git directory lives in the CLI's state location
   (`$XDG_STATE_HOME/acquit/work/<job>.git`, `~/.local/state/acquit/work/<job>.git` by default, and
@@ -39,16 +40,20 @@ The CLI refuses to start a container from a missing image; it never pulls one im
   no route out. A sidecar container from the same image runs `proxy.mjs`; it is attached to the
   internal network and to a second per-run `acquit-runner-<job>-egress` network created with
   `com.docker.network.bridge.enable_icc=false`, and it is the only path out. It never joins the
-  default bridge. The proxy allows exactly `registry.npmjs.org` and the run's provider host:
-  `api.anthropic.com`, or `openrouter.ai` when the operator stored an OpenRouter key. The CLI passes
-  that host as `ACQUIT_PROVIDER_HOST`, and `allowlist.mjs` refuses any value outside the provider
-  table's hosts, so the environment cannot widen egress; every other host is answered `403`.
+  default bridge. The proxy allows exactly `registry.npmjs.org` and the run's provider host(s):
+  `api.anthropic.com`, `openrouter.ai` when the operator stored an OpenRouter key, or
+  `api.factory.ai` plus `prem.factory.ai` for a droid run (the two hosts a real droid exec run
+  contacts through the proxy; droid also contacts `telemetry.factory.ai`, which is never required
+  and stays refused). The CLI passes the host list as a comma-joined `ACQUIT_PROVIDER_HOST`, and
+  `allowlist.mjs` refuses any value outside the provider table's hosts, so the environment cannot
+  widen egress; every other host is answered `403`.
 - **Secrets.** The work-repo token lives in a 0600 file named by a constant 0700 `GIT_ASKPASS` script
   in a `mkdtemp` directory that is removed on every exit path; no token path travels in a child's
   environment. The host does the clone, fetch, and push, so the container never receives the git
   credential. The provider key reaches the container only through the docker child's environment:
   `-e ANTHROPIC_API_KEY` names it with no value for Anthropic, `-e ANTHROPIC_AUTH_TOKEN` for
-  OpenRouter, and no other child gets it. Neither value is ever an argv word or a log line.
+  OpenRouter, `-e FACTORY_API_KEY` for droid, and no other child gets it. No value is ever an argv
+  word or a log line.
 - **Cleanup.** Every object is named `acquit-runner-<job>`, `acquit-runner-<job>-proxy`,
   `acquit-runner-<job>-net`, and `acquit-runner-<job>-egress`. A run removes them before it starts
   (leftovers from a killed run) and in a `finally` block; SIGINT and SIGTERM remove them and the
@@ -66,13 +71,22 @@ The CLI refuses to start a container from a missing image; it never pulls one im
 - `command` runs the script the operator names (`--runner command --command <script>`), mounted
   read-only at `/acquit/command.sh` and started with `sh`. The instruction, when given, is in
   `ACQUIT_INSTRUCTION` for the script to read.
+- `droid` is the House's model runner under the default provider. It runs
+  `droid exec --auto medium -m glm-5.3-flash -o json --cwd /work -f /tmp/acquit-instruction.txt` with
+  the Factory key in `FACTORY_API_KEY`. The prompt file is written by `run.mjs` from the
+  `ACQUIT_INSTRUCTION` env, so the prompt is never an argv word. The `-o json` result line is what
+  the runner classifies: `is_error`, or a nonzero exit with no result line, is a provider error
+  (the one retry); a success carries the session id and `usage.factory_credits` for the run log.
+  The droid client (the argv, the classifier, the key lookup) lives in
+  `packages/core/src/model.ts`, shared with A3 and A1.
 
 ## The proxy
 
 `proxy.mjs` is a small HTTP CONNECT proxy. It logs only the host of a denied or failed request, never
-a path or a header. Its allowed hosts are the registry plus the one provider host the CLI passed as
-`ACQUIT_PROVIDER_HOST`; `allowlist.mjs` accepts only a host from the provider table (`api.anthropic.com`
-or `openrouter.ai`) and exits rather than listen on anything else. The allowlist is a scheme, a host,
+a path or a header. Its allowed hosts are the registry plus the provider host(s) the CLI passed as a
+comma-joined `ACQUIT_PROVIDER_HOST`; `allowlist.mjs` accepts only hosts from the provider table
+(`api.anthropic.com`, `openrouter.ai`, `api.factory.ai`, `prem.factory.ai`) and exits rather than
+listen on anything else. The allowlist is a scheme, a host,
 and a port: a CONNECT is allowed only to 443, and a plain HTTP forward only to an absolute-form
 `http:` URL with no userinfo on port 80, so the right host on another port or scheme is refused too. A
 forward copies no hop-by-hop header, no header `Connection` names, and never the caller's `host`: the

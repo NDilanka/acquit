@@ -137,6 +137,7 @@ export interface Store {
 	/** One operator's `paid_receipts`, read at the moment a grant needs it. 0 when the row holds none. */
 	receiptCount(operator: OperatorId): Promise<number>;
 	readJob(jobId: JobId): Promise<JobRow | null>;
+	receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>>;
 	readOperator(operator: OperatorId): Promise<OperatorRow | null>;
 	readCredits(operator: OperatorId): Promise<CreditAccount>;
 	readRequest(actor: string, key: RequestKey): Promise<RecordedRequest | null>;
@@ -211,7 +212,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		}
 		const plan = applyJobCommand(row, command as JobCommand, { actor, now, loaded });
 		if (typeof plan === "string") return { kind: "DENIED", reason: plan };
-		const job = projectJob(plan.next, actor, await ports.store.receiptCounts());
+		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts());
 		let result: PublicResult = { kind: "JOB", job };
 		if (command.type === "PlaceBid") {
 			const bid = plan.next.bids.find(b => !row?.bids.some(old => old.id === b.id))!;
@@ -235,7 +236,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
 		if (plan.effects.some(effect => effect.kind === "CREATE_ORDER" && effect.fundingMode === "card")) await confirmFunding(ports, actor, plan.next.id);
 		const refreshed = await ports.store.readJob(plan.next.id);
-		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts()) };
+		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts()) };
 		await ports.store.finishRequest({ actor: actorKey, key, payloadDigest, result });
 		return { kind: "COMMITTED", result };
 	}
@@ -713,6 +714,9 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	}
 	return Response.json({ ok: true, applied: true });
 }
+
+/** One operator's receipt-row counts: every row, and the paid ones among them. The House line reads this, never the counter. */
+export type ReceiptRowCounts = { readonly total: number; readonly paid: number };
 
 export async function runDueTimers(ports: Ports): Promise<number> {
 	// TODO For each due row, apply TimerDue with the stored wakeAt. A stale wakeAt is a no-op.

@@ -24,6 +24,7 @@ import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, a
 import type { JobCheckout } from "../src/gitstate.ts";
 import { makeSecretDir, secretGuard, workRepoUrl, writeAskpass } from "../src/workrepo.ts";
 import { pushHead, localHead } from "../src/submit.ts";
+import { droidExecArgv } from "../../core/src/model.ts";
 
 const frozen = "a41c9e2d6f4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c" as CommitSha;
 const workRepo = "acquit-forks/invoice-app-7q2k";
@@ -1849,6 +1850,41 @@ test("an openrouter sandbox points the proxy at openrouter.ai and puts the key i
 	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
 });
 
+test("a droid sandbox points the proxy at Factory's hosts and puts the key in FACTORY_API_KEY", async t => {
+	const names = sandboxNames("job_7Q2K");
+	const docker = fakeDocker();
+	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: sandboxWorkTree(t), argv: droidExecArgv({ model: "glm-5.3-flash", workDir: "/work" }), commandPath: null,
+		runner: "droid", provider: "droid", providerKey: keyCanary, providerModel: "glm-5.3-flash",
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+	assert.equal(await runAgentInSandbox(plan, docker), 0);
+	const proxy = docker.calls.findIndex(args => args[0] === "run" && args.includes("--detach"));
+	assert.equal(proxy >= 0, true);
+	// Both hosts a real droid exec run contacts through the proxy: its API and its session gateway.
+	assert.equal(docker.calls[proxy].includes("ACQUIT_PROVIDER_HOST=api.factory.ai,prem.factory.ai"), true);
+	const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
+	assert.equal(runner >= 0, true);
+	// The key variable is named with no value; the value rides the docker child's environment.
+	assert.equal(docker.calls[runner].indexOf("FACTORY_API_KEY") > -1, true);
+	assert.equal(docker.calls[runner][docker.calls[runner].indexOf("FACTORY_API_KEY") - 1], "-e");
+	assert.equal(docker.envs[runner]?.FACTORY_API_KEY, keyCanary);
+	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
+	// The droid runner gets no claude-specific switch.
+	assert.equal(docker.calls[runner].includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), false);
+});
+
+test("the droid provider spec names Factory's hosts, the FACTORY_API_KEY variable, and the ruled model", () => {
+	assert.deepEqual(PROVIDER_SPECS.droid.hosts, ["api.factory.ai", "prem.factory.ai"]);
+	assert.equal(PROVIDER_SPECS.droid.keyVar, "FACTORY_API_KEY");
+	assert.equal(PROVIDER_SPECS.droid.defaultModel, "glm-5.3-flash");
+	assert.deepEqual(Object.entries(PROVIDER_SPECS.droid.fixedEnv("glm-5.3-flash")), [], "droid pins its model on the argv, not the environment");
+});
+
+test("the droid exec assembly pins auto medium, the model, json output, and the prompt file", () => {
+	assert.deepEqual(droidExecArgv({ model: "glm-5.3-flash", workDir: "/work" }),
+		["droid", "exec", "--auto", "medium", "-m", "glm-5.3-flash", "-o", "json", "--cwd", "/work", "-f", "/tmp/acquit-instruction.txt"]);
+});
+
 test("the askpass script names its own token file and holds no token, and the env carries no token path", () => {
 	const dir = mkdtempSync(join(tmpdir(), "acquit-run-askpass-"));
 	try {
@@ -2447,4 +2483,12 @@ test("live docker smoke: egress is limited, the edit is counted, and a planted .
 		rmSync(plantedScript, { force: true });
 		rmSync(smokeRoot, { recursive: true, force: true });
 	}
+});
+
+test("live docker smoke: the image carries the process tools the droid permission preflight runs",
+	{ skip: process.env.ACQUIT_DOCKER_TEST !== "1" }, async () => {
+	const image = process.env.ACQUIT_RUNNER_IMAGE ?? "acquit/runner-node20";
+	const probe = spawnSync("docker", ["run", "--rm", "--pull=never", "--entrypoint", "ps", image, "--version"], { encoding: "utf8", timeout: 60_000 });
+	assert.equal(probe.status, 0,
+		`droid's permission preflight dies without ps ("Executable not found in $PATH"). Rebuild the image with procps: docker build -t ${image} packages/runner`);
 });

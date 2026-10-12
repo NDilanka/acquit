@@ -67,6 +67,8 @@ export interface BidView {
   readonly runner: string;
   readonly pitch: string;
   readonly paidReceipts: number;
+  /** The House bid's receipts line, e.g. "41 fixes, 39 passed verified CI". Null on operator bids. */
+  readonly houseLine: string | null;
   readonly status: "PENDING" | "CHOSEN" | "ACCEPTED" | "NOT_SELECTED" | "RETURNED";
 }
 
@@ -117,6 +119,16 @@ export type FundingMode = "card" | "checkout";
 
 /** `GET /api/jobs/:id`, and `POST /api/jobs/:id/clock` after the job's own time moved. */
 export type JobResponse = { readonly job: JobView; readonly handles: Readonly<Record<string, string>>; readonly now: Instant };
+
+/** The House run's own git diff. `patch` may end in a `... (truncated)` line. */
+export type JobDiff = {
+  readonly commit: string;
+  readonly files: readonly { readonly path: string; readonly added: number; readonly binary: boolean }[];
+  readonly patch: string;
+};
+
+/** `GET /api/jobs/:id` only: the job response plus the House run's diff, null when the job has none. */
+export type JobDetailResponse = JobResponse & { readonly diff: JobDiff | null };
 
 /** A judge-mode visitor: its own client and operator handles, its forked repository, and when the demo ends. */
 export interface VisitorView {

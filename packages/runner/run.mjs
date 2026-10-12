@@ -8,6 +8,14 @@
 // stdio is inherited so the agent's own lines stream to the operator's terminal.
 
 import { spawn } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+
+// The droid runner reads its prompt from a file (`droid exec -f`, per the droid client's argv in
+// packages/core/src/model.ts): run.mjs writes the instruction it was handed to the one path that
+// argv names. The other runners take the instruction as an argv word and never read this file.
+if (process.env.ACQUIT_INSTRUCTION) {
+	await writeFile("/tmp/acquit-instruction.txt", process.env.ACQUIT_INSTRUCTION, { mode: 0o600 });
+}
 
 const separator = process.argv.indexOf("--exec");
 const command = separator === -1 ? null : process.argv[separator + 1];

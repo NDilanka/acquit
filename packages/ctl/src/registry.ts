@@ -1,4 +1,4 @@
-import { clockAdvance, fundMode, jobList, ledger, login, screenshot, seedDb, start, status, stop, sweep, webhookReplay } from "./commands.ts";
+import { clockAdvance, fundMode, jobList, ledger, login, migrate, screenshot, seedDb, start, status, stop, sweep, webhookReplay } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -37,6 +37,8 @@ export const registry: Command[] = [
 	{ name: "seed-db", summary: "Reset demo tables and invalidate all existing sessions.", usage: "seed-db [--dry-run] [--yes]",
 		flags: [{ name: "yes", type: "boolean", summary: "Confirm reset while an app is running.", default: false }],
 		examples: ["seed-db --dry-run", "seed-db --yes"], destructive: true, run: seedDb },
+	{ name: "migrate", summary: "Apply the tracked schema to the database in place, keeping every row.", usage: "migrate",
+		flags: [], examples: ["migrate"], destructive: false, run: migrate },
 	{ name: "ledger", summary: "Print stored ledger lines and check the three escrow laws.", usage: "ledger (--job <id> | --all) [--json] [--check]",
 		flags: [{ name: "job", type: "string", summary: "Job id to read." },
 			{ name: "all", type: "boolean", summary: "Read every stored job.", default: false },
