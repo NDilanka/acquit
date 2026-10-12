@@ -11,9 +11,12 @@ const now = "2026-10-12T00:00:00Z";
 test("the operator's receipts read marks job rows JOB and seeded rows SEED", () => {
 	const store = new SqliteStore(":memory:");
 	try {
-		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', 1, ?)").run("rcpt_house-seed-001", null, "house-tsfix", 1, "2026-10-11T00:00:00Z");
-		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', 0, NULL)").run("rcpt_house-seed-002", null, "house-tsfix", 0, null);
-		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'JOB', 1, ?)").run("rcpt_devonjob", "job_paidone", "devon-ops", 1, now);
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)").run("rcpt_house-seed-001", null, "house-tsfix", 1, "2026-10-11T00:00:00Z");
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)").run("rcpt_house-seed-002", null, "house-tsfix", 0, null);
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'JOB', ?, ?)").run("rcpt_devonjob", "job_paidone", "devon-ops", 1, now);
+		// The F6 backfill marked every pre-existing PAID job's receipt row SEED, so a job receipt can
+		// be seeded history: the read labels it exactly as the book does.
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)").run("rcpt_housejob", "job_paidtwo", "house-tsfix", 1, now);
 		const receipt = { id: "rcpt_devonjob", jobId: "job_paidone", operator: "devon-ops", agent: "ts-bugfixer",
 			pullRequest: 1, mergeCommit: "a".repeat(40), frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
 			attemptsUsed: 1, paid: 360_00, releasedAt: now };
