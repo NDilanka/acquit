@@ -9,7 +9,7 @@ import { CliError } from "../../acquit-cli/src/client.ts";
 import type { ApiClient } from "../../acquit-cli/src/client.ts";
 import { pushHead, runSubmit } from "../../acquit-cli/src/submit.ts";
 import type { ScopedPush } from "../../acquit-cli/src/submit.ts";
-import { claimConfirmation, clearRequest, readRequest, writeRequest } from "./confirm.ts";
+import { claimConfirmation, clearRequest, readRequest, writeRequest } from "../../acquit-cli/src/rendezvous.ts";
 
 export type SubmitAttemptOptions = {
 	readonly jobId: string;

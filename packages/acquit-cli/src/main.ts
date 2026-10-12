@@ -1,5 +1,5 @@
 // The operator CLI. F3 owns `submit`; F5 adds login, operator init, agent create, jobs list, bid, run,
-// diff, and receipts.
+// diff, and receipts. A2 adds `confirm-submit`, the operator's half of the MCP server's confirmation.
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { assertSubjectAllowed, ChildSubjectRefused, verifierSubjectEnv } from "../../verifier/subject.ts";
 import { apiClient, CliError, readLogin, saveLogin } from "./client.ts";
 import { localHead, parseSubmitArgs, pushHead, runSubmit } from "./submit.ts";
+import { parseConfirmArgs, runConfirmSubmit } from "./confirm.ts";
 import { openBrowser, parseLoginArgs, runLogin } from "./login.ts";
 import { parseOperatorArgs, providerPort, runOperatorInit } from "./operator.ts";
 import type { AskAnswer } from "./operator.ts";
@@ -31,7 +32,7 @@ Environment:
   ACQUIT_TOKEN  session token from \`acquit login\``;
 
 /** The table's order. */
-const ORDER = ["login", "operator", "agent", "jobs", "bid", "run", "diff", "receipts", "submit"];
+const ORDER = ["login", "operator", "agent", "jobs", "bid", "run", "diff", "receipts", "submit", "confirm-submit"];
 
 export type CommandContext = {
 	readonly env: NodeJS.ProcessEnv;
@@ -68,6 +69,16 @@ registerCommand({
 		const client = apiClient({ baseUrl: options.apiUrl, token: options.token });
 		console.log(await runSubmit(options, { client, head: localHead, push: pushHead }));
 		return 0;
+	},
+});
+
+registerCommand({
+	name: "confirm-submit",
+	usage: "acquit confirm-submit <job>  (the operator types the answer; no flag confirms)",
+	async run(argv, context) {
+		const options = parseConfirmArgs(argv, context.env);
+		return runConfirmSubmit(options, { ask: async question => { context.write(question); return readLine(); },
+			write: context.write });
 	},
 });
 

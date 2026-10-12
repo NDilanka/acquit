@@ -54,9 +54,7 @@ export function claimConfirmation(dir: string, jobId: string): SubmitConfirmatio
 			|| typeof parsed.confirmedAt !== "string") throw new Error("malformed confirmation");
 		return { jobId: parsed.jobId, commit: parsed.commit as CommitSha, confirmedAt: parsed.confirmedAt };
 	} catch (error) {
-		rmSync(claimed, { force: true });
-		throw new CliConfirmationError("CONFIRMATION_MALFORMED",
-			`The confirmation file for ${jobId} is malformed (${error instanceof Error ? error.message : String(error)}). Nothing was submitted.`);
+		throw new Error(`The confirmation file for ${jobId} is malformed (${error instanceof Error ? error.message : String(error)}). Nothing was submitted.`);
 	} finally { rmSync(claimed, { force: true }); }
 }
 
@@ -66,10 +64,4 @@ export function clearRequest(dir: string, jobId: string): void {
 	rmSync(requestPath(dir, jobId), { force: true });
 	rmSync(confirmationPath(dir, jobId), { force: true });
 	rmSync(`${confirmationPath(dir, jobId)}.claimed`, { force: true });
-}
-
-/** A refusal the tool surfaces by name. */
-export class CliConfirmationError extends Error {
-	readonly code: string;
-	constructor(code: string, detail: string) { super(detail); this.code = code; }
 }

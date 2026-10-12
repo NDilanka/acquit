@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { readLogin } from "../../acquit-cli/src/client.ts";
-import { confirmationDir } from "./confirm.ts";
+import { confirmationDir } from "../../acquit-cli/src/rendezvous.ts";
 import { paypalReader } from "./paypal.ts";
 import { buildServer } from "./server.ts";
 
