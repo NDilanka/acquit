@@ -65,11 +65,12 @@ Preconditions:
   public example `hidden-cases.example.json` refuses `FIXTURES_CONFIG_INVALID`. The API digests each
   fixture's private cases once at boot and OpenJob freezes that digest into the job's manifest, so a
   run is judged against exactly the cases its job froze, and two fixtures in one process never share
-  cases. This deployment's registry is the gitignored `data/private/fixtures.json` (mode 600):
-  fixture 1, `NDilanka/invoice-app-h2` #12, keeps its real six-case file beside it in `data/private/`;
+  cases. This deployment's registry is `/home/factory-user/.config/acquit/private/fixtures.json`
+  (mode 600, in a 0700 store outside every git repository; the VM's store is `/var/lib/acquit/private/`):
+  fixture 1, `NDilanka/invoice-app-h2` #12, keeps its real six-case file beside it in that store;
   fixture 2, `NDilanka/expense-splitter` #1, freezes `tests/split.test.ts` at its own commit and keeps
-  its three `hidden2:1..3` cases in their own file there too. The case files are gitignored and are
-  never mounted into the subject. Never print them or copy them into a repository.
+  its three `hidden2:1..3` cases in their own file there too. The case files live outside every
+  repository and are never mounted into the subject. Never print them or copy them into a repository.
 
 - **Reject a tampered test.** Run the printed `acquit submit` command with `--dir <lane repo>`. Require
   stdout to match the tutorial's block: `Submitted job_X (attempt 1 of 3)`, `Verifier result: REJECTED`,

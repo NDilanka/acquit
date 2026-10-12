@@ -42,7 +42,8 @@ Preconditions:
   can see it. The lane must also set `ACQUIT_FIXTURES` (for both `seed-db --yes` and `start`) at a
   private registry whose fixture names that disposable repository: OpenJob freezes a job's manifest
   from the registry, and a repository no entry names is denied `NOT_FOUND` by name. Never point
-  `ACQUIT_FIXTURES` at `data/private/fixtures.json` itself; copy it per run (as `fixtures-m1.json`
+  `ACQUIT_FIXTURES` at the deployment's own registry (`/home/factory-user/.config/acquit/private/fixtures.json`)
+  itself; copy it per run (as `fixtures-m1.json`
   does) and edit the copy. **Never approve or merge against the shared `NDilanka/invoice-app`
   fixture.** Reset the disposable repo after each merging job, and delete the per-job work repos
   afterwards.
