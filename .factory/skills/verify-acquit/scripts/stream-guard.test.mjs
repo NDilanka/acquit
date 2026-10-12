@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { disableStream, namespaceDirName, streamGuard } from "./stream-guard.mjs";
+import { browserEnvOf, disableStream, namespaceDirName, runtimeRoot, streamGuard } from "./stream-guard.mjs";
 
 // agent-browser on this host keeps runtime files under
 // $XDG_RUNTIME_DIR/agent-browser/namespaces/<prefix>_<ns>/run/ with the
@@ -67,6 +67,25 @@ test("honors AGENT_BROWSER_SOCKET_DIR verbatim, the way agent-browser resolves i
 	layout(socket, "verify-acquit-lane-50", ["verify-acquit-lane-50.stream"]);
 	const guard = streamGuard("verify-acquit-lane-50", { AGENT_BROWSER_SOCKET_DIR: socket, XDG_RUNTIME_DIR: join(tmpdir(), "stream-guard-unused-xdg") }, home);
 	assert.equal(guard.ok, false);
+	assert.match(guard.reason, /stream file/i);
+});
+
+test("the guard inspects the browser's own runtime root, never a stale parent override", () => {
+	// fund-escrow.mjs strips every AGENT_BROWSER_* name before the browser child starts; the guard
+	// must resolve the runtime root from that same stripped environment, or a stale empty namespace
+	// under the parent's override passes for the real session while the real stream file sits in
+	// the XDG layout the browser actually uses.
+	const xdg = mkdtempSync(join(tmpdir(), "stream-guard-"));
+	const override = mkdtempSync(join(tmpdir(), "stream-guard-"));
+	layout(join(xdg, "agent-browser"), "verify-acquit-lane-50", ["verify-acquit-lane-50.stream"]);
+	layout(join(override, "agent-browser"), "verify-acquit-lane-50", []);
+	const parent = { AGENT_BROWSER_SOCKET_DIR: override, XDG_RUNTIME_DIR: xdg };
+	assert.equal(runtimeRoot(parent), override, "the parent would resolve the stale override");
+	const clean = browserEnvOf(parent);
+	assert.equal(clean.AGENT_BROWSER_SOCKET_DIR, undefined, "the browser environment carries no override");
+	assert.equal(runtimeRoot(clean, home), join(xdg, "agent-browser"));
+	const guard = streamGuard("verify-acquit-lane-50", clean, home);
+	assert.equal(guard.ok, false, "the real stream file is found, so approval is refused");
 	assert.match(guard.reason, /stream file/i);
 });
 
