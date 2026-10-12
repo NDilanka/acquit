@@ -75,7 +75,9 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		const job = JSON.parse(String(row.json)) as JobRow;
 		const done = storedDefinitionOfDone(job);
 		if (!done) continue;
-		const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, null);
+		// The stored repository is the visitor context the open validated (a visitor's job sits on the
+		// fork its session carried), so a registered demo fork matches; every other job matches exactly.
+		const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, done.issue.repository);
 		if (!fixture) { console.warn(`Manifest backfill skipped for ${logBare(String(row.id))}: no registered fixture for ${done.issue.repository}#${done.issue.number}`); continue; }
 		db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(String(row.id), JSON.stringify({ ...done, frozenTestPath: fixture.frozenTestPath }));
 	}
@@ -293,9 +295,11 @@ export class SqliteStore implements Store {
 				for (const resource of jobResources(row)) this.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(resource, row.id);
 				// The manifest freeze travels with the job's own transaction on every path that stores a
 				// row whose contract carries one. The first write wins, so a later commit never moves it.
+				// The frozen contract's own repository is the actor context its open validated: a
+				// registered demo fork matches, and every other job matches exactly.
 				const frozen = storedDefinitionOfDone(row);
 				if (frozen) {
-					const fixture = matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, null);
+					const fixture = matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, frozen.issue.repository);
 					const done = fixture ? { ...frozen, frozenTestPath: fixture.frozenTestPath }
 						: frozen.frozenTestPath !== undefined ? frozen : null;
 					if (done) this.db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(row.id, JSON.stringify(done));
