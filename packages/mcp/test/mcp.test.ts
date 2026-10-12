@@ -18,7 +18,7 @@ import type { ApiClient } from "../../acquit-cli/src/client.ts";
 import { writeConfirmation } from "../../acquit-cli/src/confirm.ts";
 import { claimConfirmation, readRequest, writeRequest } from "../../acquit-cli/src/rendezvous.ts";
 import { runConfirmedSubmit } from "../src/submit-tool.ts";
-import { referencedPayoutItem } from "../src/paypal.ts";
+import { referencedPayoutItem, timeoutMs } from "../src/server.ts";
 import type { CommitSha } from "../../core/src/ids.ts";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -240,5 +240,18 @@ describe("the payout status read", () => {
 		assert.equal(item.status, "SUCCESS");
 		assert.equal(item.payoutItemId, "ITEMID==");
 		assert.deepEqual(item.amount, { currency: "USD", value: "324.00" });
+	});
+});
+
+describe("the server's environment timeouts", () => {
+	it("defaults the confirmation wait to 120 seconds in milliseconds, not 120 milliseconds", () => {
+		// The live proof caught this: with no ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS, the waiting
+		// submit_attempt returned pending after about two seconds because the fallback rode in as a
+		// bare 120 where the field wanted milliseconds. The operator's confirmation nearly always
+		// lands inside the real two-minute window.
+		assert.equal(timeoutMs({}, "ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS", 120), 120_000);
+		assert.equal(timeoutMs({ ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS: "30" }, "ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS", 120), 30_000);
+		assert.equal(timeoutMs({ ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS: "junk" }, "ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS", 120), 120_000);
+		assert.equal(timeoutMs({}, "ACQUIT_MCP_SUBMIT_TIMEOUT_SECONDS", 600), 600_000);
 	});
 });
