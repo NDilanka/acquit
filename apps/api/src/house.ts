@@ -5,7 +5,7 @@
 // two calls per job ever, ten submits per series, and a scan that stops at the first in-flight
 // delivery.
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dockerCli, type GitRun } from "../../../packages/acquit-cli/src/run.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../../../packages/core/src/acquit.ts";
@@ -49,12 +49,28 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 	// only shared thing between ticks.
 	let running = false;
 
+	// The pause latch is durable on purpose: a rate or usage limit stops dispatching until the
+	// operator removes the file, and a service restart must not resume an exhausted provider.
+	const pausedPath = join(ports.stateDir, "house", "paused.json");
+	let pauseAnnounced = false;
+	function announcePause(): void {
+		if (pauseAnnounced) return;
+		log(`House deliveries paused after a provider rate/usage limit; remove ${pausedPath} to resume`);
+		pauseAnnounced = true;
+	}
+
 	async function kick(): Promise<void> {
 		if (running) return;
 		running = true;
 		try {
+			if (existsSync(pausedPath)) { announcePause(); return; }
 			for (const job of await deliverableTargets()) {
-				await runHouseDelivery(deps, job);
+				const outcome = await runHouseDelivery(deps, job);
+				if (outcome === "RATE_LIMITED") {
+					writeFileSync(pausedPath, `${JSON.stringify({ reason: "RATE_LIMITED", at: new Date().toISOString(), jobId: job.id }, null, "\t")}\n`, { mode: 0o600 });
+					announcePause();
+					return;
+				}
 			}
 		} catch (error) {
 			log(`house: scan failed; the next tick retries (${error instanceof Error ? error.message.slice(0, 200) : "unknown"})`);

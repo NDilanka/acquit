@@ -193,7 +193,8 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		await deps.writeState(job.id, { ...state, calls });
 		let outcome = await deps.run(plan);
 		// One retry, only on a provider error, only while the persisted cap allows it: a 429 on the
-		// free tier is the same single retry, never a loop.
+		// free tier is the same single retry, never a loop. A rate or usage limit is the exception
+		// the operator ruled: its own terminal class, no retry at all, and the scan stops.
 		if (outcome.ok === false && outcome.reason === "PROVIDER_ERROR" && calls < MAX_CALLS) {
 			calls += 1;
 			await deps.writeState(job.id, { ...state, calls });
@@ -210,6 +211,10 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 			if (parts.length > 0) deps.log(`house: ${job.id} model run: ${parts.join(", ")}`);
 		}
 		if (outcome.ok === false) {
+			if (outcome.reason === "RATE_LIMITED") {
+				deps.log(`house: ${job.id} run stopped: RATE_LIMITED ${boundedDetail(outcome.detail)}`);
+				return "RATE_LIMITED";
+			}
 			deps.log(`house: ${job.id} run failed: ${outcome.reason} ${boundedDetail(outcome.detail)}`);
 			return "FAILED";
 		}
@@ -317,7 +322,10 @@ export function classifyModelRun(code: number | null, output: string): HouseRunO
 	const errorStatus = typeof result?.api_error_status === "number" && result.api_error_status >= 400;
 	if (result !== null && (result.is_error === true || errorStatus)) {
 		const status = errorStatus ? ` ${result.api_error_status}` : "";
-		return { ok: false, reason: "PROVIDER_ERROR", detail: `the model answered${status}` };
+		// A 429 is the free tier's own rate limit: terminal for the run, never retried, like a
+		// Factory rate or usage limit is on the droid path.
+		const rate = errorStatus && result.api_error_status === 429;
+		return { ok: false, reason: rate ? "RATE_LIMITED" : "PROVIDER_ERROR", detail: `the model answered${status}` };
 	}
 	// The result line itself says the run succeeded, whatever the exit status was.
 	if (result !== null && result.is_error === false) return { ok: true };

@@ -57,9 +57,15 @@ type DroidResultLine = {
 	readonly usage?: unknown;
 };
 
+/** A Factory rate or usage limit answers in the provider's own error text; the operator's rule
+ * makes it terminal for the whole run, so the class is named on the result and never retried. */
+const RATE_LIMITED_PATTERN = /rate.?limit|usage limit|quota|too many requests|429|insufficient credit/i;
+
 /** The one provider error is everything a retry is for: an `is_error` result line (a 4xx/5xx the
  * API itself answered), or a nonzero exit without a result line (a transport failure). An exit 0
- * with no result line defers to the commit step, as the claude classification always has. */
+ * with no result line defers to the commit step, as the claude classification always has. A rate
+ * or usage limit is the exception: its own terminal class, and the metadata the answer carried
+ * (the session it spent, the credits it reported) survives on the error either way. */
 export function classifyDroidRun(code: number | null, output: string): DroidRunResult {
 	const result = parseDroidResult(output);
 	if (result !== null && result.is_error === false) {
@@ -71,9 +77,17 @@ export function classifyDroidRun(code: number | null, output: string): DroidRunR
 	}
 	if (result !== null && result.is_error === true) {
 		const detail = typeof result.result === "string" && result.result.trim() !== "" ? result.result.trim() : "the droid result line reported an error";
-		return { ok: false, reason: "PROVIDER_ERROR", detail: boundedDetail(detail) };
+		const shared = {
+			sessionId: typeof result.session_id === "string" && result.session_id !== "" ? result.session_id : null,
+			factoryCredits: factoryCreditsOf(result.usage),
+		};
+		if (RATE_LIMITED_PATTERN.test(detail)) return { ok: false, reason: "RATE_LIMITED", detail: boundedDetail(detail), ...shared };
+		return { ok: false, reason: "PROVIDER_ERROR", detail: boundedDetail(detail), ...shared };
 	}
 	if (code === 0) return { ok: true, sessionId: null, factoryCredits: null };
+	if (RATE_LIMITED_PATTERN.test(output)) {
+		return { ok: false, reason: "RATE_LIMITED", detail: `the droid run exited ${code ?? "without a status"}` };
+	}
 	return { ok: false, reason: "PROVIDER_ERROR", detail: `the droid run exited ${code ?? "without a status"}` };
 }
 
