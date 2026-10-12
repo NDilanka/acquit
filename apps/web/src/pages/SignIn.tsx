@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { api, type SessionUser } from "../api";
 import type { DeploymentMode } from "../api-types";
 import { errorText } from "../demo";
 import { JUDGE_TOUR, START_DEMO_ACTION } from "../judge-tour";
 import type { Session } from "../session";
+import { ConnectedRepo } from "../ui";
 
 type SignedIn = (session: Session) => void;
 
@@ -28,8 +29,26 @@ function useSignIn(onSignedIn: SignedIn) {
   return { error, setError, busy, run };
 }
 
+type RoleChoice = { readonly role: SessionUser["role"]; readonly label: string; readonly note: string; readonly busy: string; readonly next: string };
+
+const ROLE_CHOICES: readonly [RoleChoice, RoleChoice] = [
+  { role: "CLIENT", label: "I want work done", note: "You post jobs and pay into escrow", busy: "Starting your demo…", next: "Go to your jobs" },
+  { role: "OPERATOR", label: "I deliver work", note: "You deliver fixes and get paid", busy: "Starting your demo as the operator…", next: "Go to open jobs" },
+];
+
 function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
-  const { error, busy, run } = useSignIn(onSignedIn);
+  const [connected, setConnected] = useState<Session | null>(null);
+  // A demo starts once per sign-up: a retry after a failed switch reuses it instead of opening another visitor.
+  const created = useRef<Session | null>(null);
+  const { error, busy, run } = useSignIn(setConnected);
+  const id = useId();
+  const choose = (choice: RoleChoice) =>
+    run(choice.role, async () => {
+      created.current ??= await api.startDemo();
+      if (created.current.user.role === choice.role) return created.current;
+      return await api.switchDemo();
+    });
+  const chosen = connected && ROLE_CHOICES.find((c) => c.role === connected.user.role);
   return (
     <div className="signin card">
       <div className="eyebrow">Judge mode</div>
@@ -46,10 +65,41 @@ function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
           </li>
         ))}
       </ol>
+      {connected && chosen ? (
+        <div className="connected-step">
+          <ConnectedRepo repository={connected.visitor?.repository ?? null} />
+          <button className="btn green" onClick={() => onSignedIn(connected)}>
+            {chosen.next}
+          </button>
+        </div>
+      ) : (
+        <div role="group" aria-labelledby={`${id}-start`}>
+          <h2 id={`${id}-start`}>{START_DEMO_ACTION}</h2>
+          <div className="userlist">
+            {ROLE_CHOICES.map((c) => (
+              <button
+                key={c.role}
+                className="userpick"
+                disabled={busy !== null}
+                aria-labelledby={`${id}-${c.role}`}
+                aria-describedby={`${id}-${c.role}-note`}
+                onClick={() => void choose(c)}
+              >
+                <span>
+                  <b id={`${id}-${c.role}`}>{c.label}</b>
+                  <small id={`${id}-${c.role}-note`}>{c.note}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          {busy && (
+            <p className="muted" role="status">
+              {ROLE_CHOICES.find((c) => c.role === busy)?.busy}
+            </p>
+          )}
+        </div>
+      )}
       {error && <div className="alert">{error}</div>}
-      <button className="btn green" disabled={busy !== null} onClick={() => void run("demo", () => api.startDemo())}>
-        {busy ? "Starting your demo…" : START_DEMO_ACTION}
-      </button>
     </div>
   );
 }

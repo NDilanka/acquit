@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CreditAccountView, JobView, OperatorView } from "../api-types";
+import type { ColDef, GetRowIdFunc } from "ag-grid-community";
+import type { CreditAccountView, JobView, OperatorView, ReceiptRow } from "../api-types";
 import { api, ApiError } from "../api";
 import { creditLine, usd, utc } from "../format";
+import { AcquitGrid } from "../grid";
 import { Link } from "../router";
 import { useSession } from "../session";
 import { BidForm } from "./BidForm";
@@ -11,15 +13,17 @@ export function OperatorHome() {
   const [jobs, setJobs] = useState<JobView[] | null>(null);
   const [credits, setCredits] = useState<CreditAccountView | null>(null);
   const [operator, setOperator] = useState<OperatorView | null>(null);
+  const [receipts, setReceipts] = useState<ReceiptRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bidding, setBidding] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [j, c, o] = await Promise.all([api.jobs("OPEN"), api.credits(), api.operator()]);
+      const [j, c, o, r] = await Promise.all([api.jobs("OPEN"), api.credits(), api.operator(), api.receipts()]);
       setJobs(j.jobs);
       setCredits(c.credits);
       setOperator(o.operator);
+      setReceipts(r.receipts);
       setError(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
@@ -27,8 +31,8 @@ export function OperatorHome() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (user.role === "OPERATOR") void load();
+  }, [load, user.role]);
 
   if (user.role !== "OPERATOR") {
     return (
@@ -105,6 +109,46 @@ export function OperatorHome() {
           </div>
         );
       })}
+      {receipts && <Receipts receipts={receipts} />}
     </>
+  );
+}
+
+function verifiedLine(row: ReceiptRow): string {
+  if (row.jobId === null) return row.passedVerifiedCi ? "Passed verified CI" : "Not verified";
+  return `${row.frozen.passed}/${row.frozen.expected} frozen, ${row.hidden.passed}/${row.hidden.expected} hidden`;
+}
+
+const receiptColumns: ColDef<ReceiptRow>[] = [
+  { headerName: "Receipt", field: "id", flex: 1.4, minWidth: 72, cellClass: "mono" },
+  { headerName: "Job", colId: "job", minWidth: 62, cellClass: "mono", valueGetter: (p) => p.data?.jobId ?? "—" },
+  {
+    headerName: "Amount",
+    colId: "amount",
+    minWidth: 72,
+    cellClass: "num strong",
+    valueGetter: (p) => (p.data && p.data.paid !== null ? usd(p.data.paid) : "—"),
+  },
+  { headerName: "Verified", colId: "verified", flex: 1.4, minWidth: 72, valueGetter: (p) => (p.data ? verifiedLine(p.data) : "") },
+  {
+    headerName: "Source",
+    field: "source",
+    minWidth: 70,
+    flex: 0.8,
+    cellRenderer: (p: { value?: ReceiptRow["source"] }) => (p.value === "SEED" ? <span className="pill new">Seeded</span> : null),
+  },
+];
+
+const receiptRowId: GetRowIdFunc<ReceiptRow> = (p) => p.data.id;
+
+function Receipts({ receipts }: { receipts: ReceiptRow[] }) {
+  return (
+    <section className="card receipts">
+      <div className="pad hd">
+        <h2>Receipts</h2>
+        <small className="muted">Each settled job leaves a receipt. Seeded rows are the deployment's starting history.</small>
+      </div>
+      <AcquitGrid rows={receipts} columns={receiptColumns} rowId={receiptRowId} empty="No receipts yet." />
+    </section>
   );
 }

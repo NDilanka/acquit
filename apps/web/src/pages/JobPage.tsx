@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
-import type { BidView, FundingMode, JobDiff, JobView, MergeProgress, UserCommand } from "../api-types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ColDef, GetRowIdFunc } from "ag-grid-community";
+import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, LedgerLine, MergeProgress, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
+import { AcquitGrid } from "../grid";
 import { useIntent } from "../intent";
+import { pollInterval } from "../poll";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
-import { houseName, lockedBid, StatusPill } from "../ui";
+import { allBids, houseName, lockedBid, payeeBid, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 
 export function JobPage({ id }: { id: string }) {
@@ -46,19 +49,8 @@ export function JobPage({ id }: { id: string }) {
     void load();
   }, [load]);
 
-  // Fast poll while waiting for a PayPal order or release; slow poll while bids may still arrive, a verdict is due, or the merge runs.
   // A card order captures without a redirect, so the checkout wait ends once the job leaves OPEN.
-  const awaitingOrder = checkout !== null && job?.status === "OPEN";
-  const polling =
-    awaitingOrder || job?.phase === "RELEASE_PENDING"
-      ? 1000
-      : job?.status === "OPEN" ||
-          job?.phase === "VERIFYING" ||
-          job?.phase === "AWAITING_CLIENT" ||
-          job?.phase === "DISPUTED" ||
-          job?.merge?.phase === "PENDING"
-        ? 4000
-        : null;
+  const polling = job ? pollInterval(job, { awaitingOrder: checkout !== null && job.status === "OPEN" }) : null;
   useEffect(() => {
     if (polling === null) return;
     const t = window.setInterval(() => void load(), polling);
@@ -91,7 +83,9 @@ export function JobPage({ id }: { id: string }) {
 
   const locked = lockedBid(job);
   const funding = job.status === "OPEN" && job.phase === "FUNDING";
-  const canCancel = isClient && job.status === "OPEN" && !funding && checkout === null;
+  // Before Accept the bids are the page; from Accept on the ledger spine leads instead.
+  const bidding = job.status === "OPEN" && job.phase === "BIDDING" && checkout === null;
+  const canCancel = isClient && bidding;
   const mergeCommit = job.viewerCanApprove && !job.dispute ? job.mergeCommit : null;
   const disputeCommit = job.viewerCanDispute && !job.dispute ? job.mergeCommit : null;
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
@@ -191,18 +185,15 @@ export function JobPage({ id }: { id: string }) {
 
       <div className="grid">
         <div>
-          {job.status === "OPEN" && !funding && checkout === null && (
+          {bidding ? (
             <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={setConfirm} />
+          ) : (
+            <Ledger job={job} locked={locked} />
           )}
           {accept.error && <div className="alert">{accept.error}</div>}
 
           {job.status === "OPEN" && (checkout || (funding && isClient)) && (
-            <Checkout
-              bid={checkout ?? locked}
-              approveUrl={job.approveUrl}
-              redirecting={checkout !== null}
-              card={job.funding === "card"}
-            />
+            <Checkout job={job} bid={checkout ?? payeeBid(job)} redirecting={checkout !== null} />
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
@@ -286,7 +277,7 @@ export function JobPage({ id }: { id: string }) {
           )}
           {judgedStatuses.includes(job.status) && <Verifier job={job} diff={diff} />}
 
-          {!isClient && job.status === "OPEN" && !funding && !job.bids.operators.some((b) => b.handle === user.handle) && (
+          {!isClient && bidding && !job.bids.operators.some((b) => b.handle === user.handle) && (
             <div className="card pad">
               <h2>Place a bid</h2>
               <BidForm job={job} onPlaced={() => void load()} />
@@ -336,7 +327,6 @@ export function JobPage({ id }: { id: string }) {
               </b>
             </div>
           </div>
-          <Ledger job={job} locked={locked} />
         </aside>
       </div>
 
@@ -348,7 +338,7 @@ export function JobPage({ id }: { id: string }) {
               Acquit creates a PayPal order that can pay only this operator. You pay now
               {job.funding === "card" ? " with the sandbox test card" : ""}; money is released on verified proof.
             </p>
-            <Breakdown price={confirm.price} />
+            <Breakdown price={confirm.price} payee={confirm.handle} />
             {accept.error && <div className="alert">{accept.error}</div>}
             <div className="act">
               <button className="btn ghost" onClick={() => setConfirm(null)}>Back</button>
@@ -401,6 +391,17 @@ export function JobPage({ id }: { id: string }) {
   );
 }
 
+function bidder(bid: BidView): string {
+  return bid.label === "HOUSE" ? `House: ${houseName(bid.handle)}` : bid.handle;
+}
+
+function proofLine(bid: BidView): string {
+  if (bid.label === "HOUSE") return bid.houseLine || `${bid.paidReceipts} passed verified CI`;
+  return `${bid.paidReceipts} verified receipt${bid.paidReceipts === 1 ? "" : "s"}`;
+}
+
+const bidRowId: GetRowIdFunc<BidView> = (p) => p.data.id;
+
 function Bids({
   job,
   isClient,
@@ -412,76 +413,63 @@ function Bids({
   busy: boolean;
   onAccept: (bid: BidView) => void;
 }) {
-  const ops = job.bids.operators;
-  const house = job.bids.house;
+  const rows = useMemo(() => allBids(job), [job]);
+  const columns = useMemo<ColDef<BidView>[]>(
+    () => [
+      {
+        headerName: "Operator",
+        flex: 2,
+        minWidth: 92,
+        valueGetter: (p) => (p.data ? bidder(p.data) : ""),
+        cellRenderer: (p: { data?: BidView }) =>
+          p.data && (
+            <div className="cellstack">
+              <b>{bidder(p.data)}</b>
+              {p.data.pitch && <small className="muted">{p.data.pitch}</small>}
+            </div>
+          ),
+      },
+      { headerName: "Proof", flex: 1.5, minWidth: 64, valueGetter: (p) => (p.data ? proofLine(p.data) : "") },
+      { headerName: "Price", field: "price", minWidth: 62, cellClass: "num strong", valueFormatter: (p) => usd(p.value as number) },
+      { headerName: "ETA", field: "eta", minWidth: 46, flex: 0.8, valueFormatter: (p) => eta(p.value as number) },
+      {
+        headerName: "",
+        colId: "action",
+        flex: 0,
+        width: 92,
+        minWidth: 92,
+        cellRenderer: (p: { data?: BidView }) =>
+          p.data &&
+          (isClient && p.data.status === "PENDING" ? (
+            <button className="btn sm" disabled={busy} onClick={() => onAccept(p.data!)}>
+              Accept
+            </button>
+          ) : (
+            <small className="muted">{p.data.status}</small>
+          )),
+      },
+    ],
+    [isClient, busy, onAccept],
+  );
   return (
     <section className="card bids">
       <div className="pad hd">
         <h2>Bids</h2>
-        <small className="muted">
-          {ops.length + (house ? 1 : 0)} waiting. Receipts count escrow releases, not star ratings.
-        </small>
+        <small className="muted">{rows.length} waiting. Receipts count escrow releases, not star ratings.</small>
       </div>
-      <div className="section-label">Operators</div>
-      {ops.length === 0 && <p className="pad muted">No operator bids yet.</p>}
-      {ops.map((b) => (
-        <BidRow key={b.id} bid={b} isClient={isClient} busy={busy} onAccept={onAccept} />
-      ))}
-      <div className="section-label">House</div>
-      {house ? (
-        <BidRow bid={house} isClient={isClient} busy={busy} onAccept={onAccept} />
-      ) : (
-        <p className="pad muted">No House bid on this job.</p>
-      )}
+      <AcquitGrid rows={rows} columns={columns} rowId={bidRowId} empty="No bids yet." />
     </section>
   );
 }
 
-function BidRow({
-  bid,
-  isClient,
-  busy,
-  onAccept,
-}: {
-  bid: BidView;
-  isClient: boolean;
-  busy: boolean;
-  onAccept: (bid: BidView) => void;
-}) {
-  const isHouse = bid.label === "HOUSE";
-  return (
-    <div className={`bidrow ${bid.status === "PENDING" ? "" : "dim"}`}>
-      <div className="who">
-        <b>{isHouse ? `House (quality bar): ${houseName(bid.handle)}` : bid.handle}</b>
-        {bid.pitch && <p className="pitch">{bid.pitch}</p>}
-      </div>
-      <div className="num price">{usd(bid.price)}</div>
-      <div className="num">{eta(bid.eta)}</div>
-      <div className="mono agent" title={bid.runner}>
-        {bid.agent}
-      </div>
-      <div className="receipts">
-        {isHouse
-          ? bid.houseLine || `${bid.paidReceipts} passed verified CI`
-          : `${bid.paidReceipts} verified receipt${bid.paidReceipts === 1 ? "" : "s"}`}
-      </div>
-      <div className="r">
-        {isClient && bid.status === "PENDING" ? (
-          <button className="btn sm" disabled={busy} onClick={() => onAccept(bid)}>
-            Accept
-          </button>
-        ) : (
-          <small className="muted">{bid.status}</small>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Breakdown({ price }: { price: number }) {
+function Breakdown({ price, payee }: { price: number; payee: string }) {
   const fee = escrowFee(price);
   return (
     <div className="rows">
+      <div>
+        <span>Payee</span>
+        <b className="payee">{payee}</b>
+      </div>
       <div>
         <span>Job budget</span>
         <b className="num">{usd(price)}</b>
@@ -579,10 +567,30 @@ function JobClock({ job, onAdvanced }: { job: JobView; onAdvanced: (job: JobView
   );
 }
 
-function Checkout({ bid, approveUrl, redirecting, card }: { bid: BidView | null; approveUrl: string | null; redirecting: boolean; card: boolean }) {
+const CHECKOUT_STEP: Record<CheckoutPhase, string> = {
+  CREATING_ORDER: "Creating the order…",
+  AWAITING_APPROVAL: "Waiting for buyer approval",
+  CAPTURING: "Capturing the payment…",
+  REFUND_PENDING: "Refunding the payment…",
+};
+
+/** Names the stored checkout substate, so a reload mid-checkout still says where the payment is. */
+function Checkout({ job, bid, redirecting }: { job: JobView; bid: BidView | null; redirecting: boolean }) {
+  const card = job.funding === "card";
+  const phase = job.checkoutPhase;
+  const step = phase
+    ? CHECKOUT_STEP[phase]
+    : redirecting
+      ? card
+        ? "Charging the sandbox test card…"
+        : "Creating the PayPal order…"
+      : "Waiting for PayPal to confirm the payment.";
   return (
     <section className="card pad checkout">
       <h2>{card ? "Sandbox test card payment" : "PayPal sandbox checkout"}</h2>
+      <p className="checkout-step" role="status">
+        <b>{step}</b>
+      </p>
       <p className="muted">
         {bid ? (
           <>
@@ -592,15 +600,14 @@ function Checkout({ bid, approveUrl, redirecting, card }: { bid: BidView | null;
           "The order names the accepted operator as its only payee."
         )}
       </p>
-      {bid && <Breakdown price={bid.price} />}
-      {redirecting ? (
-        <p className="muted">{card ? "Charging the sandbox test card…" : approveUrl ? "Sending you to PayPal…" : "Creating the PayPal order…"}</p>
-      ) : approveUrl ? (
-        <a className="btn green" href={approveUrl}>
-          Resume PayPal checkout
-        </a>
-      ) : (
-        <p className="muted">Waiting for PayPal to confirm the payment.</p>
+      {bid && <Breakdown price={bid.price} payee={bid.handle} />}
+      {phase === "AWAITING_APPROVAL" && job.approveUrl && (
+        <div className="act">
+          {redirecting && <small className="muted">Sending you to PayPal…</small>}
+          <a className="btn green" href={job.approveUrl}>
+            Resume PayPal checkout
+          </a>
+        </div>
       )}
     </section>
   );
@@ -797,25 +804,30 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
   );
 }
 
+/** The ledger spine: once a bid is accepted, the money lines lead the page. */
 function Ledger({ job, locked }: { job: JobView; locked: BidView | null }) {
+  const columns = useMemo<ColDef<LedgerLine>[]>(
+    () => [
+      {
+        headerName: "Kind",
+        field: "kind",
+        minWidth: 70,
+        flex: 0.9,
+        cellRenderer: (p: { value?: LedgerLine["kind"] }) => p.value && <b className={`k ${p.value.toLowerCase()}`}>{p.value}</b>,
+      },
+      { headerName: "Amount", field: "cents", minWidth: 66, cellClass: "num strong", valueFormatter: (p) => usd(p.value as number) },
+      { headerName: "When", field: "at", minWidth: 70, cellClass: "num", valueFormatter: (p) => utc(p.value as string) },
+      { headerName: "Note", colId: "note", flex: 2, minWidth: 90, valueGetter: (p) => (p.data ? ledgerNote(p.data, locked) : "") },
+    ],
+    [locked],
+  );
   return (
-    <div className="card pad ledger">
-      <h2>Ledger</h2>
-      {job.ledger.length === 0 ? (
-        <p className="muted small">No money has moved yet.</p>
-      ) : (
-        <ul>
-          {job.ledger.map((line, i) => (
-            <li key={`${line.kind}-${i}`} className="mono">
-              <span className="when">{utc(line.at).replace(" UTC", "")}</span>
-              <span>{job.id}</span>
-              <b className={`k ${line.kind.toLowerCase()}`}>{line.kind}</b>
-              <span className="num">{usd(line.cents)}</span>
-              <span className="note">{ledgerNote(line, locked)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <section className="card spine">
+      <div className="pad hd">
+        <h2>Ledger</h2>
+        <small className="muted">Every movement of this job's money, in order.</small>
+      </div>
+      <AcquitGrid rows={job.ledger} columns={columns} empty="No money has moved yet." />
+    </section>
   );
 }

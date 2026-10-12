@@ -6,6 +6,7 @@ import type {
   JobResponse,
   JobView,
   OperatorView,
+  ReceiptRow,
   SessionResponse,
   SessionUser,
   SignedInResponse,
@@ -82,6 +83,7 @@ export const api = {
     request<JobResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/clock`, { advanceMs }),
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
+  receipts: () => request<{ receipts: ReceiptRow[]; nextCursor: null }>("GET", "/api/me/receipts"),
   command: (key: string, command: UserCommand) => request<CommandResponse>("POST", "/api/commands", { key, command }),
   approveCli: (code: string) => request<SessionUser>("POST", "/api/cli/approve", { code }),
 };

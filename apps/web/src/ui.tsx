@@ -13,12 +13,43 @@ export function StatusPill({ job }: { job: JobView }) {
   );
 }
 
+export function RepoLink({ repository }: { repository: string | null }) {
+  return repository ? (
+    <a className="mono" href={`https://github.com/${repository}`} target="_blank" rel="noreferrer">
+      {repository}
+    </a>
+  ) : (
+    <>the deployment's shared repository</>
+  );
+}
+
+/** What the demo connected for the visitor: shown once at sign-up and on the client's dashboard. */
+export function ConnectedRepo({ repository }: { repository: string | null }) {
+  return (
+    <p className="connected">
+      <b>Connected: issues, pull requests, checks</b>
+      <span>
+        Repository <RepoLink repository={repository} />
+      </span>
+    </p>
+  );
+}
+
 export function houseName(handle: string): string {
   return handle.replace(/^house-/, "");
 }
 
+/** Operator bids first, then the House bid: the order the API serves them in. */
+export function allBids(job: JobView): BidView[] {
+  return [...job.bids.operators, ...(job.bids.house ? [job.bids.house] : [])];
+}
+
 export function lockedBid(job: JobView): BidView | null {
   if (!job.lockedTo) return null;
-  const all = [...job.bids.operators, ...(job.bids.house ? [job.bids.house] : [])];
-  return all.find((b) => b.operator === job.lockedTo) ?? null;
+  return allBids(job).find((b) => b.operator === job.lockedTo) ?? null;
+}
+
+/** The order's payee: the locked operator once escrow holds, the chosen bid while the order is still being made. */
+export function payeeBid(job: JobView): BidView | null {
+  return lockedBid(job) ?? allBids(job).find((b) => b.status === "CHOSEN") ?? null;
 }

@@ -4,6 +4,7 @@ import type { DeploymentMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
 import { Link, match, useRouter } from "./router";
 import { SessionContext, useSession, type Session } from "./session";
+import { RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
 import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
@@ -102,14 +103,7 @@ function DemoBar({ session, visitor, onSwitched }: { session: Session; visitor: 
           Signed in as <b className="mono">{session.user.handle}</b>
         </span>
         <span className="muted">
-          Repository{" "}
-          {visitor.repository ? (
-            <a className="mono" href={`https://github.com/${visitor.repository}`} target="_blank" rel="noreferrer">
-              {visitor.repository}
-            </a>
-          ) : (
-            "the deployment's shared repository"
-          )}
+          Repository <RepoLink repository={visitor.repository} />
         </span>
         <span className="muted" title={visitor.expiresAt}>{demoEnds(visitor.expiresAt, Date.now())}</span>
         {error && <span className="alert">{error}</span>}

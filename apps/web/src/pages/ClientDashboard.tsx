@@ -4,7 +4,7 @@ import { api, ApiError } from "../api";
 import { usd, utc } from "../format";
 import { Link } from "../router";
 import { rememberedJobs, useSession } from "../session";
-import { StatusPill } from "../ui";
+import { ConnectedRepo, StatusPill } from "../ui";
 
 /**
  * The contract documents only `GET /api/jobs?status=OPEN`. We ask for `/api/jobs` first (own jobs plus
@@ -26,7 +26,7 @@ async function loadJobs(handle: string): Promise<JobView[]> {
 }
 
 export function ClientDashboard() {
-  const { user } = useSession();
+  const { user, visitor } = useSession();
   const [jobs, setJobs] = useState<JobView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,6 +45,11 @@ export function ClientDashboard() {
         </div>
         <Link to="/jobs/new" className="btn">New job</Link>
       </div>
+      {visitor && (
+        <div className="card pad">
+          <ConnectedRepo repository={visitor.repository} />
+        </div>
+      )}
       {error && <div className="alert">{error}</div>}
       {!jobs && !error && <p className="muted">Loading jobs…</p>}
       {jobs && jobs.length === 0 && (
