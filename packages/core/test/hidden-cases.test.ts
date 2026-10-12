@@ -24,8 +24,8 @@ import { demoFixture } from "./hidden-fixture.ts";
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
-/** The K1 live-proof deployment file, written 0600 and outside every git repository. Its expected values are never printed. */
-const PRIVATE_CASES_PATH = "/home/factory-user/repos/acquit/data/private/hidden-cases.json";
+/** The deployment's private case file: mode 0600 under its own store, outside every git repository (the VM's store is /var/lib/acquit/private). Its expected values are never printed. */
+const PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
 const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
