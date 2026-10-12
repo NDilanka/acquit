@@ -19,7 +19,7 @@ import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { sweepExpiredVisitors } from "../src/sweep.ts";
 import { insertVisitor, newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../src/visitors.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 
 const merchant = "sandbox-seller" as MerchantId;
 const source = "maya-client/invoice-app";
@@ -113,7 +113,7 @@ test("a swept visitor keeps its operator, credits, and jobs, loses its sessions,
 	const noon = instant("2026-10-06T12:00:00.000Z");
 	const deadline = instant("2026-10-06T13:00:00.000Z");
 	let currentNow = noon;
-	const service = createAcquit({ databaseUrl: path, clientRepository: source, hiddenContract: exampleContract, demo: { merchant },
+	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture(exampleContract, { repository: source })], demo: { merchant },
 		clock: { now: () => currentNow },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },

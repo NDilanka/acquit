@@ -7,15 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { CommitSha, Digest } from "../src/ids.ts";
-import { PROTECTED_PATHS } from "../src/seed-data.ts";
+import { demoProtectedPaths } from "./hidden-fixture.ts";
 import { screenDiff } from "../src/verifier.ts";
 import type { DefinitionOfDone, RejectReason } from "../src/verifier.ts";
 import { gitSource } from "../../verifier/judge.ts";
 
 // The shipped contract, so these tests screen against the list the judge uses.
 const definitionOfDone: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" },
-	frozenAt: "0".repeat(40) as CommitSha, frozenTests: [], hiddenManifest: "0".repeat(64) as Digest, hiddenTests: [],
-	protectedPaths: PROTECTED_PATHS };
+	frozenAt: "0".repeat(40) as CommitSha, frozenTestPath: "tests/totals.test.ts", frozenTests: [],
+	hiddenManifest: "0".repeat(64) as Digest, hiddenTests: [], protectedPaths: demoProtectedPaths };
 
 function frozenRepository(): { readonly repo: string; readonly frozen: CommitSha; readonly remove: () => void } {
 	const repo = mkdtempSync(join(tmpdir(), "acquit-screen-"));

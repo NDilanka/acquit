@@ -28,10 +28,12 @@ export const SUBJECT_VALUE_DEPTH = 32;
 /** The longest error string a reply may carry. */
 export const SUBJECT_ERROR_CHARS = 1_024;
 
-/** Frozen at OpenJob. The hidden cases themselves never leave the judge. */
+/** Frozen at OpenJob from the job's manifest. The hidden cases themselves never leave the judge. */
 export type DefinitionOfDone = {
 	readonly issue: { readonly repository: string; readonly number: number; readonly title: string };
 	readonly frozenAt: CommitSha;
+	/** The frozen test file the judge extracts the frozen cases from, inside the fixture repository. */
+	readonly frozenTestPath: string;
 	readonly frozenTests: readonly TestId[];
 	readonly hiddenManifest: Digest;
 	readonly hiddenTests: readonly TestId[];

@@ -34,6 +34,7 @@ import { dockerReachable, dockerSubject, subjectFor } from "../../verifier/subje
 import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER, runSignature } from "../../verifier/signing.ts";
 import { renderSubmission } from "../../acquit-cli/src/submit.ts";
 import { exampleCases } from "./hidden-fixture.ts";
+import { bookEntry, fixtureBook } from "./verifier-book.ts";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
@@ -51,7 +52,7 @@ const fixtureSkip = FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoi
 
 function definition(repository = "maya-client/invoice-app"): DefinitionOfDone {
 	return { issue: { repository, number: 12, title: "Totals round wrong for 3-decimal currencies" },
-		frozenAt: frozenCommit, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+		frozenAt: frozenCommit, frozenTestPath: "tests/totals.test.ts", frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
 		hiddenManifest: hiddenManifest(exampleCases).digest, hiddenTests: exampleCases.map(test => test.id),
 		protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
 }
@@ -70,7 +71,7 @@ function signed(body: string, options: { readonly secret?: string; readonly time
 }
 
 function serviceFor(options: { readonly callbackUrl: string; readonly source?: VerifierServiceDeps["source"]; readonly subject?: VerifierServiceDeps["subject"] }): VerifierService {
-	return createVerifierService({ runSecret, cases: exampleCases, callback: { url: options.callbackUrl, secret: callbackSecret },
+	return createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: options.callbackUrl, secret: callbackSecret },
 		subject: options.subject ?? subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
 		source: options.source ?? (async () => ({ source: gitSource(FIXTURE!), remove: () => {} })), log: () => {} });
 }
@@ -185,7 +186,7 @@ test("a rejection with hundreds of protected paths still ends the job REJECTED",
 	let log = "";
 	const changes = Array.from({ length: 600 }, (_, index) => ({ path: `.github/workflows/w${index}.yml`, status: "MODIFIED" as const,
 		from: null, modeChanged: false, gitlink: false, binary: false, addedText: "" }));
-	const wired = createVerifierService({ runSecret, cases: exampleCases, callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
+	const wired = createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
 		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
 		source: async () => ({ remove: () => {},
 			source: { readFile: (commit, path) => gitSource(FIXTURE!).readFile(commit, path), diff: () => ({ changes }),
@@ -256,7 +257,7 @@ test("a source failure's detail is bounded and stripped of token shapes before i
 	});
 	await new Promise<void>(resolve => target.listen(0, "127.0.0.1", () => resolve()));
 	const port = (target.address() as AddressInfo).port;
-	const service = createVerifierService({ runSecret, cases: exampleCases, callback: { url: `http://127.0.0.1:${port}/api/verifier/callback`, secret: callbackSecret },
+	const service = createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: `http://127.0.0.1:${port}/api/verifier/callback`, secret: callbackSecret },
 		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
 		source: async () => { throw new Error(`SUBMITTED_COMMIT_UNFETCHABLE: https://x-access-token:${leaked}@github.com/acquit-forks/invoice-app-7Q2K.git`); },
 		log: () => {} });
@@ -298,7 +299,7 @@ test("a duplicate run id is accepted once and judged once", { skip: fixtureSkip 
 test("the service judges a clean commit and posts a callback the real API applies", { skip: fixtureSkip, timeout: 60_000 }, async () => {
 	const apiPort = await freePort();
 	let log = "";
-	const wired = createVerifierService({ runSecret, cases: exampleCases, callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
+	const wired = createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
 		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
 		source: async () => ({ source: gitSource(FIXTURE!), remove: () => {} }), log: line => { log += `[verifier] ${line}\n`; } });
 	const shell = await listen(wired);
@@ -365,7 +366,7 @@ test("the service judges a clean commit and posts a callback the real API applie
 test("a source that never arrives posts a signed RUN_FAILED the real API applies at once", { timeout: 60_000 }, async () => {
 	const apiPort = await freePort();
 	let log = "";
-	const wired = createVerifierService({ runSecret, cases: exampleCases, callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
+	const wired = createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
 		subject: subjectFor({ subject: "child", dev: true }), publisher: createFakeGitHubApp(),
 		source: async () => { throw new Error("SUBMITTED_COMMIT_UNFETCHABLE: acquit-forks/invoice-app-7Q2K 5cccb6651531: remote: Repository not found"); },
 		log: line => { log += `[verifier] ${line}\n`; } });
@@ -421,7 +422,7 @@ test("a source that never arrives posts a signed RUN_FAILED the real API applies
 test("a publish that fails after a clean judgment posts a named RUN_FAILED the API applies", { skip: fixtureSkip, timeout: 60_000 }, async () => {
 	const apiPort = await freePort();
 	let log = "";
-	const wired = createVerifierService({ runSecret, cases: exampleCases, callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
+	const wired = createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: `http://127.0.0.1:${apiPort}/api/verifier/callback`, secret: callbackSecret },
 		subject: subjectFor({ subject: "child", dev: true }),
 		publisher: { publishVerified: async () => { throw new Error("no App installation on NDilanka/invoice-app"); } },
 		source: async () => ({ source: gitSource(FIXTURE!), remove: () => {} }), log: line => { log += `[verifier] ${line}\n`; } });
@@ -537,7 +538,7 @@ test("the Docker subject verifies the honest fix", { skip: fixtureSkip !== false
 	});
 	await new Promise<void>(resolve => target.listen(0, "127.0.0.1", () => resolve()));
 	const port = (target.address() as AddressInfo).port;
-	const service = createVerifierService({ runSecret, cases: exampleCases, callback: { url: `http://127.0.0.1:${port}/api/verifier/callback`, secret: callbackSecret },
+	const service = createVerifierService({ runSecret, fixtures: fixtureBook(bookEntry(exampleCases)), callback: { url: `http://127.0.0.1:${port}/api/verifier/callback`, secret: callbackSecret },
 		subject: dockerSubject(), publisher: createFakeGitHubApp(), source: async () => ({ source: gitSource(FIXTURE!), remove: () => {} }), log: () => {} });
 	try {
 		assert.equal((await service.handle(signed(JSON.stringify(runRequest("run_svc_docker"))))).status, 202);

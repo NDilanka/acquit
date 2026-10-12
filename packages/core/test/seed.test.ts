@@ -16,7 +16,7 @@ import { usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { newVisitorId } from "../src/visitors.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture } from "./hidden-fixture.ts";
 
 const merchant = "sandbox-seller" as MerchantId;
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -49,7 +49,7 @@ test("a re-seed forgets the reservations a previous day spent", async () => {
 		assert.equal(reservations, 0, "the seed leaves no reservation behind");
 		// The fresh visitor's own reservation is the observable effect: with the stale day still there,
 		// the deployment-wide cap refuses it before its row exists.
-		const service = createAcquit({ databaseUrl: path, hiddenContract: exampleContract, demo: { merchant },
+		const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant },
 			paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 				webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 			verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });

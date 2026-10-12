@@ -1,5 +1,6 @@
-// The client repository is deployment config. One value is parsed at the boundary, stored in the
-// contract OpenJob freezes, and read from there by the work-repo fork, the judge, and the publisher.
+// The client repository is deployment config: the demo fork source, parsed at the boundary. The
+// repositories OpenJob accepts come from the fixture registry; the visitor's own fork follows its
+// fixture's demo prefix. The parsed value is read by the demo provisioner, never by OpenJob.
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -16,7 +17,7 @@ import type { JobProjection } from "../src/job.ts";
 import { usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { clientRepositoryEnv } from "../../verifier/config.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 
 const maya: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 const demo = "maya-client/invoice-app";
@@ -38,11 +39,11 @@ test("the config boundary reads ACQUIT_CLIENT_REPOSITORY and refuses a malformed
 		(error: Error) => error.message.includes("ACQUIT_CLIENT_REPOSITORY") && !error.message.includes("not-a-repository"));
 });
 
-test("a factory with no client repository named opens the demo one, never nothing", async () => {
-	// A caller that omits the field must still get the demo repository the old code froze; an
-	// undefined repository would deny every OpenJob with NOT_FOUND.
+test("OpenJob opens the fixture the registry names, never nothing", async () => {
+	// A factory whose registry carries the demo fixture opens jobs on it; an unregistered
+	// repository would deny every OpenJob with NOT_FOUND.
 	const root = await mkdtemp(join(tmpdir(), "acquit-client-default-"));
-	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), hiddenContract: exampleContract,
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), fixtures: [demoFixture(exampleContract)], clock: { now: () => instant("2026-10-06T12:00:00Z") },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -56,7 +57,7 @@ test("a factory with no client repository named opens the demo one, never nothin
 
 test("OpenJob freezes the repository the caller's own visitor holds, and refuses any other", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-visitor-repo-"));
-	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), clientRepository: live, hiddenContract: exampleContract,
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), fixtures: [demoFixture(exampleContract, { repository: live })], clock: { now: () => instant("2026-10-06T12:00:00Z") },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -76,9 +77,9 @@ test("OpenJob freezes the repository the caller's own visitor holds, and refuses
 	} finally { closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
-test("OpenJob freezes the deployment's repository and refuses any other", async () => {
+test("OpenJob freezes the registered fixture repository and refuses any other", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-client-repo-"));
-	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), clientRepository: live, hiddenContract: exampleContract,
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), fixtures: [demoFixture(exampleContract, { repository: live, demoForkPrefix: undefined })], clock: { now: () => instant("2026-10-06T12:00:00Z") },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });

@@ -15,7 +15,7 @@ import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { sweepExpiredVisitors } from "../src/sweep.ts";
 import { insertVisitor, newVisitorId, principalOf, readVisitor, repositoryForClient, visitorHandles, visitorOfHandle, visitorRepositoryName } from "../src/visitors.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture } from "./hidden-fixture.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const merchant = "sandbox-seller" as MerchantId;
@@ -73,7 +73,7 @@ test("two visitors never collide on an id, a handle, or a repository name", () =
 test("a fork that fails leaves the visitor FAILED, kept for the sweep, and no session", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-provision-"));
 	const path = join(root, "acquit.db");
-	const service = createAcquit({ databaseUrl: path, hiddenContract: exampleContract, demo: { merchant }, clock: { now: () => now },
+	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant }, clock: { now: () => now },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -94,7 +94,7 @@ test("a fork that fails leaves the visitor FAILED, kept for the sweep, and no se
 test("a crash between the fork and the bind leaves the visitor's repository named for the sweep", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-provision-"));
 	const path = join(root, "acquit.db");
-	const service = createAcquit({ databaseUrl: path, hiddenContract: exampleContract, demo: { merchant }, clock: { now: () => now },
+	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant }, clock: { now: () => now },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "1", privateKey: "key", organization: "acquit-forks" } });

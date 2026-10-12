@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
 import { githubAppEnv, serviceConfig, VerifierConfigError } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
-import { hiddenCasesSource, loadHiddenCases } from "./hidden.ts";
+import { buildFixtureBook, fixtureRegistrySource, loadFixtureRegistry } from "./fixtures.ts";
 import { createVerifierService, BODY_LIMIT_BYTES } from "./service.ts";
 import type { VerifierService } from "./service.ts";
 import { assertSubjectAllowed, subjectFor, verifierSubjectEnv } from "./subject.ts";
@@ -18,7 +18,8 @@ import { assertSubjectAllowed, subjectFor, verifierSubjectEnv } from "./subject.
 /** The production wiring: the Docker subject (or the child one under ACQUIT_DEV), the real App client, and a GitHub source. */
 export function createProductionService(): { readonly service: VerifierService; readonly port: number; readonly subject: string } {
 	const config = serviceConfig();
-	const cases = loadHiddenCases();
+	const registry = loadFixtureRegistry();
+	const book = buildFixtureBook(registry);
 	const selection = verifierSubjectEnv();
 	assertSubjectAllowed(selection);
 	const github = githubAppEnv();
@@ -26,7 +27,7 @@ export function createProductionService(): { readonly service: VerifierService; 
 	const app = createGitHubApp(github);
 	return { port: config.port, subject: selection.subject,
 		service: createVerifierService({ runSecret: config.runSecret, callback: { url: config.callbackUrl, secret: config.callbackSecret },
-			subject: subjectFor(selection), publisher: app, cases,
+			subject: subjectFor(selection), publisher: app, fixtures: book,
 			source: createRunSource({ organization: github.organization ?? "", tokenFor: owner => app.installationToken(owner) }),
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };
 }
@@ -62,10 +63,10 @@ export function createHttpShell(service: VerifierService, port: number): (reques
 	};
 }
 
-/** The one boot line the journal keeps. It names the hidden-cases source path, so a deployment's
- * evidence can show which file the verifier judged from; a case value never appears. */
-export function bootLine(port: number, subject: string, hiddenCasesPath: string, missing: readonly string[]): string {
-	return `Acquit verifier: http://127.0.0.1:${port} (subject ${subject}, hidden cases ${hiddenCasesPath}, github ${missing.length ? `missing ${missing.join(", ")}` : "configured"})`;
+/** The one boot line the journal keeps. It names the fixture registry the runs are judged from, so a
+ * deployment's evidence can show which declaration governed; a case value never appears. */
+export function bootLine(port: number, subject: string, fixtureRegistryPath: string, missing: readonly string[]): string {
+	return `Acquit verifier: http://127.0.0.1:${port} (subject ${subject}, fixtures ${fixtureRegistryPath}, github ${missing.length ? `missing ${missing.join(", ")}` : "configured"})`;
 }
 
 /** Answers 413 and stops the request once its declared or streamed size passes the cap. */
@@ -80,7 +81,8 @@ async function main(): Promise<void> {
 	try { built = createProductionService(); }
 	catch (error) {
 		// A configuration refusal names its code and the environment variable, never a value, and exits before the port is bound.
-		if (error instanceof VerifierConfigError) { console.error(`Acquit verifier: ${error.code}: ${error.message}`); process.exit(1); }
+		// A configuration refusal names its code and the environment variable, never a value, and exits before the port is bound.
+		if (error instanceof VerifierConfigError || (error instanceof Error && error.name === "FixtureConfigError")) { console.error(`Acquit verifier: ${(error as { code?: string }).code ?? error.name}: ${error.message}`); process.exit(1); }
 		throw error;
 	}
 	const { service, port, subject } = built;
@@ -97,8 +99,8 @@ async function main(): Promise<void> {
 	process.on("SIGTERM", () => { void stop(); });
 	process.on("SIGINT", () => { void stop(); });
 	server.listen(port, "127.0.0.1", () => {
-		// Names only: a value never reaches a log line. The hidden-cases source is a path, not a value.
-		console.log(bootLine(port, subject, hiddenCasesSource(), missing));
+		// Names only: a value never reaches a log line. The fixture registry is a path, not a case.
+		console.log(bootLine(port, subject, fixtureRegistrySource(), missing));
 	});
 }
 

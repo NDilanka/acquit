@@ -10,20 +10,20 @@ import { join } from "node:path";
 import test from "node:test";
 import type { CommitSha, JobId } from "../src/ids.ts";
 import { parseJobId } from "../src/ids.ts";
-import { frozenDefinition } from "../src/seed-data.ts";
+import { manifestOf } from "../src/fixtures.ts";
 import type { VerifierRunRequest } from "../src/verifier.ts";
 import { createRunSource, SourceUnavailable } from "../../verifier/fetch.ts";
 import type { GitResult, RunSourceOptions } from "../../verifier/fetch.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 
 const token = "ghs_live_proof_token";
 const submitted = "5cccb66515313caed72e4af329a62fc011139426" as CommitSha;
-const frozen = frozenDefinition("maya-client/invoice-app", exampleContract).frozenAt;
+const frozen = manifestOf(demoFixture(exampleContract), "maya-client/invoice-app").frozenAt;
 const jobId = parseJobId("job_source") as JobId;
 
 function request(repository = "maya-client/invoice-app"): VerifierRunRequest {
 	return { runId: "run_source_1" as VerifierRunRequest["runId"], jobId, ordinal: 1, sourceCommit: submitted,
-		definitionOfDone: { ...frozenDefinition(repository, exampleContract) } };
+		definitionOfDone: { ...manifestOf(demoFixture(exampleContract), repository) } };
 }
 
 /** A git runner that records what it was asked, with the mirror's config file as it stands at the call. */

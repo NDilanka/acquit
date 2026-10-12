@@ -17,8 +17,8 @@ import type { Ports, Store } from "../src/effects.ts";
 import { usd } from "../src/ledger.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Bps } from "../src/paypal.ts";
-import { frozenDefinition } from "../src/seed-data.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { manifestOf } from "../src/fixtures.ts";
+import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Actor } from "../src/acquit.ts";
 
@@ -50,7 +50,7 @@ function operatorRow(id: OperatorId, receipts: number): OperatorRow {
 }
 function openRow(respondBy: Instant): JobRow {
 	return { id: jobId, version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
-		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: frozenDefinition("maya-client/invoice-app", exampleContract), terms: TERMS },
+		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: manifestOf(demoFixture(exampleContract), "maya-client/invoice-app"), terms: TERMS },
 		bids: [
 			{ id: houseBid, operator: house, handle: "house-tsfix", kind: "HOUSE", payee: merchant, agent: "house-ts-fixer" as AgentId,
 				runner: "claude-code", price: usd("400.00"), eta: hours(24), pitch: "house", placedAt: now,
@@ -62,7 +62,7 @@ function openRow(respondBy: Instant): JobRow {
 }
 function acquire(root: string, name: string, clockNow: () => Instant) {
 	const databaseUrl = join(root, name);
-	const service = createAcquit({ databaseUrl, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: clockNow },
+	const service = createAcquit({ databaseUrl, fixtures: [demoFixture(exampleContract)], clock: { now: clockNow },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5399", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
@@ -279,7 +279,7 @@ test("the grant counts the receipt read when it is written, not a snapshot from 
 	const stale = Object.create(store) as Store;
 	stale.receiptCounts = async () => new Map([[devon, 0]]);
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store: stale, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: exampleContract, clock: { now: () => grantAt },
+	const ports: Ports = { store: stale, feeModel: model, fixtures: [demoFixture(exampleContract)], clock: { now: () => grantAt },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented }, alerts: { raise: unimplemented },
 		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, verifyWebhookDelivery: unimplemented, readResource: unimplemented } };
 	try {

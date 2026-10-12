@@ -19,6 +19,7 @@ import type { CreditAccount, Credits } from "../src/credits.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
 import { SqliteStore } from "../src/store.ts";
+import { demoFixture } from "./hidden-fixture.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -53,8 +54,8 @@ function fixture() {
 	/** Every order the outbox created, as the funding source the effect bound to it. */
 	const orders: string[] = [];
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app",
-		hiddenContract: { ids: [], digest: "c0".repeat(32) as Digest }, clock: { now: () => now }, fundingMode: () => "checkout",
+	const ports: Ports = { store, feeModel: model, fixtures: [demoFixture({ ids: [], digest: "c0".repeat(32) as Digest })],
+		clock: { now: () => now }, fundingMode: () => "checkout",
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented },
 		alerts: { raise: unimplemented }, paypal: {
 			dispatch: async call => {

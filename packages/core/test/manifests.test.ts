@@ -17,7 +17,7 @@ import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
 import { matchFixture, type FixtureContract } from "../src/fixtures.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { exampleContract, demoProtectedPaths } from "./hidden-fixture.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -34,7 +34,7 @@ const fixtureA: FixtureContract = {
 	frozenTests: Array.from({ length: 48 }, (_, i) => `frozen:${i + 1}` as TestId),
 	hiddenTests: exampleContract.ids,
 	hiddenManifest: exampleContract.digest,
-	protectedPaths: ["tests/**", ".github/**", "package.json"] as FixtureContract["protectedPaths"],
+	protectedPaths: demoProtectedPaths,
 	demoForkPrefix: "acquit-forks/",
 };
 /** Fixture 2: a second fixture, its own issue, its own private cases (distinct ids and digest). */
@@ -46,7 +46,7 @@ const fixtureB: FixtureContract = {
 	frozenTests: Array.from({ length: 12 }, (_, i) => `frozen:${i + 1}` as TestId),
 	hiddenTests: [1, 2, 3].map(i => `hidden2:${i}` as TestId),
 	hiddenManifest: "c1".repeat(32) as Digest,
-	protectedPaths: ["tests/**"] as FixtureContract["protectedPaths"],
+	protectedPaths: ["tests/**"] as unknown as FixtureContract["protectedPaths"],
 };
 
 function emptyAccount(operator = "devon-ops" as OperatorId): import("../src/credits.ts").CreditAccount {
@@ -88,7 +88,7 @@ function portsFor(store: SqliteStore, fixtures: readonly FixtureContract[]): Por
 }
 
 function fixtureRegistry(fixtures: readonly FixtureContract[]) {
-	const store = new SqliteStore(":memory:", fixtures.map(f => ({ repository: f.repository, issue: f.issue.number, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
+	const store = new SqliteStore(":memory:", fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
 	seedOperators(store);
 	return { store, ports: portsFor(store, fixtures) };
 }

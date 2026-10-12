@@ -18,11 +18,12 @@ import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookEnvelope, WebhookResourceKind } from "./paypal.ts";
-import { frozenDefinition, ISSUE } from "./seed-data.ts";
-import type { HiddenContract } from "./seed-data.ts";
+import { manifestOf, matchFixture } from "./fixtures.ts";
+import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
 import type { WebhookEventRow } from "./store.ts";
 import type { VerifierPort } from "./verifier.ts";
+import type { DefinitionOfDone } from "./verifier.ts";
 
 export type Effect = JobEffect | OperatorEffect;
 
@@ -103,6 +104,11 @@ export type AtomicCommit = {
 	 * Absent or null on every write that settles no release.
 	 */
 	readonly paidReceipt?: OperatorId | null;
+	/**
+	 * The manifest this write freezes, exactly when the write opens the job. One row per job, written
+	 * in the same transaction, so a job and the contract its judge reads are never separable.
+	 */
+	readonly manifest?: { readonly jobId: JobId; readonly done: DefinitionOfDone } | null;
 	readonly outbox: readonly OutboxRow[];
 	/**
 	 * The leased effect this write settles, in the state the write leaves it in. A plan that refused the
@@ -137,6 +143,8 @@ export interface Store {
 	/** One operator's `paid_receipts`, read at the moment a grant needs it. 0 when the row holds none. */
 	receiptCount(operator: OperatorId): Promise<number>;
 	readJob(jobId: JobId): Promise<JobRow | null>;
+	/** The manifest frozen for this job at OpenJob, or null when the row predates the manifest freeze. */
+	readManifest(jobId: JobId): Promise<DefinitionOfDone | null>;
 	receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>>;
 	readOperator(operator: OperatorId): Promise<OperatorRow | null>;
 	readCredits(operator: OperatorId): Promise<CreditAccount>;
@@ -153,10 +161,8 @@ export interface Store {
 export type Ports = {
 	readonly fundingMode?: () => "checkout" | "card";
 	readonly feeModel: ProcessorFeeModel;
-	/** The deployment's client repository: the one OpenJob accepts and freezes into the contract. */
-	readonly clientRepository: string;
-	/** The deployment's hidden cases, as the contract core may store: their ids and their digest, never the cases. */
-	readonly hiddenContract: HiddenContract;
+	/** The deployment's registered fixtures. OpenJob freezes a job's manifest from one of these. */
+	readonly fixtures: readonly FixtureContract[];
 	readonly store: Store;
 	readonly paypal: PayPal;
 	readonly verifier: VerifierPort;
@@ -186,12 +192,14 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const now = ports.clock.now();
 		let loaded: Loaded = { kind: "NONE" };
 		if (command.type === "OpenJob") {
-			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs on
-			// the deployment's own. Either way the contract freezes exactly the repository this command named.
-			const clientRepository = actor.role === "CLIENT" ? actor.repository ?? ports.clientRepository : ports.clientRepository;
-			if (command.repository !== clientRepository || command.issueNumber !== 12) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "OPEN_JOB", title: ISSUE.issues[0].title,
-				contract: { definitionOfDone: frozenDefinition(clientRepository, ports.hiddenContract), budget: command.budget,
+			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs
+			// on a registered fixture repository. Either way the manifest freezes exactly this command's
+			// fixture, keyed by repository and issue, and never a contract compiled into this package.
+			const actorRepository = actor.role === "CLIENT" ? actor.repository ?? null : null;
+			const fixture = matchFixture(ports.fixtures, command.repository, command.issueNumber, actorRepository);
+			if (!fixture) return { kind: "DENIED", reason: "NOT_FOUND" };
+			loaded = { kind: "OPEN_JOB", title: fixture.issue.title,
+				contract: { definitionOfDone: manifestOf(fixture, command.repository), budget: command.budget,
 					deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
 		} else if (command.type === "PlaceBid") {
 			if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
@@ -224,6 +232,8 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			job: { expectedVersion: row?.version ?? null, row: plan.next, wakeAt: wakeAt(plan.next) }, operator: null,
 			credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
 			paidReceipt: paidReceiptOf(row, plan.next),
+			manifest: command.type === "OpenJob" && plan.next.contract.definitionOfDone
+				? { jobId: plan.next.id, done: plan.next.contract.definitionOfDone } : null,
 			outbox: plan.effects.map(effect => outboxRow(effect, now)), settlement: null, delivery: null,
 			reservations: plan.reservations ?? [],
 			request: { actor: actorKey, key, payloadDigest, result },
@@ -381,9 +391,10 @@ async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Ex
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
 		return "WORKED";
 	}
-	const done = job.contract.definitionOfDone;
+	// The judge reads the job's own frozen manifest, never a deployment-wide contract. A row stored
+	// before the manifest freeze has no test list to judge against. Record it for a human instead of starting a run.
+	const done = await ports.store.readManifest(job.id);
 	if (done === null) {
-		// A row stored before the freeze has no test list to judge against. Record it for a human instead of starting a run.
 		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "CONTRACT_NOT_FROZEN" });
 		return "WORKED";
 	}

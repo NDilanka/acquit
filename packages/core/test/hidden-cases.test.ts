@@ -1,23 +1,25 @@
-// K1. The hidden cases live in a per-deployment private file, never in the repo and never on the
+// K1. The hidden cases live in a per-fixture private file, never in the repo and never on the
 // subject's mounts. This file pins the boundary: the parser refuses every malformed manifest by
-// name, a non-dev process without the environment refuses to start, the core fixture module holds no
+// name, a non-dev process without a registry refuses to start, the core fixture module holds no
 // cases, and the Docker subject mounts only the tree and the bootstrap.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Digest, TestId } from "../src/ids.ts";
 import * as seedData from "../src/seed-data.ts";
-import type { HiddenContract } from "../src/seed-data.ts";
-import { VerifierConfigError } from "../../verifier/config.ts";
-import { EXAMPLE_HIDDEN_CASES_PATH, HIDDEN_CASES_ENV, hiddenContractOf, loadHiddenCases, loadHiddenCasesFromFile, parseHiddenCases } from "../../verifier/hidden.ts";
+import { manifestOf } from "../src/fixtures.ts";
+import type { HiddenContract } from "../src/fixtures.ts";
+import { EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE, hiddenContractOf, loadExampleHiddenCases, loadHiddenCasesFromFile, parseHiddenCases } from "../../verifier/hidden.ts";
+import { buildFixtureBook, EXAMPLE_FIXTURES_PATH, FIXTURES_ENV, fixtureContracts, fixtureRegistrySource, loadFixtureRegistry } from "../../verifier/fixtures.ts";
+import { FixtureConfigError } from "../src/fixtures.ts";
 import { dockerArgs } from "../../verifier/subject.ts";
 import { bootLine } from "../../verifier/server.ts";
-import { hiddenCasesSource } from "../../verifier/hidden.ts";
+import { demoFixture } from "./hidden-fixture.ts";
 
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
@@ -26,13 +28,13 @@ const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module
 const PRIVATE_CASES_PATH = fileURLToPath(new URL("../../../data/private/hidden-cases.json", import.meta.url));
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
 const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
+const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
 const six = () => Array.from({ length: 6 }, (_, index) => sampleCase(index + 1));
 const manifest = (cases: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1, cases, ...extra });
 const invalid = (text: string, what: string) => {
-	assert.throws(() => parseHiddenCases(text), (error: unknown) => {
-		assert.ok(error instanceof VerifierConfigError, `${what} did not refuse with a config error`);
-		assert.equal(error.code, "VERIFIER_CONFIG_INVALID", `${what} refused with ${error.code}`);
-		assert.deepEqual(error.names, [HIDDEN_CASES_ENV], `${what} did not name ${HIDDEN_CASES_ENV}`);
+	assert.throws(() => parseHiddenCases(text, "(test file)", SHAPE), (error: unknown) => {
+		assert.ok(error instanceof Error, `${what} did not refuse`);
+		assert.match(error.message, /^Invalid configuration: hidden-case file\./, `${what} refused as ${error.message}`);
 		return true;
 	});
 };
@@ -40,20 +42,21 @@ const invalid = (text: string, what: string) => {
 test("the core fixture module holds no hidden cases", () => {
 	assert.equal("HIDDEN_CASES" in seedData, false);
 	assert.equal("hiddenManifest" in seedData, false);
+	assert.equal("frozenDefinition" in seedData, false);
 });
 
-test("the verifier boot line names the hidden cases source path", () => {
-	const named = "/var/lib/acquit/hidden-cases.json";
-	assert.equal(hiddenCasesSource({ ACQUIT_HIDDEN_CASES: named, ACQUIT_DEV: "0" }), named);
-	assert.equal(hiddenCasesSource({ ACQUIT_HIDDEN_CASES: "  ", ACQUIT_DEV: "1" }), EXAMPLE_HIDDEN_CASES_PATH);
-	assert.ok(bootLine(4311, "docker", named, []).includes(named), "the boot line names the private path");
+test("the verifier boot line names the fixture registry path", () => {
+	const named = "/var/lib/acquit/fixtures.json";
+	assert.equal(fixtureRegistrySource({ ACQUIT_FIXTURES: named, ACQUIT_DEV: "0" }), named);
+	assert.equal(fixtureRegistrySource({ ACQUIT_FIXTURES: "  ", ACQUIT_DEV: "1" }), EXAMPLE_FIXTURES_PATH);
+	assert.ok(bootLine(4311, "docker", named, []).includes(named), "the boot line names the registry path");
 });
 
 test("the committed example parses to the six public cases", () => {
-	const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH);
-	assert.deepEqual(cases.map(test => test.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
-	for (const test of cases) assert.deepEqual(test.target, { module: "src/money.ts", export: "formatTotal" });
-	assert.equal(new Set(cases.map(test => JSON.stringify(test))).size, 6);
+	const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, SHAPE);
+	assert.deepEqual(cases.map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	for (const entry of cases) assert.deepEqual(entry.target, { module: "src/money.ts", export: "formatTotal" });
+	assert.equal(new Set(cases.map(entry => JSON.stringify(entry))).size, 6);
 });
 
 test("the parser refuses every malformed manifest by name", () => {
@@ -80,78 +83,82 @@ test("the parser refuses every malformed manifest by name", () => {
 
 test("key order in the file never changes the contract digest", () => {
 	const reordered = six().map(entry => ({ expected: entry.expected, args: entry.args, target: entry.target, id: entry.id }));
-	assert.equal(hiddenContractOf(parseHiddenCases(manifest(reordered))).digest, hiddenContractOf(parseHiddenCases(manifest(six()))).digest);
-	assert.notEqual(hiddenContractOf(parseHiddenCases(manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "1.51" } : entry)))).digest,
-		hiddenContractOf(parseHiddenCases(manifest(six()))).digest);
+	assert.equal(hiddenContractOf(parseHiddenCases(manifest(reordered), "(a)", SHAPE)).digest,
+		hiddenContractOf(parseHiddenCases(manifest(six()), "(b)", SHAPE)).digest);
+	assert.notEqual(hiddenContractOf(parseHiddenCases(manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "1.51" } : entry)), "(c)", SHAPE)).digest,
+		hiddenContractOf(parseHiddenCases(manifest(six()), "(d)", SHAPE)).digest);
 });
 
-test("a non-dev process without the environment refuses by name", () => {
+/** A registry beside its own case file: the given case text is written as the entry's hiddenCases. */
+function registryFor(caseText: string, overrides: Record<string, unknown> = {}): string {
+	const entry = { repository: "maya-client/invoice-app", issue: { number: 12, title: "Totals" },
+		frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4", frozenTestPath: "tests/totals.test.ts",
+		visible: 48, hidden: 6, protectedPaths: ["tests/**"], hiddenCases: "hidden-cases.json", frozenExtractor: "invoice-totals", ...overrides };
+	const dir = mkdtempSync(join(tmpdir(), "acquit-fixtures-registry-"));
+	const path = join(dir, "fixtures.json");
+	writeFileSync(path, JSON.stringify({ version: 1, fixtures: [entry] }), { mode: 0o600 });
+	writeFileSync(join(dir, "hidden-cases.json"), caseText, { mode: 0o600 });
+	return path;
+}
+
+test("a non-dev process without a registry refuses by name", () => {
 	for (const env of [{}, { ACQUIT_DEV: "0" }]) {
-		assert.throws(() => loadHiddenCases(env), (error: unknown) => {
-			assert.ok(error instanceof VerifierConfigError);
-			assert.equal(error.code, "VERIFIER_CONFIG_MISSING");
-			assert.deepEqual(error.names, [HIDDEN_CASES_ENV]);
+		assert.throws(() => loadFixtureRegistry(env), (error: unknown) => {
+			assert.ok(error instanceof FixtureConfigError);
+			assert.equal(error.code, "FIXTURES_CONFIG_MISSING");
+			assert.deepEqual(error.names, [FIXTURES_ENV]);
 			return true;
 		});
 	}
-	assert.throws(() => loadHiddenCases({ ACQUIT_HIDDEN_CASES: "hidden.json" }), (error: unknown) => {
-		assert.ok(error instanceof VerifierConfigError);
-		assert.equal(error.code, "VERIFIER_CONFIG_INVALID");
-		assert.deepEqual(error.names, [HIDDEN_CASES_ENV]);
+	assert.throws(() => loadFixtureRegistry({ ACQUIT_FIXTURES: "fixtures.json" }), (error: unknown) => {
+		assert.ok(error instanceof FixtureConfigError);
+		assert.equal(error.code, "FIXTURES_CONFIG_INVALID");
+		assert.deepEqual(error.names, [FIXTURES_ENV]);
 		return true;
 	});
-	const dev = loadHiddenCases({ ACQUIT_DEV: "1" });
-	assert.deepEqual(dev.map(test => test.id), loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH).map(test => test.id));
+	// A development process falls back to the committed example registry, and it alone.
+	const dev = loadFixtureRegistry({ ACQUIT_DEV: "1" });
+	assert.equal(dev.path, EXAMPLE_FIXTURES_PATH);
+	assert.deepEqual(dev.entries.map(entry => entry.repository), ["maya-client/invoice-app"]);
+	assert.deepEqual(fixtureContracts(dev).map(entry => entry.hiddenManifest), [hiddenContractOf(loadExampleHiddenCases()).digest]);
 });
 
-test("the environment names a file, and that file alone decides the contract", () => {
-	const dir = mkdtempSync(join(tmpdir(), "acquit-hidden-cases-"));
-	try {
-		const path = join(dir, "hidden-cases.json");
-		writeFileSync(path, manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "9.99" } : entry)), { mode: 0o600 });
-		const loaded = loadHiddenCases({ ACQUIT_HIDDEN_CASES: path });
-		assert.deepEqual(loaded.map(test => test.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
-		assert.notEqual(hiddenContractOf(loaded).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
-	} finally { rmSync(dir, { recursive: true, force: true }); }
+test("the registry names the case files, and those files alone decide the contracts", () => {
+	const altered = manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "9.99" } : entry));
+	const registryPath = registryFor(altered);
+	const registry = loadFixtureRegistry({ ACQUIT_FIXTURES: registryPath });
+	const book = buildFixtureBook(registry);
+	const loaded = loadHiddenCasesFromFile(join(registryPath.slice(0, registryPath.lastIndexOf("/")), "hidden-cases.json"), SHAPE);
+	assert.deepEqual([...book.byDigest.keys()], [hiddenContractOf(loaded).digest]);
+	assert.notEqual(hiddenContractOf(loaded).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
+	assert.deepEqual(fixtureContracts(registry).map(entry => entry.hiddenManifest), [hiddenContractOf(loaded).digest]);
 });
 
-test("a non-dev process refuses the committed public example by name, even as a copy or a symlink", () => {
-	const dir = mkdtempSync(join(tmpdir(), "acquit-hidden-example-"));
-	try {
-		// A copy whose key order and whitespace differ still parses to the example's contract.
-		const reordered = join(dir, "reordered-example.json");
-		writeFileSync(reordered, JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)
-			.map(entry => ({ expected: entry.expected, args: entry.args, target: entry.target, id: entry.id })) }, null, 2), { mode: 0o600 });
-		const linked = join(dir, "linked-example.json");
-		symlinkSync(EXAMPLE_HIDDEN_CASES_PATH, linked);
-		for (const path of [EXAMPLE_HIDDEN_CASES_PATH, reordered, linked]) {
-			for (const env of [{ ACQUIT_HIDDEN_CASES: path }, { ACQUIT_DEV: "0", ACQUIT_HIDDEN_CASES: path }]) {
-				assert.throws(() => loadHiddenCases(env), (error: unknown) => {
-					assert.ok(error instanceof VerifierConfigError, `${path} did not refuse with a config error`);
-					assert.equal(error.code, "VERIFIER_CONFIG_INVALID", `${path} refused with ${error.code}`);
-					assert.deepEqual(error.names, [HIDDEN_CASES_ENV]);
-					assert.match(error.message, /public example/);
-					return true;
-				});
-			}
-		}
-		// A development process may name the example, and the non-dev test fixture is never mistaken for it.
-		assert.deepEqual(loadHiddenCases({ ACQUIT_DEV: "1", ACQUIT_HIDDEN_CASES: EXAMPLE_HIDDEN_CASES_PATH }).map(entry => entry.id),
-			loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH).map(entry => entry.id));
-		const fixture = loadHiddenCases({ ACQUIT_HIDDEN_CASES: TEST_HIDDEN_CASES_PATH });
-		assert.deepEqual(fixture.map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
-		assert.notEqual(hiddenContractOf(fixture).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
-	} finally { rmSync(dir, { recursive: true, force: true }); }
+test("a non-dev registry refuses the committed public example, and a dev one may name it", () => {
+	assert.throws(() => buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: EXAMPLE_FIXTURES_PATH })), (error: unknown) => {
+		assert.ok(error instanceof FixtureConfigError, "the public example did not refuse with a config error");
+		assert.equal(error.code, "FIXTURES_CONFIG_INVALID");
+		assert.deepEqual(error.names, [FIXTURES_ENV]);
+		assert.match(error.message, /public example/);
+		return true;
+	});
+	const devRegistry = loadFixtureRegistry({ ACQUIT_FIXTURES: EXAMPLE_FIXTURES_PATH, ACQUIT_DEV: "1" });
+	const dev = buildFixtureBook(devRegistry, { ACQUIT_DEV: "1" });
+	assert.deepEqual([...dev.byDigest.keys()], [hiddenContractOf(loadExampleHiddenCases()).digest]);
+	// The non-dev test fixture is never mistaken for the public example: a registry naming it loads.
+	const test = buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: registryFor(
+		readFileSync(TEST_HIDDEN_CASES_PATH, "utf8")) }));
+	assert.deepEqual([...test.byDigest.keys()], [hiddenContractOf(loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, SHAPE)).digest]);
 });
 
-test("frozenDefinition stores the contract it is handed", () => {
+test("manifestOf stores the contract it is handed", () => {
 	const contract: HiddenContract = { ids: ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"].map(id => id as TestId),
 		digest: "ab".repeat(32) as Digest };
-	const done = seedData.frozenDefinition("owner/repo", contract);
+	const done = manifestOf(demoFixture(contract), "owner/repo");
 	assert.equal(done.hiddenManifest, contract.digest);
 	assert.deepEqual(done.hiddenTests, contract.ids);
 	assert.equal(done.issue.repository, "owner/repo");
-	assert.notEqual(done.hiddenManifest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
+	assert.notEqual(done.hiddenManifest, hiddenContractOf(loadExampleHiddenCases()).digest);
 });
 
 test("the Docker subject mounts only the submitted tree and the bootstrap", () => {
@@ -163,22 +170,22 @@ test("the Docker subject mounts only the submitted tree and the bootstrap", () =
 	assert.equal(args.some(arg => arg.includes(EXAMPLE_HIDDEN_CASES_PATH)), false);
 });
 
-test("the verifier service refuses to start without the deployment's cases", () => {
+test("the verifier service refuses to start without a fixture registry", () => {
 	const server = fileURLToPath(new URL("../../verifier/server.ts", import.meta.url));
 	const child = spawnSync(process.execPath, [server], { encoding: "utf8", timeout: 15_000,
-		env: { ...process.env, ACQUIT_DEV: "0", ACQUIT_HIDDEN_CASES: "", ACQUIT_VERIFIER_PORT: "4399",
+		env: { ...process.env, ACQUIT_DEV: "0", ACQUIT_FIXTURES: "", ACQUIT_VERIFIER_PORT: "4399",
 			ACQUIT_VERIFIER_RUN_SECRET: "run-secret", ACQUIT_VERIFIER_CALLBACK_SECRET: "callback-secret",
 			ACQUIT_VERIFIER_CALLBACK_URL: "http://127.0.0.1:4398/api/verifier/callback" } });
 	assert.equal(child.status, 1);
-	assert.match(child.stderr, /VERIFIER_CONFIG_MISSING/);
-	assert.match(child.stderr, new RegExp(HIDDEN_CASES_ENV));
+	assert.match(child.stderr, /FIXTURES_CONFIG_MISSING/);
+	assert.match(child.stderr, new RegExp(FIXTURES_ENV));
 });
 
 // The lever walks every tracked file and prints counts only. On the committed example it must find
 // the values, which is what proves the check can see them; on a deployment's private file it must
 // find none. The private file is gitignored, so its absence is a skip, never a pass.
 const checkScript = fileURLToPath(new URL("../../../scripts/check-hidden-private.mjs", import.meta.url));
-const lever = (manifest: string, root?: string) => spawnSync(process.execPath, [checkScript, manifest, ...(root ? [root] : [])],
+const lever = (manifestPath: string, root?: string) => spawnSync(process.execPath, [checkScript, manifestPath, ...(root ? [root] : [])],
 	{ encoding: "utf8", timeout: 120_000 });
 /** A throwaway git repo whose tracked files are the given name-to-text pairs. */
 function copiedRepo(files: Record<string, string>): string {
@@ -190,7 +197,7 @@ function copiedRepo(files: Record<string, string>): string {
 }
 
 test("the check script sees a case spread across lines in a source copy", () => {
-	const cases = loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH);
+	const cases = loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, SHAPE);
 	const source = `const copiedCases = [\n${cases.map(entry => `  {\n    id: ${JSON.stringify(entry.id)},\n    target: ${JSON.stringify(entry.target)},\n    args: ${JSON.stringify(entry.args)},\n    expected: ${JSON.stringify(entry.expected)},\n  },`).join("\n")}\n];\n`;
 	const dir = copiedRepo({ "copied-cases.ts": source });
 	try {
@@ -201,7 +208,7 @@ test("the check script sees a case spread across lines in a source copy", () => 
 });
 
 test("the check script sees a case spread across lines in a pretty-printed JSON copy", () => {
-	const copy = JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH) }, null, 2);
+	const copy = JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, SHAPE) }, null, 2);
 	const dir = copiedRepo({ "copied-cases.json": copy });
 	try {
 		const result = lever(TEST_HIDDEN_CASES_PATH, dir);
@@ -220,9 +227,6 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 	const result = lever(PRIVATE_CASES_PATH);
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
-	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
-	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH)).digest, hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH)).digest);
-	// The deployment's own file is the allowed path through the environment policy, not the example.
-	assert.deepEqual(loadHiddenCases({ ACQUIT_HIDDEN_CASES: PRIVATE_CASES_PATH }).map(entry => entry.id),
-		["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE)).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
 });

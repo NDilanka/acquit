@@ -20,6 +20,7 @@ export const VERIFIER_NAMES = {
 	runDeadlineMs: "ACQUIT_VERIFIER_RUN_DEADLINE_MS",
 	clientRepository: "ACQUIT_CLIENT_REPOSITORY",
 	hiddenCases: "ACQUIT_HIDDEN_CASES",
+	fixtures: "ACQUIT_FIXTURES",
 } as const;
 export type VerifierKey = keyof typeof VERIFIER_NAMES;
 

@@ -22,7 +22,7 @@ import type { UsdCents } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { newVisitorId } from "../src/visitors.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture } from "./hidden-fixture.ts";
 
 const merchant = "sandbox-seller" as MerchantId;
 const deployment = "maya-client/invoice-app";
@@ -34,7 +34,7 @@ const usage = (over: Partial<CapUsage>): CapUsage => ({ visitorsFromIp: 0, visit
 
 /** A service whose clock stands still, so a window has an exact edge. */
 function serviceAt(path: string) {
-	return createAcquit({ databaseUrl: path, hiddenContract: exampleContract, demo: { merchant }, clock: { now: () => noon },
+	return createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant }, clock: { now: () => noon },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });
