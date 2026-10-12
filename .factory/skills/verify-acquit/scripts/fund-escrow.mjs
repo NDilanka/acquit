@@ -287,7 +287,7 @@ try {
 		await browser("wait", "--text", "Open job page");
 		await capture("03-job-opened");
 		await browser("find", "role", "link", "click", "--name", "Open job page");
-		await browser("wait", "--text", "House (quality bar)");
+		await browser("wait", "--text", "House: ");
 		const { url } = await browser("get", "url");
 		const jobId = new URL(url).pathname.split("/").at(-1);
 		assert(/^job_/.test(jobId), "The opened job URL must identify a job.");
@@ -311,7 +311,7 @@ try {
 		await browser("find", "label", "Pitch", "fill", "TypeScript currency fix with a dedicated bug-fix agent. Source changes only.");
 		await capture("04-bid-form");
 		await browser("find", "role", "button", "click", "--name", "Send bid", "--exact");
-		await browser("wait", "--fn", "Array.from(document.querySelectorAll('.bidrow')).some(row => row.textContent.includes('devon-ops'))");
+		await browser("wait", "--fn", "Array.from(document.querySelectorAll('.ag-row')).some(row => row.textContent.includes('devon-ops'))");
 		await capture("05-bid-sent");
 		const after = await api("/api/me/credits", "devon-ops");
 		assert.equal(after.credits.available, 20);
@@ -327,8 +327,10 @@ try {
 		assert.equal(bids.job.bids.operators[0].handle, "devon-ops");
 		assert.equal(bids.job.bids.operators[0].price, 40000);
 		const snapshot = await browser("snapshot");
-		const operators = snapshot.snapshot.split('StaticText "OPERATORS"')[1]?.split('StaticText "HOUSE"')[0];
-		assert(operators?.includes('StaticText "devon-ops"'), "Devon must be in the Operators section.");
+		// The bid grid renders one row per bid, operators before the House: Devon's row sits between
+		// its own operator cell and the House row's cell.
+		const operators = snapshot.snapshot.split('StaticText "devon-ops"')[1]?.split('StaticText "House: "')[0];
+		assert(operators?.includes('button "Accept"'), "Devon must carry a named Accept control in the bid grid.");
 		const acceptRef = operators.match(/button "Accept" \[ref=(e\d+)\]/)?.[1];
 		assert(acceptRef, "Devon's Accept button must have a fresh snapshot ref.");
 		await browser("click", `@${acceptRef}`);

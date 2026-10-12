@@ -77,6 +77,8 @@ export interface JobView {
   readonly title: string;
   readonly status: JobStatus;
   readonly phase: string;
+  /** The stored checkout substate, non-null exactly while the job is OPEN in FUNDING. */
+  readonly checkoutPhase: CheckoutPhase | null;
   readonly budget: UsdCents;
   readonly deliveryEndsAt: Instant;
   readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };
@@ -116,6 +118,35 @@ export interface JobView {
 }
 
 export type FundingMode = "card" | "checkout";
+
+export type CheckoutPhase = "CREATING_ORDER" | "AWAITING_APPROVAL" | "CAPTURING" | "REFUND_PENDING";
+
+/** `GET /api/me/receipts`: a settled job's receipt plus its repository and the receipts table's source. */
+export type JobReceiptRow = Receipt & {
+  readonly repository: string;
+  readonly source: "SEED" | "JOB";
+  readonly passedVerifiedCi: boolean;
+};
+
+/** A seeded history row has no job behind it, so it keeps only the facts the receipts table holds. */
+export type SeededReceiptRow = {
+  readonly id: string;
+  readonly jobId: null;
+  readonly operator: string;
+  readonly agent: null;
+  readonly pullRequest: null;
+  readonly mergeCommit: null;
+  readonly frozen: null;
+  readonly hidden: null;
+  readonly attemptsUsed: null;
+  readonly paid: null;
+  readonly releasedAt: Instant | null;
+  readonly repository: null;
+  readonly source: "SEED";
+  readonly passedVerifiedCi: boolean;
+};
+
+export type ReceiptRow = JobReceiptRow | SeededReceiptRow;
 
 /** `GET /api/jobs/:id`, and `POST /api/jobs/:id/clock` after the job's own time moved. */
 export type JobResponse = { readonly job: JobView; readonly handles: Readonly<Record<string, string>>; readonly now: Instant };

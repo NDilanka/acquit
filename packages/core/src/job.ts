@@ -1179,6 +1179,9 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const done = storedDefinitionOfDone(row);
 	return { id: row.id, title: row.title, status: state.status,
 		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
+		// The stored checkout substate while the job waits for its money, so the page names the phase
+		// the row holds instead of guessing from side fields. Null once funding is over.
+		checkoutPhase: funding ? funding.checkout.phase : null,
 		budget: row.contract.budget, deliveryEndsAt: row.contract.deliveryEndsAt,
 		contract: done === null ? null : { repository: done.issue.repository, frozenAt: done.frozenAt, frozenTests: done.frozenTests.length,
 			hiddenTests: done.hiddenTests.length, protectedPaths: done.protectedPaths.map(String) },

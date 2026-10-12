@@ -17,6 +17,7 @@ import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, databasePath, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { operatorReceipts } from "./receipts.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 
@@ -585,17 +586,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
 	}
 	if (url.pathname === "/api/me/receipts" && method === "GET") {
-		// A receipt lives on its PAID job row, so the route reads the rows the operator was paid for.
+		// The book's rows for this operator: settled job receipts plus the seeded history rows, each
+		// marked with the source the receipts table holds.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
-		const receipts: Record<string, unknown>[] = [];
-		for (const row of db.prepare("SELECT json FROM jobs").all()) {
-			const job = JSON.parse(String(row.json)) as { contract?: { definitionOfDone?: { issue?: { repository?: unknown } } };
-				state?: { status?: unknown; payee?: { operator?: unknown }; receipt?: Record<string, unknown> } };
-			if (job.state?.status !== "PAID" || job.state.payee?.operator !== current.actor.operatorId || !job.state.receipt) continue;
-			receipts.push({ ...job.state.receipt, repository: String(job.contract?.definitionOfDone?.issue?.repository ?? clientRepository) });
-		}
-		receipts.sort((left, right) => String(right.releasedAt).localeCompare(String(left.releasedAt)));
-		json(res, 200, { receipts, nextCursor: null }); return;
+		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository), nextCursor: null }); return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
 	if (tokenMatch && method === "POST") {

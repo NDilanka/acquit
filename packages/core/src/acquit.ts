@@ -92,6 +92,8 @@ export interface JobView {
 	readonly status: JobStatus;
 	/** Substate for the UI, such as BIDDING, FUNDING, VERIFYING, AWAITING_CLIENT, DISPUTED, RELEASE_PENDING. */
 	readonly phase: string;
+	/** The stored checkout substate (CREATING_ORDER, AWAITING_APPROVAL, CAPTURING, REFUND_PENDING) while the job waits for its money. Null outside FUNDING. */
+	readonly checkoutPhase: "CREATING_ORDER" | "AWAITING_APPROVAL" | "CAPTURING" | "REFUND_PENDING" | null;
 	readonly budget: UsdCents;
 	readonly deliveryEndsAt: Instant;
 	readonly bids: { readonly operators: readonly BidView[]; readonly house: BidView | null };

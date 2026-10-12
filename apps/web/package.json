@@ -11,6 +11,8 @@
     "test": "node --test src/*.test.ts"
   },
   "dependencies": {
+    "ag-grid-community": "36.2.0",
+    "ag-grid-react": "36.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

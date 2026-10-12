@@ -254,6 +254,31 @@ test("AcceptBid emits CREATE_ORDER naming the chosen payee and no ledger", () =>
 	assert.equal(operationKey(plan.effects[0]), operationKey(plan.effects[0]));
 	assert.ok(operationKey(plan.effects[0]).length <= 38);
 });
+test("the job view names the stored checkout substate", async () => {
+	const row: JobRow = { id: parseJobId("job_test"), version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
+		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: frozenDefinition("maya-client/invoice-app", deploymentContract), terms: TERMS },
+		bids: [{ id: parseBidId("bid_test"), operator: "devon-ops" as OperatorId, handle: "devon-ops", kind: "INDEPENDENT", payee: merchant,
+			agent: "ts-bugfixer" as AgentId, runner: "claude-code", price: usd("400.00"), eta: hours(48), pitch: "test", placedAt: now,
+			respondBy: instant("2026-10-09T12:00:00Z"), status: "PENDING" }],
+		state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } };
+	// Bidding has no checkout yet; the read route serves null so the page cannot name a substate.
+	assert.equal(projectJob(row, maya, new Map()).checkoutPhase, null);
+	const plan = applyJobCommand(row, { type: "AcceptBid", jobId: row.id, bidId: row.bids[0].id },
+		{ actor: maya, now, loaded: { kind: "ACCEPT_BID", quote: quote(commercialSplit(usd("400.00")), model) } });
+	if (typeof plan === "string") throw new Error(plan);
+	// The stored substate rides the projection the job read route serves.
+	assert.equal(projectJob(plan.next, maya, new Map()).checkoutPhase, "CREATING_ORDER");
+	const f = fixture();
+	try {
+		const opened = jobOf(await executeCommand(f.ports, maya, requestKey(), openCommand));
+		const bid = await executeCommand(f.ports, devon, requestKey(), { type: "PlaceBid", jobId: opened.id,
+			price: usd("400.00"), eta: hours(48), agent: "ts-bugfixer" as AgentId, pitch: "test" });
+		if (bid.kind === "DENIED" || bid.result.kind !== "BID") throw new Error("Missing bid");
+		// Once the order exists, the page reads the same substate the stored row holds.
+		const funding = jobOf(await executeCommand(f.ports, maya, requestKey(), { type: "AcceptBid", jobId: opened.id, bidId: bid.result.bid }));
+		assert.equal(funding.checkoutPhase, "AWAITING_APPROVAL");
+	} finally { f.store.close(); }
+});
 test("request replay uses payload digest, prevents duplicate bids/spend, refuses changed payload", async () => {
 	const f = fixture();
 	try {
