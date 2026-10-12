@@ -1,0 +1,13 @@
+{
+  "name": "@acquit/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "acquit-mcp": "src/main.ts" },
+  "scripts": { "start": "node src/main.ts" },
+  "engines": { "node": ">=24.0.0" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@paypal/agent-toolkit": "1.11.0"
+  }
+}
