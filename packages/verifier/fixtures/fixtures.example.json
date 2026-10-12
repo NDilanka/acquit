@@ -1,0 +1,17 @@
+{
+	"version": 1,
+	"fixtures": [
+		{
+			"repository": "maya-client/invoice-app",
+			"issue": { "number": 12, "title": "Totals round wrong for 3-decimal currencies" },
+			"frozenAt": "a3b6ead29f4e367d1871e753b516cc9e832871e4",
+			"frozenTestPath": "tests/totals.test.ts",
+			"visible": 48,
+			"hidden": 6,
+			"protectedPaths": ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"],
+			"hiddenCases": "hidden-cases.example.json",
+			"frozenExtractor": "invoice-totals",
+			"demoForkPrefix": "acquit-forks/"
+		}
+	]
+}

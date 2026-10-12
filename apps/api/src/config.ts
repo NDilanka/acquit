@@ -5,10 +5,10 @@ import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
-import type { HiddenContract } from "../../../packages/core/src/seed-data.ts";
+import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 import { apiVerifierEnv, clientRepositoryEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
-import { hiddenContractOf, loadHiddenCases } from "../../../packages/verifier/hidden.ts";
+import { fixtureContracts, loadFixtureRegistry } from "../../../packages/verifier/fixtures.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
@@ -33,16 +33,17 @@ export const verifierEnv = apiVerifierEnv();
 assertSubjectAllowed(verifierSubjectEnv(process.env));
 export const githubEnv = githubAppEnv();
 /**
- * The client repository every job's contract names. The deployment sets ACQUIT_CLIENT_REPOSITORY to the
- * repository its App is installed on; absent, the demo fixture is used and the tutorial's text holds.
+ * The client repository the demo visitor's fork is made from. The deployment sets
+ * ACQUIT_CLIENT_REPOSITORY to the repository its App is installed on; absent, the demo name is used.
  */
 export const clientRepository = clientRepositoryEnv();
 /**
- * The deployment's hidden-case contract, derived once here from ACQUIT_HIDDEN_CASES (or, under
- * ACQUIT_DEV=1, from the committed example). The cases themselves are dropped at this line: only the
- * verifier holds them, and a deployment without the file refuses at boot with VERIFIER_CONFIG_MISSING.
+ * The deployment's fixture registry, read once here: one contract per fixture for OpenJob — ids and
+ * digests only, the case values dropped at this line. A deployment without a registry refuses at
+ * boot, by name; under ACQUIT_DEV=1 the committed example registry is the fallback.
  */
-export const hiddenContract: HiddenContract = hiddenContractOf(loadHiddenCases());
+export const fixtureRegistry = loadFixtureRegistry();
+export const fixtures: readonly FixtureContract[] = fixtureContracts(fixtureRegistry);
 /**
  * The sandbox seller a judge-mode visitor's operator is paid through. Absent refuses POST /api/demo by
  * name rather than minting an operator that cannot be paid.
@@ -51,7 +52,7 @@ const demoMerchant = process.env.OPERATOR_DEVON_MERCHANT_ID?.trim() ?? "";
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
-	return { databaseUrl: databasePath, clientRepository, hiddenContract, demo: demoMerchant ? { merchant: demoMerchant as MerchantId } : undefined, paypal: {
+	return { databaseUrl: databasePath, fixtures, demo: demoMerchant ? { merchant: demoMerchant as MerchantId } : undefined, paypal: {
 		webOrigin,
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,

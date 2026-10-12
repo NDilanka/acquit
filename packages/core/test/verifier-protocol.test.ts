@@ -18,6 +18,7 @@ import { BOOTSTRAP_LIMITS } from "../../verifier/bootstrap.ts";
 import { gitSource, runJudge } from "../../verifier/judge.ts";
 import type { JudgeSource } from "../../verifier/judge.ts";
 import { hiddenManifest } from "../../verifier/hidden.ts";
+import { bookEntry, fixtureBook } from "./verifier-book.ts";
 import { ChildSubjectRefused, childProcessSubject, dockerArgs, dockerReachable, dockerSubject, stageBootstrap, subjectFor, verifierSubjectEnv } from "../../verifier/subject.ts";
 import type { SubjectRun } from "../../verifier/subject.ts";
 
@@ -31,7 +32,8 @@ const hiddenCases: readonly HiddenCase[] = [
 const frozenTestSource = Array.from({ length: 48 }, (_, index) =>
 	`it('case ${index + 1}', () => { expect(formatTotal([{ amount: 1 }], 'KWD')).toBe('1'); });`).join("\n");
 const definitionOfDone: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" },
-	frozenAt: frozenCommit, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+	frozenAt: frozenCommit, frozenTestPath: "tests/totals.test.ts",
+	frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
 	hiddenManifest: hiddenManifest(hiddenCases).digest, hiddenTests: hiddenCases.map(test => test.id),
 	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as never };
 
@@ -146,7 +148,7 @@ test("a complete forged transcript written before any input arrives is a fault, 
 		const request: VerifierRunRequest = { runId: "run_forged" as VerifierRunId, jobId: "job_forged" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT");
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -194,7 +196,7 @@ test("a submitted tree that carries a symlink is rejected before the subject sta
 		const request: VerifierRunRequest = { runId: "run_symlink" as VerifierRunId, jobId: "job_symlink" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT");
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -223,7 +225,7 @@ test("a submitted link to an outside directory is refused with nothing outside t
 		const request: VerifierRunRequest = { runId: "run_dirlink" as VerifierRunId, jobId: "job_dirlink" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, fixtures: fixtureBook(bookEntry(hiddenCases)),
 			subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } } });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
@@ -243,7 +245,7 @@ test("a link that loops back on the tree is refused by name and the subject neve
 		const request: VerifierRunRequest = { runId: "run_cycle" as VerifierRunId, jobId: "job_cycle" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, fixtures: fixtureBook(bookEntry(hiddenCases)),
 			subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } } });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
@@ -262,7 +264,7 @@ test("a link to a directory the runner cannot read is a TREE_SYMLINK rejection, 
 		const request: VerifierRunRequest = { runId: "run_rootlink" as VerifierRunId, jobId: "job_rootlink" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, fixtures: fixtureBook(bookEntry(hiddenCases)),
 			subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } } });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
@@ -288,7 +290,7 @@ test("a gitlink in the submitted tree is rejected before the subject starts", as
 		const request: VerifierRunRequest = { runId: "run_gitlink" as VerifierRunId, jobId: "job_gitlink" as JobId, ordinal: 1,
 			sourceCommit: head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -306,7 +308,7 @@ test("a diff over the screen's bound is refused by name and the subject never st
 	const request: VerifierRunRequest = { runId: "run_large" as VerifierRunId, jobId: "job_large" as JobId, ordinal: 1,
 		sourceCommit: frozenCommit, definitionOfDone: { ...definitionOfDone, frozenAt: frozenCommit } };
 	const outcome = await runJudge(request, { source, subject: { variant: "CHILD_PROCESS",
-			run: async () => { throw new Error("the subject must not start"); } }, publisher: createFakeGitHubApp(), cases: hiddenCases });
+			run: async () => { throw new Error("the subject must not start"); } }, publisher: createFakeGitHubApp(), fixtures: fixtureBook(bookEntry(hiddenCases)) });
 	assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 	if (outcome.kind !== "VERDICT") return;
 	assert.equal(outcome.verdict.result, "REJECTED");
@@ -330,7 +332,7 @@ test("a diff with more source paths than the screen reads is refused by name bef
 		const request: VerifierRunRequest = { runId: "run_reads" as VerifierRunId, jobId: "job_reads" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -448,7 +450,7 @@ test("the tree handed to the subject is readable whatever the umask", async () =
 			const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
 			const request: VerifierRunRequest = { runId: "run_modes" as VerifierRunId, jobId: "job_modes" as JobId, ordinal: 1,
 				sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
-			await runJudge(request, { source, publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases,
+			await runJudge(request, { source, publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, fixtures: fixtureBook(bookEntry(hiddenCases)),
 				subject: { variant: "CHILD_PROCESS", run: async treeDir => {
 					treePath = treeDir;
 					modes = { root: statSync(treeDir).mode & 0o777, src: statSync(join(treeDir, "src")).mode & 0o777,
@@ -495,7 +497,7 @@ test("a subject that cannot start still removes the materialized tree", async ()
 		const request: VerifierRunRequest = { runId: "run_down" as VerifierRunId, jobId: "job_down" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: dockerSubject({ probe: () => false }),
-			publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, cases: hiddenCases });
+			publisher: createFakeGitHubApp(), clock: { now: () => instant("2026-10-06T13:30:00Z") }, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
 		if (outcome.kind !== "RUN_FAILED") return;
 		assert.equal(outcome.failure.name, "SUBJECT_UNSTARTABLE");
@@ -522,7 +524,7 @@ test("a call that never resolves dies at the deadline as a TIMEOUT fault", async
 		const request: VerifierRunRequest = { runId: "run_hang" as VerifierRunId, jobId: "job_hang" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 1_500, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 1_500, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT");
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error("Expected a rejection");
 		assert.deepEqual(outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail),
@@ -544,7 +546,7 @@ test("a run whose hidden tests fail is REJECTED without ever asking the publishe
 			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
 		} };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher,
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -568,7 +570,7 @@ test("a run whose hidden tests fail stays REJECTED even with a publisher that wo
 			throw new Error("no App installation on maya-client/invoice-app");
 		} };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher,
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -594,7 +596,7 @@ test("a thrown error is capped to one line and never enters the verdict", async 
 		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
 		const outcome = await runJudge({ runId: "run_throw" as VerifierRunId, jobId: "job_throw" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } },
-			{ source, subject: childProcessSubject(), publisher: createFakeGitHubApp(), cases: hiddenCases });
+			{ source, subject: childProcessSubject(), publisher: createFakeGitHubApp(), fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT");
 		if (outcome.kind !== "VERDICT") return;
 		assert.equal(outcome.verdict.result, "REJECTED");
@@ -617,7 +619,7 @@ test("an externally killed subject ends the run without a verdict and is never p
 			publishCalls.push(publishRequest);
 			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
 		} };
-		const outcome = await runJudge(request, { source, publisher, cases: hiddenCases,
+		const outcome = await runJudge(request, { source, publisher, fixtures: fixtureBook(bookEntry(hiddenCases)),
 			clock: { now: () => instant("2026-10-06T13:30:00Z") }, subject: { variant: "CHILD_PROCESS", run: async () => killed } });
 		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
 		if (outcome.kind !== "RUN_FAILED") return;
@@ -640,7 +642,7 @@ test("a subject that exits 137 on its own still burns an attempt as REJECTED SUB
 			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
 		} };
 		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher,
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 4_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
 		const faults = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);
@@ -665,7 +667,7 @@ test("a subject the daemon could not report on is a kill, so the attempt slot re
 			publishCalls.push(publishRequest);
 			return { repository: publishRequest.repository, pullRequest: 13, mergeCommit: fixture.head, checkRunUrl: null };
 		} };
-		const outcome = await runJudge(request, { source, publisher, cases: hiddenCases,
+		const outcome = await runJudge(request, { source, publisher, fixtures: fixtureBook(bookEntry(hiddenCases)),
 			clock: { now: () => instant("2026-10-06T13:30:00Z") }, subject: { variant: "DOCKER", run: async () => unreported } });
 		assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
 		if (outcome.kind !== "RUN_FAILED") return;
@@ -813,7 +815,7 @@ test("a daemon that answers the postmortem slowly is not a kill: the submission'
 		try {
 			const outcome = await withShimOnPath(shim.dir, () => runJudge(request, { source, publisher: createFakeGitHubApp(),
 				subject: dockerSubject({ probe: () => true }), clock: { now: () => instant("2026-10-06T13:30:00Z") },
-				deadlineMs: 20_000, cases: hiddenCases }));
+				deadlineMs: 20_000, fixtures: fixtureBook(bookEntry(hiddenCases)) }));
 			assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 			if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
 			const faults = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);
@@ -836,7 +838,7 @@ test("a daemon whose postmortem query fails is a kill, and the attempt slot retu
 		try {
 			const outcome = await withShimOnPath(shim.dir, () => runJudge(request, { source, publisher: createFakeGitHubApp(),
 				subject: dockerSubject({ probe: () => true }), clock: { now: () => instant("2026-10-06T13:30:00Z") },
-				deadlineMs: 20_000, cases: hiddenCases }));
+				deadlineMs: 20_000, fixtures: fixtureBook(bookEntry(hiddenCases)) }));
 			assert.equal(outcome.kind, "RUN_FAILED", JSON.stringify(outcome));
 			if (outcome.kind !== "RUN_FAILED") return;
 			assert.equal(outcome.failure.name, "SUBJECT_KILLED");
@@ -980,7 +982,7 @@ test("a real Docker subject that exits 137 on its own stays a REJECTED attempt",
 		const request: VerifierRunRequest = { runId: "run_docker_137" as VerifierRunId, jobId: "job_docker_137" as JobId, ordinal: 1,
 			sourceCommit: fixture.head, definitionOfDone: { ...definitionOfDone, frozenAt: fixture.frozen } };
 		const outcome = await runJudge(request, { source, subject: dockerSubject(), publisher: createFakeGitHubApp(),
-			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 20_000, cases: hiddenCases });
+			clock: { now: () => instant("2026-10-06T13:30:00Z") }, deadlineMs: 20_000, fixtures: fixtureBook(bookEntry(hiddenCases)) });
 		assert.equal(outcome.kind, "VERDICT", JSON.stringify(outcome));
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error(`Expected a rejection, saw ${JSON.stringify(outcome)}`);
 		const faults = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);

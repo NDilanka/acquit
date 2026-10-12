@@ -13,6 +13,7 @@ import type {
 	CaptureId,
 	ClientId,
 	CommitSha,
+	Digest,
 	Hours,
 	Instant,
 	JobId,
@@ -1122,9 +1123,13 @@ export type PendingRunView = {
 
 export type ContractProjection = {
 	readonly repository: string;
+	/** The manifest's own identity: the issue it freezes and the digest it froze, readable by every viewer. */
+	readonly issue: number;
 	readonly frozenAt: CommitSha;
+	readonly frozenTestPath: string;
 	readonly frozenTests: number;
 	readonly hiddenTests: number;
+	readonly hiddenManifest: Digest;
 	readonly protectedPaths: readonly string[];
 };
 
@@ -1183,8 +1188,9 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		// the row holds instead of guessing from side fields. Null once funding is over.
 		checkoutPhase: funding ? funding.checkout.phase : null,
 		budget: row.contract.budget, deliveryEndsAt: row.contract.deliveryEndsAt,
-		contract: done === null ? null : { repository: done.issue.repository, frozenAt: done.frozenAt, frozenTests: done.frozenTests.length,
-			hiddenTests: done.hiddenTests.length, protectedPaths: done.protectedPaths.map(String) },
+		contract: done === null ? null : { repository: done.issue.repository, issue: done.issue.number, frozenAt: done.frozenAt,
+			frozenTestPath: done.frozenTestPath, frozenTests: done.frozenTests.length,
+			hiddenTests: done.hiddenTests.length, hiddenManifest: done.hiddenManifest, protectedPaths: done.protectedPaths.map(String) },
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
 		// The owning client is named only to its own session. Everyone else reads null.

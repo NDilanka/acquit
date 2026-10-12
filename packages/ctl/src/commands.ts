@@ -398,13 +398,17 @@ export async function migrate(parsed: Parsed, ctx: Context): Promise<Result> {
 	const run = await readState(ctx);
 	const path = run?.databasePath ?? ctx.databasePath;
 	const { SqliteStore } = await import("../../core/src/store.ts");
-	const store = new SqliteStore(path);
+	// The manifest backfill matches each stored job by the fixture registry this deployment declares;
+	// a registry that names none of the database's jobs refuses by name instead of guessing.
+	const { fixtureRefs, loadFixtureRegistry } = await import("../../verifier/fixtures.ts");
+	const registry = loadFixtureRegistry();
+	const store = new SqliteStore(path, fixtureRefs(registry));
 	try {
 		const names = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
 			.map(row => String(row.name));
 		const tables = Object.fromEntries(names.map(name => [name, Number(store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get()?.n ?? 0)]));
-		return { databasePath: path, migrated: true, tables,
-			text: `Migration applied at ${path}. Tables: ${names.join(", ")}. Receipts rows: ${tables.receipts ?? "table missing"}.\n` };
+		return { databasePath: path, migrated: true, tables, fixtures: registry.entries.length,
+			text: `Migration applied at ${path}. Tables: ${names.join(", ")}. Receipts rows: ${tables.receipts ?? "table missing"}. Manifest rows: ${tables.job_manifests ?? "table missing"}.\n` };
 	} finally { store.close(); }
 }
 async function app(ctx: Context, webRequired = false): Promise<{ api: number; web: number }> {

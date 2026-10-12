@@ -13,6 +13,7 @@ import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, runJudge } from "../../verifier/judge.ts";
 import { hiddenManifest } from "../../verifier/hidden.ts";
 import { exampleCases, exampleContract } from "./hidden-fixture.ts";
+import { bookEntry, fixtureBook } from "./verifier-book.ts";
 
 const at = instant("2026-10-06T12:00:00Z");
 const nonce = "4f6e2a1b8c3d5e7091a2b3c4d5e6f708";
@@ -20,7 +21,7 @@ const commit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const request: VerifierRunRequest = { runId: "run_job_test_1" as VerifierRunId, jobId: "job_test" as JobId, ordinal: 1,
 	sourceCommit: commit, definitionOfDone: {
 		issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
-		frozenAt: commit, frozenTests: ["frozen:1", "frozen:2"] as TestId[], hiddenManifest: "0".repeat(64) as Digest,
+		frozenAt: commit, frozenTestPath: "tests/totals.test.ts", frozenTests: ["frozen:1", "frozen:2"] as TestId[], hiddenManifest: "0".repeat(64) as Digest,
 		hiddenTests: ["hidden:1", "hidden:2"] as TestId[],
 		protectedPaths: ["tests/**", "package.json"] as Glob[] } };
 const cases: HiddenCase[] = [
@@ -375,7 +376,8 @@ const FIXTURE = [process.env.ACQUIT_VERIFIER_FIXTURE,
 
 const FROZEN_COMMIT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 const fixtureDefinition: DefinitionOfDone = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
-	frozenAt: FROZEN_COMMIT, frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+	frozenAt: FROZEN_COMMIT, frozenTestPath: "tests/totals.test.ts",
+	frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
 	hiddenManifest: hiddenManifest(exampleCases).digest, hiddenTests: exampleCases.map(test => test.id),
 	protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] as Glob[] };
 const head = (branch: string): CommitSha => spawnSync("git", ["-C", FIXTURE!, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim() as CommitSha;
@@ -387,7 +389,7 @@ test("the judge returns the measured verdict and reason on every invoice-app bra
 		const head = spawnSync("git", ["-C", FIXTURE!, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim() as CommitSha;
 		const request: VerifierRunRequest = { runId: `run_${branch}` as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
 			sourceCommit: head, definitionOfDone: fixtureDefinition };
-		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(), cases: exampleCases,
+		const outcome = await runJudge(request, { source, subject: childProcessSubject(), publisher: createFakeGitHubApp(), fixtures: fixtureBook(bookEntry(exampleCases)),
 			clock: { now: () => instant("2026-10-06T12:00:00Z") } });
 		assert.equal(outcome.kind, "VERDICT", `${branch} failed to produce a verdict`);
 		if (outcome.kind !== "VERDICT") continue;
@@ -414,7 +416,7 @@ test("the judge decides with the configured cases, not a set compiled into the r
 	const altered = exampleCases.map((entry, index) => index === 0 ? { ...entry, expected: "999.999" } : entry);
 	const request: VerifierRunRequest = { runId: "run_altered_cases" as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
 		sourceCommit: head("fix-honest"), definitionOfDone: { ...fixtureDefinition, hiddenManifest: hiddenManifest(altered).digest } };
-	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(), cases: altered });
+	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(), fixtures: fixtureBook(bookEntry(altered)) });
 	assert.equal(outcome.kind, "VERDICT", outcome.kind === "RUN_FAILED" ? outcome.failure.name : "");
 	if (outcome.kind !== "VERDICT") return;
 	assert.equal(outcome.verdict.result, "REJECTED");
@@ -424,6 +426,6 @@ test("the judge decides with the configured cases, not a set compiled into the r
 test("the judge refuses to verify when the contract's hidden manifest is not the one it holds", { skip: FIXTURE === null ? "Set ACQUIT_VERIFIER_FIXTURE to the invoice-app fixture." : false }, async () => {
 	const request: VerifierRunRequest = { runId: "run_manifest" as VerifierRunId, jobId: "job_matrix" as JobId, ordinal: 1,
 		sourceCommit: FROZEN_COMMIT, definitionOfDone: { ...fixtureDefinition, hiddenManifest: "0".repeat(64) as Digest } };
-	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(), cases: exampleCases });
+	const outcome = await runJudge(request, { source: gitSource(FIXTURE!), subject: childProcessSubject(), publisher: createFakeGitHubApp(), fixtures: fixtureBook(bookEntry(exampleCases)) });
 	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.failure : outcome.kind, { name: "CONTRACT_MISMATCH", detail: "HIDDEN_MANIFEST_MISMATCH" });
 });

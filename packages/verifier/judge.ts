@@ -9,25 +9,11 @@ import { join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
-import { FROZEN_TEST_PATH } from "../core/src/seed-data.ts";
 import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, rejectReasons, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
 import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, RunFailureName, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { PublisherPort } from "../core/src/github.ts";
-import { hiddenManifest } from "./hidden.ts";
+import type { FixtureBook, FixtureBookEntry } from "./fixtures.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
-
-/**
- * The frozen suite becomes judge data too, so a submitted test runner or config cannot change it.
- * The extraction is literal on purpose: this is the invoice fixture's one exported target, and the
- * count guard refuses a tree whose frozen suite no longer matches the contract.
- */
-export function invoiceFixtureFrozenCases(source: string): readonly HiddenCase[] {
-	const matches = [...source.matchAll(/it\('([^']+)', \(\) => \{\s*expect\(formatTotal\((\[[^\n]+?\]), '([^']+)'\)\)\.toBe\('([^']+)'\);/g)];
-	if (matches.length !== 48) throw new Error(`Frozen case extraction collected ${matches.length}, not 48.`);
-	return matches.map((match, index) => ({ id: `frozen:${index + 1}` as TestId,
-		target: { module: "src/money.ts", export: "formatTotal" },
-		args: [JSON.parse(match[2].replaceAll("amount:", '"amount":')), match[3]], expected: match[4] }));
-}
 
 /** Read-only access to the two commits a run compares: the frozen tree and the submitted one. */
 export interface JudgeSource {
@@ -152,9 +138,8 @@ export type JudgeDeps = {
 	readonly source: JudgeSource;
 	readonly subject: SubjectLauncher;
 	readonly publisher: PublisherPort;
-	/** The deployment's cases, loaded once at the service boundary. The judge decides with these and nothing else. */
-	readonly cases: readonly HiddenCase[];
-	readonly frozenTestPath?: string;
+	/** The deployment's fixtures, each with its private cases and digest. The run's manifest selects its own. */
+	readonly fixtures: FixtureBook;
 	readonly clock?: { now(): Instant };
 	readonly deadlineMs?: number;
 };
@@ -163,13 +148,16 @@ export type JudgeDeps = {
 export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Promise<JudgeOutcome> {
 	const started = performance.now();
 	const clock = deps.clock ?? { now: () => instant(new Date().toISOString()) };
-	const manifest = hiddenManifest(deps.cases);
 	const done = request.definitionOfDone;
-	if (done.hiddenManifest !== manifest.digest) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_MANIFEST_MISMATCH"), timings: timingsOf(started, {}) };
-	if (!sameIds(manifest.cases.map(test => test.id), done.hiddenTests)) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_CASES_MISMATCH"), timings: timingsOf(started, {}) };
+	// The manifest names its own case set by digest. A job whose frozen digest is not one this
+	// deployment holds — or whose ids drifted from the file it froze — is refused before anything runs.
+	const fixture: FixtureBookEntry | undefined = deps.fixtures.byDigest.get(done.hiddenManifest);
+	if (fixture === undefined) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_MANIFEST_MISMATCH"), timings: timingsOf(started, {}) };
+	const cases = fixture.cases;
+	if (!sameIds(cases.map(test => test.id), done.hiddenTests)) return { kind: "RUN_FAILED", failure: contractMismatch("HIDDEN_CASES_MISMATCH"), timings: timingsOf(started, {}) };
 	let frozenCases: readonly HiddenCase[];
 	try {
-		frozenCases = invoiceFixtureFrozenCases(deps.source.readFile(done.frozenAt, deps.frozenTestPath ?? FROZEN_TEST_PATH));
+		frozenCases = fixture.frozenCases(deps.source.readFile(done.frozenAt, done.frozenTestPath));
 	} catch (error) {
 		return { kind: "RUN_FAILED", failure: contractMismatch("FROZEN_CASES_UNREADABLE", message(error)), timings: timingsOf(started, {}) };
 	}
@@ -179,10 +167,10 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	const screenMs = performance.now() - screenStart;
 	if (screen.length) {
 		// Nothing starts when the diff already breaks the contract. The screen alone decides.
-		return { kind: "VERDICT", verdict: decideVerdict(request, screen, { results: new Map() }, judgeHidden(manifest.cases, new Map()), null, clock.now()),
+		return { kind: "VERDICT", verdict: decideVerdict(request, screen, { results: new Map() }, judgeHidden(cases, new Map()), null, clock.now()),
 			subject: null, timings: timingsOf(started, { screenMs }) };
 	}
-	const calls: readonly SubjectCall[] = [...frozenCases, ...manifest.cases].map(toSubjectCall);
+	const calls: readonly SubjectCall[] = [...frozenCases, ...cases].map(toSubjectCall);
 	let tree: { readonly path: string; readonly link: string | null; readonly remove: () => void } | null = null;
 	let subjectRun: SubjectRun;
 	try {
@@ -191,7 +179,7 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 		// and the tree came back un-opened: no chmod has touched a path outside it.
 		if (tree.link !== null) {
 			return { kind: "VERDICT", verdict: decideVerdict(request, [{ kind: "TREE_SYMLINK", path: tree.link }], { results: new Map() },
-				judgeHidden(manifest.cases, new Map()), null, clock.now()), subject: null, timings: timingsOf(started, { screenMs }) };
+				judgeHidden(cases, new Map()), null, clock.now()), subject: null, timings: timingsOf(started, { screenMs }) };
 		}
 		subjectRun = await deps.subject.run(tree.path, calls, deps.deadlineMs);
 	} catch (error) {
@@ -213,7 +201,7 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	const transcript = parseSubjectTranscript(subjectRun.stdout, subjectRun.nonce, calls);
 	const replies = transcript.replies;
 	const frozenJudged = judgeHidden(frozenCases, replies);
-	const hiddenJudged = judgeHidden(manifest.cases, replies);
+	const hiddenJudged = judgeHidden(cases, replies);
 	const results = new Map<TestId, "passed" | "failed">();
 	for (const test of frozenCases) if (!frozenJudged.missing.includes(test.id)) results.set(test.id, frozenJudged.failed.includes(test.id) ? "failed" : "passed");
 	const frozen: FrozenRun = { results };

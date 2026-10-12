@@ -10,8 +10,8 @@ import { projectJob } from "./job.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { JobFundingMode } from "./funding.ts";
-import { DEMO_CLIENT_REPOSITORY } from "./seed-data.ts";
-import type { HiddenContract } from "./seed-data.ts";
+import { SEEDED_USERS } from "./seed-data.ts";
+import type { FixtureContract } from "./fixtures.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
@@ -27,7 +27,9 @@ export type { UsdCents, LedgerLine } from "./ledger.ts";
 export { formatUsd, usd } from "./ledger.ts";
 export type { Credits } from "./credits.ts";
 export type { JobStatus, Receipt } from "./job.ts";
-export { ISSUE, SEEDED_USERS } from "./seed-data.ts";
+export { SEEDED_USERS } from "./seed-data.ts";
+export { matchFixture, manifestOf, fixtureKey } from "./fixtures.ts";
+export type { FixtureContract, FixtureEntry, FixtureRef, HiddenContract } from "./fixtures.ts";
 
 export type Actor =
 	/**
@@ -172,13 +174,11 @@ export interface Clock {
 
 export type AcquitConfig = {
 	readonly databaseUrl: string;
-	/** The repository a job's contract names. Parsed from ACQUIT_CLIENT_REPOSITORY at the deployment boundary. */
-	readonly clientRepository?: string;
 	/**
-	 * The deployment's hidden cases as a contract: their ids and the digest of the cases themselves.
-	 * The deployment derives it at boot from its private file; core never holds the cases.
+	 * The deployment's registered fixtures. OpenJob freezes a job's manifest from the one its command
+	 * names; the store backfills manifests for rows that predate the freeze from the same references.
 	 */
-	readonly hiddenContract: HiddenContract;
+	readonly fixtures: readonly FixtureContract[];
 	readonly clock?: Clock;
 	readonly paypal: PayPalConfig;
 	readonly verifier: { readonly ciUrl: string; readonly callbackSecret: string };
@@ -197,10 +197,10 @@ export type AcquitConfig = {
 
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
-	const store = new SqliteStore(config.databaseUrl);
+	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
 	const github = createGitHubApp(config.github);
 	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
-		clientRepository: config.clientRepository ?? DEMO_CLIENT_REPOSITORY, hiddenContract: config.hiddenContract,
+		fixtures: config.fixtures,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
 		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,
 			pullRequest: effect.pullRequest, mergeCommit: effect.mergeCommit }, requestId) },

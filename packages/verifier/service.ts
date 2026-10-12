@@ -14,9 +14,10 @@ import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import { boundedDetail, boundedVerdict } from "../core/src/verifier.ts";
-import type { DefinitionOfDone, HiddenCase, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
+import type { DefinitionOfDone, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { JudgeOutcome, JudgeSource } from "./judge.ts";
 import { runJudge } from "./judge.ts";
+import type { FixtureBook } from "./fixtures.ts";
 import type { SubjectLauncher } from "./subject.ts";
 import { parseNonce, parseSignatureHeader, parseTimestamp, runSignature, signatureEquals, RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER, RUN_TIMESTAMP_WINDOW_SECONDS } from "./signing.ts";
 
@@ -45,8 +46,8 @@ export type VerifierServiceDeps = {
 	readonly callback: { readonly url: string; readonly secret: string };
 	readonly subject: SubjectLauncher;
 	readonly publisher: PublisherPort;
-	/** The deployment's hidden cases, loaded once at boot from the private file. */
-	readonly cases: readonly HiddenCase[];
+	/** The deployment's fixtures with their private cases; the run's manifest selects its own. */
+	readonly fixtures: FixtureBook;
 	/** Builds the read-only source for one run. Production fetches the commits from GitHub. */
 	readonly source: (request: VerifierRunRequest) => Promise<RunSource>;
 	readonly clock?: { now(): Instant };
@@ -177,7 +178,7 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		try {
 			built = await deps.source(record.request);
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
-				cases: deps.cases, deadlineMs: deps.subjectDeadlineMs });
+				fixtures: deps.fixtures, deadlineMs: deps.subjectDeadlineMs });
 			// What the run view and the callback carry is bounded and redacted here, once, for every source.
 			record.outcome = outcome.kind === "VERDICT" ? { ...outcome, verdict: boundedVerdict(outcome.verdict) }
 				: { ...outcome, failure: { ...outcome.failure, detail: boundedDetail(outcome.failure.detail) } };
@@ -314,13 +315,16 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const number = typeof value.issue.number === "number" && Number.isSafeInteger(value.issue.number) && value.issue.number > 0 ? value.issue.number : null;
 	const title = boundedText(value.issue.title, 300);
 	const frozenAt = idOf(value.frozenAt, /^[0-9a-f]{7,64}$/);
+	// The frozen test path is inside the fixture repository: relative, bounded, no escaping.
+	const frozenTestPath = typeof value.frozenTestPath === "string" && value.frozenTestPath.length > 0 && value.frozenTestPath.length <= 300
+		&& !value.frozenTestPath.startsWith("/") && !value.frozenTestPath.split("/").includes("..") ? value.frozenTestPath : null;
 	const frozenTests = testIds(value.frozenTests);
 	const hiddenTests = testIds(value.hiddenTests);
 	const hiddenManifest = idOf(value.hiddenManifest, /^[0-9a-f]{64}$/);
 	const protectedPaths = globList(value.protectedPaths);
-	if (repository === null || number === null || title === null || frozenAt === null || frozenTests === null
+	if (repository === null || number === null || title === null || frozenAt === null || frozenTestPath === null || frozenTests === null
 		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null) return null;
-	return { issue: { repository, number, title }, frozenAt: frozenAt as CommitSha, frozenTests: frozenTests as readonly TestId[],
+	return { issue: { repository, number, title }, frozenAt: frozenAt as CommitSha, frozenTestPath, frozenTests: frozenTests as readonly TestId[],
 		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"] };
 }
 

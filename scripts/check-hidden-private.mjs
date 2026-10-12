@@ -22,7 +22,7 @@ if (!manifest) {
 const root = repoRoot ?? fileURLToPath(new URL("..", import.meta.url));
 /** How far apart, in characters, a currency and an answer may sit once whitespace is removed. */
 const WINDOW = 200;
-const cases = parseHiddenCases(readFileSync(manifest, "utf8"), manifest);
+const cases = parseHiddenCases(readFileSync(manifest, "utf8"), manifest, { count: 6, idPrefix: "hidden" });
 const files = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
 	.split("\0").filter(file => file !== "");
 let total = 0;

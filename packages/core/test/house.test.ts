@@ -13,7 +13,7 @@ import { instant, parseRequestKey } from "../src/ids.ts";
 import type { ClientId, MerchantId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import { demoFixture } from "./hidden-fixture.ts";
 
 const merchant = "sandbox-seller" as MerchantId;
 const deployment = "maya-client/invoice-app";
@@ -21,7 +21,7 @@ const deployment = "maya-client/invoice-app";
 test("an unseeded deployment logs the House's refusal once, not once per tick", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-house-"));
 	const path = join(root, "acquit.db");
-	const service = createAcquit({ databaseUrl: path, hiddenContract: exampleContract, demo: { merchant },
+	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant },
 		clock: { now: () => instant("2026-10-06T12:00:00Z") },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },

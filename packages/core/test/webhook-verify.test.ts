@@ -16,8 +16,8 @@ import { createPayPal, parseWebhookEnvelope } from "../src/paypal.ts";
 import type { Bps, ResourceRead, WebhookVerifyOutcome } from "../src/paypal.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
-import type { HiddenContract } from "../src/seed-data.ts";
-import { exampleContract } from "./hidden-fixture.ts";
+import type { HiddenContract } from "../src/fixtures.ts";
+import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
@@ -86,7 +86,7 @@ function fixture() {
 	const reads = new Map<string, ResourceRead>();
 	const calls: string[] = [];
 	const verdicts: WebhookVerifyOutcome[] = [];
-	const ports: Ports = { store, feeModel: model, clientRepository: "maya-client/invoice-app", hiddenContract: deploymentContract,
+	const ports: Ports = { store, feeModel: model, fixtures: [demoFixture(deploymentContract)],
 		clock: { now: () => now }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal: {
 			dispatch: async call => {

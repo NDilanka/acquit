@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { resolve } from "node:path";
-import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, ISSUE, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
+import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase } from "../../../packages/core/src/store.ts";
@@ -16,10 +16,28 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
+import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
+
+/** The job catalog a session may open against, from the deployment's fixture registry: a visitor
+ * sees only the fixture its fork was made from, named by its own fork; every other signed-in
+ * principal sees every registered fixture. */
+function fixtureCatalog(fixtures: readonly FixtureContract[],
+	visitor: { readonly fork: string | null; readonly source: string } | null):
+	{ repository: string; issues: { number: number; title: string; suite: { commit: string; visible: number; hidden: number } }[] }[] {
+	const repos = new Map<string, { number: number; title: string; suite: { commit: string; visible: number; hidden: number } }[]>();
+	for (const f of fixtures) {
+		if (visitor && f.repository !== visitor.source) continue;
+		const issues = repos.get(f.repository) ?? [];
+		issues.push({ number: f.issue.number, title: f.issue.title, suite: { commit: f.frozenAt.slice(0, 7), visible: f.frozenTests.length, hidden: f.hiddenTests.length } });
+		repos.set(f.repository, issues);
+	}
+	return [...repos].map(([repository, issues]) =>
+		({ repository: visitor && visitor.fork !== null && repository === visitor.source ? visitor.fork : repository, issues }));
+}
 
 let clockOffset = 0;
 let fundingMode: "checkout" | "card" = "checkout";
@@ -418,8 +436,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		return;
 	}
 	if (url.pathname === "/api/repos" && method === "GET") {
-		// The one repository this session may open a job on: the visitor's own fork when it has one.
-		json(res, 200, { repos: [{ ...ISSUE, repository: current.visitor?.repository ?? clientRepository }] });
+		// The repositories this session may open a job on, from the deployment's fixture registry: a
+		// visitor sees its own fork under its fixture's issue; a signed-in client sees every fixture.
+		json(res, 200, { repos: fixtureCatalog(fixtures, current.visitor ? { fork: current.visitor.repository, source: clientRepository } : null) });
 		return;
 	}
 	if (url.pathname === "/api/commands" && method === "POST") {

@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { generateKeyPairSync, createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -61,13 +62,25 @@ async function freePort(): Promise<number> {
 	await new Promise<void>(resolve => listener.close(() => resolve()));
 	return port;
 }
+/** The test registry: fixture 1 over the committed non-dev test cases, written per run. */
+function testRegistry(dir: string): string {
+	const path = join(dir, "fixtures.json");
+	writeFileSync(path, JSON.stringify({ version: 1, fixtures: [{
+		repository: "maya-client/invoice-app", issue: { number: 12, title: "Totals round wrong for 3-decimal currencies" },
+		frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4", frozenTestPath: "tests/totals.test.ts",
+		visible: 48, hidden: 6, hiddenIdPrefix: "hidden",
+		protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"],
+		hiddenCases: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url)),
+		frozenExtractor: "invoice-totals", demoForkPrefix: "acquit-forks/" }] }), { mode: 0o600 });
+	return path;
+}
 /** One isolated API child, listening on its own port and reaching only the two stubs. */
 async function startApi(root: string, dir: string, dev: boolean, github = false): Promise<{ readonly child: ChildProcess; readonly url: string }> {
 	const port = await freePort();
 	const child = spawn(process.execPath, ["--import", preload("Date.now=()=>1760000000000"), "--import", preload(fetchStub), "apps/api/src/server.ts"],
 		{ cwd: root, stdio: "ignore", env: {
 			...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
-			ACQUIT_HIDDEN_CASES: fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url)),
+			ACQUIT_FIXTURES: testRegistry(dir),
 			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
 			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: join(dir, "fetch.log"),
 			// The GitHub App is this test's own choice, never the developer's .env: without one the App

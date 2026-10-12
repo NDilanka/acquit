@@ -7,7 +7,7 @@ import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
 import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
-import type { RunFailure } from "./verifier.ts";
+import type { DefinitionOfDone, RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
 import type { AgentId, ClientId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
 import { instant } from "./ids.ts";
@@ -15,9 +15,12 @@ import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
 import type { UsdCents } from "./ledger.ts";
 import { logBare } from "./log.ts";
 import { jobFunding } from "./funding.ts";
+import { matchFixture } from "./fixtures.ts";
+import type { FixtureRef } from "./fixtures.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
 
-export function openDatabase(path: string): DatabaseSync {
+/** The store's own schema. The fixtures drive the M1 manifest backfill; absent, no backfill runs. */
+export function openDatabase(path: string, fixtures: readonly FixtureRef[] = []): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 	const db = new DatabaseSync(path);
 	// The lock guard goes on before the first write. The migration below drops a table, and a second
@@ -59,7 +62,25 @@ export function openDatabase(path: string): DatabaseSync {
 		CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, job_id TEXT, operator TEXT NOT NULL,
 			source TEXT NOT NULL, paid INTEGER NOT NULL DEFAULT 0, paid_at TEXT);
 		CREATE INDEX IF NOT EXISTS receipts_operator ON receipts(operator);
+		-- One frozen manifest per job, written by OpenJob in the job's own transaction. The judge reads
+		-- the job's manifest; a registry change after the job is open never moves it.
+		CREATE TABLE IF NOT EXISTS job_manifests (job_id TEXT PRIMARY KEY, json TEXT NOT NULL);
 	`);
+	// The M1 backfill: a database from before per-job manifests holds each job's frozen contract only
+	// inside the job row. One manifest row per such job, carrying exactly the contract it was frozen
+	// with, plus the frozen test path the registry names for its fixture. The job id is the key, so a
+	// second migration inserts nothing new. A job whose fixture the registry does not name is skipped
+	// with one log line: it stays as judgeable as it was, and fixing the registry re-runs the backfill.
+	for (const row of db.prepare("SELECT id, json FROM jobs WHERE id NOT IN (SELECT job_id FROM job_manifests)").all()) {
+		const job = JSON.parse(String(row.json)) as JobRow;
+		const done = storedDefinitionOfDone(job);
+		if (!done) continue;
+		// The stored repository is the visitor context the open validated (a visitor's job sits on the
+		// fork its session carried), so a registered demo fork matches; every other job matches exactly.
+		const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, done.issue.repository);
+		if (!fixture) { console.warn(`Manifest backfill skipped for ${logBare(String(row.id))}: no registered fixture for ${done.issue.repository}#${done.issue.number}`); continue; }
+		db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(String(row.id), JSON.stringify({ ...done, frozenTestPath: fixture.frozenTestPath }));
+	}
 	// The backfill: a database that already settled jobs holds its receipts only inside the PAID rows.
 	// One SEED-marked row per PAID job's own receipt, so a line counted from rows sees the whole
 	// history the day the migration lands. The receipt id guards the re-run: a second migration
@@ -171,12 +192,21 @@ export function outboxDue(state: OutboxState): string | null {
 }
 export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
-	constructor(path: string) { this.db = openDatabase(path); }
+	readonly #fixtures: readonly FixtureRef[];
+	constructor(path: string, fixtures: readonly FixtureRef[] = []) {
+		this.#fixtures = fixtures;
+		this.db = openDatabase(path, fixtures);
+	}
 	// The job's own funding source lives beside the row, not in it: a command that read a row before a
 	// choice was stored must not be able to write a stale copy back over it.
 	async readJob(id: JobId): Promise<JobRow | null> {
 		const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id));
 		return row ? storedJob({ ...row, funding: jobFunding(this.db, id) }) : null;
+	}
+	/** The manifest frozen at OpenJob, or null for a row that predates the manifest freeze. */
+	async readManifest(id: JobId): Promise<DefinitionOfDone | null> {
+		const row = this.db.prepare("SELECT json FROM job_manifests WHERE job_id = ?").get(id);
+		return row ? JSON.parse(String(row.json)) as DefinitionOfDone : null;
 	}
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
@@ -263,6 +293,17 @@ export class SqliteStore implements Store {
 					if (!result.changes) { this.db.exec("ROLLBACK"); return { kind: "VERSION_CONFLICT" }; }
 				}
 				for (const resource of jobResources(row)) this.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(resource, row.id);
+				// The manifest freeze travels with the job's own transaction on every path that stores a
+				// row whose contract carries one. The first write wins, so a later commit never moves it.
+				// The frozen contract's own repository is the actor context its open validated: a
+				// registered demo fork matches, and every other job matches exactly.
+				const frozen = storedDefinitionOfDone(row);
+				if (frozen) {
+					const fixture = matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, frozen.issue.repository);
+					const done = fixture ? { ...frozen, frozenTestPath: fixture.frozenTestPath }
+						: frozen.frozenTestPath !== undefined ? frozen : null;
+					if (done) this.db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(row.id, JSON.stringify(done));
+				}
 			}
 			for (const credit of change.credits) {
 				const account = credit.account;
@@ -290,6 +331,7 @@ export class SqliteStore implements Store {
 					.run(receipt.id, receipt.jobId, receipt.operator, receipt.releasedAt);
 			}
 			for (const row of change.outbox) this.db.prepare("INSERT OR IGNORE INTO outbox VALUES (?, ?, ?, ?)").run(row.key, JSON.stringify(row), JSON.stringify(row.state), outboxDue(row.state));
+			if (change.manifest) this.db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(change.manifest.jobId, JSON.stringify(change.manifest.done));
 			if (change.settlement) this.updateEffect(change.settlement.key, change.settlement.state);
 			if (change.request) this.db.prepare("INSERT INTO requests VALUES (?, ?, ?, ?)").run(change.request.actor, change.request.key, change.request.payloadDigest, JSON.stringify(change.request.result));
 			if (change.delivery) this.db.prepare("INSERT INTO deliveries VALUES (?)").run(change.delivery);
