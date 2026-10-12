@@ -14,6 +14,21 @@ export function runtimeRoot(env = process.env, home = homedir()) {
 // the original session string (agent-browser 0.37.1 on this host).
 export const namespaceDirName = (ns) => ns.replace(/_{2,}/g, "_");
 
+// The sanitized environment a browser child actually runs under: every
+// agent-browser override and every credential-shaped name is removed before
+// the child starts. Guarding the session against the parent's environment
+// instead would inspect a root the browser never uses -- fail closed when the
+// override directory is absent, or worse, pass a stale empty namespace while
+// the real stream file sits in the runtime root the browser resolved.
+export function browserEnvOf(env) {
+	const clean = { ...env };
+	for (const name of Object.keys(clean)) {
+		if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT"
+			|| /PAYPAL|SANDBOX|MERCHANT_ID|PASSWORD|SECRET|TOKEN|API_KEY/.test(name)) delete clean[name];
+	}
+	return clean;
+}
+
 const directory = (path) => {
 	try { return statSync(path).isDirectory(); } catch { return false; }
 };

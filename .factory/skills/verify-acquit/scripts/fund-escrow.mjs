@@ -9,7 +9,7 @@ import { captured as captureCommand, discarded, portOpen, runPids } from "../../
 import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
 import { dashboardPorts } from "../../../../packages/ctl/src/browser-safety.ts";
 import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
-import { disableStream, streamGuard } from "./stream-guard.mjs";
+import { browserEnvOf, disableStream, streamGuard } from "./stream-guard.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 if (process.env.ACQUIT_LANE === undefined) process.env.DATABASE_PATH = "./data/verify/acquit.db";
@@ -29,11 +29,9 @@ const evidence = resolve(root, process.env.ACQUIT_EVIDENCE_DIR ?? "data/evidence
 const launch = JSON.parse(await readFile(join(evidence, "launch.json"), "utf8"));
 assert(launch.ok && launch.command === "start" && launch.data.alreadyRunning === false, "This run must start its own instance.");
 assert.equal(resolve(launch.data.databasePath), databasePath, "Refuse to drive the real database.");
-const browserEnv = { ...process.env };
-for (const name of Object.keys(browserEnv)) {
-	if (name.startsWith("AGENT_BROWSER_") || name === "FACTORY_DESKTOP_CDP_PORT"
-		|| /PAYPAL|SANDBOX|MERCHANT_ID|PASSWORD|SECRET|TOKEN|API_KEY/.test(name)) delete browserEnv[name];
-}
+// The sanitized environment every browser command runs under; the approval guard resolves the
+// session's runtime root from this same environment, so it inspects what the browser uses.
+const browserEnv = browserEnvOf(process.env);
 browserEnv.AGENT_BROWSER_SESSION = browserSession;
 browserEnv.AGENT_BROWSER_HEADED = "false";
 // Sandbox token + order calls can each consume their 15s timeout before a
@@ -132,7 +130,7 @@ async function approve() {
 	// before any credential command, and refuse while a stream file remains.
 	const refuseStreams = async () => {
 		await disableStream(browser);
-		const guard = streamGuard(browserSession);
+		const guard = streamGuard(browserSession, browserEnv);
 		assert(guard.ok, `Approval refused: ${guard.reason}.`);
 	};
 	await refuseStreams();
