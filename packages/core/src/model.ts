@@ -5,9 +5,9 @@
 // Docker, no key value in a log: the key travels from `factoryApiKey` to the sandbox in-process,
 // the way the provider key always has.
 
-import { readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { boundedDetail } from "./verifier.ts";
 
 /** The providers the switch can name. `droid` is the operator's ruled default; `openrouter` keeps
@@ -111,6 +111,66 @@ function parseDroidResult(output: string): DroidResultLine | null {
 		} catch { /* a non-JSON line; keep scanning back */ }
 	}
 	return null;
+}
+
+// ---- the shared model-call budget --------------------------------------------------------------
+
+/** The operator's approved budget for app model calls: under 20 a minute and under 1000 a day.
+ * A window therefore admits its 19th call (minute) and its 999th (day), and nothing further. */
+export const MODEL_CALLS_MINUTE = 20;
+export const MODEL_CALLS_DAY = 1000;
+
+/** One line of the call log every app model call shares. The START record is written before the
+ * caller runs anything; the END record carries the outcome and the usage the answer reported. */
+export type ModelCallRecord = {
+	readonly at: string;
+	readonly caller: string;
+	readonly jobId: string | null;
+	readonly provider: string;
+	readonly model: string;
+	readonly phase: "START" | "END";
+	readonly outcome?: string;
+	readonly sessionId?: string | null;
+	readonly factoryCredits?: number | null;
+};
+
+export type ModelCallLog = {
+	readonly append: (record: ModelCallRecord) => Promise<void>;
+	readonly records: () => Promise<readonly ModelCallRecord[]>;
+};
+
+/** The durable, append-only call log (one JSON line per record, mode 600) the shared budget reads:
+ * `model-calls.jsonl` beside the database, so every caller in this deployment counts together. */
+export function modelCallLog(path: string): ModelCallLog {
+	return {
+		async append(record) {
+			await mkdir(dirname(path), { recursive: true });
+			await appendFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+		},
+		async records() {
+			let raw: string;
+			try {
+				raw = await readFile(path, "utf8");
+			} catch {
+				return [];
+			}
+			return raw.split("\n").filter(line => line.trim() !== "").map(line => JSON.parse(line) as ModelCallRecord);
+		},
+	};
+}
+
+/** Reserves one model call at `call.at` when the shared budget allows it, writing the call's START
+ * record before the caller runs anything, so crashes, failures, and retries all count. Refuses
+ * when the rolling minute already holds its 19 calls or the day its 999. */
+export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> {
+	const at = Date.parse(call.at);
+	const records = await log.records();
+	const starts = records.filter(record => record.phase === "START").map(record => Date.parse(record.at));
+	const perMinute = starts.filter(startedAt => startedAt > at - 60_000).length;
+	const perDay = starts.filter(startedAt => startedAt > at - 86_400_000).length;
+	if (perMinute >= MODEL_CALLS_MINUTE - 1 || perDay >= MODEL_CALLS_DAY - 1) return { ok: false, reason: "BUDGET" };
+	await log.append({ ...call, phase: "START" });
+	return { ok: true };
 }
 
 // ---- the Factory key ---------------------------------------------------------------------------

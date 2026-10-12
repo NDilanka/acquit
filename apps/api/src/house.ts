@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dockerCli, type GitRun } from "../../../packages/acquit-cli/src/run.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../../../packages/core/src/acquit.ts";
+import { modelCallLog } from "../../../packages/core/src/model.ts";
 import type { JobId, CommitSha } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import {
@@ -71,6 +72,9 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 					announcePause();
 					return;
 				}
+				// A spent shared budget only ends this tick: the next one retries within the budget,
+				// so nothing is latched and no job is unfairly abandoned.
+				if (outcome === "BUDGET") return;
 			}
 		} catch (error) {
 			log(`house: scan failed; the next tick retries (${error instanceof Error ? error.message.slice(0, 200) : "unknown"})`);
@@ -116,6 +120,10 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 		}),
 		readState: store.readState,
 		writeState: store.writeState,
+		// The shared call budget lives beside the database: every model call this deployment makes
+		// appends to the same log, on this clock.
+		callLog: modelCallLog(join(ports.stateDir, "model-calls.jsonl")),
+		now: () => new Date().toISOString(),
 		submit: async (job, commit, delivery) => {
 			// The diff lands before the edge: a timeline that shows the model's own diff must show it
 			// even when the submit itself needs the next tick's retry.

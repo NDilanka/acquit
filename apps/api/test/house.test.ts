@@ -84,7 +84,7 @@ function twoJobHouse(stateDir: string, run: (plan: HouseRunPlan) => Promise<Hous
 		stateDir,
 		run: async plan => { plans.push(plan); return run(plan); },
 		work: fakeWork(),
-		env: { ACQUIT_HOUSE_COMMAND: "/srv/house/fix.sh" },
+		env: {},
 	});
 	return { house, plans };
 }

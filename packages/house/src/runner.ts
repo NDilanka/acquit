@@ -18,8 +18,8 @@ import {
 	runAgentInSandbox, sandboxNames, seedCommitIdentity, submissionCommit,
 	type ChangedFile, type DockerPort, type GitRun, type RunnerPlan,
 } from "../../acquit-cli/src/run.ts";
-import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, modelProvider } from "../../core/src/model.ts";
-import type { ModelProvider } from "../../core/src/model.ts";
+import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, modelProvider, reserveModelCall } from "../../core/src/model.ts";
+import type { ModelCallLog, ModelProvider } from "../../core/src/model.ts";
 import type { Actor } from "../../core/src/acquit.ts";
 import type { CommitSha, JobId, OperatorId, VisitorId } from "../../core/src/ids.ts";
 import type { JobRow, JobStatus } from "../../core/src/job.ts";
@@ -134,6 +134,10 @@ export type HouseDeliveryDeps = {
 	 * delivery rides along the first time so the job's timeline can show the run's own diff. The
 	 * target rides too, so the submit edge builds the actor from the job's own tenant. */
 	readonly submit: (job: HouseTarget, commit: CommitSha, delivery?: HouseDelivery) => Promise<void>;
+	/** The durable call log the shared minute/day budget reads, and every call appends to. */
+	readonly callLog: ModelCallLog;
+	/** The deployment's own clock, so the budget's rolling windows and record stamps are testable. */
+	readonly now: () => string;
 	readonly log: (line: string) => void;
 };
 
@@ -189,26 +193,49 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 				instruction: houseInstruction(defaultInstruction({ title: job.title })) }
 			: { runner: "command", jobId: job.id, workDir: prepared.workDir, commandPath: deps.mode.commandPath };
 
-		let calls = state.calls + 1;
+		// The shared budget is the deployment's, not the job's: a reservation is refused before the
+		// job's own call count moves, and the START record precedes the run, so crashes, failures,
+		// and retries all count. The command runner makes no model call, so it reserves none.
+		const reserve = (): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> => deps.mode.runner !== "model" ? Promise.resolve({ ok: true })
+			: reserveModelCall(deps.callLog, { at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model: deps.mode.model });
+		// Every invocation is recorded once it returns, before any retry decision: the END record
+		// and one operator-readable line carrying the call's own session, credits, and outcome.
+		const recordCall = async (outcome: HouseRunOutcome, call: number): Promise<void> => {
+			if (deps.mode.runner !== "model") return;
+			const outcomeName = outcome.ok ? "ok" : outcome.reason;
+			await deps.callLog.append({
+				at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model: deps.mode.model,
+				phase: "END", outcome: outcomeName, sessionId: outcome.sessionId, factoryCredits: outcome.factoryCredits,
+			});
+			const parts = [
+				`model ${deps.mode.model}`,
+				outcome.sessionId == null ? null : `session ${outcome.sessionId}`,
+				outcome.factoryCredits == null ? null : `credits ${outcome.factoryCredits}`,
+			];
+			deps.log(`house: ${job.id} model call ${call}: ${parts.filter(part => part !== null).join(", ")}, outcome ${outcomeName}`);
+		};
+
+		let calls = state.calls;
+		if (!(await reserve()).ok) {
+			deps.log(`house: ${job.id} call budget spent; the next tick retries`);
+			return "BUDGET";
+		}
+		calls += 1;
 		await deps.writeState(job.id, { ...state, calls });
 		let outcome = await deps.run(plan);
+		await recordCall(outcome, calls);
 		// One retry, only on a provider error, only while the persisted cap allows it: a 429 on the
 		// free tier is the same single retry, never a loop. A rate or usage limit is the exception
 		// the operator ruled: its own terminal class, no retry at all, and the scan stops.
 		if (outcome.ok === false && outcome.reason === "PROVIDER_ERROR" && calls < MAX_CALLS) {
+			if (!(await reserve()).ok) {
+				deps.log(`house: ${job.id} run stopped: BUDGET on the retry; the job keeps its first call`);
+				return "FAILED";
+			}
 			calls += 1;
 			await deps.writeState(job.id, { ...state, calls });
 			outcome = await deps.run(plan);
-		}
-		if (outcome.ok === true) {
-			// The per-call record: the model id, the provider's session id, and the credits it
-			// reported. Where a provider reports none, the line is simply silent about it.
-			const parts = [
-				outcome.model === undefined || outcome.model === null ? null : `model ${outcome.model}`,
-				outcome.sessionId === undefined || outcome.sessionId === null ? null : `session ${outcome.sessionId}`,
-				outcome.factoryCredits === undefined || outcome.factoryCredits === null ? null : `credits ${outcome.factoryCredits}`,
-			].filter(part => part !== null);
-			if (parts.length > 0) deps.log(`house: ${job.id} model run: ${parts.join(", ")}`);
+			await recordCall(outcome, calls);
 		}
 		if (outcome.ok === false) {
 			if (outcome.reason === "RATE_LIMITED") {
