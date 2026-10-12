@@ -4,7 +4,7 @@ In public mode (`ACQUIT_DEV` unset) a visitor starts a demo and gets its own cli
 
 ## Sub-features
 
-- `judge-start` shows `Start my demo` on the sign-in page and lands on `Your jobs` as `guest-<hex>-client`.
+- `judge-start` shows the tour and, under the `Start my demo` group, exactly two roles (`I want work done`, `I deliver work`). Choosing `I want work done` starts the demo (one `POST /api/demo`), shows the `Connected: issues, pull requests, checks` step naming the visitor's repository, and `Go to your jobs` lands on `Your jobs` as `guest-<hex>-client`.
 - `judge-restore` keeps the demo across a reload through `GET /api/session`, whose `mode` (`public` or `dev`) also chooses the sign-in page.
 - `judge-bar` shows the demo bar under the top bar: `Your demo`, the `Act as client` / `Act as operator` switch (the active one is pressed and disabled), `Signed in as <handle>`, `Repository <owner/name>` (or `the deployment's shared repository` without an App), and `Ends in <h> h <m> min`.
 - `judge-switch` moves the session between the visitor's two accounts with `POST /api/demo/switch`. The page remounts as the new account.
@@ -16,7 +16,7 @@ In public mode (`ACQUIT_DEV` unset) a visitor starts a demo and gets its own cli
 
 ## How to get to it (user POV)
 
-- Open `/` without a session on a public-mode lane and choose `Start my demo`.
+- Open `/` without a session on a public-mode lane and choose `I want work done` under `Start my demo`, then `Go to your jobs`.
 - Choose `Act as operator` or `Act as client` in the demo bar.
 - Open a job as the visitor's client and use `Payment method` and `Job clock` in the right column.
 
@@ -30,7 +30,7 @@ Preconditions:
 
 Steps:
 
-- **Start.** `ab open $webUrl`, `ab wait --text 'Start my demo'`, `ab find role button click --name 'Start my demo'`, `ab wait --text 'Your demo'`. Require `Act as client` disabled and `Signed in as guest-…-client`.
+- **Start.** `ab open $webUrl`, `ab wait --text 'Start my demo'`, `ab find role button click --name 'I want work done'`, `ab wait --text 'Connected: issues, pull requests, checks'`, `ab find role button click --name 'Go to your jobs'`, `ab wait --text 'Your demo'`. Require `Act as client` disabled and `Signed in as guest-…-client`.
 - **Restore.** `ab reload`, `ab wait --text 'Your demo'`. Require the same handle.
 - **Switch.** `ab find role button click --name 'Act as operator'`, wait for the `-ops` handle, then `Open jobs`. Switch back with `Act as client` and wait for `Your jobs`.
 - **Open a job.** Post one through [Post a job](02-post-job.md) and open its page. Require `Payment method` with `Sandbox test card` checked, and `Job clock`.
