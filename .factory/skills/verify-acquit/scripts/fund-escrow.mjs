@@ -8,7 +8,7 @@ import { context } from "../../../../packages/ctl/src/state.ts";
 import { captured as captureCommand, discarded, portOpen, runPids } from "../../../../packages/ctl/src/process.ts";
 import { browserExecutable } from "../../../../packages/ctl/src/executables.ts";
 import { dashboardPorts } from "../../../../packages/ctl/src/browser-safety.ts";
-import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout } from "./safe-browser.mjs";
+import { credentialFill, redactor, refuseDashboard, paypalControlSelectors, englishCheckoutUrl, paypalPageProbe, classifyCheckout, urlWithoutQuery } from "./safe-browser.mjs";
 import { browserEnvOf, disableStream, streamGuard } from "./stream-guard.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -361,6 +361,8 @@ try {
 		assert.equal(funding.job.phase, "FUNDING");
 		assert.equal(funding.job.escrow, "NONE");
 		assert.equal(new URL(funding.job.approveUrl).hostname, checkout.hostname);
+		// The saved evidence carries the approval URL's origin and path only, never its query.
+		funding.job.approveUrl = urlWithoutQuery(funding.job.approveUrl);
 		await save("job-funding.json", funding);
 		const db = new DatabaseSync(databasePath, { readOnly: true });
 		let stored;
