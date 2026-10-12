@@ -49,9 +49,9 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createGitHubApp, workRepoName } from "../../packages/core/src/github.ts";
 import { authAssertion } from "../../packages/core/src/paypal.ts";
-import { FROZEN_AT } from "../../packages/core/src/seed-data.ts";
 import { captured, portOpen, sleep } from "../../packages/ctl/src/process.ts";
 import { laneSlot } from "../../packages/ctl/src/state.ts";
+import { loadFixtureRegistry } from "../../packages/verifier/fixtures.ts";
 import { githubAppEnv } from "../../packages/verifier/config.ts";
 import { dockerReachable } from "../../packages/verifier/subject.ts";
 
@@ -82,8 +82,11 @@ const fixture = resolve(root, process.env.ACQUIT_VERIFIER_FIXTURE ?? "../../acqu
 // operator's 360.00 USD share, held by the card source. Devon bids the price, as the plan's ledger does.
 const BUDGET = 40_000;
 const BID_PRICE = 40_000;
-const ISSUE_NUMBER = 12;
 const REPLAYS = 5;
+// The fixture the client repo's jobs open against comes from the registry this environment declares
+// (the committed example in development), resolved in preflight after .env loads. The seed carries
+// no contract any more: the frozen commit and issue are the registered entry's own.
+let registered = null;
 const RULES = { approveToPaidMedianSeconds: 20, webhookMedianMs: 500 };
 const PAYPAL_BASE = "https://api-m.sandbox.paypal.com";
 
@@ -139,10 +142,13 @@ async function main() {
 }
 
 async function preflight() {
+	const registry = loadFixtureRegistry();
+	registered = registry.entries.find(entry => entry.repository === clientRepo) ?? null;
+	assert(registered !== null, `The registry ${registry.path} names no fixture for ${clientRepo}; a job can only open on a registered repository.`);
 	assert(existsSync(helper), `No disposable-repo helper at ${helper}. Pass --helper <path>.`);
 	assert(existsSync(resolve(fixture, ".git")), `No invoice-app fixture at ${fixture}. Set ACQUIT_VERIFIER_FIXTURE.`);
-	assert.equal(spawnSync("git", ["-C", fixture, "cat-file", "-e", `${FROZEN_AT}^{commit}`]).status, 0,
-		`The fixture does not carry the frozen commit ${FROZEN_AT.slice(0, 7)}.`);
+	assert.equal(spawnSync("git", ["-C", fixture, "cat-file", "-e", `${registered.frozenAt}^{commit}`]).status, 0,
+		`The fixture does not carry the frozen commit ${registered.frozenAt.slice(0, 7)}.`);
 	assert(dockerReachable(), "The Docker subject is unreachable: the verifier cannot judge a submission.");
 	githubAppEnv();
 	for (const [name, port] of [["api", slot.apiPort], ["web", slot.webPort], ["verifier", slot.verifierPort]]) {
@@ -154,8 +160,8 @@ async function preflight() {
 async function oneJob(index, maya, devon) {
 	const stamp = `f2-perf-${index + 1}`;
 	const reset = resetClientRepo();
-	assert.equal(reset.main, FROZEN_AT.slice(0, 7), "The disposable repo is not at the frozen commit after its reset.");
-	const opened = await command(maya, { type: "OpenJob", repository: clientRepo, issueNumber: ISSUE_NUMBER, budget: BUDGET,
+	assert.equal(reset.main, registered.frozenAt.slice(0, 7), "The disposable repo is not at the frozen commit after its reset.");
+	const opened = await command(maya, { type: "OpenJob", repository: clientRepo, issueNumber: registered.issue.number, budget: BUDGET,
 		deliveryEndsAt: new Date(Date.now() + 7 * 86400000).toISOString() });
 	const jobId = opened.job.id;
 	const bid = await command(devon, { type: "PlaceBid", jobId, price: BID_PRICE, eta: 72, agent: "ts-bugfixer",

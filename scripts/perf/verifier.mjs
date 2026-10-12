@@ -19,9 +19,10 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createFakeGitHubApp } from "../../packages/core/src/github.ts";
 import { instant } from "../../packages/core/src/ids.ts";
-import { frozenDefinition, DEMO_CLIENT_REPOSITORY } from "../../packages/core/src/seed-data.ts";
+import { DEMO_CLIENT_REPOSITORY } from "../../packages/core/src/seed-data.ts";
+import { manifestOf } from "../../packages/core/src/fixtures.ts";
 import { gitSource, runJudge } from "../../packages/verifier/judge.ts";
-import { EXAMPLE_HIDDEN_CASES_PATH, hiddenContractOf, loadHiddenCasesFromFile } from "../../packages/verifier/hidden.ts";
+import { buildFixtureBook, fixtureContracts, loadFixtureRegistry } from "../../packages/verifier/fixtures.ts";
 import { childProcessSubject, dockerReachable, dockerSubject } from "../../packages/verifier/subject.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -57,10 +58,15 @@ if (values.subject === "docker" && !dockerReachable()) {
 if (values.subject === "child" && !values.dev) {
 	await blocked("CHILD_SUBJECT_NEEDS_DEV", "The child-process subject is the unit-test path. Pass --dev to acknowledge that.");
 }
-// The probe is a development run: it judges with the committed example. A deployment names its own
-// private file in ACQUIT_HIDDEN_CASES, and that file is never in the repository.
-const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH);
-const definition = frozenDefinition(DEMO_CLIENT_REPOSITORY, hiddenContractOf(cases));
+// The probe is a development run: it judges with the committed example registry. A deployment names
+// its own registry in ACQUIT_FIXTURES, and that file is never in the repository. The manifest is
+// what OpenJob would freeze for the demo fixture; the book holds the example cases it names.
+const devEnv = { ACQUIT_DEV: "1" };
+const registry = loadFixtureRegistry(devEnv);
+const contract = fixtureContracts(registry).find(entry => entry.repository === DEMO_CLIENT_REPOSITORY);
+assert(contract !== undefined, `The committed example registry names no fixture for ${DEMO_CLIENT_REPOSITORY}.`);
+const definition = manifestOf(contract, DEMO_CLIENT_REPOSITORY);
+const book = buildFixtureBook(registry, devEnv);
 const head = branch => spawnSync("git", ["-C", fixture, "rev-parse", `${branch}^{commit}`], { encoding: "utf8" }).stdout.trim();
 assert.equal(spawnSync("git", ["-C", fixture, "cat-file", "-e", `${definition.frozenAt}^{commit}`]).status, 0,
 	`The fixture does not carry the contract's frozen commit ${definition.frozenAt}.`);
@@ -71,8 +77,8 @@ const samples = { "fix-honest": [], "tamper-test": [] };
 async function one(branch, warm) {
 	const started = performance.now();
 	const outcome = await runJudge({ runId: `run_perf_${branch}_${samples[branch].length + 1}`, jobId: "job_perf", ordinal: 1,
-		sourceCommit: head(branch), definitionOfDone: definition }, { source, subject, publisher: createFakeGitHubApp(), cases,
-		clock: { now: () => instant(new Date().toISOString()) } });
+		sourceCommit: head(branch), definitionOfDone: definition }, { source, subject, publisher: createFakeGitHubApp(),
+		fixtures: book, clock: { now: () => instant(new Date().toISOString()) } });
 	const wallMs = performance.now() - started;
 	assert.equal(outcome.kind, "VERDICT", `${branch} produced no verdict`);
 	assert.equal(outcome.verdict.result, expected[branch], `${branch} decided ${outcome.verdict.result}`);
