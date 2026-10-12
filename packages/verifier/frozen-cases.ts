@@ -21,7 +21,7 @@ export function splitterFixtureFrozenCases(source: string): readonly HiddenCase[
 	if (matches.length !== 12) throw new Error(`Frozen case extraction collected ${matches.length}, not 12.`);
 	return matches.map((match, index) => ({ id: `frozen:${index + 1}` as TestId,
 		target: { module: "src/split.ts", export: "splitTotal" },
-		args: [JSON.parse(match[2]), match[3]], expected: match[4] }));
+		args: [JSON.parse(match[2].replaceAll("amount:", '"amount":')), match[3]], expected: match[4] }));
 }
 
 /** The extractors a registry entry may name. A boot that names another id refuses before listening. */

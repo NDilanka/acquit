@@ -16,8 +16,18 @@ import { parseWebhookEnvelope } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
-import { matchFixture, type FixtureContract } from "../src/fixtures.ts";
-import { exampleContract, demoProtectedPaths } from "./hidden-fixture.ts";
+import { matchFixture, manifestOf, type FixtureContract } from "../src/fixtures.ts";
+import { exampleCases, exampleContract, demoProtectedPaths } from "./hidden-fixture.ts";
+import { bookEntry, fixtureBook } from "./verifier-book.ts";
+import type { FixtureBookEntry } from "../../verifier/fixtures.ts";
+import { splitterFixtureFrozenCases } from "../../verifier/frozen-cases.ts";
+import { hiddenManifest } from "../../verifier/hidden.ts";
+import { runJudge } from "../../verifier/judge.ts";
+import type { SubjectLauncher } from "../../verifier/subject.ts";
+import type { HiddenCase, SubjectCall, VerifierRunRequest } from "../src/verifier.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -37,6 +47,10 @@ const fixtureA: FixtureContract = {
 	protectedPaths: demoProtectedPaths,
 	demoForkPrefix: "acquit-forks/",
 };
+/** Fixture 2's own private cases: three splitter cases, distinct ids from fixture 1's. */
+const splitCases: readonly HiddenCase[] = [1, 2, 3].map(i => ({ id: `hidden2:${i}` as TestId,
+	target: { module: "src/split.ts", export: "splitTotal" },
+	args: [[{ amount: 10 * i }], "USD"], expected: `${5 * i}.00` }));
 /** Fixture 2: a second fixture, its own issue, its own private cases (distinct ids and digest). */
 const fixtureB: FixtureContract = {
 	repository: "maya-client/expense-splitter",
@@ -44,8 +58,8 @@ const fixtureB: FixtureContract = {
 	frozenAt: "b4c7dad1e5a5a6b7c8d9e0f1a2b3c4d5e6f7a8b9" as CommitSha,
 	frozenTestPath: "tests/split.test.ts",
 	frozenTests: Array.from({ length: 12 }, (_, i) => `frozen:${i + 1}` as TestId),
-	hiddenTests: [1, 2, 3].map(i => `hidden2:${i}` as TestId),
-	hiddenManifest: "c1".repeat(32) as Digest,
+	hiddenTests: splitCases.map(test => test.id),
+	hiddenManifest: hiddenManifest(splitCases).digest,
 	protectedPaths: ["tests/**"] as unknown as FixtureContract["protectedPaths"],
 };
 
@@ -191,4 +205,69 @@ test("matchFixture keys on fixture repository and issue, with the demo fork rule
 	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, "acquit-forks/demo-aabbcc112233")?.repository, fixtureA.repository);
 	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, null), null, "a fork name without a visitor actor");
 	assert.equal(matchFixture(fixtures, "acquit-forks/other-aabbcc112233", 12, "acquit-forks/other-aabbcc112233"), null, "a fork outside the fixture's demo prefix");
+});
+
+test("two jobs on two fixtures in one verifier process: each run receives only its own cases", async () => {
+	// Both fixture books load in one process; the run request's own manifest digest picks its case
+	// set. The subject spy records the ids each run was handed: fixture A's 48 frozen and 6 hidden,
+	// fixture B's 12 and 3, and never a case from the other fixture.
+	const invoiceSource = Array.from({ length: 48 }, (_, i) =>
+		`it('case ${i + 1}', () => { expect(formatTotal([{ amount: 1 }], 'KWD')).toBe('1'); });`).join("\n");
+	const splitSource = Array.from({ length: 12 }, (_, i) =>
+		`it('case ${i + 1}', () => { expect(splitTotal([{ amount: 2 }], 'KWD')).toBe('2'); });`).join("\n");
+	const source = {
+		readFile: (commit: CommitSha, path: string): string => {
+			if (path === fixtureA.frozenTestPath) return invoiceSource;
+			if (path === fixtureB.frozenTestPath) return splitSource;
+			throw new Error(`unexpected read of ${path}`);
+		},
+		diff: () => ({ changes: [] }),
+		materialize: () => ({ path: mkdtempSync(join(tmpdir(), "acquit-manifest-tree-")), link: null, remove: () => {} }),
+	};
+	const entryA = bookEntry(exampleCases);
+	const entryB: FixtureBookEntry = { entry: { repository: fixtureB.repository, issue: { number: 7, title: fixtureB.issue.title },
+		frozenAt: fixtureB.frozenAt, frozenTestPath: fixtureB.frozenTestPath, visible: 12, hidden: 3, hiddenIdPrefix: "hidden2",
+		protectedPaths: ["tests/**"] as unknown as FixtureContract["protectedPaths"], hiddenCases: "(private)", frozenExtractor: "splitter-share" },
+		cases: splitCases, digest: fixtureB.hiddenManifest, frozenCases: splitterFixtureFrozenCases };
+	const fixtures = fixtureBook(entryA, entryB);
+	const received: TestId[][] = [];
+	const subject: SubjectLauncher = { variant: "CHILD_PROCESS", run: async (_tree, calls) => {
+		received.push(calls.map(call => call.id));
+		return { variant: "CHILD_PROCESS", nonce: "n".repeat(32), ready: true, stdout: "", stderr: "", exitCode: 0, signal: null, killedBy: null, faults: [], wallMs: 1 };
+	} };
+	const publisher = { publishVerified: async (): Promise<never> => { throw new Error("never publishes"); } } as never;
+
+	const runA = await runJudge(
+		{ runId: "run_a" as VerifierRunRequest["runId"], jobId: "job_a" as VerifierRunRequest["jobId"], ordinal: 1,
+			sourceCommit: fixtureA.frozenAt, definitionOfDone: manifestOf(fixtureA, fixtureA.repository) },
+		{ source, subject, publisher, fixtures });
+	assert.equal(runA.kind, "VERDICT");
+	const runB = await runJudge(
+		{ runId: "run_b" as VerifierRunRequest["runId"], jobId: "job_b" as VerifierRunRequest["jobId"], ordinal: 1,
+			sourceCommit: fixtureB.frozenAt, definitionOfDone: manifestOf(fixtureB, fixtureB.repository) },
+		{ source, subject, publisher, fixtures });
+	if (runB.kind !== "VERDICT") console.error("RUN B FAILURE:", JSON.stringify(runB.failure ?? runB));
+	assert.equal(runB.kind, "VERDICT");
+	assert.deepEqual(received[0], [...fixtureA.frozenTests, ...exampleContract.ids], "run A received fixture A's cases alone");
+	assert.deepEqual(received[1], [...fixtureB.frozenTests, ...fixtureB.hiddenTests], "run B received fixture B's cases alone");
+	// Each fixture names its own hidden id space; only the private hidden cases could ever cross.
+	assert.notDeepEqual(received[0]!.slice(-6), received[1]!.slice(-3), "the two runs never share hidden cases");
+});
+
+test("a job whose manifest names ids its digest never digested refuses before anything runs", async () => {
+	// Swapping the two jobs' manifests is refused by name: the digest picks the cases, and the ids
+	// it carries must be the ones that digest digested. Nothing starts, so no case value is spent.
+	const source = { readFile: (): string => { throw new Error("never read"); },
+		diff: () => ({ changes: [] }), materialize: () => { throw new Error("never materializes"); } };
+	const fixtures = fixtureBook(bookEntry(exampleCases));
+	const swapped = { issue: { repository: fixtureB.repository, number: 7, title: fixtureB.issue.title },
+		frozenAt: fixtureB.frozenAt, frozenTestPath: fixtureB.frozenTestPath, frozenTests: fixtureB.frozenTests,
+		hiddenTests: fixtureB.hiddenTests, hiddenManifest: exampleContract.digest, protectedPaths: [...fixtureB.protectedPaths] };
+	const outcome = await runJudge(
+		{ runId: "run_swap" as VerifierRunRequest["runId"], jobId: "job_swap" as VerifierRunRequest["jobId"], ordinal: 1,
+			sourceCommit: fixtureB.frozenAt, definitionOfDone: swapped },
+		{ source, subject: { variant: "CHILD_PROCESS", run: async () => { throw new Error("the subject must not start"); } },
+			publisher: { publishVerified: async (): Promise<never> => { throw new Error("never publishes"); } } as never, fixtures });
+	assert.deepEqual(outcome.kind === "RUN_FAILED" ? outcome.failure : outcome.kind,
+		{ name: "CONTRACT_MISMATCH", detail: "HIDDEN_CASES_MISMATCH" });
 });

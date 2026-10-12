@@ -83,7 +83,8 @@ test("migrate applies to an existing database without data loss, and twice chang
 		before.exec("DROP TABLE receipts");
 		before.close();
 
-		const env = { ...process.env, DATABASE_PATH: database };
+		// Development mode: the migrate command loads the committed example registry like the verifier does.
+		const env = { ...process.env, DATABASE_PATH: database, ACQUIT_DEV: "1" };
 		for (const run of [1, 2]) {
 			const migrated = spawnSync(process.execPath, [ctl, "migrate"], { encoding: "utf8", timeout: 60_000, env });
 			assert.equal(migrated.status, 0, `migrate run ${run} must pass: ${migrated.stderr.slice(0, 300)}`);
