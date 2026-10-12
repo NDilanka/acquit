@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Digest, TestId } from "../src/ids.ts";
@@ -24,8 +24,8 @@ import { demoFixture } from "./hidden-fixture.ts";
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
-/** The K1 live-proof deployment file, written 0600 and gitignored. Its expected values are never printed. */
-const PRIVATE_CASES_PATH = fileURLToPath(new URL("../../../data/private/hidden-cases.json", import.meta.url));
+/** The K1 live-proof deployment file, written 0600 and outside every git repository. Its expected values are never printed. */
+const PRIVATE_CASES_PATH = "/home/factory-user/repos/acquit/data/private/hidden-cases.json";
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
 const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
@@ -229,4 +229,10 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
 	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
 	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE)).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
+});
+
+test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment." }, () => {
+	for (let dir = dirname(PRIVATE_CASES_PATH); dir !== "/"; dir = dirname(dir)) {
+		assert.ok(!existsSync(join(dir, ".git")), `${dir} holds a git work tree; the private case store must not`);
+	}
 });
