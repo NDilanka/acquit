@@ -62,6 +62,29 @@ test("a nonzero exit without a result line is a provider error", () => {
 	assert.match((outcome as { detail: string }).detail, /exited 1/);
 });
 
+test("a rate or usage limit is its own terminal class, keeping the metadata the answer carried", () => {
+	const rateLimited = `{"type":"result","subtype":"failure","is_error":true,"duration_ms":142,"num_turns":0,`
+		+ `"result":"429 Too Many Requests: rate limit exceeded, try again later","session_id":"7f98292d-bbec-41c4-bf6a-cc66790a0a6a",`
+		+ `"usage":{"input_tokens":0,"output_tokens":0,"factory_credits":0}}\n`;
+	const outcome = classifyDroidRun(0, rateLimited);
+	assert.equal(outcome.ok, false);
+	assert.equal((outcome as { reason: string }).reason, "RATE_LIMITED", "a rate limit is terminal, never retried");
+	assert.equal((outcome as { sessionId?: string }).sessionId, "7f98292d-bbec-41c4-bf6a-cc66790a0a6a", "the spent session survives on the error");
+	assert.equal((classifyDroidRun(0, `{"type":"result","is_error":true,"result":"usage limit reached: insufficient credits for today",`
+		+ `"session_id":"s-u","usage":{"factory_credits":12}}\n`) as { reason: string }).reason, "RATE_LIMITED", "a usage-limit answer is the same class");
+	const generic = classifyDroidRun(0, `{"type":"result","subtype":"failure","is_error":true,`
+		+ `"result":"403 status code (no body)","session_id":"s-g","usage":{"factory_credits":0}}\n`);
+	assert.equal((generic as { reason: string }).reason, "PROVIDER_ERROR", "a generic provider error keeps its one retry");
+	assert.equal((generic as { sessionId?: string }).sessionId, "s-g", "even a generic error keeps the session it spent");
+	assert.equal((generic as { factoryCredits?: number }).factoryCredits, 0, "and the credits it reported");
+});
+
+test("a nonzero exit whose raw output names a rate or usage limit is RATE_LIMITED too", () => {
+	const outcome = classifyDroidRun(1, "droid: usage limit reached; the quota is exhausted for today\n");
+	assert.equal(outcome.ok, false);
+	assert.equal((outcome as { reason: string }).reason, "RATE_LIMITED", "a quota-naming exit is terminal, never retried");
+});
+
 test("an exit 0 with no result line defers to the commit step", () => {
 	assert.deepEqual(classifyDroidRun(0, "the agent printed nothing parseable\n"), { ok: true, sessionId: null, factoryCredits: null });
 });

@@ -229,15 +229,29 @@ test("two provider errors in a row make exactly two calls, never a submit, and n
 	assert.deepEqual(commits, [], "the House submits nothing without a run");
 });
 
-test("a 429 from the free tier gets the same single retry and never a loop", async () => {
+test("a rate-limited run is never retried: one call, no submit, and the series stops", async () => {
+	const { deps, plans, commits, states } = fakeDeps(async () => ({ ok: false, reason: "RATE_LIMITED", detail: "429 rate limit exceeded" }));
+	const outcome = await runHouseDelivery(deps, target);
+	assert.equal(outcome, "RATE_LIMITED", "the scan learns the limit is terminal for the whole run");
+	assert.equal(plans.length, 1, "a rate limit gets no second call");
+	assert.equal(states.get(target.id)?.calls, 1);
+	assert.deepEqual(commits, [], "nothing is submitted");
+});
+
+test("an OpenRouter 429 is the same terminal class: one call, never retried", async () => {
+	const throttled = `{"type":"result","subtype":"error_error","is_error":true,"api_error_status":429,"result":"rate limited"}\n`;
+	const classified = classifyModelRun(0, throttled);
+	assert.equal(classified.ok, false);
+	assert.equal((classified as { reason: string }).reason, "RATE_LIMITED", "a 429 classifies as RATE_LIMITED");
 	let calls = 0;
 	const { deps, plans } = fakeDeps(async () => {
 		calls += 1;
-		return { ok: false, reason: "PROVIDER_ERROR", detail: `429 ${calls}` };
+		return calls === 1
+			? { ok: false, reason: "RATE_LIMITED", detail: "429" }
+			: { ok: false, reason: "PROVIDER_ERROR", detail: "unreachable" };
 	});
-	const outcome = await runHouseDelivery(deps, target);
-	assert.equal(outcome, "FAILED");
-	assert.equal(plans.length, 2, "at most two calls in total");
+	assert.equal(await runHouseDelivery(deps, target), "RATE_LIMITED");
+	assert.equal(plans.length, 1, "the 429 is never retried");
 });
 
 test("a runner whose calls are spent is skipped without a call or a submit", async () => {
