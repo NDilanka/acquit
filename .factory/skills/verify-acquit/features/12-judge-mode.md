@@ -24,7 +24,7 @@ In public mode (`ACQUIT_DEV` unset) a visitor starts a demo and gets its own cli
 
 Preconditions:
 
-- Start the lane with `ACQUIT_DEV` unset. Public mode refuses the committed example hidden cases, so set `ACQUIT_HIDDEN_CASES` to the absolute path of `packages/verifier/fixtures/hidden-cases.test.json` for both `seed-db --yes` and `start`. Never point it at `data/private/`.
+- Start the lane with `ACQUIT_DEV` unset. Public mode refuses a fixture whose cases parse to the committed public example, so set `ACQUIT_FIXTURES` to the absolute path of a registry file whose entry's `hiddenCases` names the absolute path of `packages/verifier/fixtures/hidden-cases.test.json` (a one-fixture copy of the committed example registry's shape) for both `seed-db --yes` and `start`. Never point it at `data/private/`.
 - With the App configured, `Start my demo` forks `ACQUIT_CLIENT_REPOSITORY` into the App's organization. Unset, that is `maya-client/invoice-app`, which does not exist, and the drive stops at `DEMO_REPOSITORY_FAILED` (`POST /repos/maya-client/invoice-app/forks answered 404`). To drive the UI without creating a GitHub repository, start the lane with `ACQUIT_GITHUB_APP_ID=`, `ACQUIT_GITHUB_APP_PRIVATE_KEY=`, and `ACQUIT_GITHUB_APP_ORG=` set empty in the environment. The visitor's repository is then null and its jobs open on the deployment's repository.
 - Use the `ab` function from the feature index with the lane's own session.
 

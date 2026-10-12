@@ -116,7 +116,7 @@ async function approve() {
 		if (process.platform === "win32") {
 			ports.push(...await dashboardPorts(browserSession, root));
 		} else if (process.env.AGENT_BROWSER_DASHBOARD_PORT === undefined) {
-			throw new Error("Approval refused: custom dashboard ports can only be discovered on Windows. Set AGENT_BROWSER_DASHBOARD_PORT or close the dashboard.");
+			throw new Error("Approval refused: custom dashboard ports can only be discovered on Windows. On Linux, export AGENT_BROWSER_DASHBOARD_PORT= (an empty value; naming a port is always refused) after confirming your run's daemon is the only agent-browser one and nothing listens on 4848.");
 		}
 		await refuseDashboard(ports, portOpen);
 	};

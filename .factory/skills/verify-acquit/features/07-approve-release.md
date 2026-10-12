@@ -39,8 +39,13 @@ Preconditions:
   `ACQUIT_CLIENT_REPOSITORY=NDilanka/invoice-app-f2-perf` and create or reset it with
   `node --env-file=<worktree>/.env /home/factory-user/repos/acquit/scratch/client-repo.mjs f2-perf`.
   That prints the repository, its `main` (the frozen commit `a3b6ead`), and whether the App installation
-  can see it. **Never approve or merge against the shared `NDilanka/invoice-app` fixture.** Reset the
-  disposable repo after each merging job, and delete the per-job work repos afterwards.
+  can see it. The lane must also set `ACQUIT_FIXTURES` (for both `seed-db --yes` and `start`) at a
+  private registry whose fixture names that disposable repository: OpenJob freezes a job's manifest
+  from the registry, and a repository no entry names is denied `NOT_FOUND` by name. Never point
+  `ACQUIT_FIXTURES` at `data/private/fixtures.json` itself; copy it per run (as `fixtures-m1.json`
+  does) and edit the copy. **Never approve or merge against the shared `NDilanka/invoice-app`
+  fixture.** Reset the disposable repo after each merging job, and delete the per-job work repos
+  afterwards.
 
 - **See the gate.** Open the verified job as `maya-client`. Require the Client review section, the
   judged commit, the pull request number, and the **Approve and release** button. As `devon-ops`, require
@@ -49,7 +54,10 @@ Preconditions:
   the merged pull request, `Receipt rcpt_<id>`, and the ledger lines below. The page reloads the view
   after the command, so a refusal that means "another tab already approved" must not surface as an error.
 - **Read the receipt.** Require frozen tests `48/48`, hidden tests `6/6`, `attemptsUsed: 1`, the pull
-  request number, and the judged commit. A PAID job serves the attempts its receipt used, not zero.
+  request number, and the judged commit. Those are fixture 1's tallies. A job opened on the second
+  fixture, `NDilanka/expense-splitter` #1, approves with its own: frozen `12/12`, hidden `3/3`, and
+  the pull request opens on `NDilanka/expense-splitter` itself. A PAID job serves the attempts its
+  receipt used, not zero.
 - **Read the payout back.** `job.release.payoutItemId` names the referenced payout item and
   `job.release.captureId` the escrow capture. Mint a client-credentials token and read
   `GET https://api-m.sandbox.paypal.com/v1/payments/referenced-payouts-items/<item id>`: require
