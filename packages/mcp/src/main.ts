@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { readLogin } from "../../acquit-cli/src/client.ts";
 import { confirmationDir } from "../../acquit-cli/src/rendezvous.ts";
 import { paypalReader } from "./paypal.ts";
-import { buildServer } from "./server.ts";
+import { buildServer, timeoutMs } from "./server.ts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(root, ".env");
@@ -36,16 +36,11 @@ const paypal = (): ReturnType<typeof paypalReader> => {
 	return reader;
 };
 
-const seconds = (name: string, fallback: number): number => {
-	const parsed = Number(process.env[name]);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
-};
-
 const server = buildServer({
 	apiUrl, token, paypal,
 	confirmDir: confirmationDir(process.env),
-	confirmWaitMs: seconds("ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS", 120),
-	submitTimeoutSeconds: seconds("ACQUIT_MCP_SUBMIT_TIMEOUT_SECONDS", 600) / 1000,
+	confirmWaitMs: timeoutMs(process.env, "ACQUIT_MCP_CONFIRM_TIMEOUT_SECONDS", 120),
+	submitTimeoutSeconds: timeoutMs(process.env, "ACQUIT_MCP_SUBMIT_TIMEOUT_SECONDS", 600) / 1000,
 });
 
 await server.connect(new StdioServerTransport());

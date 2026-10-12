@@ -51,6 +51,13 @@ function committed(outcome: { readonly kind: string; readonly reason?: string; r
 	return outcome.result;
 }
 
+/** An environment timeout in milliseconds: the name's value is seconds, and so is the fallback.
+ * A bare fallback here once made the confirmation wait 120ms instead of 120s. */
+export function timeoutMs(env: NodeJS.ProcessEnv, name: string, fallbackSeconds: number): number {
+	const parsed = Number(env[name]);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallbackSeconds * 1000;
+}
+
 export function buildServer(options: ServerOptions): McpServer {
 	const server = new McpServer({ name: "acquit-mcp", version: "0.1.0" });
 	const clientOf = options.client ?? ((baseUrl: string, token: string) => apiClient({ baseUrl, token }));

@@ -18,7 +18,8 @@ import type { ApiClient } from "../../acquit-cli/src/client.ts";
 import { writeConfirmation } from "../../acquit-cli/src/confirm.ts";
 import { claimConfirmation, readRequest, writeRequest } from "../../acquit-cli/src/rendezvous.ts";
 import { runConfirmedSubmit } from "../src/submit-tool.ts";
-import { referencedPayoutItem, timeoutMs } from "../src/server.ts";
+import { referencedPayoutItem } from "../src/paypal.ts";
+import { timeoutMs } from "../src/server.ts";
 import type { CommitSha } from "../../core/src/ids.ts";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
