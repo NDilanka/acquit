@@ -18,6 +18,7 @@ import type { ApiClient } from "../../acquit-cli/src/client.ts";
 import { writeConfirmation } from "../../acquit-cli/src/confirm.ts";
 import { claimConfirmation, readRequest, writeRequest } from "../../acquit-cli/src/rendezvous.ts";
 import { runConfirmedSubmit } from "../src/submit-tool.ts";
+import { referencedPayoutItem } from "../src/paypal.ts";
 import type { CommitSha } from "../../core/src/ids.ts";
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -223,5 +224,21 @@ describe("submit_attempt's confirmation handshake", () => {
 		assert.deepEqual(pushes, []);
 		assert.equal(client.posts.some(post => post.path === "/api/commands"), false);
 		assert.equal(claimConfirmation(confirmDir, "job_a2held"), null, "the confirmation for X is gone");
+	});
+});
+
+describe("the payout status read", () => {
+	it("reads the sandbox payout item's real field names: item_id, currency_code, processing_state", () => {
+		// The shape the sandbox actually answers for GET /v1/payments/referenced-payouts-items/<id>:
+		// the id lives in `item_id`, the amount's currency in `currency_code`, and the state in
+		// `processing_state.status`. A reader that invents `payout_item_id` or `currency` drops the
+		// amount and the id on the floor.
+		const item = referencedPayoutItem({
+			item_id: "ITEMID==", processing_state: { status: "SUCCESS" },
+			payout_amount: { currency_code: "USD", value: "324.00" },
+		}, "FALLBACK-ID==");
+		assert.equal(item.status, "SUCCESS");
+		assert.equal(item.payoutItemId, "ITEMID==");
+		assert.deepEqual(item.amount, { currency: "USD", value: "324.00" });
 	});
 });
