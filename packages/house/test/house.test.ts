@@ -18,7 +18,7 @@ import {
 	type HouseDeliverableFacts, type HouseDelivery, type HouseDeliveryDeps, type HouseDeliveryState,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
 } from "../src/runner.ts";
-import { modelCallLog } from "../../core/src/model.ts";
+import { modelCallLog, DROID_INSTRUCTION_PATH } from "../../core/src/model.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const ctl = join(root, "packages/ctl/src/main.ts");
