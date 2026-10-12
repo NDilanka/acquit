@@ -54,11 +54,14 @@ export function referencedPayoutItem(item: unknown, payoutItemId: string): Refer
 	const body = item && typeof item === "object" ? item as Record<string, unknown> : {};
 	const state = body.processing_state && typeof body.processing_state === "object" ? body.processing_state as Record<string, unknown> : {};
 	const amount = body.payout_amount && typeof body.payout_amount === "object" ? body.payout_amount as Record<string, unknown> : {};
+	// The sandbox names the id `item_id` and the currency `currency_code`; the passed id stands in
+	// only when the answer carries none.
+	const id = typeof body.item_id === "string" && body.item_id !== "" ? body.item_id : payoutItemId;
 	return {
-		payoutItemId: typeof body.payout_item_id === "string" ? body.payout_item_id : payoutItemId,
+		payoutItemId: id,
 		status: typeof state.status === "string" ? state.status : "UNKNOWN",
-		amount: typeof amount.value === "string" && typeof amount.currency === "string"
-			? { currency: amount.currency, value: amount.value } : null,
+		amount: typeof amount.value === "string" && typeof amount.currency_code === "string"
+			? { currency: amount.currency_code, value: amount.value } : null,
 		raw: body,
 	};
 }
