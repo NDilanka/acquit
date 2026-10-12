@@ -8,12 +8,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { dockerCli, type GitRun } from "../../../packages/acquit-cli/src/run.ts";
-import type { CommandOutcome, UserCommand } from "../../../packages/core/src/acquit.ts";
-import type { JobId, CommitSha, OperatorId } from "../../../packages/core/src/ids.ts";
+import type { Actor, CommandOutcome, UserCommand } from "../../../packages/core/src/acquit.ts";
+import type { JobId, CommitSha } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import {
-	gitWorkPort, houseFactsOf, houseMode, HOUSE_OPERATOR_ID, houseRunPort, isDeliverableHouseJob, runHouseDelivery,
-	stateStore, type HouseDeliveryDeps, type HouseDeliveryState, type HouseTarget,
+	gitWorkPort, houseActorFor, houseFactsOf, houseMode, houseRunPort, isDeliverableHouseJob, runHouseDelivery,
+	stateStore, type HouseDeliveryDeps, type HouseDeliveryState, type HouseRunPort, type HouseTarget, type HouseWorkPort,
 } from "../../../packages/house/src/runner.ts";
 
 export type HousePorts = {
@@ -21,8 +21,9 @@ export type HousePorts = {
 	readonly jobs: () => readonly JobRow[];
 	/** Mints the scoped token one push uses, and answers with the work repo it scoped to. */
 	readonly mint: (job: HouseTarget) => Promise<{ readonly repository: string; readonly token: string }>;
-	/** The Submit edge, as the API's own request path runs it: one call, one outcome. */
-	readonly execute: (command: UserCommand) => Promise<CommandOutcome>;
+	/** The Submit edge, as the API's own request path runs it: one call, one outcome, the actor the
+	 * House submits as built from the job's own tenant. */
+	readonly execute: (actor: Actor, command: UserCommand) => Promise<CommandOutcome>;
 	/** Persists one delivery's diff for the job's timeline, before the Submit edge runs. */
 	readonly recordDiff: (jobId: JobId, commit: CommitSha, files: readonly { readonly path: string; readonly added: number; readonly binary: boolean }[], patch: string) => Promise<void>;
 	/** Where the House keeps its state files and its checkouts, e.g. beside the database. */
@@ -31,6 +32,9 @@ export type HousePorts = {
 	readonly proxyImage?: string;
 	readonly git?: GitRun;
 	readonly env?: NodeJS.ProcessEnv;
+	/** Overrides for tests; the real wiring runs the provider switch's port in the sandbox. */
+	readonly run?: HouseRunPort;
+	readonly work?: HouseWorkPort;
 };
 
 /** The loop. Kick it from the tick; it returns at once when a delivery is already in flight. */
@@ -67,7 +71,9 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 			if (definition === null) continue;
 			const state = await store.readState(row.id);
 			if (!worthStarting(state)) continue;
-			targets.push({ id: row.id, title: row.title, repository: definition.issue.repository, frozenAt: definition.frozenAt });
+			// The tenant comes from the stored row, the same one the House bid with -- never from a
+			// state file: the submit may act in exactly the world the job belongs to.
+			targets.push({ id: row.id, title: row.title, repository: definition.issue.repository, frozenAt: definition.frozenAt, tenant: row.tenant ?? null });
 		}
 		return targets;
 	}
@@ -79,13 +85,13 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 
 	const deps: HouseDeliveryDeps = {
 		mode,
-		run: houseRunPort({
+		run: ports.run ?? houseRunPort({
 			docker: dockerCli(),
 			image: ports.image ?? (env.ACQUIT_RUNNER_IMAGE?.trim() || "acquit/runner-node20"),
 			proxyImage: ports.proxyImage ?? (env.ACQUIT_RUNNER_PROXY_IMAGE?.trim() || env.ACQUIT_RUNNER_IMAGE?.trim() || "acquit/runner-node20"),
 			env,
 		}),
-		work: gitWorkPort({
+		work: ports.work ?? gitWorkPort({
 			stateRoot: join(ports.stateDir, "house", "checkouts"),
 			workRoot: join(ports.stateDir, "house", "work"),
 			mint: ports.mint,
@@ -94,21 +100,16 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 		}),
 		readState: store.readState,
 		writeState: store.writeState,
-		submit: async (jobId: JobId, commit: CommitSha, delivery) => {
+		submit: async (job, commit, delivery) => {
 			// The diff lands before the edge: a timeline that shows the model's own diff must show it
 			// even when the submit itself needs the next tick's retry.
-			if (delivery) await ports.recordDiff(jobId, delivery.commit, delivery.files, delivery.patch);
+			if (delivery) await ports.recordDiff(job.id, delivery.commit, delivery.files, delivery.patch);
 			// A denial still resolved -- the domain heard the submit -- so it resolves here too and
 			// the series' attempt counter stays the one bound on the loop.
-			const outcome = await ports.execute({ type: "Submit", jobId, sourceCommit: commit });
-			if (outcome.kind === "DENIED") log(`house: ${jobId} submit denied: ${outcome.reason}`);
+			const outcome = await ports.execute(houseActorFor(job.tenant), { type: "Submit", jobId: job.id, sourceCommit: commit });
+			if (outcome.kind === "DENIED") log(`house: ${job.id} submit denied: ${outcome.reason}`);
 		},
 		log,
 	};
 	return { kick };
-}
-
-/** The actor the House submits as: the deployment's own seeded operator, never a client's. */
-export function houseActor(): { role: "OPERATOR"; operatorId: OperatorId; tenant: null } {
-	return { role: "OPERATOR", operatorId: HOUSE_OPERATOR_ID as OperatorId, tenant: null };
 }

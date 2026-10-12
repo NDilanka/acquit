@@ -45,7 +45,9 @@ export function droidExecArgv({ model, workDir = "/work" }: { readonly model: st
 
 export type DroidRunResult =
 	| { readonly ok: true; readonly sessionId: string | null; readonly factoryCredits: number | null }
-	| { readonly ok: false; readonly reason: "PROVIDER_ERROR"; readonly detail: string };
+	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED"; readonly detail: string;
+		/** What the failed run still reported, when the provider's own result line carried it. */
+		readonly sessionId?: string | null; readonly factoryCredits?: number | null };
 
 /** The `-o json` result line droid exec prints, or null. */
 type DroidResultLine = {

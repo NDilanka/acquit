@@ -125,7 +125,7 @@ function merchantOf(db: DatabaseSync, operator: string): string | null {
 const suffixFile = "/home/factory-user/repos/acquit/data/trail/house-instruction-suffix.txt";
 const target: HouseTarget = {
 	id: "job_9e0f6b72-1111-4222-8333-444455556666" as JobId, title: "Totals round wrong for 3-decimal currencies",
-	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567" as CommitSha,
+	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567" as CommitSha, tenant: null,
 };
 const fresh: HouseDeliveryState = { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0 };
 
@@ -152,8 +152,8 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 		},
 		readState: async jobId => states.get(jobId) ?? fresh,
 		writeState: async (jobId, state) => { states.set(jobId, state); },
-		submit: async (jobId, commit, delivery) => {
-			commits.push(`${jobId}:${commit}`);
+		submit: async (job, commit, delivery) => {
+			commits.push(`${job.id}:${commit}`);
 			deliveries.push(delivery ?? null);
 		},
 		log: () => {},
@@ -487,7 +487,7 @@ test("the work port keeps the askpass secret alive from prepare through the push
 			mint: async () => ({ repository: "acquit-forks/invoice-app-x", token: "GHT-TEST-TOKEN" }),
 			git, env: { ...process.env },
 		});
-		const target: HouseTarget = { id: "job_7Q2K" as JobId, title: "Totals", repository: "maya-client/invoice-app", frozenAt: frozen };
+		const target: HouseTarget = { id: "job_7Q2K" as JobId, title: "Totals", repository: "maya-client/invoice-app", frozenAt: frozen, tenant: null };
 		const prepared = await port.prepare(target);
 		assert.equal(typeof prepared.workDir, "string");
 		const delivery = await port.finalize(target, prepared.workDir);

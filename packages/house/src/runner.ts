@@ -20,7 +20,8 @@ import {
 } from "../../acquit-cli/src/run.ts";
 import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, modelProvider } from "../../core/src/model.ts";
 import type { ModelProvider } from "../../core/src/model.ts";
-import type { CommitSha, JobId } from "../../core/src/ids.ts";
+import type { Actor } from "../../core/src/acquit.ts";
+import type { CommitSha, JobId, OperatorId, VisitorId } from "../../core/src/ids.ts";
 import type { JobRow, JobStatus } from "../../core/src/job.ts";
 import { boundedDetail } from "../../core/src/verifier.ts";
 
@@ -30,6 +31,13 @@ export const HOUSE_MODEL_OPENROUTER = "nvidia/nemotron-3-ultra-550b-a55b:free";
 
 /** The deployment's own House operator, the one the seed creates. */
 export const HOUSE_OPERATOR_ID = "house-tsfix";
+
+/** The actor the House submits as: the deployment's own seeded operator, inside the job's tenant.
+ * The House bids with the job's tenant, so its delivery submits in the same world it bid in; a
+ * seeded job has none, and the tenant-less actor stays locked out of every visitor's job. */
+export function houseActorFor(tenant: VisitorId | null): Actor {
+	return { role: "OPERATOR", operatorId: HOUSE_OPERATOR_ID as OperatorId, tenant };
+}
 
 /** The exact suffix the mission ruled onto the CLI default instruction, byte for byte. */
 export const HOUSE_INSTRUCTION_SUFFIX = "Fix the root cause, not only the example in the title. Identify the general rule the bug "
@@ -60,13 +68,18 @@ export type HouseRunPlan =
 	| { readonly runner: "command"; readonly jobId: JobId; readonly workDir: string; readonly commandPath: string };
 
 /** A model run's outcome. A success carries what the run log records per call: the model id, the
- * provider's session id, and the Factory credits the provider reported, when it reported them. */
+ * provider's session id, and the Factory credits the provider reported, when it reported them. An
+ * error carries the same when the provider's own answer did, plus its class: a rate or usage limit
+ * is terminal (`RATE_LIMITED`), never retried, and stops the whole scan. */
 export type HouseRunOutcome = {
 	readonly ok: true;
 	readonly sessionId?: string | null;
 	readonly model?: string | null;
 	readonly factoryCredits?: number | null;
-} | { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RUN_FAILED"; readonly detail: string };
+} | { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED" | "RUN_FAILED"; readonly detail: string;
+	readonly sessionId?: string | null;
+	readonly model?: string | null;
+	readonly factoryCredits?: number | null; };
 
 export type HouseRunPort = (plan: HouseRunPlan) => Promise<HouseRunOutcome>;
 
@@ -86,6 +99,8 @@ export type HouseTarget = {
 	/** The contract's repository, from which the work repo name is derived. */
 	readonly repository: string;
 	readonly frozenAt: CommitSha;
+	/** The job row's own tenant, the only world this delivery's submit may act in. */
+	readonly tenant: VisitorId | null;
 };
 
 /** One job's delivery state, outside the job row: the House is the only writer and the API only
@@ -116,12 +131,13 @@ export type HouseDeliveryDeps = {
 	readonly readState: (jobId: JobId) => Promise<HouseDeliveryState>;
 	readonly writeState: (jobId: JobId, state: HouseDeliveryState) => Promise<void>;
 	/** The same Submit edge every operator uses: push and Submit, which starts the verifier. The
-	 * delivery rides along the first time so the job's timeline can show the run's own diff. */
-	readonly submit: (jobId: JobId, commit: CommitSha, delivery?: HouseDelivery) => Promise<void>;
+	 * delivery rides along the first time so the job's timeline can show the run's own diff. The
+	 * target rides too, so the submit edge builds the actor from the job's own tenant. */
+	readonly submit: (job: HouseTarget, commit: CommitSha, delivery?: HouseDelivery) => Promise<void>;
 	readonly log: (line: string) => void;
 };
 
-export type DeliveryOutcome = "SUBMITTED" | "RESUBMITTED" | "CALLS_SPENT" | "NO_SUBMISSION" | "FAILED";
+export type DeliveryOutcome = "SUBMITTED" | "RESUBMITTED" | "CALLS_SPENT" | "NO_SUBMISSION" | "FAILED" | "RATE_LIMITED" | "BUDGET";
 
 /** Hard bounds. Two calls per job ever -- the retry on a provider error is the second one -- and a
  * bounded re-submit loop so a flaky API can never spin. */
@@ -145,7 +161,7 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		// heard the submit -- so it counts the same.
 		await deps.writeState(job.id, { ...state, submitAttempts: state.submitAttempts + 1 });
 		try {
-			await deps.submit(job.id, state.submittedCommit);
+			await deps.submit(job, state.submittedCommit);
 		} catch (error) {
 			deps.log(`house: ${job.id} submit did not land; the next tick retries (${boundedDetail(String(error))})`);
 		}
@@ -206,7 +222,7 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		// path with the commit in hand instead of a spent budget and nothing to show.
 		await deps.writeState(job.id, { ...state, calls, submittedCommit: delivery.commit, submitAttempts: state.submitAttempts + 1 });
 		try {
-			await deps.submit(job.id, delivery.commit, delivery);
+			await deps.submit(job, delivery.commit, delivery);
 		} catch (error) {
 			deps.log(`house: ${job.id} submit did not land; the next tick resubmits (${boundedDetail(String(error))})`);
 		}

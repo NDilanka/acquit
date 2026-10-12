@@ -17,7 +17,7 @@ import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, databasePath, devEnabled, githubEnv, verifierEnv, webOrigin } from "./config.ts";
-import { createHouseDelivery, houseActor } from "./house.ts";
+import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 
 let clockOffset = 0;
@@ -707,7 +707,7 @@ const houseKick = createHouseDelivery({
 		const name = workRepoName(job.repository, job.id);
 		return { repository: `${githubEnv.organization}/${name}`, token: await githubApp.installationToken(githubEnv.organization, [name]) };
 	},
-	execute: command => acquit.execute(houseActor(), parseRequestKey(randomUUID()), command),
+	execute: (actor, command) => acquit.execute(actor, parseRequestKey(randomUUID()), command),
 	recordDiff: async (jobId, commit, files, patch) => {
 		db.prepare("INSERT OR REPLACE INTO house_diffs VALUES (?, ?, ?, ?)").run(jobId, commit, JSON.stringify(files), patch);
 	},
