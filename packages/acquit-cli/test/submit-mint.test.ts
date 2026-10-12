@@ -3,6 +3,9 @@
 // so the submission keeps the credential the API scoped to that repository alone.
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { CliError } from "../src/client.ts";
 import type { ApiClient } from "../src/client.ts";
@@ -46,12 +49,12 @@ function mintClient(script: (() => unknown)[]): ApiClient & { readonly posts: Po
 }
 
 function mintDeps(client: ReturnType<typeof mintClient>, pushes: unknown[][]) {
-	const secret = { path: "/tmp/acquit-mint-secret", remove: () => {} };
+	const secretPath = mkdtempSync(join(tmpdir(), "acquit-mint-secret-"));
 	return {
 		client,
 		head: () => COMMIT,
 		push: (...call: unknown[]) => pushes.push(call),
-		makeSecretDir: () => secret,
+		makeSecretDir: () => ({ path: secretPath, remove: () => rmSync(secretPath, { recursive: true, force: true }) }),
 		sleep: async (ms: number) => { client.sleeps.push(ms); },
 		now: (() => { let tick = 0; return () => Date.parse("2026-10-13T00:00:00.000Z") + (tick++) * 1000; })(),
 	};
