@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, factoryApiKey, modelProvider,
+	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, factoryApiKey, modelCallLog, modelProvider,
+	reserveModelCall,
 } from "../src/model.ts";
 
 test("the model provider switch defaults to droid with glm-5.3-flash", () => {
@@ -83,6 +84,33 @@ test("a nonzero exit whose raw output names a rate or usage limit is RATE_LIMITE
 	const outcome = classifyDroidRun(1, "droid: usage limit reached; the quota is exhausted for today\n");
 	assert.equal(outcome.ok, false);
 	assert.equal((outcome as { reason: string }).reason, "RATE_LIMITED", "a quota-naming exit is terminal, never retried");
+});
+
+test("the shared budget refuses the 20th call in a rolling minute and the 1000th of a day, recording the START first", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const call = (offsetMs: number) => ({ at: new Date(Date.parse("2026-10-12T00:00:00Z") + offsetMs).toISOString(),
+			caller: "house", jobId: "job_x", provider: "droid", model: "glm-5.3-flash" });
+		for (let index = 0; index < 18; index += 1) assert.deepEqual(await reserveModelCall(log, call(index * 1_000)), { ok: true });
+		assert.deepEqual(await reserveModelCall(log, call(18_000)), { ok: true }, "18 calls in the window still admit the 19th");
+		assert.deepEqual(await reserveModelCall(log, call(19_000)), { ok: false, reason: "BUDGET" }, "the 20th call in a minute is refused");
+		const starts = (await log.records()).filter(record => record.phase === "START");
+		assert.equal(starts.length, 19, "every admitted call wrote its START record before anything ran");
+
+		const day = modelCallLog(join(dir, "day.jsonl"));
+		const recent = new Date(Date.parse("2026-10-12T00:00:00Z") - 3_600_000).toISOString();
+		const dayAgo = new Date(Date.parse("2026-10-12T00:00:00Z") - 25 * 3_600_000).toISOString();
+		for (let index = 0; index < 999; index += 1) {
+			await day.append({ at: recent, caller: "house", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
+		}
+		assert.deepEqual(await reserveModelCall(day, call(0)), { ok: false, reason: "BUDGET" }, "999 calls in the day refuse the 1000th");
+		const old = modelCallLog(join(dir, "old.jsonl"));
+		for (let index = 0; index < 999; index += 1) {
+			await old.append({ at: dayAgo, caller: "house", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
+		}
+		assert.deepEqual(await reserveModelCall(old, call(0)), { ok: true }, "calls older than a day do not count");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("an exit 0 with no result line defers to the commit step", () => {

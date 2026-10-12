@@ -18,10 +18,14 @@ import {
 	type HouseDeliverableFacts, type HouseDelivery, type HouseDeliveryDeps, type HouseDeliveryState,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
 } from "../src/runner.ts";
-import { DROID_INSTRUCTION_PATH } from "../../core/src/model.ts";
+import { modelCallLog } from "../../core/src/model.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const ctl = join(root, "packages/ctl/src/main.ts");
+
+// Every fakeDeps call borrows its own temp call-log directory; the exit sweep takes them all back.
+const budgetDirs: string[] = [];
+process.on("exit", () => { for (const dir of budgetDirs) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } } });
 
 test("the House label counts a receipts table of 41 rows with 39 paid", () => {
 	assert.equal(houseLine({ total: 41, paid: 39 }), "41 fixes, 39 passed verified CI");
@@ -135,6 +139,8 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 	const commits: string[] = [];
 	const deliveries: (HouseDelivery | null)[] = [];
 	const states = new Map<string, HouseDeliveryState>();
+	const budgetDir = mkdtempSync(join(tmpdir(), "acquit-house-calls-"));
+	budgetDirs.push(budgetDir);
 	const record = async (plan: HouseRunPlan): Promise<HouseRunOutcome> => {
 		plans.push(plan);
 		return run === undefined ? { ok: true } : run(plan);
@@ -156,6 +162,8 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 			commits.push(`${job.id}:${commit}`);
 			deliveries.push(delivery ?? null);
 		},
+		callLog: modelCallLog(join(budgetDir, "model-calls.jsonl")),
+		now: () => new Date().toISOString(),
 		log: () => {},
 		...overrides,
 	};
@@ -252,6 +260,81 @@ test("an OpenRouter 429 is the same terminal class: one call, never retried", as
 	});
 	assert.equal(await runHouseDelivery(deps, target), "RATE_LIMITED");
 	assert.equal(plans.length, 1, "the 429 is never retried");
+});
+
+test("a spent shared minute budget refuses the call before anything runs, spending no job call", async () => {
+	const budget = mkdtempSync(join(tmpdir(), "acquit-house-budget-"));
+	try {
+		const callLog = modelCallLog(join(budget, "model-calls.jsonl"));
+		const recent = new Date(Date.now() - 5_000).toISOString();
+		for (let index = 0; index < 19; index += 1) {
+			await callLog.append({ at: recent, caller: "house", jobId: "job_other", provider: "droid", model: "glm-5.3-flash", phase: "START" });
+		}
+		const { deps, plans, states, commits } = fakeDeps(undefined, { callLog });
+		const outcome = await runHouseDelivery(deps, target);
+		assert.equal(outcome, "BUDGET", "the series ends this tick on a spent budget");
+		assert.equal(plans.length, 0, "no model call starts");
+		assert.equal(states.get(target.id)?.calls ?? 0, 0, "a refused call consumes no job call");
+		assert.deepEqual(commits, [], "nothing is submitted");
+	} finally { rmSync(budget, { recursive: true, force: true }); }
+});
+
+test("a budget spent on the retry keeps the job's first call", async () => {
+	const budget = mkdtempSync(join(tmpdir(), "acquit-house-budget-"));
+	try {
+		const callLog = modelCallLog(join(budget, "model-calls.jsonl"));
+		let calls = 0;
+		const run = async (): Promise<HouseRunOutcome> => {
+			calls += 1;
+			if (calls === 1) {
+				// While the first call is out, the rest of the deployment spends the minute window.
+				const recent = new Date().toISOString();
+				for (let index = 0; index < 18; index += 1) {
+					await callLog.append({ at: recent, caller: "house", jobId: "job_other", provider: "droid", model: "glm-5.3-flash", phase: "START" });
+				}
+			}
+			return { ok: false, reason: "PROVIDER_ERROR", detail: "503 upstream" };
+		};
+		const { deps, plans, states } = fakeDeps(run, { callLog });
+		const outcome = await runHouseDelivery(deps, target);
+		assert.equal(outcome, "FAILED");
+		assert.equal(plans.length, 1, "the retry is refused before the run port is touched again");
+		assert.equal(states.get(target.id)?.calls, 1, "the job keeps its first call; a later tick may use the second");
+	} finally { rmSync(budget, { recursive: true, force: true }); }
+});
+
+test("every invocation is recorded before the retry decision, a failed call keeping its own metadata", async () => {
+	let calls = 0;
+	const { deps, plans } = fakeDeps(async () => {
+		calls += 1;
+		return calls === 1
+			? { ok: false, reason: "PROVIDER_ERROR", detail: "403 (no body)", sessionId: "s1", factoryCredits: 0.5 }
+			: { ok: true, sessionId: "s2", model: "glm-5.3-flash", factoryCredits: 1.2 };
+	}, { now: () => "2026-10-12T00:00:00Z" });
+	await runHouseDelivery(deps, target);
+	assert.equal(plans.length, 2, "the retry ran");
+	const records = await deps.callLog.records();
+	const ends = records.filter(record => record.phase === "END");
+	assert.equal(ends.length, 2, "both calls carry an END record");
+	assert.deepEqual(ends[0], { at: "2026-10-12T00:00:00Z", caller: "house", jobId: target.id, provider: "droid", model: "glm-5.3-flash",
+		phase: "END", outcome: "PROVIDER_ERROR", sessionId: "s1", factoryCredits: 0.5 });
+	assert.deepEqual(ends[1], { at: "2026-10-12T00:00:00Z", caller: "house", jobId: target.id, provider: "droid", model: "glm-5.3-flash",
+		phase: "END", outcome: "ok", sessionId: "s2", factoryCredits: 1.2 });
+});
+
+test("two failed calls each record the session and credits they spent", async () => {
+	let calls = 0;
+	const { deps } = fakeDeps(async () => {
+		calls += 1;
+		return { ok: false, reason: "PROVIDER_ERROR", detail: "503 upstream", sessionId: `s${calls}`, factoryCredits: calls };
+	});
+	await runHouseDelivery(deps, target);
+	const ends = (await deps.callLog.records()).filter(record => record.phase === "END");
+	assert.equal(ends.length, 2, "both failures recorded");
+	assert.equal(ends[0]?.sessionId, "s1");
+	assert.equal(ends[0]?.factoryCredits, 1);
+	assert.equal(ends[1]?.sessionId, "s2");
+	assert.equal(ends[1]?.factoryCredits, 2);
 });
 
 test("a runner whose calls are spent is skipped without a call or a submit", async () => {
