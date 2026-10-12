@@ -10,6 +10,8 @@ Group=ubuntu
 WorkingDirectory=/opt/acquit
 EnvironmentFile=/etc/acquit/runtime.env
 EnvironmentFile=/etc/acquit/verifier-secrets.env
+# The model provider key (FACTORY_API_KEY) reaches the API only; the verifier never loads it.
+EnvironmentFile=/etc/acquit/model-secrets.env
 ExecStart=/usr/bin/node apps/api/src/server.ts
 Restart=always
 RestartSec=5
