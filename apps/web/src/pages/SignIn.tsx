@@ -1,15 +1,23 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { api, type SessionUser } from "../api";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { api, ApiError, type SessionUser } from "../api";
 import type { DeploymentMode } from "../api-types";
 import { errorText } from "../demo";
 import { JUDGE_TOUR, START_DEMO_ACTION } from "../judge-tour";
+import { useRouter } from "../router";
 import type { Session } from "../session";
 import { ConnectedRepo } from "../ui";
 
 type SignedIn = (session: Session) => void;
 
 export function SignIn({ mode, onSignedIn }: { mode: DeploymentMode; onSignedIn: SignedIn }) {
-  return mode === "public" ? <StartDemo onSignedIn={onSignedIn} /> : <SeededPicker onSignedIn={onSignedIn} />;
+  return mode === "public" ? (
+    <>
+      <StartDemo onSignedIn={onSignedIn} />
+      <PlatformKey onSignedIn={onSignedIn} />
+    </>
+  ) : (
+    <SeededPicker onSignedIn={onSignedIn} />
+  );
 }
 
 function useSignIn(onSignedIn: SignedIn) {
@@ -106,6 +114,13 @@ function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
 
 function SeededPicker({ onSignedIn }: { onSignedIn: SignedIn }) {
   const { error, setError, busy, run } = useSignIn(onSignedIn);
+  const { navigate } = useRouter();
+  const platform = () =>
+    run("platform", async () => {
+      const session = await api.signIn("platform");
+      navigate("/studio");
+      return session;
+    });
   const [users, setUsers] = useState<SessionUser[] | null>(null);
 
   useEffect(() => {
@@ -136,6 +151,45 @@ function SeededPicker({ onSignedIn }: { onSignedIn: SignedIn }) {
           </button>
         ))}
       </div>
+      <button className="btn ghost sm signin-quiet" disabled={busy !== null} onClick={() => void platform()}>
+        {busy === "platform" ? "Signing in…" : "Platform dashboards"}
+      </button>
     </div>
+  );
+}
+
+function PlatformKey({ onSignedIn }: { onSignedIn: SignedIn }) {
+  const [key, setKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { navigate } = useRouter();
+  const id = useId();
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.platformSession(key);
+      navigate("/studio");
+      onSignedIn({ user: r.user, visitor: null });
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 403 ? "Wrong platform key" : errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="signin card form platform-key" onSubmit={(e) => void submit(e)}>
+      <label htmlFor={`${id}-key`}>
+        <span>Platform key</span>
+        <input id={`${id}-key`} type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} required />
+      </label>
+      <div className="act">
+        {error && <span className="alert">{error}</span>}
+        <button className="btn sm" disabled={busy || key === ""}>
+          {busy ? "Checking…" : "Open the platform dashboards"}
+        </button>
+      </div>
+    </form>
   );
 }

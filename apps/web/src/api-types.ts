@@ -126,6 +126,12 @@ export type JobReceiptRow = Receipt & {
   readonly repository: string;
   readonly source: "SEED" | "JOB";
   readonly passedVerifiedCi: boolean;
+  /** The gross the capture held: the job's HELD line. */
+  readonly grossPaid: UsdCents | null;
+  /** The fee the book took: the job's FEE line. */
+  readonly fee: UsdCents | null;
+  readonly feeSplit: { readonly processor: UsdCents | null; readonly acquit: UsdCents | null } | null;
+  readonly result: "VERIFIED" | null;
 };
 
 /** A seeded history row has no job behind it, so it keeps only the facts the receipts table holds. */
@@ -144,9 +150,56 @@ export type SeededReceiptRow = {
   readonly repository: null;
   readonly source: "SEED";
   readonly passedVerifiedCi: boolean;
+  readonly grossPaid: null;
+  readonly fee: null;
+  readonly feeSplit: null;
+  readonly result: null;
 };
 
 export type ReceiptRow = JobReceiptRow | SeededReceiptRow;
+
+/** `GET /api/me/payouts`: one row per released job the operator was paid. */
+export type PayoutRow = {
+  readonly jobId: string;
+  readonly payoutItemId: string;
+  readonly captureId: string | null;
+  readonly paid: UsdCents | null;
+  readonly releasedAt: Instant | null;
+  readonly releaseAuthority: string | null;
+  readonly repository: string;
+};
+
+export type PlatformAttempt = {
+  readonly ordinal: number;
+  readonly result: "VERIFIED" | "REJECTED";
+  readonly at: Instant;
+  /** True when the rejection named the frozen tests: a tamper the verifier caught. */
+  readonly tamper: boolean;
+  readonly reasons: readonly string[];
+};
+
+/** One job's book in `GET /api/platform/ledger`, across every tenant. Mirrored from packages/core/src/platform.ts. */
+export type PlatformJobLedger = {
+  readonly jobId: string;
+  readonly title: string;
+  readonly tenant: string | null;
+  readonly client: string;
+  readonly status: JobStatus;
+  readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
+  readonly operator: { readonly id: string; readonly handle: string } | null;
+  readonly lines: readonly LedgerLine[];
+  readonly paidCents: UsdCents | null;
+  readonly fee: { readonly cents: UsdCents; readonly processor: UsdCents; readonly acquit: UsdCents } | null;
+  readonly payout: {
+    readonly paid: UsdCents;
+    readonly payoutItemId: string;
+    readonly captureId: string | null;
+    readonly releasedAt: Instant;
+    readonly authority: string | null;
+  } | null;
+  readonly receipt: { readonly id: string; readonly paid: UsdCents; readonly releasedAt: Instant } | null;
+  readonly attempts: readonly PlatformAttempt[];
+};
 
 /** `GET /api/jobs/:id`, and `POST /api/jobs/:id/clock` after the job's own time moved. */
 export type JobResponse = { readonly job: JobView; readonly handles: Readonly<Record<string, string>>; readonly now: Instant };
@@ -171,7 +224,7 @@ export interface VisitorView {
   readonly expiresAt: Instant;
 }
 
-export type SessionUser = { readonly handle: string; readonly role: "CLIENT" | "OPERATOR" };
+export type SessionUser = { readonly handle: string; readonly role: "CLIENT" | "OPERATOR" | "PLATFORM" };
 
 /** `public` offers only Start my demo; `dev` offers the seeded picker. */
 export type DeploymentMode = "public" | "dev";
@@ -181,6 +234,9 @@ export type SessionResponse = { readonly user: SessionUser | null; readonly visi
 
 /** `POST /api/session`, `POST /api/demo`, and `POST /api/demo/switch`. */
 export type SignedInResponse = { readonly user: SessionUser; readonly visitor: VisitorView | null; readonly token: string };
+
+/** `POST /api/platform/session`: the platform role has no visitor. */
+export type PlatformSignedInResponse = { readonly user: SessionUser; readonly token: string };
 
 export interface OperatorView {
   readonly id: string;
