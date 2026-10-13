@@ -279,6 +279,10 @@ function acquitStudioTheme() {
 // component that reads React state instead, so it gets one empty table.
 const STUDIO_DATA = { sources: [{ id: "acquit", data: [] }] };
 
+// The dashboards are read-only in view mode, so the studio's filter panel is only noise there and
+// covers the stacked narrow layout. Edit mode keeps its default panels.
+const STUDIO_PANELS = { view: { left: [], right: [] } };
+
 function AcquitStudio({
   state,
   mode,
@@ -303,6 +307,7 @@ function AcquitStudio({
         layout={PAGE_LAYOUT}
         widgets={WIDGETS}
         data={STUDIO_DATA}
+        panels={STUDIO_PANELS}
         onStateUpdated={onStateUpdated}
       />
     </AgStudioProvider>
