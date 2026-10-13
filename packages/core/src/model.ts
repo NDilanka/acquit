@@ -5,7 +5,8 @@
 // Docker, no key value in a log: the key travels from `factoryApiKey` to the sandbox in-process,
 // the way the provider key always has.
 
-import { appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { appendFile, link, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -176,13 +177,21 @@ export function modelCallLog(path: string): ModelCallLog {
  * atomic for every caller that shares the budget: concurrent Ask requests and the House scan
  * today, in this process or in separate ones. The lock is a lock file taken with O_EXCL
  * (`open(.., "wx")`), which the kernel serializes across processes and threads alike; a plain
- * in-process mutex would leave two processes both reading the same count. A holder that died
- * wedges waiters only until the lock file's age passes BUDGET_LOCK_STALE_MS, when the next
- * waiter takes it over; a live holder's section is milliseconds wide. */
+ * in-process mutex would leave two processes both reading the same count. The holder writes a
+ * unique owner token (pid + random) into the file it created, and its release removes the path
+ * only while the file still holds that token, so one holder's cleanup can never delete a
+ * replacement owner's lock. A holder that died wedges waiters only until the file's age passes
+ * BUDGET_LOCK_STALE_MS; the takeover renames the dead file to a unique tombstone -- an atomic
+ * step, so of every waiter that saw the same stale lock exactly one rename succeeds and only
+ * the winner retries the exclusive create -- and the winner re-reads the tombstone's age first,
+ * handing a file that had gone fresh again back to its owner. A waiter that cannot get the lock
+ * by its deadline refuses with BUDGET: waiting and failing closed, never proceeding uncounted. */
 const BUDGET_LOCK_TIMEOUT_MS = 5_000;
 const BUDGET_LOCK_STALE_MS = 10_000;
 
 const budgetLockWait = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
+
+const budgetLockToken = (): string => `${process.pid}.${randomBytes(8).toString("hex")}`;
 
 async function budgetLockStale(lockPath: string): Promise<boolean> {
 	try {
@@ -192,6 +201,30 @@ async function budgetLockStale(lockPath: string): Promise<boolean> {
 	}
 }
 
+/** The single-winner stale takeover: rename the dead lock to a unique tombstone, discard it, and
+ * tell the caller to retry the create. A rename that loses (another waiter took the lock first,
+ * or the file vanished) returns false and the caller simply keeps waiting. The renamed file is
+ * re-read before it is believed dead: if the age no longer says stale, the file belonged to a
+ * live owner whose lock was briefly taken, and `link` puts it back. */
+async function breakStaleLock(lockPath: string): Promise<boolean> {
+	const tombstone = `${lockPath}.${budgetLockToken()}.stale`;
+	try {
+		await rename(lockPath, tombstone);
+	} catch {
+		return false;
+	}
+	try {
+		if (Date.now() - (await stat(tombstone)).mtimeMs > BUDGET_LOCK_STALE_MS) return true;
+		await link(tombstone, lockPath).catch(() => {});
+		return false;
+	} finally {
+		await rm(tombstone, { force: true });
+	}
+}
+
+/** The lock-wait deadline's own outcome: the caller refuses the reservation, it does not error. */
+class BudgetLockTimeout extends Error {}
+
 async function withBudgetLock<T>(lockPath: string, critical: () => Promise<T>): Promise<T> {
 	const deadline = Date.now() + BUDGET_LOCK_TIMEOUT_MS;
 	for (;;) {
@@ -200,38 +233,58 @@ async function withBudgetLock<T>(lockPath: string, critical: () => Promise<T>): 
 			handle = await open(lockPath, "wx", 0o600);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			if (await budgetLockStale(lockPath)) {
-				await rm(lockPath, { force: true });
-				continue;
-			}
-			if (Date.now() >= deadline) throw new Error(`the model-call budget lock never freed: ${lockPath}`);
+			if (await budgetLockStale(lockPath) && await breakStaleLock(lockPath)) continue;
+			if (Date.now() >= deadline) throw new BudgetLockTimeout(`the model-call budget lock never freed: ${lockPath}`);
 			await budgetLockWait(2 + Math.floor(Math.random() * 6));
 			continue;
 		}
+		const token = budgetLockToken();
 		try {
+			await handle.write(token, 0, "utf8");
 			return await critical();
 		} finally {
 			await handle.close();
-			await rm(lockPath, { force: true });
+			await releaseBudgetLock(lockPath, token);
 		}
+	}
+}
+
+/** Release removes the lock only while the path still holds this holder's token: a stale takeover
+ * can have replaced the file, and the replacement owner's lock must survive. */
+async function releaseBudgetLock(lockPath: string, token: string): Promise<void> {
+	try {
+		if (await readFile(lockPath, "utf8") !== token) return;
+		await rm(lockPath, { force: true });
+	} catch {
+		// gone already: there is nothing of ours left to remove
 	}
 }
 
 /** Reserves one model call at `call.at` when the shared budget allows it, writing the call's START
  * record before the caller runs anything, so crashes, failures, and retries all count. Refuses
  * when the rolling minute already holds its 19 calls or the day its 999. `call.at` is the wall
- * clock -- the dev offset clock used for domain deadlines never reaches the budget. */
+ * clock -- the dev offset clock used for domain deadlines never reaches the budget. The windows
+ * are always re-read inside the lock, and that re-read decides; the unlocked read first only
+ * spares the lock when the answer is already no. A waiter that never gets the lock refuses with
+ * BUDGET too. */
 export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> {
-	return withBudgetLock(`${log.path}.lock`, async (): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> => {
-		const at = Date.parse(call.at);
-		const records = await log.records();
-		const starts = records.filter(record => record.phase === "START").map(record => Date.parse(record.at));
-		const perMinute = starts.filter(startedAt => startedAt > at - 60_000).length;
-		const perDay = starts.filter(startedAt => startedAt > at - 86_400_000).length;
-		if (perMinute >= MODEL_CALLS_MINUTE - 1 || perDay >= MODEL_CALLS_DAY - 1) return { ok: false, reason: "BUDGET" };
-		await log.append({ ...call, phase: "START" });
-		return { ok: true };
-	});
+	const at = Date.parse(call.at);
+	const overBudget = async (): Promise<boolean> => {
+		const starts = (await log.records()).filter(record => record.phase === "START").map(record => Date.parse(record.at));
+		return starts.filter(startedAt => startedAt > at - 60_000).length >= MODEL_CALLS_MINUTE - 1
+			|| starts.filter(startedAt => startedAt > at - 86_400_000).length >= MODEL_CALLS_DAY - 1;
+	};
+	if (await overBudget()) return { ok: false, reason: "BUDGET" };
+	try {
+		return await withBudgetLock(`${log.path}.lock`, async (): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> => {
+			if (await overBudget()) return { ok: false, reason: "BUDGET" };
+			await log.append({ ...call, phase: "START" });
+			return { ok: true };
+		});
+	} catch (error) {
+		if (error instanceof BudgetLockTimeout) return { ok: false, reason: "BUDGET" };
+		throw error;
+	}
 }
 
 // ---- the Factory key ---------------------------------------------------------------------------

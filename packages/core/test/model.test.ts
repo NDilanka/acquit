@@ -13,6 +13,7 @@ import {
 	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, droidResultText, factoryApiKey, modelCallLog, modelProvider,
 	reserveModelCall,
 } from "../src/model.ts";
+import type { ModelCallLog } from "../src/model.ts";
 
 test("the model provider switch defaults to droid with glm-5.3-flash", () => {
 	assert.equal(modelProvider({}), "droid");
@@ -161,6 +162,8 @@ test("two waiters that both see a stale lock admit exactly one reservation", asy
 	try {
 		const log = modelCallLog(join(dir, "model-calls.jsonl"));
 		const lockPath = `${log.path}.lock`;
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		for (let index = 0; index < 18; index += 1) await log.append({ ...call, phase: "START" });
 		await fsPromises.writeFile(lockPath, "", { mode: 0o600 });
 		const stale = new Date(Date.now() - 20_000);
 		await fsPromises.utimes(lockPath, stale, stale);
@@ -189,7 +192,6 @@ test("two waiters that both see a stale lock admit exactly one reservation", asy
 				return snapshot;
 			},
 		};
-		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
 		const results = await Promise.all([reserveModelCall(wrapped, call), reserveModelCall(wrapped, call)]);
 		assert.equal(results.filter(result => result.ok).length, 1, "of two waiters that both saw the stale lock, exactly one is admitted");
 		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "the minute never holds the twentieth start");
@@ -207,7 +209,7 @@ test("a releaser never removes a lock a replacement owner took over", async () =
 		const log = modelCallLog(join(dir, "model-calls.jsonl"));
 		const lockPath = `${log.path}.lock`;
 		const replacement = "6311.replacementowner";
-		const wrapped = {
+		const wrapped: ModelCallLog = {
 			...log,
 			append: async record => {
 				await log.append(record);
