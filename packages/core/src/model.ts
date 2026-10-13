@@ -5,7 +5,8 @@
 // Docker, no key value in a log: the key travels from `factoryApiKey` to the sandbox in-process,
 // the way the provider key always has.
 
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { boundedDetail } from "./verifier.ts";
@@ -143,6 +144,9 @@ export type ModelCallRecord = {
 };
 
 export type ModelCallLog = {
+	/** The log's own path. The budget's lock file derives from it, so every process that reads
+	 * and appends through this log waits on the same lock. */
+	readonly path: string;
 	readonly append: (record: ModelCallRecord) => Promise<void>;
 	readonly records: () => Promise<readonly ModelCallRecord[]>;
 };
@@ -151,6 +155,7 @@ export type ModelCallLog = {
  * `model-calls.jsonl` beside the database, so every caller in this deployment counts together. */
 export function modelCallLog(path: string): ModelCallLog {
 	return {
+		path,
 		async append(record) {
 			await mkdir(dirname(path), { recursive: true });
 			await appendFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -167,18 +172,66 @@ export function modelCallLog(path: string): ModelCallLog {
 	};
 }
 
+/** The reservation's critical section -- read the log, count the windows, append the START -- is
+ * atomic for every caller that shares the budget: concurrent Ask requests and the House scan
+ * today, in this process or in separate ones. The lock is a lock file taken with O_EXCL
+ * (`open(.., "wx")`), which the kernel serializes across processes and threads alike; a plain
+ * in-process mutex would leave two processes both reading the same count. A holder that died
+ * wedges waiters only until the lock file's age passes BUDGET_LOCK_STALE_MS, when the next
+ * waiter takes it over; a live holder's section is milliseconds wide. */
+const BUDGET_LOCK_TIMEOUT_MS = 5_000;
+const BUDGET_LOCK_STALE_MS = 10_000;
+
+const budgetLockWait = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
+
+async function budgetLockStale(lockPath: string): Promise<boolean> {
+	try {
+		return Date.now() - (await stat(lockPath)).mtimeMs > BUDGET_LOCK_STALE_MS;
+	} catch {
+		return false; // gone already; the next exclusive open decides
+	}
+}
+
+async function withBudgetLock<T>(lockPath: string, critical: () => Promise<T>): Promise<T> {
+	const deadline = Date.now() + BUDGET_LOCK_TIMEOUT_MS;
+	for (;;) {
+		let handle: FileHandle;
+		try {
+			handle = await open(lockPath, "wx", 0o600);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			if (await budgetLockStale(lockPath)) {
+				await rm(lockPath, { force: true });
+				continue;
+			}
+			if (Date.now() >= deadline) throw new Error(`the model-call budget lock never freed: ${lockPath}`);
+			await budgetLockWait(2 + Math.floor(Math.random() * 6));
+			continue;
+		}
+		try {
+			return await critical();
+		} finally {
+			await handle.close();
+			await rm(lockPath, { force: true });
+		}
+	}
+}
+
 /** Reserves one model call at `call.at` when the shared budget allows it, writing the call's START
  * record before the caller runs anything, so crashes, failures, and retries all count. Refuses
- * when the rolling minute already holds its 19 calls or the day its 999. */
+ * when the rolling minute already holds its 19 calls or the day its 999. `call.at` is the wall
+ * clock -- the dev offset clock used for domain deadlines never reaches the budget. */
 export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> {
-	const at = Date.parse(call.at);
-	const records = await log.records();
-	const starts = records.filter(record => record.phase === "START").map(record => Date.parse(record.at));
-	const perMinute = starts.filter(startedAt => startedAt > at - 60_000).length;
-	const perDay = starts.filter(startedAt => startedAt > at - 86_400_000).length;
-	if (perMinute >= MODEL_CALLS_MINUTE - 1 || perDay >= MODEL_CALLS_DAY - 1) return { ok: false, reason: "BUDGET" };
-	await log.append({ ...call, phase: "START" });
-	return { ok: true };
+	return withBudgetLock(`${log.path}.lock`, async (): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> => {
+		const at = Date.parse(call.at);
+		const records = await log.records();
+		const starts = records.filter(record => record.phase === "START").map(record => Date.parse(record.at));
+		const perMinute = starts.filter(startedAt => startedAt > at - 60_000).length;
+		const perDay = starts.filter(startedAt => startedAt > at - 86_400_000).length;
+		if (perMinute >= MODEL_CALLS_MINUTE - 1 || perDay >= MODEL_CALLS_DAY - 1) return { ok: false, reason: "BUDGET" };
+		await log.append({ ...call, phase: "START" });
+		return { ok: true };
+	});
 }
 
 // ---- the Factory key ---------------------------------------------------------------------------
