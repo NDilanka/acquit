@@ -1,5 +1,5 @@
 import type { JobReceiptRow, LedgerLine, PlatformJobLedger, ReceiptRow } from "./api-types";
-import { COLUMNS, type DashboardState } from "./dashboard-widgets.ts";
+import { COLUMNS, STACKED_MIN_YSPAN, type DashboardState } from "./dashboard-widgets.ts";
 
 function linesCents(jobs: readonly PlatformJobLedger[], kind: LedgerLine["kind"]): number {
   let total = 0;
@@ -94,6 +94,16 @@ export function stackLayout(layout: Partial<Record<string, Track>>, columns: num
 export function stacked(state: DashboardState): DashboardState {
   return {
     ...state,
-    pages: state.pages.map((page) => ({ ...page, widgetLayout: stackLayout(page.widgetLayout ?? {}, page.layout?.columns ?? COLUMNS) })),
+    pages: state.pages.map((page) => {
+      // Heights are raised before stacking so each row's yTrack accounts for the taller rows above it.
+      const raised = Object.fromEntries(
+        Object.entries(page.widgetLayout ?? {}).map(([id, track]) => {
+          const type = page.widgets?.[id]?.type;
+          const min = type ? (STACKED_MIN_YSPAN[type] ?? 0) : 0;
+          return [id, track && { ...track, ySpan: Math.max(track.ySpan, min) }];
+        }),
+      );
+      return { ...page, widgetLayout: stackLayout(raised, page.layout?.columns ?? COLUMNS) };
+    }),
   };
 }

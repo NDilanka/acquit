@@ -180,6 +180,14 @@ export const WIDGET_ROWS = {
 
 export type AcquitWidgetId = (typeof WIDGET_ROWS)[DashboardId][number][number]["id"];
 
+// The stacked narrow layout keeps each widget's wide-layout height, and a widget scrolls its own
+// overflow, so a widget whose content grows when it is narrowed lists a minimum height here; that
+// way no stacked widget's last line scrolls out of view. The receipt card needs room for its pill,
+// five summary rows and a caption that wraps to two lines at 390 px.
+export const STACKED_MIN_YSPAN: Partial<Record<AcquitWidgetId, number>> = {
+  "acquit-receipt-card": 7,
+};
+
 export type AcquitWidget = { type: AcquitWidgetId; dataMapping: Record<string, never>; format?: AgWidgetDataFormat<unknown> };
 
 export interface AcquitRegistry extends AgRegistry {

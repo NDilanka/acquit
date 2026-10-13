@@ -3,7 +3,10 @@ import {
   directLlmRunner,
   type AgAiChatSession,
   type AgAiHarness,
+  type AgAiHistoryStore,
+  type AgAiHistoryStoreEventListener,
   type AgAiRunOutcome,
+  type AgAiThread,
   type AgAiTelemetryObserver,
   type AgAiTool,
   type AgStudioApi,
@@ -106,17 +109,72 @@ export function createAskLedgerHarness(
     primary: ASK_AGENT_ID,
     promptStarters: ASK_PROMPT_STARTERS,
     observers: [observer],
+    history: askHistory,
   }));
 }
 
-// Studio's harness opens only threads it already holds, so the drawer's conversation is created
-// once per harness and reopened from then on; the promise is kept so two opens share one thread.
+/**
+ * Every harness this module builds shares one in-memory store, so a harness rebuilt on a narrow/wide
+ * crossing finds the conversation the previous one saved. Nothing else writes to it in a single-tab
+ * dashboard, so its "changed" listeners are held for the harness but never fired.
+ */
+function memoryHistoryStore(): AgAiHistoryStore {
+  const threads = new Map<string, AgAiThread>();
+  const listeners = new Set<AgAiHistoryStoreEventListener>();
+  return {
+    listThreads: async () =>
+      [...threads.values()].map((thread) => thread.summary).sort((a, b) => b.updatedAt - a.updatedAt),
+    loadThread: async (threadId) => threads.get(threadId),
+    saveThread: async (thread) => {
+      threads.set(thread.summary.threadId, thread);
+    },
+    deleteThread: async (threadId) => {
+      threads.delete(threadId);
+    },
+    addEventListener: (_type, listener) => listeners.add(listener),
+    removeEventListener: (_type, listener) => listeners.delete(listener),
+  };
+}
+
+const askHistory = memoryHistoryStore();
+
+// One user and one dashboard conversation, so the thread to reopen on a new harness is just the last one.
+let lastThreadId: string | undefined;
+
+const REOPEN_ATTEMPTS = 5;
+const REOPEN_DELAY_MS = 25;
+
+/**
+ * A fresh harness starts loading its roster from the history store without awaiting it, while
+ * openThread looks the id up in the roster synchronously, so the first open can report "Unknown
+ * thread" for a thread that is in the store. A few short retries let the roster load land; a thread
+ * still unknown after that is gone, and the drawer starts a new conversation instead.
+ */
+async function reopenOrCreate(harness: AgAiHarness, threadId: string): Promise<AgAiChatSession> {
+  for (let attempt = 1; attempt <= REOPEN_ATTEMPTS; attempt++) {
+    try {
+      return await harness.openThread(threadId);
+    } catch {
+      if (attempt < REOPEN_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, REOPEN_DELAY_MS));
+    }
+  }
+  return harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+}
+
+// The promise is kept per harness so two opens share one session.
 const askThreads = new WeakMap<AgAiHarness, Promise<AgAiChatSession>>();
 
 export function openAskThread(harness: AgAiHarness): Promise<AgAiChatSession> {
   let session = askThreads.get(harness);
   if (!session) {
-    session = harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+    session = (
+      lastThreadId === undefined
+        ? harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME })
+        : reopenOrCreate(harness, lastThreadId)
+    ).then((opened) => {
+      lastThreadId = opened.threadId;
+      return opened;
+    });
     askThreads.set(harness, session);
   }
   return session;
