@@ -101,8 +101,10 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
 	if (!visitorColumns.has("repository_id")) db.exec("ALTER TABLE visitors ADD COLUMN repository_id INTEGER");
 	// The seeded handles are principals with no visitor: the rows every session resolves through, so
-	// the SEEDED_USERS constant is a seed, never an authentication source.
+	// the SEEDED_USERS constant is a seed, never an authentication source. The platform principal is
+	// the third such row: the deployment's own reader of the whole book, held by no picker.
 	for (const user of SEEDED_USERS) db.prepare("INSERT OR IGNORE INTO principals VALUES (?, ?, NULL)").run(user.handle, user.role);
+	db.prepare("INSERT OR IGNORE INTO principals VALUES ('platform', 'PLATFORM', NULL)").run();
 	return db;
 }
 

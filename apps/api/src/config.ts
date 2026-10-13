@@ -16,6 +16,11 @@ if (existsSync(envPath)) process.loadEnvFile(envPath);
 export const databasePath = resolve(rootPath, process.env.DATABASE_PATH ?? "./data/acquit.db");
 export const webOrigin = new URL(process.env.WEB_ORIGIN ?? `http://localhost:${process.env.WEB_PORT ?? 5173}`).origin;
 export const devEnabled = process.env.ACQUIT_DEV === "1";
+/**
+ * The platform role's own credential, minting the one session that may read the whole book. A
+ * deployment that exposes the dashboards outside dev mode sets it; the value is never logged.
+ */
+export const platformKey = process.env.ACQUIT_PLATFORM_KEY?.trim() ?? "";
 export function required(name: string): string {
 	const value = process.env[name]?.trim();
 	if (!value) throw new Error(`Missing configuration: ${name}`);

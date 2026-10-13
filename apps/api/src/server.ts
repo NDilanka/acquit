@@ -16,7 +16,7 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { createHouseDelivery } from "./house.ts";
@@ -70,6 +70,12 @@ if (!(db.prepare("PRAGMA table_info(cli_codes)").all() as { name?: unknown }[]).
 // verdict stays the only thing that can move a job.
 db.exec(`CREATE TABLE IF NOT EXISTS house_diffs (
 	job_id TEXT PRIMARY KEY, commit_sha TEXT NOT NULL, files TEXT NOT NULL, patch TEXT NOT NULL)`);
+// The dashboards' saved layouts: one row per user and dashboard, holding the Studio state the user
+// rearranged. A layout is presentation state per signed-in handle, so a user's arrangement never
+// reaches another user's dashboard.
+db.exec(`CREATE TABLE IF NOT EXISTS studio_layouts (
+	user_handle TEXT NOT NULL, dashboard TEXT NOT NULL, json TEXT NOT NULL, updated_at TEXT NOT NULL,
+	PRIMARY KEY (user_handle, dashboard))`);
 /** The recorded diff for one job's House run, or null when the job has none. */
 function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; files: unknown; patch: string } | null {
 	const row = db.prepare("SELECT commit_sha, files, patch FROM house_diffs WHERE job_id = ?").get(jobId);
@@ -108,7 +114,8 @@ function session(req: IncomingMessage) {
 	if (!principal) return null;
 	// Public mode has one way in: Start my demo. A principal with no visitor belongs to the seeded
 	// world, so its session is refused here, not only at the mint: an old cookie dies with the mode.
-	if (!devEnabled && principal.visitorId === null) return null;
+	// The platform principal is the one exception, and only its own key-gated mint makes a session.
+	if (!devEnabled && principal.visitorId === null && principal.role !== "PLATFORM") return null;
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
 	// A visitor past its expiry is no principal at all, whatever its session row still says: the demo
 	// ends when the visitor does, so the API refuses it here rather than waiting for the sweep.
@@ -116,6 +123,7 @@ function session(req: IncomingMessage) {
 	const actor: Actor = principal.role === "CLIENT"
 		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
 			...(visitor?.repository ? { repository: visitor.repository } : {}) }
+		: principal.role === "PLATFORM" ? { role: "PLATFORM" }
 		: { role: "OPERATOR", operatorId: principal.handle as OperatorId, tenant: principal.visitorId };
 	return { handle: principal.handle, role: principal.role, visitor, token, actor };
 }
@@ -436,6 +444,37 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
 		return;
 	}
+	if (url.pathname === "/api/platform/session" && method === "POST") {
+		// The platform role's only mint. Public mode's sign-in refusal leaves the seeded principals
+		// locked, so the dashboards authenticate with the deployment's own key instead: a holder of
+		// the key reads the whole book, which is exactly the role's meaning. The key is never logged.
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "key")) throw new BadBody("Unsupported field");
+		const given = text(input.key, "key", 200);
+		if (platformKey === "") {
+			if (devEnabled) { json(res, 503, { error: "PLATFORM_KEY_UNSET", detail: "Set ACQUIT_PLATFORM_KEY before minting a platform session." }); return; }
+			json(res, 503, { error: "PLATFORM_KEY_UNSET" }); return;
+		}
+		const expected = Buffer.from(platformKey, "utf8");
+		const presented = Buffer.from(given, "utf8");
+		if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) {
+			json(res, 403, { error: "PLATFORM_KEY_MISMATCH" }); return;
+		}
+		const token = mintSession("platform");
+		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+		json(res, 201, { user: { handle: "platform", role: "PLATFORM" }, token });
+		return;
+	}
+	if (url.pathname === "/api/platform/ledger" && method === "GET") {
+		// The whole book, every tenant, one role: the platform dashboard's only data source. Any other
+		// signed-in session is refused here before the core is asked, so no client or operator session
+		// can read across the tenant line by holding this URL.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		const result = await acquit.query(current.actor, { type: "PlatformLedger" });
+		if (result.kind !== "PLATFORM_LEDGER") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { jobs: result.ledger.jobs, now: clock.now() });
+		return;
+	}
 	if (url.pathname === "/api/repos" && method === "GET") {
 		// The repositories this session may open a job on, from the deployment's fixture registry: a
 		// visitor sees its own fork under its fixture's issue; a signed-in client sees every fixture.
@@ -604,6 +643,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			JSON.stringify({ id: agent.name, owner: current.handle, name: agent.name, runner: agent.runner,
 				promptDigest: agent.promptDigest, tools: agent.tools }));
 		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
+	}
+	if (url.pathname === "/api/studio/layout" && method === "PUT") {
+		// The signed-in user's own layout for one named dashboard. The body holds the Studio state
+		// serialized by the page; the server never interprets it, only stores and returns it.
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => !["dashboard", "state"].includes(key))) throw new BadBody("Unsupported field");
+		const dashboard = text(input.dashboard, "dashboard", 40);
+		if (!/^[a-z][a-z-]*$/.test(dashboard)) throw new BadBody("dashboard must be a lowercase name");
+		const state = text(input.state, "state", 30_000);
+		db.prepare(`INSERT INTO studio_layouts (user_handle, dashboard, json, updated_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(user_handle, dashboard) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`)
+			.run(current.handle, dashboard, state, clock.now());
+		json(res, 200, { saved: true, dashboard }); return;
+	}
+	if (url.pathname === "/api/studio/layout" && method === "GET") {
+		const dashboard = url.searchParams.get("dashboard") ?? "";
+		const row = db.prepare("SELECT json FROM studio_layouts WHERE user_handle = ? AND dashboard = ?").get(current.handle, dashboard);
+		json(res, 200, { state: row ? String(row.json) : null }); return;
 	}
 	if (url.pathname === "/api/me/receipts" && method === "GET") {
 		// The book's rows for this operator: settled job receipts plus the seeded history rows, each
