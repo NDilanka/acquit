@@ -98,10 +98,11 @@ export function createAskLedgerHarness(
         adapter,
         instructions: (ctx, params) => `${builtIn.widget.instructions?.(ctx, params) ?? ""}\n\n${NEW_WIDGET_WORKFLOW}`,
         tools: (ctx, params) => [...(builtIn.widget.tools?.(ctx, params) ?? []), ctx.studio.addWidget()],
-        // Studio types the widget delegation's widgetType against the widget catalogue of the api it
-        // runs on, and that catalogue reads empty on the harness's api, which left the delegate tool
-        // unadvertised and its calls rejected with "Expected one of: ". Plain strings keep the branch
-        // resolvable; the widget agent's own tools take the type and widget ids as strings anyway.
+        // Studio types the widget delegation's widgetType against the api's widget catalogue. With the
+        // AI module registered that catalogue is populated from the widgets' `ai` metadata. The plain
+        // strings stay so the delegate branch remains resolvable when the catalogue reads empty (the
+        // AI module not registered, for example) instead of the delegate tool being silently dropped.
+        // The widget agent's own tools take the type and widget ids as strings anyway.
         schema: (s) =>
           s.object({ widgetType: s.string(), widgetId: s.string(), pageId: s.string().optional() }),
       }),

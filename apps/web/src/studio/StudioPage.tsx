@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createStudioTheme, type AgDataSourcesDefinition, type AgPanelConfig, type AgReportState } from "ag-studio";
+import {
+  AgStudioAiModule,
+  AgStudioModuleRegistry,
+  createStudioTheme,
+  type AgDataSourcesDefinition,
+  type AgPanelConfig,
+  type AgReportState,
+} from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
 import type { PlatformJobLedger } from "../api-types";
@@ -22,6 +29,10 @@ import {
   type EarningsData,
 } from "./dashboards";
 import "./studio.css";
+
+// The ESM entry registers only the data-engine module. The AI module brings the context service
+// whose widget catalogue and schema the dashboard's agents read.
+AgStudioModuleRegistry.registerModules([AgStudioAiModule]);
 
 const ESCROW_REFRESH_MS = 30_000;
 const SAVE_DEBOUNCE_MS = 300;
