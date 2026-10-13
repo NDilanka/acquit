@@ -57,7 +57,16 @@ export function createAskLedgerHarness(studio: AgStudioApi, served: () => readon
         tools: (ctx) => [...ledgerTools(ctx.api), ctx.tools.delegateTo(["widget"])],
         adapter,
       }),
-      directLlmRunner({ ...builtIn.widget, adapter }),
+      directLlmRunner({
+        ...builtIn.widget,
+        adapter,
+        // Studio types the widget delegation's widgetType against the widget catalogue of the api it
+        // runs on, and that catalogue reads empty on the harness's api, which left the delegate tool
+        // unadvertised and its calls rejected with "Expected one of: ". Plain strings keep the branch
+        // resolvable; the widget agent's own tools take the type and widget ids as strings anyway.
+        schema: (s) =>
+          s.object({ widgetType: s.string(), widgetId: s.string(), pageId: s.string().optional() }),
+      }),
     ],
     primary: ASK_AGENT_ID,
     promptStarters: ASK_PROMPT_STARTERS,

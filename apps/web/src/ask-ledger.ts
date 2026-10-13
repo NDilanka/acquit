@@ -32,6 +32,7 @@ export const ASK_INSTRUCTIONS = [
   "Give amounts in dollars, name the jobs and PayPal order ids you checked, and when the book and PayPal disagree, say so plainly with both figures.",
   "You only read. You cannot capture, refund, release or pay out money, and you never claim to have done so.",
   "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
+  'Call delegate_to exactly in its schema\'s shape: {"type": {"id": "widget"}, "instructions": "<the task>"}. The delegate\'s id rides inside the type object.',
 ].join("\n");
 
 export const ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
