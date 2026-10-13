@@ -11,8 +11,21 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCallLog } from "../../../packages/core/src/model.ts";
+import { usd } from "../../../packages/core/src/acquit.ts";
+import { instant } from "../../../packages/core/src/ids.ts";
+import type { CaptureId, ClientId, JobId, MerchantId, OperatorId, OrderId } from "../../../packages/core/src/ids.ts";
 import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
-import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, buildAskPrompt, parseAskEnvelope } from "../src/ask.ts";
+import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, buildAskPrompt, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
+
+/** One held job's ledger row, the projection the platform route serves, as the executor reads it. */
+const heldBookRow = (): PlatformJobLedger => ({
+	jobId: "job_held" as JobId, title: "held job", tenant: null, client: "maya-client" as ClientId,
+	status: "IN_PROGRESS", escrow: "HELD", operator: { id: "devon-ops" as OperatorId, handle: "devon-ops" },
+	lines: [{ kind: "HELD", cents: usd("378.00"), at: instant("2026-10-13T12:00:00Z") }],
+	paidCents: usd("378.00"),
+	capture: { orderId: "ORDER1" as OrderId, captureId: "CAP1" as CaptureId, payee: "sandbox-seller" as MerchantId, gross: usd("378.00") },
+	fee: null, payout: null, receipt: null, attempts: [],
+});
 
 const tools = [
 	{ name: "platform_totals", description: "The book's held, released, refunded, and fee totals.", parameters: { type: "object", properties: {} } },
@@ -39,12 +52,12 @@ test("a model turn is relayed: the envelope's message and calls ride back, and t
 	const log = logFile(dir);
 	try {
 		const seen: string[] = [];
-		const droid = async (prompt: string) => {
+		const model = async (prompt: string) => {
 			seen.push(prompt);
 			return { ok: true as const, text: '{"message":null,"calls":[{"id":"c1","name":"platform_totals","arguments":{}}]}', sessionId: "sess-1", factoryCredits: 5 };
 		};
 		const outcome = await askLedgerTurn(
-			{ droid, callLog: modelCallLog(log.path), now: () => "2026-10-13T12:00:00Z" },
+			{ model, callLog: modelCallLog(log.path), now: () => "2026-10-13T12:00:00Z" },
 			{ messages: question, tools },
 		);
 		assert.deepEqual(outcome, {
@@ -58,9 +71,9 @@ test("a model turn is relayed: the envelope's message and calls ride back, and t
 });
 
 test("a turn the model answers outright carries the message and no calls", async () => {
-	const droid = async () => ({ ok: true as const, text: 'Sure! {"message":"378.00 USD is held; PayPal agrees.","calls":[]}', sessionId: null, factoryCredits: 3 });
+	const model = async () => ({ ok: true as const, text: 'Sure! {"message":"378.00 USD is held; PayPal agrees.","calls":[]}', sessionId: null, factoryCredits: 3 });
 	const outcome = await askLedgerTurn(
-		{ droid, callLog: modelCallLog(join(tmpdir(), "acquit-ask-none", "log.jsonl")), now: () => "2026-10-13T12:00:00Z" },
+		{ model, callLog: modelCallLog(join(tmpdir(), "acquit-ask-none", "log.jsonl")), now: () => "2026-10-13T12:00:00Z" },
 		{ messages: question, tools },
 	);
 	assert.ok(outcome.ok);
@@ -81,13 +94,14 @@ test("prose without the envelope still reaches the reader as the message", () =>
 test("a provider error retries once and then fails; a rate limit never retries", async () => {
 	const calls: number[] = [];
 	let failing: "provider" | "rate" = "provider";
-	const droid = async () => {
+	const model = async () => {
 		calls.push(1);
 		return failing === "provider"
 			? { ok: false as const, reason: "PROVIDER_ERROR" as const, detail: "the droid result line reported an error" }
 			: { ok: false as const, reason: "RATE_LIMITED" as const, detail: "usage limit reached" };
 	};
-	const run = () => askLedgerTurn({ droid, callLog: modelCallLog("/nonexistent/log.jsonl"), now: () => "2026-10-13T12:00:00Z" }, { messages: question, tools });
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-retry-"));
+	const run = () => askLedgerTurn({ model, callLog: modelCallLog(join(root, "log.jsonl")), now: () => "2026-10-13T12:00:00Z" }, { messages: question, tools });
 
 	failing = "provider";
 	const retried = await run();
@@ -99,26 +113,25 @@ test("a provider error retries once and then fails; a rate limit never retries",
 	const limited = await run();
 	assert.ok(!limited.ok && limited.reason === "MODEL_RATE_LIMITED", "a rate limit is its own terminal class");
 	assert.equal(calls.length, 1, "a rate limit is never retried in a loop");
+	try { await rm(root, { recursive: true, force: true }); } catch { /* the log file is disposable */ }
 });
 
 test("a spent shared budget refuses the turn before any model call", async () => {
 	const calls: number[] = [];
-	const droid = async () => { calls.push(1); return { ok: true as const, text: '{"message":"x","calls":[]}', sessionId: null, factoryCredits: 1 }; };
-	const log = modelCallLog("/tmp/acquit-ask-budget/model-calls.jsonl");
-	// Saturate the rolling minute with the cap's record count.
-	for (let i = 0; i < 19; i++) await log.append({ at: "2026-10-13T12:00:30Z", caller: "other", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
-	const outcome = await askLedgerTurn({ droid, callLog: log, now: () => "2026-10-13T12:00:31Z" }, { messages: question, tools });
-	assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET");
-	assert.deepEqual(calls, []);
+	const model = async () => { calls.push(1); return { ok: true as const, text: '{"message":"x","calls":[]}', sessionId: null, factoryCredits: 1 }; };
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-budget-"));
+	try {
+		const log = modelCallLog(join(root, "model-calls.jsonl"));
+		// Saturate the rolling minute with the cap's record count.
+		for (let i = 0; i < 19; i++) await log.append({ at: "2026-10-13T12:00:30Z", caller: "other", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
+		const outcome = await askLedgerTurn({ model, callLog: log, now: () => "2026-10-13T12:00:31Z" }, { messages: question, tools });
+		assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET");
+		assert.deepEqual(calls, []);
+	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("the tool executor answers from the book and PayPal, and the set is closed and read-only", async () => {
-	const book: readonly PlatformJobLedger[] = [{
-		jobId: "job_held", title: "held job", tenant: null, client: "maya-client", status: "IN_PROGRESS", escrow: "HELD",
-		operator: { id: "devon-ops", handle: "devon-ops" }, lines: [{ kind: "HELD", cents: 37800, at: "2026-10-13T12:00:00Z" }],
-		paidCents: 37800, capture: { orderId: "ORDER1", captureId: "CAP1", payee: "sandbox-seller", gross: 37800 }, fee: null,
-		payout: null, receipt: null, attempts: [],
-	}];
+	const book = [heldBookRow()];
 	const readBook = async () => book;
 	const paypalOrders = new Map([["ORDER1", { status: "COMPLETED", amount: "378.00" }]]);
 	const executor = askToolExecutor({ platformView: readBook, paypal: { getOrder: async id => {
@@ -139,13 +152,28 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	for (const name of ASK_TOOL_NAMES) assert.doesNotMatch(name, /create|capture|refund|payout|update|send|cancel/);
 });
 
+test("the openrouter ask port runs on an injected transport, :free only, and never a live call", async () => {
+	const calls: { readonly url: string; readonly init?: { readonly headers?: unknown; readonly body?: string } }[] = [];
+	const transport = (async (url: string | URL, init?: { headers?: unknown; body?: string }) => {
+		calls.push({ url: String(url), init });
+		return new Response(JSON.stringify({ choices: [{ message: { content: "held: 378.00" } }] }), { status: 200 });
+	}) as unknown as typeof fetch;
+	const port = openrouterAskPort({ fetch: transport, key: async () => "keyring-canary", env: {} });
+	const answered = await port(buildAskPrompt({ messages: question, tools }));
+	assert.ok(answered.ok && answered.text === "held: 378.00");
+	assert.equal(calls.length, 1);
+	assert.ok(calls[0]!.url.startsWith("https://openrouter.ai/api/v1/chat/completions"), "the port calls OpenRouter's chat API");
+	assert.match(String(calls[0]!.init?.body), /:free/, "the model the port names is a :free model");
+	const headers = calls[0]!.init?.headers as { authorization?: string };
+	assert.equal(headers.authorization, "Bearer keyring-canary", "the key rides the header in process");
+	assert.equal(String(calls[0]!.init?.body).includes("keyring-canary"), false, "the key never rides the body");
+	const refused = await openrouterAskPort({ fetch: async () => { throw new Error("no call may happen without a key"); }, key: async () => null, env: {} })(
+		buildAskPrompt({ messages: question, tools }));
+	assert.ok(!refused.ok && refused.reason === "NO_KEY", "no key, no call");
+});
+
 test("the executor answers a job's own book, with its capture, lines, and verdicts", async () => {
-	const book: readonly PlatformJobLedger[] = [{
-		jobId: "job_held", title: "held job", tenant: null, client: "maya-client", status: "IN_PROGRESS", escrow: "HELD",
-		operator: { id: "devon-ops", handle: "devon-ops" }, lines: [{ kind: "HELD", cents: 37800, at: "2026-10-13T12:00:00Z" }],
-		paidCents: 37800, capture: { orderId: "ORDER1", captureId: "CAP1", payee: "sandbox-seller", gross: 37800 }, fee: null,
-		payout: null, receipt: null, attempts: [],
-	}];
+	const book = [heldBookRow()];
 	const executor = askToolExecutor({ platformView: async () => book, paypal: { getOrder: async () => ({}) } });
 	const job = await executor("get_job", { jobId: "job_held" }) as PlatformJobLedger;
 	assert.equal(job.jobId, "job_held");

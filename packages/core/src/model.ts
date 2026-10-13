@@ -97,6 +97,14 @@ function factoryCreditsOf(usage: unknown): number | null {
 	return typeof credits === "number" && Number.isFinite(credits) ? credits : null;
 }
 
+/** The answer text a finished run's result line carried, or null. A read-only ask turn's whole
+ * product is that text; a delivery's product is the commit it pushed, which is why this is its
+ * own read instead of a field on the classification. */
+export function droidResultText(output: string): string | null {
+	const result = parseDroidResult(output);
+	return result !== null && typeof result.result === "string" && result.result.trim() !== "" ? result.result : null;
+}
+
 /** The last `{"type":"result",...}` line the droid CLI prints, or null. */
 function parseDroidResult(output: string): DroidResultLine | null {
 	const lines = output.split("\n");

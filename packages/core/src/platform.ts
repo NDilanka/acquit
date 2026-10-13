@@ -86,3 +86,25 @@ export function platformJobLedger(row: JobRow): PlatformJobLedger {
 		receipt: state.status === "PAID" ? { id: state.receipt.id, paid: state.receipt.paid, releasedAt: state.receipt.releasedAt } : null,
 		attempts };
 }
+
+// ---- the book's totals -------------------------------------------------------------------------
+
+/** The book's totals, the ledger's own arithmetic so every reader sums it the same way: holds
+ * count on jobs still in escrow, and every release, refund, and fee the stored book carries. */
+export function platformEscrowTotals(jobs: readonly PlatformJobLedger[]): {
+	readonly held: number; readonly released: number; readonly refunded: number; readonly fees: number;
+} {
+	let held = 0;
+	let released = 0;
+	let refunded = 0;
+	let fees = 0;
+	for (const job of jobs) {
+		for (const line of job.lines) {
+			if (line.kind === "RELEASED") released += line.cents;
+			else if (line.kind === "REFUND") refunded += line.cents;
+			else if (line.kind === "FEE") fees += line.cents;
+			else if (line.kind === "HELD" && job.escrow === "HELD") held += line.cents;
+		}
+	}
+	return { held, released, refunded, fees };
+}
