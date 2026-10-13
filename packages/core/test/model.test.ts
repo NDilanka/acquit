@@ -113,6 +113,33 @@ test("the shared budget refuses the 20th call in a rolling minute and the 1000th
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("two concurrent reservations cannot both pass the cap", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-race-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const at = new Date().toISOString();
+		for (let index = 0; index < 18; index += 1) {
+			await log.append({ at, caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
+		}
+		const call = { at, caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		const results = await Promise.all([reserveModelCall(log, call), reserveModelCall(log, call)]);
+		assert.equal(results.filter(result => result.ok).length, 1, "exactly one of the two concurrent reservations is admitted");
+		const starts = (await log.records()).filter(record => record.phase === "START");
+		assert.equal(starts.length, 19, "the minute never holds the 20th start");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("thirty concurrent reservations admit exactly the minute's nineteen", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-race30-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		const results = await Promise.all(Array.from({ length: 30 }, () => reserveModelCall(log, call)));
+		assert.equal(results.filter(result => result.ok).length, 19, "the window admits its 19, nothing more");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "each admission wrote one START");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("an exit 0 with no result line defers to the commit step", () => {
 	assert.deepEqual(classifyDroidRun(0, "the agent printed nothing parseable\n"), { ok: true, sessionId: null, factoryCredits: null });
 });
