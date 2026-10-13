@@ -185,6 +185,24 @@ test("a spent shared budget refuses the turn before any model call", async () =>
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("the ask turn budgets on the wall clock, never a domain clock a caller hands it", async () => {
+	const calls: number[] = [];
+	const model = async () => { calls.push(1); return { ok: true as const, text: '{"message":"x","calls":[]}', sessionId: null, factoryCredits: 1 }; };
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-wallclock-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		await seedStarts(log, 19);
+		// Exactly what the server wiring used to pass: the dev offset clock, shifted eight days
+		// ahead of the wall clock the log's real starts live on. The cast survives the type
+		// system dropping the field; the budget must drop the field's clock with it.
+		const offsetDeps = { model, callLog: log,
+			now: () => new Date(Date.now() + 8 * 86_400_000).toISOString() } as unknown as Parameters<typeof askLedgerTurn>[0];
+		const outcome = await askLedgerTurn(offsetDeps, { messages: question, tools });
+		assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET", "the wall-clock minute is full; the offset clock cannot buy a call");
+		assert.deepEqual(calls, [], "no invocation ran");
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("the tool executor answers from the book and PayPal, and the set is closed and read-only", async () => {
 	const book = [heldBookRow()];
 	const readBook = async () => book;
