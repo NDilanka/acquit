@@ -41,7 +41,8 @@ export function conserves(jobs: readonly PlatformJobLedger[]) {
 }
 
 function jobReceipts(rows: readonly ReceiptRow[]): JobReceiptRow[] {
-  return rows.filter((r): r is JobReceiptRow => r.source === "JOB");
+  // A migrated receipt carries source SEED yet has a real job behind it, so provenance cannot tell a real receipt from a display seed.
+  return rows.filter((r): r is JobReceiptRow => r.jobId !== null);
 }
 
 export function earnings(rows: readonly ReceiptRow[]) {
