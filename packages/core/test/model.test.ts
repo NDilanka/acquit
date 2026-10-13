@@ -201,6 +201,29 @@ test("two waiters that both see a stale lock admit exactly one reservation", asy
 	}
 });
 
+test("a releaser never removes a lock a replacement owner took over", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-release-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const lockPath = `${log.path}.lock`;
+		const replacement = "6311.replacementowner";
+		const wrapped = {
+			...log,
+			append: async record => {
+				await log.append(record);
+				// a stale takeover replaces the lock file while this holder is still inside its section
+				rmSync(lockPath, { force: true });
+				writeFileSync(lockPath, replacement, { mode: 0o600 });
+			},
+		};
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		assert.deepEqual(await reserveModelCall(wrapped, call), { ok: true });
+		let afterRelease: string | null = null;
+		try { afterRelease = readFileSync(lockPath, "utf8"); } catch { afterRelease = null; }
+		assert.equal(afterRelease, replacement, "the replacement owner's lock survives the first holder's release");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("an exit 0 with no result line defers to the commit step", () => {
 	assert.deepEqual(classifyDroidRun(0, "the agent printed nothing parseable\n"), { ok: true, sessionId: null, factoryCredits: null });
 });
