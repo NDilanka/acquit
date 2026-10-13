@@ -3,6 +3,7 @@
 // facts the job view serves, with the one-tenant rule lifted for this one query and role.
 
 import type { ClientId, Instant, JobId, JobStatus, OperatorId, UsdCents, VisitorId } from "./acquit.ts";
+import type { CaptureId, MerchantId, OrderId } from "./ids.ts";
 import { attemptView, storedBook } from "./job.ts";
 import type { JobRow } from "./job.ts";
 import type { LedgerLine } from "./ledger.ts";
@@ -33,6 +34,11 @@ export type PlatformJobLedger = {
 	readonly lines: readonly LedgerLine[];
 	/** The gross the capture held: the HELD line's cents. Null before any capture. */
 	readonly paidCents: UsdCents | null;
+	/** The funding capture a held escrow was paid with, so a ledger agent can ask PayPal whether it
+	 * agrees. Null before any capture and on a settled job: a release names its payout, a refund its
+	 * refund, so the settled book keeps none of the held capture here. */
+	readonly capture: { readonly orderId: OrderId; readonly captureId: CaptureId; readonly payee: MerchantId;
+		readonly gross: UsdCents } | null;
 	readonly fee: PlatformFee | null;
 	/** The referenced payout that paid the operator, on a released job alone. */
 	readonly payout: { readonly paid: UsdCents; readonly payoutItemId: string; readonly captureId: string | null;
@@ -70,6 +76,10 @@ export function platformJobLedger(row: JobRow): PlatformJobLedger {
 			: state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? "HELD" : "NONE",
 		operator: payeeOperator === null ? null : { id: payeeOperator, handle: accepted?.handle ?? payeeOperator },
 		lines, paidCents: held?.cents ?? null,
+		capture: state.status === "IN_PROGRESS" || state.status === "VERIFIED"
+			? { orderId: state.escrow.capture.orderId, captureId: state.escrow.capture.captureId,
+				payee: state.escrow.capture.payee, gross: state.escrow.capture.gross }
+			: null,
 		fee: fee ? { cents: fee.cents, processor: fee.processor, acquit: fee.acquit } : null,
 		payout: state.status === "PAID" ? { paid: state.release.paid, payoutItemId: state.release.payoutItemId,
 			captureId: state.release.captureId, releasedAt: state.release.at, authority: state.releaseAuthority ?? null } : null,
