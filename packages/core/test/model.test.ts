@@ -143,64 +143,52 @@ test("thirty concurrent reservations admit exactly the minute's nineteen", async
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("two waiters that both see a stale lock admit exactly one reservation", async () => {
+test("two waiters queue on a live owner's lock, enter one at a time after its release, and the caps hold", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-queue-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		for (let index = 0; index < 18; index += 1) await log.append({ ...call, phase: "START" });
+		writeFileSync(`${log.path}.lock`, "4242.liveowner", { mode: 0o600 });
+		const minute = Promise.all([reserveModelCall(log, call), reserveModelCall(log, call)]);
+		// Both waiters are now cycling on the live owner's lock; then the owner releases it.
+		await new Promise(resolve => { setTimeout(resolve, 100); });
+		await fsPromises.unlink(`${log.path}.lock`);
+		const results = await minute;
+		assert.equal(results.filter(result => result.ok).length, 1, "the release admits the queued waiters strictly one at a time; the cap refuses the second");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "the minute never holds the twentieth start");
+
+		const day = modelCallLog(join(dir, "day.jsonl"));
+		// An hour ago: inside the day window, outside the minute one, so only the day cap decides.
+		const anHourAgo = new Date(Date.now() - 3_600_000).toISOString();
+		for (let index = 0; index < 998; index += 1) await day.append({ ...call, at: anHourAgo, phase: "START" });
+		writeFileSync(`${day.path}.lock`, "4242.liveowner", { mode: 0o600 });
+		const dayQueue = Promise.all([reserveModelCall(day, call), reserveModelCall(day, call)]);
+		await new Promise(resolve => { setTimeout(resolve, 100); });
+		await fsPromises.unlink(`${day.path}.lock`);
+		const dayResults = await dayQueue;
+		assert.equal(dayResults.filter(result => result.ok).length, 1, "the same queue against the day window");
+		assert.equal((await day.records()).filter(record => record.phase === "START").length, 999, "the day never holds its thousandth start");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a waiter never removes or takes over a stale lock, however old it looks", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-stale-"));
-	const originalStat = fsPromises.stat;
-	const originalRm = fsPromises.rm;
-	// The same injected schedule the scrutiny probe uses: both waiters' staleness checks are held
-	// until both have looked, and the second waiter's removal is held until the first holder's
-	// critical read, so the second removal lands on the first holder's fresh lock.
-	let releaseStats!: () => void;
-	const bothStats = new Promise<void>(resolve => { releaseStats = resolve; });
-	let releaseFirstRead!: () => void;
-	const firstRead = new Promise<void>(resolve => { releaseFirstRead = resolve; });
-	let releaseBothReads!: () => void;
-	const bothReads = new Promise<void>(resolve => { releaseBothReads = resolve; });
-	let statCount = 0;
-	let removals = 0;
-	let reads = 0;
 	try {
 		const log = modelCallLog(join(dir, "model-calls.jsonl"));
 		const lockPath = `${log.path}.lock`;
 		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
 		for (let index = 0; index < 18; index += 1) await log.append({ ...call, phase: "START" });
-		await fsPromises.writeFile(lockPath, "", { mode: 0o600 });
+		writeFileSync(lockPath, "4242.longgoneowner", { mode: 0o600 });
+		// An age no staleness threshold could call fresh: the lock's owner is long gone.
 		const stale = new Date(Date.now() - 20_000);
 		await fsPromises.utimes(lockPath, stale, stale);
-		fsPromises.stat = (async (...args: Parameters<typeof originalStat>) => {
-			const result = await originalStat(...args);
-			if (args[0] === lockPath && statCount < 2) {
-				statCount += 1;
-				if (statCount === 2) releaseStats();
-				await bothStats;
-			}
-			return result;
-		}) as unknown as typeof fsPromises.stat;
-		fsPromises.rm = (async (...args: Parameters<typeof originalRm>) => {
-			if (args[0] === lockPath && ++removals === 2) await firstRead;
-			return originalRm(...args);
-		}) as unknown as typeof fsPromises.rm;
-		syncBuiltinESMExports();
-		const wrapped = {
-			...log,
-			records: async () => {
-				const snapshot = await log.records();
-				reads += 1;
-				if (reads === 1) releaseFirstRead();
-				if (reads === 2) releaseBothReads();
-				await bothReads;
-				return snapshot;
-			},
-		};
-		const results = await Promise.all([reserveModelCall(wrapped, call), reserveModelCall(wrapped, call)]);
-		assert.equal(results.filter(result => result.ok).length, 1, "of two waiters that both saw the stale lock, exactly one is admitted");
-		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "the minute never holds the twentieth start");
-	} finally {
-		fsPromises.stat = originalStat;
-		fsPromises.rm = originalRm;
-		syncBuiltinESMExports();
-		rmSync(dir, { recursive: true, force: true });
-	}
+		const refusal = await reserveModelCall(log, call);
+		assert.ok(!refusal.ok && refusal.reason === "BUDGET", "the waiter waits out its bound and refuses; it never takes a lock over");
+		assert.equal(readFileSync(lockPath, "utf8"), "4242.longgoneowner", "the stale lock is left exactly as its owner wrote it");
+		assert.deepEqual((await fsPromises.readdir(dir)).filter(name => name.endsWith(".stale")), [], "no takeover tombstones were created beside the lock");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 18, "nothing was appended behind a lock the waiter does not own");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("a releaser never removes a lock a replacement owner took over", async () => {
@@ -213,7 +201,7 @@ test("a releaser never removes a lock a replacement owner took over", async () =
 			...log,
 			append: async record => {
 				await log.append(record);
-				// a stale takeover replaces the lock file while this holder is still inside its section
+				// the operator's clear plus a re-acquire replaced the lock while this holder is still inside its section
 				rmSync(lockPath, { force: true });
 				writeFileSync(lockPath, replacement, { mode: 0o600 });
 			},
@@ -233,7 +221,12 @@ test("a waiter facing a lock that never frees refuses with BUDGET and leaves the
 		const lockPath = `${log.path}.lock`;
 		writeFileSync(lockPath, "0.0.wedged", { mode: 0o600 });
 		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
-		assert.deepEqual(await reserveModelCall(log, call), { ok: false, reason: "BUDGET" }, "a lock that never frees is a budget refusal, never an error");
+		const refusal = await reserveModelCall(log, call);
+		assert.ok(!refusal.ok && refusal.reason === "BUDGET", "a lock that never frees is a budget refusal, never an error");
+		if (!refusal.ok) {
+			assert.ok(refusal.detail !== undefined && refusal.detail.includes(lockPath), "the refusal names the lock path");
+			assert.match(refusal.detail, /model-lock clear/, "and the operator's recovery command");
+		}
 		assert.equal(readFileSync(lockPath, "utf8"), "0.0.wedged", "the refusal leaves the wedged lock for its owner");
 		assert.equal((await log.records()).length, 0, "nothing was appended behind the wedged lock");
 	} finally { rmSync(dir, { recursive: true, force: true }); }

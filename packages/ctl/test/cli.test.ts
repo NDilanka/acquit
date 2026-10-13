@@ -63,13 +63,40 @@ test("top-level help lists every command, flags, envelope, and exits successfull
 	await fixture(async cli => {
 		const result = cli(["--help"]);
 		assert.equal(result.code, 0);
-		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|ledger|jobs|login|screenshot|webhook)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "ledger", "jobs", "login", "screenshot", "webhook"]);
+		assert.deepEqual(result.stdout.match(/^(clock|fund-mode|start|stop|status|seed-db|ledger|jobs|login|screenshot|webhook|model-lock)(?= |\n)/gm), ["clock", "fund-mode", "start", "stop", "status", "seed-db", "ledger", "jobs", "login", "screenshot", "webhook", "model-lock"]);
 		assert.equal(result.stdout.includes("stop [destructive]"), true);
 		assert.equal(result.stdout.includes("Exit codes: 0 success, 1 runtime failure, 2 usage error."), true);
 		assert.equal(result.stdout.includes('Failure: {"ok":false'), true);
 		const command = cli(["screenshot", "--help"]);
 		assert.equal(command.code, 0);
 		assert.equal(command.stdout.includes("--path <value>  Same-origin route to capture. Default: /."), true);
+	});
+});
+test("model-lock clear refuses a live owner, clears a dead one, and prints only the path and outcome", async () => {
+	await fixture(async (cli, root) => {
+		const lockPath = resolve(root, "model-calls.jsonl.lock");
+		// A live owner: this test process's own pid, recorded the way the allocator writes it.
+		await writeFile(lockPath, `${process.pid}.abc123`, { mode: 0o600 });
+		const live = cli(["model-lock", "clear"]);
+		assert.equal(live.code, 1);
+		const refusal = JSON.parse(live.stdout);
+		assert.equal(refusal.ok, false);
+		assert.equal(refusal.error.code, "LOCK_LIVE");
+		assert.ok(refusal.error.message.includes(lockPath), "the refusal names the lock path");
+		assert.equal(readFileSync(lockPath, "utf8"), `${process.pid}.abc123`, "a live owner's lock survives the refusal");
+		const forced = JSON.parse(cli(["model-lock", "clear", "--force"]).stdout);
+		assert.equal(forced.ok, true);
+		assert.equal(forced.data.outcome, "cleared", "--force is the operator's explicit override");
+		assert.equal(existsSync(lockPath), false);
+		// A dead owner: an exited child's pid, provably gone from this host.
+		const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+		await writeFile(lockPath, `${dead}.abc123`, { mode: 0o600 });
+		const gone = cli(["model-lock", "clear"]);
+		assert.equal(gone.code, 0);
+		assert.equal(gone.stdout, `${lockPath} cleared\n`, "the path and the outcome, nothing else");
+		const absent = cli(["model-lock", "clear"]);
+		assert.equal(absent.code, 0);
+		assert.equal(absent.stdout, `${lockPath} absent, nothing to clear\n`);
 	});
 });
 test("CLI startup does not eagerly load F1's ledger or job modules", () => {
