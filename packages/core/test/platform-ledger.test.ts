@@ -11,8 +11,9 @@ import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId
 import { commercialSplit, reduceLedger } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { quote } from "../src/paypal.ts";
-import { TERMS } from "../src/job.ts";
-import type { JobRow, Receipt } from "../src/job.ts";
+import { TERMS, applyJobCommand } from "../src/job.ts";
+import type { JobRow, PassedAttempt, Receipt, RejectedAttempt } from "../src/job.ts";
+import { platformJobLedger } from "../src/platform.ts";
 import { isTestTamper } from "../src/verifier.ts";
 import type { VerifierRunId } from "../src/verifier.ts";
 import { SqliteStore } from "../src/store.ts";
@@ -150,4 +151,45 @@ test("the platform ledger conserves: payout plus fee equals paid over the releas
 			assert.equal(job.payout.paid + job.fee.cents, job.paidCents);
 		}
 	} finally { built.close(); }
+});
+
+/** A verified job that got there on its second attempt: the first touched the frozen tests. */
+function verifiedRetryRow(): JobRow {
+	const capture = { orderId: "TESTORDER" as OrderId, captureId: "TESTCAPTURE" as CaptureId, payee: merchant,
+		disbursement: "DELAYED" as const, gross: usd("420.00"), processorFee: usd("15.15"), platformFee: usd("44.85"),
+		sellerNet: usd("360.00"), capturedAt: now };
+	const book = reduceLedger([], { kind: "Hold", gross: usd("420.00"), at: now });
+	if ("kind" in book) throw new Error("law break");
+	const rejected: RejectedAttempt = { ordinal: 1, verdict: { result: "REJECTED", runId: "run_retry_1" as VerifierRunId,
+		sourceCommit: "0042bbeb5d1e" as CommitSha, reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }],
+		reasonsTruncated: 0, at: now } };
+	const passed: PassedAttempt = { ordinal: 2, verdict: { result: "VERIFIED", runId: "run_retry_2" as VerifierRunId,
+		sourceCommit: "8f3a302b4d6e" as CommitSha, mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha,
+		pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
+		reportDigest: "d0".repeat(32) as Digest, at: now } };
+	return { id: parseJobId("job_ledger_retry"), version: 3 as Version, client: "maya-client" as ClientId, tenant: null,
+		title: "retry job", contract: contract(), openedAt: now, bids: [acceptedBid()],
+		state: { status: "VERIFIED",
+			escrow: { payee: { bidId: "bid_test-1" as BidId, operator: "devon-ops" as OperatorId, payee: merchant,
+					agent: "ts-bugfixer" as AgentId, price: usd("360.00"), eta: hours(48) },
+				quote: quote(commercialSplit(usd("420.00")), model), capture, book, cutoffAt: instant("2026-11-03T12:00:00Z") },
+			history: [rejected, passed], passed,
+			review: { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: now } }, runsStarted: 2 } };
+}
+
+test("a paid job keeps the attempts it settled with: an honest retry's tamper stays on the ledger", () => {
+	const row = verifiedRetryRow();
+	const before = platformJobLedger(row).attempts;
+	assert.deepEqual(before, [
+		{ ordinal: 1, result: "REJECTED", at: now, tamper: true, reasons: ["PR modifies frozen test file tests/totals.test.ts"] },
+		{ ordinal: 2, result: "VERIFIED", at: now, tamper: false, reasons: [] },
+	]);
+	const settled = applyJobCommand(row, { type: "ReleaseSettled", jobId: row.id,
+		release: { captureId: "TESTCAPTURE" as CaptureId, payoutItemId: "payout-item-1" as PayoutItemId, paid: usd("360.00"), at: later } },
+		{ actor: { role: "SYSTEM" }, now: later });
+	if (typeof settled === "string") throw new Error(`release refused: ${settled}`);
+	assert.equal(settled.next.state.status, "PAID");
+	assert.ok("history" in settled.next.state, "the paid row keeps its verdict history");
+	assert.equal(settled.next.state.history.length, 2);
+	assert.deepEqual(platformJobLedger(settled.next).attempts, before);
 });
