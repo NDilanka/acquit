@@ -273,9 +273,9 @@ export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): A
 		await writeFile(file, prompt, { mode: 0o600 });
 		// Read-only argv, the ruling pinned: the model, json output, the prompt by file. No --auto,
 		// and the working directory is the turn's own temp dir, never a job repo. The child runs
-		// under `timeout` too, so one whose parent dies mid-turn still ends itself instead of
+		// under `timeout 290` too, so one whose parent dies mid-turn still ends itself instead of
 		// holding its connections forever.
-		const argv = ["timeout", "290", "droid", "exec", "-m", DROID_MODEL, "-o", "json", "-f", file];
+		const argv = ["290", "droid", "exec", "-m", DROID_MODEL, "-o", "json", "-f", file];
 		try {
 			const run = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
 				// stderr is ignored, not piped: nothing here reads it, and a chatty child would fill the
