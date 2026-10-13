@@ -1,4 +1,5 @@
 import type { JobReceiptRow, LedgerLine, PlatformJobLedger, ReceiptRow } from "./api-types";
+import { COLUMNS, type DashboardState } from "./dashboard-widgets.ts";
 
 function linesCents(jobs: readonly PlatformJobLedger[], kind: LedgerLine["kind"]): number {
   let total = 0;
@@ -88,4 +89,11 @@ export function stackLayout(layout: Partial<Record<string, Track>>, columns: num
     yTrack += ySpan;
   }
   return stacked;
+}
+
+export function stacked(state: DashboardState): DashboardState {
+  return {
+    ...state,
+    pages: state.pages.map((page) => ({ ...page, widgetLayout: stackLayout(page.widgetLayout ?? {}, page.layout?.columns ?? COLUMNS) })),
+  };
 }

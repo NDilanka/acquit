@@ -14,6 +14,7 @@ import type {
   AgLlmResponse,
   AgStudioApi,
 } from "ag-studio";
+import type { AgAiToolDisplay } from "ag-studio-react";
 import type { AskMessage, AskToolSchema, AskTurnRequest, AskTurnResponse } from "./api-types";
 import { api, ApiError } from "./api.ts";
 
@@ -351,6 +352,11 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
 }
 
 export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order"] as const;
+
+/** How the Studio chat panel words the ledger tools' rows; Studio's own tools keep theirs. */
+export const ASK_TOOL_DISPLAY: Record<string, AgAiToolDisplay> = Object.fromEntries(
+  ASK_TOOL_NAMES.map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), hidden: false } satisfies AgAiToolDisplay]),
+);
 
 export function askStatusText(status: AgAiRunStatus): string {
   switch (status) {
