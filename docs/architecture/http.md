@@ -66,6 +66,12 @@ Advancing one job's clock moves that job's stored instants, its wake time, and i
 
 `POST /api/demo` answers `429 { error }` with the code, and it checks the caps before it forks, so a refused visitor leaves no repository behind. A capped command is a `409` with the same `{ outcome: { kind: "DENIED", reason } }` shape every refusal has. The visitor caps bind a visitor's own client only: dev mode's seeded client is the operator's own, and the day-wide run cap binds the whole deployment because the free tier belongs to the key. Attempts per job stay `TERMS.maxAttempts`, which the table already enforced.
 
+### The shared model budget
+
+App model calls (the House runner's deliveries, Ask the ledger's turns) reserve from one deployment-wide budget before anything runs: `model-calls.jsonl` beside the database. The rolling windows admit 19 calls a minute and 999 a day, one short of the provider's own 20/min and 1000/day. A reservation is guarded by a lock file, `model-calls.jsonl.lock`, taken with an exclusive create; the holder writes its owner token into the file, and only that owner's release removes it. There is no stale takeover: a caller that cannot take the lock within its short bounded wait fails closed with `MODEL_BUDGET` (a 429 to API callers, naming the lock path and the recovery command in the detail), never calls uncounted, and never removes a lock it does not own.
+
+Recovery is the operator's: `npm run -s ctl -- model-lock clear` removes a wedged lock once the process recorded in it is no longer alive on this host, refuses a live owner unless `--force` is passed, and prints the path and the outcome.
+
 ## Commands
 
 One route carries every user command, matching `Acquit.execute`.

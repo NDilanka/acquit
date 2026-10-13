@@ -140,12 +140,12 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 			sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
 	};
 	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
-	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the deployment's shared model budget is spent for now" };
+	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
 	let result = await deps.model(prompt);
 	await recordEnd(result);
 	if (!result.ok && result.reason === "PROVIDER_ERROR") {
 		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
-		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the shared model budget refused the one retry" };
+		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: retried.detail ?? "the shared model budget refused the one retry" };
 		result = await deps.model(prompt);
 		await recordEnd(result);
 	}

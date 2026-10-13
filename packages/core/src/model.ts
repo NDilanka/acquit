@@ -6,7 +6,7 @@
 // the way the provider key always has.
 
 import { randomBytes } from "node:crypto";
-import { appendFile, link, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -178,49 +178,25 @@ export function modelCallLog(path: string): ModelCallLog {
  * today, in this process or in separate ones. The lock is a lock file taken with O_EXCL
  * (`open(.., "wx")`), which the kernel serializes across processes and threads alike; a plain
  * in-process mutex would leave two processes both reading the same count. The holder writes a
- * unique owner token (pid + random) into the file it created, and its release removes the path
- * only while the file still holds that token, so one holder's cleanup can never delete a
- * replacement owner's lock. A holder that died wedges waiters only until the file's age passes
- * BUDGET_LOCK_STALE_MS; the takeover renames the dead file to a unique tombstone -- an atomic
- * step, so of every waiter that saw the same stale lock exactly one rename succeeds and only
- * the winner retries the exclusive create -- and the winner re-reads the tombstone's age first,
- * handing a file that had gone fresh again back to its owner. A waiter that cannot get the lock
- * by its deadline refuses with BUDGET: waiting and failing closed, never proceeding uncounted. */
+ * unique owner token (pid + random) into the file it creates, and its release removes the path
+ * only while the file still holds that token, so nobody but the lock's own owner ever removes a
+ * live lock. There is no stale takeover: an age can never tell a dead holder from a live one
+ * that merely stalled, and every takeover step opens a schedule where two callers end up
+ * counting the same window. A holder that died wedges the waiters instead -- each waits a
+ * bounded time, then refuses with BUDGET and never proceeds uncounted -- and recovery is the
+ * operator's: `node packages/ctl/src/main.ts model-lock clear` removes the lock once the pid it
+ * records is gone from this host. */
 const BUDGET_LOCK_TIMEOUT_MS = 5_000;
-const BUDGET_LOCK_STALE_MS = 10_000;
+
+/** The budget's lock file: the call log's own path plus `.lock`, so every reader of the log waits
+ * on exactly the lock its writers hold. */
+export function modelCallLockPath(logPath: string): string {
+	return `${logPath}.lock`;
+}
 
 const budgetLockWait = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
 
 const budgetLockToken = (): string => `${process.pid}.${randomBytes(8).toString("hex")}`;
-
-async function budgetLockStale(lockPath: string): Promise<boolean> {
-	try {
-		return Date.now() - (await stat(lockPath)).mtimeMs > BUDGET_LOCK_STALE_MS;
-	} catch {
-		return false; // gone already; the next exclusive open decides
-	}
-}
-
-/** The single-winner stale takeover: rename the dead lock to a unique tombstone, discard it, and
- * tell the caller to retry the create. A rename that loses (another waiter took the lock first,
- * or the file vanished) returns false and the caller simply keeps waiting. The renamed file is
- * re-read before it is believed dead: if the age no longer says stale, the file belonged to a
- * live owner whose lock was briefly taken, and `link` puts it back. */
-async function breakStaleLock(lockPath: string): Promise<boolean> {
-	const tombstone = `${lockPath}.${budgetLockToken()}.stale`;
-	try {
-		await rename(lockPath, tombstone);
-	} catch {
-		return false;
-	}
-	try {
-		if (Date.now() - (await stat(tombstone)).mtimeMs > BUDGET_LOCK_STALE_MS) return true;
-		await link(tombstone, lockPath).catch(() => {});
-		return false;
-	} finally {
-		await rm(tombstone, { force: true });
-	}
-}
 
 /** The lock-wait deadline's own outcome: the caller refuses the reservation, it does not error. */
 class BudgetLockTimeout extends Error {}
@@ -233,8 +209,10 @@ async function withBudgetLock<T>(lockPath: string, critical: () => Promise<T>): 
 			handle = await open(lockPath, "wx", 0o600);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			if (await budgetLockStale(lockPath) && await breakStaleLock(lockPath)) continue;
-			if (Date.now() >= deadline) throw new BudgetLockTimeout(`the model-call budget lock never freed: ${lockPath}`);
+			if (Date.now() >= deadline) {
+				throw new BudgetLockTimeout(`the model-call budget lock never freed: ${lockPath};`
+					+ ` recover with: node packages/ctl/src/main.ts model-lock clear`);
+			}
 			await budgetLockWait(2 + Math.floor(Math.random() * 6));
 			continue;
 		}
@@ -249,8 +227,8 @@ async function withBudgetLock<T>(lockPath: string, critical: () => Promise<T>): 
 	}
 }
 
-/** Release removes the lock only while the path still holds this holder's token: a stale takeover
- * can have replaced the file, and the replacement owner's lock must survive. */
+/** Release removes the lock only while the path still holds this holder's token: an operator's
+ * clear plus a re-acquire can have replaced the file, and the new owner's lock must survive. */
 async function releaseBudgetLock(lockPath: string, token: string): Promise<void> {
 	try {
 		if (await readFile(lockPath, "utf8") !== token) return;
@@ -266,8 +244,10 @@ async function releaseBudgetLock(lockPath: string, token: string): Promise<void>
  * clock -- the dev offset clock used for domain deadlines never reaches the budget. The windows
  * are always re-read inside the lock, and that re-read decides; the unlocked read first only
  * spares the lock when the answer is already no. A waiter that never gets the lock refuses with
- * BUDGET too. */
-export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> {
+ * BUDGET too, and that refusal carries the message naming the lock path and the operator's
+ * recovery command. */
+export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">):
+Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> {
 	const at = Date.parse(call.at);
 	const overBudget = async (): Promise<boolean> => {
 		const starts = (await log.records()).filter(record => record.phase === "START").map(record => Date.parse(record.at));
@@ -276,13 +256,13 @@ export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRe
 	};
 	if (await overBudget()) return { ok: false, reason: "BUDGET" };
 	try {
-		return await withBudgetLock(`${log.path}.lock`, async (): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> => {
+		return await withBudgetLock(modelCallLockPath(log.path), async (): Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> => {
 			if (await overBudget()) return { ok: false, reason: "BUDGET" };
 			await log.append({ ...call, phase: "START" });
 			return { ok: true };
 		});
 	} catch (error) {
-		if (error instanceof BudgetLockTimeout) return { ok: false, reason: "BUDGET" };
+		if (error instanceof BudgetLockTimeout) return { ok: false, reason: "BUDGET", detail: error.message };
 		throw error;
 	}
 }

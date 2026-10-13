@@ -1,4 +1,4 @@
-import { clockAdvance, fundMode, jobList, ledger, login, migrate, screenshot, seedDb, start, status, stop, sweep, webhookReplay } from "./commands.ts";
+import { clockAdvance, fundMode, jobList, ledger, login, migrate, modelLockClear, screenshot, seedDb, start, status, stop, sweep, webhookReplay } from "./commands.ts";
 import type { Context } from "./state.ts";
 
 export interface FlagSpec {
@@ -67,6 +67,10 @@ export const registry: Command[] = [
 			{ name: "json", type: "boolean", summary: "Print the JSON envelope instead of the outcome line.", default: false }],
 		examples: ["webhook replay --capture 5O190127TN364715T", "webhook replay --event WH-CAPTURE-2AB12345"],
 		destructive: false, run: webhookReplay },
+	{ name: "model-lock", summary: "Clear the shared model-budget lock once the owner recorded in it is gone from this host.", usage: "model-lock clear [--force] [--json]",
+		flags: [{ name: "force", type: "boolean", summary: "Clear even when the recorded owner is still alive.", default: false },
+			{ name: "json", type: "boolean", summary: "Print the JSON envelope instead of the outcome line.", default: false }],
+		examples: ["model-lock clear", "model-lock clear --force"], destructive: false, run: modelLockClear },
 ];
 export function flags(command: Command): FlagSpec[] {
 	return [...command.flags, ...(command.destructive ? [{ name: "dry-run", type: "boolean" as const, summary: "Report proposed changes without making them.", default: false }] : []),

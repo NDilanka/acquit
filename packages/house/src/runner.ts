@@ -196,7 +196,7 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		// The shared budget is the deployment's, not the job's: a reservation is refused before the
 		// job's own call count moves, and the START record precedes the run, so crashes, failures,
 		// and retries all count. The command runner makes no model call, so it reserves none.
-		const reserve = (): Promise<{ ok: true } | { ok: false; reason: "BUDGET" }> => deps.mode.runner !== "model" ? Promise.resolve({ ok: true })
+		const reserve = (): Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> => deps.mode.runner !== "model" ? Promise.resolve({ ok: true })
 			: reserveModelCall(deps.callLog, { at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model: deps.mode.model });
 		// Every invocation is recorded once it returns, before any retry decision: the END record
 		// and one operator-readable line carrying the call's own session, credits, and outcome.
@@ -216,8 +216,9 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		};
 
 		let calls = state.calls;
-		if (!(await reserve()).ok) {
-			deps.log(`house: ${job.id} call budget spent; the next tick retries`);
+		const reserved = await reserve();
+		if (!reserved.ok) {
+			deps.log(`house: ${job.id} call budget spent; the next tick retries${reserved.detail === undefined ? "" : ` (${reserved.detail})`}`);
 			return "BUDGET";
 		}
 		calls += 1;
@@ -228,8 +229,9 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		// free tier is the same single retry, never a loop. A rate or usage limit is the exception
 		// the operator ruled: its own terminal class, no retry at all, and the scan stops.
 		if (outcome.ok === false && outcome.reason === "PROVIDER_ERROR" && calls < MAX_CALLS) {
-			if (!(await reserve()).ok) {
-				deps.log(`house: ${job.id} run stopped: BUDGET on the retry; the job keeps its first call`);
+			const retried = await reserve();
+			if (!retried.ok) {
+				deps.log(`house: ${job.id} run stopped: BUDGET on the retry; the job keeps its first call${retried.detail === undefined ? "" : ` (${retried.detail})`}`);
 				return "FAILED";
 			}
 			calls += 1;

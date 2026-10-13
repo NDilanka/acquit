@@ -84,7 +84,7 @@ test("model-lock clear refuses a live owner, clears a dead one, and prints only 
 		assert.equal(refusal.error.code, "LOCK_LIVE");
 		assert.ok(refusal.error.message.includes(lockPath), "the refusal names the lock path");
 		assert.equal(readFileSync(lockPath, "utf8"), `${process.pid}.abc123`, "a live owner's lock survives the refusal");
-		const forced = JSON.parse(cli(["model-lock", "clear", "--force"]).stdout);
+		const forced = JSON.parse(cli(["model-lock", "clear", "--force", "--json"]).stdout);
 		assert.equal(forced.ok, true);
 		assert.equal(forced.data.outcome, "cleared", "--force is the operator's explicit override");
 		assert.equal(existsSync(lockPath), false);
