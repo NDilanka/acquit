@@ -38,6 +38,15 @@ function logFile(root: string): { path: string; close: () => Promise<void> } {
 	return { path: join(root, "model-calls.jsonl"), close: () => rm(root, { recursive: true, force: true }) };
 }
 
+/** Seeds the call log with recent wall-clock START records: a minute window that is already
+ * nearly spent, exactly the shape the shared budget reads. */
+async function seedStarts(log: ReturnType<typeof modelCallLog>, count: number): Promise<void> {
+	const at = new Date(Date.now() - 5_000).toISOString();
+	for (let index = 0; index < count; index += 1) {
+		await log.append({ at, caller: "other", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
+	}
+}
+
 test("the ask prompt carries the response contract, the tool schemas, and the conversation", () => {
 	const prompt = buildAskPrompt({ messages: question, tools, instructions: "You are Ask the ledger." });
 	assert.match(prompt, /Ask the ledger/);
@@ -116,6 +125,48 @@ test("a provider error retries once and then fails; a rate limit never retries",
 	assert.ok(!limited.ok && limited.reason === "MODEL_RATE_LIMITED", "a rate limit is its own terminal class");
 	assert.equal(calls.length, 1, "a rate limit is never retried in a loop");
 	try { await rm(root, { recursive: true, force: true }); } catch { /* the log file is disposable */ }
+});
+
+test("the retry is its own budget attempt: reserved, started, and ended like the first", async () => {
+	const calls: number[] = [];
+	const model = async () => {
+		calls.push(1);
+		return calls.length === 1
+			? { ok: false as const, reason: "PROVIDER_ERROR" as const, detail: "the droid result line reported an error" }
+			: { ok: true as const, text: '{"message":"done","calls":[]}', sessionId: "sess-2", factoryCredits: 2 };
+	};
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-retry-slot-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		await seedStarts(log, 17);
+		const outcome = await askLedgerTurn({ model, callLog: log, now: () => new Date().toISOString() }, { messages: question, tools });
+		assert.ok(outcome.ok, "17 spent slots leave the turn and its retry inside the budget");
+		assert.equal(calls.length, 2, "the turn retried exactly once");
+		const records = await modelCallLog(log.path).records();
+		assert.equal(records.filter(record => record.phase === "START").length, 19, "the retry wrote its own START before it ran");
+		assert.deepEqual(records.filter(record => record.phase === "END").map(record => record.outcome),
+			["PROVIDER_ERROR", "answered"], "every attempt records its own END");
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a retry the shared budget cannot admit is refused, never an unreserved 20th call", async () => {
+	const calls: number[] = [];
+	const model = async () => {
+		calls.push(1);
+		return calls.length === 1
+			? { ok: false as const, reason: "PROVIDER_ERROR" as const, detail: "the droid result line reported an error" }
+			: { ok: true as const, text: '{"message":"done","calls":[]}', sessionId: null, factoryCredits: 1 };
+	};
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-retry-refused-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		await seedStarts(log, 18);
+		const outcome = await askLedgerTurn({ model, callLog: log, now: () => new Date().toISOString() }, { messages: question, tools });
+		assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET", "the retry is refused when the minute is spent");
+		assert.equal(calls.length, 1, "the refused retry never ran");
+		const records = await modelCallLog(log.path).records();
+		assert.equal(records.filter(record => record.phase === "START").length, 19, "the minute never holds a 20th start");
+	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("a spent shared budget refuses the turn before any model call", async () => {
