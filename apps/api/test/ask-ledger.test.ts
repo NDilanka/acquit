@@ -277,3 +277,23 @@ test("a chatty droid on stderr cannot wedge the turn: the port never waits on a 
 		assert.ok(settled.ok && /"message":"hi"/.test(settled.text), "the answer text rides back");
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a failed droid run keeps the session id and credits it reported in the turn's log", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-failure-usage-"));
+	try {
+		const bin = join(dir, "bin");
+		await mkdir(bin);
+		// A failed run that still reports what it spent: the result shape classifyDroidRun reads.
+		const failed = JSON.stringify({ type: "result", subtype: "failure", is_error: true, result: "injected provider failure", session_id: "synthetic-session", usage: { factory_credits: 7 } });
+		await writeFile(join(bin, "droid"), `#!/bin/sh\nprintf '%s\\n' '${failed}'\nexit 1\n`, { mode: 0o700 });
+		const port = droidAskPort({ env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, FACTORY_API_KEY: "test-key-in-process" } });
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const outcome = await askLedgerTurn({ model: port, callLog: log }, { messages: question, tools });
+		assert.ok(!outcome.ok && outcome.reason === "MODEL_PROVIDER_ERROR", "the failed run is the provider-error class");
+		const ends = (await log.records()).filter(record => record.phase === "END");
+		for (const end of ends) {
+			assert.equal(end.sessionId, "synthetic-session", "the failed run's session survives into the log");
+			assert.equal(end.factoryCredits, 7, "the failed run's credits survive into the log");
+		}
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
