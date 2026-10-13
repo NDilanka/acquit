@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgStudioApi } from "ag-studio";
 import { ASK_AGENT_ID, ASK_AGENT_NAME, type AskAdapterDeps } from "./ask-ledger.ts";
 import { createAskLedgerHarness, NEW_WIDGET_WORKFLOW, openAskThread } from "./ask-harness.ts";
+import * as dashboardWidgets from "./dashboard-widgets.ts";
 import { WIDGET_ROWS, type DashboardState } from "./dashboard-widgets.ts";
 import { stacked } from "./studio-data.ts";
 
@@ -282,6 +283,43 @@ test("the add_widget workflow survives the turn route's instruction clip", async
   const instructions = childBodies[0]?.instructions ?? "";
   assert.equal(instructions.length, 4000, "Studio's built-in widget template alone fills the turn route's instruction cap");
   assert.ok(instructions.includes(NEW_WIDGET_WORKFLOW), "the add_widget workflow is inside the clipped instructions the model receives");
+});
+
+test("each dashboard's widget ids stay on their own dashboard", () => {
+  // A namespace read, because a named import of an export the module lacks fails the whole file at link time.
+  const { WIDGET_IDS } = dashboardWidgets as { WIDGET_IDS?: Record<"escrow" | "earnings", readonly string[]> };
+  assert.ok(
+    WIDGET_IDS,
+    "each dashboard has its own widget-id list (WIDGET_IDS in dashboard-widgets.ts); today dashboards.tsx builds one registry from both dashboards' widgets",
+  );
+  const escrowIds = new Set<string>(WIDGET_ROWS.escrow.flat().map((spec) => spec.id));
+  const earningsIds = new Set<string>(WIDGET_ROWS.earnings.flat().map((spec) => spec.id));
+  const escrow = new Set(WIDGET_IDS.escrow);
+  const earnings = new Set(WIDGET_IDS.earnings);
+  assert.deepEqual(escrow, escrowIds, "the escrow dashboard lists exactly its own widgets");
+  assert.deepEqual(earnings, earningsIds, "the earnings dashboard lists exactly its own widgets");
+  for (const id of earningsIds) assert.ok(!escrow.has(id), `the escrow dashboard does not list ${id}`);
+  for (const id of escrowIds) assert.ok(!earnings.has(id), `the earnings dashboard does not list ${id}`);
+  assert.deepEqual([...escrow].filter((id) => earnings.has(id)), [], "no widget id is on both dashboards");
+});
+
+test("a delegated add_widget of another dashboard's widget type is refused", async () => {
+  const { api, state } = mockStudioApi([
+    ...HELD_CATALOGUE,
+    { type: "acquit-paid-out", name: "acquit-paid-out", description: "Total paid out.", usage: "...", configuration: "..." },
+  ]);
+  const { fetch, childBodies } = scriptedFetch([delegate("acquit-paid-out", "earnings-1"), text("Added the paid-out widget.")], [
+    call("child-1", "add_widget", { widgetId: "earnings-1", type: "acquit-paid-out", xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 }),
+    call("child-2", "complete_task", { summary: "I could not add the widget: that type is not on this dashboard.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch, dashboard: "escrow" });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add a widget showing my total paid out.");
+  await settle(session);
+  assert.ok(childBodies.length >= 2, "the delegated widget agent reached its add_widget call");
+  assert.equal(state.pages[0].widgets["earnings-1"], undefined, "the earnings widget was never added to the escrow dashboard");
+  const foreign = Object.keys(state.pages[0].widgets).filter((id) => state.pages[0].widgets[id]?.type === "acquit-paid-out");
+  assert.deepEqual(foreign, [], "no acquit-paid-out widget is on the escrow dashboard");
 });
 
 test("the stacked narrow layout leaves room for the receipt card's caption", () => {
