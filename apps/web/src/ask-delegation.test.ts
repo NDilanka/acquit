@@ -72,6 +72,15 @@ function mockStudioApi(catalogue: MockCatalogueEntry[]): { api: AgStudioApi; sta
           state.pages[0].widgets[args.widgetId] = { type: args.type, dataMapping: {} };
           return ok(`Added widget ${args.widgetId}`);
         }),
+      removeWidget: () =>
+        tool("remove_widget", "remove a widget", async (call) => {
+          const args = call.args as { widgetId?: string };
+          if (args.widgetId == null || state.pages[0].widgets[args.widgetId] == null) {
+            return { success: false as const, issues: [{ message: `removeWidget: widget ${args.widgetId} is not on page main` }] };
+          }
+          delete state.pages[0].widgets[args.widgetId];
+          return ok(`Removed widget ${args.widgetId}`);
+        }),
       configureWidget: ({ widgetType, widgetId }: { widgetType: string; widgetId: string }) => {
         if (!catalogue.some((entry) => entry.type === widgetType)) {
           throw new Error(`DiscriminatedUnionLens.case: no variant with type === ${widgetType} in [${catalogue.map((e) => e.type).join(", ")}]`);
@@ -102,13 +111,16 @@ type Answer = { message: string | null; calls: { id: string; name: string; argum
 const answer = (a: Answer) => new Response(JSON.stringify({ ...a, ok: true, model: "m", sessionId: null, factoryCredits: null }), { status: 200, headers: { "content-type": "application/json" } });
 const text = (message: string): Answer => ({ message, calls: [] });
 const call = (id: string, name: string, args: Record<string, unknown>): Answer => ({ message: null, calls: [{ id, name, arguments: args }] });
+/** A turn the provider fails: the route's 500 with no `outcome`, which ends the SDK run as an error. */
+const providerFailure = () =>
+  new Response(JSON.stringify({ error: "MODEL_PROVIDER_ERROR", detail: "the provider failed mid-run" }), { status: 500, headers: { "content-type": "application/json" } });
 
 const isParentTurn = (body: { tools?: { name: string }[] }) => body.tools?.some((t) => t.name === "delegate_to") === true;
 
 /** A chat fetch stub that answers parent turns (it sees the delegate_to schema) and child turns separately. */
 function scriptedFetch(
   parent: Answer[],
-  child: Answer[],
+  child: (Answer | Response)[],
 ): { fetch: typeof fetch; parentBodies: { instructions?: string }[]; childBodies: { instructions?: string }[] } {
   const parentBodies: { instructions?: string }[] = [];
   const childBodies: { instructions?: string }[] = [];
@@ -119,7 +131,8 @@ function scriptedFetch(
       return answer(parent.shift() ?? text("parent ran dry"));
     }
     childBodies.push(body);
-    return answer(child.shift() ?? text("child ran dry"));
+    const next = child.shift() ?? text("child ran dry");
+    return next instanceof Response ? next : answer(next);
   }) as typeof fetch;
   return { fetch: stub, parentBodies, childBodies };
 }
@@ -314,6 +327,27 @@ test("a delegated add_widget of another dashboard's widget type is refused", asy
   assert.equal(state.pages[0].widgets["earnings-1"], undefined, "the earnings widget was never added to the escrow dashboard");
   const foreign = Object.keys(state.pages[0].widgets).filter((id) => state.pages[0].widgets[id]?.type === "acquit-paid-out");
   assert.deepEqual(foreign, [], "no acquit-paid-out widget is on the escrow dashboard");
+});
+
+test("a child that adds a widget and then fails leaves no widget behind, and the ledger agent's reply says failure", async () => {
+  const REPLY = "The widget was not made: the delegate failed, and the partially added widget was removed.";
+  const { api, state } = mockStudioApi(HELD_CATALOGUE);
+  const { fetch, childBodies, parentBodies } = scriptedFetch([delegate("acquit-held", "held-new-1"), text(REPLY)], [
+    call("child-1", "add_widget", { widgetId: "held-new-1", type: "acquit-held", xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 }),
+    providerFailure(),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add a widget showing held escrow.");
+  await settle(session);
+  assert.ok(childBodies.length >= 2, "the delegated widget agent reached add_widget and continued past it");
+  const result = delegateResult(session);
+  assert.equal(result?.success, false, "a child that died mid-run is not a success");
+  assert.match(result?.issues?.[0]?.message ?? "", /removed/i, "the failure says the partially added widget was removed");
+  assert.equal(state.pages[0].widgets["held-new-1"], undefined, "the widget the failed child added is gone from the grid");
+  assert.match(JSON.stringify(parentBodies[1]), /removed/i, "the ledger agent's next turn carried the rollback");
+  const last = session.messages.filter((m) => m.role === "assistant").at(-1);
+  assert.ok(last?.parts.some((p) => p.type === "text" && p.text === REPLY), "the reader's final word is the failure reply");
 });
 
 test("the stacked narrow layout leaves room for the receipt card's caption", () => {
