@@ -22,6 +22,7 @@ import {
   buildAskTools,
   type AskAdapterDeps,
 } from "./ask-ledger.ts";
+import { WIDGET_IDS, type DashboardId } from "./dashboard-widgets.ts";
 
 const widgetCatalogue = (api: AgStudioApi) =>
   api.getAiContext().catalogue().map((entry) => ({ type: entry.type, description: entry.description }));
@@ -65,6 +66,28 @@ function honestDelegate(inner: AgAiTool, outcomes: ReadonlyMap<string, AgAiRunOu
 }
 
 /**
+ * Studio's add_widget accepts any type in the api's catalogue, which can list another dashboard's
+ * widgets. This refuses a type that is not on this dashboard, and refuses every type when the
+ * dashboard is unknown.
+ */
+function dashboardAdd(inner: AgAiTool, dashboard: DashboardId | undefined): AgAiTool {
+  const allowed: readonly string[] = dashboard ? WIDGET_IDS[dashboard] : [];
+  return {
+    ...inner,
+    execute: async (call, ctx) => {
+      const type = call.args.type;
+      if (typeof type === "string" && allowed.includes(type)) {
+        return (await inner.execute?.(call, ctx)) ?? { success: false, issues: [] };
+      }
+      return {
+        success: false,
+        issues: [{ message: `Widget type ${JSON.stringify(type)} is not on this dashboard. Its widget types are: ${allowed.join(", ") || "none"}.` }],
+      };
+    },
+  };
+}
+
+/**
  * The dashboard's harness: the ledger agent fronting the conversation, and Studio's widget agent as
  * its delegate. Both run on the one adapter, so every model turn goes through the app's own route.
  */
@@ -97,7 +120,7 @@ export function createAskLedgerHarness(
         ...builtIn.widget,
         adapter,
         instructions: (ctx, params) => `${NEW_WIDGET_WORKFLOW}\n\n${builtIn.widget.instructions?.(ctx, params) ?? ""}`,
-        tools: (ctx, params) => [...(builtIn.widget.tools?.(ctx, params) ?? []), ctx.studio.addWidget()],
+        tools: (ctx, params) => [...(builtIn.widget.tools?.(ctx, params) ?? []), dashboardAdd(ctx.studio.addWidget(), deps?.dashboard)],
         // Studio types the widget delegation's widgetType against the api's widget catalogue. With the
         // AI module registered that catalogue is populated from the widgets' `ai` metadata. The plain
         // strings stay so the delegate branch remains resolvable when the catalogue reads empty (the

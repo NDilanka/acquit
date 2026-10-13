@@ -1,5 +1,5 @@
-import { createContext, useContext, type ComponentType } from "react";
-import type { AgPageLayoutState } from "ag-studio";
+import { Component, createContext, useContext, type ComponentType, type ReactNode } from "react";
+import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
 import type { PayoutRow, PlatformJobLedger, ReceiptRow } from "../api-types";
 import { dollars, utc } from "../format";
@@ -158,31 +158,52 @@ const SIZES = {
   card: { defaultSize: { width: 560, height: 240 }, minSize: { width: 150, height: 200 } },
 } as const;
 
+/** One widget that throws shows a fallback in its own tile instead of taking the page down. */
+class WidgetBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? <p className="muted">This widget could not be shown.</p> : this.props.children;
+  }
+}
+
 function labelled({ comp: Body, label }: Spec): ComponentType {
   return function AcquitWidget() {
     return (
       <section className="studio-widget" aria-label={label}>
         <span className="eyebrow">{label}</span>
-        <Body />
+        <WidgetBoundary>
+          <Body />
+        </WidgetBoundary>
       </section>
     );
   };
 }
 
-const ALL: readonly Spec[] = Object.values(DASHBOARDS).flat(2);
+function buildRegistry(id: DashboardId): AgWidgetsConfig<AcquitRegistry> {
+  const specs = DASHBOARDS[id].flat();
+  return createWidgets<AcquitRegistry>({
+    additionalTypes: specs.map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      form: () => [],
+      comp: labelled(spec),
+      ai: spec.ai,
+      ...SIZES[spec.kind],
+    })),
+    menu: [{ label: "Acquit", widgetIds: specs.map((s) => s.id) }],
+    defaultType: WIDGET_ROWS[id][0][0].id,
+  });
+}
 
-export const WIDGETS = createWidgets<AcquitRegistry>({
-  additionalTypes: ALL.map((spec) => ({
-    id: spec.id,
-    label: spec.label,
-    form: () => [],
-    comp: labelled(spec),
-    ai: spec.ai,
-    ...SIZES[spec.kind],
-  })),
-  menu: [{ label: "Acquit", widgetIds: ALL.map((s) => s.id) }],
-  defaultType: "acquit-held",
-});
+export const WIDGETS: Record<DashboardId, AgWidgetsConfig<AcquitRegistry>> = {
+  escrow: buildRegistry("escrow"),
+  earnings: buildRegistry("earnings"),
+};
 
 export function freshState(id: DashboardId): DashboardState {
   const rows = DASHBOARDS[id];

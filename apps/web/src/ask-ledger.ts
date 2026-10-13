@@ -17,6 +17,7 @@ import type {
 import type { AgAiToolDisplay } from "ag-studio-react";
 import type { AskMessage, AskToolSchema, AskTurnRequest, AskTurnResponse } from "./api-types";
 import { api, ApiError } from "./api.ts";
+import type { DashboardId } from "./dashboard-widgets.ts";
 
 export const ASK_AGENT_ID = "ask-ledger";
 export const ASK_AGENT_NAME = "Ask the ledger";
@@ -237,6 +238,7 @@ export type AskAdapterDeps = {
   readonly fetch?: typeof fetch;
   readonly newId?: () => string;
   readonly now?: () => number;
+  readonly dashboard?: DashboardId;
 };
 
 let minted = 0;

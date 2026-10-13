@@ -3,8 +3,7 @@ import { test } from "node:test";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgStudioApi } from "ag-studio";
 import { ASK_AGENT_ID, ASK_AGENT_NAME, type AskAdapterDeps } from "./ask-ledger.ts";
 import { createAskLedgerHarness, NEW_WIDGET_WORKFLOW, openAskThread } from "./ask-harness.ts";
-import * as dashboardWidgets from "./dashboard-widgets.ts";
-import { WIDGET_ROWS, type DashboardState } from "./dashboard-widgets.ts";
+import { WIDGET_IDS, WIDGET_ROWS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { stacked } from "./studio-data.ts";
 
 // The tests run the real harness over a mock Studio api: a Proxy that answers the SDK's internal
@@ -147,7 +146,8 @@ const settle = (session: AgAiChatSession, ms = 10_000) =>
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const harnessFor = (api: AgStudioApi, deps?: AskAdapterDeps): AgAiHarness => createAskLedgerHarness(api, () => [], deps);
+const harnessFor = (api: AgStudioApi, deps?: AskAdapterDeps & { dashboard?: DashboardId }): AgAiHarness =>
+  createAskLedgerHarness(api, () => [], { dashboard: "escrow", ...deps });
 
 const toolParts = (session: AgAiChatSession) =>
   session.messages.flatMap((m) => m.parts).filter((part): part is Extract<AgAiChatMessage["parts"][number], { type: "tool_call" }> => part.type === "tool_call");
@@ -286,16 +286,10 @@ test("the add_widget workflow survives the turn route's instruction clip", async
 });
 
 test("each dashboard's widget ids stay on their own dashboard", () => {
-  // A namespace read, because a named import of an export the module lacks fails the whole file at link time.
-  const { WIDGET_IDS } = dashboardWidgets as { WIDGET_IDS?: Record<"escrow" | "earnings", readonly string[]> };
-  assert.ok(
-    WIDGET_IDS,
-    "each dashboard has its own widget-id list (WIDGET_IDS in dashboard-widgets.ts); today dashboards.tsx builds one registry from both dashboards' widgets",
-  );
   const escrowIds = new Set<string>(WIDGET_ROWS.escrow.flat().map((spec) => spec.id));
   const earningsIds = new Set<string>(WIDGET_ROWS.earnings.flat().map((spec) => spec.id));
-  const escrow = new Set(WIDGET_IDS.escrow);
-  const earnings = new Set(WIDGET_IDS.earnings);
+  const escrow = new Set<string>(WIDGET_IDS.escrow);
+  const earnings = new Set<string>(WIDGET_IDS.earnings);
   assert.deepEqual(escrow, escrowIds, "the escrow dashboard lists exactly its own widgets");
   assert.deepEqual(earnings, earningsIds, "the earnings dashboard lists exactly its own widgets");
   for (const id of earningsIds) assert.ok(!escrow.has(id), `the escrow dashboard does not list ${id}`);

@@ -180,6 +180,12 @@ export const WIDGET_ROWS = {
 
 export type AcquitWidgetId = (typeof WIDGET_ROWS)[DashboardId][number][number]["id"];
 
+/** Each dashboard's own widget ids, which scope the agent's widget catalogue and its delegated adds. */
+export const WIDGET_IDS: Record<DashboardId, readonly AcquitWidgetId[]> = {
+  escrow: WIDGET_ROWS.escrow.flat().map((w) => w.id),
+  earnings: WIDGET_ROWS.earnings.flat().map((w) => w.id),
+};
+
 // The stacked narrow layout keeps each widget's wide-layout height, and a widget scrolls its own
 // overflow, so a widget whose content grows when it is narrowed lists a minimum height here; that
 // way no stacked widget's last line scrolls out of view. The receipt card needs room for its pill,

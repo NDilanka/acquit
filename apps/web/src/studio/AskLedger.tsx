@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { AskToolSchema } from "../api-types";
 import { createAskLedgerHarness, openAskThread } from "../ask-harness.ts";
 import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, askRows, askStatusText } from "../ask-ledger";
+import type { DashboardId } from "../dashboard-widgets.ts";
 import { errorText } from "../demo";
 
 export { createAskLedgerHarness, openAskThread };
@@ -25,7 +26,7 @@ export type AskLedger = {
  * One harness per Studio instance, shared by Studio's chat panel and the app's drawer. A remount
  * (the narrow/wide switch) brings a new Studio API and so a new, empty harness.
  */
-export function useAskLedger(): AskLedger {
+export function useAskLedger(dashboard: DashboardId): AskLedger {
   const [load, setLoad] = useState<AskLoad>({ kind: "loading" });
   const served = useRef<readonly AskToolSchema[]>([]);
   useEffect(() => {
@@ -46,9 +47,9 @@ export function useAskLedger(): AskLedger {
   const built = useRef<{ studio: AgStudioApi; harness: AgAiHarness } | null>(null);
   const [harness, setHarness] = useState<AgAiHarness | null>(null);
   const harnessFor = useCallback((studio: AgStudioApi) => {
-    if (built.current?.studio !== studio) built.current = { studio, harness: createAskLedgerHarness(studio, () => served.current) };
+    if (built.current?.studio !== studio) built.current = { studio, harness: createAskLedgerHarness(studio, () => served.current, { dashboard }) };
     return built.current.harness;
-  }, []);
+  }, [dashboard]);
   const setup = useCallback((params: AgAiHarnessSetupParams) => harnessFor(params.api), [harnessFor]);
   const onApiReady = useCallback((event: { api: AgStudioApi }) => setHarness(harnessFor(event.api)), [harnessFor]);
   return useMemo(() => ({ load, harness, setup, onApiReady }), [load, harness, setup, onApiReady]);

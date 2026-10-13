@@ -6,6 +6,7 @@ import {
   type AgDataSourcesDefinition,
   type AgPanelConfig,
   type AgReportState,
+  type AgWidgetsConfig,
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
@@ -66,7 +67,7 @@ function Notice({ title, children }: { title: string; children: ReactNode }) {
 type Load<T> = { kind: "loading" } | { kind: "ready"; data: T } | { kind: "failed"; error: string };
 
 function EscrowDashboard() {
-  const ask = useAskLedger();
+  const ask = useAskLedger("escrow");
   const [ledger, setLedger] = useState<Load<readonly PlatformJobLedger[]> | { kind: "denied" }>({ kind: "loading" });
   useEffect(() => {
     let live = true;
@@ -194,6 +195,7 @@ function Dashboard<T>({
             mode={editing && !narrow ? "edit" : "view"}
             onState={narrow ? undefined : layout.save}
             data={id === "escrow" ? STUDIO_ESCROW_DATA : STUDIO_EARNINGS_DATA}
+            widgets={WIDGETS[id]}
             ask={ask}
           />,
         )
@@ -319,12 +321,14 @@ function AcquitStudio({
   mode,
   onState,
   data,
+  widgets,
   ask,
 }: {
   state: DashboardState;
   mode: "view" | "edit";
   onState: ((state: DashboardState) => void) | undefined;
   data: AgDataSourcesDefinition<AcquitRegistry>;
+  widgets: AgWidgetsConfig<AcquitRegistry>;
   ask: AskLedger | undefined;
 }) {
   const theme = useMemo(acquitStudioTheme, []);
@@ -340,7 +344,7 @@ function AcquitStudio({
         mode={mode}
         theme={theme}
         layout={PAGE_LAYOUT}
-        widgets={WIDGETS}
+        widgets={widgets}
         data={data}
         panels={ask ? STUDIO_PANELS_WITH_AI : STUDIO_PANELS}
         ai={ask?.setup}
