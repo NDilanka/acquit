@@ -224,6 +224,19 @@ test("a releaser never removes a lock a replacement owner took over", async () =
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a waiter facing a lock that never frees refuses with BUDGET and leaves the lock alone", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-wedge-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const lockPath = `${log.path}.lock`;
+		writeFileSync(lockPath, "0.0.wedged", { mode: 0o600 });
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		assert.deepEqual(await reserveModelCall(log, call), { ok: false, reason: "BUDGET" }, "a lock that never frees is a budget refusal, never an error");
+		assert.equal(readFileSync(lockPath, "utf8"), "0.0.wedged", "the refusal leaves the wedged lock for its owner");
+		assert.equal((await log.records()).length, 0, "nothing was appended behind the wedged lock");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("an exit 0 with no result line defers to the commit step", () => {
 	assert.deepEqual(classifyDroidRun(0, "the agent printed nothing parseable\n"), { ok: true, sessionId: null, factoryCredits: null });
 });
