@@ -137,12 +137,13 @@ test("the retry is its own budget attempt: reserved, started, and ended like the
 	};
 	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-retry-slot-"));
 	try {
-		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const path = join(dir, "model-calls.jsonl");
+		const log = modelCallLog(path);
 		await seedStarts(log, 17);
 		const outcome = await askLedgerTurn({ model, callLog: log, now: () => new Date().toISOString() }, { messages: question, tools });
 		assert.ok(outcome.ok, "17 spent slots leave the turn and its retry inside the budget");
 		assert.equal(calls.length, 2, "the turn retried exactly once");
-		const records = await modelCallLog(log.path).records();
+		const records = await modelCallLog(path).records();
 		assert.equal(records.filter(record => record.phase === "START").length, 19, "the retry wrote its own START before it ran");
 		assert.deepEqual(records.filter(record => record.phase === "END").map(record => record.outcome),
 			["PROVIDER_ERROR", "answered"], "every attempt records its own END");
@@ -159,12 +160,13 @@ test("a retry the shared budget cannot admit is refused, never an unreserved 20t
 	};
 	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-retry-refused-"));
 	try {
-		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const path = join(dir, "model-calls.jsonl");
+		const log = modelCallLog(path);
 		await seedStarts(log, 18);
 		const outcome = await askLedgerTurn({ model, callLog: log, now: () => new Date().toISOString() }, { messages: question, tools });
 		assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET", "the retry is refused when the minute is spent");
 		assert.equal(calls.length, 1, "the refused retry never ran");
-		const records = await modelCallLog(log.path).records();
+		const records = await modelCallLog(path).records();
 		assert.equal(records.filter(record => record.phase === "START").length, 19, "the minute never holds a 20th start");
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });

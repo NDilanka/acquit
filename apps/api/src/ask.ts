@@ -120,26 +120,35 @@ export function askModelName(): string {
 }
 
 /** One model turn: reserve from the shared budget, run the provider's port, read the envelope.
- * A provider error retries once; a rate or usage limit is terminal for the run, never retried. */
+ * Every provider attempt is its own budget event -- the retry reserves its own slot and records
+ * its own START and END, so the log counts exactly what ran -- and a retry the budget cannot
+ * admit is refused, never an unreserved call past the cap. A provider error retries once; a
+ * rate or usage limit is terminal for the run, never retried. */
 export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly messages: readonly AskMessage[]; readonly tools: readonly AskToolSchema[]; readonly instructions?: string }): Promise<AskTurnOutcome> {
 	const provider = modelProvider();
 	const model = askModelName();
+	const prompt = buildAskPrompt(input);
+	const recordEnd = async (attempt: AskModelResult): Promise<void> => {
+		await deps.callLog.append({ at: deps.now(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
+			outcome: attempt.ok ? "answered" : attempt.reason, sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
+	};
 	const reserved = await reserveModelCall(deps.callLog, { at: deps.now(), caller: "ask-ledger", jobId: null, provider, model });
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the deployment's shared model budget is spent for now" };
-	const prompt = buildAskPrompt(input);
 	let result = await deps.model(prompt);
-	if (!result.ok && result.reason === "PROVIDER_ERROR") result = await deps.model(prompt);
+	await recordEnd(result);
+	if (!result.ok && result.reason === "PROVIDER_ERROR") {
+		const retried = await reserveModelCall(deps.callLog, { at: deps.now(), caller: "ask-ledger", jobId: null, provider, model });
+		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the shared model budget refused the one retry" };
+		result = await deps.model(prompt);
+		await recordEnd(result);
+	}
 	if (!result.ok) {
-		await deps.callLog.append({ at: deps.now(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
-			outcome: result.reason, sessionId: null, factoryCredits: null });
 		return result.reason === "RATE_LIMITED"
 			? { ok: false, reason: "MODEL_RATE_LIMITED", detail: result.detail }
 			: result.reason === "NO_KEY" ? { ok: false, reason: "MODEL_KEY_MISSING", detail: result.detail }
 				: { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: result.detail };
 	}
 	const envelope = parseAskEnvelope(result.text);
-	await deps.callLog.append({ at: deps.now(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
-		outcome: "answered", sessionId: result.sessionId, factoryCredits: result.factoryCredits });
 	return { ok: true, message: envelope.message, calls: envelope.calls, model, sessionId: result.sessionId, factoryCredits: result.factoryCredits };
 }
 
