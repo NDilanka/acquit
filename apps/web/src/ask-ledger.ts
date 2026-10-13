@@ -402,8 +402,10 @@ export function askRows(messages: readonly AgAiChatMessage[]): AskRow[] {
         case "text":
           return part.text.trim() === "" ? [] : [{ kind: "text", key, role: message.role, text: part.text }];
         case "tool_call": {
-          const { status } = part.toolCall;
-          const state = status === "complete" ? "done" : status === "error" ? "failed" : status === "cancelled" ? "cancelled" : "running";
+          const { status, result } = part.toolCall;
+          // A tool that returns Studio's failure shape still settles at "complete".
+          const reportedFailure = typeof result === "object" && result !== null && (result as { success?: unknown }).success === false;
+          const state = reportedFailure ? "failed" : status === "complete" ? "done" : status === "error" ? "failed" : status === "cancelled" ? "cancelled" : "running";
           return [{ kind: "step", key, label: askToolLabel(part.toolCall.name, part.toolCall.args), state }];
         }
         case "error":
