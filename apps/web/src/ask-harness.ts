@@ -6,6 +6,7 @@ import {
   type AgAiHistoryStore,
   type AgAiHistoryStoreEventListener,
   type AgAiRunOutcome,
+  type AgAiStudioTools,
   type AgAiThread,
   type AgAiTelemetryObserver,
   type AgAiTool,
@@ -51,16 +52,44 @@ function delegateOutcomes(): { outcomes: Map<string, AgAiRunOutcome>; observer: 
 /**
  * Studio's delegate tool reports success whenever the child returns, even when it errored. This
  * passes a result through only when the child's run also finished 'ok'. A child that throws while
- * resolving its tools ends before any telemetry, so a missing outcome counts as a failure too.
+ * resolving its tools ends before any telemetry, so a missing outcome counts as a failure too. A
+ * failed child's partly added widget is removed again, so the grid never keeps a half-made widget.
  */
-function honestDelegate(inner: AgAiTool, outcomes: ReadonlyMap<string, AgAiRunOutcome>): AgAiTool {
+function honestDelegate(
+  inner: AgAiTool,
+  outcomes: ReadonlyMap<string, AgAiRunOutcome>,
+  api: AgStudioApi,
+  studio: AgAiStudioTools,
+): AgAiTool {
+  const selectedWidgetIds = () => {
+    const state = api.getState();
+    return Object.keys(state.pages.find((page) => page.id === state.selectedPageId)?.widgets ?? {});
+  };
   return {
     ...inner,
     execute: async (call, ctx) => {
+      const before = new Set(selectedWidgetIds());
       const result = (await inner.execute?.(call, ctx)) ?? { success: false, issues: [] };
       if (result.success && outcomes.get(call.toolCallId) === "ok") return result;
       const detail = result.success ? result.response : result.issues.map((issue) => issue.message).join("; ");
-      return { success: false, issues: [{ message: `The widget delegate did not complete${detail ? `: ${detail}` : "."}` }] };
+      const added = selectedWidgetIds().filter((id) => !before.has(id));
+      const removed: string[] = [];
+      const kept: string[] = [];
+      const remove = studio.removeWidget?.();
+      for (const [index, id] of added.entries()) {
+        const undo = await remove?.execute?.(
+          { toolCallId: `${call.toolCallId}-rollback-${index}`, name: "remove_widget", args: { widgetId: id } },
+          ctx,
+        );
+        (undo?.success ? removed : kept).push(id);
+      }
+      const rollback =
+        (removed.length ? ` The partially added widget ${removed.join(", ")} was removed again.` : "") +
+        (kept.length ? ` The partially added widget ${kept.join(", ")} could not be removed and is still on the dashboard.` : "");
+      return {
+        success: false,
+        issues: [{ message: `The widget delegate did not complete${detail ? `: ${detail}` : "."}${rollback}` }],
+      };
     },
   };
 }
@@ -113,7 +142,7 @@ export function createAskLedgerHarness(
         description: "Answers questions about Acquit's escrow ledger and PayPal's view of it, from read-only tools.",
         instructions: (ctx) => askInstructions(widgetCatalogue(ctx.api)),
         maxTurns: ASK_MAX_TURNS,
-        tools: (ctx) => [...ledgerTools(ctx.api), honestDelegate(ctx.tools.delegateTo(["widget"]), outcomes)],
+        tools: (ctx) => [...ledgerTools(ctx.api), honestDelegate(ctx.tools.delegateTo(["widget"]), outcomes, ctx.api, ctx.studio)],
         adapter,
       }),
       directLlmRunner({
