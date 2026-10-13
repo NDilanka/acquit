@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { readLogin } from "../../acquit-cli/src/client.ts";
 import { confirmationDir } from "../../acquit-cli/src/rendezvous.ts";
 import { paypalReader } from "./paypal.ts";
+import type { PaypalReader } from "./paypal.ts";
 import { buildServer, timeoutMs } from "./server.ts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -25,14 +26,16 @@ const token = (): string | null => {
 };
 
 const paypalConfigured = (): boolean => (process.env.PAYPAL_CLIENT_ID?.trim() ?? "") !== "" && (process.env.PAYPAL_CLIENT_SECRET?.trim() ?? "") !== "";
-let reader: ReturnType<typeof paypalReader> | null = null;
-/** Built on first use: the other five tools run where PayPal is not configured at all. */
-const paypal = (): ReturnType<typeof paypalReader> => {
+let reader: Promise<PaypalReader> | null = null;
+/** Built on first use: the other five tools run where PayPal is not configured at all. A build
+ * that fails clears itself, so the next tool call mints again instead of replaying the failure. */
+const paypal = (): Promise<PaypalReader> => {
 	if (!paypalConfigured()) {
 		return Promise.reject(new Error("get_payout_status needs PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET in the environment."));
 	}
 	reader ??= paypalReader({ clientId: process.env.PAYPAL_CLIENT_ID!.trim(), clientSecret: process.env.PAYPAL_CLIENT_SECRET!.trim(),
-		sandbox: process.env.PAYPAL_ENV !== "live" });
+		sandbox: process.env.PAYPAL_ENV !== "live" })
+		.catch((error: unknown) => { reader = null; throw error; });
 	return reader;
 };
 
