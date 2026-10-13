@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
@@ -21,6 +21,9 @@ import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
+import { askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, paypalAskReader } from "./ask.ts";
+import type { AskMessage } from "./ask.ts";
+import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
@@ -83,6 +86,56 @@ function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; file
 	try {
 		return { commit: String(row.commit_sha), files: JSON.parse(String(row.files)), patch: String(row.patch) };
 	} catch { return null; }
+}
+// The "Ask the ledger" agent's server side. The model turns run in this process (one read-only
+// droid exec turn per relay, or the openrouter port when the switch names it), the tools run here,
+// and the tool set is closed: no create, capture, refund, payout, or update tool exists to call.
+// The key rides the child's environment, never argv, never a log; the shared budget counts every
+// call before it runs, on the same log the House's deliveries append to.
+const askCallLog = modelCallLog(join(resolve(databasePath, ".."), "model-calls.jsonl"));
+const askPaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
+	? paypalAskReader({ clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret }) : null;
+const askExecutor = askToolExecutor({
+	platformView: async () => {
+		const result = await acquit.query({ role: "PLATFORM" }, { type: "PlatformLedger" });
+		if (result.kind !== "PLATFORM_LEDGER") throw new Error("the platform ledger is not readable");
+		return result.ledger.jobs;
+	},
+	paypal: askPaypal,
+});
+const askModel = modelProvider() === "openrouter" ? openrouterAskPort() : droidAskPort();
+const askTools = askToolList(askPaypal !== null);
+function readAskCall(value: unknown): { id: string; function: { name: string; arguments: string } } {
+	const call = object(value);
+	const fn = object(call.function);
+	return { id: text(call.id, "call id", 100), function: { name: text(fn.name, "tool name", 60), arguments: text(fn.arguments, "tool arguments", 16_000) } };
+}
+/** The conversation the panel relays, bounded: at most 64 messages, each with a role the loop
+ * sends and only the fields that role carries. */
+function readAskMessages(value: unknown): readonly AskMessage[] {
+	if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new BadBody("messages must be a list of 1 to 64 messages");
+	return value.map(raw => {
+		const message = object(raw);
+		const id = text(message.id, "message id", 100);
+		const role = text(message.role, "message role", 12);
+		if (role === "user" || role === "system" || role === "developer") {
+			if (Object.keys(message).some(key => key !== "id" && key !== "role" && key !== "content")) throw new BadBody("Unsupported message field");
+			return { id, role, content: text(message.content, "message content", 16_000) } as AskMessage;
+		}
+		if (role === "assistant") {
+			if (Object.keys(message).some(key => key !== "id" && key !== "role" && key !== "content" && key !== "toolCalls")) throw new BadBody("Unsupported message field");
+			if (message.content === undefined && message.toolCalls === undefined) throw new BadBody("An assistant message carries content or tool calls");
+			const toolCalls = message.toolCalls === undefined ? undefined
+				: (Array.isArray(message.toolCalls) ? message.toolCalls : []).map(readAskCall);
+			return { id, role, ...(message.content === undefined ? {} : { content: text(message.content, "message content", 16_000) }),
+				...(toolCalls === undefined ? {} : { toolCalls }) } as AskMessage;
+		}
+		if (role === "tool") {
+			if (Object.keys(message).some(key => key !== "id" && key !== "role" && key !== "content" && key !== "toolCallId")) throw new BadBody("Unsupported message field");
+			return { id, role, content: text(message.content, "tool result", 32_000), toolCallId: text(message.toolCallId, "tool call id", 100) } as AskMessage;
+		}
+		throw new BadBody("Invalid message role");
+	});
 }
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
@@ -474,6 +527,53 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const result = await acquit.query(current.actor, { type: "PlatformLedger" });
 		if (result.kind !== "PLATFORM_LEDGER") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { jobs: result.ledger.jobs, now: clock.now() });
+		return;
+	}
+	if (url.pathname === "/api/ask-ledger/tools" && method === "GET") {
+		// The ledger agent's tool list: the closed read-only set, with the model it runs on and
+		// whether a usable provider key sits in process. The platform role alone holds it.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		json(res, 200, { tools: askTools, model: askModelName(), keyConfigured: await askKeyConfigured() });
+		return;
+	}
+	if (url.pathname === "/api/ask-ledger/turn" && method === "POST") {
+		// One model turn, relayed. The browser's agent loop sends the conversation; the turn runs in
+		// this process under the shared budget, and the envelope's message and tool calls are the
+		// only thing back. The tool list is the server's own -- the browser never names tools here.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		let relayed: { messages: readonly AskMessage[]; instructions: string | undefined };
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions")) throw new BadBody("Unsupported field");
+			relayed = { messages: readAskMessages(input.messages),
+				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog, now: () => clock.now() },
+			{ ...relayed, tools: askTools });
+		if (!outcome.ok) {
+			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
+				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
+			return;
+		}
+		json(res, 200, outcome);
+		return;
+	}
+	if (url.pathname === "/api/ask-ledger/tool" && method === "POST") {
+		// One tool call, executed. The name must be one of the closed read-only set; the result is
+		// the tool's answer, and a tool's failure is the loop's to read -- never a retried write,
+		// because there is no write tool to retry.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		let named: { name?: unknown; arguments?: unknown };
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "name" && key !== "arguments")) throw new BadBody("Unsupported field");
+			named = input;
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		try {
+			json(res, 200, { result: await askExecutor(text(named.name, "tool name", 60), object(named.arguments ?? {})) });
+		} catch (error) {
+			json(res, 502, { error: "TOOL_FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
+		}
 		return;
 	}
 	if (url.pathname === "/api/repos" && method === "GET") {

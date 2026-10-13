@@ -111,11 +111,17 @@ function parseAskCall(raw: unknown): AskCall[] {
 	return [{ id: typeof record.id === "string" && record.id !== "" ? record.id : null, name: record.name, arguments: args ?? {} }];
 }
 
+/** The model id the ask turns run on, per the deployment's provider switch: the one place the
+ * route's answer and the turns themselves read the same name from. */
+export function askModelName(): string {
+	return modelProvider() === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER;
+}
+
 /** One model turn: reserve from the shared budget, run the provider's port, read the envelope.
  * A provider error retries once; a rate or usage limit is terminal for the run, never retried. */
 export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly messages: readonly AskMessage[]; readonly tools: readonly AskToolSchema[]; readonly instructions?: string }): Promise<AskTurnOutcome> {
 	const provider = modelProvider();
-	const model = provider === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER;
+	const model = askModelName();
 	const reserved = await reserveModelCall(deps.callLog, { at: deps.now(), caller: "ask-ledger", jobId: null, provider, model });
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the deployment's shared model budget is spent for now" };
 	const prompt = buildAskPrompt(input);
