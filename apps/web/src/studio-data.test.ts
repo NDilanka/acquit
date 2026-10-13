@@ -132,12 +132,12 @@ const receipts: ReceiptRow[] = [
   jobRow("rc_seeded_job", 50000, 1000, "2026-12-02T00:00:00.000Z", "SEED"),
 ];
 
-test("earnings sum only the operator's job receipts, with a missing fee counted as zero", () => {
-  assert.deepEqual(earnings(receipts), { paidOut: 45000, feesWithheld: 6000, jobsPaid: 2 });
+test("earnings sum the operator's job-backed receipts however they are seeded, with a missing fee counted as zero", () => {
+  assert.deepEqual(earnings(receipts), { paidOut: 95000, feesWithheld: 7000, jobsPaid: 3 });
 });
 
-test("the newest receipt is the latest job receipt, ignoring seeded history", () => {
-  assert.equal(newestReceipt(receipts)?.id, "rc_new");
+test("the newest receipt is the latest job-backed receipt, job-less display seeds aside", () => {
+  assert.equal(newestReceipt(receipts)?.id, "rc_seeded_job");
   assert.equal(newestReceipt([seeded]), null);
 });
 
