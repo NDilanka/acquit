@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgStudioApi } from "ag-studio";
 import { ASK_AGENT_ID, ASK_AGENT_NAME, type AskAdapterDeps } from "./ask-ledger.ts";
-import { createAskLedgerHarness, openAskThread } from "./ask-harness.ts";
+import { createAskLedgerHarness, NEW_WIDGET_WORKFLOW, openAskThread } from "./ask-harness.ts";
 import { WIDGET_ROWS, type DashboardState } from "./dashboard-widgets.ts";
 import { stacked } from "./studio-data.ts";
 
@@ -106,17 +106,22 @@ const call = (id: string, name: string, args: Record<string, unknown>): Answer =
 const isParentTurn = (body: { tools?: { name: string }[] }) => body.tools?.some((t) => t.name === "delegate_to") === true;
 
 /** A chat fetch stub that answers parent turns (it sees the delegate_to schema) and child turns separately. */
-function scriptedFetch(parent: Answer[], child: Answer[]): { fetch: typeof fetch; parentBodies: { instructions?: string }[] } {
+function scriptedFetch(
+  parent: Answer[],
+  child: Answer[],
+): { fetch: typeof fetch; parentBodies: { instructions?: string }[]; childBodies: { instructions?: string }[] } {
   const parentBodies: { instructions?: string }[] = [];
+  const childBodies: { instructions?: string }[] = [];
   const stub = (async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as { tools?: { name: string }[]; instructions?: string };
     if (isParentTurn(body)) {
       parentBodies.push(body);
       return answer(parent.shift() ?? text("parent ran dry"));
     }
+    childBodies.push(body);
     return answer(child.shift() ?? text("child ran dry"));
   }) as typeof fetch;
-  return { fetch: stub, parentBodies };
+  return { fetch: stub, parentBodies, childBodies };
 }
 
 const settle = (session: AgAiChatSession, ms = 10_000) =>
@@ -261,6 +266,22 @@ test("a delegated widget run adds the widget before configuring it", async () =>
   const added = state.pages[0].widgets["held-new-1"] as { type: string } | undefined;
   assert.ok(added, "the widget exists on the dashboard");
   assert.equal(added?.type, "acquit-held");
+});
+
+test("the add_widget workflow survives the turn route's instruction clip", async () => {
+  const { api } = mockStudioApi(HELD_CATALOGUE);
+  const { fetch, childBodies } = scriptedFetch([delegate("acquit-held", "held-new-1"), text("Added.")], [
+    call("child-1", "complete_task", { summary: "Added and configured the widget.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add a widget showing held escrow.");
+  await settle(session);
+  assert.ok(childBodies.length >= 1, "the delegated widget agent took a turn");
+  // The fetch body is already clipped, so a body at exactly the cap is one the clip cut short.
+  const instructions = childBodies[0]?.instructions ?? "";
+  assert.equal(instructions.length, 4000, "Studio's built-in widget template alone fills the turn route's instruction cap");
+  assert.ok(instructions.includes(NEW_WIDGET_WORKFLOW), "the add_widget workflow is inside the clipped instructions the model receives");
 });
 
 test("the stacked narrow layout leaves room for the receipt card's caption", () => {

@@ -26,7 +26,7 @@ import {
 const widgetCatalogue = (api: AgStudioApi) =>
   api.getAiContext().catalogue().map((entry) => ({ type: entry.type, description: entry.description }));
 
-const NEW_WIDGET_WORKFLOW = `## New widgets on this dashboard
+export const NEW_WIDGET_WORKFLOW = `## New widgets on this dashboard
 The widget you were given may not be on the grid yet. If view_widget shows it does not exist, add it yourself:
 1. Call add_widget with widgetId set to the task's widgetId, type set to the task's widgetType, and a small free spot on the grid (xTrack, yTrack, xSpan, ySpan).
 2. Call configure_widget as usual.
