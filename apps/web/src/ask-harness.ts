@@ -96,7 +96,7 @@ export function createAskLedgerHarness(
       directLlmRunner({
         ...builtIn.widget,
         adapter,
-        instructions: (ctx, params) => `${builtIn.widget.instructions?.(ctx, params) ?? ""}\n\n${NEW_WIDGET_WORKFLOW}`,
+        instructions: (ctx, params) => `${NEW_WIDGET_WORKFLOW}\n\n${builtIn.widget.instructions?.(ctx, params) ?? ""}`,
         tools: (ctx, params) => [...(builtIn.widget.tools?.(ctx, params) ?? []), ctx.studio.addWidget()],
         // Studio types the widget delegation's widgetType against the api's widget catalogue. With the
         // AI module registered that catalogue is populated from the widgets' `ai` metadata. The plain
