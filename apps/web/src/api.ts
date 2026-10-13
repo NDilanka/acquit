@@ -1,4 +1,8 @@
 import type {
+  AskToolResponse,
+  AskToolsResponse,
+  AskTurnRequest,
+  AskTurnResponse,
   CommandResponse,
   CreditAccountView,
   FundingMode,
@@ -38,12 +42,16 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+/** Per-call transport options: a cancel signal, and a fetch a test can stand in for. */
+export type CallOptions = { readonly signal?: AbortSignal; readonly fetch?: typeof fetch };
+
+async function request<T>(method: string, path: string, body?: unknown, init: CallOptions = {}): Promise<T> {
+  const res = await (init.fetch ?? fetch)(path, {
     method,
     credentials: "same-origin",
     headers: body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: init.signal,
   });
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -96,4 +104,8 @@ export const api = {
     request<{ saved: true; dashboard: string }>("PUT", "/api/studio/layout", { dashboard, state }),
   command: (key: string, command: UserCommand) => request<CommandResponse>("POST", "/api/commands", { key, command }),
   approveCli: (code: string) => request<SessionUser>("POST", "/api/cli/approve", { code }),
+  askLedgerTools: () => request<AskToolsResponse>("GET", "/api/ask-ledger/tools"),
+  askLedgerTurn: (body: AskTurnRequest, init?: CallOptions) => request<AskTurnResponse>("POST", "/api/ask-ledger/turn", body, init),
+  askLedgerTool: (name: string, args: Record<string, unknown>, init?: CallOptions) =>
+    request<AskToolResponse>("POST", "/api/ask-ledger/tool", { name, arguments: args }, init),
 };

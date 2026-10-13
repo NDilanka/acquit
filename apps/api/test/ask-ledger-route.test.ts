@@ -89,6 +89,20 @@ test("the ask routes answer the platform role alone, and the tool set is the clo
 		const records = log.split("\n").filter(line => line.trim() !== "").map(line => JSON.parse(line) as { caller: string; phase: string });
 		assert.deepEqual(records.map(record => [record.caller, record.phase]),
 			[["ask-ledger", "START"], ["ask-ledger", "END"]], "the refused turn still counts against the shared budget");
+
+		// The turn's tool schemas are the loop's own -- the agent's read tools plus the harness's
+		// delegate_to -- relayed into the prompt, so a delegated widget run can go through. An
+		// unbounded or malformed list is refused.
+		const delegated = await post(port, "/api/ask-ledger/turn", {
+			messages: [{ id: "m1", role: "user", content: "Add a widget showing held escrow." }],
+			tools: [{ name: "delegate_to", description: "Hand work to another agent.", parameters: { type: "object", properties: {} } }],
+		}, token);
+		assert.equal(delegated.status, 503, "the relayed tools are accepted, the turn still needs a key");
+		const tooMany = await post(port, "/api/ask-ledger/turn", {
+			messages: [{ id: "m1", role: "user", content: "hello" }],
+			tools: Array.from({ length: 33 }, (_, i) => ({ name: `tool_${i}`, description: "x", parameters: { type: "object", properties: {} } })),
+		}, token);
+		assert.equal(tooMany.status, 400, "an unbounded tool list is refused");
 	} finally {
 		child?.kill("SIGTERM");
 		await rm(dir, { recursive: true, force: true });

@@ -22,7 +22,7 @@ import { operatorPayouts } from "./payouts.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 import { askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, paypalAskReader } from "./ask.ts";
-import type { AskMessage } from "./ask.ts";
+import type { AskMessage, AskToolSchema } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 
@@ -109,6 +109,21 @@ function readAskCall(value: unknown): { id: string; function: { name: string; ar
 	const call = object(value);
 	const fn = object(call.function);
 	return { id: text(call.id, "call id", 100), function: { name: text(fn.name, "tool name", 60), arguments: text(fn.arguments, "tool arguments", 16_000) } };
+}
+/** The turn's tool schemas, relayed from the loop that resolved them for this agent: the agent's
+ * read tools plus the harness's delegate_to. Bounded; the prompt is shaped by them, but the only
+ * tools that can execute are this route's closed set and the loop's own browser-side tools. */
+function readAskTools(value: unknown): readonly AskToolSchema[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || value.length > 32) throw new BadBody("tools must be a list of at most 32 schemas");
+	return value.map(raw => {
+		const tool = object(raw);
+		if (Object.keys(tool).some(key => key !== "name" && key !== "description" && key !== "parameters")) throw new BadBody("Unsupported tool field");
+		const parameters = tool.parameters ?? { type: "object", properties: {} };
+		if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || JSON.stringify(parameters).length > 4000) throw new BadBody("Invalid tool parameters");
+		const schema: Record<string, unknown> = parameters as Record<string, unknown>;
+		return { name: text(tool.name, "tool name", 60), description: text(tool.description, "tool description", 2000), parameters: schema };
+	});
 }
 /** The conversation the panel relays, bounded: at most 64 messages, each with a role the loop
  * sends and only the fields that role carries. */
@@ -537,19 +552,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		return;
 	}
 	if (url.pathname === "/api/ask-ledger/turn" && method === "POST") {
-		// One model turn, relayed. The browser's agent loop sends the conversation; the turn runs in
-		// this process under the shared budget, and the envelope's message and tool calls are the
-		// only thing back. The tool list is the server's own -- the browser never names tools here.
+		// One model turn, relayed. The browser's agent loop sends the conversation and the tool
+		// schemas it resolved for this agent; the turn runs in this process under the shared budget,
+		// and the envelope's message and tool calls are the only thing back. The tool-execution
+		// route stays the closed set -- relaying schemas never widens what can run.
 		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
-		let relayed: { messages: readonly AskMessage[]; instructions: string | undefined };
+		let relayed: { messages: readonly AskMessage[]; instructions: string | undefined; tools: readonly AskToolSchema[] };
 		try {
 			const input = object(await body(req));
-			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions")) throw new BadBody("Unsupported field");
-			relayed = { messages: readAskMessages(input.messages),
+			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions" && key !== "tools")) throw new BadBody("Unsupported field");
+			relayed = { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
 				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
-		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog, now: () => clock.now() },
-			{ ...relayed, tools: askTools });
+		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog, now: () => clock.now() }, relayed);
 		if (!outcome.ok) {
 			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
 				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
