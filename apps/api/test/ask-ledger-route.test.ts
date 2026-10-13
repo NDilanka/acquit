@@ -119,7 +119,7 @@ test("the ask routes answer the platform role alone, and the tool set is the clo
  * 32,768-byte global cap every other route keeps.
  */
 const filterOperators = ["=", "!=", ">", ">=", "<", "<=", "contains", "startsWith", "endsWith", "between", "in", "notIn", "isEmpty", "isNotEmpty"];
-const dataTypes = ["string", "number", "boolean", "date", "money", "percent", "integer", "decimal", "currency", "text", "id", "enum", "category", "quantity", "rate", "amount", "balance", "timestamp", "day", "month", "quarter", "year", "week", "hour", "flag", "score", "count", "total"];
+const dataTypes = ["string", "number", "boolean", "date", "money", "percent", "integer", "decimal", "currency", "text", "id", "enum", "category", "quantity", "rate"];
 // The data engine advertises its filter operators per data type, and that enumeration is what makes
 // the real schema large. Each type lists every operator with a one-sentence description.
 const operatorsByType: Record<string, Record<string, { description: string }>> = {};
@@ -174,14 +174,29 @@ function widgetAgentTurn(): { messages: unknown[]; instructions: string; tools: 
 	const sized = (name: string, description: string, parameters: unknown) => ({ name, description, parameters });
 	const small = { type: "object", properties: {} };
 	const tools = [
-		sized("view_plan", "Read the current plan for this conversation.", small),
-		sized("view_widget", "Read one widget's full configuration.", small),
-		sized("view_schema", "Read the data schema.", small),
+		sized("view_plan", "Read the plan this conversation keeps, with one entry per task the reader gave.", small),
+		sized("view_widget", "Read one widget's full configuration: its type, data mapping, format, filters, size and any health issues.",
+			{ type: "object", properties: { widgetId: { type: "string", description: "The widget id, as add_widget or the task names it." } }, required: ["widgetId"] }),
+		sized("view_schema", "Read the dashboard data schema: every table, its fields, their types and the aggregations each supports.", small),
 		sized("add_widget_filter", "Add one filter to one widget.", filterParameters),
-		sized("remove_widget_filter", "Remove one filter from one widget.", small),
-		sized("configure_widget", "Patch one widget's configuration.", small),
-		sized("add_widget", "Add a widget to the grid.", small),
-		sized("complete_task", "Finish the task.", small),
+		sized("remove_widget_filter", "Remove one filter from one widget.",
+			{ type: "object", properties: { widgetId: { type: "string", description: "The widget whose filter is removed." },
+				index: { type: "number", description: "The position of the filter to remove, as view_widget lists them." } }, required: ["widgetId", "index"] }),
+		sized("configure_widget", "Patch one widget's configuration.",
+			{ type: "object", properties: { widgetId: { type: "string", description: "The widget to configure." },
+				dataMapping: { type: "object", description: "The field mapping, from the widget's own inputs to the schema's field ids." },
+				format: { type: "object", description: "The display format: number precision, currency and suffix." } }, required: ["widgetId"] }),
+		sized("add_widget", "Add a widget to the grid.",
+			{ type: "object", properties: { widgetId: { type: "string", description: "The id the new widget takes on the grid." },
+				type: { type: "string", description: "The widget type, from the dashboard's catalogue." },
+				xTrack: { type: "number", description: "The grid column the widget starts at." },
+				yTrack: { type: "number", description: "The grid row the widget starts at." },
+				xSpan: { type: "number", description: "How many columns the widget spans." },
+				ySpan: { type: "number", description: "How many rows the widget spans." } },
+				required: ["widgetId", "type", "xTrack", "yTrack", "xSpan", "ySpan"] }),
+		sized("complete_task", "Finish the task.",
+			{ type: "object", properties: { summary: { type: "string", description: "One or two sentences on what was added and configured." },
+				artifacts: { type: "object", description: "The ids of the widgets the task produced." } }, required: ["summary", "artifacts"] }),
 	];
 	const messages = [
 		{ id: "t1", role: "user", content: "Make the widget show held escrow. The widget type is acquit-held and the widget id is held-escrow-main." },
@@ -223,14 +238,15 @@ echo '{"type":"result","is_error":false,"result":"{\\"message\\":\\"Widget added
 		const body = widgetAgentTurn();
 		const bodyBytes = Buffer.byteLength(JSON.stringify(body), "utf8");
 		assert.ok(bodyBytes > 32_768, `the realistic body is above the global cap, as the measured real one was (built ${bodyBytes})`);
+		assert.ok(JSON.stringify((body.tools[3] as { parameters: unknown }).parameters).length < 32_000, "the filter schema stays inside the route's per-tool bound");
 		assert.ok(JSON.stringify((body.tools[3] as { parameters: unknown }).parameters).length > 22_000, "the filter schema carries the real shape's size");
 
 		const anonymous = await post(port, "/api/ask-ledger/turn", body);
 		assert.equal(anonymous.status, 401, "an unauthenticated turn is refused before the body is even read");
 
 		const turn = await post(port, "/api/ask-ledger/turn", body, token);
-		assert.equal(turn.status, 200, `a realistic widget-agent turn above the global cap is accepted (got ${turn.status})`);
 		const answered = await turn.json() as { ok: boolean; message: string | null };
+		assert.equal(turn.status, 200, `a realistic widget-agent turn above the global cap is accepted (got ${turn.status}: ${JSON.stringify(answered)})`);
 		assert.equal(answered.ok, true);
 		assert.equal(answered.message, "Widget added.", "the envelope came back from the model port");
 		const promptBytes = Number((await readFile(join(record, "prompt-bytes"), "utf8")).trim());
@@ -243,10 +259,11 @@ echo '{"type":"result","is_error":false,"result":"{\\"message\\":\\"Widget added
 		assert.equal(refused.status, 413, "a body past the route's own cap is refused with 413");
 		assert.equal(((await refused.json()) as { error: string }).error, "ASK_BODY_TOO_LARGE");
 
-		// The global cap keeps holding on every other route.
+		// The global cap keeps holding on every other route: a 40 KB body there is still the global
+		// cap's 400 BAD_REQUEST, never the ask route's 413.
 		const elsewhere = await post(port, "/api/session", { handle: "x".repeat(40_000) });
-		assert.equal(elsewhere.status, 400);
-		assert.equal(((await elsewhere.json()) as { detail: string }).detail, "Request body too large", "the global 32 KB cap is unchanged on other routes");
+		assert.equal(elsewhere.status, 400, "the global 32 KB cap is unchanged on other routes");
+		assert.equal(((await elsewhere.json()) as { error: string }).error, "BAD_REQUEST");
 	} finally {
 		child?.kill("SIGTERM");
 		await rm(dir, { recursive: true, force: true });

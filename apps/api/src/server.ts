@@ -120,7 +120,10 @@ function readAskTools(value: unknown): readonly AskToolSchema[] {
 		const tool = object(raw);
 		if (Object.keys(tool).some(key => key !== "name" && key !== "description" && key !== "parameters")) throw new BadBody("Unsupported tool field");
 		const parameters = tool.parameters ?? { type: "object", properties: {} };
-		if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || JSON.stringify(parameters).length > 4000) throw new BadBody("Invalid tool parameters");
+		// Studio's real schemas are large by construction: add_widget_filter's shape enumerates the
+		// data engine's filter operators per data type and serialized at 22,528 bytes on the measured
+		// turn. The bound admits those while keeping each schema (and so the prompt) bounded.
+		if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || JSON.stringify(parameters).length > 32_000) throw new BadBody("Invalid tool parameters");
 		const schema: Record<string, unknown> = parameters as Record<string, unknown>;
 		return { name: text(tool.name, "tool name", 60), description: text(tool.description, "tool description", 2000), parameters: schema };
 	});
@@ -253,6 +256,17 @@ async function body(req: IncomingMessage): Promise<unknown> {
 const CALLBACK_BODY_LIMIT_BYTES = VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096;
 /** The webhook route's own cap, above any event body PayPal sends for one capture, refund, or payout. */
 const WEBHOOK_BODY_LIMIT_BYTES = 65_536;
+/**
+ * The ask turn route's own cap, above the largest turn Studio's real harness builds. The delegated
+ * widget-agent turn measured 32,905 bytes (evidence g1a3/ask-round4-fix/measurement.json, byte
+ * lengths only: instructions clipped at 4,000, 27,378 bytes of tool schemas led by add_widget_filter's
+ * 22,528-byte data-engine filter shape, 1,420 bytes of child-thread messages) -- past the global
+ * 32,768-byte cap every other route keeps, which refused the turn 400 before any model call. 256 KiB
+ * gives that measured turn about 8x headroom for the child histories and tool results that grow over
+ * a run's turns, while the route's own field bounds (64 messages of 32,000 characters, 32 schemas)
+ * and this cap together keep what a caller can relay bounded.
+ */
+const ASK_TURN_BODY_LIMIT_BYTES = 262_144;
 async function rawBody(req: IncomingMessage, max: number): Promise<string> {
 	const declared = Number(req.headers["content-length"] ?? "");
 	if (Number.isFinite(declared) && declared > max) throw new TooLarge("Request body too large");
@@ -555,11 +569,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// One model turn, relayed. The browser's agent loop sends the conversation and the tool
 		// schemas it resolved for this agent; the turn runs in this process under the shared budget,
 		// and the envelope's message and tool calls are the only thing back. The tool-execution
-		// route stays the closed set -- relaying schemas never widens what can run.
+		// route stays the closed set -- relaying schemas never widens what can run. The route
+		// carries its own larger cap, because the harness's delegated widget-agent turn is bigger
+		// than the global cap every other route keeps.
 		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		let raw: string;
+		try { raw = await rawBody(req, ASK_TURN_BODY_LIMIT_BYTES); }
+		catch (error) {
+			if (error instanceof TooLarge) { json(res, 413, { error: "ASK_BODY_TOO_LARGE" }); return; }
+			throw error;
+		}
 		let relayed: { messages: readonly AskMessage[]; instructions: string | undefined; tools: readonly AskToolSchema[] };
 		try {
-			const input = object(await body(req));
+			let parsed: unknown;
+			try { parsed = JSON.parse(raw); } catch { throw new BadBody("Expected a JSON body"); }
+			const input = object(parsed);
 			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions" && key !== "tools")) throw new BadBody("Unsupported field");
 			relayed = { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
 				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
