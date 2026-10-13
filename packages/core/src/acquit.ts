@@ -15,6 +15,8 @@ import type { FixtureContract } from "./fixtures.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
+import { platformJobLedger } from "./platform.ts";
+import type { PlatformLedgerView } from "./platform.ts";
 import { SqliteStore } from "./store.ts";
 import { bindVisitorRepository, failVisitor, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
 import type { VisitorRow } from "./visitors.ts";
@@ -39,7 +41,12 @@ export type Actor =
 	 */
 	| { readonly role: "CLIENT"; readonly clientId: ClientId; readonly tenant: VisitorId | null; readonly repository?: string }
 	| { readonly role: "OPERATOR"; readonly operatorId: OperatorId; readonly tenant: VisitorId | null }
-	| { readonly role: "ARBITER"; readonly staffId: StaffId };
+	| { readonly role: "ARBITER"; readonly staffId: StaffId }
+	/**
+	 * The deployment's own operator of last resort: it reads the whole book for the platform dashboards
+	 * (the ledger route) and holds no commands. It is never a job's client, payee, or arbiter.
+	 */
+	| { readonly role: "PLATFORM" };
 
 export type UserCommand = UserJobCommand | OperatorCommand;
 
@@ -61,7 +68,8 @@ export type Query =
 	| { readonly type: "OpenJobs"; readonly cursor: string | null }
 	| { readonly type: "Receipts"; readonly operatorId: OperatorId; readonly cursor: string | null }
 	| { readonly type: "Operator" }
-	| { readonly type: "Credits" };
+	| { readonly type: "Credits" }
+	| { readonly type: "PlatformLedger" };
 
 export type QueryResult =
 	/** A single job carries its full projection, so a reader of one job sees its frozen contract. */
@@ -70,6 +78,7 @@ export type QueryResult =
 	| { readonly kind: "RECEIPTS"; readonly receipts: readonly Receipt[]; readonly nextCursor: string | null }
 	| { readonly kind: "OPERATOR"; readonly operator: OperatorView }
 	| { readonly kind: "CREDITS"; readonly credits: CreditAccountView }
+	| { readonly kind: "PLATFORM_LEDGER"; readonly ledger: PlatformLedgerView }
 	| { readonly kind: "DENIED"; readonly reason: Failure };
 
 export interface BidView {
@@ -217,7 +226,10 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			const houseRows = await store.receiptRowCounts();
 			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
 			// and the system paths are the only cross-tenant readers, and they are never a session.
-			const sameWorld = (row: JobRow) => actor.role === "ARBITER" || (actor.tenant ?? null) === (row.tenant ?? null);
+			// The platform role is the other cross-tenant reader, and only through PlatformLedger:
+			// a job read or list answers nothing to it, so the dashboards have one door, not two.
+			const sameWorld = (row: JobRow) => actor.role === "ARBITER" ||
+				(actor.role === "CLIENT" || actor.role === "OPERATOR") && (actor.tenant ?? null) === (row.tenant ?? null);
 			switch (query.type) {
 				case "Job": {
 					const row = await store.readJob(query.jobId);
@@ -245,6 +257,10 @@ export function createAcquit(config: AcquitConfig): Acquit {
 					const account = await store.readCredits(actor.operatorId);
 					return { kind: "CREDITS", credits: { available: (account.balance.allowance + account.balance.purchased) as Credits,
 						weeklyAllowance: weeklyAllowance(counts.get(actor.operatorId) ?? 0), nextGrantAt: nextCreditGrant(ports.clock.now()) } };
+				}
+				case "PlatformLedger": {
+					if (actor.role !== "PLATFORM") return { kind: "DENIED", reason: "NOT_OWNER" };
+					return { kind: "PLATFORM_LEDGER", ledger: { jobs: (await store.listJobs()).map(platformJobLedger) } };
 				}
 				default: throw new Error("not implemented");
 			}

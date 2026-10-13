@@ -1145,7 +1145,7 @@ export type JobProjection = JobView & {
 	};
 };
 
-function attemptView(record: AttemptRecord): AttemptView {
+export function attemptView(record: AttemptRecord): AttemptView {
 	const verdict = record.verdict;
 	return verdict.result === "VERIFIED"
 		? { ordinal: record.ordinal, result: "VERIFIED", reasons: [], reasonsTruncated: 0, sourceCommit: verdict.sourceCommit, at: verdict.at,

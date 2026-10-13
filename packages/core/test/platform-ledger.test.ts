@@ -7,12 +7,14 @@ import { closeAcquit, createAcquit, usd } from "../src/acquit.ts";
 import type { Actor } from "../src/acquit.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { instant, hours, parseJobId } from "../src/ids.ts";
-import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OrderId, PayoutItemId, Version, VisitorId } from "../src/ids.ts";
-import { commercialSplit, quote, reduceLedger } from "../src/ledger.ts";
-import type { Bps } from "../src/ledger.ts";
+import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OperatorId, OrderId, PayoutItemId, ReceiptId, TestId, Version, VisitorId } from "../src/ids.ts";
+import { commercialSplit, reduceLedger } from "../src/ledger.ts";
+import type { Bps } from "../src/paypal.ts";
+import { quote } from "../src/paypal.ts";
 import { TERMS } from "../src/job.ts";
-import type { JobRow } from "../src/job.ts";
+import type { JobRow, Receipt } from "../src/job.ts";
 import { isTestTamper } from "../src/verifier.ts";
+import type { VerifierRunId } from "../src/verifier.ts";
 import { SqliteStore } from "../src/store.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 
@@ -38,19 +40,19 @@ function insert(store: SqliteStore, row: JobRow): void {
 }
 
 /** A paid job in visitor A's world: the book is held 420.00, released 360.00, fee 60.00. */
-function paidRow(tenant: VisitorId | null): JobRow {
+function paidRow(tenant: VisitorId | null, id = "job_ledger_paid"): JobRow {
 	const held = reduceLedger([], { kind: "Hold", gross: usd("420.00"), at: now });
 	if ("kind" in held) throw new Error("law break");
 	const paid = reduceLedger(held, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at: later });
 	if ("kind" in paid) throw new Error("law break");
-	return { id: parseJobId("job_ledger_paid"), version: 1 as Version, client: "maya-client" as ClientId, tenant, title: "paid job",
+	return { id: parseJobId(id), version: 1 as Version, client: "maya-client" as ClientId, tenant, title: "paid job",
 		contract: contract(), openedAt: now, bids: [acceptedBid()], state: { status: "PAID",
 			payee: { bidId: "bid_test-1" as BidId, operator: "devon-ops" as OperatorId, payee: merchant, agent: "ts-bugfixer" as AgentId, price: usd("360.00"), eta: hours(48) },
-			book: paid, receipt: { id: "rcpt_ledger-1", jobId: parseJobId("job_ledger_paid"), operator: "devon-ops" as OperatorId,
+			book: paid, receipt: { id: `rcpt_${id}` as ReceiptId, jobId: parseJobId(id), operator: "devon-ops" as OperatorId,
 				agent: "ts-bugfixer" as AgentId, pullRequest: 13, mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha,
-				frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, attemptsUsed: 2, paid: usd("360.00"), releasedAt: later },
+				frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, attemptsUsed: 2, paid: usd("360.00"), releasedAt: later } as Receipt,
 			release: { payoutItemId: "payout-item-1" as PayoutItemId, captureId: "TESTCAPTURE" as CaptureId, paid: usd("360.00"), at: later },
-			releaseAuthority: "CLIENT", merge: { phase: "MERGED", at: later, sha: "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1" as CommitSha }, treasury: [] } };
+			releaseAuthority: "CLIENT_APPROVAL", merge: { phase: "MERGED", at: later, sha: "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1" as CommitSha }, treasury: [] } };
 }
 
 /** A held job in visitor B's world whose first attempt was a test tamper the verifier rejected. */
@@ -99,7 +101,7 @@ test("a test tamper is a rejected attempt that touched the frozen tests, not a f
 	assert.equal(isTestTamper({ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }), true);
 	assert.equal(isTestTamper({ kind: "PROTECTED_PATH_MODIFIED", path: "src/totals.ts" }), false);
 	assert.equal(isTestTamper({ kind: "TEST_FRAMEWORK_IN_SOURCE", path: "src/totals.ts", symbol: "node:test" }), true);
-	assert.equal(isTestTamper({ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }), false);
+	assert.equal(isTestTamper({ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1" as TestId] }), false);
 });
 
 test("the platform ledger query returns every tenant's book to the platform role alone", async () => {
@@ -109,17 +111,19 @@ test("the platform ledger query returns every tenant's book to the platform role
 		const allowed = await built.service.query(platform, { type: "PlatformLedger" });
 		assert.equal(allowed.kind, "PLATFORM_LEDGER");
 		if (allowed.kind !== "PLATFORM_LEDGER") throw new Error("Expected the platform ledger");
-		assert.deepEqual(allowed.ledger.jobs.map(job => job.jobId), ["job_ledger_paid", "job_ledger_held", "job_ledger_refunded"]);
+		assert.deepEqual([...allowed.ledger.jobs.map(job => job.jobId)].sort(), ["job_ledger_held", "job_ledger_paid", "job_ledger_refunded"]);
 		const paid = allowed.ledger.jobs.find(job => job.jobId === "job_ledger_paid");
 		assert.ok(paid, "the paid job is in the ledger");
 		assert.equal(paid.status, "PAID");
 		assert.equal(paid.escrow, "RELEASED");
 		assert.equal(paid.operator?.handle, "devon-ops");
-		assert.deepEqual(paid.lines, paidRow(null).state.status === "PAID" ? paidRow(null).state.book : []);
+		const storedPaid = paidRow(null);
+		assert.ok(storedPaid.state.status === "PAID");
+		assert.deepEqual(paid.lines, storedPaid.state.book);
 		assert.equal(paid.paidCents, 42000);
 		assert.deepEqual(paid.fee, { cents: 6000, processor: 1515, acquit: 4485 });
-		assert.deepEqual(paid.payout, { paid: 36000, payoutItemId: "payout-item-1", captureId: "TESTCAPTURE", releasedAt: later, authority: "CLIENT" });
-		assert.deepEqual(paid.receipt, { id: "rcpt_ledger-1", paid: 36000, releasedAt: later });
+		assert.deepEqual(paid.payout, { paid: 36000, payoutItemId: "payout-item-1", captureId: "TESTCAPTURE", releasedAt: later, authority: "CLIENT_APPROVAL" });
+		assert.deepEqual(paid.receipt, { id: "rcpt_job_ledger_paid", paid: 36000, releasedAt: later });
 		const held = allowed.ledger.jobs.find(job => job.jobId === "job_ledger_held");
 		assert.ok(held, "the held job is in the ledger");
 		assert.equal(held.escrow, "HELD");
@@ -134,7 +138,7 @@ test("the platform ledger query returns every tenant's book to the platform role
 });
 
 test("the platform ledger conserves: payout plus fee equals paid over the released jobs", async () => {
-	const rows = [paidRow("v_a" as VisitorId), paidRow("v_b" as VisitorId), heldTamperRow(), refundedRow()];
+	const rows = [paidRow("v_a" as VisitorId), paidRow("v_b" as VisitorId, "job_ledger_paid_b"), heldTamperRow(), refundedRow()];
 	const built = await serviceWith(rows);
 	try {
 		const allowed = await built.service.query(platform, { type: "PlatformLedger" });
