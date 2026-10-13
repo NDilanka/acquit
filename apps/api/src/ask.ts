@@ -16,6 +16,8 @@ import type { ModelCallLog } from "../../../packages/core/src/model.ts";
 import { platformEscrowTotals } from "../../../packages/core/src/platform.ts";
 import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
 import { HOUSE_MODEL_OPENROUTER, keyringKey } from "../../../packages/house/src/runner.ts";
+import { authAssertion } from "../../../packages/core/src/paypal.ts";
+import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import { paypalReader } from "../../../packages/mcp/src/paypal.ts";
 import type { PaypalReader } from "../../../packages/mcp/src/paypal.ts";
 
@@ -147,7 +149,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
  * the only thing that runs them, and it holds no create, capture, refund, payout, or update tool. */
 export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order"] as const;
 
-export type PaypalAskReader = { readonly getOrder: (id: string) => Promise<unknown> };
+export type PaypalAskReader = { readonly getOrder: (id: string, payee: string | null) => Promise<unknown> };
 
 export type AskToolExecutor = (name: string, args: Record<string, unknown>) => Promise<unknown>;
 
@@ -164,7 +166,10 @@ export function askToolExecutor(deps: AskExecutorDeps): AskToolExecutor {
 		if (deps.paypal === null) throw new Error("get_order is unavailable: the deployment has no PayPal credentials");
 		const id = typeof args["id"] === "string" ? args["id"].trim() : "";
 		if (id === "") throw new Error("get_order needs the order's id");
-		return deps.paypal.getOrder(id);
+		// An order PayPal cannot see without its merchant's name is read under the assertion the
+		// book's own capture names: the payee the escrow was taken on behalf of.
+		const payee = (await deps.platformView()).find(job => job.capture?.orderId === id)?.capture?.payee ?? null;
+		return deps.paypal.getOrder(id, payee);
 	};
 	const jobSummary = (job: PlatformJobLedger) => ({
 		jobId: job.jobId, title: job.title, status: job.status, escrow: job.escrow,
@@ -223,8 +228,11 @@ export function paypalAskReader(config: { readonly clientId: string; readonly cl
 		return reader;
 	};
 	return {
-		async getOrder(id) {
-			return (await read()).get(`/v2/checkout/orders/${encodeURIComponent(id)}`);
+		async getOrder(id, payee) {
+			// A merchant-scoped order hides from a bare platform read: the assertion names the payee
+			// the capture belongs to, exactly as the platform's own PayPal client does.
+			const assertion = payee === null ? undefined : authAssertion(config.clientId, payee as MerchantId);
+			return (await read()).get(`/v2/checkout/orders/${encodeURIComponent(id)}`, assertion);
 		},
 	};
 }

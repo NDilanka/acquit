@@ -6,8 +6,10 @@
 import { PayPalAPI } from "@paypal/agent-toolkit/mcp";
 
 export type PaypalReader = {
-	/** One GET against the sandbox API; the path begins with `/v1/`. */
-	readonly get: (path: string) => Promise<unknown>;
+	/** One GET against the sandbox API; the path begins with `/v1/`. A merchant-scoped resource
+	 * (an order, a capture) is read under the `PayPal-Auth-Assertion` that names the merchant it
+	 * belongs to, or PayPal cannot see it; pass that assertion here. */
+	readonly get: (path: string, authAssertion?: string) => Promise<unknown>;
 };
 
 export type PaypalConfig = {
@@ -58,18 +60,20 @@ export async function paypalReader(options: PaypalConfig, fetchImpl: typeof fetc
 		if (minted === null || now() >= minted.expiresAt - RENEW_BEFORE_MS) return mint();
 		return minted;
 	};
-	const read = async (path: string, api: PayPalAPI): Promise<Response> =>
+	const read = async (path: string, api: PayPalAPI, assertion: string | null): Promise<Response> =>
 		fetchImpl(`${api.paypalClient.getBaseUrl()}${path}`,
-			{ headers: await api.paypalClient.getHeaders(), signal: AbortSignal.timeout(15_000), redirect: "error" });
+			{ headers: { ...(await api.paypalClient.getHeaders()), ...(assertion === null ? {} : { "PayPal-Auth-Assertion": assertion }) },
+				signal: AbortSignal.timeout(15_000), redirect: "error" });
 	return {
-		async get(path) {
+		async get(path, assertion) {
+			const named = assertion ?? null;
 			const first = await current();
-			let response = await read(path, first.api);
+			let response = await read(path, first.api, named);
 			if (response.status === 401) {
 				// The token was refused before its expiry could catch it. Drop it, mint once, retry once.
 				minted = null;
 				const fresh = await mint();
-				response = await read(path, fresh.api);
+				response = await read(path, fresh.api, named);
 			}
 			if (!response.ok) throw new Error(`PayPal answered ${response.status} for ${path.split("?")[0]}.`);
 			return response.json();

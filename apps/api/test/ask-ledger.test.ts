@@ -72,10 +72,12 @@ test("a model turn is relayed: the envelope's message and calls ride back, and t
 
 test("a turn the model answers outright carries the message and no calls", async () => {
 	const model = async () => ({ ok: true as const, text: 'Sure! {"message":"378.00 USD is held; PayPal agrees.","calls":[]}', sessionId: null, factoryCredits: 3 });
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-outright-"));
 	const outcome = await askLedgerTurn(
-		{ model, callLog: modelCallLog(join(tmpdir(), "acquit-ask-none", "log.jsonl")), now: () => "2026-10-13T12:00:00Z" },
+		{ model, callLog: modelCallLog(join(root, "log.jsonl")), now: () => "2026-10-13T12:00:00Z" },
 		{ messages: question, tools },
 	);
+	try { await rm(root, { recursive: true, force: true }); } catch { /* the log file is disposable */ }
 	assert.ok(outcome.ok);
 	if (!outcome.ok) throw new Error("expected a completed turn");
 	assert.equal(outcome.message, "378.00 USD is held; PayPal agrees.");
@@ -134,7 +136,9 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	const book = [heldBookRow()];
 	const readBook = async () => book;
 	const paypalOrders = new Map([["ORDER1", { status: "COMPLETED", amount: "378.00" }]]);
-	const executor = askToolExecutor({ platformView: readBook, paypal: { getOrder: async id => {
+	const asked: (readonly (string | null)[])[] = [];
+	const executor = askToolExecutor({ platformView: readBook, paypal: { getOrder: async (id, payee) => {
+		asked.push([id, payee]);
 		const found = paypalOrders.get(id);
 		if (!found) throw new Error(`PayPal answered 404 for ${id}.`);
 		return found;
@@ -144,6 +148,9 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	assert.deepEqual(totals, { held: 37800, released: 0, refunded: 0, fees: 0, heldJobs: 1 });
 	const order = await executor("get_order", { id: "ORDER1" });
 	assert.deepEqual(order, { status: "COMPLETED", amount: "378.00" });
+	// The order is the capture's: the read asserts the merchant the book named it under, or PayPal
+	// cannot see it at all.
+	assert.deepEqual(asked, [["ORDER1", "sandbox-seller"]]);
 	await assert.rejects(executor("get_order", { id: "ORDER2" }), /PayPal answered 404/);
 	await assert.rejects(executor("capture_order", {}), /no tool named capture_order/, "the executor is a closed set");
 
