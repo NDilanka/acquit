@@ -431,23 +431,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const selected = principalOf(db, String(row.handle));
 		json(res, 200, { status: "APPROVED", token: String(row.token), user: { handle: selected?.handle ?? String(row.handle), role: selected?.role ?? "OPERATOR" } }); return;
 	}
-	const current = session(req);
-	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
-	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
-	// The visitor's client/operator switch. It moves this session's principal inside the visitor that
-	// owns it, and it can never name a handle the session's visitor does not hold.
-	if (url.pathname === "/api/demo/switch" && method === "POST") {
-		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
-		const toClient = current.handle !== current.visitor.clientHandle;
-		const target = toClient ? current.visitor.clientHandle : current.visitor.operatorHandle;
-		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
-		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
-		return;
-	}
+	// The platform role's only mint. Public mode's sign-in refusal leaves the seeded principals
+	// locked, so the dashboards authenticate with the deployment's own key instead: a holder of
+	// the key reads the whole book, which is exactly the role's meaning. The key is never logged.
+	// It sits before the session gate: the mint is the credential, not something a session guards.
 	if (url.pathname === "/api/platform/session" && method === "POST") {
-		// The platform role's only mint. Public mode's sign-in refusal leaves the seeded principals
-		// locked, so the dashboards authenticate with the deployment's own key instead: a holder of
-		// the key reads the whole book, which is exactly the role's meaning. The key is never logged.
 		const input = object(await body(req));
 		if (Object.keys(input).some(key => key !== "key")) throw new BadBody("Unsupported field");
 		const given = text(input.key, "key", 200);
@@ -463,6 +451,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const token = mintSession("platform");
 		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 		json(res, 201, { user: { handle: "platform", role: "PLATFORM" }, token });
+		return;
+	}
+	const current = session(req);
+	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
+	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
+	// The visitor's client/operator switch. It moves this session's principal inside the visitor that
+	// owns it, and it can never name a handle the session's visitor does not hold.
+	if (url.pathname === "/api/demo/switch" && method === "POST") {
+		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
+		const toClient = current.handle !== current.visitor.clientHandle;
+		const target = toClient ? current.visitor.clientHandle : current.visitor.operatorHandle;
+		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
+		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
 		return;
 	}
 	if (url.pathname === "/api/platform/ledger" && method === "GET") {
