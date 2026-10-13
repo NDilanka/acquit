@@ -31,6 +31,12 @@ export function englishCheckoutUrl(value) {
 	url.searchParams.set("locale.x", "en_US");
 	return url.toString();
 }
+// Evidence files carry the approval URL's origin and path only, never its query: the query names
+// the one-time approval, and no saved artifact needs it.
+export function urlWithoutQuery(value) {
+	const url = new URL(value);
+	return url.origin + url.pathname;
+}
 export function classifyCheckout(probe, returnOrigin) {
 	if (probe.origin === returnOrigin) return "returned";
 	if (probe.overlays.length) return "overlay";

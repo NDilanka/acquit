@@ -18,6 +18,7 @@ import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "..
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
+import { operatorPayouts } from "./payouts.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
@@ -609,6 +610,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// marked with the source the receipts table holds.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository), nextCursor: null }); return;
+	}
+	if (url.pathname === "/api/me/payouts" && method === "GET") {
+		// The operator's payouts: one row per released job, with the referenced payout item the
+		// capture paid through. A client's 403 is the receipts route's answer, and a payout of
+		// another operator never appears.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { payouts: operatorPayouts(db, current.actor.operatorId, clientRepository) }); return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
 	if (tokenMatch && method === "POST") {

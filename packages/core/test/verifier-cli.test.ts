@@ -412,20 +412,23 @@ test("a mint that is not ready or not configured falls back for a named remote a
 	};
 	const retry = "The work repository acquit-forks/invoice-app-7Q2K is not visible to the GitHub App yet. "
 		+ "It is created shortly after funding, so retry in about 30 seconds.";
-	// A named work-repo remote keeps the operator's own credential, the way submit pushed before the
-	// scoped mint existed; the Submit command still runs.
+	// A not-ready mint is retried twice before any fallback: the fork's async creation usually
+	// finishes within that window. A named work-repo remote then keeps the operator's own
+	// credential, the way submit pushed before the scoped mint existed; the Submit command still runs.
 	const namedNotReady = await run("origin", "WORK_REPO_NOT_READY", retry);
-	assert.deepEqual(namedNotReady.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
+	assert.deepEqual(namedNotReady.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/jobs/job_7Q2K/work-repo-token",
+		"/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
 	assert.deepEqual(namedNotReady.pushes, ["origin"]);
 	const namedUnconfigured = await run("origin", "GITHUB_NOT_CONFIGURED", "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run.");
 	assert.deepEqual(namedUnconfigured.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/commands"]);
 	assert.deepEqual(namedUnconfigured.pushes, ["origin"]);
-	// The default target has no operator credential to fall back to: the refusal surfaces with its
-	// retry hint instead of a Submit the API would refuse.
+	// The default target has no operator credential to fall back to: after the retries the refusal
+	// surfaces with its retry hint instead of a Submit the API would refuse.
 	const defaultNotReady = await run(null, "WORK_REPO_NOT_READY", retry);
 	assert.equal(defaultNotReady.error?.code, "WORK_REPO_NOT_READY");
 	assert.match(defaultNotReady.error?.message ?? "", /retry in about 30 seconds/);
-	assert.deepEqual(defaultNotReady.posts, ["/api/jobs/job_7Q2K/work-repo-token"]);
+	assert.deepEqual(defaultNotReady.posts, ["/api/jobs/job_7Q2K/work-repo-token", "/api/jobs/job_7Q2K/work-repo-token",
+		"/api/jobs/job_7Q2K/work-repo-token"]);
 	const defaultUnconfigured = await run(null, "GITHUB_NOT_CONFIGURED", "Set ACQUIT_GITHUB_APP_ID, ACQUIT_GITHUB_APP_PRIVATE_KEY, and ACQUIT_GITHUB_APP_ORG before a run.");
 	assert.equal(defaultUnconfigured.error?.code, "GITHUB_NOT_CONFIGURED");
 	assert.deepEqual(defaultUnconfigured.posts, ["/api/jobs/job_7Q2K/work-repo-token"]);

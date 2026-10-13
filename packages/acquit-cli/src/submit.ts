@@ -279,7 +279,7 @@ async function pushSubmission(options: SubmitOptions, view: JobProjection, commi
 	}
 	let credential: { readonly repository: string; readonly token: string };
 	try {
-		credential = parseWorkRepo((await deps.client.post(`/api/jobs/${encodeURIComponent(view.id)}/work-repo-token`, {})).body);
+		credential = await mintWorkRepoToken(view.id, deps);
 	} catch (error) {
 		// A named remote still takes the operator's own credential when the mint cannot answer: a
 		// stranger's denial, a work repo GitHub has not created yet, or an API with no GitHub App.
@@ -308,6 +308,25 @@ async function pushSubmission(options: SubmitOptions, view: JobProjection, commi
 	} finally {
 		stop();
 		secret.remove();
+	}
+}
+
+/** The mint races the work repository's async creation right after funding: a submit called soon
+ * after the capture can see the repository as not ready for a moment. Retry that answer briefly
+ * before any fallback, so the submission keeps the credential scoped to this repository alone
+ * instead of handing the push to the operator's own credential. */
+async function mintWorkRepoToken(jobId: string, deps: SubmitDeps): Promise<{ readonly repository: string; readonly token: string }> {
+	const sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return parseWorkRepo((await deps.client.post(`/api/jobs/${encodeURIComponent(jobId)}/work-repo-token`, {})).body);
+		} catch (error) {
+			if (attempt < 2 && error instanceof CliError && error.code === "WORK_REPO_NOT_READY") {
+				await sleep(attempt === 0 ? 1_000 : 2_000);
+				continue;
+			}
+			throw error;
+		}
 	}
 }
 
