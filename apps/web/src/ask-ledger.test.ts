@@ -373,3 +373,14 @@ test("the drawer's rows carry text, labelled steps and errors, and skip reasonin
     { kind: "error", key: "e-0", text: "No key." },
   ]);
 });
+
+test("a delegation the child failed shows failed in the panel, not done", () => {
+  const messages: AgAiChatMessage[] = [
+    { id: "d1", role: "assistant", createdAt: 1, parts: [{ type: "tool_call", toolCall: { toolCallId: "d", name: "delegate_to", status: "complete", args: { type: { id: "widget", widgetType: "acquit-held", widgetId: "held-escrow-main" } }, result: { success: false, issues: [{ message: "The widget delegate did not complete: the child turn was refused." }] } } }] },
+    { id: "d2", role: "assistant", createdAt: 2, parts: [{ type: "tool_call", toolCall: { toolCallId: "d2", name: "delegate_to", status: "complete", args: {}, result: { success: true, response: "Added widget held-escrow-main." } } }] },
+  ];
+  assert.deepEqual(askRows(messages), [
+    { kind: "step", key: "d1-0", label: "Handing off to the widget builder", state: "failed" },
+    { kind: "step", key: "d2-0", label: "Handing off to the widget builder", state: "done" },
+  ]);
+});
