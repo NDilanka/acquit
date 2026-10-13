@@ -33,8 +33,23 @@ export const ASK_INSTRUCTIONS = [
   "Give amounts in dollars, name the jobs and PayPal order ids you checked, and when the book and PayPal disagree, say so plainly with both figures.",
   "You only read. You cannot capture, refund, release or pay out money, and you never claim to have done so.",
   "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
-  'Call delegate_to exactly in its schema\'s shape: {"type": {"id": "widget"}, "instructions": "<the task>"}. The delegate\'s id rides inside the type object.',
 ].join("\n");
+
+const DELEGATION_RECIPE = [
+  "## Delegating a widget",
+  'Call delegate_to exactly in this shape: {"type": {"id": "widget", "widgetType": "<a type from the catalogue>", "widgetId": "<a short new id for a new widget, or the id of the widget to change>"}, "instructions": "<what the widget should show>"}.',
+  "The widget agent adds the widget if it is new, then configures it.",
+  "Report its result honestly: if delegate_to fails, tell the reader the widget was not made and why, and never claim it was.",
+].join("\n");
+
+/** The ledger agent's prompt, naming the widget types the dashboard publishes so a delegation picks a real one. */
+export function askInstructions(catalogue: readonly { readonly type: string; readonly description?: string }[]): string {
+  if (catalogue.length === 0) {
+    return `${ASK_INSTRUCTIONS}\n\nThe dashboard currently publishes no widget types, so decline a widget request rather than delegating it.`;
+  }
+  const entries = catalogue.map((entry) => (entry.description ? `- ${entry.type}: ${entry.description}` : `- ${entry.type}`));
+  return [ASK_INSTRUCTIONS, ["## Widget catalogue", ...entries].join("\n"), DELEGATION_RECIPE].join("\n\n");
+}
 
 export const ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
   { label: "Escrow held vs PayPal", prompt: ASK_VALIDATION_QUESTION },

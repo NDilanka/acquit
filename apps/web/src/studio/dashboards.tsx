@@ -177,6 +177,7 @@ export const WIDGETS = createWidgets<AcquitRegistry>({
     label: spec.label,
     form: () => [],
     comp: labelled(spec),
+    ai: spec.ai,
     ...SIZES[spec.kind],
   })),
   menu: [{ label: "Acquit", widgetIds: ALL.map((s) => s.id) }],
