@@ -44,7 +44,11 @@ export type AskModelPort = (prompt: string) => Promise<AskModelResult>;
 
 export type AskModelResult =
 	| { readonly ok: true; readonly text: string; readonly sessionId: string | null; readonly factoryCredits: number | null }
-	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED" | "NO_KEY"; readonly detail: string };
+	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED" | "NO_KEY"; readonly detail: string;
+		/** What the failed run still reported, when the provider's own answer carried it: the
+		 * session it spent and the credits it charged. A failed call keeps its usage, like the
+		 * House runner's failures do. */
+		readonly sessionId?: string | null; readonly factoryCredits?: number | null };
 
 export type AskTurnDeps = {
 	readonly model: AskModelPort;
@@ -133,7 +137,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	const recordEnd = async (attempt: AskModelResult): Promise<void> => {
 		await deps.callLog.append({ at: stamp(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
 			outcome: attempt.ok ? "answered" : attempt.reason,
-			sessionId: attempt.ok ? attempt.sessionId : null, factoryCredits: attempt.ok ? attempt.factoryCredits : null });
+			sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
 	};
 	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the deployment's shared model budget is spent for now" };
@@ -312,7 +316,11 @@ export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): A
 			});
 			if ("spawnDetail" in run) return { ok: false, reason: "PROVIDER_ERROR", detail: boundedDetail(run.spawnDetail) };
 			const classified = classifyDroidRun(run.code, run.stdout);
-			if (!classified.ok) return { ok: false, reason: classified.reason, detail: classified.detail };
+			// A failed run carries what it reported: the session it spent and the credits it charged.
+			if (!classified.ok) {
+				return { ok: false, reason: classified.reason, detail: classified.detail,
+					sessionId: classified.sessionId, factoryCredits: classified.factoryCredits };
+			}
 			return { ok: true, text: droidResultText(run.stdout) ?? "", sessionId: classified.sessionId, factoryCredits: classified.factoryCredits };
 		} finally { await rm(dir, { recursive: true, force: true }); }
 	};
