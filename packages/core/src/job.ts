@@ -238,6 +238,8 @@ export type PaidState = {
 	readonly release: ReleaseEvidence;
 	/** The authority the release was selected under. A row stored before F4 reads as null at the store boundary. */
 	readonly releaseAuthority: ReleaseIntent["authority"] | null;
+	/** Every verdict the row settled with, earlier ones included. A row stored before this field reads as empty at the store boundary. */
+	readonly history: History;
 	readonly merge: MergeProgress;
 	readonly treasury: readonly TreasuryEntry[];
 };
@@ -692,7 +694,7 @@ function transitionTable(): {
 			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { status: "PAID", payee: escrow.payee, book, receipt, release, releaseAuthority: row.state.review.release.authority,
-					merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
+					history: row.state.history, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
 		} },
 		RefundSettled: { by: "SYSTEM", apply: (row, command) => {
 			const escrow = heldEscrowOf(row);

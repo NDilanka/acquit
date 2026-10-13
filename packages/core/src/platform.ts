@@ -38,7 +38,7 @@ export type PlatformJobLedger = {
 	readonly payout: { readonly paid: UsdCents; readonly payoutItemId: string; readonly captureId: string | null;
 		readonly releasedAt: Instant; readonly authority: string | null } | null;
 	readonly receipt: { readonly id: string; readonly paid: UsdCents; readonly releasedAt: Instant } | null;
-	/** Every verdict the row holds: the judged attempts, and the paid job's own verified one. */
+	/** Every verdict the row holds: the judged attempts, and a legacy paid row's receipt-verified one. */
 	readonly attempts: readonly PlatformAttempt[];
 };
 
@@ -54,14 +54,15 @@ export function platformJobLedger(row: JobRow): PlatformJobLedger {
 	const fee = lines.find(line => line.kind === "FEE");
 	const held = lines.find(line => line.kind === "HELD");
 	const history = state.status === "IN_PROGRESS" ? state.attempts.history
-		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
+		: state.status === "VERIFIED" || state.status === "REFUNDED" || state.status === "PAID" ? state.history : [];
 	const judged = history.map(record => {
 		const view = attemptView(record);
 		return { ordinal: view.ordinal, result: view.result, at: view.at,
 			tamper: record.verdict.result === "REJECTED" && record.verdict.reasons.some(isTestTamper), reasons: view.reasons };
 	});
-	// A paid row keeps no attempt history: its receipt's own verified attempt is the verdict it holds.
-	const attempts = state.status === "PAID"
+	// A paid row keeps the history it settled with. A row stored before the field reads empty, and its
+	// receipt's own verified attempt is the one verdict it can still name.
+	const attempts = state.status === "PAID" && judged.length === 0
 		? [{ ordinal: state.receipt.attemptsUsed, result: "VERIFIED" as const, at: state.receipt.releasedAt, tamper: false, reasons: [] }]
 		: judged;
 	return { jobId: row.id, title: row.title, tenant: row.tenant ?? null, client: row.client, status: state.status,

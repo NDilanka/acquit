@@ -53,7 +53,7 @@ function paidRow(tenant: VisitorId | null, id = "job_ledger_paid"): JobRow {
 				agent: "ts-bugfixer" as AgentId, pullRequest: 13, mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha,
 				frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, attemptsUsed: 2, paid: usd("360.00"), releasedAt: later } as Receipt,
 			release: { payoutItemId: "payout-item-1" as PayoutItemId, captureId: "TESTCAPTURE" as CaptureId, paid: usd("360.00"), at: later },
-			releaseAuthority: "CLIENT_APPROVAL", merge: { phase: "MERGED", at: later, sha: "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1" as CommitSha }, treasury: [] } };
+			releaseAuthority: "CLIENT_APPROVAL", history: [], merge: { phase: "MERGED", at: later, sha: "d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a3b5c7d9e1" as CommitSha }, treasury: [] } };
 }
 
 /** A held job in visitor B's world whose first attempt was a test tamper the verifier rejected. */
@@ -186,7 +186,7 @@ test("a paid job keeps the attempts it settled with: an honest retry's tamper st
 	]);
 	const settled = applyJobCommand(row, { type: "ReleaseSettled", jobId: row.id,
 		release: { captureId: "TESTCAPTURE" as CaptureId, payoutItemId: "payout-item-1" as PayoutItemId, paid: usd("360.00"), at: later } },
-		{ actor: { role: "SYSTEM" }, now: later });
+		{ actor: { role: "SYSTEM", source: "PAYPAL" } as const, now: later, loaded: { kind: "NONE" } as const });
 	if (typeof settled === "string") throw new Error(`release refused: ${settled}`);
 	assert.equal(settled.next.state.status, "PAID");
 	assert.ok("history" in settled.next.state, "the paid row keeps its verdict history");

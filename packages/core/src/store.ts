@@ -147,7 +147,10 @@ function isReleaseAuthority(value: unknown): value is ReleaseIntent["authority"]
 function storedPaid(state: JobState): JobState {
 	if (state.status !== "PAID") return state;
 	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
-	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null };
+	// A paid row stored before it kept its verdict history holds none: the read types that absence as
+	// the empty history, and the projection falls back to the receipt's own verified attempt.
+	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null,
+		history: Array.isArray(paid.history) ? paid.history : [] };
 }
 /** The five reasons the domain records. Anything else in a row is not a reason this build knows. */
 const REFUND_REASONS = ["DELIVERY_DEADLINE", "ATTEMPTS_EXHAUSTED", "ARBITER_REFUND", "CAPTURE_CUTOFF", "CAPTURE_MISMATCH"] as const;
