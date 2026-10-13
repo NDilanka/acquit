@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, factoryApiKey, modelCallLog, modelProvider,
+	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, droidResultText, factoryApiKey, modelCallLog, modelProvider,
 	reserveModelCall,
 } from "../src/model.ts";
 
@@ -122,8 +122,7 @@ test("a success result without session or usage still succeeds, with nulls recor
 	assert.deepEqual(classifyDroidRun(0, bare), { ok: true, sessionId: null, factoryCredits: null });
 });
 
-test("the Factory key comes from the environment first, then the laptop key file, never a log", async () => {
-	assert.equal(await factoryApiKey({ FACTORY_API_KEY: "from-env" }), "from-env", "the VM's env var wins");
+test("the Factory key comes from the environment first, then the laptop key file, never a log", async () => {	assert.equal(await factoryApiKey({ FACTORY_API_KEY: "from-env" }), "from-env", "the VM's env var wins");
 	const home = mkdtempSync(join(tmpdir(), "acquit-model-key-"));
 	const keyFile = join(home, ".config", "acquit", "factory-api-key");
 	try {
@@ -137,3 +136,13 @@ test("the Factory key comes from the environment first, then the laptop key file
 	} finally { rmSync(home, { recursive: true, force: true }); }
 	assert.equal(await factoryApiKey({ HOME: "/nonexistent-acquit-home" }), null, "a missing key file yields null, never a throw");
 });
+
+test("the result line's answer text is readable for a read-only ask turn", () => {
+	const ok = `{"type":"result","subtype":"success","is_error":false,"result":"{\\"message\\":\\"378.00 held\\"}","session_id":"s1","usage":{"factory_credits":12}}\n`;
+	assert.equal(droidResultText(ok), '{"message":"378.00 held"}');
+	assert.equal(droidResultText("no result line at all\n"), null, "a stream with no result line has no text");
+	assert.equal(droidResultText(""), null, "an empty stream has no text");
+	const errored = `{"type":"result","subtype":"failure","is_error":true,"result":"the model refused"}\n`;
+	assert.equal(droidResultText(errored), "the model refused", "an errored run still reports the text it carried");
+});
+
