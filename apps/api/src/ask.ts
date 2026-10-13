@@ -276,7 +276,9 @@ export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): A
 		const argv = ["droid", "exec", "-m", DROID_MODEL, "-o", "json", "-f", file];
 		try {
 			const run = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
-				const child = spawn("droid", argv, { env: { ...env, FACTORY_API_KEY: key }, cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
+				// stderr is ignored, not piped: nothing here reads it, and a chatty child would fill the
+			// pipe buffer and wedge on a write that never drains, past every timeout this port sets.
+			const child = spawn("droid", argv, { env: { ...env, FACTORY_API_KEY: key }, cwd: dir, stdio: ["ignore", "pipe", "ignore"] });
 				let stdout = "";
 				const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("the droid turn timed out")); }, 300_000);
 				child.stdout.on("data", (chunk: Buffer) => { stdout += String(chunk); });

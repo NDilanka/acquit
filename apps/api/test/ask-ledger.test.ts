@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCallLog } from "../../../packages/core/src/model.ts";
@@ -15,7 +15,7 @@ import { usd } from "../../../packages/core/src/acquit.ts";
 import { instant } from "../../../packages/core/src/ids.ts";
 import type { CaptureId, ClientId, JobId, MerchantId, OperatorId, OrderId } from "../../../packages/core/src/ids.ts";
 import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
-import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, buildAskPrompt, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
+import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, buildAskPrompt, droidAskPort, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
 
 /** One held job's ledger row, the projection the platform route serves, as the executor reads it. */
 const heldBookRow = (): PlatformJobLedger => ({
@@ -179,4 +179,22 @@ test("the executor answers a job's own book, with its capture, lines, and verdic
 	assert.equal(job.jobId, "job_held");
 	assert.deepEqual(job.capture, { orderId: "ORDER1", captureId: "CAP1", payee: "sandbox-seller", gross: 37800 });
 	await assert.rejects(executor("get_job", { jobId: "job_missing" }), /no job named job_missing/);
+});
+
+test("a chatty droid on stderr cannot wedge the turn: the port never waits on a full pipe", { timeout: 30_000 }, async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-shim-"));
+	try {
+		const bin = join(dir, "bin");
+		await mkdir(bin);
+		// A droid that answers, then pours far more than a pipe buffer's worth down stderr before it
+		// exits -- the shape that wedges a port that pipes stderr and never reads it.
+		const result = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: '{"message":"hi","calls":[]}', session_id: "s1", usage: { factory_credits: 1 } });
+		await writeFile(join(bin, "droid"), `#!/bin/sh\nprintf '%s\\n' '${result}'\nhead -c 262144 /dev/zero | tr '\\0' x >&2\n`, { mode: 0o700 });
+		const port = droidAskPort({ env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, FACTORY_API_KEY: "test-key-in-process" } });
+		const settled = await Promise.race([
+			port(buildAskPrompt({ messages: question, tools })),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the turn did not settle: the port waits on a full stderr pipe")), 20_000)),
+		]);
+		assert.ok(settled.ok && /"message":"hi"/.test(settled.text), "the answer text rides back");
+	} finally { await rm(dir, { recursive: true, force: true }); }
 });
