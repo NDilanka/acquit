@@ -3,10 +3,12 @@
 // the egress proxy on 2026-10-11); no test below opens a socket.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { syncBuiltinESMExports } from "node:module";
 import {
 	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, droidResultText, factoryApiKey, modelCallLog, modelProvider,
 	reserveModelCall,
@@ -138,6 +140,65 @@ test("thirty concurrent reservations admit exactly the minute's nineteen", async
 		assert.equal(results.filter(result => result.ok).length, 19, "the window admits its 19, nothing more");
 		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "each admission wrote one START");
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("two waiters that both see a stale lock admit exactly one reservation", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-stale-"));
+	const originalStat = fsPromises.stat;
+	const originalRm = fsPromises.rm;
+	// The same injected schedule the scrutiny probe uses: both waiters' staleness checks are held
+	// until both have looked, and the second waiter's removal is held until the first holder's
+	// critical read, so the second removal lands on the first holder's fresh lock.
+	let releaseStats!: () => void;
+	const bothStats = new Promise<void>(resolve => { releaseStats = resolve; });
+	let releaseFirstRead!: () => void;
+	const firstRead = new Promise<void>(resolve => { releaseFirstRead = resolve; });
+	let releaseBothReads!: () => void;
+	const bothReads = new Promise<void>(resolve => { releaseBothReads = resolve; });
+	let statCount = 0;
+	let removals = 0;
+	let reads = 0;
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const lockPath = `${log.path}.lock`;
+		await fsPromises.writeFile(lockPath, "", { mode: 0o600 });
+		const stale = new Date(Date.now() - 20_000);
+		await fsPromises.utimes(lockPath, stale, stale);
+		fsPromises.stat = (async (...args: Parameters<typeof originalStat>) => {
+			const result = await originalStat(...args);
+			if (args[0] === lockPath && statCount < 2) {
+				statCount += 1;
+				if (statCount === 2) releaseStats();
+				await bothStats;
+			}
+			return result;
+		}) as unknown as typeof fsPromises.stat;
+		fsPromises.rm = (async (...args: Parameters<typeof originalRm>) => {
+			if (args[0] === lockPath && ++removals === 2) await firstRead;
+			return originalRm(...args);
+		}) as unknown as typeof fsPromises.rm;
+		syncBuiltinESMExports();
+		const wrapped = {
+			...log,
+			records: async () => {
+				const snapshot = await log.records();
+				reads += 1;
+				if (reads === 1) releaseFirstRead();
+				if (reads === 2) releaseBothReads();
+				await bothReads;
+				return snapshot;
+			},
+		};
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		const results = await Promise.all([reserveModelCall(wrapped, call), reserveModelCall(wrapped, call)]);
+		assert.equal(results.filter(result => result.ok).length, 1, "of two waiters that both saw the stale lock, exactly one is admitted");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "the minute never holds the twentieth start");
+	} finally {
+		fsPromises.stat = originalStat;
+		fsPromises.rm = originalRm;
+		syncBuiltinESMExports();
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("an exit 0 with no result line defers to the commit step", () => {
