@@ -4,6 +4,7 @@
 .studio-widget .rows { margin: 4px 0 6px; }
 .studio-widget .rows div { padding: 7px 12px; }
 .studio-widget .pill { align-self: flex-start; }
+.studio-widget .mono { overflow-wrap: anywhere; }
 .studio-value { font-size: 26px; font-weight: 600; line-height: 1.15; }
 .pill.break { color: var(--red); background: var(--red-bg); border-color: #f0c9c0; }
 @media (max-width: 640px) {
