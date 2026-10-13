@@ -275,6 +275,10 @@ function acquitStudioTheme() {
   });
 }
 
+// Studio refuses to mount its canvas without a data source, even though every widget is a custom
+// component that reads React state instead, so it gets one empty table.
+const STUDIO_DATA = { sources: [{ id: "acquit", data: [] }] };
+
 function AcquitStudio({
   state,
   mode,
@@ -298,6 +302,7 @@ function AcquitStudio({
         theme={theme}
         layout={PAGE_LAYOUT}
         widgets={WIDGETS}
+        data={STUDIO_DATA}
         onStateUpdated={onStateUpdated}
       />
     </AgStudioProvider>
