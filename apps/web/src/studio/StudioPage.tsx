@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createStudioTheme, type AgReportState } from "ag-studio";
+import { createStudioTheme, type AgDataSourcesDefinition, type AgReportState } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
 import type { PlatformJobLedger } from "../api-types";
 import { errorText } from "../demo";
 import { Link } from "../router";
 import { useSession } from "../session";
+import { STUDIO_EARNINGS_DATA, STUDIO_ESCROW_DATA } from "../studio-source";
 import {
   EarningsContext,
   EscrowContext,
@@ -163,6 +164,7 @@ function Dashboard<T>({
             state={narrow ? stacked(layout.latest.current) : layout.latest.current}
             mode={editing && !narrow ? "edit" : "view"}
             onState={narrow ? undefined : layout.save}
+            data={id === "escrow" ? STUDIO_ESCROW_DATA : STUDIO_EARNINGS_DATA}
           />,
         )
       )}
@@ -275,10 +277,6 @@ function acquitStudioTheme() {
   });
 }
 
-// Studio refuses to mount its canvas without a data source, even though every widget is a custom
-// component that reads React state instead, so it gets one empty table.
-const STUDIO_DATA = { sources: [{ id: "acquit", data: [] }] };
-
 // The dashboards are read-only in view mode, so the studio's filter panel is only noise there and
 // covers the stacked narrow layout. Edit mode keeps its default panels.
 const STUDIO_PANELS = { view: { left: [], right: [] } };
@@ -287,10 +285,12 @@ function AcquitStudio({
   state,
   mode,
   onState,
+  data,
 }: {
   state: DashboardState;
   mode: "view" | "edit";
   onState: ((state: DashboardState) => void) | undefined;
+  data: AgDataSourcesDefinition<AcquitRegistry>;
 }) {
   const theme = useMemo(acquitStudioTheme, []);
   // Studio may keep the first handler it is given, so it calls through a ref to the current one.
@@ -306,7 +306,7 @@ function AcquitStudio({
         theme={theme}
         layout={PAGE_LAYOUT}
         widgets={WIDGETS}
-        data={STUDIO_DATA}
+        data={data}
         panels={STUDIO_PANELS}
         onStateUpdated={onStateUpdated}
       />
