@@ -66,7 +66,7 @@ test("a model turn is relayed: the envelope's message and calls ride back, and t
 			return { ok: true as const, text: '{"message":null,"calls":[{"id":"c1","name":"platform_totals","arguments":{}}]}', sessionId: "sess-1", factoryCredits: 5 };
 		};
 		const outcome = await askLedgerTurn(
-			{ model, callLog: modelCallLog(log.path), now: () => "2026-10-13T12:00:00Z" },
+			{ model, callLog: modelCallLog(log.path) },
 			{ messages: question, tools },
 		);
 		assert.deepEqual(outcome, {
@@ -83,7 +83,7 @@ test("a turn the model answers outright carries the message and no calls", async
 	const model = async () => ({ ok: true as const, text: 'Sure! {"message":"378.00 USD is held; PayPal agrees.","calls":[]}', sessionId: null, factoryCredits: 3 });
 	const root = await mkdtemp(join(tmpdir(), "acquit-ask-outright-"));
 	const outcome = await askLedgerTurn(
-		{ model, callLog: modelCallLog(join(root, "log.jsonl")), now: () => "2026-10-13T12:00:00Z" },
+		{ model, callLog: modelCallLog(join(root, "log.jsonl")) },
 		{ messages: question, tools },
 	);
 	try { await rm(root, { recursive: true, force: true }); } catch { /* the log file is disposable */ }
@@ -112,7 +112,7 @@ test("a provider error retries once and then fails; a rate limit never retries",
 			: { ok: false as const, reason: "RATE_LIMITED" as const, detail: "usage limit reached" };
 	};
 	const root = await mkdtemp(join(tmpdir(), "acquit-ask-retry-"));
-	const run = () => askLedgerTurn({ model, callLog: modelCallLog(join(root, "log.jsonl")), now: () => "2026-10-13T12:00:00Z" }, { messages: question, tools });
+	const run = () => askLedgerTurn({ model, callLog: modelCallLog(join(root, "log.jsonl")) }, { messages: question, tools });
 
 	failing = "provider";
 	const retried = await run();
@@ -140,7 +140,7 @@ test("the retry is its own budget attempt: reserved, started, and ended like the
 		const path = join(dir, "model-calls.jsonl");
 		const log = modelCallLog(path);
 		await seedStarts(log, 17);
-		const outcome = await askLedgerTurn({ model, callLog: log, now: () => new Date().toISOString() }, { messages: question, tools });
+		const outcome = await askLedgerTurn({ model, callLog: log }, { messages: question, tools });
 		assert.ok(outcome.ok, "17 spent slots leave the turn and its retry inside the budget");
 		assert.equal(calls.length, 2, "the turn retried exactly once");
 		const records = await modelCallLog(path).records();
@@ -163,7 +163,7 @@ test("a retry the shared budget cannot admit is refused, never an unreserved 20t
 		const path = join(dir, "model-calls.jsonl");
 		const log = modelCallLog(path);
 		await seedStarts(log, 18);
-		const outcome = await askLedgerTurn({ model, callLog: log, now: () => new Date().toISOString() }, { messages: question, tools });
+		const outcome = await askLedgerTurn({ model, callLog: log }, { messages: question, tools });
 		assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET", "the retry is refused when the minute is spent");
 		assert.equal(calls.length, 1, "the refused retry never ran");
 		const records = await modelCallLog(path).records();
@@ -177,9 +177,10 @@ test("a spent shared budget refuses the turn before any model call", async () =>
 	const root = await mkdtemp(join(tmpdir(), "acquit-ask-budget-"));
 	try {
 		const log = modelCallLog(join(root, "model-calls.jsonl"));
-		// Saturate the rolling minute with the cap's record count.
-		for (let i = 0; i < 19; i++) await log.append({ at: "2026-10-13T12:00:30Z", caller: "other", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
-		const outcome = await askLedgerTurn({ model, callLog: log, now: () => "2026-10-13T12:00:31Z" }, { messages: question, tools });
+		// Saturate the rolling minute with the cap's record count, stamped on the wall clock the
+		// turn budgets on.
+		await seedStarts(log, 19);
+		const outcome = await askLedgerTurn({ model, callLog: log }, { messages: question, tools });
 		assert.ok(!outcome.ok && outcome.reason === "MODEL_BUDGET");
 		assert.deepEqual(calls, []);
 	} finally { await rm(root, { recursive: true, force: true }); }

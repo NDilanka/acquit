@@ -49,7 +49,6 @@ export type AskModelResult =
 export type AskTurnDeps = {
 	readonly model: AskModelPort;
 	readonly callLog: ModelCallLog;
-	readonly now: () => string;
 };
 
 /** The instruction every turn runs under, whatever the agent's own definition adds: one JSON
@@ -123,21 +122,25 @@ export function askModelName(): string {
  * Every provider attempt is its own budget event -- the retry reserves its own slot and records
  * its own START and END, so the log counts exactly what ran -- and a retry the budget cannot
  * admit is refused, never an unreserved call past the cap. A provider error retries once; a
- * rate or usage limit is terminal for the run, never retried. */
+ * rate or usage limit is terminal for the run, never retried. The budget's stamps are the wall
+ * clock: the turn takes no clock at all, so the dev offset clock that governs domain deadlines
+ * cannot reach the budget through it. */
 export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly messages: readonly AskMessage[]; readonly tools: readonly AskToolSchema[]; readonly instructions?: string }): Promise<AskTurnOutcome> {
 	const provider = modelProvider();
 	const model = askModelName();
 	const prompt = buildAskPrompt(input);
+	const stamp = (): string => new Date().toISOString();
 	const recordEnd = async (attempt: AskModelResult): Promise<void> => {
-		await deps.callLog.append({ at: deps.now(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
-			outcome: attempt.ok ? "answered" : attempt.reason, sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
+		await deps.callLog.append({ at: stamp(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
+			outcome: attempt.ok ? "answered" : attempt.reason,
+			sessionId: attempt.ok ? attempt.sessionId : null, factoryCredits: attempt.ok ? attempt.factoryCredits : null });
 	};
-	const reserved = await reserveModelCall(deps.callLog, { at: deps.now(), caller: "ask-ledger", jobId: null, provider, model });
+	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the deployment's shared model budget is spent for now" };
 	let result = await deps.model(prompt);
 	await recordEnd(result);
 	if (!result.ok && result.reason === "PROVIDER_ERROR") {
-		const retried = await reserveModelCall(deps.callLog, { at: deps.now(), caller: "ask-ledger", jobId: null, provider, model });
+		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
 		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: "the shared model budget refused the one retry" };
 		result = await deps.model(prompt);
 		await recordEnd(result);

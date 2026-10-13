@@ -564,7 +564,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			relayed = { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
 				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
-		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog, now: () => clock.now() }, relayed);
+		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog }, relayed);
 		if (!outcome.ok) {
 			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
 				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
