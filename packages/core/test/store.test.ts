@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { projectJob } from "../src/job.ts";
+import { houseLine, projectJob } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
 import { openDatabase, SqliteStore } from "../src/store.ts";
 import type { OperationKey, OutboxRow, RecordedRequest } from "../src/effects.ts";
@@ -261,6 +261,31 @@ test("a PAID commit appends its receipt row in the same write, counted from rows
 		await store.commit({ job: { expectedVersion: row.version as Version, row: row as unknown as JobRow, wakeAt: null },
 			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
 		assert.deepEqual((await store.receiptRowCounts()).get(payee), { total: 1, paid: 1 }, "the replay never adds a row");
+	} finally { store.close(); }
+});
+
+test("the House line's row counts read the real receipt rows and skip the seeded ones", async () => {
+	const store = new SqliteStore(":memory:");
+	const house = "house-tsfix" as OperatorId;
+	const operator = { id: house, handle: "house-tsfix", kind: "HOUSE", version: 0,
+		payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: "2026-10-06T12:00:00.000Z" } };
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	try {
+		// The seed's display history: 41 rows (39 paid) marked SEED. They label the House's history
+		// but they are not fixes the line counts.
+		const insert = store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)");
+		for (let index = 1; index <= 41; index++) {
+			const paid = index <= 39 ? 1 : 0;
+			insert.run(`rcpt_house-seed-${String(index).padStart(3, "0")}`, null, house, paid, paid ? "2026-10-06T12:00:00.000Z" : null);
+		}
+		const seeded = (await store.receiptRowCounts()).get(house) ?? { total: 0, paid: 0 };
+		assert.deepEqual(seeded, { total: 0, paid: 0 }, "seeded rows stay out of the line");
+		assert.equal(houseLine(seeded), "0 fixes, 0 passed verified CI");
+		// The first real House job settles: the row count and the line move by exactly that one row.
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'JOB', 1, ?)").run("rcpt_job_house_1", "job_house_1", house, "2026-10-14T12:00:00.000Z");
+		const real = (await store.receiptRowCounts()).get(house) ?? { total: 0, paid: 0 };
+		assert.deepEqual(real, { total: 1, paid: 1 }, "a real receipt row is what the line counts");
+		assert.equal(houseLine(real), "1 fixes, 1 passed verified CI");
 	} finally { store.close(); }
 });
 
