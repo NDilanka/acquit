@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { instant } from "../../../packages/core/src/ids.ts";
 import type { CommitSha, TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
+import { parseScopingFile } from "../../../packages/core/src/scoping.ts";
 
 const root = join(import.meta.dirname, "..");
 const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
@@ -160,6 +161,9 @@ test("a client reviews its own parked draft, another role is refused, and the ap
 		const file = JSON.parse(await readFile(join(scopingDir, `${jobId}.json`), "utf8")) as { approved: string | null; cases: readonly { id: string }[] };
 		assert.ok(file.approved, "the private file records the approval");
 		assert.deepEqual(file.cases.map(test => test.id), ["draft:1", "draft:2"], "the private file keeps only the approved cases");
+		const reparsed = parseScopingFile(await readFile(join(scopingDir, `${jobId}.json`), "utf8"), `${jobId}.json`);
+		assert.equal(reparsed.version, 1, "the rewritten file still carries version 1, so the verifier's book reloads it");
+		assert.deepEqual(reparsed.cases.map(test => test.id), ["draft:1", "draft:2"]);
 
 		const second = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: [] }, maya);
 		assert.equal(second.status, 409, "a frozen draft is immutable");
