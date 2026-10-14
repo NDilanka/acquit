@@ -24,11 +24,14 @@ import { demoFixture } from "./hidden-fixture.ts";
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
-/** The laptop store's path: the deployment default the private-file tests fall back to. */
+/** The laptop store's path: the deployment default, and what ACQUIT_PRIVATE_CASES overrides. */
 const DEFAULT_PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
-/** The deployment's private case file: mode 0600 under its own store, outside every git repository. Its expected values are never printed. */
-function privateCasesPath(_env: Record<string, string | undefined> = process.env): string {
-	return DEFAULT_PRIVATE_CASES_PATH;
+/** The deployment's private case file: ACQUIT_PRIVATE_CASES when set (a VM's registry names its
+ * own files under /var/lib/acquit), else the laptop store. Mode 0600 under its own store, outside
+ * every git repository; its expected values are never printed. The private-file tests skip when
+ * the store is absent, never pass vacuously. */
+function privateCasesPath(env: Record<string, string | undefined> = process.env): string {
+	return env.ACQUIT_PRIVATE_CASES?.trim() || DEFAULT_PRIVATE_CASES_PATH;
 }
 const PRIVATE_CASES_PATH = privateCasesPath();
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
@@ -228,7 +231,7 @@ test("the check script finds the public example in the repository", () => {
 	assert.match(result.stdout, /cases=6 files=\d+ total=[1-9]\d*/);
 });
 
-test("the check script finds nothing from a deployment's private file", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this checkout." }, () => {
+test("the check script finds nothing from a deployment's private file", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this checkout; set ACQUIT_PRIVATE_CASES or provision the store." }, () => {
 	const result = lever(PRIVATE_CASES_PATH);
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
@@ -248,7 +251,7 @@ function isGitRepository(dir: string): boolean {
 	return existsSync(join(dir, ".git")) || (existsSync(join(dir, "HEAD")) && existsSync(join(dir, "objects")));
 }
 
-test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment." }, () => {
+test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment; set ACQUIT_PRIVATE_CASES or provision the store." }, () => {
 	for (const dir of ancestorsAbove(PRIVATE_CASES_PATH)) {
 		assert.ok(!isGitRepository(dir), `${dir} holds a git repository; the private case store must not`);
 	}
