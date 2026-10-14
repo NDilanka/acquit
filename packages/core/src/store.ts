@@ -244,20 +244,24 @@ export class SqliteStore implements Store {
 
 	/** The client's approval, claimed in one unit of work on this store's own connection. The job's
 	 * row is re-read under the write lock, so an approval only ever lands while the job is still
-	 * OPEN: once an acceptance or a funding commits the job to its contract, the claim refuses for
-	 * good, and no later approval can rewrite what the job runs — that is the whole of the other
-	 * side's guard, so AcceptBid needs none of its own. The AWAITING_APPROVAL row then moves to
-	 * APPROVED by compare-and-set on its status, the manifest freezes with the approved digest, and
-	 * the caller's `persist` rewrites the private case file before the commit — a write that fails
-	 * rolls the whole claim back, so the state is never approved without its file. */
+	 * open for bids: status OPEN with phase BIDDING and no accepted bid. An acceptance keeps the
+	 * status OPEN but commits the job to its contract — phase FUNDING, a CHOSEN bid, and every
+	 * checkout step after it up to and including CAPTURING — so the claim refuses those for good,
+	 * and no later approval can rewrite what the job runs. A permanent funding failure returns the
+	 * job to BIDDING with nothing held, and only then the window opens again. The AWAITING_APPROVAL
+	 * row then moves to APPROVED by compare-and-set on its status, the manifest freezes with the
+	 * approved digest, and the caller's `persist` rewrites the private case file before the commit —
+	 * a write that fails rolls the whole claim back, so the state is never approved without its
+	 * file. */
 	async claimApproval(id: JobId, freeze: { readonly manifest: DefinitionOfDone; readonly ids: readonly TestId[];
 		readonly digest: Digest; readonly counts: JobScopingRow["counts"]; readonly persist: () => void },
 		at: Instant): Promise<"CLAIMED" | "ALREADY_FROZEN" | "JOB_NOT_OPEN" | "NOT_AWAITING"> {
 		this.db.exec("BEGIN IMMEDIATE");
 		try {
 			const job = this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id);
-			const status = job ? (JSON.parse(String(job.json)) as JobRow).state.status : null;
-			if (status !== "OPEN") { this.db.exec("ROLLBACK"); return status === null ? "NOT_AWAITING" : "JOB_NOT_OPEN"; }
+			const state = job ? (JSON.parse(String(job.json)) as JobRow).state : null;
+			const openForBids = state !== null && state.status === "OPEN" && state.phase.kind === "BIDDING";
+			if (!openForBids) { this.db.exec("ROLLBACK"); return state === null ? "NOT_AWAITING" : "JOB_NOT_OPEN"; }
 			const claimed = this.db.prepare(`UPDATE job_scoping SET status = 'APPROVED', ids = ?, digest = ?, reason = NULL, counts = ?, updated_at = ?
 				WHERE job_id = ? AND status = 'AWAITING_APPROVAL'`)
 				.run(JSON.stringify(freeze.ids), freeze.digest, freeze.counts === null ? null : JSON.stringify(freeze.counts), at, id);

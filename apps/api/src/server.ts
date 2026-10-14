@@ -708,10 +708,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	// The AI scoping review and approval: the job's client reads its own parked draft, and the one
 	// approval freezes exactly the cases it kept. Another role is refused by name; a draft that
 	// leaves a coverage family uncovered is refused by naming the family; a frozen draft is immutable;
-	// and an approval lands only while the job is still OPEN — before acceptance or funding commits
-	// it to its contract — so a progressed job's manifest can never be rewritten. That is the whole
-	// of the coordination: the approval side refuses every job past OPEN, so an accepted job's
-	// contract stands no matter when its client's draft was parked.
+	// and an approval lands only while the job is still open for bids — before an acceptance commits
+	// it to its contract — so an accepted job's manifest can never be rewritten. That is the whole
+	// of the coordination: the approval side refuses every job whose bid window has closed, so an
+	// accepted job's contract stands no matter when its client's draft was parked.
 	const scopingRoute = url.pathname.match(/^\/api\/jobs\/([^/]+)\/scoping(\/approve)?$/);
 	if (scopingRoute && (method === "GET" || (method === "POST" && scopingRoute[2] === "/approve"))) {
 		const jobId = validJobId(decodeURIComponent(scopingRoute[1]));
@@ -766,9 +766,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const digest = hiddenManifest(kept).digest;
 		if (!manifest) { json(res, 409, { error: "NO_MANIFEST" }); return; }
 		// The one guarded claim: the store re-reads the job under the write lock, so an approval
-		// lands only while the job is still OPEN; the row moves by compare-and-set on its status,
-		// the manifest freezes, and the private file is rewritten before the commit. The loser of a
-		// race is refused by name; a file write that fails rolls the whole claim back.
+		// lands only while the job is still open for bids — OPEN with phase BIDDING, since an
+		// accepted bid keeps the status OPEN but closes this window. The row moves by
+		// compare-and-set on its status, the manifest freezes, and the private file is rewritten
+		// before the commit. The loser of a race is refused by name; a file write that fails rolls
+		// the whole claim back.
 		const claimed = await scopingStore.claimApproval(jobId, {
 			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest },
 			ids: kept.map(test => test.id), digest, counts: scopingRow.counts,
