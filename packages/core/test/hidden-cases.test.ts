@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Digest, TestId } from "../src/ids.ts";
@@ -283,9 +283,27 @@ test("a directory holding only HEAD or only objects is not a bare repository", (
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a relative ACQUIT_PRIVATE_CASES terminates", () => {
+	const store = mkdtempSync(join(tmpdir(), "acquit-hidden-rel-"));
+	try {
+		mkdirSync(join(store, "private"), { recursive: true });
+		writeFileSync(join(store, "private", "hidden-cases.json"), manifest(six()), { mode: 0o600 });
+		// The child runs the actual walk test above, unisolated, with the knob relative to that cwd.
+		// The heap cap makes a regressed walk abort in seconds instead of pinning the machine, and
+		// the spawn timeout is the backstop; the pass-1 match refuses a child that skipped the test.
+		const result = spawnSync(process.execPath,
+			["--test", "--test-isolation=none", "--max-old-space-size=256", "--test-name-pattern=sits outside every git repository",
+				fileURLToPath(new URL("./hidden-cases.test.ts", import.meta.url))],
+			{ cwd: store, env: { ...process.env, ACQUIT_PRIVATE_CASES: "private/hidden-cases.json" }, encoding: "utf8", timeout: 20_000 });
+		assert.equal(result.status, 0, `the relative-path run ended in ${result.signal ?? result.status}\n${result.stdout}\n${result.stderr}`);
+		assert.match(result.stdout, /\bpass 1\b/, "the walk test itself must have run once");
+	} finally { rmSync(store, { recursive: true, force: true }); }
+});
+
 test("the private-case path honors its environment knob", () => {
 	assert.equal(privateCasesPath({}), DEFAULT_PRIVATE_CASES_PATH, "no knob value keeps the laptop default");
 	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "/var/lib/acquit/private/hidden-cases.json" }), "/var/lib/acquit/private/hidden-cases.json",
 		"the knob names the deployment's own store");
 	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "  " }), DEFAULT_PRIVATE_CASES_PATH, "a blank knob value keeps the default");
+	assert.equal(isAbsolute(privateCasesPath({ ACQUIT_PRIVATE_CASES: "private/hidden-cases.json" })), true, "a relative knob value resolves to an absolute path");
 });
