@@ -264,6 +264,27 @@ test("a PAID commit appends its receipt row in the same write, counted from rows
 	} finally { store.close(); }
 });
 
+test("the job view's receipt carries the receipts-table source", async () => {
+	const store = new SqliteStore(":memory:");
+	const payee = "devon-ops" as OperatorId;
+	const operator = { id: payee, handle: "devon-ops", kind: "INDEPENDENT", version: 0,
+		payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: "2026-10-06T12:00:00.000Z" } };
+	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(operator.id, operator.version, JSON.stringify(operator), 0);
+	const row = storedPaidRow("job_paid_src", "REVIEW_SILENCE");
+	const maya = { role: "CLIENT" as const, clientId: "maya-client" as ClientId, tenant: null };
+	try {
+		await store.commit({ job: { expectedVersion: null, row: row as unknown as JobRow, wakeAt: null },
+			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
+		const view = projectJob(row as unknown as JobRow, maya, new Map(), undefined, await store.receiptSources());
+		assert.equal(view.receipt?.source, "JOB", "the settlement's own receipt row reads JOB");
+		// The F6 backfill marked every pre-existing PAID job's receipt row SEED, so a migrated job's
+		// own receipt carries that provenance and the pages label it Seeded.
+		store.db.prepare("UPDATE receipts SET source = 'SEED' WHERE id = ?").run("rcpt_job_paid_src");
+		const migrated = projectJob(row as unknown as JobRow, maya, new Map(), undefined, await store.receiptSources());
+		assert.equal(migrated.receipt?.source, "SEED", "a migrated row reads SEED on the job view");
+	} finally { store.close(); }
+});
+
 test("the House line's row counts read the real receipt rows and skip the seeded ones", async () => {
 	const store = new SqliteStore(":memory:");
 	const house = "house-tsfix" as OperatorId;
