@@ -321,3 +321,40 @@ export type AskTurnResponse = {
 
 /** `POST /api/ask-ledger/tool` on 200. */
 export type AskToolResponse = { readonly result: unknown };
+
+export type ScopingStatus = "DRAFTING" | "AWAITING_APPROVAL" | "APPROVED" | "FAILED";
+
+/** How many drafted candidates survived each of the four filters, then the dedupe. */
+export type FilterCounts = {
+  readonly candidates: number;
+  readonly f1: number;
+  readonly f2: number;
+  readonly f3: number;
+  readonly f4: number;
+  readonly deduped: number;
+};
+
+/** One drafted hidden case, with its private expected value and the issue text that justifies it. */
+export type ScopingCase = {
+  readonly id: string;
+  readonly target: { readonly module: string; readonly export: string };
+  readonly args: readonly unknown[];
+  readonly expected: unknown;
+  readonly citation: string;
+};
+
+/** `GET /api/jobs/:id/scoping` on 200, for the job's own client. Once approved, `cases` holds only the kept set. */
+export type ScopingResponse = {
+  readonly jobId: string;
+  readonly status: ScopingStatus;
+  readonly reason: string | null;
+  readonly counts: FilterCounts | null;
+  readonly issueBody: string | null;
+  readonly approvedAt: Instant | null;
+  readonly contract: string | null;
+  readonly frozenAt: string | null;
+  readonly cases: readonly ScopingCase[];
+};
+
+/** `POST /api/jobs/:id/scoping/approve` on 200. */
+export type ScopingApproveResponse = { readonly jobId: string; readonly digest: string; readonly approvedIds: readonly string[] };
