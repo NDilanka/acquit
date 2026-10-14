@@ -68,7 +68,7 @@ test("the script refuses by name when ACQUIT_CLIENT_REPOSITORY is unset and no -
 		assert.equal(refused.status, 1, `expected the named refusal, got status ${refused.status}: ${refused.stdout} ${refused.stderr}`);
 		assert.match(refused.stderr, /ACQUIT_CLIENT_REPOSITORY_UNSET/);
 		// --owner names the client repo itself, so the variable's absence cannot misname the work fork.
-		const owned = spawnSync(process.execPath, [script, "95", "main", "--template", template],
+		const owned = spawnSync(process.execPath, [script, "95", "main", "--template", template, "--owner", "probe-lanes"],
 			{ encoding: "utf8", cwd: root, env: { ...unset, ACQUIT_GITHUB_APP_ORG: "acquit-forks" } });
 		assert.equal(owned.status, 0, owned.stderr);
 		const ownedPrinted = JSON.parse(owned.stdout) as { clientRepo: string };
