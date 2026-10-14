@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -231,8 +231,45 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE)).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
 });
 
+/** The walk as it stands: every directory above the store's, stopping before the filesystem root. */
+function ancestorsAbove(start: string): string[] {
+	const dirs: string[] = [];
+	for (let dir = dirname(start); dir !== "/"; dir = dirname(dir)) dirs.push(dir);
+	return dirs;
+}
+/** The git markers the walk looks for: today only a work tree's .git entry. */
+function isGitRepository(dir: string): boolean {
+	return existsSync(join(dir, ".git"));
+}
+
 test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment." }, () => {
-	for (let dir = dirname(PRIVATE_CASES_PATH); dir !== "/"; dir = dirname(dir)) {
-		assert.ok(!existsSync(join(dir, ".git")), `${dir} holds a git work tree; the private case store must not`);
+	for (const dir of ancestorsAbove(PRIVATE_CASES_PATH)) {
+		assert.ok(!isGitRepository(dir), `${dir} holds a git work tree; the private case store must not`);
 	}
+});
+
+test("the ancestor walk reaches the filesystem root itself", () => {
+	assert.ok(ancestorsAbove(join(tmpdir(), "deep", "path", "hidden-cases.json")).includes("/"),
+		"the walk stopped before /; a store under a repository mounted at the root would slip past it");
+});
+
+test("the ancestor walk detects a bare repository above the store", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-hidden-bare-"));
+	try {
+		writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n", { mode: 0o600 });
+		mkdirSync(join(root, "objects"), { recursive: true });
+		assert.deepEqual(ancestorsAbove(join(root, "store", "hidden-cases.json")).filter(isGitRepository), [root],
+			"a bare repository (HEAD plus objects, no .git) above the store went undetected");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a directory holding only HEAD or only objects is not a bare repository", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-hidden-notbare-"));
+	try {
+		writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n", { mode: 0o600 });
+		assert.equal(isGitRepository(root), false, "HEAD alone is not a bare repository marker");
+		rmSync(join(root, "HEAD"));
+		mkdirSync(join(root, "objects"), { recursive: true });
+		assert.equal(isGitRepository(root), false, "objects alone is not a bare repository marker");
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
