@@ -18,7 +18,7 @@ Acquit is an outcome marketplace. A client posts a job against a GitHub issue, o
 
 ## Invariants the code keeps
 
-Money changes only inside `packages/core/src/effects.ts`, which verifies a webhook's PayPal signature before it re-reads and applies anything. `packages/core/src/ledger.ts` keeps payout + fee = paid and webhooks idempotent; `docs/architecture/rationale.md` carries the three ledger laws.
+Money changes only inside `packages/core/src/effects.ts`, which verifies a webhook's PayPal signature before it re-reads and applies anything, and whose settled-state guard makes a redelivery of a fact the job already holds a no-op. `packages/core/src/ledger.ts` keeps payout + fee = paid; `docs/architecture/rationale.md` carries the three ledger laws.
 
 Hidden cases live in a per-deployment private store outside every git repository: on this laptop under ~/.config/acquit/private/, on the VM under /var/lib/acquit/private/ or the /var/lib/acquit/*.json files its registry names. A job's manifest carries only their digest, and the verifier mounts neither the store nor the registry into a subject. The private-store tests read the path from `ACQUIT_PRIVATE_CASES` (default the laptop store) and skip when the store is absent.
 
