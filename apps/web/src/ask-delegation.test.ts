@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgStudioApi } from "ag-studio";
-import { ASK_AGENT_ID, ASK_AGENT_NAME, type AskAdapterDeps } from "./ask-ledger.ts";
+import { ASK_AGENT_ID, ASK_AGENT_NAME, askRows, type AskAdapterDeps } from "./ask-ledger.ts";
 import { createAskLedgerHarness, NEW_WIDGET_WORKFLOW, openAskThread } from "./ask-harness.ts";
 import { WIDGET_IDS, WIDGET_ROWS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { stacked } from "./studio-data.ts";
@@ -12,7 +12,19 @@ import { stacked } from "./studio-data.ts";
 
 type MockCatalogueEntry = { type: string; name: string; description: string; usage?: string; configuration?: string };
 
-type MockState = { selectedPageId: string; pages: [{ id: string; widgets: Record<string, Record<string, unknown>> }] };
+type MockTrack = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
+
+type MockState = {
+  selectedPageId: string;
+  pages: [
+    {
+      id: string;
+      layout?: { columns: number; rowHeight: number };
+      widgets: Record<string, Record<string, unknown>>;
+      widgetLayout?: Record<string, MockTrack>;
+    },
+  ];
+};
 
 const HELD_CATALOGUE: MockCatalogueEntry[] = [
   {
@@ -28,10 +40,18 @@ const HELD_CATALOGUE: MockCatalogueEntry[] = [
  * A Studio api double faithful where the bug lives: `getAiContext().catalogue()` serves the given
  * entries; the widget tools the SDK's widget agent asks for come from here, and `configureWidget`
  * throws before any model call when the delegated type is not in the catalogue — the production
- * failure's shape. Added and configured widgets land in `state`.
+ * failure's shape. Added and configured widgets land in `state`. An add that carries a full track
+ * is placed as Studio places a valid one; `dropPlacement` keeps the config but drops the placement,
+ * which is what Studio did with an overlapping add in user-testing round 4.
  */
-function mockStudioApi(catalogue: MockCatalogueEntry[]): { api: AgStudioApi; state: MockState } {
-  const state: MockState = { selectedPageId: "main", pages: [{ id: "main", widgets: {} }] };
+function mockStudioApi(
+  catalogue: MockCatalogueEntry[],
+  opts: { layout?: Record<string, MockTrack>; dropPlacement?: boolean } = {},
+): { api: AgStudioApi; state: MockState } {
+  const state: MockState = {
+    selectedPageId: "main",
+    pages: [{ id: "main", layout: { columns: 12, rowHeight: 60 }, widgets: {}, widgetLayout: { ...opts.layout } }],
+  };
   const tool = (
     name: string,
     description: string,
@@ -67,9 +87,13 @@ function mockStudioApi(catalogue: MockCatalogueEntry[]): { api: AgStudioApi; sta
       removeWidgetFilter: () => tool("remove_widget_filter", "unfilter a widget", async () => ok("ok")),
       addWidget: () =>
         tool("add_widget", "add a widget", async (call) => {
-          const args = call.args as { widgetId?: string; type?: string };
+          const args = call.args as { widgetId?: string; type?: string } & Partial<Record<keyof MockTrack, unknown>>;
           if (args.widgetId == null || args.type == null) return { success: false as const, issues: [{ message: "widgetId and type are required" }] };
           state.pages[0].widgets[args.widgetId] = { type: args.type, dataMapping: {} };
+          const { xTrack, yTrack, xSpan, ySpan } = args;
+          if (!opts.dropPlacement && typeof xTrack === "number" && typeof yTrack === "number" && typeof xSpan === "number" && typeof ySpan === "number") {
+            (state.pages[0].widgetLayout ??= {})[args.widgetId] = { xTrack, yTrack, xSpan, ySpan };
+          }
           return ok(`Added widget ${args.widgetId}`);
         }),
       removeWidget: () =>
@@ -79,6 +103,7 @@ function mockStudioApi(catalogue: MockCatalogueEntry[]): { api: AgStudioApi; sta
             return { success: false as const, issues: [{ message: `removeWidget: widget ${args.widgetId} is not on page main` }] };
           }
           delete state.pages[0].widgets[args.widgetId];
+          delete state.pages[0].widgetLayout?.[args.widgetId];
           return ok(`Removed widget ${args.widgetId}`);
         }),
       configureWidget: ({ widgetType, widgetId }: { widgetType: string; widgetId: string }) => {
@@ -366,4 +391,96 @@ test("the stacked narrow layout leaves room for the receipt card's caption", () 
   const card = (stackedState.pages[0]?.widgetLayout ?? {})["acquit-receipt-card"];
   assert.ok(card, "the receipt card survives stacking");
   assert.ok(card.ySpan >= 7, `the receipt card grows in the stacked layout (got ySpan ${card.ySpan})`);
+});
+
+const ROUND4_LAYOUT = {
+  "acquit-released": { xTrack: 3, yTrack: 0, xSpan: 3, ySpan: 2 },
+  "acquit-refunded": { xTrack: 6, yTrack: 0, xSpan: 3, ySpan: 2 },
+  "acquit-fees": { xTrack: 9, yTrack: 0, xSpan: 3, ySpan: 2 },
+  "acquit-pass-rate": { xTrack: 0, yTrack: 2, xSpan: 4, ySpan: 2 },
+  "acquit-reject-rate": { xTrack: 4, yTrack: 2, xSpan: 4, ySpan: 2 },
+  "acquit-tamper-caught": { xTrack: 8, yTrack: 2, xSpan: 4, ySpan: 2 },
+  "acquit-conserves": { xTrack: 0, yTrack: 4, xSpan: 12, ySpan: 4 },
+};
+
+const clash = (a: MockTrack, b: MockTrack) =>
+  a.xTrack < b.xTrack + b.xSpan && b.xTrack < a.xTrack + a.xSpan && a.yTrack < b.yTrack + b.ySpan && b.yTrack < a.yTrack + a.ySpan;
+
+const clashingPairs = (layout: Record<string, MockTrack>) => {
+  const entries = Object.entries(layout);
+  return entries.flatMap(([a, ta], i) => entries.slice(i + 1).filter(([, tb]) => clash(ta, tb)).map(([b]) => `${a} x ${b}`));
+};
+
+const heldAdd = (track: Partial<MockTrack>) => call("child-1", "add_widget", { widgetId: "held-escrow-main", type: "acquit-held", ...track });
+const complete = (summary: string) => call("child-2", "complete_task", { summary, artifacts: [] });
+
+async function runAdd(api: AgStudioApi, child: Answer[], reply: string, extra: Record<string, unknown> = {}) {
+  const { fetch } = scriptedFetch([delegate("acquit-held", "held-escrow-main"), text(reply)], child);
+  const deps = { fetch, ...extra };
+  const session = await harnessFor(api, deps).createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add a widget showing held escrow.");
+  await settle(session);
+  return session;
+}
+
+test("a delegated add at an occupied spot is placed on the first free spot and kept", async () => {
+  const { api, state } = mockStudioApi(HELD_CATALOGUE, { layout: ROUND4_LAYOUT });
+  const session = await runAdd(
+    api,
+    [heldAdd({ xTrack: 0, yTrack: 0, xSpan: 4, ySpan: 2 }), complete("Added and configured the held-escrow widget.")],
+    "Added the held-escrow widget.",
+  );
+  assert.equal(delegateResult(session)?.success, true, "the delegate succeeded");
+  assert.ok(state.pages[0].widgets["held-escrow-main"], "the widget's config is on the page");
+  assert.deepEqual(state.pages[0].widgetLayout?.["held-escrow-main"], { xTrack: 0, yTrack: 8, xSpan: 4, ySpan: 2 }, "the widget sits on the first free 4x2 spot");
+  assert.deepEqual(clashingPairs(state.pages[0].widgetLayout ?? {}), [], "no two widgets share a cell");
+});
+
+test("an add whose placement does not stick fails and removes the widget", async () => {
+  const { api, state } = mockStudioApi(HELD_CATALOGUE, { dropPlacement: true });
+  const session = await runAdd(
+    api,
+    [heldAdd({ xTrack: 0, yTrack: 0, xSpan: 4, ySpan: 2 }), complete("I could not add the widget: the placement did not hold.")],
+    "The widget was not added: the placement did not hold.",
+  );
+  const result = delegateResult(session);
+  assert.equal(result?.success, false, "a widget with no placement is not a success");
+  assert.equal(state.pages[0].widgets["held-escrow-main"], undefined, "the unplaced widget was removed again");
+  const message = result?.issues?.[0]?.message ?? "";
+  assert.match(message, /held-escrow-main/, "the failure names the widget");
+  assert.match(message, /not on the dashboard's grid/, "the failure says the widget is not on the grid");
+  const step = askRows(session.messages).find((row) => row.kind === "step" && row.label === "Handing off to the widget builder");
+  assert.equal(step?.kind === "step" ? step.state : undefined, "failed", "the drawer shows the hand-off as failed");
+});
+
+test("an add at a genuinely free spot keeps the spot it asked for", async () => {
+  const { api, state } = mockStudioApi(HELD_CATALOGUE);
+  const session = await runAdd(
+    api,
+    [heldAdd({ xTrack: 0, yTrack: 8, xSpan: 4, ySpan: 2 }), complete("Added and configured the held-escrow widget.")],
+    "Added the held-escrow widget.",
+  );
+  assert.equal(delegateResult(session)?.success, true, "the delegate succeeded");
+  assert.deepEqual(state.pages[0].widgetLayout?.["held-escrow-main"], { xTrack: 0, yTrack: 8, xSpan: 4, ySpan: 2 });
+});
+
+test("an add whose tile never renders fails and removes the widget", async () => {
+  const { api, state } = mockStudioApi(HELD_CATALOGUE);
+  const session = await runAdd(
+    api,
+    [heldAdd({ xTrack: 0, yTrack: 8, xSpan: 4, ySpan: 2 }), complete("I added the widget but it never showed up.")],
+    "The widget was not added: it never showed up.",
+    { renderedCount: (_type: string) => 0, renderWaitMs: 50 },
+  );
+  const result = delegateResult(session);
+  assert.equal(result?.success, false, "a widget whose tile never renders is not a success");
+  assert.equal(state.pages[0].widgets["held-escrow-main"], undefined, "the unrendered widget was removed again");
+  assert.match(result?.issues?.[0]?.message ?? "", /render/i, "the failure says the tile did not render");
+});
+
+test("an add with no placement at all lands on the first free spot", async () => {
+  const { api, state } = mockStudioApi(HELD_CATALOGUE);
+  const session = await runAdd(api, [heldAdd({}), complete("Added and configured the held-escrow widget.")], "Added the held-escrow widget.");
+  assert.equal(delegateResult(session)?.success, true, "the delegate succeeded");
+  assert.deepEqual(state.pages[0].widgetLayout?.["held-escrow-main"], { xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 }, "the widget takes its spec's 3x2 at the origin");
 });
