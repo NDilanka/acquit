@@ -13,6 +13,7 @@ import { instant } from "../src/ids.ts";
 import type { ClientId, CommitSha, Digest, JobId, TestId, Version } from "../src/ids.ts";
 import { SqliteStore, openDatabase } from "../src/store.ts";
 import { hiddenManifest } from "../../verifier/hidden.ts";
+import { storedDefinitionOfDone } from "../src/job.ts";
 import type { DefinitionOfDone, HiddenCase } from "../src/verifier.ts";
 
 const now = instant("2026-10-14T12:00:00Z");
@@ -75,6 +76,42 @@ test("the freeze rewrites the job's manifest hidden contract from the approved d
 		assert.deepEqual(frozen.hiddenTests, ["draft:1", "draft:2"], "the manifest holds exactly the approved draft ids");
 		assert.equal(frozen.hiddenManifest, digest, "the frozen digest is the approved cases' digest");
 		assert.equal(frozen.frozenAt, frozenCommit, "the frozen commit never moves");
+		store.close();
+	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+});
+
+test("a read of the job carries the frozen manifest, so every projection reads the approved set", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-a1-frozen-view-"));
+	try {
+		const store = new SqliteStore(join(root, "acquit.db"));
+		const curated: DefinitionOfDone = {
+			issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
+			frozenAt: frozenCommit, frozenTestPath: "tests/totals.test.ts",
+			frozenTests: Array.from({ length: 48 }, (_, index) => `frozen:${index + 1}` as TestId),
+			hiddenTests: Array.from({ length: 6 }, (_, index) => `hidden:${index + 1}` as TestId),
+			hiddenManifest: "a".repeat(64) as DefinitionOfDone["hiddenManifest"], protectedPaths: ["tests/**"] as unknown as DefinitionOfDone["protectedPaths"],
+		};
+		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run("job_frozen_view", 1, JSON.stringify({
+			id: "job_frozen_view", version: 1, client: "maya-client", tenant: null,
+			title: "Totals round wrong for 3-decimal currencies", openedAt: now,
+			contract: { budget: 40000, deliveryEndsAt: instant("2026-10-20T12:00:00Z"), definitionOfDone: curated, terms: {} },
+			bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } },
+		}), null);
+		store.db.prepare("INSERT INTO job_manifests VALUES (?, ?)").run("job_frozen_view", JSON.stringify(curated));
+		const cases: readonly HiddenCase[] = [
+			{ id: "draft:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [1235, "BHD"], expected: "1.235" },
+			{ id: "draft:2" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [123500, "JPY"], expected: "123500" },
+		];
+		const digest = hiddenManifest(cases).digest;
+		await store.freezeManifest("job_frozen_view" as JobId, { ...curated,
+			hiddenTests: cases.map(test => test.id), hiddenManifest: digest });
+		const done = storedDefinitionOfDone((await store.readJob("job_frozen_view" as JobId))!);
+		assert.ok(done, "the read carries a contract");
+		assert.deepEqual(done.hiddenTests, ["draft:1", "draft:2"], "the approved set, not the curated six");
+		assert.equal(done.hiddenManifest, digest, "the digest of the manifest the verifier runs");
+		assert.equal(done.frozenAt, frozenCommit, "the frozen commit never moves");
+		const listed = await store.listJobs();
+		assert.equal(storedDefinitionOfDone(listed[0]!).hiddenManifest, digest, "the list reads the same frozen contract");
 		store.close();
 	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });

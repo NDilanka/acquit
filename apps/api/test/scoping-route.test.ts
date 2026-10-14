@@ -259,6 +259,32 @@ test("approving every case the draft parked works, and a job with no parked draf
 	}
 });
 
+test("after the approval the job's contract names the approved set, so the API reads what the verifier runs", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-route-"));
+	const scopingDir = join(dir, "scoping");
+	const port = 4888;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, join(dir, "test.db"), scopingDir);
+		const maya = await session(port, "maya-client");
+		const jobId = await openJob(port, maya);
+		await parkDraft(join(dir, "test.db"), scopingDir, jobId);
+		const approved = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya);
+		assert.equal(approved.status, 200);
+		const frozen = (await approved.json()) as { digest: string };
+
+		const detail = await get(port, `/api/jobs/${jobId}`, maya);
+		assert.equal(detail.status, 200);
+		const job = (await detail.json()) as { job: { contract: { hiddenTests: number; hiddenManifest: string } | null } };
+		assert.ok(job.job.contract, "the job carries its contract");
+		assert.equal(job.job.contract!.hiddenTests, 2, "the approved case count, not the fixture's curated 6");
+		assert.equal(job.job.contract!.hiddenManifest, frozen.digest, "the digest of the manifest the verifier runs");
+	} finally {
+		child?.kill("SIGKILL");
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
 test("an approval for a job that has left OPEN refuses by name and freezes nothing", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-route-"));
 	const scopingDir = join(dir, "scoping");
