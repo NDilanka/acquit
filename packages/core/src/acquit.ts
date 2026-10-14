@@ -197,6 +197,9 @@ export type AcquitConfig = {
 	readonly verifierPort?: VerifierPort;
 	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
 	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
+	/** The AI-scoping kickoff, run when OpenJob commits a fixture that carries a trusted fix. The
+	 * deployment owns the model, the phases, and the private store; the open never fails with it. */
+	readonly scopeDraft?: Ports["scopeDraft"];
 	/**
 	 * Judge mode. The merchant is the sandbox seller a visitor's operator is paid through; without it
 	 * the demo route refuses by name, because a visitor that cannot be paid cannot bid.
@@ -217,6 +220,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		// where the deployment's own log handling is the record.
 		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
 		workRepo: github,
+		scopeDraft: config.scopeDraft,
 		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {

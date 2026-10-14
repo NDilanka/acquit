@@ -189,3 +189,9 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .acquit-grid .ag-cell, .acquit-grid .ag-header-cell { padding-left: 6px; padding-right: 6px; }
   .jobline, .act { flex-wrap: wrap; }
 }
+
+.scoping { overflow: hidden; }
+.scoping .hd { display: grid; gap: 2px; padding-bottom: 0; }
+.scoping .contract { white-space: pre-wrap; }
+.scoping .tbl td { vertical-align: top; overflow-wrap: anywhere; font-size: 13px; }
+.scoping .tbl td.mono { font-size: 12px; }

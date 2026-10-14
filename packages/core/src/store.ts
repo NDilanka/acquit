@@ -9,7 +9,7 @@ import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from ".
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
-import type { AgentId, ClientId, CommitSha, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey } from "./ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey, TestId } from "./ids.ts";
 import { instant } from "./ids.ts";
 import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
 import type { UsdCents } from "./ledger.ts";
@@ -17,6 +17,7 @@ import { logBare } from "./log.ts";
 import { jobFunding } from "./funding.ts";
 import { matchFixture } from "./fixtures.ts";
 import type { FixtureRef } from "./fixtures.ts";
+import type { JobScopingRow } from "./scoping.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
 
 /** The store's own schema. The fixtures drive the M1 manifest backfill; absent, no backfill runs. */
@@ -65,6 +66,10 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		-- One frozen manifest per job, written by OpenJob in the job's own transaction. The judge reads
 		-- the job's manifest; a registry change after the job is open never moves it.
 		CREATE TABLE IF NOT EXISTS job_manifests (job_id TEXT PRIMARY KEY, json TEXT NOT NULL);
+		-- One job's AI-scoping state: ids and counts only, never a case value. The issue body lives
+		-- here because filter 4 checks every drafted citation against the body it was justified from.
+		CREATE TABLE IF NOT EXISTS job_scoping (job_id TEXT PRIMARY KEY, status TEXT NOT NULL, issue_body TEXT,
+			ids TEXT NOT NULL, digest TEXT, reason TEXT, counts TEXT, updated_at TEXT NOT NULL);
 	`);
 	// The M1 backfill: a database from before per-job manifests holds each job's frozen contract only
 	// inside the job row. One manifest row per such job, carrying exactly the contract it was frozen
@@ -128,6 +133,15 @@ function storedJob(row: JobRow): JobRow {
 	// A row written before a run could fail has no failure field. This read is the boundary that types it.
 	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
 	return { ...parsed, state: { ...parsed.state, attempts: { ...parsed.state.attempts, failure } } };
+}
+/** The job's contract with the manifest frozen over it: an approval rewrites the job_manifests row
+ * the judge reads, and every reader of the job — the API's projection, the CLI, the command paths —
+ * sees the set that froze, never the fixture's curated copy the row was opened with. */
+function withFrozenManifest(db: DatabaseSync, row: JobRow): JobRow {
+	if (row.contract === null || row.contract === undefined) return row;
+	const frozen = db.prepare("SELECT json FROM job_manifests WHERE job_id = ?").get(row.id);
+	if (!frozen) return row;
+	return { ...row, contract: { ...row.contract, definitionOfDone: JSON.parse(String(frozen.json)) as DefinitionOfDone } };
 }
 /** A paid row stored before the merge carried GitHub's commit holds MERGED with no sha. This read types that absence. */
 function storedMerge(state: JobState): JobState {
@@ -206,12 +220,67 @@ export class SqliteStore implements Store {
 	// choice was stored must not be able to write a stale copy back over it.
 	async readJob(id: JobId): Promise<JobRow | null> {
 		const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id));
-		return row ? storedJob({ ...row, funding: jobFunding(this.db, id) }) : null;
+		return row ? storedJob(withFrozenManifest(this.db, { ...row, funding: jobFunding(this.db, id) })) : null;
 	}
 	/** The manifest frozen at OpenJob, or null for a row that predates the manifest freeze. */
 	async readManifest(id: JobId): Promise<DefinitionOfDone | null> {
 		const row = this.db.prepare("SELECT json FROM job_manifests WHERE job_id = ?").get(id);
 		return row ? JSON.parse(String(row.json)) as DefinitionOfDone : null;
+	}
+	/** The job's scoping state, or null when no draft was ever started for it. */
+	async readScoping(id: JobId): Promise<JobScopingRow | null> {
+		const row = this.db.prepare("SELECT job_id, status, issue_body, ids, digest, reason, counts, updated_at FROM job_scoping WHERE job_id = ?").get(id);
+		if (!row) return null;
+		return { jobId: String(row.job_id) as JobId, status: String(row.status) as JobScopingRow["status"],
+			issueBody: row.issue_body === null ? null : String(row.issue_body),
+			ids: JSON.parse(String(row.ids)) as JobScopingRow["ids"],
+			digest: row.digest === null ? null : String(row.digest) as JobScopingRow["digest"],
+			reason: row.reason === null ? null : String(row.reason),
+			counts: row.counts === null ? null : JSON.parse(String(row.counts)) as JobScopingRow["counts"],
+			updatedAt: String(row.updated_at) as Instant };
+	}
+	async writeScoping(row: JobScopingRow): Promise<void> {
+		this.db.prepare("INSERT OR REPLACE INTO job_scoping VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+			row.jobId, row.status, row.issueBody, JSON.stringify(row.ids), row.digest, row.reason,
+			row.counts === null ? null : JSON.stringify(row.counts), row.updatedAt);
+	}
+	/** Freezes the job's manifest from the client's approved draft: the same row the judge reads,
+	 * with the approved case ids and their digest. The frozen commit and the frozen tests never move. */
+	async freezeManifest(id: JobId, done: DefinitionOfDone): Promise<void> {
+		this.db.prepare("INSERT INTO job_manifests VALUES (?, ?) ON CONFLICT(job_id) DO UPDATE SET json = excluded.json")
+			.run(id, JSON.stringify(done));
+	}
+
+	/** The client's approval, claimed in one unit of work on this store's own connection. The job's
+	 * row is re-read under the write lock, so an approval only ever lands while the job is still
+	 * open for bids: status OPEN with phase BIDDING and no accepted bid. An acceptance keeps the
+	 * status OPEN but commits the job to its contract — phase FUNDING, a CHOSEN bid, and every
+	 * checkout step after it up to and including CAPTURING — so the claim refuses those for good,
+	 * and no later approval can rewrite what the job runs. A permanent funding failure returns the
+	 * job to BIDDING with nothing held, and only then the window opens again. The AWAITING_APPROVAL
+	 * row then moves to APPROVED by compare-and-set on its status, the manifest freezes with the
+	 * approved digest, and the caller's `persist` rewrites the private case file before the commit —
+	 * a write that fails rolls the whole claim back, so the state is never approved without its
+	 * file. */
+	async claimApproval(id: JobId, freeze: { readonly manifest: DefinitionOfDone; readonly ids: readonly TestId[];
+		readonly digest: Digest; readonly counts: JobScopingRow["counts"]; readonly persist: () => void },
+		at: Instant): Promise<"CLAIMED" | "ALREADY_FROZEN" | "JOB_NOT_OPEN" | "NOT_AWAITING"> {
+		this.db.exec("BEGIN IMMEDIATE");
+		try {
+			const job = this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id);
+			const state = job ? (JSON.parse(String(job.json)) as JobRow).state : null;
+			const openForBids = state !== null && state.status === "OPEN" && state.phase.kind === "BIDDING";
+			if (!openForBids) { this.db.exec("ROLLBACK"); return state === null ? "NOT_AWAITING" : "JOB_NOT_OPEN"; }
+			const claimed = this.db.prepare(`UPDATE job_scoping SET status = 'APPROVED', ids = ?, digest = ?, reason = NULL, counts = ?, updated_at = ?
+				WHERE job_id = ? AND status = 'AWAITING_APPROVAL'`)
+				.run(JSON.stringify(freeze.ids), freeze.digest, freeze.counts === null ? null : JSON.stringify(freeze.counts), at, id);
+			if (claimed.changes !== 1) { this.db.exec("ROLLBACK"); return "ALREADY_FROZEN"; }
+			this.db.prepare("INSERT INTO job_manifests VALUES (?, ?) ON CONFLICT(job_id) DO UPDATE SET json = excluded.json")
+				.run(id, JSON.stringify(freeze.manifest));
+			freeze.persist();
+			this.db.exec("COMMIT");
+			return "CLAIMED";
+		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
@@ -233,7 +302,7 @@ export class SqliteStore implements Store {
 		return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => {
 			const job = JSON.parse(String(row.json)) as JobRow;
 			const mode = modes.get(String(job.id));
-			return storedJob({ ...job, funding: mode === "checkout" || mode === "card" ? mode : null });
+			return storedJob(withFrozenManifest(this.db, { ...job, funding: mode === "checkout" || mode === "card" ? mode : null }));
 		});
 	}
 	async listOperators(): Promise<readonly OperatorRow[]> { return this.db.prepare("SELECT json FROM operators").all().map(row => JSON.parse(String(row.json)) as OperatorRow); }

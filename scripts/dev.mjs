@@ -20,6 +20,11 @@ const verifierEnv = {
   // refuses at boot without one. This script never sets ACQUIT_DEV.
   ACQUIT_FIXTURES: process.env.ACQUIT_FIXTURES ?? (process.env.ACQUIT_DEV === '1'
     ? fileURLToPath(new URL('../packages/verifier/fixtures/fixtures.example.json', import.meta.url)) : undefined),
+  // Both processes must agree on the private scoping store: the API writes approved drafts there,
+  // the verifier reads them per run. This launcher names no override for them — with no
+  // ACQUIT_SCOPING_DIR in the environment, the shared resolver lands both children on the
+  // deployment's private store under the profile config root, outside every git work tree, and
+  // refuses by name if a default would ever sit inside one.
 };
 const children = [
   spawn(process.execPath, ['apps/api/src/server.ts'], { cwd: root, stdio: 'inherit',

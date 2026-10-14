@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
-import { githubAppEnv, serviceConfig, VerifierConfigError } from "./config.ts";
+import { githubAppEnv, scopingDirResolution, serviceConfig, VerifierConfigError } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
 import { buildFixtureBook, fixtureRegistrySource, loadFixtureRegistry } from "./fixtures.ts";
 import { createVerifierService, BODY_LIMIT_BYTES } from "./service.ts";
@@ -28,6 +28,7 @@ export function createProductionService(): { readonly service: VerifierService; 
 	return { port: config.port, subject: selection.subject,
 		service: createVerifierService({ runSecret: config.runSecret, callback: { url: config.callbackUrl, secret: config.callbackSecret },
 			subject: subjectFor(selection), publisher: app, fixtures: book,
+			scopingDir: scopingDirResolution(),
 			source: createRunSource({ organization: github.organization ?? "", tokenFor: owner => app.installationToken(owner) }),
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };
 }

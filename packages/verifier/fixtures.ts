@@ -4,17 +4,17 @@
 // loads every fixture's cases once at boot and digests them; a run's manifest selects its cases by
 // that digest, so each run is judged against exactly the cases its job froze.
 
-import { readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixtureCasesPath, parseFixtureRegistry, refuseDuplicateDigests } from "../core/src/fixtures.ts";
 import { FixtureConfigError } from "../core/src/fixtures.ts";
 import type { FixtureContract, FixtureEntry, FixtureRef } from "../core/src/fixtures.ts";
-import type { Digest, TestId } from "../core/src/ids.ts";
+import { hiddenCaseOf, parseScopingFile } from "../core/src/scoping.ts";
+import type { Digest, JobId, TestId } from "../core/src/ids.ts";
 import type { HiddenCase } from "../core/src/verifier.ts";
 import { FROZEN_EXTRACTORS } from "./frozen-cases.ts";
-import { loadHiddenCasesFromFile, publicExampleDigest } from "./hidden.ts";
-import { hiddenContractOf } from "./hidden.ts";
+import { hiddenContractOf, hiddenManifest, loadHiddenCasesFromFile, publicExampleDigest } from "./hidden.ts";
 
 export { FixtureConfigError } from "../core/src/fixtures.ts";
 
@@ -96,7 +96,9 @@ export function fixtureContracts(registry: FixtureRegistry): readonly FixtureCon
 		const hidden = hiddenContractOf(cases);
 		return { repository: entry.repository, issue: entry.issue, frozenAt: entry.frozenAt, frozenTestPath: entry.frozenTestPath,
 			frozenTests: frozenTestIds(entry.visible), hiddenTests: hidden.ids, hiddenManifest: hidden.digest,
-			protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }) };
+			protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }),
+			...(entry.trustedFix === undefined ? {} : { trustedFix: entry.trustedFix }),
+			...(entry.coverageFamilies === undefined ? {} : { coverageFamilies: entry.coverageFamilies }) };
 	});
 }
 
@@ -109,4 +111,52 @@ export function fixtureRefs(registry: FixtureRegistry): readonly FixtureRef[] {
 /** The registry path a boot line names: the deployment's file, or the committed example in development. */
 export function fixtureRegistrySource(env: NodeJS.ProcessEnv = process.env): string {
 	return env[FIXTURES_ENV]?.trim() || (env.ACQUIT_DEV === "1" ? EXAMPLE_FIXTURES_PATH : "");
+}
+
+/** One job's approved draft, as the scoping book holds it: the job it belongs to, the fixture it
+ * was scoped against, its judged cases (citations stripped — the judged frame never carries one),
+ * and the digest that selects them. */
+export type ScopingBookEntry = { readonly jobId: JobId; readonly repository: string; readonly cases: readonly HiddenCase[]; readonly digest: Digest };
+
+/**
+ * Reads every scoping file in the deployment's private scoping store and digests each job's case
+ * set. A file that is missing, malformed, or caseless contributes nothing: a draft that never
+ * froze cannot be judged, and one bad file must not take the deployment's other jobs down.
+ */
+export function loadScopingBook(dir: string): ReadonlyMap<Digest, ScopingBookEntry> {
+	const book = new Map<Digest, ScopingBookEntry>();
+	let names: string[];
+	try {
+		names = readdirSync(dir).filter(name => name.endsWith(".json")).sort();
+	} catch {
+		return book;
+	}
+	for (const name of names) {
+		try {
+			const file = parseScopingFile(readFileSync(join(dir, name), "utf8"), name);
+			if (file.approved === null || file.cases.length === 0) continue;
+			const cases: readonly HiddenCase[] = file.cases.map(hiddenCaseOf);
+			const digest = hiddenManifest(cases).digest;
+			book.set(digest, { jobId: file.jobId, repository: file.repository, cases, digest });
+		} catch {
+			// Skipped by name at the caller's log; the book itself stays silent about case values.
+		}
+	}
+	return book;
+}
+
+/** The run-time book: the deployment's curated fixtures, plus every approved draft beside them.
+ * A digest collision resolves toward the curated file — the same cases digest the same, so the
+ * entry a run gets is the same case set either way. A draft scoped against a repository this
+ * deployment does not register is left out: no fixture, no frozen-case extractor, no run. */
+export function withScopingCases(book: FixtureBook, scoping: ReadonlyMap<Digest, ScopingBookEntry>): FixtureBook {
+	if (scoping.size === 0) return book;
+	const byDigest = new Map(book.byDigest);
+	for (const [digest, entry] of scoping) {
+		if (byDigest.has(digest)) continue;
+		const curated = [...book.byDigest.values()].find(candidate => candidate.entry.repository === entry.repository);
+		if (!curated) continue;
+		byDigest.set(digest, { entry: curated.entry, cases: entry.cases, digest, frozenCases: curated.frozenCases });
+	}
+	return { source: book.source, byDigest };
 }

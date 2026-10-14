@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColDef, GetRowIdFunc } from "ag-grid-community";
-import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, LedgerLine, MergeProgress, UserCommand } from "../api-types";
+import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, LedgerLine, MergeProgress, ScopingCase, UserCommand } from "../api-types";
 import { api, ApiError, type RepoIssue } from "../api";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
+import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
 import { allBids, houseName, lockedBid, payeeBid, StatusPill } from "../ui";
@@ -185,6 +186,7 @@ export function JobPage({ id }: { id: string }) {
 
       <div className="grid">
         <div>
+          {isClient && <ScopingReview job={job} />}
           {bidding ? (
             <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={setConfirm} />
           ) : (
@@ -388,6 +390,189 @@ export function JobPage({ id }: { id: string }) {
         </div>
       )}
     </>
+  );
+}
+
+const DRAFTING_POLL_MS = 4000;
+
+const settle = <T,>(p: Promise<T>): Promise<Settled<T>> =>
+  p.then(
+    (body) => ({ ok: true, body }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+
+/** The job's client reviews the drafted hidden cases and approves the ones it keeps; the approval freezes them. */
+function ScopingReview({ job }: { job: JobView }) {
+  const jobId = job.id;
+  const [panel, setPanel] = useState<ScopingPanel>({ kind: "HIDDEN" });
+  // Null until the first checkbox change: every drafted case starts kept.
+  const [kept, setKept] = useState<ReadonlySet<string> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const read = useCallback(
+    async (shown: ScopingPanel) => {
+      const next = readPanel(await settle(api.scoping(jobId)), shown);
+      setPanel(next);
+      return next;
+    },
+    [jobId],
+  );
+
+  useEffect(() => {
+    void read({ kind: "HIDDEN" });
+  }, [read]);
+
+  const drafting = panel.kind === "DRAFTING";
+  useEffect(() => {
+    if (!drafting) return;
+    const t = window.setInterval(() => void read({ kind: "DRAFTING" }), DRAFTING_POLL_MS);
+    return () => window.clearInterval(t);
+  }, [drafting, read]);
+
+  if (panel.kind === "HIDDEN") return null;
+  if (panel.kind === "UNREADABLE") return <div className="alert">The acceptance contract could not be read. {panel.message}</div>;
+  if (panel.kind === "DRAFTING") {
+    return (
+      <section className="card pad">
+        <h2>Acceptance contract</h2>
+        <p className="muted">The acceptance contract is being drafted from the issue. You review it here before it freezes.</p>
+      </section>
+    );
+  }
+  if (panel.kind === "FAILED") {
+    return (
+      <section className="card pad">
+        <h2>Acceptance contract</h2>
+        <p>
+          The draft failed: <b className="mono">{panel.reason}</b>. Nothing was frozen. A draft never retries; a new job starts a new
+          draft.
+        </p>
+      </section>
+    );
+  }
+
+  const { draft } = panel;
+  const approval = approvalWindow(job);
+  const reviewing = panel.kind === "REVIEW" && approval.kind === "OPEN" ? panel : null;
+  const keptIds = kept ?? new Set(draft.cases.map((c) => c.id));
+  const toggle = (id: string) => {
+    const next = new Set(keptIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setKept(next);
+  };
+  const approve = async () => {
+    if (!reviewing) return;
+    setBusy(true);
+    const step = approvalStep(reviewing, await settle(api.approveScoping(jobId, leaveOut(draft.cases, keptIds))));
+    setPanel(step.panel);
+    setError(step.error);
+    if (step.reread) await read(step.panel);
+    setBusy(false);
+  };
+
+  return (
+    <section className="card scoping">
+      <div className="pad hd">
+        <h2>Acceptance contract</h2>
+        {draft.counts && <small className="muted">{countsLine(draft.counts)}.</small>}
+      </div>
+      <div className="pad">
+        {panel.kind === "FROZEN" ? (
+          <dl className="kvs">
+            <dt>Status</dt>
+            <dd>
+              <span className="pill ok">Approved and frozen</span>
+            </dd>
+            {panel.digest && (
+              <>
+                <dt>Hidden manifest</dt>
+                <dd className="mono" title={panel.digest}>
+                  {shortDigest(panel.digest)}
+                </dd>
+              </>
+            )}
+            {panel.approvedAt && (
+              <>
+                <dt>Approved</dt>
+                <dd className="num">{utc(panel.approvedAt)}</dd>
+              </>
+            )}
+            <dt>Approved cases</dt>
+            <dd className="mono">{panel.approvedIds.join(", ")}</dd>
+          </dl>
+        ) : approval.kind === "CLOSED" ? (
+          <div className="alert">{approval.notice}</div>
+        ) : (
+          <p className="muted">
+            Review the drafted hidden cases. Clear a case to leave it out; the approval freezes the rest and cannot be changed.
+          </p>
+        )}
+        {draft.contract && <p className="contract">{draft.contract}</p>}
+        {draft.issueBody && (
+          <details>
+            <summary>Issue body, the text each citation must quote</summary>
+            <pre className="receipt-box">{draft.issueBody}</pre>
+          </details>
+        )}
+      </div>
+      <table className="tbl">
+        <thead>
+          <tr>
+            {reviewing && <th>Keep</th>}
+            <th>Case</th>
+            <th>Target</th>
+            <th>Args</th>
+            <th>Expected</th>
+            <th>Citation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {draft.cases.map((c) => (
+            <CaseRow key={c.id} c={c} keep={reviewing ? { on: keptIds.has(c.id), busy, toggle } : null} />
+          ))}
+        </tbody>
+      </table>
+      {reviewing && (
+        <div className="pad">
+          {error && <div className="alert">{error}</div>}
+          <div className="act">
+            <small className="muted">
+              {keptIds.size} of {draft.cases.length} cases kept.
+            </small>
+            <button className="btn green" disabled={busy || keptIds.size === 0} onClick={() => void approve()}>
+              {busy ? "Freezing…" : "Approve the kept cases"}
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CaseRow({
+  c,
+  keep,
+}: {
+  c: ScopingCase;
+  keep: { on: boolean; busy: boolean; toggle: (id: string) => void } | null;
+}) {
+  return (
+    <tr>
+      {keep && (
+        <td>
+          <input type="checkbox" aria-label={`Keep ${c.id}`} checked={keep.on} disabled={keep.busy} onChange={() => keep.toggle(c.id)} />
+        </td>
+      )}
+      <td className="mono">{c.id}</td>
+      <td className="mono">
+        {c.target.module} <span className="muted">{c.target.export}</span>
+      </td>
+      <td className="mono">{JSON.stringify(c.args)}</td>
+      <td className="mono">{JSON.stringify(c.expected)}</td>
+      <td>{c.citation}</td>
+    </tr>
   );
 }
 

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseClientRepository } from "../core/src/github.ts";
+import { resolveScopingDir } from "../core/src/scoping-dir.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const envPath = resolve(root, ".env");
@@ -99,4 +100,12 @@ export function githubAppEnv(env: NodeJS.ProcessEnv = process.env): { readonly a
 /** The API reads the client repository here; the verifier service reads it from the contract it is handed. */
 export function clientRepositoryEnv(env: NodeJS.ProcessEnv = process.env): string {
 	return parseClientRepository(verifierValue("clientRepository", env));
+}
+
+/** The deployment's private scoping store, through the one shared resolver the API also uses: the
+ * same environment — ACQUIT_SCOPING_DIR, or the default private store's per-database subdirectory —
+ * lands both processes on the same directory, so an approved draft the API parks is the file the
+ * verifier's book reads. */
+export function scopingDirResolution(env: NodeJS.ProcessEnv = process.env): string {
+	return resolveScopingDir(env);
 }

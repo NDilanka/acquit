@@ -14,6 +14,8 @@ import type {
   PlatformJobLedger,
   PlatformSignedInResponse,
   ReceiptRow,
+  ScopingApproveResponse,
+  ScopingResponse,
   SessionResponse,
   SessionUser,
   SignedInResponse,
@@ -34,11 +36,14 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly detail?: string;
-  constructor(status: number, code: string, detail?: string) {
+  /** The whole error body, for a refusal that carries more than its code (COVERAGE_GATE names `missing`). */
+  readonly body: unknown;
+  constructor(status: number, code: string, detail?: string, body: unknown = null) {
     super(detail ? `${code}: ${detail}` : code);
     this.status = status;
     this.code = code;
     this.detail = detail;
+    this.body = body;
   }
 }
 
@@ -65,7 +70,7 @@ async function request<T>(method: string, path: string, body?: unknown, init: Ca
     // A domain refusal arrives as 409 with an outcome, not an error.
     if (res.status === 409 && isOutcome(data)) return data as T;
     const err = (data ?? {}) as { error?: string; detail?: string };
-    throw new ApiError(res.status, err.error ?? `HTTP_${res.status}`, err.detail);
+    throw new ApiError(res.status, err.error ?? `HTTP_${res.status}`, err.detail, data);
   }
   return data as T;
 }
@@ -90,6 +95,9 @@ export const api = {
   job: (id: string) => request<JobDetailResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
   setFunding: (id: string, mode: FundingMode) =>
     request<{ mode: FundingMode }>("POST", `/api/jobs/${encodeURIComponent(id)}/funding`, { mode }),
+  scoping: (id: string) => request<ScopingResponse>("GET", `/api/jobs/${encodeURIComponent(id)}/scoping`),
+  approveScoping: (id: string, leaveOut: readonly string[]) =>
+    request<ScopingApproveResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/scoping/approve`, { leaveOut }),
   advanceJobClock: (id: string, advanceMs: number) =>
     request<JobResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/clock`, { advanceMs }),
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
