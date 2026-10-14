@@ -6,7 +6,7 @@
 // freezes nothing until the owning client approves it.
 
 import { isDeepStrictEqual } from "node:util";
-import type { CommitSha, TestId } from "./ids.ts";
+import type { CommitSha, Digest, Instant, JobId, TestId } from "./ids.ts";
 import { SUBJECT_FRAME_BYTES, SUBJECT_VALUE_DEPTH } from "./verifier.ts";
 import type { HiddenCase, JsonValue } from "./verifier.ts";
 
@@ -203,6 +203,24 @@ export async function runScopeFilters(draft: ScopeDraft, deps: ScopeFilterDeps):
 
 /** One currency family the fixture's gate defines: a name, and the currency codes that cover it. */
 export type CurrencyFamily = { readonly name: string; readonly currencies: readonly string[] };
+
+/** One job's scoping state, as the store holds it: the draft's ids and counts, never a case value.
+ * The issue body lives here too — the job stores the issue body, not only its number and title —
+ * because filter 4 checks every citation against the body it was justified from. */
+export type ScopingStatus = "DRAFTING" | "AWAITING_APPROVAL" | "APPROVED" | "FAILED";
+
+export type JobScopingRow = {
+	readonly jobId: JobId;
+	readonly status: ScopingStatus;
+	readonly issueBody: string | null;
+	readonly ids: readonly TestId[];
+	/** The digest of the frozen (approved) case set; null until the client approves. */
+	readonly digest: Digest | null;
+	/** A failure's name, or the coverage gate's missing families. Never a case value. */
+	readonly reason: string | null;
+	readonly counts: FilterCounts | null;
+	readonly updatedAt: Instant;
+};
 
 export type CoverageGateResult = { readonly ok: true } | { readonly ok: false; readonly missing: readonly string[] };
 

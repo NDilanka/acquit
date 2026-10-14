@@ -13,7 +13,7 @@ import { instant } from "../src/ids.ts";
 import type { ClientId, CommitSha, Digest, JobId, TestId, Version } from "../src/ids.ts";
 import { SqliteStore, openDatabase } from "../src/store.ts";
 import { hiddenManifest } from "../../verifier/hidden.ts";
-import type { HiddenCase } from "../src/verifier.ts";
+import type { DefinitionOfDone, HiddenCase } from "../src/verifier.ts";
 
 const now = instant("2026-10-14T12:00:00Z");
 const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
@@ -42,7 +42,7 @@ test("the scoping row round-trips: ids and counts only, the case values never en
 		assert.equal(row.issueBody, "The issue body text.");
 		assert.deepEqual(row.ids, ["draft:1", "draft:2"]);
 		assert.deepEqual(row.counts, { candidates: 7, f1: 5, f2: 4, f3: 2, f4: 2, deduped: 2 });
-		const raw = String(store.db.prepare("SELECT ids, counts, issue_body FROM job_scoping WHERE job_id = ?").get("job_scoped"));
+		const raw = JSON.stringify(store.db.prepare("SELECT ids, counts, issue_body FROM job_scoping WHERE job_id = ?").get("job_scoped"));
 		assert.ok(!raw.includes("expected"), "no case shape reaches the database");
 		store.close();
 	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
@@ -67,8 +67,8 @@ test("the freeze rewrites the job's manifest hidden contract from the approved d
 		await store.freezeManifest("job_freeze" as JobId, {
 			issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
 			frozenAt: frozenCommit, frozenTestPath: "tests/totals.test.ts",
-			frozenTests: ["frozen:1", "frozen:2"], hiddenTests: cases.map(test => test.id),
-			hiddenManifest: digest, protectedPaths: ["tests/**"],
+			frozenTests: ["frozen:1", "frozen:2"] as TestId[], hiddenTests: cases.map(test => test.id),
+			hiddenManifest: digest, protectedPaths: ["tests/**"] as unknown as DefinitionOfDone["protectedPaths"],
 		});
 		const frozen = await store.readManifest("job_freeze" as JobId);
 		assert.ok(frozen);
@@ -90,7 +90,7 @@ test("the A1 migration creates the scoping table on a pre-A1 database and change
 			store.db.prepare("INSERT INTO job_manifests VALUES (?, ?)").run("job_paid", JSON.stringify({
 				issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals round wrong for 3-decimal currencies" },
 				frozenAt: frozenCommit, frozenTestPath: "tests/totals.test.ts",
-				frozenTests: ["frozen:1"], hiddenTests: ["hidden:1"], hiddenManifest: "a".repeat(64), protectedPaths: ["tests/**"],
+				frozenTests: ["frozen:1"] as TestId[], hiddenTests: ["hidden:1"] as TestId[], hiddenManifest: "a".repeat(64) as Digest, protectedPaths: ["tests/**"] as unknown as DefinitionOfDone["protectedPaths"],
 			}));
 			store.close();
 		}

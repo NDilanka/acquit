@@ -19,6 +19,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookEnvelope, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
+import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
 import type { WebhookEventRow } from "./store.ts";
@@ -145,6 +146,11 @@ export interface Store {
 	readJob(jobId: JobId): Promise<JobRow | null>;
 	/** The manifest frozen for this job at OpenJob, or null when the row predates the manifest freeze. */
 	readManifest(jobId: JobId): Promise<DefinitionOfDone | null>;
+	/** The job's AI-scoping state: ids and counts only, never a case value. */
+	readScoping(jobId: JobId): Promise<JobScopingRow | null>;
+	writeScoping(row: JobScopingRow): Promise<void>;
+	/** Freezes the job's manifest from the client's approved draft. */
+	freezeManifest(jobId: JobId, done: DefinitionOfDone): Promise<void>;
 	receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>>;
 	readOperator(operator: OperatorId): Promise<OperatorRow | null>;
 	readCredits(operator: OperatorId): Promise<CreditAccount>;

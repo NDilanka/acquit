@@ -17,6 +17,7 @@ import { logBare } from "./log.ts";
 import { jobFunding } from "./funding.ts";
 import { matchFixture } from "./fixtures.ts";
 import type { FixtureRef } from "./fixtures.ts";
+import type { JobScopingRow } from "./scoping.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
 
 /** The store's own schema. The fixtures drive the M1 manifest backfill; absent, no backfill runs. */
@@ -65,6 +66,10 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		-- One frozen manifest per job, written by OpenJob in the job's own transaction. The judge reads
 		-- the job's manifest; a registry change after the job is open never moves it.
 		CREATE TABLE IF NOT EXISTS job_manifests (job_id TEXT PRIMARY KEY, json TEXT NOT NULL);
+		-- One job's AI-scoping state: ids and counts only, never a case value. The issue body lives
+		-- here because filter 4 checks every drafted citation against the body it was justified from.
+		CREATE TABLE IF NOT EXISTS job_scoping (job_id TEXT PRIMARY KEY, status TEXT NOT NULL, issue_body TEXT,
+			ids TEXT NOT NULL, digest TEXT, reason TEXT, counts TEXT, updated_at TEXT NOT NULL);
 	`);
 	// The M1 backfill: a database from before per-job manifests holds each job's frozen contract only
 	// inside the job row. One manifest row per such job, carrying exactly the contract it was frozen
@@ -212,6 +217,29 @@ export class SqliteStore implements Store {
 	async readManifest(id: JobId): Promise<DefinitionOfDone | null> {
 		const row = this.db.prepare("SELECT json FROM job_manifests WHERE job_id = ?").get(id);
 		return row ? JSON.parse(String(row.json)) as DefinitionOfDone : null;
+	}
+	/** The job's scoping state, or null when no draft was ever started for it. */
+	async readScoping(id: JobId): Promise<JobScopingRow | null> {
+		const row = this.db.prepare("SELECT job_id, status, issue_body, ids, digest, reason, counts, updated_at FROM job_scoping WHERE job_id = ?").get(id);
+		if (!row) return null;
+		return { jobId: String(row.job_id) as JobId, status: String(row.status) as JobScopingRow["status"],
+			issueBody: row.issue_body === null ? null : String(row.issue_body),
+			ids: JSON.parse(String(row.ids)) as JobScopingRow["ids"],
+			digest: row.digest === null ? null : String(row.digest) as JobScopingRow["digest"],
+			reason: row.reason === null ? null : String(row.reason),
+			counts: row.counts === null ? null : JSON.parse(String(row.counts)) as JobScopingRow["counts"],
+			updatedAt: String(row.updated_at) as Instant };
+	}
+	async writeScoping(row: JobScopingRow): Promise<void> {
+		this.db.prepare("INSERT OR REPLACE INTO job_scoping VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+			row.jobId, row.status, row.issueBody, JSON.stringify(row.ids), row.digest, row.reason,
+			row.counts === null ? null : JSON.stringify(row.counts), row.updatedAt);
+	}
+	/** Freezes the job's manifest from the client's approved draft: the same row the judge reads,
+	 * with the approved case ids and their digest. The frozen commit and the frozen tests never move. */
+	async freezeManifest(id: JobId, done: DefinitionOfDone): Promise<void> {
+		this.db.prepare("INSERT INTO job_manifests VALUES (?, ?) ON CONFLICT(job_id) DO UPDATE SET json = excluded.json")
+			.run(id, JSON.stringify(done));
 	}
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
 	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
