@@ -147,6 +147,8 @@ function parseCandidateValue(raw: JsonValue, at: string, seen: Set<string>): Sco
  * Both the review route and the verifier's book loader parse with this, so the two sides can never
  * disagree about the file's shape. */
 export type ScopingFile = {
+	/** The file format's own version, carried through every rewrite so an approved file re-parses. */
+	readonly version: 1;
 	readonly jobId: JobId;
 	readonly repository: string;
 	readonly issue: { readonly number: number; readonly title: string };
@@ -171,7 +173,7 @@ export function parseScopingFile(text: string, source: string): ScopingFile {
 	if (!Array.isArray(value.cases)) return fail("must carry a cases array");
 	const seen = new Set<string>();
 	const cases = value.cases.map((raw, index) => parseCandidateValue(raw, `case ${index + 1}`, seen));
-	return { jobId: value.jobId as JobId, repository: value.repository,
+	return { version: 1, jobId: value.jobId as JobId, repository: value.repository,
 		issue: { number: value.issue.number, title: value.issue.title }, frozenAt: value.frozenAt as CommitSha,
 		contract: value.contract, approved: value.approved === null ? null : value.approved as Instant, cases };
 }
