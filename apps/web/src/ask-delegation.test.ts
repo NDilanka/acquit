@@ -275,6 +275,7 @@ test("the Ask conversation survives a remount through the shared history store",
 test("a delegated widget run really configures the widget on the dashboard", async () => {
   const { api, state } = mockStudioApi(HELD_CATALOGUE);
   state.pages[0].widgets["held-1"] = { type: "acquit-held", dataMapping: {} };
+  state.pages[0].widgetLayout!["held-1"] = { xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 };
   const { fetch } = scriptedFetch([delegate("acquit-held", "held-1"), text("Added.")], [
     call("child-1", "configure_widget", { dataMapping: {}, format: {} }),
     call("child-2", "complete_task", { summary: "Configured the held-escrow widget.", artifacts: [] }),

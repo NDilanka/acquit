@@ -239,6 +239,8 @@ export type AskAdapterDeps = {
   readonly newId?: () => string;
   readonly now?: () => number;
   readonly dashboard?: DashboardId;
+  readonly renderedCount?: (type: string) => number;
+  readonly renderWaitMs?: number;
 };
 
 let minted = 0;

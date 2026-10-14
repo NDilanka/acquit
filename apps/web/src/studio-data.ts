@@ -138,7 +138,7 @@ export function firstFreeTrack(placed: readonly Track[], span: Span, columns: nu
 
 type Page = DashboardState["pages"][number];
 
-const selectedPage = (state: DashboardState): Page | undefined =>
+export const selectedPage = (state: DashboardState): Page | undefined =>
   state.pages.find((p) => p.id === state.selectedPageId) ?? state.pages[0];
 
 /** The widget has a placement of its own on its page that Studio can render. */

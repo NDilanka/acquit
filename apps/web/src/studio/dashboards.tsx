@@ -171,10 +171,10 @@ class WidgetBoundary extends Component<{ children: ReactNode }, { failed: boolea
   }
 }
 
-function labelled({ comp: Body, label }: Spec): ComponentType {
+function labelled({ id, comp: Body, label }: Spec): ComponentType {
   return function AcquitWidget() {
     return (
-      <section className="studio-widget" aria-label={label}>
+      <section className="studio-widget" aria-label={label} data-widget-type={id}>
         <span className="eyebrow">{label}</span>
         <WidgetBoundary>
           <Body />
