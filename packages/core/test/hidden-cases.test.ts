@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Digest, TestId } from "../src/ids.ts";
@@ -26,12 +26,14 @@ const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
 /** The laptop store's path: the deployment default, and what ACQUIT_PRIVATE_CASES overrides. */
 const DEFAULT_PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
-/** The deployment's private case file: ACQUIT_PRIVATE_CASES when set (a VM's registry names its
- * own files under /var/lib/acquit), else the laptop store. Mode 0600 under its own store, outside
- * every git repository; its expected values are never printed. The private-file tests skip when
- * the store is absent, never pass vacuously. */
+/** The deployment's private case file: ACQUIT_PRIVATE_CASES when set, resolved to an absolute
+ * path against the process cwd (a VM's registry names its own files under /var/lib/acquit), else
+ * the laptop store. Mode 0600 under its own store, outside every git repository; its expected
+ * values are never printed. The private-file tests skip when the store is absent, never pass
+ * vacuously. */
 function privateCasesPath(env: Record<string, string | undefined> = process.env): string {
-	return env.ACQUIT_PRIVATE_CASES?.trim() || DEFAULT_PRIVATE_CASES_PATH;
+	const configured = env.ACQUIT_PRIVATE_CASES?.trim();
+	return configured ? resolve(configured) : DEFAULT_PRIVATE_CASES_PATH;
 }
 const PRIVATE_CASES_PATH = privateCasesPath();
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
@@ -240,10 +242,11 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 });
 
 /** Every directory above the store's, including the filesystem root itself: a store under a
- * repository mounted at the root is still caught. */
+ * repository mounted at the root is still caught. The walk stops at the first directory that is
+ * its own parent, the root, so a relative start cannot spin on dirname('.') === '.'. */
 function ancestorsAbove(start: string): string[] {
 	const dirs: string[] = [];
-	for (let dir = dirname(start); ; dir = dirname(dir)) { dirs.push(dir); if (dir === "/") break; }
+	for (let dir = dirname(start); ; dir = dirname(dir)) { dirs.push(dir); if (dirname(dir) === dir) break; }
 	return dirs;
 }
 /** A work tree's .git entry, or a bare repository's HEAD plus objects/ pair. */
