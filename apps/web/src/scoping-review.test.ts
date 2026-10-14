@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ScopingCase, ScopingResponse } from "./api-types";
 import { ApiError } from "./api.ts";
-import { approvalStep, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel } from "./scoping-review.ts";
+import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel } from "./scoping-review.ts";
 
 const usd250: ScopingCase = {
   id: "h-usd-250",
@@ -133,4 +133,28 @@ test("an unreachable API keeps the review open and says a retry is safe", () => 
     error: "Cannot reach the API: TypeError: Failed to fetch. Retry is safe.",
     reread: false,
   });
+});
+
+test("a job still taking bids keeps the approval window open", () => {
+  assert.deepEqual(approvalWindow({ status: "OPEN", phase: "BIDDING" }), { kind: "OPEN" });
+});
+
+test("an accepted bid closes the approval window and says the job is committed to its contract", () => {
+  assert.deepEqual(approvalWindow({ status: "OPEN", phase: "FUNDING" }), {
+    kind: "CLOSED",
+    reason: "BID_ACCEPTED",
+    notice: "A bid was accepted and the job is committed to its contract, so this draft can no longer be approved.",
+  });
+});
+
+test("a job past OPEN closes the approval window and says the job has moved on", () => {
+  const movedOn = {
+    kind: "CLOSED",
+    reason: "JOB_MOVED_ON",
+    notice: "The job has moved on, so this draft can no longer be approved.",
+  };
+  assert.deepEqual(approvalWindow({ status: "IN_PROGRESS", phase: "READY" }), movedOn);
+  assert.deepEqual(approvalWindow({ status: "VERIFIED", phase: "AWAITING_CLIENT" }), movedOn);
+  assert.deepEqual(approvalWindow({ status: "PAID", phase: "PAID" }), movedOn);
+  assert.deepEqual(approvalWindow({ status: "CLOSED", phase: "CANCELLED" }), movedOn);
 });
