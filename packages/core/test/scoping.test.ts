@@ -31,7 +31,7 @@ function draftText(): string {
 			{ id: "cand:2", target: { module: "src/money.ts", export: "formatTotal" },
 				args: [123500, "JPY"], expected: "123500", citation: "Zero-decimal currencies such as JPY must not gain a decimal place" },
 			{ id: "cand:3", target: { module: "src/money.ts", export: "formatTotal" },
-				args: [100, "USD"], expected: "1.00", citation: "an invented citation that is nowhere in the issue" },
+				args: [250, "USD"], expected: "2.50", citation: "an invented citation that is nowhere in the issue" },
 			{ id: "cand:4", target: { module: "src/money.ts", export: "formatTotal" },
 				args: [999, "KWD"], expected: "0.999", citation: "the currency's own minor-unit count" },
 		],
@@ -94,7 +94,7 @@ test("filters 1 and 2: a candidate that throws on the frozen commit is dropped; 
 				["cand:2", { ok: true, value: "123500", error: null }],
 				// cand:3 and cand:4 run and mismatch — discriminating so far.
 				["cand:3", { ok: true, value: "9.99", error: null }],
-				["cand:4", { ok: true, value: "1.00", error: null }],
+				["cand:4", { ok: true, value: "2.50", error: null }],
 			]),
 			fixed: new Map([
 				["cand:3", { ok: false, value: null, error: "the module threw on the fix" }],
@@ -117,8 +117,8 @@ test("filter 3: a candidate that errors or mismatches on the trusted fix is drop
 		issueBody: ISSUE_BODY, frozenAt: FROZEN, trustedFix: FIXED,
 		runPhase: phaseRunner({
 			frozen: new Map([
-				["cand:2", { ok: true, value: "1.00", error: null }],
-				["cand:4", { ok: true, value: "1.00", error: null }],
+				["cand:2", { ok: true, value: "2.50", error: null }],
+				["cand:4", { ok: true, value: "2.50", error: null }],
 			]),
 			fixed: new Map([
 				// cand:2 errors even on the trusted fix — the case is wrong, not the code.
@@ -141,10 +141,10 @@ test("filter 4: the expected value is justified from the issue text — a fabric
 		runPhase: phaseRunner({
 			frozen: new Map([
 				["cand:3", { ok: true, value: "9.99", error: null }],
-				["cand:4", { ok: true, value: "1.00", error: null }],
+				["cand:4", { ok: true, value: "2.50", error: null }],
 			]),
 			fixed: new Map([
-				["cand:3", { ok: true, value: "1.00", error: null }],
+				["cand:3", { ok: true, value: "2.50", error: null }],
 				["cand:4", { ok: true, value: "0.999", error: null }],
 			]),
 		}),
@@ -196,7 +196,7 @@ test("the coverage gate names every currency family the survivors do not cover",
 		{ name: "three-decimal", currencies: ["BHD", "KWD", "TND"] },
 	];
 	const survivors: readonly ScopeCandidate[] = [
-		{ id: "draft:1", target: { module: "src/money.ts", export: "formatTotal" }, args: [100, "USD"], expected: "1.00", citation: "c" },
+		{ id: "draft:1", target: { module: "src/money.ts", export: "formatTotal" }, args: [250, "USD"], expected: "2.50", citation: "c" },
 	];
 	const lacking = coverageGate(survivors, families);
 	assert.equal(lacking.ok, false);

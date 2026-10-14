@@ -42,6 +42,11 @@ export type FixtureEntry = {
 	/** The literal frozen-case extractor the verifier runs against this fixture's frozen test file. */
 	readonly frozenExtractor: string;
 	readonly demoForkPrefix?: string;
+	/** The fixture's trusted fix commit, the second phase AI scoping's filters require a drafted
+	 * case to pass on. Absent, the fixture is not scoped: OpenJob never kicks a draft for it. */
+	readonly trustedFix?: CommitSha;
+	/** The per-currency-family coverage gate the fixture's draft must satisfy before approval. */
+	readonly coverageFamilies?: readonly { readonly name: string; readonly currencies: readonly string[] }[];
 };
 
 export class FixtureConfigError extends Error {
@@ -93,7 +98,7 @@ export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], rep
 	return null;
 }
 
-const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix"];
+const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies"];
 const OWNER_NAME = /^[a-zA-Z0-9-]+$/;
 const REPOSITORY_NAME = /^[a-zA-Z0-9._-]+$/;
 
@@ -152,12 +157,33 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 		if (demoForkPrefix !== undefined && (typeof demoForkPrefix !== "string" || !/^[a-zA-Z0-9-]+\/$/.test(demoForkPrefix))) {
 			refuse([at], `${at} demoForkPrefix must be an owner or org name followed by a slash.`);
 		}
+		const trustedFix = raw.trustedFix;
+		if (trustedFix !== undefined && (typeof trustedFix !== "string" || !/^[0-9a-f]{40}$/.test(trustedFix))) {
+			refuse([at], `${at} trustedFix must be a 40-hex commit.`);
+		}
+		const coverageFamilies = raw.coverageFamilies;
+		if (coverageFamilies !== undefined) {
+			if (!Array.isArray(coverageFamilies) || coverageFamilies.length === 0) refuse([at], `${at} coverageFamilies must be a non-empty array of families.`);
+			for (const family of coverageFamilies) {
+				if (!isRecord(family)) refuse([at], `${at} coverageFamilies entry must be an object.`);
+				for (const key of Object.keys(family)) if (key !== "name" && key !== "currencies") refuse([at], `${at} coverageFamilies entry has an unknown field ${key}.`);
+				const name = family.name;
+				if (typeof name !== "string" || name === "" || name.length > 60) refuse([at], `${at} coverageFamilies entry must carry a name of at most 60 characters.`);
+				const currencies = family.currencies;
+				if (!Array.isArray(currencies) || currencies.length === 0
+					|| !currencies.every(code => typeof code === "string" && /^[A-Z]{3}$/.test(code))) {
+					refuse([at], `${at} coverageFamilies entry must carry currencies as three-letter uppercase codes.`);
+				}
+			}
+		}
 		const key = fixtureKey(repository, number);
 		if (seen.has(key)) refuse([at], `${source} registers ${key} twice.`);
 		seen.add(key);
 		entries.push({ repository, issue: { number, title }, frozenAt: frozenAt as CommitSha, frozenTestPath,
 			visible, hidden, hiddenIdPrefix, protectedPaths: protectedPaths as readonly Glob[], hiddenCases, frozenExtractor,
-			...(demoForkPrefix === undefined ? {} : { demoForkPrefix }) });
+			...(demoForkPrefix === undefined ? {} : { demoForkPrefix }),
+			...(trustedFix === undefined ? {} : { trustedFix: trustedFix as CommitSha }),
+			...(coverageFamilies === undefined ? {} : { coverageFamilies: coverageFamilies as { name: string; currencies: string[] }[] }) });
 	}
 	return entries;
 }
