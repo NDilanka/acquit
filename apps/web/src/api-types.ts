@@ -30,6 +30,8 @@ export interface Receipt {
   readonly attemptsUsed: number;
   readonly paid: UsdCents;
   readonly releasedAt: Instant;
+  /** The receipts table's provenance, served on the job view too since it reads that table. */
+  readonly source: "SEED" | "JOB";
 }
 
 export type MergeProgress =
@@ -134,7 +136,6 @@ export type CheckoutPhase = "CREATING_ORDER" | "AWAITING_APPROVAL" | "CAPTURING"
 /** `GET /api/me/receipts`: a settled job's receipt plus its repository and the receipts table's source. */
 export type JobReceiptRow = Receipt & {
   readonly repository: string;
-  readonly source: "SEED" | "JOB";
   readonly passedVerifiedCi: boolean;
   /** The gross the capture held: the job's HELD line. */
   readonly grossPaid: UsdCents | null;
