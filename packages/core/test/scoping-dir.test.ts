@@ -7,9 +7,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { resolveScopingDir } from "../src/scoping-dir.ts";
 
 const cleanUp = (dir: string) => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
@@ -50,4 +52,31 @@ test("a default that would land inside a git work tree refuses by name", () => {
 		mkdirSync(join(home, ".git"));
 		assert.throws(() => resolveScopingDir({ HOME: home, DATABASE_PATH: join(home, "elsewhere", "acquit.db") }), /git work tree/);
 	} finally { cleanUp(home); }
+});
+
+test("a relative config root resolves to an absolute directory instead of hanging the guard", () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-scoping-relcfg-"));
+	try {
+		// In a child process: before the fix the ancestor walk spins forever on the relative
+		// spelling, and the probe is killed rather than wedging the suite. The working directory
+		// sits outside every git work tree, so the resolved store is a legal one.
+		const resolver = JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "src", "scoping-dir.ts")).href);
+		const dbPath = JSON.stringify(join(dir, "acquit.db"));
+		const probeScript = [
+			`process.chdir(${JSON.stringify(dir)});`,
+			`const { resolveScopingDir } = await import(${resolver});`,
+			`const xdg = resolveScopingDir({ XDG_CONFIG_HOME: "cfg", DATABASE_PATH: ${dbPath} });`,
+			`const fromHome = resolveScopingDir({ HOME: "relhome", DATABASE_PATH: ${dbPath} });`,
+			`console.log(xdg);`,
+			`console.log(fromHome);`,
+		].join("\n");
+		const probe = spawnSync(process.execPath, ["--input-type=module", "-e", probeScript], { encoding: "utf8", timeout: 10_000 });
+		assert.equal(probe.status, 0, probe.signal
+			? `the resolution was killed (${probe.signal}): a relative config root must resolve or refuse, never hang`
+			: `the resolution failed: ${probe.stderr}`);
+		const [xdg, fromHome] = probe.stdout.trim().split("\n");
+		assert.ok(isAbsolute(xdg), `${xdg} must be absolute`);
+		assert.ok(xdg.startsWith(`${join(dir, "cfg", "acquit", "private", "scoping")}/`), `${xdg} must resolve the relative XDG root against the working directory`);
+		assert.ok(isAbsolute(fromHome) && fromHome.startsWith(`${join(dir, "relhome", ".config", "acquit", "private", "scoping")}/`), `${fromHome} must resolve a relative HOME too`);
+	} finally { cleanUp(dir); }
 });
