@@ -38,6 +38,13 @@ function draftText(): string {
 	});
 }
 
+/** A value nested deeper than the subject protocol's own bound. */
+function deepValue(depth: number): JsonValue {
+	let value: JsonValue = "x";
+	for (let index = 0; index < depth; index += 1) value = [value];
+	return value;
+}
+
 type PhaseReply = { readonly ok: boolean; readonly value: JsonValue | null; readonly error: string | null };
 
 /** A phase runner the test scripts per commit: which candidates answer, with what. */
@@ -71,7 +78,7 @@ test("a malformed draft is refused by name: not JSON, an unknown field, a duplic
 		{ id: "cand:1", target: { module: "m", export: "e" }, args: [], expected: null, citation: "c" },
 	] })), /duplicate/);
 	assert.throws(() => parseScopeDraft(JSON.stringify({ contract: "c", candidates: [
-		{ id: "cand:1", target: { module: "m", export: "e" }, args: [{ loop: null, deep: new Array(64).fill("x") }], expected: null, citation: "c" },
+		{ id: "cand:1", target: { module: "m", export: "e" }, args: [deepValue(40)], expected: null, citation: "c" },
 	] })), /bounded/);
 });
 
@@ -85,8 +92,13 @@ test("filters 1 and 2: a candidate that throws on the frozen commit is dropped; 
 				["cand:1", { ok: false, value: null, error: "TypeError: undefined is not a function" }],
 				// cand:2 runs but the frozen code already answers as expected — not discriminating.
 				["cand:2", { ok: true, value: "123500", error: null }],
-				// cand:4 runs and mismatches — discriminating so far.
+				// cand:3 and cand:4 run and mismatch — discriminating so far.
+				["cand:3", { ok: true, value: "9.99", error: null }],
 				["cand:4", { ok: true, value: "1.00", error: null }],
+			]),
+			fixed: new Map([
+				["cand:3", { ok: false, value: null, error: "the module threw on the fix" }],
+				["cand:4", { ok: true, value: "0.999", error: null }],
 			]),
 		}),
 	});
