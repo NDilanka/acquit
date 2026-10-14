@@ -6,6 +6,9 @@ import type {
   JobResponse,
   JobView,
   OperatorView,
+  PayoutRow,
+  PlatformJobLedger,
+  PlatformSignedInResponse,
   ReceiptRow,
   SessionResponse,
   SessionUser,
@@ -84,6 +87,13 @@ export const api = {
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   receipts: () => request<{ receipts: ReceiptRow[]; nextCursor: null }>("GET", "/api/me/receipts"),
+  payouts: () => request<{ payouts: PayoutRow[] }>("GET", "/api/me/payouts"),
+  platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
+  platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
+  loadStudioLayout: (dashboard: string) =>
+    request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),
+  saveStudioLayout: (dashboard: string, state: string) =>
+    request<{ saved: true; dashboard: string }>("PUT", "/api/studio/layout", { dashboard, state }),
   command: (key: string, command: UserCommand) => request<CommandResponse>("POST", "/api/commands", { key, command }),
   approveCli: (code: string) => request<SessionUser>("POST", "/api/cli/approve", { code }),
 };

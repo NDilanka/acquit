@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { arbiterNoteLine, authorityNote, creditLine, denied, disputeNote, ledgerNote, mergeNote, refundNote, releaseNote, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, creditLine, denied, disputeNote, dollars, ledgerNote, mergeNote, refundNote, releaseNote, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -118,4 +118,10 @@ test("the arbiter's note shows only where the arbiter decided", () => {
   assert.equal(arbiterNoteLine({ ...base, status: "VERIFIED" }), null);
   assert.equal(arbiterNoteLine({ ...base, status: "IN_PROGRESS", refundReason: "ATTEMPTS_EXHAUSTED" }), null);
   assert.equal(arbiterNoteLine({ ...base, arbiterNote: null, status: "PAID", releaseAuthority: "ARBITER_UPHELD" }), null);
+});
+
+test("dashboard money reads as dollars and cents", () => {
+  assert.equal(dollars(42000), "$420.00");
+  assert.equal(dollars(5), "$0.05");
+  assert.equal(dollars(-1250), "-$12.50");
 });

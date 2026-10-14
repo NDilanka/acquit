@@ -25,8 +25,17 @@ type StoredReceipt = {
 
 type PaidJobJson = {
 	readonly contract?: { readonly definitionOfDone?: { readonly issue?: { readonly repository?: unknown } } };
-	readonly state?: { readonly status?: unknown; readonly payee?: { readonly operator?: unknown }; readonly receipt?: StoredReceipt };
+	readonly state?: { readonly status?: unknown; readonly payee?: { readonly operator?: unknown }; readonly receipt?: StoredReceipt;
+		/** The stored book: its FEE and HELD lines name the job's fee and the gross the capture held. */
+		readonly book?: readonly { readonly kind?: unknown; readonly cents?: unknown; readonly processor?: unknown; readonly acquit?: unknown }[] };
 };
+
+/** One book line the receipt card reads. A row stored before the line existed reads null there. */
+function bookLine(state: PaidJobJson["state"], kind: "HELD" | "FEE"): { readonly cents: number; readonly processor: number | null; readonly acquit: number | null } | null {
+	const line = state?.book?.find(entry => entry?.kind === kind);
+	if (!line || typeof line.cents !== "number") return null;
+	return { cents: line.cents, processor: typeof line.processor === "number" ? line.processor : null, acquit: typeof line.acquit === "number" ? line.acquit : null };
+}
 
 export function operatorReceipts(db: InstanceType<typeof import("node:sqlite").DatabaseSync>, operatorId: string, clientRepository: string): readonly ReceiptRowView[] {
 	const sources = new Map<string, string>();
@@ -37,16 +46,25 @@ export function operatorReceipts(db: InstanceType<typeof import("node:sqlite").D
 	for (const row of db.prepare("SELECT json FROM jobs").all() as { json: string }[]) {
 		const job = JSON.parse(String(row.json)) as PaidJobJson;
 		if (job.state?.status !== "PAID" || job.state.payee?.operator !== operatorId || !job.state.receipt) continue;
+		const held = bookLine(job.state, "HELD");
+		const fee = bookLine(job.state, "FEE");
 		receipts.push({ ...job.state.receipt,
 			repository: String(job.contract?.definitionOfDone?.issue?.repository ?? clientRepository),
 			source: sources.get(job.state.receipt.id) === "SEED" ? "SEED" : "JOB",
-			passedVerifiedCi: true });
+			passedVerifiedCi: true,
+			// The receipt card's own fields: the gross the capture held and the fee the book took, so
+			// the card's numbers come from the same row the route serves.
+			grossPaid: held?.cents ?? null,
+			fee: fee?.cents ?? null,
+			feeSplit: fee ? { processor: fee.processor, acquit: fee.acquit } : null,
+			result: "VERIFIED" });
 	}
 	// A seeded row has no job behind it: the display row keeps only the facts the book holds.
 	for (const row of db.prepare("SELECT id, paid, paid_at FROM receipts WHERE operator = ? AND job_id IS NULL").all(operatorId) as { id: string; paid: number; paid_at: string | null }[]) {
 		receipts.push({ id: row.id, jobId: null, operator: operatorId, agent: null, pullRequest: null, mergeCommit: null,
 			frozen: null, hidden: null, attemptsUsed: null, paid: null, releasedAt: row.paid_at,
-			repository: null, source: "SEED", passedVerifiedCi: row.paid === 1 });
+			repository: null, source: "SEED", passedVerifiedCi: row.paid === 1,
+			grossPaid: null, fee: null, feeSplit: null, result: null });
 	}
 	receipts.sort((left, right) => String(right.releasedAt ?? "").localeCompare(String(left.releasedAt ?? "")));
 	return receipts;

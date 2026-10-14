@@ -101,8 +101,10 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
 	if (!visitorColumns.has("repository_id")) db.exec("ALTER TABLE visitors ADD COLUMN repository_id INTEGER");
 	// The seeded handles are principals with no visitor: the rows every session resolves through, so
-	// the SEEDED_USERS constant is a seed, never an authentication source.
+	// the SEEDED_USERS constant is a seed, never an authentication source. The platform principal is
+	// the third such row: the deployment's own reader of the whole book, held by no picker.
 	for (const user of SEEDED_USERS) db.prepare("INSERT OR IGNORE INTO principals VALUES (?, ?, NULL)").run(user.handle, user.role);
+	db.prepare("INSERT OR IGNORE INTO principals VALUES ('platform', 'PLATFORM', NULL)").run();
 	return db;
 }
 
@@ -145,7 +147,10 @@ function isReleaseAuthority(value: unknown): value is ReleaseIntent["authority"]
 function storedPaid(state: JobState): JobState {
 	if (state.status !== "PAID") return state;
 	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
-	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null };
+	// A paid row stored before it kept its verdict history holds none: the read types that absence as
+	// the empty history, and the projection falls back to the receipt's own verified attempt.
+	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null,
+		history: Array.isArray(paid.history) ? paid.history : [] };
 }
 /** The five reasons the domain records. Anything else in a row is not a reason this build knows. */
 const REFUND_REASONS = ["DELIVERY_DEADLINE", "ATTEMPTS_EXHAUSTED", "ARBITER_REFUND", "CAPTURE_CUTOFF", "CAPTURE_MISMATCH"] as const;

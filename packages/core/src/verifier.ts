@@ -620,6 +620,16 @@ export function describeRejectReason(reason: RejectReason): string {
 	}
 }
 
+/**
+ * A rejected attempt is a caught tamper when its reasons name the frozen tests themselves: a change
+ * to a tests/** path, or test framework code smuggled into source. A suite that simply failed or a
+ * subject that faulted is an honest delivery, not a tamper.
+ */
+export function isTestTamper(reason: RejectReason): boolean {
+	return reason.kind === "PROTECTED_PATH_MODIFIED" ? matchesGlob("tests/**" as Glob, reason.path)
+		: reason.kind === "TEST_FRAMEWORK_IN_SOURCE";
+}
+
 export interface VerifierPort {
 	/** Starting the same runId twice reuses the first run. CI retries its own infrastructure within the run budget. */
 	start(request: VerifierRunRequest): Promise<void>;

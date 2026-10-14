@@ -45,3 +45,30 @@ test("the operator's receipts read marks job rows JOB and seeded rows SEED", () 
 		]);
 	} finally { store.close(); }
 });
+
+test("a job receipt carries the fee and the gross its book held, for the receipt card", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		const receipt = { id: "rcpt_devonjob", jobId: "job_paidone", operator: "devon-ops", agent: "ts-bugfixer",
+			pullRequest: 1, mergeCommit: "a".repeat(40), frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
+			attemptsUsed: 1, paid: 360_00, releasedAt: now };
+		const job = { contract: { definitionOfDone: { issue: { repository: "maya-client/invoice-app" } } },
+			state: { status: "PAID", payee: { operator: "devon-ops" }, receipt,
+				book: [{ kind: "HELD", cents: 420_00, at: now }, { kind: "RELEASED", cents: 360_00, at: now },
+					{ kind: "FEE", cents: 6_000, processor: 1_515, acquit: 4_485, at: now }] } };
+		store.db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run("job_paidone", JSON.stringify(job));
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'JOB', ?, ?)").run("rcpt_devonjob", "job_paidone", "devon-ops", 1, now);
+		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)").run("rcpt_house-seed-001", null, "devon-ops", 1, now);
+
+		const devon = operatorReceipts(store.db, "devon-ops", "maya-client/invoice-app");
+		const jobRow = devon.find(row => row.source === "JOB");
+		assert.ok(jobRow, "the job receipt row is present");
+		assert.equal(jobRow.fee, 6_000);
+		assert.equal(jobRow.grossPaid, 420_00);
+		assert.equal(jobRow.result, "VERIFIED");
+		const seeded = devon.find(row => row.source === "SEED");
+		assert.ok(seeded, "the seeded row is present");
+		assert.equal(seeded.fee, null);
+		assert.equal(seeded.grossPaid, null);
+	} finally { store.close(); }
+});

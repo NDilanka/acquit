@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import type { DeploymentMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
@@ -11,6 +11,19 @@ import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
+
+// AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
+const StudioPage = lazy(() => import("./studio/StudioPage"));
+
+function Studio() {
+  return (
+    <Suspense fallback={<p className="muted">Loading the dashboards…</p>}>
+      <StudioPage />
+    </Suspense>
+  );
+}
+
+const ROLE_CAPTION = { CLIENT: "client", OPERATOR: "operator", PLATFORM: "platform" } as const;
 
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -126,6 +139,8 @@ function Routes() {
       return <OperatorHome />;
     case "cli":
       return <CliLogin />;
+    case "studio":
+      return <Studio />;
     case "notFound":
       return (
         <div className="card pad">
@@ -140,7 +155,14 @@ function Routes() {
 
 function Home() {
   const { user } = useSession();
-  return user.role === "OPERATOR" ? <OperatorHome /> : <ClientDashboard />;
+  switch (user.role) {
+    case "OPERATOR":
+      return <OperatorHome />;
+    case "PLATFORM":
+      return <Studio />;
+    case "CLIENT":
+      return <ClientDashboard />;
+  }
 }
 
 function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: () => void }) {
@@ -162,6 +184,12 @@ function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: ()
       {user?.role === "OPERATOR" && (
         <nav className="nav">
           <Link to="/operator" className={on("/operator") || on("/")}>Open jobs</Link>
+          <Link to="/studio" className={on("/studio")}>Dashboards</Link>
+        </nav>
+      )}
+      {user?.role === "PLATFORM" && (
+        <nav className="nav">
+          <Link to="/studio" className={on("/studio") || on("/")}>Dashboards</Link>
         </nav>
       )}
       <span className="sp" />
@@ -171,7 +199,7 @@ function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: ()
           <span className="avatar">
             <i>{user.handle.slice(0, 2).toUpperCase()}</i>
             {user.handle}
-            <small className="muted">{user.role === "CLIENT" ? "client" : "operator"}</small>
+            <small className="muted">{ROLE_CAPTION[user.role]}</small>
           </span>
           <button className="btn ghost sm" onClick={onSignOut}>{session?.visitor ? "Leave demo" : "Sign out"}</button>
         </>

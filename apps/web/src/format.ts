@@ -39,6 +39,10 @@ export function eta(hours: number): string {
 
 const bare = (cents: number) => usd(cents).replace(" USD", "");
 
+export function dollars(cents: number): string {
+  return `${cents < 0 ? "-" : ""}$${bare(Math.abs(cents))}`;
+}
+
 /** `locked` is the accepted bid, when known, so the HELD split is exact rather than inferred. */
 export function ledgerNote(line: LedgerLine, locked: { readonly handle: string; readonly price: number } | null): string {
   switch (line.kind) {

@@ -41,7 +41,7 @@ export type VisitorRow = {
 
 export type Principal = {
 	readonly handle: string;
-	readonly role: "CLIENT" | "OPERATOR";
+	readonly role: "CLIENT" | "OPERATOR" | "PLATFORM";
 	readonly visitorId: VisitorId | null;
 };
 
@@ -101,7 +101,7 @@ export function principalOf(db: DatabaseSync, handle: string): Principal | null 
 	const found = db.prepare("SELECT handle, role, visitor_id FROM principals WHERE handle = ?").get(handle);
 	if (!found) return null;
 	const role = String(found.role);
-	if (role !== "CLIENT" && role !== "OPERATOR") return null;
+	if (role !== "CLIENT" && role !== "OPERATOR" && role !== "PLATFORM") return null;
 	return { handle: String(found.handle), role, visitorId: found.visitor_id === null ? null : parseVisitorId(String(found.visitor_id)) };
 }
 
