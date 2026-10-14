@@ -24,8 +24,13 @@ import { demoFixture } from "./hidden-fixture.ts";
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
-/** The deployment's private case file: mode 0600 under its own store, outside every git repository (the VM's store is /var/lib/acquit/private). Its expected values are never printed. */
-const PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
+/** The laptop store's path: the deployment default the private-file tests fall back to. */
+const DEFAULT_PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
+/** The deployment's private case file: mode 0600 under its own store, outside every git repository. Its expected values are never printed. */
+function privateCasesPath(_env: Record<string, string | undefined> = process.env): string {
+	return DEFAULT_PRIVATE_CASES_PATH;
+}
+const PRIVATE_CASES_PATH = privateCasesPath();
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
 const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
@@ -273,4 +278,11 @@ test("a directory holding only HEAD or only objects is not a bare repository", (
 		mkdirSync(join(root, "objects"), { recursive: true });
 		assert.equal(isGitRepository(root), false, "objects alone is not a bare repository marker");
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the private-case path honors its environment knob", () => {
+	assert.equal(privateCasesPath({}), DEFAULT_PRIVATE_CASES_PATH, "no knob value keeps the laptop default");
+	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "/var/lib/acquit/private/hidden-cases.json" }), "/var/lib/acquit/private/hidden-cases.json",
+		"the knob names the deployment's own store");
+	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "  " }), DEFAULT_PRIVATE_CASES_PATH, "a blank knob value keeps the default");
 });
