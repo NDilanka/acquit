@@ -186,6 +186,12 @@ export const WIDGET_IDS: Record<DashboardId, readonly AcquitWidgetId[]> = {
   earnings: WIDGET_ROWS.earnings.flat().map((w) => w.id),
 };
 
+/** Each dashboard's widget spans by widget type, the size a widget gets when it needs a fresh placement. */
+export const WIDGET_SPANS: Record<DashboardId, Readonly<Record<string, { readonly xSpan: number; readonly ySpan: number }>>> = {
+  escrow: Object.fromEntries(WIDGET_ROWS.escrow.flat().map((w) => [w.id, { xSpan: w.xSpan, ySpan: w.ySpan }])),
+  earnings: Object.fromEntries(WIDGET_ROWS.earnings.flat().map((w) => [w.id, { xSpan: w.xSpan, ySpan: w.ySpan }])),
+};
+
 // The stacked narrow layout keeps each widget's wide-layout height, and a widget scrolls its own
 // overflow, so a widget whose content grows when it is narrowed lists a minimum height here; that
 // way no stacked widget's last line scrolls out of view. The receipt card needs room for its pill,

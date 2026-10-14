@@ -22,13 +22,13 @@ import {
   PAGE_LAYOUT,
   WIDGETS,
   freshState,
-  parseSaved,
   stacked,
   type AcquitRegistry,
   type DashboardId,
   type DashboardState,
   type EarningsData,
 } from "./dashboards";
+import { parseSaved } from "../studio-data";
 import "./studio.css";
 
 // The ESM entry registers only the data-engine module. The AI module brings the context service
@@ -220,7 +220,7 @@ function useSavedLayout(id: DashboardId) {
     api.loadStudioLayout(id).then(
       (r) => {
         if (!live) return;
-        latest.current = parseSaved(r.state) ?? freshState(id);
+        latest.current = parseSaved(r.state, id) ?? freshState(id);
         setStatus({ kind: "ready" });
       },
       (e: unknown) => live && setStatus({ kind: "failed", error: `Your saved layout could not be loaded, so this is the default: ${errorText(e)}` }),

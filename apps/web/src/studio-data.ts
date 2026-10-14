@@ -1,5 +1,5 @@
 import type { JobReceiptRow, LedgerLine, PlatformJobLedger, ReceiptRow } from "./api-types";
-import { COLUMNS, STACKED_MIN_YSPAN, type DashboardState } from "./dashboard-widgets.ts";
+import { COLUMNS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 
 function linesCents(jobs: readonly PlatformJobLedger[], kind: LedgerLine["kind"]): number {
   let total = 0;
@@ -106,4 +106,86 @@ export function stacked(state: DashboardState): DashboardState {
       return { ...page, widgetLayout: stackLayout(raised, page.layout?.columns ?? COLUMNS) };
     }),
   };
+}
+
+type Span = { readonly xSpan: number; readonly ySpan: number };
+
+/** Two placements share at least one grid cell. */
+export function tracksOverlap(a: Track, b: Track): boolean {
+  return a.xTrack < b.xTrack + b.xSpan && b.xTrack < a.xTrack + a.xSpan && a.yTrack < b.yTrack + b.ySpan && b.yTrack < a.yTrack + a.ySpan;
+}
+
+/** Studio renders the placement: it sits inside the page's columns and covers no cell already taken. */
+export function placementFits(track: Track, placed: readonly Track[], columns: number): boolean {
+  const inGrid = track.xTrack >= 0 && track.yTrack >= 0 && track.xSpan >= 1 && track.ySpan >= 1 && track.xTrack + track.xSpan <= columns;
+  return inGrid && !placed.some((other) => tracksOverlap(track, other));
+}
+
+/** The first spot, top row first and then left to right, where the span covers no taken cell. */
+export function firstFreeTrack(placed: readonly Track[], span: Span, columns: number): Track {
+  const xSpan = Math.min(Math.max(span.xSpan, 1), columns);
+  const ySpan = Math.max(span.ySpan, 1);
+  // Nothing reaches below the lowest bottom edge, so the row there is always free.
+  const bottom = Math.max(0, ...placed.map((t) => t.yTrack + t.ySpan));
+  for (let yTrack = 0; yTrack <= bottom; yTrack++) {
+    for (let xTrack = 0; xTrack + xSpan <= columns; xTrack++) {
+      const track = { xTrack, yTrack, xSpan, ySpan };
+      if (!placed.some((other) => tracksOverlap(track, other))) return track;
+    }
+  }
+  return { xTrack: 0, yTrack: bottom, xSpan, ySpan };
+}
+
+type Page = DashboardState["pages"][number];
+
+const selectedPage = (state: DashboardState): Page | undefined =>
+  state.pages.find((p) => p.id === state.selectedPageId) ?? state.pages[0];
+
+/** The widget has a placement of its own on its page that Studio can render. */
+export function widgetPlaced(state: DashboardState, widgetId: string): boolean {
+  const page = selectedPage(state);
+  const track = page?.widgetLayout?.[widgetId];
+  if (!page || !track) return false;
+  const others = Object.entries(page.widgetLayout ?? {})
+    .filter((e): e is [string, Track] => e[0] !== widgetId && e[1] !== undefined)
+    .map(([, t]) => t);
+  return placementFits(track, others, page.layout?.columns ?? COLUMNS);
+}
+
+/**
+ * Keeps every placement that fits beside the ones kept before it, in saved order, then gives each
+ * widget left without one the first free spot, so every widget on a page renders and none is dropped.
+ */
+export function repairPlacements(state: DashboardState, spanFor?: (widget: { readonly type: string }) => Span): DashboardState {
+  return {
+    ...state,
+    pages: state.pages.map((page) => {
+      const columns = page.layout?.columns ?? COLUMNS;
+      const kept: Record<string, Track> = {};
+      for (const [id, track] of Object.entries(page.widgetLayout ?? {})) {
+        if (track && placementFits(track, Object.values(kept), columns)) kept[id] = track;
+      }
+      for (const [id, widget] of Object.entries(page.widgets ?? {})) {
+        if (kept[id] || !widget) continue;
+        kept[id] = firstFreeTrack(Object.values(kept), spanFor?.(widget) ?? { xSpan: 4, ySpan: 2 }, columns);
+      }
+      return { ...page, widgetLayout: kept };
+    }),
+  };
+}
+
+/**
+ * A saved layout from the server, or null when it is missing or no longer reads as Studio state.
+ * A widget the saved layout leaves without a placement, or places over another, gets the first free
+ * spot, so the dashboard loads every widget.
+ */
+export function parseSaved(json: string | null, id: DashboardId): DashboardState | null {
+  if (json === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { pages?: unknown }).pages)) return null;
+    return repairPlacements(parsed as DashboardState, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
+  } catch {
+    return null;
+  }
 }

@@ -219,15 +219,3 @@ export function freshState(id: DashboardId): DashboardState {
     ],
   };
 }
-
-/** A saved layout from the server, or null when it is missing or no longer reads as Studio state. */
-export function parseSaved(json: string | null): DashboardState | null {
-  if (json === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(json);
-    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { pages?: unknown }).pages)) return null;
-    return parsed as DashboardState;
-  } catch {
-    return null;
-  }
-}
