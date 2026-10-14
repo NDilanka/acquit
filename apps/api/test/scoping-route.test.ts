@@ -9,10 +9,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { instant } from "../../../packages/core/src/ids.ts";
-import type { CommitSha, TestId } from "../../../packages/core/src/ids.ts";
+import { hours, instant } from "../../../packages/core/src/ids.ts";
+import type { BidId, CommitSha, JobId, OrderId, TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { applyJobCommand } from "../../../packages/core/src/job.ts";
+import { commercialSplit, usd } from "../../../packages/core/src/ledger.ts";
+import { quote } from "../../../packages/core/src/paypal.ts";
+import type { Bps } from "../../../packages/core/src/paypal.ts";
 
 const root = join(import.meta.dirname, "..");
 const frozenCommit = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
@@ -106,6 +110,48 @@ const forceState = (dbPath: string, jobId: string, state: unknown) => {
 	const job = JSON.parse(String(db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId)!.json));
 	db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state }), jobId);
 	db.close();
+};
+
+/** The synthetic bid the accepted-state derivation chooses, priced to the quote the accept loads. */
+const syntheticBid = {
+	id: "bid_synthetic-red", operator: "op_synthetic-red", handle: "synthetic-operator", kind: "INDEPENDENT",
+	payee: "SYNTHETICPAYEE", agent: "agent_synthetic-red", runner: "codex", price: usd("300.00"), eta: hours(24),
+	pitch: "synthetic", placedAt: now, respondBy: instant("2026-10-16T12:00:00Z"), status: "PENDING",
+};
+const syntheticFeeModel = { version: "synthetic", rateBps: 349 as Bps, fixed: usd("0.49") };
+
+/** Derives the accepted state with the real reducer: AcceptBid marks a synthetic pending bid CHOSEN
+ * and moves the OPEN job's phase to FUNDING. The CREATE_ORDER effect it plans is never executed —
+ * no PayPal order exists anywhere. */
+const acceptSyntheticBid = (dbPath: string, jobId: string) => {
+	const db = new DatabaseSync(dbPath);
+	const row = JSON.parse(String(db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId)!.json));
+	const plan = applyJobCommand({ ...row, bids: [...row.bids, syntheticBid] },
+		{ type: "AcceptBid", jobId: jobId as JobId, bidId: syntheticBid.id as BidId },
+		{ actor: { role: "CLIENT", clientId: row.client, tenant: row.tenant ?? null }, now,
+			loaded: { kind: "ACCEPT_BID", quote: quote(commercialSplit(syntheticBid.price), syntheticFeeModel), fundingMode: "checkout" } });
+	if (typeof plan === "string") throw new Error(`the accept must commit: ${plan}`);
+	db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify(plan.next), jobId);
+	db.close();
+	return plan.next.state;
+};
+
+/** Derives CAPTURING from the stored FUNDING state with the reducer's own system edges. The CAPTURE
+ * effect is never executed; only the state the API would read is written. */
+const captureSyntheticOrder = (dbPath: string, jobId: string) => {
+	const db = new DatabaseSync(dbPath);
+	const row = JSON.parse(String(db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId)!.json));
+	const system = { role: "SYSTEM", source: "PAYPAL" } as const;
+	const created = applyJobCommand(row, { type: "OrderCreated", jobId: jobId as JobId, round: row.state.phase.round,
+		orderId: "SYNTHETIC-ORDER-RED" as OrderId, approveUrl: "https://example.invalid/synthetic" },
+		{ actor: system, now, loaded: { kind: "NONE" } });
+	if (typeof created === "string") throw new Error(`the order must commit: ${created}`);
+	const approved = applyJobCommand(created.next, { type: "BuyerApproved", jobId: jobId as JobId, orderId: "SYNTHETIC-ORDER-RED" as OrderId },
+		{ actor: system, now, loaded: { kind: "NONE" } });
+	if (typeof approved === "string") throw new Error(`the buyer's approval must commit: ${approved}`);
+	db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify(approved.next), jobId);
+	db.close();
+	return approved.next.state;
 };
 
 test("a client reviews its own parked draft, another role is refused, and the approval freezes exactly the kept cases", async () => {
@@ -241,6 +287,50 @@ test("an approval for a job that has left OPEN refuses by name and freezes nothi
 			assert.deepEqual(readManifest(join(dir, "test.db"), jobId), frozenAtOpen, "the frozen manifest is untouched");
 			assert.equal(readRow(join(dir, "test.db"), jobId)!.status, "AWAITING_APPROVAL", "the draft stays parked");
 		}
+	} finally {
+		child?.kill("SIGKILL");
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
+test("an approval after a bid was accepted refuses by name and freezes nothing, while the status is still OPEN", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-route-"));
+	const scopingDir = join(dir, "scoping");
+	const port = 4886;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, join(dir, "test.db"), scopingDir);
+		const maya = await session(port, "maya-client");
+		const jobId = await openJob(port, maya);
+		await parkDraft(join(dir, "test.db"), scopingDir, jobId);
+		const frozenAtOpen = readManifest(join(dir, "test.db"), jobId);
+
+		// Accepting a bid commits the job to its contract while the status stays OPEN: the phase
+		// moves to FUNDING with a chosen bid, and CAPTURING follows once the buyer approves the
+		// order. The approval window closes at the acceptance, not only when work starts. Each
+		// accepted state is derived here with the real reducer, and the approval below goes through
+		// the real handler.
+		const accepted = acceptSyntheticBid(join(dir, "test.db"), jobId);
+		if (accepted.status !== "OPEN") throw new Error("the accept keeps the status OPEN");
+		if (accepted.phase.kind !== "FUNDING") throw new Error("the accept moves the phase to FUNDING");
+		if (accepted.phase.chosen.bidId !== syntheticBid.id) throw new Error("the accept chooses the synthetic bid");
+		const refused = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya);
+		assert.equal(refused.status, 409, "an accepted bid closes the approval window");
+		assert.deepEqual(await refused.json() as unknown, { error: "JOB_NOT_OPEN",
+			detail: "Approval freezes a job's contract only while the job is OPEN; this one has moved on, and the manifest it runs stands." });
+		assert.deepEqual(readManifest(join(dir, "test.db"), jobId), frozenAtOpen, "the frozen manifest is untouched");
+		assert.equal(readRow(join(dir, "test.db"), jobId)!.status, "AWAITING_APPROVAL", "the draft stays parked");
+
+		const capturing = captureSyntheticOrder(join(dir, "test.db"), jobId);
+		if (capturing.status !== "OPEN") throw new Error("the capture keeps the status OPEN");
+		if (capturing.phase.kind !== "FUNDING") throw new Error("the capture keeps the phase FUNDING");
+		if (capturing.phase.checkout.phase !== "CAPTURING") throw new Error("the capture reaches CAPTURING");
+		const refusedCapturing = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya);
+		assert.equal(refusedCapturing.status, 409, "the window stays closed while the capture runs");
+		assert.deepEqual(await refusedCapturing.json() as unknown, { error: "JOB_NOT_OPEN",
+			detail: "Approval freezes a job's contract only while the job is OPEN; this one has moved on, and the manifest it runs stands." });
+		assert.deepEqual(readManifest(join(dir, "test.db"), jobId), frozenAtOpen, "the frozen manifest is untouched");
+		assert.equal(readRow(join(dir, "test.db"), jobId)!.status, "AWAITING_APPROVAL", "the draft stays parked");
 	} finally {
 		child?.kill("SIGKILL");
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
