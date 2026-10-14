@@ -18,12 +18,13 @@ import { fileURLToPath } from "node:url";
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 /** The profile config root, the way the CLI's own login file resolves it: XDG, else the home's
- * .config. The private store beneath it is the deployment's, never the repo's. */
+ * .config, always resolved to an absolute path so a relative spelling cannot spin the guard's
+ * walk. The private store beneath it is the deployment's, never the repo's. */
 function configHome(env: NodeJS.ProcessEnv): string {
 	const xdg = env.XDG_CONFIG_HOME?.trim();
-	if (xdg) return xdg;
+	if (xdg) return resolve(xdg);
 	const home = env.HOME?.trim();
-	return join(home ? home : homedir(), ".config");
+	return resolve(join(home ? home : homedir(), ".config"));
 }
 
 /** The database the store scopes, resolved the way every reader resolves it. */
@@ -41,8 +42,9 @@ function storeKey(dbPath: string): string {
  * directory itself included — may hold a git work tree. The check covers the default only; an
  * explicit ACQUIT_SCOPING_DIR is the deployment's own named directory, honored as given. */
 function assertOutsideWorkTree(dir: string): void {
-	for (let at = dir; at !== "/"; at = dirname(at)) {
+	for (let at = dir; ; at = dirname(at)) {
 		if (existsSync(join(at, ".git"))) throw new Error(`The scoping store ${dir} sits inside a git work tree (${at} holds one); private case files never live in a repository. Name ACQUIT_SCOPING_DIR with a directory outside every repository.`);
+		if (dirname(at) === at) break; // a spelling that can walk no further stops here instead of spinning
 	}
 }
 
