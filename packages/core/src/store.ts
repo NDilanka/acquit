@@ -134,6 +134,15 @@ function storedJob(row: JobRow): JobRow {
 	const failure = storedFailure((parsed.state.attempts as { readonly failure?: unknown }).failure ?? null);
 	return { ...parsed, state: { ...parsed.state, attempts: { ...parsed.state.attempts, failure } } };
 }
+/** The job's contract with the manifest frozen over it: an approval rewrites the job_manifests row
+ * the judge reads, and every reader of the job — the API's projection, the CLI, the command paths —
+ * sees the set that froze, never the fixture's curated copy the row was opened with. */
+function withFrozenManifest(db: DatabaseSync, row: JobRow): JobRow {
+	if (row.contract === null || row.contract === undefined) return row;
+	const frozen = db.prepare("SELECT json FROM job_manifests WHERE job_id = ?").get(row.id);
+	if (!frozen) return row;
+	return { ...row, contract: { ...row.contract, definitionOfDone: JSON.parse(String(frozen.json)) as DefinitionOfDone } };
+}
 /** A paid row stored before the merge carried GitHub's commit holds MERGED with no sha. This read types that absence. */
 function storedMerge(state: JobState): JobState {
 	if (state.status !== "PAID" || state.merge.phase !== "MERGED") return state;
@@ -211,7 +220,7 @@ export class SqliteStore implements Store {
 	// choice was stored must not be able to write a stale copy back over it.
 	async readJob(id: JobId): Promise<JobRow | null> {
 		const row = parsed<JobRow>(this.db.prepare("SELECT json FROM jobs WHERE id = ?").get(id));
-		return row ? storedJob({ ...row, funding: jobFunding(this.db, id) }) : null;
+		return row ? storedJob(withFrozenManifest(this.db, { ...row, funding: jobFunding(this.db, id) })) : null;
 	}
 	/** The manifest frozen at OpenJob, or null for a row that predates the manifest freeze. */
 	async readManifest(id: JobId): Promise<DefinitionOfDone | null> {
@@ -293,7 +302,7 @@ export class SqliteStore implements Store {
 		return this.db.prepare("SELECT json FROM jobs ORDER BY rowid DESC").all().map(row => {
 			const job = JSON.parse(String(row.json)) as JobRow;
 			const mode = modes.get(String(job.id));
-			return storedJob({ ...job, funding: mode === "checkout" || mode === "card" ? mode : null });
+			return storedJob(withFrozenManifest(this.db, { ...job, funding: mode === "checkout" || mode === "card" ? mode : null }));
 		});
 	}
 	async listOperators(): Promise<readonly OperatorRow[]> { return this.db.prepare("SELECT json FROM operators").all().map(row => JSON.parse(String(row.json)) as OperatorRow); }

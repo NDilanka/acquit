@@ -111,7 +111,9 @@ test("a read of the job carries the frozen manifest, so every projection reads t
 		assert.equal(done.hiddenManifest, digest, "the digest of the manifest the verifier runs");
 		assert.equal(done.frozenAt, frozenCommit, "the frozen commit never moves");
 		const listed = await store.listJobs();
-		assert.equal(storedDefinitionOfDone(listed[0]!).hiddenManifest, digest, "the list reads the same frozen contract");
+		const listedDone = storedDefinitionOfDone(listed[0]!);
+		assert.ok(listedDone);
+		assert.equal(listedDone.hiddenManifest, digest, "the list reads the same frozen contract");
 		store.close();
 	} finally { await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
