@@ -142,14 +142,16 @@ function parseCandidateValue(raw: JsonValue, at: string, seen: Set<string>): Sco
 		return parsed;
 }
 
-/** The deployment's own scoping file: one job's drafted cases with their citations, the approval
- * timestamp once the client freezes it. Both the review route and the verifier's book loader parse
- * with this, so the two sides can never disagree about the file's shape. */
+/** The deployment's own scoping file: one job's drafted cases with their citations, the contract
+ * prose the client reads when it reviews, and the approval timestamp once the client freezes it.
+ * Both the review route and the verifier's book loader parse with this, so the two sides can never
+ * disagree about the file's shape. */
 export type ScopingFile = {
 	readonly jobId: JobId;
 	readonly repository: string;
 	readonly issue: { readonly number: number; readonly title: string };
 	readonly frozenAt: CommitSha;
+	readonly contract: string;
 	readonly approved: Instant | null;
 	readonly cases: readonly ScopeCandidate[];
 };
@@ -164,13 +166,14 @@ export function parseScopingFile(text: string, source: string): ScopingFile {
 	if (typeof value.repository !== "string" || value.repository === "") return fail("must carry a repository");
 	if (!isRecord(value.issue) || typeof value.issue.number !== "number" || typeof value.issue.title !== "string") return fail("must carry the issue's number and title");
 	if (typeof value.frozenAt !== "string" || !/^[0-9a-f]{40}$/.test(value.frozenAt)) return fail("must carry the frozen commit");
+	if (typeof value.contract !== "string" || value.contract.trim() === "" || value.contract.length > 4_000) return fail("must carry the contract prose of at most 4000 characters");
 	if (value.approved !== null && typeof value.approved !== "string") return fail("approved must be a timestamp or null");
 	if (!Array.isArray(value.cases)) return fail("must carry a cases array");
 	const seen = new Set<string>();
 	const cases = value.cases.map((raw, index) => parseCandidateValue(raw, `case ${index + 1}`, seen));
 	return { jobId: value.jobId as JobId, repository: value.repository,
 		issue: { number: value.issue.number, title: value.issue.title }, frozenAt: value.frozenAt as CommitSha,
-		approved: value.approved === null ? null : value.approved as Instant, cases };
+		contract: value.contract, approved: value.approved === null ? null : value.approved as Instant, cases };
 }
 
 /** Canonical JSON: key order can never make two identical (target, args) look different to the dedupe. */

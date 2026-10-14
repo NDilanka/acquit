@@ -33,7 +33,8 @@ function scopingFile(jobId: string, cases: readonly HiddenCase[], approved: stri
 	return JSON.stringify({
 		version: 1, jobId, repository: "maya-client/invoice-app",
 		issue: { number: 12, title: "Totals round wrong for 3-decimal currencies" }, frozenAt: frozenCommit,
-		approved, cases: cases.map(test => ({ ...test, citation: "the currency's own minor-unit count" })),
+		contract: "Every total formats to the currency's own minor-unit count.", approved,
+		cases: cases.map(test => ({ ...test, citation: "the currency's own minor-unit count" })),
 	});
 }
 

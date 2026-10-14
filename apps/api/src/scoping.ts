@@ -6,16 +6,28 @@
 // error, a malformed answer, a draft every filter drops — freezes nothing and is never retried.
 
 import { mkdir, writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DROID_MODEL, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
 import type { ModelCallLog } from "../../../packages/core/src/model.ts";
 import type { CurrencyFamily, FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import type { Instant, JobId, TestId } from "../../../packages/core/src/ids.ts";
 import { parseScopeDraft, runScopeFilters, ScopeDraftError } from "../../../packages/core/src/scoping.ts";
-import type { JobScopingRow, ScopePhaseRunner } from "../../../packages/core/src/scoping.ts";
+import type { JobScopingRow, ScopePhaseOutcome, ScopePhaseRunner } from "../../../packages/core/src/scoping.ts";
+import { parseSubjectTranscript, toSubjectCall } from "../../../packages/core/src/verifier.ts";
+import type { SubjectCall } from "../../../packages/core/src/verifier.ts";
+import { gitSource } from "../../../packages/verifier/judge.ts";
+import { subjectFor, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
+import type { SubjectLauncher } from "../../../packages/verifier/subject.ts";
 import { droidAskPort, openrouterAskPort } from "./ask.ts";
 import type { AskModelPort, AskModelResult } from "./ask.ts";
 import { HOUSE_MODEL_OPENROUTER } from "../../../packages/house/src/runner.ts";
+import type { TokenPort } from "../../../packages/core/src/github.ts";
+
+/** The issue body read the draft scopes from: the repository and issue, and the body text. */
+export type IssueBodyPort = (issue: { readonly repository: string; readonly number: number }) => Promise<string | null>;
 
 /** The model id the scoping draft runs on, per the deployment's provider switch. */
 export function scopeModelName(env: NodeJS.ProcessEnv = process.env): string {
@@ -53,10 +65,8 @@ export async function scopeDraftTurn(deps: { readonly model: AskModelPort; reado
 
 export type ScopingKickDeps = {
 	readonly store: { readonly readScoping: (jobId: JobId) => Promise<JobScopingRow | null>; readonly writeScoping: (row: JobScopingRow) => Promise<void> };
+	/** The fixture the kick is for: its repository, issue, frozen commit, trusted fix, and gate. */
 	readonly fixture: FixtureContract;
-	/** The repository the job's manifest names: the draft scopes that repo's issue. */
-	readonly repository: string;
-	readonly issue: { readonly number: number };
 	readonly issueBody: (issue: { readonly repository: string; readonly number: number }) => Promise<string | null>;
 	readonly model: (prompt: string) => Promise<AskModelResult>;
 	readonly callLog: ModelCallLog;
@@ -89,7 +99,7 @@ export function scopingKick(deps: ScopingKickDeps): (jobId: JobId) => Promise<vo
 			// One draft per job, ever: the row is the guard a replayed open or a second kick reads.
 			if (await deps.store.readScoping(jobId) !== null) return;
 			await deps.store.writeScoping({ jobId, status: "DRAFTING", issueBody: null, ids: [], digest: null, reason: null, counts: null, updatedAt: deps.clock.now() });
-			const body = await deps.issueBody({ repository: deps.repository, number: deps.issue.number });
+			const body = await deps.issueBody({ repository: deps.fixture.repository, number: deps.fixture.issue.number });
 			if (body === null) {
 				await deps.store.writeScoping({ jobId, status: "FAILED", issueBody: null, ids: [], digest: null, reason: "ISSUE_BODY_UNREADABLE", counts: null, updatedAt: deps.clock.now() });
 				say(`scoping ${jobId}: the issue body never arrived; nothing was drafted`);
@@ -128,8 +138,8 @@ export function scopingKick(deps: ScopingKickDeps): (jobId: JobId) => Promise<vo
 				({ id: candidate.id, target: candidate.target, args: candidate.args, expected: candidate.expected, citation: candidate.citation }));
 			await mkdir(deps.scopingDir, { recursive: true, mode: 0o700 });
 			await writeFile(join(deps.scopingDir, `${jobId}.json`), JSON.stringify({
-				version: 1, jobId, repository: deps.repository, issue: { number: deps.issue.number, title: deps.fixture.issue.title },
-				frozenAt: deps.fixture.frozenAt, approved: null, cases,
+				version: 1, jobId, repository: deps.fixture.repository, issue: { number: deps.fixture.issue.number, title: deps.fixture.issue.title },
+				frozenAt: deps.fixture.frozenAt, contract: draft.contract, approved: null, cases,
 			}, null, "\t"), { mode: 0o600, encoding: "utf8" });
 			await deps.store.writeScoping({ jobId, status: "AWAITING_APPROVAL", issueBody: body, ids: cases.map(test => test.id as TestId),
 				digest: null, reason: null, counts: counts.counts, updatedAt: deps.clock.now() });
@@ -141,6 +151,70 @@ export function scopingKick(deps: ScopingKickDeps): (jobId: JobId) => Promise<vo
 				await deps.store.writeScoping({ jobId, status: "FAILED", issueBody: null, ids: [], digest: null,
 					reason: "PIPELINE_ERROR", counts: null, updatedAt: deps.clock.now() });
 			} catch { /* the row already said DRAFTING; the log line above is the record */ }
+		}
+	};
+}
+
+// ---- the real ports: the phases' two commits, and the issue body --------------------------------
+
+/** The subject replies one commit's phase read out of its transcript, or a dropped case. */
+const repliesOf = (stdout: string, nonce: string, calls: readonly SubjectCall[]): ReadonlyMap<TestId, ScopePhaseOutcome> => {
+	const { replies } = parseSubjectTranscript(stdout, nonce, calls);
+	const outcomes = new Map<TestId, ScopePhaseOutcome>();
+	for (const call of calls) {
+		const reply = replies.get(call.id);
+		outcomes.set(call.id, reply === undefined ? { ok: false, value: null, error: "no reply" }
+			: reply.ok ? { ok: true, value: reply.value, error: null } : { ok: false, value: null, error: reply.error });
+	}
+	return outcomes;
+};
+
+/** The scoping phase runner: one private mirror of the client repository per phase, the frozen and
+ * fix commits fetched into it, the subject run against the extracted tree. The installation token
+ * rides in the fetch child's own environment, exactly as a verifier run's fetch does. */
+export function scopingPhaseRunner(deps: { readonly repository: string; readonly tokenFor: (owner: string) => Promise<string>;
+	readonly subject?: SubjectLauncher }): ScopePhaseRunner {
+	const git = (args: readonly string[], env: NodeJS.ProcessEnv): void => {
+		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 60_000, env });
+		if (result.status !== 0) throw new Error(`git ${String(args[0])} failed: ${String(result.stderr).slice(0, 200)}`);
+	};
+	return async (commit, cases) => {
+		const calls = cases.map(toSubjectCall);
+		const dir = mkdtempSync(join(tmpdir(), "acquit-scope-phase-"));
+		try {
+			git(["-C", dir, "init", "--bare", "--quiet"], { PATH: process.env.PATH ?? "", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" });
+			const token = await deps.tokenFor(deps.repository.split("/")[0]!);
+			const credential = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+			git(["-C", dir, "-c", "credential.helper=", "fetch", "--no-tags", "--quiet", `https://github.com/${deps.repository}.git`, commit],
+				{ PATH: process.env.PATH ?? "", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
+					GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraHeader",
+					GIT_CONFIG_VALUE_0: `Authorization: Basic ${credential}` });
+			const source = gitSource(dir);
+			const tree = source.materialize(commit);
+			try {
+				const launcher = deps.subject ?? subjectFor(verifierSubjectEnv());
+				const run = await launcher.run(tree.path, calls);
+				return repliesOf(run.stdout, run.nonce, calls);
+			} finally { tree.remove(); }
+		} finally { rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+	};
+}
+
+/** The issue body port: the installation token's own REST read of the one issue the contract froze.
+ * Null when GitHub refuses or the body is empty — the draft then parks FAILED and nothing freezes. */
+export function issueBodyFetcher(deps: { readonly app: TokenPort; readonly apiBase: string }): IssueBodyPort {
+	return async issue => {
+		const [owner, name] = [issue.repository.split("/")[0]!, issue.repository.split("/")[1]!];
+		try {
+			const token = await deps.app.installationToken(owner, [name]);
+			const response = await fetch(`${deps.apiBase}/repos/${issue.repository}/issues/${issue.number}`, {
+				headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "acquit-scoping" },
+				signal: AbortSignal.timeout(30_000), redirect: "error" });
+			if (!response.ok) return null;
+			const payload = await response.json() as { body?: unknown };
+			return typeof payload.body === "string" && payload.body.trim() !== "" ? payload.body : null;
+		} catch {
+			return null;
 		}
 	};
 }

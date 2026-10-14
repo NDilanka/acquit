@@ -11,6 +11,11 @@
 			"protectedPaths": ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"],
 			"hiddenCases": "hidden-cases.example.json",
 			"frozenExtractor": "invoice-totals",
+			"trustedFix": "5cccb66515313caed72e4af329a62fc011139426",
+			"coverageFamilies": [
+				{ "name": "zero-decimal", "currencies": ["JPY", "KRW"] },
+				{ "name": "three-decimal", "currencies": ["BHD", "KWD", "OMR", "JOD"] }
+			],
 			"demoForkPrefix": "acquit-forks/"
 		}
 	]

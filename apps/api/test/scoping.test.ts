@@ -51,7 +51,7 @@ function deps(overrides: Partial<Parameters<typeof scopingKick>[0]> = {}): Param
 			readScoping: async () => null,
 			writeScoping: async () => {},
 		},
-		fixture: contract, repository: "maya-client/invoice-app", issue: { number: 12 },
+		fixture: contract,
 		issueBody: async () => issueBody,
 		model: async () => answered(goodDraft),
 		callLog: modelCallLog(join(dir, "model-calls.jsonl")),
