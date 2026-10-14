@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { fixtureCasesPath, parseFixtureRegistry, refuseDuplicateDigests } from "../core/src/fixtures.ts";
 import { FixtureConfigError } from "../core/src/fixtures.ts";
 import type { FixtureContract, FixtureEntry, FixtureRef } from "../core/src/fixtures.ts";
-import { parseScopingFile } from "../core/src/scoping.ts";
+import { hiddenCaseOf, parseScopingFile } from "../core/src/scoping.ts";
 import type { Digest, JobId, TestId } from "../core/src/ids.ts";
 import type { HiddenCase } from "../core/src/verifier.ts";
 import { FROZEN_EXTRACTORS } from "./frozen-cases.ts";
@@ -135,8 +135,7 @@ export function loadScopingBook(dir: string): ReadonlyMap<Digest, ScopingBookEnt
 		try {
 			const file = parseScopingFile(readFileSync(join(dir, name), "utf8"), name);
 			if (file.approved === null || file.cases.length === 0) continue;
-			const cases: readonly HiddenCase[] = file.cases.map(candidate =>
-				({ id: candidate.id as TestId, target: candidate.target, args: candidate.args, expected: candidate.expected }));
+			const cases: readonly HiddenCase[] = file.cases.map(hiddenCaseOf);
 			const digest = hiddenManifest(cases).digest;
 			book.set(digest, { jobId: file.jobId, repository: file.repository, cases, digest });
 		} catch {

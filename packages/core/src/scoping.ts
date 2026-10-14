@@ -200,6 +200,13 @@ export type ScopeFilterResult = {
 	readonly counts: FilterCounts;
 };
 
+/** The one scoping-case-to-hidden-case mapping: the citation is review prose, never run data. Every
+ * digest over drafted cases — the filters' own comparison, the verifier's book, and the approval's
+ * frozen manifest — must go through this, or the sides disagree and a run is refused by name. */
+export function hiddenCaseOf(candidate: ScopeCandidate): HiddenCase {
+	return { id: candidate.id as TestId, target: candidate.target, args: candidate.args, expected: candidate.expected };
+}
+
 /**
  * The four filters, in Prototype C's order, then the dedupe. A candidate survives only when every
  * filter keeps it: (1) it runs on the frozen commit without error; (2) its frozen reply deep-strict
@@ -210,7 +217,7 @@ export type ScopeFilterResult = {
  * dropped, exactly as Prototype C dropped it.
  */
 export async function runScopeFilters(draft: ScopeDraft, deps: ScopeFilterDeps): Promise<ScopeFilterResult> {
-	const cases: readonly HiddenCase[] = draft.candidates.map(({ id, target, args, expected }) => ({ id: id as TestId, target, args, expected }));
+	const cases: readonly HiddenCase[] = draft.candidates.map(hiddenCaseOf);
 	const frozen = await deps.runPhase(deps.frozenAt, cases);
 	const supplied = normalizeScopeText(deps.issueBody);
 	const survivors: ScopeCandidate[] = [];

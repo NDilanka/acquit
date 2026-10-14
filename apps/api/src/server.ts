@@ -9,7 +9,7 @@ import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, JobId, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
-import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { coverageGate, hiddenCaseOf, parseScopingFile } from "../../../packages/core/src/scoping.ts";
 import type { TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
@@ -756,8 +756,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const fixture = manifest ? fixtures.find(candidate => candidate.hiddenManifest === manifest.hiddenManifest) ?? null : null;
 		const gate = coverageGate(approved, fixture?.coverageFamilies ?? []);
 		if (!gate.ok) { json(res, 422, { error: "COVERAGE_GATE", missing: gate.missing }); return; }
-		const kept = approved.map(test =>
-			({ id: test.id as TestId, target: test.target, args: test.args, expected: test.expected, citation: test.citation }));
+		const kept = approved.map(hiddenCaseOf);
 		const digest = hiddenManifest(kept).digest;
 		if (!manifest) { json(res, 409, { error: "NO_MANIFEST" }); return; }
 		await scopingStore.freezeManifest(jobId, { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest });
