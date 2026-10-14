@@ -309,9 +309,11 @@ export class SqliteStore implements Store {
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
 	}
-	/** The House line's own source: receipt rows per operator, every row and the paid ones among them. */
+	/** The House line's own source: the real receipt rows per operator — every row the operator
+	 * earned and the paid ones among them. The seeded rows (source SEED) are display history the
+	 * line never counts; the receipts views label them Seeded instead. */
 	async receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>> {
-		return new Map(this.db.prepare("SELECT operator, COUNT(*) AS total, COALESCE(SUM(paid), 0) AS paid FROM receipts GROUP BY operator")
+		return new Map(this.db.prepare("SELECT operator, COUNT(*) AS total, COALESCE(SUM(paid), 0) AS paid FROM receipts WHERE source != 'SEED' GROUP BY operator")
 			.all().map(row => [String(row.operator) as OperatorId, { total: Number(row.total), paid: Number(row.paid) }]));
 	}
 	async receiptCount(id: OperatorId): Promise<number> {

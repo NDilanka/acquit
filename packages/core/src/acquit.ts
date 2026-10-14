@@ -92,7 +92,7 @@ export interface BidView {
 	readonly runner: string;
 	readonly pitch: string;
 	readonly paidReceipts: number;
-	/** The House line counted from receipt rows ("41 fixes, 39 passed verified CI"), on House bids alone. */
+	/** The House line counted from the real receipt rows ("1 fixes, 1 passed verified CI" after the first paid job), on House bids alone. */
 	readonly houseLine: string | null;
 	readonly status: "PENDING" | "CHOSEN" | "ACCEPTED" | "NOT_SELECTED" | "RETURNED";
 }

@@ -1156,7 +1156,7 @@ export function attemptView(record: AttemptRecord): AttemptView {
 			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: null, hidden: null, pullRequest: null };
 }
 
-/** The House bid row's line, counted from receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are rows like any other; their source marks them. */
+/** The House bid row's line, counted from the real receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are display history the store keeps out of these counts; the receipts views label them Seeded. */
 export function houseLine(rows: { readonly total: number; readonly paid: number } | null): string | null {
 	if (rows === null) return null;
 	return `${rows.total} fixes, ${rows.paid} passed verified CI`;

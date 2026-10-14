@@ -744,7 +744,7 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	return Response.json({ ok: true, applied: true });
 }
 
-/** One operator's receipt-row counts: every row, and the paid ones among them. The House line reads this, never the counter. */
+/** One operator's real receipt-row counts: every row the operator earned, and the paid ones among them. The House line reads this, never the counter; seeded rows are labelled in the UI instead. */
 export type ReceiptRowCounts = { readonly total: number; readonly paid: number };
 
 export async function runDueTimers(ports: Ports): Promise<number> {

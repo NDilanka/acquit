@@ -52,7 +52,8 @@ try {
 		store.db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
 		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(operator.id, account.version, JSON.stringify(account));
 		// The House's display history is receipt rows, not a counter: 41 fixes, 39 of them passed
-		// verified CI. Every seeded row is marked SEED, and the House line counts them with the real ones.
+		// verified CI. Every seeded row is marked SEED, so the House line counts only the real
+		// ones, and the receipts views label the seeded rows Seeded.
 		if (seed.kind === "HOUSE") {
 			const insert = store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)");
 			for (let index = 1; index <= seed.receipts; index++) {
