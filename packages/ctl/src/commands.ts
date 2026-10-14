@@ -330,9 +330,9 @@ export async function start(parsed: Parsed, ctx: Context): Promise<Result> {
 			await atomicJson(ctx.stateFile, state);
 			await recordListener(ctx, state, "web");
 			const verifier = await detached("packages/verifier/server.ts", verifierRecord.nonce!, ctx.root,
-				// The lane's own DATABASE_PATH rides along: the scoping store's default sits beside the
-				// database through the shared resolver, so the API and the verifier land on the same
-				// private directory with no extra setting.
+				// The lane's own DATABASE_PATH rides along: the scoping store's default keys on it through
+				// the shared resolver, so the API and the verifier land on the same private directory
+				// with no extra setting.
 				{ ...process.env, ...verifierEnv, DATABASE_PATH: ctx.databasePath, ACQUIT_OWNERSHIP_RECORD: ctx.stateFile, ACQUIT_OWNERSHIP_ROLE: "verifier" },
 				state.logs.verifier!, [], verifierRecord.socketPath);
 			children.push(verifier);

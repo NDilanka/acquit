@@ -74,7 +74,7 @@ export type ScopingKickDeps = {
 	readonly model: (prompt: string) => Promise<AskModelResult>;
 	readonly callLog: ModelCallLog;
 	readonly runPhase: ScopePhaseRunner;
-	/** The deployment's private scoping store: one file per job, beside the registry, never in git. */
+	/** The deployment's private scoping store: one file per job, outside every repository, never in git. */
 	readonly scopingDir: string;
 	readonly clock: { readonly now: () => Instant };
 	readonly log?: (line: string) => void;

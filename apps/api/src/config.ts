@@ -16,7 +16,8 @@ const envPath = resolve(rootPath, ".env");
 if (existsSync(envPath)) process.loadEnvFile(envPath);
 export const databasePath = resolve(rootPath, process.env.DATABASE_PATH ?? "./data/acquit.db");
 /** The deployment's private scoping store, through the one shared resolver the verifier also uses:
- * the same environment lands both processes on the same directory. */
+ * the same environment lands both processes on the same directory — the private store's
+ * per-database subdirectory, never inside a repository. */
 export const scopingDir = resolveScopingDir(process.env);
 export const webOrigin = new URL(process.env.WEB_ORIGIN ?? `http://localhost:${process.env.WEB_PORT ?? 5173}`).origin;
 export const devEnabled = process.env.ACQUIT_DEV === "1";

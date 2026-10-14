@@ -103,8 +103,9 @@ export function clientRepositoryEnv(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 /** The deployment's private scoping store, through the one shared resolver the API also uses: the
- * same environment — ACQUIT_SCOPING_DIR, or the default beside the database — lands both processes
- * on the same directory, so an approved draft the API parks is the file the verifier's book reads. */
+ * same environment — ACQUIT_SCOPING_DIR, or the default private store's per-database subdirectory —
+ * lands both processes on the same directory, so an approved draft the API parks is the file the
+ * verifier's book reads. */
 export function scopingDirResolution(env: NodeJS.ProcessEnv = process.env): string {
 	return resolveScopingDir(env);
 }

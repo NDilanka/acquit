@@ -116,6 +116,8 @@ test("a drafted contract parks AWAITING_APPROVAL with the issue body, ids and co
 		assert.equal(file.cases[0]!.expected, "1.235", "the private file alone holds the case values");
 		const mode = (await stat(join(dir, "job_scope.json"))).mode & 0o777;
 		assert.equal(mode, 0o600, "the private file is the operator's own read");
+		const dirMode = (await stat(dir)).mode & 0o777;
+		assert.equal(dirMode, 0o700, "the private store's directory admits no one else");
 	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
 
