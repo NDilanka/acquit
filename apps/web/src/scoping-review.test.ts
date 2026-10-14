@@ -37,6 +37,7 @@ function draft(over: Partial<ScopingResponse> = {}): ScopingResponse {
     counts: { candidates: 5, f1: 4, f2: 4, f3: 3, f4: 3, deduped: 3 },
     issueBody: "Totals print wrong for 2-decimal and 0-decimal currencies.",
     approvedAt: null,
+    digest: null,
     contract: "formatMinor prints minor units in the currency's own decimals.",
     frozenAt: "9f2c41e7d0b3a5c6e8f1d2b4a6c8e0f1a3b5c7d9",
     cases: [usd250, jpy500, eur199],

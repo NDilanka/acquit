@@ -351,6 +351,8 @@ export type ScopingResponse = {
   readonly counts: FilterCounts | null;
   readonly issueBody: string | null;
   readonly approvedAt: Instant | null;
+  /** The frozen row's digest: null while the draft awaits approval, the approved digest once it is APPROVED. */
+  readonly digest: string | null;
   readonly contract: string | null;
   readonly frozenAt: string | null;
   readonly cases: readonly ScopingCase[];

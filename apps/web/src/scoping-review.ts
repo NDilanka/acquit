@@ -14,7 +14,7 @@ export type ScopingPanel =
       readonly draft: ScopingResponse;
       readonly approvedIds: readonly string[];
       readonly approvedAt: string | null;
-      /** Only the approval's own reply carries the digest; a later read of the draft does not. */
+      /** The approval's own reply carries the digest, and a later read carries the frozen row's digest too. */
       readonly digest: string | null;
     };
 
@@ -59,7 +59,8 @@ export const shortDigest = (digest: string) => digest.slice(0, 12);
 
 /**
  * A 403 (not the job's client) or 404 (no draft was ever kicked) means there is no panel at all. A failed
- * re-read keeps the panel already shown, and a re-read of a frozen draft keeps the digest its approval returned.
+ * re-read keeps the panel already shown, and a re-read of a frozen draft keeps the digest: the frozen row's own
+ * when the response names one, else the one its approval returned.
  */
 export function readPanel(read: Settled<ScopingResponse>, shown: ScopingPanel): ScopingPanel {
   if (!read.ok) {
@@ -75,7 +76,7 @@ export function readPanel(read: Settled<ScopingResponse>, shown: ScopingPanel): 
     case "AWAITING_APPROVAL":
       return { kind: "REVIEW", draft };
     case "APPROVED": {
-      const digest = shown.kind === "FROZEN" ? shown.digest : null;
+      const digest = draft.digest ?? (shown.kind === "FROZEN" ? shown.digest : null);
       return { kind: "FROZEN", draft, approvedIds: draft.cases.map((c) => c.id), approvedAt: draft.approvedAt, digest };
     }
   }
