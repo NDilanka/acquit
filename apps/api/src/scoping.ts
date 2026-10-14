@@ -179,9 +179,11 @@ const repliesOf = (stdout: string, nonce: string, calls: readonly SubjectCall[])
 
 /** The scoping phase runner: one private mirror of the client repository per phase, the frozen and
  * fix commits fetched into it, the subject run against the extracted tree. The installation token
- * rides in the fetch child's own environment, exactly as a verifier run's fetch does. */
+ * rides in the fetch child's own environment, exactly as a verifier run's fetch does. `remoteOf`
+ * names the fetch URL (the GitHub default); a test points it at a local mirror. */
 export function scopingPhaseRunner(deps: { readonly repository: string; readonly tokenFor: (owner: string) => Promise<string>;
-	readonly subject?: SubjectLauncher }): ScopePhaseRunner {
+	readonly subject?: SubjectLauncher; readonly remoteOf?: (repository: string) => string }): ScopePhaseRunner {
+	const remote = deps.remoteOf ?? (repository => `https://github.com/${repository}.git`);
 	const git = (args: readonly string[], env: NodeJS.ProcessEnv): void => {
 		const result = spawnSync("git", [...args], { encoding: "utf8", timeout: 60_000, env });
 		if (result.status !== 0) throw new Error(`git ${String(args[0])} failed: ${String(result.stderr).slice(0, 200)}`);
@@ -193,7 +195,7 @@ export function scopingPhaseRunner(deps: { readonly repository: string; readonly
 			git(["-C", dir, "init", "--bare", "--quiet"], { PATH: process.env.PATH ?? "", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" });
 			const token = await deps.tokenFor(deps.repository.split("/")[0]!);
 			const credential = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-			git(["-C", dir, "-c", "credential.helper=", "fetch", "--no-tags", "--quiet", `https://github.com/${deps.repository}.git`, commit],
+			git(["-C", dir, "-c", "credential.helper=", "fetch", "--no-tags", "--quiet", remote(deps.repository), commit],
 				{ PATH: process.env.PATH ?? "", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
 					GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraHeader",
 					GIT_CONFIG_VALUE_0: `Authorization: Basic ${credential}` });
