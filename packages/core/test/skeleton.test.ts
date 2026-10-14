@@ -1165,7 +1165,7 @@ test("ReleaseSettled builds the receipt, the paid book, and the merge from the o
 	const view = projectJob(plan.next, maya, new Map());
 	assert.equal(view.status, "PAID");
 	assert.equal(view.escrow, "RELEASED");
-	assert.deepEqual(view.receipt, state.receipt);
+	assert.deepEqual(view.receipt, { ...state.receipt, source: "JOB" });
 	assert.deepEqual(view.release, state.release);
 	assert.equal(view.release?.payoutItemId, payoutItemId);
 	assert.equal(view.release?.captureId, "TESTCAPTURE");
