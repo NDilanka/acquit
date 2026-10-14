@@ -42,6 +42,15 @@ assert(laneRaw !== undefined && branch !== undefined, "Usage: lane-repo.mjs <lan
 assert(!values.askpass || values.jobs !== undefined, "--askpass needs --jobs <jobId>: without a job there is no work repo to push to.");
 const lane = Number(laneRaw);
 assert(Number.isSafeInteger(lane) && lane >= 0, "Lane must be a whole number.");
+const owner = values.owner ?? process.env.ACQUIT_LANE_REPO_OWNER ?? null;
+// The printed clientRepo and work remote derive from the deployment's client repository. Without
+// the variable they silently name the demo fixture's fork, which does not exist on a real
+// deployment (the submit then reports WORK_REPO_NOT_READY forever). --owner replaces the
+// variable's only use, so only a run without one needs it.
+if (owner === null && (process.env.ACQUIT_CLIENT_REPOSITORY ?? "").trim() === "") {
+	console.error("lane-repo: ACQUIT_CLIENT_REPOSITORY_UNSET. Export the deployment's client repository (owner/repo, for example NDilanka/invoice-app-h2), or pass --owner <account> to name the client repo explicitly.");
+	process.exit(1);
+}
 const template = resolve(values.template ?? process.env.ACQUIT_VERIFIER_FIXTURE ?? resolve(root, "../../acquit/scratch/verifier/invoice-app"));
 assert(existsSync(resolve(template, ".git")), `No invoice-app template at ${template}. Set --template or ACQUIT_VERIFIER_FIXTURE.`);
 const branches = spawnSync("git", ["-C", template, "for-each-ref", "--format=%(refname:short)", "refs/heads"], { encoding: "utf8" }).stdout.trim().split("\n");
@@ -57,7 +66,6 @@ const checked = spawnSync("git", ["-C", repo, "checkout", "--quiet", branch], { 
 assert.equal(checked.status, 0, `Checkout failed: ${checked.stderr?.trim()}`);
 const head = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
 const frozen = spawnSync("git", ["-C", template, "rev-parse", "main"], { encoding: "utf8" }).stdout.trim();
-const owner = values.owner ?? process.env.ACQUIT_LANE_REPO_OWNER ?? null;
 const contractRepo = clientRepositoryEnv();
 const clientRepo = owner === null ? contractRepo : `${owner}/${values.repo ?? `invoice-app-lane-${lane}`}`;
 const creation = values.create ? await ensureClientRepo(clientRepo, frozen, template) : null;

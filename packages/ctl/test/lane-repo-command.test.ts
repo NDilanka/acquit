@@ -50,6 +50,35 @@ test("the printed lane command names the deployment's repository and the job's w
 	}
 });
 
+test("the script refuses by name when ACQUIT_CLIENT_REPOSITORY is unset and no --owner names the repo", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-lane-repo-unset-"));
+	const template = join(dir, "template");
+	const laneDirs = [96, 95].map(lane => resolve(root, `../../acquit/scratch/verifier/invoice-app-lane-${lane}`));
+	try {
+		await mkdir(template, { recursive: true });
+		const git = (args: string[]) => spawnSync("git", args, { encoding: "utf8", cwd: template });
+		assert.equal(git(["init", "-q", "-b", "main"]).status, 0);
+		await writeFile(join(template, "README.md"), "fixture\n");
+		assert.equal(git(["add", "."]).status, 0);
+		assert.equal(git(["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "fixture"]).status, 0);
+		const unset: NodeJS.ProcessEnv = { ...process.env };
+		delete unset.ACQUIT_CLIENT_REPOSITORY;
+		const refused = spawnSync(process.execPath, [script, "96", "main", "--template", template, "--jobs", "job_7Q2K"],
+			{ encoding: "utf8", cwd: root, env: { ...unset, ACQUIT_GITHUB_APP_ORG: "acquit-forks" } });
+		assert.equal(refused.status, 1, `expected the named refusal, got status ${refused.status}: ${refused.stdout} ${refused.stderr}`);
+		assert.match(refused.stderr, /ACQUIT_CLIENT_REPOSITORY_UNSET/);
+		// --owner names the client repo itself, so the variable's absence cannot misname the work fork.
+		const owned = spawnSync(process.execPath, [script, "95", "main", "--template", template, "--owner", "probe-lanes"],
+			{ encoding: "utf8", cwd: root, env: { ...unset, ACQUIT_GITHUB_APP_ORG: "acquit-forks" } });
+		assert.equal(owned.status, 0, owned.stderr);
+		const ownedPrinted = JSON.parse(owned.stdout) as { clientRepo: string };
+		assert.equal(ownedPrinted.clientRepo, "probe-lanes/invoice-app-lane-95");
+	} finally {
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		for (const laneDir of laneDirs) await rm(laneDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
 test("the askpass reads its token file from the environment, and every printed path survives a hostile TMPDIR", async () => {
 	const stub = createServer((req, res) => {
 		res.setHeader("content-type", "application/json");

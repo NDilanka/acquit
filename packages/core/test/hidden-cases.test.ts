@@ -5,9 +5,9 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Digest, TestId } from "../src/ids.ts";
@@ -24,8 +24,18 @@ import { demoFixture } from "./hidden-fixture.ts";
 /** A well-formed case in the manifest's own shape. The values are fixtures; the deployment's own file is never in the repo. */
 const sampleCase = (index: number) => ({ id: `hidden:${index}`, target: { module: "src/money.ts", export: "formatTotal" },
 	args: [[{ amount: 1.5 }], "USD"], expected: "1.50" });
-/** The deployment's private case file: mode 0600 under its own store, outside every git repository (the VM's store is /var/lib/acquit/private). Its expected values are never printed. */
-const PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
+/** The laptop store's path: the deployment default, and what ACQUIT_PRIVATE_CASES overrides. */
+const DEFAULT_PRIVATE_CASES_PATH = "/home/factory-user/.config/acquit/private/hidden-cases.json";
+/** The deployment's private case file: ACQUIT_PRIVATE_CASES when set, resolved to an absolute
+ * path against the process cwd (a VM's registry names its own files under /var/lib/acquit), else
+ * the laptop store. Mode 0600 under its own store, outside every git repository; its expected
+ * values are never printed. The private-file tests skip when the store is absent, never pass
+ * vacuously. */
+function privateCasesPath(env: Record<string, string | undefined> = process.env): string {
+	const configured = env.ACQUIT_PRIVATE_CASES?.trim();
+	return configured ? resolve(configured) : DEFAULT_PRIVATE_CASES_PATH;
+}
+const PRIVATE_CASES_PATH = privateCasesPath();
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
 const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
@@ -223,7 +233,7 @@ test("the check script finds the public example in the repository", () => {
 	assert.match(result.stdout, /cases=6 files=\d+ total=[1-9]\d*/);
 });
 
-test("the check script finds nothing from a deployment's private file", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this checkout." }, () => {
+test("the check script finds nothing from a deployment's private file", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this checkout; set ACQUIT_PRIVATE_CASES or provision the store." }, () => {
 	const result = lever(PRIVATE_CASES_PATH);
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
@@ -231,8 +241,72 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE)).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
 });
 
-test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment." }, () => {
-	for (let dir = dirname(PRIVATE_CASES_PATH); dir !== "/"; dir = dirname(dir)) {
-		assert.ok(!existsSync(join(dir, ".git")), `${dir} holds a git work tree; the private case store must not`);
+/** Every directory above the store's, including the filesystem root itself: a store under a
+ * repository mounted at the root is still caught. The walk stops at the first directory that is
+ * its own parent, the root, so a relative start cannot spin on dirname('.') === '.'. */
+function ancestorsAbove(start: string): string[] {
+	const dirs: string[] = [];
+	for (let dir = dirname(start); ; dir = dirname(dir)) { dirs.push(dir); if (dirname(dir) === dir) break; }
+	return dirs;
+}
+/** A work tree's .git entry, or a bare repository's HEAD plus objects/ pair. */
+function isGitRepository(dir: string): boolean {
+	return existsSync(join(dir, ".git")) || (existsSync(join(dir, "HEAD")) && existsSync(join(dir, "objects")));
+}
+
+test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment; set ACQUIT_PRIVATE_CASES or provision the store." }, () => {
+	for (const dir of ancestorsAbove(PRIVATE_CASES_PATH)) {
+		assert.ok(!isGitRepository(dir), `${dir} holds a git repository; the private case store must not`);
 	}
+});
+
+test("the ancestor walk reaches the filesystem root itself", () => {
+	assert.ok(ancestorsAbove(join(tmpdir(), "deep", "path", "hidden-cases.json")).includes("/"),
+		"the walk stopped before /; a store under a repository mounted at the root would slip past it");
+});
+
+test("the ancestor walk detects a bare repository above the store", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-hidden-bare-"));
+	try {
+		writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n", { mode: 0o600 });
+		mkdirSync(join(root, "objects"), { recursive: true });
+		assert.deepEqual(ancestorsAbove(join(root, "store", "hidden-cases.json")).filter(isGitRepository), [root],
+			"a bare repository (HEAD plus objects, no .git) above the store went undetected");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a directory holding only HEAD or only objects is not a bare repository", () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-hidden-notbare-"));
+	try {
+		writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n", { mode: 0o600 });
+		assert.equal(isGitRepository(root), false, "HEAD alone is not a bare repository marker");
+		rmSync(join(root, "HEAD"));
+		mkdirSync(join(root, "objects"), { recursive: true });
+		assert.equal(isGitRepository(root), false, "objects alone is not a bare repository marker");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a relative ACQUIT_PRIVATE_CASES terminates", () => {
+	const store = mkdtempSync(join(tmpdir(), "acquit-hidden-rel-"));
+	try {
+		mkdirSync(join(store, "private"), { recursive: true });
+		writeFileSync(join(store, "private", "hidden-cases.json"), manifest(six()), { mode: 0o600 });
+		// The child runs the actual walk test above, unisolated, with the knob relative to that cwd.
+		// The heap cap makes a regressed walk abort in seconds instead of pinning the machine, and
+		// the spawn timeout is the backstop; the pass-1 match refuses a child that skipped the test.
+		const result = spawnSync(process.execPath,
+			["--test", "--test-isolation=none", "--max-old-space-size=256", "--test-name-pattern=sits outside every git repository",
+				fileURLToPath(new URL("./hidden-cases.test.ts", import.meta.url))],
+			{ cwd: store, env: { ...process.env, ACQUIT_PRIVATE_CASES: "private/hidden-cases.json" }, encoding: "utf8", timeout: 20_000 });
+		assert.equal(result.status, 0, `the relative-path run ended in ${result.signal ?? result.status}\n${result.stdout}\n${result.stderr}`);
+		assert.match(result.stdout, /\bpass 1\b/, "the walk test itself must have run once");
+	} finally { rmSync(store, { recursive: true, force: true }); }
+});
+
+test("the private-case path honors its environment knob", () => {
+	assert.equal(privateCasesPath({}), DEFAULT_PRIVATE_CASES_PATH, "no knob value keeps the laptop default");
+	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "/var/lib/acquit/private/hidden-cases.json" }), "/var/lib/acquit/private/hidden-cases.json",
+		"the knob names the deployment's own store");
+	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "  " }), DEFAULT_PRIVATE_CASES_PATH, "a blank knob value keeps the default");
+	assert.equal(isAbsolute(privateCasesPath({ ACQUIT_PRIVATE_CASES: "private/hidden-cases.json" })), true, "a relative knob value resolves to an absolute path");
 });
