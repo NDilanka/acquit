@@ -7,7 +7,7 @@ import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote
 import { AcquitGrid } from "../grid";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
-import { approvalStep, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel, type Settled } from "../scoping-review";
+import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
 import { allBids, houseName, lockedBid, payeeBid, StatusPill } from "../ui";
@@ -186,7 +186,7 @@ export function JobPage({ id }: { id: string }) {
 
       <div className="grid">
         <div>
-          {isClient && <ScopingReview jobId={job.id} />}
+          {isClient && <ScopingReview job={job} />}
           {bidding ? (
             <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={setConfirm} />
           ) : (
@@ -402,7 +402,8 @@ const settle = <T,>(p: Promise<T>): Promise<Settled<T>> =>
   );
 
 /** The job's client reviews the drafted hidden cases and approves the ones it keeps; the approval freezes them. */
-function ScopingReview({ jobId }: { jobId: string }) {
+function ScopingReview({ job }: { job: JobView }) {
+  const jobId = job.id;
   const [panel, setPanel] = useState<ScopingPanel>({ kind: "HIDDEN" });
   // Null until the first checkbox change: every drafted case starts kept.
   const [kept, setKept] = useState<ReadonlySet<string> | null>(null);
@@ -452,7 +453,8 @@ function ScopingReview({ jobId }: { jobId: string }) {
   }
 
   const { draft } = panel;
-  const reviewing = panel.kind === "REVIEW" ? panel : null;
+  const approval = approvalWindow(job);
+  const reviewing = panel.kind === "REVIEW" && approval.kind === "OPEN" ? panel : null;
   const keptIds = kept ?? new Set(draft.cases.map((c) => c.id));
   const toggle = (id: string) => {
     const next = new Set(keptIds);
@@ -500,6 +502,8 @@ function ScopingReview({ jobId }: { jobId: string }) {
             <dt>Approved cases</dt>
             <dd className="mono">{panel.approvedIds.join(", ")}</dd>
           </dl>
+        ) : approval.kind === "CLOSED" ? (
+          <div className="alert">{approval.notice}</div>
         ) : (
           <p className="muted">
             Review the drafted hidden cases. Clear a case to leave it out; the approval freezes the rest and cannot be changed.

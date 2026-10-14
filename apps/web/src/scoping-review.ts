@@ -1,4 +1,4 @@
-import type { FilterCounts, ScopingApproveResponse, ScopingCase, ScopingResponse } from "./api-types";
+import type { FilterCounts, JobView, ScopingApproveResponse, ScopingCase, ScopingResponse } from "./api-types";
 import { ApiError } from "./api.ts";
 import { errorText } from "./demo.ts";
 
@@ -17,6 +17,23 @@ export type ScopingPanel =
       /** Only the approval's own reply carries the digest; a later read of the draft does not. */
       readonly digest: string | null;
     };
+
+/** Whether the job still takes the draft's approval. An accepted bid commits the job to its contract while it stays OPEN. */
+export type ApprovalWindow =
+  | { readonly kind: "OPEN" }
+  | { readonly kind: "CLOSED"; readonly reason: "BID_ACCEPTED" | "JOB_MOVED_ON"; readonly notice: string };
+
+export function approvalWindow(job: Pick<JobView, "status" | "phase">): ApprovalWindow {
+  if (job.status !== "OPEN") return { kind: "CLOSED", reason: "JOB_MOVED_ON", notice: "The job has moved on, so this draft can no longer be approved." };
+  if (job.phase === "FUNDING") {
+    return {
+      kind: "CLOSED",
+      reason: "BID_ACCEPTED",
+      notice: "A bid was accepted and the job is committed to its contract, so this draft can no longer be approved.",
+    };
+  }
+  return { kind: "OPEN" };
+}
 
 export type Settled<T> = { readonly ok: true; readonly body: T } | { readonly ok: false; readonly error: unknown };
 
