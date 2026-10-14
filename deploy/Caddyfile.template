@@ -14,7 +14,11 @@
 		}
 		@api path /api /api/* /paypal /paypal/*
 		handle @api {
-			reverse_proxy 127.0.0.1:4310
+			reverse_proxy 127.0.0.1:4310 {
+				# The client's own X-Forwarded-For entries are a claim it controls: the proxy answers
+				# the header with the address it saw, and the API reads that last hop.
+				header_up X-Forwarded-For {remote_host}
+			}
 		}
 		handle {
 			root * /opt/acquit/apps/web/dist
