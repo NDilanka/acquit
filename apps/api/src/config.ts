@@ -6,6 +6,7 @@ import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
+import { resolveScopingDir } from "../../../packages/core/src/scoping-dir.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 import { apiVerifierEnv, clientRepositoryEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
 import { fixtureContracts, loadFixtureRegistry } from "../../../packages/verifier/fixtures.ts";
@@ -14,6 +15,9 @@ export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
 if (existsSync(envPath)) process.loadEnvFile(envPath);
 export const databasePath = resolve(rootPath, process.env.DATABASE_PATH ?? "./data/acquit.db");
+/** The deployment's private scoping store, through the one shared resolver the verifier also uses:
+ * the same environment lands both processes on the same directory. */
+export const scopingDir = resolveScopingDir(process.env);
 export const webOrigin = new URL(process.env.WEB_ORIGIN ?? `http://localhost:${process.env.WEB_PORT ?? 5173}`).origin;
 export const devEnabled = process.env.ACQUIT_DEV === "1";
 /**

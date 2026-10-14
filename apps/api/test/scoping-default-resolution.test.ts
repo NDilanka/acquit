@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { instant } from "../../../packages/core/src/ids.ts";
+import type { Digest } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { loadScopingBook } from "../../../packages/verifier/fixtures.ts";
 
@@ -111,7 +112,7 @@ test("an approval parked under production defaults is the file the verifier's ow
 			.scopingDirResolution?.({ DATABASE_PATH: dbPath });
 		assert.ok(resolved, "the verifier's production wiring resolves a scoping directory by default");
 		assert.equal(resolve(resolved!), resolve(scopingDir), "the verifier's production default is the store the API wrote");
-		const entry = loadScopingBook(resolved!).get(frozen.digest);
+		const entry = loadScopingBook(resolved!).get(frozen.digest as Digest);
 		assert.ok(entry, "the verifier's book resolves the approved set by its digest");
 		assert.equal(entry!.jobId, jobId);
 		assert.deepEqual(entry!.cases.map(test => test.id), frozen.approvedIds);

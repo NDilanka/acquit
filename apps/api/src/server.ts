@@ -21,7 +21,7 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { createHouseDelivery } from "./house.ts";
@@ -61,9 +61,9 @@ const githubApp = createGitHubApp(githubEnv);
 // The AI scoping kick: on OpenJob of a fixture that carries a trusted fix, the pinned model drafts
 // the acceptance contract, the four filters run it against the real frozen and fix commits, and the
 // survivors park for the client's approval. The model turn shares the ask ledger's budget log; the
-// case values live in the private scoping store beside the database, never in git. The kick runs
-// beside the open, never inside it, and never fails the open that started it.
-const scopingDir = process.env["ACQUIT_SCOPING_DIR"]?.trim() || join(resolve(databasePath, ".."), "scoping");
+// case values live in the private scoping store the shared resolver names (scopingDir from the
+// config), never in git. The kick runs beside the open, never inside it, and never fails the open
+// that started it.
 const scopeDraft: NonNullable<AcquitConfig["scopeDraft"]> = (jobId, fixture) => {
 	void scopingKick({
 		store: new SqliteStore(baseSettings.databaseUrl), fixture,
