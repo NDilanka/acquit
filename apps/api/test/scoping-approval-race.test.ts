@@ -30,7 +30,7 @@ const http = require_("node:http");
 const net = require_("node:net");
 const cp = require_("node:child_process");
 let server: import("node:http").Server | null = null;
-http.Server.prototype.listen = function (..._args: unknown[]) { server = this; return this; } as unknown as typeof http.Server.prototype.listen;
+http.Server.prototype.listen = function (this: import("node:http").Server, ..._args: unknown[]) { server = this; return this; } as unknown as typeof http.Server.prototype.listen;
 globalThis.fetch = async () => { throw new Error("test: network refused"); };
 net.Socket.prototype.connect = function (..._args: unknown[]) { throw new Error("test: network refused"); } as unknown as typeof net.Socket.prototype.connect;
 for (const name of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) {
@@ -62,11 +62,12 @@ function inject(method: string, path: string, token?: string) {
 		socket: { remoteAddress: "127.0.0.1" } });
 	let finish!: (value: Answer) => void;
 	const done = new Promise<Answer>(resolve => { finish = resolve; });
+	const sent = { statusCode: 0, headersSent: false };
+	const headers: Record<string, string> = {};
 	const res = {
-		statusCode: 0, headersSent: false, headers: {} as Record<string, string>,
-		setHeader(key: string, value: string) { this.headers[key] = value; },
-		writeHead(status: number, headers?: Record<string, string>) { this.statusCode = status; this.headersSent = true; Object.assign(this.headers, headers ?? {}); return this; },
-		end(data?: unknown) { finish({ status: this.statusCode, body: data ? JSON.parse(String(data)) : null }); },
+		setHeader: (key: string, value: string) => { headers[key] = value; },
+		writeHead: (status: number, responseHeaders?: Record<string, string>) => { sent.statusCode = status; sent.headersSent = true; Object.assign(headers, responseHeaders ?? {}); },
+		end: (data?: unknown) => { finish({ status: sent.statusCode, body: data ? JSON.parse(String(data)) : null }); },
 	} as unknown as ServerResponse;
 	server!.emit("request", req as unknown as IncomingMessage, res);
 	return { req, done, send(payload?: unknown): Promise<Answer> { req.end(payload === undefined ? undefined : JSON.stringify(payload)); return done; } };
@@ -95,6 +96,17 @@ const waitReading = async (req: PassThrough): Promise<boolean> => {
 		await new Promise(resolve => setImmediate(resolve));
 	}
 	return false;
+};
+
+/** The kick settles before the draft is parked: the pipeline never writes again once its row has
+ * left DRAFTING, so the park below cannot be overwritten by a late pipeline failure. */
+const settleRow = async (jobId: string): Promise<void> => {
+	for (let i = 0; i < 200; i += 1) {
+		const row = readRow(jobId);
+		if (row && row.status !== "DRAFTING") return;
+		await new Promise(resolve => setTimeout(resolve, 25));
+	}
+	throw new Error("the scoping kick never settled");
 };
 
 const draftedCases = [
@@ -135,6 +147,7 @@ const readRow = (jobId: string): { status: string; digest: string | null } | nul
 test("two interleaved approvals claim the freeze once, and the loser is refused by name", async () => {
 	const maya = await session("maya-client");
 	const jobId = await openJob(maya);
+	await settleRow(jobId);
 	parkDraft(jobId);
 
 	const a = inject("POST", `/api/jobs/${jobId}/scoping/approve`, maya);
@@ -160,6 +173,7 @@ test("two interleaved approvals claim the freeze once, and the loser is refused 
 test("a private-file write failure rolls the approval back: no approved state without its file", async () => {
 	const maya = await session("maya-client");
 	const jobId = await openJob(maya);
+	await settleRow(jobId);
 	parkDraft(jobId);
 	const frozenAtOpen = readManifest(jobId);
 
@@ -168,7 +182,7 @@ test("a private-file write failure rolls the approval back: no approved state wi
 	chmodSync(join(scopingDir, `${jobId}.json`), 0o400);
 	const refused = await pending.send({ leaveOut: ["draft:3"] });
 	chmodSync(join(scopingDir, `${jobId}.json`), 0o600);
-	assert.equal(refused.status, 500, "a failed private-file write is an internal failure, not an approval");
+	assert.equal(refused.status, 500, `a failed private-file write is an internal failure, not an approval: ${JSON.stringify(refused.body)}`);
 	assert.equal(readRow(jobId)!.status, "AWAITING_APPROVAL", "the draft stays parked — nothing was approved");
 	assert.deepEqual(readManifest(jobId), frozenAtOpen, "the manifest is untouched");
 	const file = JSON.parse(readFileSync(join(scopingDir, `${jobId}.json`), "utf8")) as { approved: string | null };

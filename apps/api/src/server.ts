@@ -1,8 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
@@ -708,7 +707,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	}
 	// The AI scoping review and approval: the job's client reads its own parked draft, and the one
 	// approval freezes exactly the cases it kept. Another role is refused by name; a draft that
-	// leaves a coverage family uncovered is refused by naming the family; a frozen draft is immutable.
+	// leaves a coverage family uncovered is refused by naming the family; a frozen draft is immutable;
+	// and an approval lands only while the job is still OPEN — before acceptance or funding commits
+	// it to its contract — so a progressed job's manifest can never be rewritten. That is the whole
+	// of the coordination: the approval side refuses every job past OPEN, so an accepted job's
+	// contract stands no matter when its client's draft was parked.
 	const scopingRoute = url.pathname.match(/^\/api\/jobs\/([^/]+)\/scoping(\/approve)?$/);
 	if (scopingRoute && (method === "GET" || (method === "POST" && scopingRoute[2] === "/approve"))) {
 		const jobId = validJobId(decodeURIComponent(scopingRoute[1]));
@@ -718,12 +721,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			json(res, 403, { error: "NOT_OWNER" }); return;
 		}
 		const scopingStore = new SqliteStore(baseSettings.databaseUrl);
-		const scopingRow = await scopingStore.readScoping(jobId);
 		const filePath = join(scopingDir, `${jobId}.json`);
 		const readFile = (): ReturnType<typeof parseScopingFile> | null => {
 			try { return parseScopingFile(readFileSync(filePath, "utf8"), `${jobId}.json`); } catch { return null; }
 		};
 		if (method === "GET") {
+			const scopingRow = await scopingStore.readScoping(jobId);
 			if (!scopingRow) { json(res, 404, { error: "NO_DRAFT" }); return; }
 			const file = readFile();
 			json(res, 200, {
@@ -734,19 +737,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			});
 			return;
 		}
-		if (!scopingRow || scopingRow.status !== "AWAITING_APPROVAL") {
-			json(res, scopingRow?.status === "APPROVED" ? 409 : 404,
-				scopingRow?.status === "APPROVED" ? { error: "ALREADY_FROZEN" } : { error: "NO_DRAFT" });
-			return;
-		}
-		const file = readFile();
-		if (!file) { json(res, 404, { error: "NO_DRAFT" }); return; }
+		// The client's answer is parsed before anything about the approval is read: two interleaved
+		// approvals must both reach the guarded claim, where exactly one wins, instead of one
+		// winning a status check made while the other's body was still in flight.
 		let leaveOut: string[];
 		try {
 			const input = object(await body(req));
 			if (Object.keys(input).some(key => key !== "leaveOut")) throw new BadBody("Unsupported field");
 			leaveOut = (Array.isArray(input.leaveOut) ? input.leaveOut : []).map(raw => text(raw, "left-out case id", 64));
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const scopingRow = await scopingStore.readScoping(jobId);
+		if (!scopingRow || (scopingRow.status !== "AWAITING_APPROVAL" && scopingRow.status !== "APPROVED")) {
+			json(res, 404, { error: "NO_DRAFT" }); return;
+		}
+		if (scopingRow.status === "APPROVED") { json(res, 409, { error: "ALREADY_FROZEN" }); return; }
+		const file = readFile();
+		if (!file) { json(res, 404, { error: "NO_DRAFT" }); return; }
 		const left = new Set(leaveOut);
 		const approved = file.cases.filter(test => !left.has(test.id));
 		if (approved.length === 0) { json(res, 422, { error: "NOTHING_APPROVED" }); return; }
@@ -759,10 +765,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const kept = approved.map(hiddenCaseOf);
 		const digest = hiddenManifest(kept).digest;
 		if (!manifest) { json(res, 409, { error: "NO_MANIFEST" }); return; }
-		await scopingStore.freezeManifest(jobId, { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest });
-		await scopingStore.writeScoping({ jobId, status: "APPROVED", issueBody: scopingRow.issueBody, ids: kept.map(test => test.id),
-			digest, reason: null, counts: scopingRow.counts, updatedAt: clock.now() });
-		await writeFile(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved }, null, "\t"), { mode: 0o600, encoding: "utf8" });
+		// The one guarded claim: the store re-reads the job under the write lock, so an approval
+		// lands only while the job is still OPEN; the row moves by compare-and-set on its status,
+		// the manifest freezes, and the private file is rewritten before the commit. The loser of a
+		// race is refused by name; a file write that fails rolls the whole claim back.
+		const claimed = await scopingStore.claimApproval(jobId, {
+			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest },
+			ids: kept.map(test => test.id), digest, counts: scopingRow.counts,
+			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
+		}, clock.now());
+		if (claimed !== "CLAIMED") {
+			if (claimed === "JOB_NOT_OPEN") json(res, 409, { error: "JOB_NOT_OPEN",
+				detail: "Approval freezes a job's contract only while the job is OPEN; this one has moved on, and the manifest it runs stands." });
+			else if (claimed === "ALREADY_FROZEN") json(res, 409, { error: "ALREADY_FROZEN" });
+			else json(res, 404, { error: "NO_DRAFT" });
+			return;
+		}
 		console.log(`[scoping] ${jobId}: the client approved ${kept.length} case(s); the manifest froze ${digest.slice(0, 12)}`);
 		json(res, 200, { jobId, digest, approvedIds: kept.map(test => test.id) });
 		return;

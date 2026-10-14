@@ -236,7 +236,8 @@ test("an approval for a job that has left OPEN refuses by name and freezes nothi
 			forceState(join(dir, "test.db"), jobId, progressed);
 			const refused = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya);
 			assert.equal(refused.status, 409, `a ${progressed.status} job no longer takes an approval`);
-			assert.deepEqual(await refused.json() as unknown, { error: "JOB_NOT_OPEN" });
+			assert.deepEqual(await refused.json() as unknown, { error: "JOB_NOT_OPEN",
+				detail: "Approval freezes a job's contract only while the job is OPEN; this one has moved on, and the manifest it runs stands." });
 			assert.deepEqual(readManifest(join(dir, "test.db"), jobId), frozenAtOpen, "the frozen manifest is untouched");
 			assert.equal(readRow(join(dir, "test.db"), jobId)!.status, "AWAITING_APPROVAL", "the draft stays parked");
 		}
