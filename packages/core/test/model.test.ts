@@ -3,14 +3,17 @@
 // the egress proxy on 2026-10-11); no test below opens a socket.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { syncBuiltinESMExports } from "node:module";
 import {
-	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, factoryApiKey, modelCallLog, modelProvider,
+	classifyDroidRun, droidExecArgv, DROID_INSTRUCTION_PATH, DROID_MODEL, droidResultText, factoryApiKey, modelCallLog, modelProvider,
 	reserveModelCall,
 } from "../src/model.ts";
+import type { ModelCallLog } from "../src/model.ts";
 
 test("the model provider switch defaults to droid with glm-5.3-flash", () => {
 	assert.equal(modelProvider({}), "droid");
@@ -113,6 +116,122 @@ test("the shared budget refuses the 20th call in a rolling minute and the 1000th
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("two concurrent reservations cannot both pass the cap", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-race-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const at = new Date().toISOString();
+		for (let index = 0; index < 18; index += 1) {
+			await log.append({ at, caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
+		}
+		const call = { at, caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		const results = await Promise.all([reserveModelCall(log, call), reserveModelCall(log, call)]);
+		assert.equal(results.filter(result => result.ok).length, 1, "exactly one of the two concurrent reservations is admitted");
+		const starts = (await log.records()).filter(record => record.phase === "START");
+		assert.equal(starts.length, 19, "the minute never holds the 20th start");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("thirty concurrent reservations admit exactly the minute's nineteen", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-race30-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		const results = await Promise.all(Array.from({ length: 30 }, () => reserveModelCall(log, call)));
+		assert.equal(results.filter(result => result.ok).length, 19, "the window admits its 19, nothing more");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "each admission wrote one START");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("two waiters queue on a live owner's lock, enter one at a time after its release, and the caps hold", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-queue-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		for (let index = 0; index < 18; index += 1) await log.append({ ...call, phase: "START" });
+		writeFileSync(`${log.path}.lock`, "4242.liveowner", { mode: 0o600 });
+		const minute = Promise.all([reserveModelCall(log, call), reserveModelCall(log, call)]);
+		// Both waiters are now cycling on the live owner's lock; then the owner releases it.
+		await new Promise(resolve => { setTimeout(resolve, 100); });
+		await fsPromises.unlink(`${log.path}.lock`);
+		const results = await minute;
+		assert.equal(results.filter(result => result.ok).length, 1, "the release admits the queued waiters strictly one at a time; the cap refuses the second");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 19, "the minute never holds the twentieth start");
+
+		const day = modelCallLog(join(dir, "day.jsonl"));
+		// An hour ago: inside the day window, outside the minute one, so only the day cap decides.
+		const anHourAgo = new Date(Date.now() - 3_600_000).toISOString();
+		for (let index = 0; index < 998; index += 1) await day.append({ ...call, at: anHourAgo, phase: "START" });
+		writeFileSync(`${day.path}.lock`, "4242.liveowner", { mode: 0o600 });
+		const dayQueue = Promise.all([reserveModelCall(day, call), reserveModelCall(day, call)]);
+		await new Promise(resolve => { setTimeout(resolve, 100); });
+		await fsPromises.unlink(`${day.path}.lock`);
+		const dayResults = await dayQueue;
+		assert.equal(dayResults.filter(result => result.ok).length, 1, "the same queue against the day window");
+		assert.equal((await day.records()).filter(record => record.phase === "START").length, 999, "the day never holds its thousandth start");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a waiter never removes or takes over a stale lock, however old it looks", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-stale-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const lockPath = `${log.path}.lock`;
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		for (let index = 0; index < 18; index += 1) await log.append({ ...call, phase: "START" });
+		writeFileSync(lockPath, "4242.longgoneowner", { mode: 0o600 });
+		// An age no staleness threshold could call fresh: the lock's owner is long gone.
+		const stale = new Date(Date.now() - 20_000);
+		await fsPromises.utimes(lockPath, stale, stale);
+		const refusal = await reserveModelCall(log, call);
+		assert.ok(!refusal.ok && refusal.reason === "BUDGET", "the waiter waits out its bound and refuses; it never takes a lock over");
+		assert.equal(readFileSync(lockPath, "utf8"), "4242.longgoneowner", "the stale lock is left exactly as its owner wrote it");
+		assert.deepEqual((await fsPromises.readdir(dir)).filter(name => name.endsWith(".stale")), [], "no takeover tombstones were created beside the lock");
+		assert.equal((await log.records()).filter(record => record.phase === "START").length, 18, "nothing was appended behind a lock the waiter does not own");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a releaser never removes a lock a replacement owner took over", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-release-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const lockPath = `${log.path}.lock`;
+		const replacement = "6311.replacementowner";
+		const wrapped: ModelCallLog = {
+			...log,
+			append: async record => {
+				await log.append(record);
+				// the operator's clear plus a re-acquire replaced the lock while this holder is still inside its section
+				rmSync(lockPath, { force: true });
+				writeFileSync(lockPath, replacement, { mode: 0o600 });
+			},
+		};
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		assert.deepEqual(await reserveModelCall(wrapped, call), { ok: true });
+		let afterRelease: string | null = null;
+		try { afterRelease = readFileSync(lockPath, "utf8"); } catch { afterRelease = null; }
+		assert.equal(afterRelease, replacement, "the replacement owner's lock survives the first holder's release");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a waiter facing a lock that never frees refuses with BUDGET and leaves the lock alone", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-wedge-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const lockPath = `${log.path}.lock`;
+		writeFileSync(lockPath, "0.0.wedged", { mode: 0o600 });
+		const call = { at: new Date().toISOString(), caller: "ask-ledger", jobId: null, provider: "droid", model: "glm-5.3-flash" };
+		const refusal = await reserveModelCall(log, call);
+		assert.ok(!refusal.ok && refusal.reason === "BUDGET", "a lock that never frees is a budget refusal, never an error");
+		if (!refusal.ok) {
+			assert.ok(refusal.detail !== undefined && refusal.detail.includes(lockPath), "the refusal names the lock path");
+			assert.match(refusal.detail, /model-lock clear/, "and the operator's recovery command");
+		}
+		assert.equal(readFileSync(lockPath, "utf8"), "0.0.wedged", "the refusal leaves the wedged lock for its owner");
+		assert.equal((await log.records()).length, 0, "nothing was appended behind the wedged lock");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("an exit 0 with no result line defers to the commit step", () => {
 	assert.deepEqual(classifyDroidRun(0, "the agent printed nothing parseable\n"), { ok: true, sessionId: null, factoryCredits: null });
 });
@@ -122,8 +241,7 @@ test("a success result without session or usage still succeeds, with nulls recor
 	assert.deepEqual(classifyDroidRun(0, bare), { ok: true, sessionId: null, factoryCredits: null });
 });
 
-test("the Factory key comes from the environment first, then the laptop key file, never a log", async () => {
-	assert.equal(await factoryApiKey({ FACTORY_API_KEY: "from-env" }), "from-env", "the VM's env var wins");
+test("the Factory key comes from the environment first, then the laptop key file, never a log", async () => {	assert.equal(await factoryApiKey({ FACTORY_API_KEY: "from-env" }), "from-env", "the VM's env var wins");
 	const home = mkdtempSync(join(tmpdir(), "acquit-model-key-"));
 	const keyFile = join(home, ".config", "acquit", "factory-api-key");
 	try {
@@ -137,3 +255,13 @@ test("the Factory key comes from the environment first, then the laptop key file
 	} finally { rmSync(home, { recursive: true, force: true }); }
 	assert.equal(await factoryApiKey({ HOME: "/nonexistent-acquit-home" }), null, "a missing key file yields null, never a throw");
 });
+
+test("the result line's answer text is readable for a read-only ask turn", () => {
+	const ok = `{"type":"result","subtype":"success","is_error":false,"result":"{\\"message\\":\\"378.00 held\\"}","session_id":"s1","usage":{"factory_credits":12}}\n`;
+	assert.equal(droidResultText(ok), '{"message":"378.00 held"}');
+	assert.equal(droidResultText("no result line at all\n"), null, "a stream with no result line has no text");
+	assert.equal(droidResultText(""), null, "an empty stream has no text");
+	const errored = `{"type":"result","subtype":"failure","is_error":true,"result":"the model refused"}\n`;
+	assert.equal(droidResultText(errored), "the model refused", "an errored run still reports the text it carried");
+});
+

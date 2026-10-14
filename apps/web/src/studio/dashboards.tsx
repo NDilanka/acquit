@@ -1,11 +1,13 @@
-import { createContext, useContext, type ComponentType } from "react";
-import type { AgPageLayoutState, AgReportState, AgWidgetDataFormat } from "ag-studio";
-import { createWidgets, type AgRegistry, type AgWidgetDefinition } from "ag-studio-react";
+import { Component, createContext, useContext, type ComponentType, type ReactNode } from "react";
+import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
+import { createWidgets } from "ag-studio-react";
 import type { PayoutRow, PlatformJobLedger, ReceiptRow } from "../api-types";
 import { dollars, utc } from "../format";
-import { conserves, earnings, escrowTotals, newestReceipt, placeRows, stackLayout, verifierStats } from "../studio-data";
+import { COLUMNS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
+import { conserves, earnings, escrowTotals, newestReceipt, placeRows, verifierStats } from "../studio-data";
 
-export type DashboardId = "escrow" | "earnings";
+export type { AcquitRegistry, AcquitWidgetId, DashboardId, DashboardState };
+export { stacked } from "../studio-data";
 
 export type EarningsData = { readonly receipts: readonly ReceiptRow[]; readonly payouts: readonly PayoutRow[]; readonly handle: string };
 
@@ -110,104 +112,40 @@ function ReceiptCard() {
   );
 }
 
-type WidgetSpec = {
-  readonly id: string;
-  readonly label: string;
-  readonly comp: ComponentType;
-  readonly kind: "stat" | "card";
-  readonly xSpan: number;
-  readonly ySpan: number;
-};
-
 const escrowTotal = (key: keyof ReturnType<typeof escrowTotals>, note: string) =>
   stat(useEscrow, (jobs) => ({ value: dollars(escrowTotals(jobs)[key]), note }));
 
-/** Each dashboard's widgets, one inner array per row of a fresh layout. */
-const DASHBOARDS = {
-  escrow: [
-    [
-      { id: "acquit-held", label: "Held escrow", kind: "stat", xSpan: 3, ySpan: 2, comp: escrowTotal("held", "In escrow on jobs not yet settled") },
-      { id: "acquit-released", label: "Released", kind: "stat", xSpan: 3, ySpan: 2, comp: escrowTotal("released", "Paid out to operators") },
-      { id: "acquit-refunded", label: "Refunded", kind: "stat", xSpan: 3, ySpan: 2, comp: escrowTotal("refunded", "Returned to clients") },
-      { id: "acquit-fees", label: "Fees", kind: "stat", xSpan: 3, ySpan: 2, comp: escrowTotal("fees", "PayPal processing and Acquit") },
-    ],
-    [
-      {
-        id: "acquit-pass-rate",
-        label: "Verifier pass rate",
-        kind: "stat",
-        xSpan: 4,
-        ySpan: 2,
-        comp: stat(useEscrow, (jobs) => {
-          const s = verifierStats(jobs);
-          return { value: percent(s.passRate), note: `Of ${s.attempts} attempts verified` };
-        }),
-      },
-      {
-        id: "acquit-reject-rate",
-        label: "Verifier reject rate",
-        kind: "stat",
-        xSpan: 4,
-        ySpan: 2,
-        comp: stat(useEscrow, (jobs) => {
-          const s = verifierStats(jobs);
-          return { value: percent(s.rejectRate), note: `Of ${s.attempts} attempts rejected` };
-        }),
-      },
-      {
-        id: "acquit-tamper-caught",
-        label: "Tamper attempts caught",
-        kind: "stat",
-        xSpan: 4,
-        ySpan: 2,
-        comp: stat(useEscrow, (jobs) => ({ value: String(verifierStats(jobs).tamperAttempts), note: "Rejected for editing the frozen tests" })),
-      },
-    ],
-    [{ id: "acquit-conserves", label: "Ledger conserves", kind: "card", xSpan: 12, ySpan: 4, comp: LedgerConserves }],
-  ],
-  earnings: [
-    [
-      {
-        id: "acquit-paid-out",
-        label: "Total paid out",
-        kind: "stat",
-        xSpan: 4,
-        ySpan: 2,
-        comp: stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).paidOut), note: "Payouts on your job receipts" })),
-      },
-      {
-        id: "acquit-fees-withheld",
-        label: "Fees withheld",
-        kind: "stat",
-        xSpan: 4,
-        ySpan: 2,
-        comp: stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).feesWithheld), note: "PayPal processing and Acquit" })),
-      },
-      {
-        id: "acquit-jobs-paid",
-        label: "Jobs paid",
-        kind: "stat",
-        xSpan: 4,
-        ySpan: 2,
-        comp: stat(useEarnings, (d) => ({ value: String(earnings(d.receipts).jobsPaid), note: "Verified, released, and paid" })),
-      },
-    ],
-    [{ id: "acquit-receipt-card", label: "Receipt card", kind: "card", xSpan: 12, ySpan: 5, comp: ReceiptCard }],
-  ],
-} as const satisfies Record<DashboardId, readonly (readonly WidgetSpec[])[]>;
+const COMP = {
+  "acquit-held": escrowTotal("held", "In escrow on jobs not yet settled"),
+  "acquit-released": escrowTotal("released", "Paid out to operators"),
+  "acquit-refunded": escrowTotal("refunded", "Returned to clients"),
+  "acquit-fees": escrowTotal("fees", "PayPal processing and Acquit"),
+  "acquit-pass-rate": stat(useEscrow, (jobs) => {
+    const s = verifierStats(jobs);
+    return { value: percent(s.passRate), note: `Of ${s.attempts} attempts verified` };
+  }),
+  "acquit-reject-rate": stat(useEscrow, (jobs) => {
+    const s = verifierStats(jobs);
+    return { value: percent(s.rejectRate), note: `Of ${s.attempts} attempts rejected` };
+  }),
+  "acquit-tamper-caught": stat(useEscrow, (jobs) => ({ value: String(verifierStats(jobs).tamperAttempts), note: "Rejected for editing the frozen tests" })),
+  "acquit-conserves": LedgerConserves,
+  "acquit-paid-out": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).paidOut), note: "Payouts on your job receipts" })),
+  "acquit-fees-withheld": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).feesWithheld), note: "PayPal processing and Acquit" })),
+  "acquit-jobs-paid": stat(useEarnings, (d) => ({ value: String(earnings(d.receipts).jobsPaid), note: "Verified, released, and paid" })),
+  "acquit-receipt-card": ReceiptCard,
+} satisfies Record<AcquitWidgetId, ComponentType>;
 
-type Spec = (typeof DASHBOARDS)[DashboardId][number][number];
-export type AcquitWidgetId = Spec["id"];
+type SpecData = (typeof WIDGET_ROWS)[DashboardId][number][number];
+type Spec = SpecData & { readonly comp: ComponentType };
 
-type AcquitWidget = { type: AcquitWidgetId; dataMapping: Record<string, never>; format?: AgWidgetDataFormat<unknown> };
+const withComp = (rows: readonly (readonly SpecData[])[]): readonly (readonly Spec[])[] =>
+  rows.map((row) => row.map((spec) => ({ ...spec, comp: COMP[spec.id] })));
 
-export interface AcquitRegistry extends AgRegistry {
-  widgets: readonly AgWidgetDefinition<AcquitWidgetId, AcquitWidget>[];
-}
-
-export type DashboardState = AgReportState<AcquitRegistry>;
-
-const COLUMNS = 12;
+const DASHBOARDS: Record<DashboardId, readonly (readonly Spec[])[]> = {
+  escrow: withComp(WIDGET_ROWS.escrow),
+  earnings: withComp(WIDGET_ROWS.earnings),
+};
 
 /**
  * Studio converts a widget's pixel minimum into columns against the page's minimum width, so these
@@ -220,30 +158,52 @@ const SIZES = {
   card: { defaultSize: { width: 560, height: 240 }, minSize: { width: 150, height: 200 } },
 } as const;
 
-function labelled({ comp: Body, label }: Spec): ComponentType {
+/** One widget that throws shows a fallback in its own tile instead of taking the page down. */
+class WidgetBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? <p className="muted">This widget could not be shown.</p> : this.props.children;
+  }
+}
+
+function labelled({ id, comp: Body, label }: Spec): ComponentType {
   return function AcquitWidget() {
     return (
-      <section className="studio-widget" aria-label={label}>
+      <section className="studio-widget" aria-label={label} data-widget-type={id}>
         <span className="eyebrow">{label}</span>
-        <Body />
+        <WidgetBoundary>
+          <Body />
+        </WidgetBoundary>
       </section>
     );
   };
 }
 
-const ALL: readonly Spec[] = Object.values(DASHBOARDS).flat(2);
+function buildRegistry(id: DashboardId): AgWidgetsConfig<AcquitRegistry> {
+  const specs = DASHBOARDS[id].flat();
+  return createWidgets<AcquitRegistry>({
+    additionalTypes: specs.map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      form: () => [],
+      comp: labelled(spec),
+      ai: spec.ai,
+      ...SIZES[spec.kind],
+    })),
+    menu: [{ label: "Acquit", widgetIds: specs.map((s) => s.id) }],
+    defaultType: WIDGET_ROWS[id][0][0].id,
+  });
+}
 
-export const WIDGETS = createWidgets<AcquitRegistry>({
-  additionalTypes: ALL.map((spec) => ({
-    id: spec.id,
-    label: spec.label,
-    form: () => [],
-    comp: labelled(spec),
-    ...SIZES[spec.kind],
-  })),
-  menu: [{ label: "Acquit", widgetIds: ALL.map((s) => s.id) }],
-  defaultType: "acquit-held",
-});
+export const WIDGETS: Record<DashboardId, AgWidgetsConfig<AcquitRegistry>> = {
+  escrow: buildRegistry("escrow"),
+  earnings: buildRegistry("earnings"),
+};
 
 export function freshState(id: DashboardId): DashboardState {
   const rows = DASHBOARDS[id];
@@ -257,24 +217,5 @@ export function freshState(id: DashboardId): DashboardState {
         widgetLayout: placeRows(rows),
       },
     ],
-  };
-}
-
-/** A saved layout from the server, or null when it is missing or no longer reads as Studio state. */
-export function parseSaved(json: string | null): DashboardState | null {
-  if (json === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(json);
-    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { pages?: unknown }).pages)) return null;
-    return parsed as DashboardState;
-  } catch {
-    return null;
-  }
-}
-
-export function stacked(state: DashboardState): DashboardState {
-  return {
-    ...state,
-    pages: state.pages.map((page) => ({ ...page, widgetLayout: stackLayout(page.widgetLayout ?? {}, page.layout?.columns ?? COLUMNS) })),
   };
 }

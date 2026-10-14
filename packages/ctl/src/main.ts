@@ -22,6 +22,7 @@ const name = args[0] ?? "";
 if (name === "clock" && args[1] === "advance" && args[2] && !args[2].startsWith("--")) args.splice(1, 2, "--duration", args[2]);
 if (name === "fund-mode" && args[1] && !args[1].startsWith("--")) args.splice(1, 1, "--mode", args[1]);
 if (name === "webhook" && args[1] === "replay") args.splice(1, 1);
+if (name === "model-lock" && args[1] === "clear") args.splice(1, 1);
 try {
 	if (args.length === 0 || (args.length === 1 && name === "--help")) {
 		process.stdout.write(help());

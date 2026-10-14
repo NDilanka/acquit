@@ -15,6 +15,7 @@ import { TERMS, applyJobCommand } from "../src/job.ts";
 import type { JobRow, PassedAttempt, Receipt, RejectedAttempt } from "../src/job.ts";
 import { platformJobLedger } from "../src/platform.ts";
 import { isTestTamper } from "../src/verifier.ts";
+import { platformEscrowTotals } from "../src/platform.ts";
 import type { VerifierRunId } from "../src/verifier.ts";
 import { SqliteStore } from "../src/store.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
@@ -135,6 +136,34 @@ test("the platform ledger query returns every tenant's book to the platform role
 			const denied = await built.service.query(actor, { type: "PlatformLedger" });
 			assert.equal(denied.kind, "DENIED");
 		}
+	} finally { built.close(); }
+});
+
+test("the platform ledger names the capture a held escrow was funded with", async () => {
+	const rows = [paidRow("v_a" as VisitorId), heldTamperRow(), refundedRow()];
+	const built = await serviceWith(rows);
+	try {
+		const allowed = await built.service.query(platform, { type: "PlatformLedger" });
+		if (allowed.kind !== "PLATFORM_LEDGER") throw new Error("Expected the platform ledger");
+		const held = allowed.ledger.jobs.find(job => job.jobId === "job_ledger_held");
+		assert.ok(held, "the held job is in the ledger");
+		// The capture's own facts, so a ledger agent can ask PayPal whether it agrees: the order and
+		// capture ids, the payee the capture was taken on behalf of, and the gross it held.
+		assert.deepEqual(held.capture, { orderId: "TESTORDER", captureId: "TESTCAPTURE", payee: merchant, gross: 37800 });
+		const paid = allowed.ledger.jobs.find(job => job.jobId === "job_ledger_paid");
+		assert.equal(paid?.capture ?? null, null, "a released job names its payout, not a held capture");
+		const refunded = allowed.ledger.jobs.find(job => job.jobId === "job_ledger_refunded");
+		assert.equal(refunded?.capture ?? null, null, "a refunded job names its refund, not a held capture");
+	} finally { built.close(); }
+});
+
+test("the ledger's totals are the ledger's own arithmetic: holds on escrowed jobs, every release, refund, and fee", async () => {
+	const rows = [paidRow("v_a" as VisitorId), paidRow("v_b" as VisitorId, "job_ledger_paid_b"), heldTamperRow(), refundedRow()];
+	const built = await serviceWith(rows);
+	try {
+		const allowed = await built.service.query(platform, { type: "PlatformLedger" });
+		if (allowed.kind !== "PLATFORM_LEDGER") throw new Error("Expected the platform ledger");
+		assert.deepEqual(platformEscrowTotals(allowed.ledger.jobs), { held: 37800, released: 72000, refunded: 42000, fees: 12000 });
 	} finally { built.close(); }
 });
 

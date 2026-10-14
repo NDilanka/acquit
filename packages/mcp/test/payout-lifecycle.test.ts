@@ -31,7 +31,8 @@ function syntheticPaypal(expiresIn: number, readStatuses: readonly number[]): {
 			calls.oauth += 1;
 			return json({ access_token: `token-${calls.oauth}`, expires_in: expiresIn });
 		}
-		calls.reads.push(String((init?.headers as Record<string, string>)["Authorization"]));
+		calls.reads.push(String((init?.headers as Record<string, string>)["Authorization"]) +
+			((init?.headers as Record<string, string>)["PayPal-Auth-Assertion"] ? "|asserted" : ""));
 		const status = readStatuses[Math.min(calls.reads.length - 1, readStatuses.length - 1)];
 		return json({ item_id: "probe-item", processing_state: { status: "SUCCESS" },
 			payout_amount: { currency_code: "USD", value: "360.00" } }, status);
@@ -52,6 +53,19 @@ describe("the payout reader's token lifecycle", () => {
 		await reader.get("/v1/payments/referenced-payouts-items/probe-item");
 		assert.deepEqual(calls.reads, ["Bearer token-1", "Bearer token-1", "Bearer token-2"]);
 		assert.equal(calls.oauth, 2);
+	});
+
+	it("a read may assert the merchant the resource belongs to, and the assertion rides the retry", async () => {
+		const { transport, calls } = syntheticPaypal(3600, [401, 200]);
+		const reader = await paypalReader(
+			{ clientId: "probe-id", clientSecret: "probe-value", sandbox: true }, transport);
+		const item = await reader.get("/v2/checkout/orders/probe-order", "assertion-jwt");
+		assert.deepEqual(calls.reads, ["Bearer token-1|asserted", "Bearer token-2|asserted"],
+			"both the refused read and its retry name the merchant");
+		assert.equal(calls.oauth, 2);
+		assert.equal(referencedPayoutItem(item, "probe-item").status, "SUCCESS");
+		const plain = await reader.get("/v2/checkout/orders/probe-order");
+		assert.deepEqual(calls.reads.slice(2), ["Bearer token-2"], "a read with no assertion sends none");
 	});
 
 	it("re-mints once and retries once when a read answers 401", async () => {

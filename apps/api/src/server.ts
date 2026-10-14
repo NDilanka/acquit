@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, StaffId } from "../../../packages/core/src/ids.ts";
@@ -21,6 +21,9 @@ import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
+import { askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, paypalAskReader } from "./ask.ts";
+import type { AskMessage, AskToolSchema } from "./ask.ts";
+import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
@@ -83,6 +86,74 @@ function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; file
 	try {
 		return { commit: String(row.commit_sha), files: JSON.parse(String(row.files)), patch: String(row.patch) };
 	} catch { return null; }
+}
+// The "Ask the ledger" agent's server side. The model turns run in this process (one read-only
+// droid exec turn per relay, or the openrouter port when the switch names it), the tools run here,
+// and the tool set is closed: no create, capture, refund, payout, or update tool exists to call.
+// The key rides the child's environment, never argv, never a log; the shared budget counts every
+// call before it runs, on the same log the House's deliveries append to.
+const askCallLog = modelCallLog(join(resolve(databasePath, ".."), "model-calls.jsonl"));
+const askPaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
+	? paypalAskReader({ clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret }) : null;
+const askExecutor = askToolExecutor({
+	platformView: async () => {
+		const result = await acquit.query({ role: "PLATFORM" }, { type: "PlatformLedger" });
+		if (result.kind !== "PLATFORM_LEDGER") throw new Error("the platform ledger is not readable");
+		return result.ledger.jobs;
+	},
+	paypal: askPaypal,
+});
+const askModel = modelProvider() === "openrouter" ? openrouterAskPort() : droidAskPort();
+const askTools = askToolList(askPaypal !== null);
+function readAskCall(value: unknown): { id: string; function: { name: string; arguments: string } } {
+	const call = object(value);
+	const fn = object(call.function);
+	return { id: text(call.id, "call id", 100), function: { name: text(fn.name, "tool name", 60), arguments: text(fn.arguments, "tool arguments", 16_000) } };
+}
+/** The turn's tool schemas, relayed from the loop that resolved them for this agent: the agent's
+ * read tools plus the harness's delegate_to. Bounded; the prompt is shaped by them, but the only
+ * tools that can execute are this route's closed set and the loop's own browser-side tools. */
+function readAskTools(value: unknown): readonly AskToolSchema[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || value.length > 32) throw new BadBody("tools must be a list of at most 32 schemas");
+	return value.map(raw => {
+		const tool = object(raw);
+		if (Object.keys(tool).some(key => key !== "name" && key !== "description" && key !== "parameters")) throw new BadBody("Unsupported tool field");
+		const parameters = tool.parameters ?? { type: "object", properties: {} };
+		// Studio's real schemas are large by construction: add_widget_filter's shape enumerates the
+		// data engine's filter operators per data type and serialized at 22,528 bytes on the measured
+		// turn. The bound admits those while keeping each schema (and so the prompt) bounded.
+		if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || JSON.stringify(parameters).length > 32_000) throw new BadBody("Invalid tool parameters");
+		const schema: Record<string, unknown> = parameters as Record<string, unknown>;
+		return { name: text(tool.name, "tool name", 60), description: text(tool.description, "tool description", 2000), parameters: schema };
+	});
+}
+/** The conversation the panel relays, bounded: at most 64 messages, each with a role the loop
+ * sends and only the fields that role carries. */
+function readAskMessages(value: unknown): readonly AskMessage[] {
+	if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new BadBody("messages must be a list of 1 to 64 messages");
+	return value.map(raw => {
+		const message = object(raw);
+		const id = text(message.id, "message id", 100);
+		const role = text(message.role, "message role", 12);
+		if (role === "user" || role === "system" || role === "developer") {
+			if (Object.keys(message).some(key => key !== "id" && key !== "role" && key !== "content")) throw new BadBody("Unsupported message field");
+			return { id, role, content: text(message.content, "message content", 16_000) } as AskMessage;
+		}
+		if (role === "assistant") {
+			if (Object.keys(message).some(key => key !== "id" && key !== "role" && key !== "content" && key !== "toolCalls")) throw new BadBody("Unsupported message field");
+			if (message.content === undefined && message.toolCalls === undefined) throw new BadBody("An assistant message carries content or tool calls");
+			const toolCalls = message.toolCalls === undefined ? undefined
+				: (Array.isArray(message.toolCalls) ? message.toolCalls : []).map(readAskCall);
+			return { id, role, ...(message.content === undefined ? {} : { content: text(message.content, "message content", 16_000) }),
+				...(toolCalls === undefined ? {} : { toolCalls }) } as AskMessage;
+		}
+		if (role === "tool") {
+			if (Object.keys(message).some(key => key !== "id" && key !== "role" && key !== "content" && key !== "toolCallId")) throw new BadBody("Unsupported message field");
+			return { id, role, content: text(message.content, "tool result", 32_000), toolCallId: text(message.toolCallId, "tool call id", 100) } as AskMessage;
+		}
+		throw new BadBody("Invalid message role");
+	});
 }
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
@@ -185,6 +256,17 @@ async function body(req: IncomingMessage): Promise<unknown> {
 const CALLBACK_BODY_LIMIT_BYTES = VERDICT_REASONS_MAX * VERDICT_REASON_BYTES_MAX + 4_096;
 /** The webhook route's own cap, above any event body PayPal sends for one capture, refund, or payout. */
 const WEBHOOK_BODY_LIMIT_BYTES = 65_536;
+/**
+ * The ask turn route's own cap, above the largest turn Studio's real harness builds. The delegated
+ * widget-agent turn measured 32,905 bytes (evidence g1a3/ask-round4-fix/measurement.json, byte
+ * lengths only: instructions clipped at 4,000, 27,378 bytes of tool schemas led by add_widget_filter's
+ * 22,528-byte data-engine filter shape, 1,420 bytes of child-thread messages) -- past the global
+ * 32,768-byte cap every other route keeps, which refused the turn 400 before any model call. 256 KiB
+ * gives that measured turn about 8x headroom for the child histories and tool results that grow over
+ * a run's turns, while the route's own field bounds (64 messages of 32,000 characters, 32 schemas)
+ * and this cap together keep what a caller can relay bounded.
+ */
+const ASK_TURN_BODY_LIMIT_BYTES = 262_144;
 async function rawBody(req: IncomingMessage, max: number): Promise<string> {
 	const declared = Number(req.headers["content-length"] ?? "");
 	if (Number.isFinite(declared) && declared > max) throw new TooLarge("Request body too large");
@@ -474,6 +556,63 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const result = await acquit.query(current.actor, { type: "PlatformLedger" });
 		if (result.kind !== "PLATFORM_LEDGER") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { jobs: result.ledger.jobs, now: clock.now() });
+		return;
+	}
+	if (url.pathname === "/api/ask-ledger/tools" && method === "GET") {
+		// The ledger agent's tool list: the closed read-only set, with the model it runs on and
+		// whether a usable provider key sits in process. The platform role alone holds it.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		json(res, 200, { tools: askTools, model: askModelName(), keyConfigured: await askKeyConfigured() });
+		return;
+	}
+	if (url.pathname === "/api/ask-ledger/turn" && method === "POST") {
+		// One model turn, relayed. The browser's agent loop sends the conversation and the tool
+		// schemas it resolved for this agent; the turn runs in this process under the shared budget,
+		// and the envelope's message and tool calls are the only thing back. The tool-execution
+		// route stays the closed set -- relaying schemas never widens what can run. The route
+		// carries its own larger cap, because the harness's delegated widget-agent turn is bigger
+		// than the global cap every other route keeps.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		let raw: string;
+		try { raw = await rawBody(req, ASK_TURN_BODY_LIMIT_BYTES); }
+		catch (error) {
+			if (error instanceof TooLarge) { json(res, 413, { error: "ASK_BODY_TOO_LARGE" }); return; }
+			throw error;
+		}
+		let relayed: { messages: readonly AskMessage[]; instructions: string | undefined; tools: readonly AskToolSchema[] };
+		try {
+			let parsed: unknown;
+			try { parsed = JSON.parse(raw); } catch { throw new BadBody("Expected a JSON body"); }
+			const input = object(parsed);
+			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions" && key !== "tools")) throw new BadBody("Unsupported field");
+			relayed = { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
+				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog }, relayed);
+		if (!outcome.ok) {
+			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
+				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
+			return;
+		}
+		json(res, 200, outcome);
+		return;
+	}
+	if (url.pathname === "/api/ask-ledger/tool" && method === "POST") {
+		// One tool call, executed. The name must be one of the closed read-only set; the result is
+		// the tool's answer, and a tool's failure is the loop's to read -- never a retried write,
+		// because there is no write tool to retry.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		let named: { name?: unknown; arguments?: unknown };
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "name" && key !== "arguments")) throw new BadBody("Unsupported field");
+			named = input;
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		try {
+			json(res, 200, { result: await askExecutor(text(named.name, "tool name", 60), object(named.arguments ?? {})) });
+		} catch (error) {
+			json(res, 502, { error: "TOOL_FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
+		}
 		return;
 	}
 	if (url.pathname === "/api/repos" && method === "GET") {

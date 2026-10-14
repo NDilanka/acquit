@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createStudioTheme, type AgDataSourcesDefinition, type AgReportState } from "ag-studio";
+import {
+  AgStudioAiModule,
+  AgStudioModuleRegistry,
+  createStudioTheme,
+  type AgDataSourcesDefinition,
+  type AgPanelConfig,
+  type AgReportState,
+  type AgWidgetsConfig,
+} from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
 import type { PlatformJobLedger } from "../api-types";
 import { errorText } from "../demo";
 import { Link } from "../router";
 import { useSession } from "../session";
+import { ASK_TOOL_DISPLAY, AskLedgerDrawer, useAskLedger, type AskLedger } from "./AskLedger";
 import { STUDIO_EARNINGS_DATA, STUDIO_ESCROW_DATA } from "../studio-source";
 import {
   EarningsContext,
@@ -13,14 +22,18 @@ import {
   PAGE_LAYOUT,
   WIDGETS,
   freshState,
-  parseSaved,
   stacked,
   type AcquitRegistry,
   type DashboardId,
   type DashboardState,
   type EarningsData,
 } from "./dashboards";
+import { parseSaved } from "../studio-data";
 import "./studio.css";
+
+// The ESM entry registers only the data-engine module. The AI module brings the context service
+// whose widget catalogue and schema the dashboard's agents read.
+AgStudioModuleRegistry.registerModules([AgStudioAiModule]);
 
 const ESCROW_REFRESH_MS = 30_000;
 const SAVE_DEBOUNCE_MS = 300;
@@ -54,6 +67,7 @@ function Notice({ title, children }: { title: string; children: ReactNode }) {
 type Load<T> = { kind: "loading" } | { kind: "ready"; data: T } | { kind: "failed"; error: string };
 
 function EscrowDashboard() {
+  const ask = useAskLedger("escrow");
   const [ledger, setLedger] = useState<Load<readonly PlatformJobLedger[]> | { kind: "denied" }>({ kind: "loading" });
   useEffect(() => {
     let live = true;
@@ -94,7 +108,7 @@ function EscrowDashboard() {
     );
   }
   return (
-    <Dashboard id="escrow" title="Platform escrow" lead="Every job's money across all tenants, refreshed every 30 seconds." load={ledger}>
+    <Dashboard id="escrow" title="Platform escrow" lead="Every job's money across all tenants, refreshed every 30 seconds." load={ledger} ask={ask}>
       {(jobs, studio) => <EscrowContext.Provider value={jobs}>{studio}</EscrowContext.Provider>}
     </Dashboard>
   );
@@ -124,17 +138,20 @@ function Dashboard<T>({
   title,
   lead,
   load,
+  ask,
   children,
 }: {
   id: DashboardId;
   title: string;
   lead: string;
   load: Load<T>;
+  ask?: AskLedger;
   children: (data: T, studio: ReactNode) => ReactNode;
 }) {
   const layout = useSavedLayout(id);
   const narrow = useMedia(NARROW);
   const [editing, setEditing] = useState(false);
+  const [asking, setAsking] = useState(false);
   return (
     <div className="studio-page">
       <div className="head">
@@ -143,15 +160,28 @@ function Dashboard<T>({
           <h1>{title}</h1>
           <p className="muted">{lead}</p>
         </div>
-        {!narrow && layout.save && (
-          <button className={`btn sm ${editing ? "green" : "ghost"}`} aria-pressed={editing} onClick={() => setEditing((on) => !on)}>
-            {editing ? "Done arranging" : "Arrange layout"}
-          </button>
-        )}
+        <div className="head-actions">
+          {ask && (
+            <button
+              className={`btn sm ${asking ? "green" : "ghost"}`}
+              aria-expanded={asking}
+              aria-controls={ASK_PANEL_ID}
+              onClick={() => setAsking((on) => !on)}
+            >
+              Ask the ledger
+            </button>
+          )}
+          {!narrow && layout.save && (
+            <button className={`btn sm ${editing ? "green" : "ghost"}`} aria-pressed={editing} onClick={() => setEditing((on) => !on)}>
+              {editing ? "Done arranging" : "Arrange layout"}
+            </button>
+          )}
+        </div>
       </div>
       {load.kind === "failed" && <div className="alert">{load.error}</div>}
       {layout.loadError && <div className="alert warn">{layout.loadError}</div>}
       {layout.saveError && <div className="alert warn">Your layout change was not saved: {layout.saveError}</div>}
+      {ask && <AskLedgerDrawer id={ASK_PANEL_ID} ask={ask} open={asking} onClose={() => setAsking(false)} />}
       {load.kind === "loading" || !layout.loaded ? (
         <p className="muted">Loading the dashboard…</p>
       ) : (
@@ -165,6 +195,8 @@ function Dashboard<T>({
             mode={editing && !narrow ? "edit" : "view"}
             onState={narrow ? undefined : layout.save}
             data={id === "escrow" ? STUDIO_ESCROW_DATA : STUDIO_EARNINGS_DATA}
+            widgets={WIDGETS[id]}
+            ask={ask}
           />,
         )
       )}
@@ -188,7 +220,7 @@ function useSavedLayout(id: DashboardId) {
     api.loadStudioLayout(id).then(
       (r) => {
         if (!live) return;
-        latest.current = parseSaved(r.state) ?? freshState(id);
+        latest.current = parseSaved(r.state, id) ?? freshState(id);
         setStatus({ kind: "ready" });
       },
       (e: unknown) => live && setStatus({ kind: "failed", error: `Your saved layout could not be loaded, so this is the default: ${errorText(e)}` }),
@@ -278,19 +310,26 @@ function acquitStudioTheme() {
 }
 
 // The dashboards are read-only in view mode, so the studio's filter panel is only noise there and
-// covers the stacked narrow layout. Edit mode keeps its default panels.
+// covers the stacked narrow layout. Declaring any layout drops Studio's defaults for both modes, so
+// edit mode shows only what is declared: the chat panel, on the dashboard that has an agent.
 const STUDIO_PANELS = { view: { left: [], right: [] } };
+const STUDIO_PANELS_WITH_AI: AgPanelConfig = { view: { left: [], right: [] }, edit: { right: ["ai"] } };
+const ASK_PANEL_ID = "ask-ledger-panel";
 
 function AcquitStudio({
   state,
   mode,
   onState,
   data,
+  widgets,
+  ask,
 }: {
   state: DashboardState;
   mode: "view" | "edit";
   onState: ((state: DashboardState) => void) | undefined;
   data: AgDataSourcesDefinition<AcquitRegistry>;
+  widgets: AgWidgetsConfig<AcquitRegistry>;
+  ask: AskLedger | undefined;
 }) {
   const theme = useMemo(acquitStudioTheme, []);
   // Studio may keep the first handler it is given, so it calls through a ref to the current one.
@@ -305,9 +344,12 @@ function AcquitStudio({
         mode={mode}
         theme={theme}
         layout={PAGE_LAYOUT}
-        widgets={WIDGETS}
+        widgets={widgets}
         data={data}
-        panels={STUDIO_PANELS}
+        panels={ask ? STUDIO_PANELS_WITH_AI : STUDIO_PANELS}
+        ai={ask?.setup}
+        aiToolDisplay={ask ? ASK_TOOL_DISPLAY : undefined}
+        onApiReady={ask?.onApiReady}
         onStateUpdated={onStateUpdated}
       />
     </AgStudioProvider>

@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { LedgerLaw, LedgerLine as BookLine } from "../../core/src/ledger.ts";
 import { instant } from "../../core/src/ids.ts";
 import type { StoredBookRaw } from "../../core/src/job.ts";
 import { logBare } from "../../core/src/log.ts";
+import { modelCallLockPath } from "../../core/src/model.ts";
 import { alive, captured, childListener, CliError, detached, killTree, ownershipNonce, ownershipReady, portOpen, reachable, releaseSpawned, requireOwned, sleep } from "./process.ts";
 import type { ChildProcess } from "node:child_process";
 import { atomicJson, clearState, counts, envKeys, locked, readState, readStoredJobs, readStoredWebhookEvent } from "./state.ts";
@@ -194,6 +195,32 @@ function captureDelivery(capture: string, fresh: boolean): WebhookDelivery {
 	const eventId = `WH-CAPTURE-${suffix}`;
 	// Only the resource id matters: the route re-reads the capture from PayPal and routes what it reads.
 	return { eventId, source: "built", envelope: JSON.stringify({ id: eventId, event_type: "PAYMENT.CAPTURE.COMPLETED", resource_type: "capture", resource: { id: capture } }) };
+}
+/** The operator's recovery for a wedged shared model budget. The lock names its owner as
+ * `pid.token`; a clear refuses unless that pid is gone from this host (`process.kill(pid, 0)`
+ * answers ESRCH) or --force says the operator checked. The answer prints only the lock's path
+ * and the outcome -- never the pid or the token. */
+export async function modelLockClear(parsed: Parsed, ctx: Context): Promise<Result> {
+	const lockPath = modelCallLockPath(join(dirname(ctx.databasePath), "model-calls.jsonl"));
+	const recorded = await readFile(lockPath, "utf8").catch(() => null);
+	if (recorded === null) return { text: `${lockPath} absent, nothing to clear\n`, path: lockPath, outcome: "absent" };
+	const dot = recorded.indexOf(".");
+	const pid = dot <= 0 ? NaN : Number(recorded.slice(0, dot).trim());
+	let ownerAlive: boolean;
+	if (Number.isSafeInteger(pid) && pid > 0) {
+		try { process.kill(pid, 0); ownerAlive = true; } catch (error) { ownerAlive = (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+	} else {
+		ownerAlive = false;
+	}
+	if (ownerAlive || !Number.isSafeInteger(pid) || pid <= 0) {
+		if (!parsed.force) throw new CliError("LOCK_LIVE",
+			Number.isSafeInteger(pid) && pid > 0
+				? `The lock at ${lockPath} records an owner that is alive on this host; nothing was removed.`
+				: `The lock at ${lockPath} records no owner pid this host can check; nothing was removed.`,
+			"Wait for the model call that holds it, or clear it anyway with --force.");
+	}
+	await rm(lockPath, { force: true });
+	return { text: `${lockPath} cleared\n`, path: lockPath, outcome: "cleared" };
 }
 async function probes(api: number, web: number, verifier?: number) {
 	// The session route answers 200 unauthenticated in both modes; the seeded user list is dev-only.

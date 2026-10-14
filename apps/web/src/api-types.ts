@@ -275,3 +275,49 @@ export type CommandOutcome =
 
 /** The `POST /api/commands` body. An INSUFFICIENT_CREDITS refusal also carries the credit view. */
 export type CommandResponse = { readonly outcome: CommandOutcome; readonly credits?: CreditAccountView | null };
+
+/** One tool the ledger agent may call, as `GET /api/ask-ledger/tools` serves it. Mirrored from apps/api/src/ask.ts. */
+export type AskToolSchema = {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+  readonly kind: "client";
+};
+
+/** `GET /api/ask-ledger/tools`. */
+export type AskToolsResponse = { readonly tools: readonly AskToolSchema[]; readonly model: string; readonly keyConfigured: boolean };
+
+/** The conversation `POST /api/ask-ledger/turn` relays, one message per role it accepts. */
+export type AskMessage =
+  | { readonly id: string; readonly role: "user" | "system" | "developer"; readonly content: string }
+  | {
+      readonly id: string;
+      readonly role: "assistant";
+      readonly content?: string;
+      readonly toolCalls?: readonly { readonly id: string; readonly function: { readonly name: string; readonly arguments: string } }[];
+    }
+  | { readonly id: string; readonly role: "tool"; readonly content: string; readonly toolCallId: string };
+
+/** The `POST /api/ask-ledger/turn` body. `tools` is the loop's own schema list for this turn (the
+ * agent's read tools plus the harness's delegate_to), relayed so the prompt can offer them. */
+export type AskTurnRequest = {
+  readonly messages: readonly AskMessage[];
+  readonly instructions?: string;
+  readonly tools?: readonly { readonly name: string; readonly description: string; readonly parameters: Record<string, unknown> }[];
+};
+
+/** A tool call one model turn asked for. `id` is the model's own, and may be missing. */
+export type AskCall = { readonly id: string | null; readonly name: string; readonly arguments: unknown };
+
+/** `POST /api/ask-ledger/turn` on 200. A refused turn arrives as an error status instead. */
+export type AskTurnResponse = {
+  readonly ok: true;
+  readonly message: string | null;
+  readonly calls: readonly AskCall[];
+  readonly model: string;
+  readonly sessionId: string | null;
+  readonly factoryCredits: number | null;
+};
+
+/** `POST /api/ask-ledger/tool` on 200. */
+export type AskToolResponse = { readonly result: unknown };
