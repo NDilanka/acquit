@@ -149,7 +149,9 @@ test("a client reviews its own parked draft, another role is refused, and the ap
 		assert.equal(approved.status, 200);
 		const frozen = await approved.json() as { digest: string; approvedIds: string[] };
 		assert.deepEqual(frozen.approvedIds, ["draft:1", "draft:2"]);
-		const kept = draftedCases.filter(test => test.id !== "draft:3").map(test => ({ ...test, id: test.id as TestId }));
+		// The digest is the verifier book's own: the approved cases as run data, the citation left out.
+		const kept = draftedCases.filter(test => test.id !== "draft:3").map(({ id, target, args, expected }) =>
+			({ id: id as TestId, target, args, expected }));
 		assert.equal(frozen.digest, hiddenManifest(kept).digest, "the digest is the approved set's own");
 		const manifest = readManifest(join(dir, "test.db"), jobId);
 		assert.ok(manifest);
@@ -190,7 +192,7 @@ test("approving every case the draft parked works, and a job with no parked draf
 		await parkDraft(join(dir, "test.db"), scopingDir, jobId);
 		const everything = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: [] }, maya);
 		assert.equal(everything.status, 200);
-		const kept = draftedCases.map(test => ({ ...test, id: test.id as TestId }));
+		const kept = draftedCases.map(({ id, target, args, expected }) => ({ id: id as TestId, target, args, expected }));
 		const frozen = await everything.json() as { digest: string };
 		assert.equal(frozen.digest, hiddenManifest(kept).digest);
 
