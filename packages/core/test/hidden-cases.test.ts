@@ -231,20 +231,21 @@ test("the check script finds nothing from a deployment's private file", { skip: 
 	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE)).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
 });
 
-/** The walk as it stands: every directory above the store's, stopping before the filesystem root. */
+/** Every directory above the store's, including the filesystem root itself: a store under a
+ * repository mounted at the root is still caught. */
 function ancestorsAbove(start: string): string[] {
 	const dirs: string[] = [];
-	for (let dir = dirname(start); dir !== "/"; dir = dirname(dir)) dirs.push(dir);
+	for (let dir = dirname(start); ; dir = dirname(dir)) { dirs.push(dir); if (dir === "/") break; }
 	return dirs;
 }
-/** The git markers the walk looks for: today only a work tree's .git entry. */
+/** A work tree's .git entry, or a bare repository's HEAD plus objects/ pair. */
 function isGitRepository(dir: string): boolean {
-	return existsSync(join(dir, ".git"));
+	return existsSync(join(dir, ".git")) || (existsSync(join(dir, "HEAD")) && existsSync(join(dir, "objects")));
 }
 
 test("the deployment's private case file sits outside every git repository", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this deployment." }, () => {
 	for (const dir of ancestorsAbove(PRIVATE_CASES_PATH)) {
-		assert.ok(!isGitRepository(dir), `${dir} holds a git work tree; the private case store must not`);
+		assert.ok(!isGitRepository(dir), `${dir} holds a git repository; the private case store must not`);
 	}
 });
 
