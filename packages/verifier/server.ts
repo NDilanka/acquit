@@ -28,6 +28,7 @@ export function createProductionService(): { readonly service: VerifierService; 
 	return { port: config.port, subject: selection.subject,
 		service: createVerifierService({ runSecret: config.runSecret, callback: { url: config.callbackUrl, secret: config.callbackSecret },
 			subject: subjectFor(selection), publisher: app, fixtures: book,
+			scopingDir: process.env["ACQUIT_SCOPING_DIR"]?.trim() || undefined,
 			source: createRunSource({ organization: github.organization ?? "", tokenFor: owner => app.installationToken(owner) }),
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };
 }

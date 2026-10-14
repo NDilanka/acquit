@@ -18,6 +18,7 @@ import type { DefinitionOfDone, RunFailure, RunFailureName, Verdict, VerifierRep
 import type { JudgeOutcome, JudgeSource } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { FixtureBook } from "./fixtures.ts";
+import { loadScopingBook, withScopingCases } from "./fixtures.ts";
 import type { SubjectLauncher } from "./subject.ts";
 import { parseNonce, parseSignatureHeader, parseTimestamp, runSignature, signatureEquals, RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER, RUN_TIMESTAMP_WINDOW_SECONDS } from "./signing.ts";
 
@@ -48,6 +49,9 @@ export type VerifierServiceDeps = {
 	readonly publisher: PublisherPort;
 	/** The deployment's fixtures with their private cases; the run's manifest selects its own. */
 	readonly fixtures: FixtureBook;
+	/** The deployment's private scoping store, when it keeps one: every approved draft beside the
+	 * curated fixtures, read per run, so a draft approved after this process booted still resolves. */
+	readonly scopingDir?: string;
 	/** Builds the read-only source for one run. Production fetches the commits from GitHub. */
 	readonly source: (request: VerifierRunRequest) => Promise<RunSource>;
 	readonly clock?: { now(): Instant };
@@ -178,7 +182,8 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 		try {
 			built = await deps.source(record.request);
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
-				fixtures: deps.fixtures, deadlineMs: deps.subjectDeadlineMs });
+				fixtures: withScopingCases(deps.fixtures, deps.scopingDir === undefined ? new Map() : loadScopingBook(deps.scopingDir)),
+				deadlineMs: deps.subjectDeadlineMs });
 			// What the run view and the callback carry is bounded and redacted here, once, for every source.
 			record.outcome = outcome.kind === "VERDICT" ? { ...outcome, verdict: boundedVerdict(outcome.verdict) }
 				: { ...outcome, failure: { ...outcome.failure, detail: boundedDetail(outcome.failure.detail) } };

@@ -20,6 +20,10 @@ const verifierEnv = {
   // refuses at boot without one. This script never sets ACQUIT_DEV.
   ACQUIT_FIXTURES: process.env.ACQUIT_FIXTURES ?? (process.env.ACQUIT_DEV === '1'
     ? fileURLToPath(new URL('../packages/verifier/fixtures/fixtures.example.json', import.meta.url)) : undefined),
+  // Both processes must agree on the private scoping store: the API writes approved drafts there,
+  // the verifier reads them per run. Absent, each falls back beside its own database — which in a
+  // dev run are the same directory, so the default keeps them together.
+  ACQUIT_SCOPING_DIR: process.env.ACQUIT_SCOPING_DIR ?? fileURLToPath(new URL('../data/scoping', import.meta.url)),
 };
 const children = [
   spawn(process.execPath, ['apps/api/src/server.ts'], { cwd: root, stdio: 'inherit',
