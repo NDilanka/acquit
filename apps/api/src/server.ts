@@ -728,7 +728,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			const file = readFile();
 			json(res, 200, {
 				jobId, status: scopingRow.status, reason: scopingRow.reason, counts: scopingRow.counts,
-				issueBody: scopingRow.issueBody, approvedAt: file?.approved ?? null,
+				issueBody: scopingRow.issueBody, approvedAt: file?.approved ?? null, digest: scopingRow.digest,
 				contract: file?.contract ?? null, frozenAt: file?.frozenAt ?? null,
 				cases: (file?.cases ?? []).map(test => ({ id: test.id, target: test.target, args: test.args, expected: test.expected, citation: test.citation })),
 			});
