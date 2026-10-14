@@ -99,6 +99,15 @@ const readRow = (dbPath: string, jobId: string): { status: string; digest: strin
 	return row ? { status: String(row.status), digest: row.digest === null ? null : String(row.digest), ids: JSON.parse(String(row.ids)) } : null;
 };
 
+/** Stands in for work that moved on while the draft waited: the row is rewritten the way the domain
+ * itself would store a progressed job, contract and all, with only the state replaced. */
+const forceState = (dbPath: string, jobId: string, state: unknown) => {
+	const db = new DatabaseSync(dbPath);
+	const job = JSON.parse(String(db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId)!.json));
+	db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify({ ...job, state }), jobId);
+	db.close();
+};
+
 test("a client reviews its own parked draft, another role is refused, and the approval freezes exactly the kept cases", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-route-"));
 	const scopingDir = join(dir, "scoping");
@@ -198,6 +207,39 @@ test("approving every case the draft parked works, and a job with no parked draf
 
 		const leaveEverything = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:1", "draft:2", "draft:3"] }, maya);
 		assert.equal(leaveEverything.status, 409, "the frozen draft cannot be reopened by leaving everything out");
+	} finally {
+		child?.kill("SIGKILL");
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
+test("an approval for a job that has left OPEN refuses by name and freezes nothing", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-route-"));
+	const scopingDir = join(dir, "scoping");
+	const port = 4883;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, join(dir, "test.db"), scopingDir);
+		const maya = await session(port, "maya-client");
+		const jobId = await openJob(port, maya);
+		await parkDraft(join(dir, "test.db"), scopingDir, jobId);
+		const frozenAtOpen = readManifest(join(dir, "test.db"), jobId);
+
+		// Approval belongs to the client's review, before an acceptance or a funding commits the job
+		// to its contract. A job that progressed — here the two shapes past OPEN — must refuse by
+		// name and leave the manifest exactly the one it was opened with.
+		for (const progressed of [
+			{ status: "IN_PROGRESS", escrow: { synthetic: true }, attempts: { phase: "VERIFYING", history: [], runsStarted: 1, pending: { synthetic: true }, failure: null } },
+			{ status: "PAID", payee: { synthetic: true }, book: { synthetic: true }, receipt: { synthetic: true }, release: { synthetic: true },
+				releaseAuthority: "CLIENT_APPROVAL", history: [], merge: { phase: "NEEDS_HUMAN", reason: "synthetic" }, treasury: [] },
+		]) {
+			forceState(join(dir, "test.db"), jobId, progressed);
+			const refused = await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya);
+			assert.equal(refused.status, 409, `a ${progressed.status} job no longer takes an approval`);
+			assert.deepEqual(await refused.json() as unknown, { error: "JOB_NOT_OPEN" });
+			assert.deepEqual(readManifest(join(dir, "test.db"), jobId), frozenAtOpen, "the frozen manifest is untouched");
+			assert.equal(readRow(join(dir, "test.db"), jobId)!.status, "AWAITING_APPROVAL", "the draft stays parked");
+		}
 	} finally {
 		child?.kill("SIGKILL");
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
