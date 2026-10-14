@@ -5,11 +5,11 @@ import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, Operati
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
-import type { JobRow, JobState, PaidState, RefundReason, ReleaseIntent } from "./job.ts";
+import type { JobRow, JobState, PaidState, ReceiptSource, RefundReason, ReleaseIntent } from "./job.ts";
 import { boundedDetail, isRunFailureName } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure } from "./verifier.ts";
 import type { OperatorRow } from "./operator.ts";
-import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, OperatorId, PayoutBatchId, RefundId, RequestKey, TestId } from "./ids.ts";
+import type { AgentId, ClientId, CommitSha, Digest, Instant, JobId, OperatorId, PayoutBatchId, ReceiptId, RefundId, RequestKey, TestId } from "./ids.ts";
 import { instant } from "./ids.ts";
 import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
 import type { UsdCents } from "./ledger.ts";
@@ -309,10 +309,18 @@ export class SqliteStore implements Store {
 	async receiptCounts(): Promise<ReadonlyMap<OperatorId, number>> {
 		return new Map(this.db.prepare("SELECT id, paid_receipts FROM operators").all().map(row => [String(row.id) as OperatorId, Number(row.paid_receipts)]));
 	}
-	/** The House line's own source: receipt rows per operator, every row and the paid ones among them. */
+	/** The House line's own source: the real receipt rows per operator — every row the operator
+	 * earned and the paid ones among them. The seeded rows (source SEED) are display history the
+	 * line never counts; the receipts views label them Seeded instead. */
 	async receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>> {
-		return new Map(this.db.prepare("SELECT operator, COUNT(*) AS total, COALESCE(SUM(paid), 0) AS paid FROM receipts GROUP BY operator")
+		return new Map(this.db.prepare("SELECT operator, COUNT(*) AS total, COALESCE(SUM(paid), 0) AS paid FROM receipts WHERE source != 'SEED' GROUP BY operator")
 			.all().map(row => [String(row.operator) as OperatorId, { total: Number(row.total), paid: Number(row.paid) }]));
+	}
+	/** The provenance the receipts table holds, by receipt id: the row a settlement wrote reads JOB
+	 * and the F6 backfill's rows read SEED. The job view serves it so every page labels a receipt alike. */
+	async receiptSources(): Promise<ReadonlyMap<ReceiptId, ReceiptSource>> {
+		return new Map(this.db.prepare("SELECT id, source FROM receipts").all()
+			.map(row => [String(row.id) as ReceiptId, (String(row.source) === "SEED" ? "SEED" : "JOB") as ReceiptSource]));
 	}
 	async receiptCount(id: OperatorId): Promise<number> {
 		const row = this.db.prepare("SELECT paid_receipts FROM operators WHERE id = ?").get(id);

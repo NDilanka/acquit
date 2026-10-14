@@ -8,9 +8,9 @@ import type { CapRefusal, Reservation } from "./caps.ts";
 import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
-import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, RequestKey, Version } from "./ids.ts";
+import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, ReceiptId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
-import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Refusal, SystemJobCommand } from "./job.ts";
+import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
@@ -152,6 +152,8 @@ export interface Store {
 	/** Freezes the job's manifest from the client's approved draft. */
 	freezeManifest(jobId: JobId, done: DefinitionOfDone): Promise<void>;
 	receiptRowCounts(): Promise<ReadonlyMap<OperatorId, ReceiptRowCounts>>;
+	/** Every receipt row's provenance by receipt id, so the job view's receipt carries the source the pages label. */
+	receiptSources(): Promise<ReadonlyMap<ReceiptId, ReceiptSource>>;
 	readOperator(operator: OperatorId): Promise<OperatorRow | null>;
 	readCredits(operator: OperatorId): Promise<CreditAccount>;
 	readRequest(actor: string, key: RequestKey): Promise<RecordedRequest | null>;
@@ -233,7 +235,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		}
 		const plan = applyJobCommand(row, command as JobCommand, { actor, now, loaded });
 		if (typeof plan === "string") return { kind: "DENIED", reason: plan };
-		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts());
+		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources());
 		let result: PublicResult = { kind: "JOB", job };
 		if (command.type === "PlaceBid") {
 			const bid = plan.next.bids.find(b => !row?.bids.some(old => old.id === b.id))!;
@@ -264,7 +266,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
 		if (plan.effects.some(effect => effect.kind === "CREATE_ORDER" && effect.fundingMode === "card")) await confirmFunding(ports, actor, plan.next.id);
 		const refreshed = await ports.store.readJob(plan.next.id);
-		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts()) };
+		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources()) };
 		await ports.store.finishRequest({ actor: actorKey, key, payloadDigest, result });
 		return { kind: "COMMITTED", result };
 	}
@@ -744,7 +746,7 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	return Response.json({ ok: true, applied: true });
 }
 
-/** One operator's receipt-row counts: every row, and the paid ones among them. The House line reads this, never the counter. */
+/** One operator's real receipt-row counts: every row the operator earned, and the paid ones among them. The House line reads this, never the counter; seeded rows are labelled in the UI instead. */
 export type ReceiptRowCounts = { readonly total: number; readonly paid: number };
 
 export async function runDueTimers(ports: Ports): Promise<number> {

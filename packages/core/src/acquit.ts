@@ -7,7 +7,7 @@ import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
-import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { JobFundingMode } from "./funding.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
@@ -92,7 +92,7 @@ export interface BidView {
 	readonly runner: string;
 	readonly pitch: string;
 	readonly paidReceipts: number;
-	/** The House line counted from receipt rows ("41 fixes, 39 passed verified CI"), on House bids alone. */
+	/** The House line counted from the real receipt rows ("1 fixes, 1 passed verified CI" after the first paid job), on House bids alone. */
 	readonly houseLine: string | null;
 	readonly status: "PENDING" | "CHOSEN" | "ACCEPTED" | "NOT_SELECTED" | "RETURNED";
 }
@@ -147,7 +147,8 @@ export interface JobView {
 	readonly merge: MergeProgress | null;
 	/** What the release observed: the referenced payout item that paid the operator. Served on a PAID job. */
 	readonly release: ReleaseEvidence | null;
-	readonly receipt: Receipt | null;
+	/** The settled receipt, carrying the receipts table's provenance: a migrated row reads SEED and the pages label it Seeded. */
+	readonly receipt: ReceiptView | null;
 }
 
 export interface OperatorView {
@@ -228,6 +229,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
 			const houseRows = await store.receiptRowCounts();
+			const sources = await store.receiptSources();
 			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
 			// and the system paths are the only cross-tenant readers, and they are never a session.
 			// The platform role is the other cross-tenant reader, and only through PlatformLedger:
@@ -240,13 +242,13 @@ export function createAcquit(config: AcquitConfig): Acquit {
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
 					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
-					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows) } : { kind: "DENIED", reason: "NOT_OWNER" };
+					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}
 				case "OpenJobs": {
 					const jobs = (await store.listJobs()).filter(row => sameWorld(row) && (row.state.status === "OPEN" ||
 						actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId)));
-					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows)), nextCursor: null };
+					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows, sources)), nextCursor: null };
 				}
 				case "Operator": {
 					if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };

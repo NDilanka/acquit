@@ -1,4 +1,4 @@
-import type { FilterCounts, JobView, ScopingApproveResponse, ScopingCase, ScopingResponse } from "./api-types";
+import type { FilterCounts, JobView, Receipt, ScopingApproveResponse, ScopingCase, ScopingResponse } from "./api-types";
 import { ApiError } from "./api.ts";
 import { errorText } from "./demo.ts";
 
@@ -56,6 +56,18 @@ export function countsLine(counts: FilterCounts): string {
 }
 
 export const shortDigest = (digest: string) => digest.slice(0, 12);
+
+/** The job page header's suite line, read from the job's own frozen contract (the counts the verifier runs, frozen at
+ * OpenJob or when the client approved the draft), never the fixture catalog's curated copy. */
+export function suiteLine(contract: Pick<NonNullable<JobView["contract"]>, "frozenAt" | "frozenTests" | "hiddenTests">): string {
+  return `Suite frozen at ${contract.frozenAt.slice(0, 7)} (${contract.frozenTests} tests, ${contract.hiddenTests} hidden)`;
+}
+
+/** The job page receipt panel's Seeded label: the same provenance the receipts grid and the Studio receipt card
+ * show, and null for a real (JOB) receipt. */
+export function seededLabel(source: Receipt["source"]): "Seeded" | null {
+  return source === "SEED" ? "Seeded" : null;
+}
 
 /**
  * A 403 (not the job's client) or 404 (no draft was ever kicked) means there is no panel at all. A failed

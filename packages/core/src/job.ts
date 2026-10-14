@@ -220,6 +220,13 @@ export type Receipt = {
 	readonly releasedAt: Instant;
 };
 
+/** The receipts table's provenance for a settled job's receipt: a row the settlement wrote reads JOB,
+ * and a row the F6 backfill wrote for a PAID job that predates it reads SEED. The pages label a SEED
+ * receipt Seeded, on the job page's receipt panel exactly as the receipts views do. */
+export type ReceiptSource = "SEED" | "JOB";
+/** The projection's receipt: the stored receipt plus the provenance the receipts table holds. */
+export type ReceiptView = Receipt & { readonly source: ReceiptSource };
+
 export type MergeProgress =
 	| { readonly phase: "PENDING" }
 	/**
@@ -1156,7 +1163,7 @@ export function attemptView(record: AttemptRecord): AttemptView {
 			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: null, hidden: null, pullRequest: null };
 }
 
-/** The House bid row's line, counted from receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are rows like any other; their source marks them. */
+/** The House bid row's line, counted from the real receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are display history the store keeps out of these counts; the receipts views label them Seeded. */
 export function houseLine(rows: { readonly total: number; readonly paid: number } | null): string | null {
 	if (rows === null) return null;
 	return `${rows.total} fixes, ${rows.paid} passed verified CI`;
@@ -1164,7 +1171,8 @@ export function houseLine(rows: { readonly total: number; readonly paid: number 
 
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>,
-	houseRows?: ReadonlyMap<OperatorId, { readonly total: number; readonly paid: number }>): JobProjection {
+	houseRows?: ReadonlyMap<OperatorId, { readonly total: number; readonly paid: number }>,
+	receiptSources?: ReadonlyMap<ReceiptId, ReceiptSource>): JobProjection {
 	const ranked = rankBids(row.bids, paidReceipts);
 	const viewBid = (bid: Bid) => ({ id: bid.id, operator: bid.operator, handle: bid.handle,
 		label: bid.kind, price: bid.price, eta: bid.eta, agent: String(bid.agent), runner: bid.runner,
@@ -1229,5 +1237,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		mergeCommit: state.status === "VERIFIED" ? state.passed.verdict.mergeCommit : state.status === "PAID" ? state.receipt.mergeCommit : null,
 		merge: state.status === "PAID" ? state.merge : null,
 		release: state.status === "PAID" ? state.release : null,
-		receipt: state.status === "PAID" ? state.receipt : null };
+		// The receipt carries the receipts table's own provenance, so every page labels a SEED row
+		// alike. The store writes the row in the settlement's transaction, so a settled job's row is
+		// always there; without the read (or the row) the receipt reads as the real row it looks like.
+		receipt: state.status === "PAID" ? { ...state.receipt, source: receiptSources?.get(state.receipt.id) ?? "JOB" } : null };
 }

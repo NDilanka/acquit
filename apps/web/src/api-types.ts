@@ -30,6 +30,8 @@ export interface Receipt {
   readonly attemptsUsed: number;
   readonly paid: UsdCents;
   readonly releasedAt: Instant;
+  /** The receipts table's provenance, served on the job view too since it reads that table. */
+  readonly source: "SEED" | "JOB";
 }
 
 export type MergeProgress =
@@ -110,7 +112,17 @@ export interface JobView {
   /** Served on a PAID job only. */
   readonly release: ReleaseEvidence | null;
   readonly receipt: Receipt | null;
-  readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
+  /** The job's frozen contract: the frozen manifest the verifier runs, served since the frozen manifest row existed. */
+  readonly contract: {
+    readonly repository: string;
+    readonly issue: number;
+    readonly frozenAt: string;
+    readonly frozenTestPath: string;
+    readonly frozenTests: number;
+    readonly hiddenTests: number;
+    readonly hiddenManifest: string;
+    readonly protectedPaths: readonly string[];
+  } | null;
   /** The source this job's accept will use, served to the owning client only. Null when the deployment's default applies. */
   readonly funding: FundingMode | null;
   /** How far the owning client moved this job's own clock in total, 0 when unmoved. Null for every other viewer. */
@@ -124,7 +136,6 @@ export type CheckoutPhase = "CREATING_ORDER" | "AWAITING_APPROVAL" | "CAPTURING"
 /** `GET /api/me/receipts`: a settled job's receipt plus its repository and the receipts table's source. */
 export type JobReceiptRow = Receipt & {
   readonly repository: string;
-  readonly source: "SEED" | "JOB";
   readonly passedVerifiedCi: boolean;
   /** The gross the capture held: the job's HELD line. */
   readonly grossPaid: UsdCents | null;

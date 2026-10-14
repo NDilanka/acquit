@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColDef, GetRowIdFunc } from "ag-grid-community";
 import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, LedgerLine, MergeProgress, ScopingCase, UserCommand } from "../api-types";
-import { api, ApiError, type RepoIssue } from "../api";
+import { api, ApiError } from "../api";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
-import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel, type Settled } from "../scoping-review";
+import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, seededLabel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
 import { allBids, houseName, lockedBid, payeeBid, StatusPill } from "../ui";
@@ -19,7 +19,6 @@ export function JobPage({ id }: { id: string }) {
   const [job, setJob] = useState<JobView | null>(null);
   const [diff, setDiff] = useState<JobDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [suite, setSuite] = useState<RepoIssue["suite"] | null>(null);
   const [checkout, setCheckout] = useState<BidView | null>(null);
   const [confirm, setConfirm] = useState<BidView | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
@@ -61,16 +60,6 @@ export function JobPage({ id }: { id: string }) {
   useEffect(() => {
     if (checkout && job?.approveUrl) window.location.assign(job.approveUrl);
   }, [checkout, job?.approveUrl]);
-
-  useEffect(() => {
-    if (!isClient || !job || suite) return;
-    api
-      .repos()
-      .then((r) => {
-        for (const repo of r.repos) for (const i of repo.issues) if (i.title === job.title) setSuite(i.suite);
-      })
-      .catch(() => undefined);
-  }, [isClient, job, suite]);
 
   if (error && !job) {
     return (
@@ -158,11 +147,7 @@ export function JobPage({ id }: { id: string }) {
             <span>
               Deadline <b className="num">{utc(job.deliveryEndsAt)}</b>
             </span>
-            {suite && (
-              <span>
-                Suite frozen at <b className="mono">{suite.commit}</b> ({suite.visible} tests, {suite.hidden} hidden)
-              </span>
-            )}
+            {job.contract && <span>{suiteLine(job.contract)}</span>}
           </div>
         </div>
         {canCancel && (
@@ -806,6 +791,7 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
   const pr = receipt?.pullRequest ?? job.pullRequest;
   const reason = refundNote(job.refundReason, job.status === "REFUNDED", job.attempts.used + job.attempts.left);
   const arbiter = arbiterNoteLine(job);
+  const seeded = receipt && seededLabel(receipt.source);
   return (
     <section className="card pad statuspanel">
       <pre className="mono">
@@ -813,6 +799,12 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
         {locked ? `Operator: ${locked.handle}\n` : ""}
         {`Escrow: ${job.escrow}${locked && job.escrow === "HELD" ? `, locked to ${locked.handle}` : ""}`}
         {receipt ? `\nReceipt: ${receipt.id}` : ""}
+        {seeded && (
+          <>
+            {" "}
+            <span className="pill new">{seeded}</span>
+          </>
+        )}
       </pre>
       {pr !== null &&
         (contract ? (
