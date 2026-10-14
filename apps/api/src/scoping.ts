@@ -116,7 +116,7 @@ export function scopingKick(deps: ScopingKickDeps): (jobId: JobId) => Promise<vo
 			const answer = await scopeDraftTurn({ model: deps.model, callLog: deps.callLog, jobId }, scopePrompt({ body, fixture: deps.fixture, families: deps.fixture.coverageFamilies ?? [] }));
 			if (!answer.ok) {
 				await deps.store.writeScoping({ jobId, status: "FAILED", issueBody: body, ids: [], digest: null, reason: `DRAFT_${answer.reason}`, counts: null, updatedAt: deps.clock.now() });
-				say(`scoping ${jobId}: the draft turn failed (${answer.reason}); nothing was frozen and nothing will retry`);
+				say(`scoping ${jobId}: the draft turn failed (${answer.reason}): ${answer.detail}; nothing was frozen and nothing will retry`);
 				return;
 			}
 			let draft;
