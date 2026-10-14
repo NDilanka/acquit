@@ -174,6 +174,10 @@ export type Ports = {
 	readonly verifier: VerifierPort;
 	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
 	readonly workRepo?: WorkRepoPort;
+	/** The AI-scoping kickoff: on OpenJob of a fixture that carries a trusted fix, the deployment
+	 * drafts the acceptance contract and its hidden cases. The implementer owns the model calls,
+	 * the filter phases, and the private store; a failed draft never fails the open itself. */
+	readonly scopeDraft?: (jobId: JobId, fixture: FixtureContract) => Promise<void>;
 	/** The merge of the verified pull request. Its answer carries the commit GitHub landed it on. */
 	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<MergeOutcome> };
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
@@ -197,6 +201,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		if (!["OpenJob", "PlaceBid", "AcceptBid", "CancelJob", "Submit", "Approve", "Dispute", "ResolveDispute"].includes(command.type)) throw new Error("not implemented");
 		const row = "jobId" in command ? await ports.store.readJob(command.jobId) : null;
 		const now = ports.clock.now();
+		let openFixture: FixtureContract | null = null;
 		let loaded: Loaded = { kind: "NONE" };
 		if (command.type === "OpenJob") {
 			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs
@@ -205,6 +210,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			const actorRepository = actor.role === "CLIENT" ? actor.repository ?? null : null;
 			const fixture = matchFixture(ports.fixtures, command.repository, command.issueNumber, actorRepository);
 			if (!fixture) return { kind: "DENIED", reason: "NOT_FOUND" };
+			openFixture = fixture;
 			loaded = { kind: "OPEN_JOB", title: fixture.issue.title,
 				contract: { definitionOfDone: manifestOf(fixture, command.repository), budget: command.budget,
 					deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
@@ -248,7 +254,12 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		// The caps refused this act whole: the transaction wrote nothing, and the closed code is the answer.
 		if (committed.kind === "CAPPED") return { kind: "DENIED", reason: committed.reason };
 		if (committed.kind !== "COMMITTED") continue;
-		if (command.type === "OpenJob") await placeHouseBid(ports, plan.next);
+		if (command.type === "OpenJob") {
+			await placeHouseBid(ports, plan.next);
+			// The scoping draft starts once the job exists. A fixture without a trusted fix is never
+			// scoped, and a deployment without the port opens exactly as it always did.
+			if (ports.scopeDraft && openFixture?.trustedFix) await ports.scopeDraft(plan.next.id, openFixture);
+		}
 		// Drain only this command's own effects, not somebody else's checkout.
 		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
 		if (plan.effects.some(effect => effect.kind === "CREATE_ORDER" && effect.fundingMode === "card")) await confirmFunding(ports, actor, plan.next.id);

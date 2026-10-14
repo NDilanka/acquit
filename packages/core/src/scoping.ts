@@ -239,8 +239,9 @@ export async function runScopeFilters(draft: ScopeDraft, deps: ScopeFilterDeps):
 	return { survivors, counts: { candidates: draft.candidates.length, f1, f2, f3, f4, deduped: survivors.length } };
 }
 
-/** One currency family the fixture's gate defines: a name, and the currency codes that cover it. */
-export type CurrencyFamily = { readonly name: string; readonly currencies: readonly string[] };
+/** One family the coverage gate names, as the fixture's registry entry declares it. */
+export type { CurrencyFamily } from "./fixtures.ts";
+import type { CurrencyFamily } from "./fixtures.ts";
 
 /** One job's scoping state, as the store holds it: the draft's ids and counts, never a case value.
  * The issue body lives here too — the job stores the issue body, not only its number and title —

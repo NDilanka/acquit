@@ -96,7 +96,9 @@ export function fixtureContracts(registry: FixtureRegistry): readonly FixtureCon
 		const hidden = hiddenContractOf(cases);
 		return { repository: entry.repository, issue: entry.issue, frozenAt: entry.frozenAt, frozenTestPath: entry.frozenTestPath,
 			frozenTests: frozenTestIds(entry.visible), hiddenTests: hidden.ids, hiddenManifest: hidden.digest,
-			protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }) };
+			protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }),
+			...(entry.trustedFix === undefined ? {} : { trustedFix: entry.trustedFix }),
+			...(entry.coverageFamilies === undefined ? {} : { coverageFamilies: entry.coverageFamilies }) };
 	});
 }
 

@@ -22,7 +22,15 @@ export type FixtureContract = {
 	readonly protectedPaths: readonly Glob[];
 	/** The `<org>/` org whose `demo-<visitor>` forks open this fixture; absent, no fork names it. */
 	readonly demoForkPrefix?: string;
+	/** The fixture's trusted fix commit, the second phase AI scoping's filters require a drafted
+	 * case to pass on. Absent, the fixture is not scoped: OpenJob never kicks a draft for it. */
+	readonly trustedFix?: CommitSha;
+	/** The per-currency-family coverage gate the fixture's draft must satisfy before approval. */
+	readonly coverageFamilies?: readonly CurrencyFamily[];
 };
+
+/** One family the coverage gate names: its own label, and the currency codes that cover it. */
+export type CurrencyFamily = { readonly name: string; readonly currencies: readonly string[] };
 
 /** What the store's manifest backfill matches a stored job by: its fixture's registry reference. */
 export type FixtureRef = { readonly repository: string; readonly issue: { readonly number: number }; readonly frozenTestPath: string; readonly demoForkPrefix?: string };
@@ -46,7 +54,7 @@ export type FixtureEntry = {
 	 * case to pass on. Absent, the fixture is not scoped: OpenJob never kicks a draft for it. */
 	readonly trustedFix?: CommitSha;
 	/** The per-currency-family coverage gate the fixture's draft must satisfy before approval. */
-	readonly coverageFamilies?: readonly { readonly name: string; readonly currencies: readonly string[] }[];
+	readonly coverageFamilies?: readonly CurrencyFamily[];
 };
 
 export class FixtureConfigError extends Error {
