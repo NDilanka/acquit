@@ -83,6 +83,17 @@ test("a read maps to its panel: a draft in progress, a failure by name, a review
   });
 });
 
+test("a later read of a frozen draft keeps the digest the server's frozen row names, so a fresh page shows what froze", () => {
+  const frozen = draft({ status: "APPROVED", approvedAt: "2026-11-03T15:22:00.000Z", digest, cases: [usd250] });
+  assert.deepEqual(readPanel({ ok: true, body: frozen }, hidden), {
+    kind: "FROZEN",
+    approvedIds: ["h-usd-250"],
+    approvedAt: "2026-11-03T15:22:00.000Z",
+    digest,
+    draft: frozen,
+  });
+});
+
 test("a 200 approval freezes the panel on the approved ids and the digest, a re-read adds the approval time and keeps the digest, and a failed re-read keeps the frozen panel", () => {
   const review = readPanel({ ok: true, body: draft() }, hidden) as Extract<ScopingPanel, { kind: "REVIEW" }>;
   const step = approvalStep(review, { ok: true, body: { jobId: "job_7", digest, approvedIds: ["h-usd-250", "h-eur-199"] } });
