@@ -15,6 +15,7 @@ import type { JobScopingRow, ScopePhaseOutcome, ScopePhaseRunner } from "../../.
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { DEMO_FROZEN_AT, DEMO_FROZEN_TEST_PATH, demoFixture, exampleCases, exampleContract } from "../../../packages/core/test/hidden-fixture.ts";
 import { scopeDraftModel, scopeModelName, scopeDraftTurn, scopingKick } from "../src/scoping.ts";
+import { openrouterAskPort } from "../src/ask.ts";
 import type { AskModelResult } from "../src/ask.ts";
 
 const now = instant("2026-10-14T12:00:00Z");
@@ -66,6 +67,32 @@ test("the scoping model name follows the provider switch: glm-5.3-flash by defau
 	assert.equal(scopeModelName(), "glm-5.3-flash");
 	assert.equal(scopeModelName({ ACQUIT_MODEL_PROVIDER: "droid" }), "glm-5.3-flash");
 	assert.equal(scopeModelName({ ACQUIT_MODEL_PROVIDER: "openrouter" }), "nvidia/nemotron-3-ultra-550b-a55b:free");
+});
+
+test("the draft request carries the stored issue body and the frozen and fix commits, on either provider", async () => {
+	const seen: string[] = [];
+	const kick = scopingKick(deps({ model: async prompt => { seen.push(prompt); return answered(goodDraft); } }));
+	await kick(jobId);
+	const prompt = seen[0] ?? "";
+	assert.match(prompt, /Totals round wrong: BHD and its friends carry three decimals/, "the stored issue body rides in the request");
+	assert.match(prompt, new RegExp(issueBody.slice(0, 24)), "the body, not just its title");
+	assert.match(prompt, /a3b6ead29f4e367d1871e753b516cc9e832871e4/, "the frozen commit is named");
+	assert.match(prompt, /5cccb66515313caed72e4af329a62fc011139426/, "the trusted fix is named");
+	assert.match(prompt, /maya-client\/invoice-app/, "the repository is named");
+
+	// The openrouter transport takes the same request: the injected transport asserts the :free id
+	// and the identical contents. No live openrouter call is ever made by this mission.
+	let requested: { model?: string; messages?: readonly { content?: string }[] } | null = null;
+	const openrouter = openrouterAskPort({ env: { OPENROUTER_API_KEY: "k" },
+		key: async () => "k", fetch: (async (_url, init) => {
+			requested = JSON.parse(String(init?.body)) as { model: string; messages: { content: string }[] };
+			return new Response(JSON.stringify({ choices: [{ message: { content: goodDraft } }] }), { status: 200 });
+		}) as typeof fetch });
+	const turn = await scopeDraftTurn({ model: openrouter, callLog: modelCallLog(join(tmpdir(), `a1-or-${Date.now()}.jsonl`)), jobId }, prompt);
+	assert.ok(turn.ok, "the injected transport answers");
+	assert.ok(requested!.model!.endsWith(":free"), "the openrouter model id is the free tier's");
+	assert.match(requested!.messages![0]!.content!, /a3b6ead29f4e367d1871e753b516cc9e832871e4/, "the same frozen commit rides in the openrouter request");
+	assert.match(requested!.messages![0]!.content!, /Totals round wrong: BHD and its friends carry three decimals/, "the same issue body rides in the openrouter request");
 });
 
 test("a drafted contract parks AWAITING_APPROVAL with the issue body, ids and counts, and its cases in the private file", async () => {

@@ -9,7 +9,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DROID_MODEL, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
 import type { ModelCallLog } from "../../../packages/core/src/model.ts";
 import type { CurrencyFamily, FixtureContract } from "../../../packages/core/src/fixtures.ts";
@@ -55,6 +55,9 @@ export async function scopeDraftTurn(deps: { readonly model: AskModelPort; reado
 	const provider = modelProvider();
 	const model = scopeModelName();
 	const at = (): string => new Date().toISOString();
+	// The budget's lock file lives beside the log; make sure the directory is there before the
+	// reservation asks for it.
+	await mkdir(dirname(deps.callLog.path), { recursive: true });
 	const reserved = await reserveModelCall(deps.callLog, { at: at(), caller: "scoping", jobId: deps.jobId, provider, model });
 	if (!reserved.ok) return { ok: false, reason: "BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
 	const result = await deps.model(prompt);
@@ -87,6 +90,11 @@ Rules: 2 to 12 candidates; every candidate must FAIL on the frozen commit and PA
 fix; every expected value must be justified by words you quote from the issue body; args must be
 bounded JSON; ids unique and at most 64 characters.
 ${families}
+## Repository and commits
+Repository: ${input.fixture.repository}
+Frozen commit (every case must fail here): ${input.fixture.frozenAt}
+Trusted fix commit (every case must pass here): ${input.fixture.trustedFix ?? "(none declared)"}
+The frozen suite is ${input.fixture.frozenTestPath}; the module you call lives in the repository tree at those commits.
 ## Issue
 ${input.body}`;
 };
