@@ -108,6 +108,15 @@ export function parseScopeDraft(text: string): ScopeDraft {
 	const candidates: ScopeCandidate[] = [];
 	for (const [index, raw] of value.candidates.entries()) {
 		const at = `candidate ${index + 1}`;
+		const parsed = parseCandidateValue(raw, at, seen);
+		candidates.push(parsed);
+	}
+	return { contract, candidates };
+}
+
+/** One candidate's strict validation, shared by the draft parser and the scoping-file parser: field
+ * names, bounds, uniqueness, and one subject frame of headroom. */
+function parseCandidateValue(raw: JsonValue, at: string, seen: Set<string>): ScopeCandidate {
 		if (!isRecord(raw)) throw new ScopeDraftError(`${at} must be an object.`);
 		for (const key of Object.keys(raw)) if (!CANDIDATE_FIELDS.includes(key)) throw new ScopeDraftError(`${at} has an unknown field ${key}.`);
 		const id = raw.id;
@@ -130,9 +139,38 @@ export function parseScopeDraft(text: string): ScopeDraft {
 		if (Buffer.byteLength(JSON.stringify({ kind: "call", nonce: "0".repeat(32), id: parsed.id, target: parsed.target, args: parsed.args })) > SUBJECT_FRAME_BYTES) {
 			throw new ScopeDraftError(`${at} cannot fit one subject frame of ${SUBJECT_FRAME_BYTES} bytes.`);
 		}
-		candidates.push(parsed);
-	}
-	return { contract, candidates };
+		return parsed;
+}
+
+/** The deployment's own scoping file: one job's drafted cases with their citations, the approval
+ * timestamp once the client freezes it. Both the review route and the verifier's book loader parse
+ * with this, so the two sides can never disagree about the file's shape. */
+export type ScopingFile = {
+	readonly jobId: JobId;
+	readonly repository: string;
+	readonly issue: { readonly number: number; readonly title: string };
+	readonly frozenAt: CommitSha;
+	readonly approved: Instant | null;
+	readonly cases: readonly ScopeCandidate[];
+};
+
+export function parseScopingFile(text: string, source: string): ScopingFile {
+	const fail = (why: string): never => { throw new ScopeDraftError(`${source}: ${why}`); };
+	let value: JsonValue;
+	try { value = JSON.parse(text) as JsonValue; } catch { return fail("is not JSON"); }
+	if (!isRecord(value)) return fail("is not one JSON object");
+	if (value.version !== 1) return fail("must carry version 1");
+	if (typeof value.jobId !== "string" || value.jobId === "") return fail("must carry a jobId");
+	if (typeof value.repository !== "string" || value.repository === "") return fail("must carry a repository");
+	if (!isRecord(value.issue) || typeof value.issue.number !== "number" || typeof value.issue.title !== "string") return fail("must carry the issue's number and title");
+	if (typeof value.frozenAt !== "string" || !/^[0-9a-f]{40}$/.test(value.frozenAt)) return fail("must carry the frozen commit");
+	if (value.approved !== null && typeof value.approved !== "string") return fail("approved must be a timestamp or null");
+	if (!Array.isArray(value.cases)) return fail("must carry a cases array");
+	const seen = new Set<string>();
+	const cases = value.cases.map((raw, index) => parseCandidateValue(raw, `case ${index + 1}`, seen));
+	return { jobId: value.jobId as JobId, repository: value.repository,
+		issue: { number: value.issue.number, title: value.issue.title }, frozenAt: value.frozenAt as CommitSha,
+		approved: value.approved === null ? null : value.approved as Instant, cases };
 }
 
 /** Canonical JSON: key order can never make two identical (target, args) look different to the dedupe. */
