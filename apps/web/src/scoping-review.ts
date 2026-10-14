@@ -57,6 +57,12 @@ export function countsLine(counts: FilterCounts): string {
 
 export const shortDigest = (digest: string) => digest.slice(0, 12);
 
+/** The job page header's suite line, read from the job's own frozen contract (the counts the verifier runs, frozen at
+ * OpenJob or when the client approved the draft), never the fixture catalog's curated copy. */
+export function suiteLine(contract: Pick<NonNullable<JobView["contract"]>, "frozenAt" | "frozenTests" | "hiddenTests">): string {
+  return `Suite frozen at ${contract.frozenAt.slice(0, 7)} (${contract.frozenTests} tests, ${contract.hiddenTests} hidden)`;
+}
+
 /**
  * A 403 (not the job's client) or 404 (no draft was ever kicked) means there is no panel at all. A failed
  * re-read keeps the panel already shown, and a re-read of a frozen draft keeps the digest: the frozen row's own

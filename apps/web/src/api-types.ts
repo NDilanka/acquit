@@ -110,7 +110,17 @@ export interface JobView {
   /** Served on a PAID job only. */
   readonly release: ReleaseEvidence | null;
   readonly receipt: Receipt | null;
-  readonly contract: { readonly repository: string; readonly frozenAt: string } | null;
+  /** The job's frozen contract: the frozen manifest the verifier runs, served since the frozen manifest row existed. */
+  readonly contract: {
+    readonly repository: string;
+    readonly issue: number;
+    readonly frozenAt: string;
+    readonly frozenTestPath: string;
+    readonly frozenTests: number;
+    readonly hiddenTests: number;
+    readonly hiddenManifest: string;
+    readonly protectedPaths: readonly string[];
+  } | null;
   /** The source this job's accept will use, served to the owning client only. Null when the deployment's default applies. */
   readonly funding: FundingMode | null;
   /** How far the owning client moved this job's own clock in total, 0 when unmoved. Null for every other viewer. */

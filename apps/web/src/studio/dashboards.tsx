@@ -82,6 +82,7 @@ function ReceiptCard() {
         <span className="dot" />
         {receipt.result}
       </span>
+      {receipt.source === "SEED" && <span className="pill new">Seeded</span>}
       <div className="rows">
         <div>
           <span>Job</span>
