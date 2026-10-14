@@ -2,6 +2,22 @@
 
 Cleared, then paid. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`.
 
+## What proves each judging criterion
+
+The hackathon weighs five criteria equally. [docs/win-plan.md](docs/win-plan.md) sections 1 to 4 carry the rules and our read of them. Each row names the screen or the file where a judge can check the claim against the code.
+
+| Criterion | Proof on screen | Proof in the repo |
+| --- | --- | --- |
+| Technological Implementation | A job page (route /jobs/:id) runs PayPal escrow end to end: the funded hold, the delivered commit, and the verdict that releases or refunds it. | `packages/core/src/paypal.ts` (orders, verified webhooks, referenced payouts, refunds), `packages/core/src/effects.ts` (the apply pipeline), `packages/house/src/runner.ts` (the House agent on a real model), `packages/mcp/` (the MCP server an agent drives), `packages/verifier/judge.ts` (the Docker judge). |
+| Design | Route / is the judge entry with the three-step tour and the role choice; /jobs/new posts a job; a job page carries the checkout breakdown, the payee, and the ledger; /studio holds the AG Studio dashboards over the AG Grid tables. | `apps/web/src/pages/` and `apps/web/src/studio/`. |
+| Potential Impact | The operator page (route /operator) lists deliveries, receipts, and payouts; /studio shows the platform's escrow position next to the ledger it must conserve. | `packages/core/src/store.ts` (the House line counts receipt rows, and seeded rows are marked SEED), `packages/core/src/ledger.ts` with `docs/architecture/rationale.md` (payout + fee = paid). |
+| Innovation | A job page's verdict timeline shows a tampered submission REJECTED and an honest fix VERIFIED. | `packages/verifier/judge.ts` (frozen plus hidden tests), `packages/core/src/fixtures.ts` (a manifest frozen per job), `packages/core/src/scoping.ts` (AI drafts the acceptance contract; the client approves before it freezes). The delivery agent never sees the hidden cases: their values live outside every git repository. |
+| Presentation | The tour on route / walks a new visitor to Start my demo in public mode. | README.md (this map), `ARCHITECTURE.md`, `docs/tutorial.md`, `docs/video-script.md`. |
+
+## Where the build log lives
+
+Two gitignored directories carry the build's process, and a fresh clone does not have them: `scratch/` holds the prototypes, probes, and lane scripts the build ran, and `data/trail/` holds the decision log, resume notes, and evidence. They are the build log, not product code.
+
 ## Prerequisites
 
 - Node.js 24 or newer
