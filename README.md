@@ -1,6 +1,21 @@
 # Acquit
 
-Cleared, then paid. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`.
+Cleared, then paid. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Hosted demo
+
+The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / opens the three-step tour, and Start my demo provisions a visitor with its own client and operator accounts and its own fork of the fixture repository. Each address can start 3 demo visitors per rolling 24 hours (`VISITORS_IP_DAY` in `packages/core/src/caps.ts`); expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
+
+## What is built
+
+- **Escrow on the PayPal sandbox.** A client funds a job through PayPal checkout or a sandbox test card; the funds are held until the verdict. VERIFIED releases the operator's payout minus the platform fee as a referenced payout; a rejected or timed-out job refunds or reopens. Webhook deliveries are applied only after PayPal's verify-webhook-signature returns `SUCCESS` (`packages/core/src/effects.ts`).
+- **A Docker verifier with hidden tests.** Each job freezes a manifest (repository, issue, frozen commit, frozen tests, and the digest of private hidden cases). The verifier judges a delivered commit against both; the hidden cases live outside every git repository (`packages/verifier/`).
+- **AI scoping.** On Open job, the model drafts the acceptance contract and hidden cases; the client approves the draft before the manifest freezes (`packages/core/src/scoping.ts`).
+- **The House.** The platform's own operator delivers with a real model inside the runner sandbox, through the same Submit edge any operator uses, and every delivery writes a receipt row (`packages/house/`, `packages/runner/`).
+- **An MCP server for operators' agents.** A stdio server over the operator token with `list_jobs`, `get_job`, `place_bid`, `submit_attempt`, `get_receipt`, and `get_payout_status`; payout status is read through `@paypal/agent-toolkit`. The operator confirms each submit in the CLI or the web app, never through a model-set flag (`packages/mcp/`).
+- **The web app.** Sign-up and sign-in, job pages with the checkout breakdown, payee, and ledger, AG Grid tables for bids, the ledger, and receipts, AG Studio dashboards for operator earnings and platform escrow, and the "Ask the ledger" agent with read-only Acquit and PayPal tools (`apps/web/`).
+- **Model provider.** Every app model call (the House, scoping, and Ask the ledger) reads `ACQUIT_MODEL_PROVIDER`. The default is `droid`, which runs Factory's `droid exec -m glm-5.3-flash` with `FACTORY_API_KEY`; `openrouter` is the selectable alternative (`packages/core/src/model.ts`).
+- **Deployment.** The hosted VM's Caddy, systemd, and firewall configuration is tracked as templates, with no secret in the tree. See [deploy/README.md](deploy/README.md).
 
 ## What proves each judging criterion
 
@@ -21,39 +36,45 @@ Two gitignored directories carry the build's process, and a fresh clone does not
 ## Prerequisites
 
 - Node.js 24 or newer
-- A PayPal sandbox Platform app, a sandbox operator merchant onboarded through Partner Referrals, and a sandbox Personal buyer
+- Docker, running (the verifier judges in a Docker subject; the House and `acquit run` use the runner image, built with `docker build -t acquit/runner-node20 packages/runner`)
+- A PayPal sandbox Platform app, a sandbox operator merchant onboarded through Partner Referrals, a sandbox merchant for the House, and a sandbox Personal buyer
+- For model runs: a Factory API key for the default `droid` provider
 
 ## Configure
 
-Create `.env` in the repo root (it is gitignored):
+Create `.env` in the repo root (it is gitignored). The API, the control CLI, and `npm run dev` load it with `process.loadEnvFile`. The names below are the ones the code reads; no value belongs in this README or in any tracked file.
 
-```
-PAYPAL_ENV=sandbox
-PAYPAL_API_BASE=https://api-m.sandbox.paypal.com
-PAYPAL_CLIENT_ID=...
-PAYPAL_CLIENT_SECRET=...
-OPERATOR_DEVON_MERCHANT_ID=...
-PLATFORM_MERCHANT_ID=...
-SANDBOX_BUYER_EMAIL=...
-PORT=4310
-WEB_PORT=5173
-DATABASE_PATH=./data/acquit.db
-# Optional: the verifier's port and the pair the API and the verifier must share.
-# npm run dev and a lane generate the pair when they are absent.
-ACQUIT_VERIFIER_PORT=4311
-ACQUIT_VERIFIER_RUN_SECRET=...
-ACQUIT_VERIFIER_CALLBACK_SECRET=...
-```
+| Name | Needed for |
+| --- | --- |
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | Required by the API. `PAYPAL_API_BASE` may name only the sandbox API. `PAYPAL_ENV` tells the MCP server's PayPal toolkit which environment to use. |
+| `OPERATOR_DEVON_MERCHANT_ID`, `OPERATOR_HOUSE_MERCHANT_ID` | Required by `npm run seed`: the demo operator's payee and the House's own payee. The API also pays demo visitors' operators through `OPERATOR_DEVON_MERCHANT_ID`. |
+| `PAYPAL_WEBHOOK_ID` | The webhook id the API verifies every PayPal delivery's signature against. |
+| `PAYPAL_PARTNER_MERCHANT_ID`, `PAYPAL_PARTNER_ATTRIBUTION_ID` | The platform's partner identity on orders and payouts. |
+| `ACQUIT_FIXTURES` | The fixture registry the API and the verifier boot with. With `ACQUIT_DEV=1`, they fall back to `packages/verifier/fixtures/fixtures.example.json`. |
+| `ACQUIT_CLIENT_REPOSITORY` | The client repository a demo visitor's fork is made from (default `maya-client/invoice-app`). |
+| `ACQUIT_GITHUB_APP_ID`, `ACQUIT_GITHUB_APP_ORG`, `ACQUIT_GITHUB_APP_PRIVATE_KEY` | The GitHub App that creates visitor forks and per-job work repos. Blank them for a lane that must not touch GitHub. |
+| `ACQUIT_MODEL_PROVIDER`, `FACTORY_API_KEY` | The model provider switch (`droid` by default). The droid provider reads `FACTORY_API_KEY`, then `~/.config/acquit/factory-api-key`. |
+| `ACQUIT_PLATFORM_KEY` | Mints the platform session behind the platform ledger route and dashboards. |
+| `VITE_AG_STUDIO_LICENSE_KEY` | The AG Studio license for the dashboards. |
+| `ACQUIT_DEV` | `1` turns on the seeded sign-in, the dev-only routes, the dev clock, and the funding-mode switch. Leave it unset for a public deployment. |
+| `PORT`, `WEB_PORT`, `DATABASE_PATH`, `WEB_ORIGIN` | API port (default 4310), web port (default 5173), database path (default `./data/acquit.db`), and the web origin. |
+| `ACQUIT_VERIFIER_PORT`, `ACQUIT_VERIFIER_RUN_SECRET`, `ACQUIT_VERIFIER_CALLBACK_SECRET`, `ACQUIT_VERIFIER_CALLBACK_URL` | The verifier's port and the pair the API and the verifier share. `npm run dev` and a lane generate the pair when it is absent. |
+| `ACQUIT_SCOPING_DIR` | Optional: the private store for approved scoping drafts. The default sits under the profile's config directory, outside every git work tree. |
+| `PLATFORM_MERCHANT_ID`, `SANDBOX_BUYER_EMAIL` | Used by the verification skill's funding driver (`.factory/skills/verify-acquit/scripts/fund-escrow.mjs`). |
+
+To list the names a local `.env` sets without printing any value, run `grep -oE '^[A-Z_]+=' .env`.
 
 ## Run
 
 ```
 npm install
 npm run seed
-npm run dev
+ACQUIT_DEV=1 npm run dev
 ```
 
-Open http://localhost:5173 and sign in as `maya-client` (client) or `devon-ops` (operator). There are no passwords in the skeleton.
+Open http://localhost:5173 and sign in as `maya-client` (client) or `devon-ops` (operator); the seeded users have no passwords. That seeded sign-in exists only with `ACQUIT_DEV=1`. Without it the app runs in public mode, as the hosted demo does: visitors start through Start my demo, and `ACQUIT_FIXTURES` must name your own registry, because the API and the verifier refuse to boot without one.
+
+The operator CLI is `node packages/acquit-cli/src/main.ts` (bin `acquit`), and the MCP server is `node packages/mcp/src/main.ts` (bin `acquit-mcp`).
 
 ## Control CLI
 
@@ -84,7 +105,7 @@ Set `ACQUIT_LANE=<n>` before every control command. Lane n uses API port `4310 +
 
 The verifier needs a run secret, a callback secret, and the API's callback URL. A lane generates the pair per start and hands the same values to the API and the verifier; neither the run file nor a log line carries a secret. Set `ACQUIT_VERIFIER_RUN_SECRET`, `ACQUIT_VERIFIER_CALLBACK_SECRET`, and `ACQUIT_VERIFIER_CALLBACK_URL` in `.env` to keep them stable, and `ACQUIT_VERIFIER_PORT` outside a lane. The verifier judges with the Docker subject by default; `ACQUIT_VERIFIER_SUBJECT=child` with `ACQUIT_DEV=1` is the test/dev path and is refused otherwise.
 
-A lane's client repo is the repository the job's contract names, and it must exist on GitHub with the frozen commit as its default branch. `node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> <branch> --owner <account> --create` prepares the local work directory, creates the private repo with `main` at the fixture's frozen commit, and reports whether the App installation can see it. The live lane repo is `NDilanka/invoice-app` (public, `main` = `a3b6ead`). The contract names the deployment's client repository: set `ACQUIT_CLIENT_REPOSITORY=NDilanka/invoice-app` for that lane. `OpenJob` accepts only that repository and freezes it into the contract; the default is `maya-client/invoice-app`.
+A lane's client repo is the repository the job's contract names, and it must exist on GitHub with the frozen commit as its default branch. `node .factory/skills/verify-acquit/scripts/lane-repo.mjs <lane> <branch> --owner <account> --create` prepares the local work directory, creates the private repo with `main` at the fixture's frozen commit, and reports whether the App installation can see it. `OpenJob` freezes the manifest of the registered fixture its command names (the registry is `ACQUIT_FIXTURES`) into the job. A lane that approves or merges should use a disposable client repo, not a shared one.
 
 Start the API with `ACQUIT_DEV=1` to use `npm run ctl -- clock advance 4h` or `npm run ctl -- fund-mode card`. Card mode uses a real sandbox test-card capture without buyer login. Funding regression and tutorial runs use checkout mode. The clock offset and funding mode reset on restart.
 
