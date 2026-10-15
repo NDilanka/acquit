@@ -4,6 +4,7 @@
 // own digest. This module parses the registry and matches fixtures; it never reads a case file
 // (the cases themselves never enter core) and holds no demo fixture of its own.
 
+import { dirname, isAbsolute, join } from "node:path";
 import type { CommitSha, Digest, TestId } from "./ids.ts";
 import type { DefinitionOfDone, Glob } from "./verifier.ts";
 
@@ -198,9 +199,8 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 
 /** A case file's path as the registry named it: absolute stays, relative resolves beside the registry file. */
 export function fixtureCasesPath(entry: FixtureEntry, registryPath: string): string {
-	if (entry.hiddenCases.startsWith("/")) return entry.hiddenCases;
-	const dir = registryPath.slice(0, registryPath.lastIndexOf("/"));
-	return `${dir}/${entry.hiddenCases}`;
+	if (isAbsolute(entry.hiddenCases)) return entry.hiddenCases;
+	return join(dirname(registryPath), entry.hiddenCases);
 }
 
 /** The digest is the run's case selector: a registry that cannot pick one case set per digest is ambiguous. */
