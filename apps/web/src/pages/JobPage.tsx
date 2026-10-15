@@ -826,7 +826,7 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
       )}
       {job.merge && (
         <p>
-          <span className={mergeTone[job.merge.phase]}>{mergeNote(job.merge, job.pullRequest, job.mergeCommit)}</span>
+          <span className={`${mergeTone[job.merge.phase]} merge-note`}>{mergeNote(job.merge, job.pullRequest, job.mergeCommit)}</span>
         </p>
       )}
       {job.status === "PAID" && job.releaseAuthority && (

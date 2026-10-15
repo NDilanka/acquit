@@ -17,3 +17,7 @@ test("the PAID job's merged-PR badge wraps instead of widening a 390px page", ()
   assert.match(oneLineRule(".merge-note"), /white-space:\s*normal/);
   assert.match(jobPage, /merge-note/);
 });
+
+test("the PAID status panel's payout and capture ids wrap instead of widening a 390px page", () => {
+  assert.match(css, /\.statuspanel \.mono \{[^}]*overflow-wrap:\s*anywhere/);
+});
