@@ -5,13 +5,10 @@
 
 (acquit_routes) {
 	route {
-		# The gate. Exactly /paypal/webhook is exempt: PayPal signs those deliveries, and the API
-		# verifies the signature against PAYPAL_WEBHOOK_ID before it applies anything. The hash is
-		# not stored here — configure.sh renders AUTH_HASH from a file staged at configure time.
-		@gate not path /paypal/webhook
-		basic_auth @gate {
-			acquit AUTH_HASH
-		}
+		# The gate came down at Close with the operator's explicit OK (decisions.tsv,
+		# category operator-gate-ok). PayPal's /paypal/webhook deliveries still reach the API
+		# unauthenticated, and the API verifies each signature against PAYPAL_WEBHOOK_ID
+		# before it applies anything.
 		@api path /api /api/* /paypal /paypal/*
 		handle @api {
 			reverse_proxy 127.0.0.1:4310
@@ -28,7 +25,7 @@
 	import acquit_routes
 }
 
-# Diagnostic listener: unreachable externally, uses the identical auth and routing.
+# Diagnostic listener: unreachable externally, uses the identical routing.
 # Production HTTPS remains on public ACME and automatically retries issuance.
 http://127.0.0.1:8080 {
 	bind 127.0.0.1
