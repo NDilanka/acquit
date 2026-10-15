@@ -20,7 +20,11 @@ UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/acquit
+# The House delivery loop (F6) hardens host git through the CLI state root, which defaults under
+# /home/ubuntu. ProtectHome hides /home inside this unit, so the deployment pins the state root inside
+# ReadWritePaths. The Docker socket needs an explicit writable path for the sandbox proxy connect.
+Environment=XDG_STATE_HOME=/var/lib/acquit/house-state
+ReadWritePaths=/var/lib/acquit /var/run/docker.sock
 PrivateTmp=true
 
 [Install]
