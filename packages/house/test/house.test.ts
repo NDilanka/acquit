@@ -630,7 +630,8 @@ test("the work port keeps preparing when the state home is unwritable", async ()
 		const jobTarget: HouseTarget = { id: "job_7Q2K" as JobId, title: "Totals", repository: "maya-client/invoice-app", frozenAt: frozen, tenant: null };
 		const prepared = await port.prepare(jobTarget);
 		assert.equal(typeof prepared.workDir, "string", "prepare survives an unwritable state home");
-		assert(configAtPrepare !== null && configAtPrepare.startsWith(join(root, "state")),
+		assert(configAtPrepare !== null, "the first git run carried the hardened env");
+		assert(String(configAtPrepare).startsWith(join(root, "state")),
 			`the hardened git config lives under the port's own state dir, not the locked home (got ${String(configAtPrepare)})`);
 		assert.equal(existsSync(join(locked, "state")), false, "the locked home stayed untouched");
 		port.remove(jobTarget.id);
