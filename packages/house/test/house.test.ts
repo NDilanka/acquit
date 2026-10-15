@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -596,4 +596,46 @@ test("the work port keeps the askpass secret alive from prepare through the push
 		port.remove(target.id);
 		assert.equal(existsSync(String(askpassAtPush)), false, "remove sweeps the askpass secret");
 	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the work port keeps preparing when the state home is unwritable", async () => {
+	// A hardened unit (ProtectHome) hides the home directory, so the CLI state root's default under
+	// the home fails with EACCES, exactly as the VM's House prepares did before its drop-in: the
+	// port then pins the state root under its own state dir, the deployment's data dir.
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-work-root-"));
+	const locked = join(root, "locked-home");
+	mkdirSync(locked, { mode: 0o500 });
+	try {
+		const frozen = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
+		let configAtPrepare: string | null = null;
+		const git: GitRun = (args, env) => {
+			if (configAtPrepare === null) configAtPrepare = env?.GIT_CONFIG_GLOBAL ?? null;
+			if (args.includes("clone")) {
+				const gitDir = args[args.indexOf("--separate-git-dir") + 1];
+				const workTree = args.at(-1) as string;
+				mkdirSync(gitDir, { recursive: true, mode: 0o700 });
+				mkdirSync(workTree, { recursive: true, mode: 0o700 });
+				writeFileSync(join(workTree, ".git"), `gitdir: ${gitDir}\n`, { mode: 0o644 });
+				return { status: 0, stdout: "", stderr: "" };
+			}
+			if (args.includes("rev-parse")) return { status: 0, stdout: `${frozen}\n`, stderr: "" };
+			if (args.includes("--porcelain")) return { status: 0, stdout: " M src/money.ts\n", stderr: "" };
+			return { status: 0, stdout: "", stderr: "" };
+		};
+		const port = gitWorkPort({
+			stateRoot: join(root, "state"), workRoot: join(root, "work"),
+			mint: async () => ({ repository: "acquit-forks/invoice-app-x", token: "GHT-TEST-TOKEN" }),
+			git, env: { ...process.env, XDG_STATE_HOME: join(locked, "state") },
+		});
+		const jobTarget: HouseTarget = { id: "job_7Q2K" as JobId, title: "Totals", repository: "maya-client/invoice-app", frozenAt: frozen, tenant: null };
+		const prepared = await port.prepare(jobTarget);
+		assert.equal(typeof prepared.workDir, "string", "prepare survives an unwritable state home");
+		assert(configAtPrepare !== null && configAtPrepare.startsWith(join(root, "state")),
+			`the hardened git config lives under the port's own state dir, not the locked home (got ${String(configAtPrepare)})`);
+		assert.equal(existsSync(join(locked, "state")), false, "the locked home stayed untouched");
+		port.remove(jobTarget.id);
+	} finally {
+		chmodSync(locked, 0o700);
+		rmSync(root, { recursive: true, force: true });
+	}
 });
