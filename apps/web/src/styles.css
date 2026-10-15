@@ -54,6 +54,8 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .pill.open { color: var(--blue); background: var(--blue-bg); border-color: #cdd9f3; }
 .pill.ok { color: var(--green); background: var(--green-bg); border-color: var(--green-line); }
 .pill.new { color: var(--muted); background: #f3f2ed; border-color: var(--line); }
+.merge-note { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
+.statuspanel .mono { overflow-wrap: anywhere; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
 .btn { display: inline-block; text-decoration: none; border: 1px solid var(--ink); background: var(--ink); color: #fff; padding: 9px 16px; border-radius: 8px; font-weight: 600; font-size: 13.5px; white-space: nowrap; }
@@ -99,7 +101,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .form input, .form select, .form textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; }
 .form textarea { resize: vertical; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 12px; }
-.act { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.act { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
 .act small { margin-right: auto; }
 
 .kvs { display: grid; grid-template-columns: 180px 1fr; gap: 6px 16px; margin: 12px 0 18px; }
