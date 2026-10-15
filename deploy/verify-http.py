@@ -59,14 +59,11 @@ print(f"{mode} unauthenticated /api/users: 401 UNAUTHENTICATED (the API's own re
 code, body = request("/paypal/webhook", "POST")
 assert code == 400 and json.loads(body)["received"] is False, f"Unsigned webhook: {code}"
 print(f"{mode} unauthenticated POST /paypal/webhook: 400 unsigned refusal (the API's signature check)")
-for path, method in [("/paypal/webhook/x", "GET"), ("/paypal/webhooks", "POST")]:
+for path, method in [("/paypal/webhook/x", "GET"), ("/paypal/webhooks", "POST"),
+                     ("/paypal/webhook/../api/session", "GET")]:
     code, body = request(path, method)
     assert code == 404 and json.loads(body)["error"] == "NOT_FOUND", f"Lookalike {path}: {code}"
     print(f"{mode} unauthenticated {method} {path}: 404 NOT_FOUND")
-# Caddy normalizes the traversal before matching, so it lands on the public session read.
-code, body = request("/paypal/webhook/../api/session")
-assert code == 200 and json.loads(body)["mode"] == "public", f"Traversal probe: {code}"
-print(f"{mode} unauthenticated traversal probe: 200 on /api/session (no gate left to bypass)")
 # The dev route answers what the deployment runs: P1 ships ACQUIT_DEV=1, where the route is enabled
 # and an unauthenticated call still needs an app session; public mode refuses it by name.
 probe = subprocess.run([*ssh, "sudo grep -x 'ACQUIT_DEV=1' /etc/acquit/runtime.env || true"],
