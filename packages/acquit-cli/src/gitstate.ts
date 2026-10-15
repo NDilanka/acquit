@@ -62,6 +62,22 @@ export function ensureStateRoot(env: NodeJS.ProcessEnv = process.env): string {
 	return root;
 }
 
+/** The env a hardened git run uses when the resolved state root may be unwritable: if the default
+ * state root cannot be created (ProtectHome hides the home directory on a hardened deployment), the
+ * state home moves under `fallbackDir` -- the caller's own state dir, inside the deployment's data
+ * -- so the service still starts. */
+export function withStateRootFallback(env: NodeJS.ProcessEnv, fallbackDir: string): NodeJS.ProcessEnv {
+	try {
+		ensureStateRoot(env);
+		return env;
+	} catch {
+		const stateHome = process.platform === "win32" ? { LOCALAPPDATA: fallbackDir } : { XDG_STATE_HOME: fallbackDir };
+		const fallback = { ...env, ...stateHome };
+		ensureStateRoot(fallback);
+		return fallback;
+	}
+}
+
 /** An empty file the CLI owns, used as GIT_CONFIG_GLOBAL so no user or machine config is read. */
 function emptyGlobalConfig(root: string): string {
 	const path = join(root, "gitconfig");

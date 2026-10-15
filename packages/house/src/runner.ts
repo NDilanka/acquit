@@ -11,7 +11,7 @@ import { rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CliError } from "../../acquit-cli/src/client.ts";
-import { checkoutGitArgs as locationGitArgs, hardenedGitEnv, stripGitEnv, type JobCheckout } from "../../acquit-cli/src/gitstate.ts";
+import { checkoutGitArgs as locationGitArgs, hardenedGitEnv, stripGitEnv, withStateRootFallback, type JobCheckout } from "../../acquit-cli/src/gitstate.ts";
 import { childEnv, makeSecretDir, workRepoUrl, writeAskpass } from "../../acquit-cli/src/workrepo.ts";
 import {
 	agentArgv, changedFiles, defaultInstruction, gitCli, globalGitIdentity, prepareWorkRepo, pushWork,
@@ -552,7 +552,9 @@ export function gitWorkPort(deps: GitWorkDeps): HouseWorkPort {
 			const secret = makeSecretDir();
 			try {
 				const askpass = writeAskpass(secret.path, credential.token);
-				const gitEnv = hardenedGitEnv(childEnv(env));
+				// ProtectHome hides the home directory on a hardened deployment, so the git state root
+				// falls back under this port's own state dir when the default under the home is unwritable.
+				const gitEnv = hardenedGitEnv(withStateRootFallback(childEnv(env), deps.stateRoot));
 				prepareWorkRepo(git, checkout, url, job.frozenAt, gitEnv, askpass.env);
 				seedCommitIdentity(git, checkout, globalGitIdentity(git, stripGitEnv(env)), gitEnv);
 				const checkoutGitArgs = (callEnv: NodeJS.ProcessEnv, args: readonly string[]) => locationGitArgs(checkout, callEnv, args);
