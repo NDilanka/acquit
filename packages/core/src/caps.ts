@@ -39,7 +39,6 @@ export type Reservation = {
  * deployment-wide counters (visitorsToday, runsToday) ignore the scope; the rest are the scope's own.
  */
 export type CapUsage = {
-	readonly visitorsFromIp: number;
 	readonly visitorsToday: number;
 	readonly jobs: number;
 	readonly budget: UsdCents;
@@ -49,7 +48,6 @@ export type CapUsage = {
 
 /** One row per closed refusal code: the limit, the kind that spends it, the counter it reads, and how. */
 export const CAPS = {
-	VISITORS_IP_DAY: { limit: 3, kind: "VISITOR", counter: "visitorsFromIp", mode: "count", scope: "visitors from one address in 24 h" },
 	VISITORS_DAY: { limit: 50, kind: "VISITOR", counter: "visitorsToday", mode: "count", scope: "visitors in 24 h" },
 	VISITOR_JOBS: { limit: 3, kind: "JOB", counter: "jobs", mode: "count", scope: "one visitor's jobs" },
 	AMOUNT: { limit: 100_000, kind: "JOB", counter: null, mode: "value", scope: "one job's budget, in cents" },
@@ -77,7 +75,6 @@ export function capUsage(db: DatabaseSync, input: { readonly scope: string; read
 		return Number(row?.n ?? 0);
 	};
 	return {
-		visitorsFromIp: count("kind = 'VISITOR' AND scope = ? AND at_wall > ?", input.scope, input.since),
 		visitorsToday: count("kind = 'VISITOR' AND at_wall > ?", input.since),
 		jobs: count("kind = 'JOB' AND scope = ? AND at_wall > ?", input.scope, input.since),
 		budget: sum("kind = 'JOB' AND scope = ? AND at_wall > ?", input.scope, input.since) as UsdCents,

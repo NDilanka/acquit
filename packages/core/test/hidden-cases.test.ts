@@ -138,7 +138,7 @@ test("the registry names the case files, and those files alone decide the contra
 	const registryPath = registryFor(altered);
 	const registry = loadFixtureRegistry({ ACQUIT_FIXTURES: registryPath });
 	const book = buildFixtureBook(registry);
-	const loaded = loadHiddenCasesFromFile(join(registryPath.slice(0, registryPath.lastIndexOf("/")), "hidden-cases.json"), SHAPE);
+	const loaded = loadHiddenCasesFromFile(join(dirname(registryPath), "hidden-cases.json"), SHAPE);
 	assert.deepEqual([...book.byDigest.keys()], [hiddenContractOf(loaded).digest]);
 	assert.notEqual(hiddenContractOf(loaded).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
 	assert.deepEqual(fixtureContracts(registry).map(entry => entry.hiddenManifest), [hiddenContractOf(loaded).digest]);

@@ -44,5 +44,5 @@ Steps:
 - The page shows the controls only when the signed-in handle is the visitor's client and `job.client` names it. `job.client` and `job.clockShiftMs` are null for every other viewer, and the API refuses the operator with `403 NOT_VISITOR_JOB`.
 - `Payment method` closes once a bid is accepted; the API answers `409 FUNDING_BOUND` after that.
 - The clock moves only this job's stored instants. The deployment clock and every other job keep their time.
-- Each `Start my demo` creates a visitor and counts against `CAP_VISITORS_IP_DAY` and `CAP_VISITORS_DAY`. A refused fork creates none.
+- Each `Start my demo` creates a visitor and counts against `CAP_VISITORS_DAY` (50 per rolling 24 hours across the deployment). There is no per-address cap. A refused fork creates none.
 - With the App configured, each demo leaves a real repository that `ctl sweep` removes only after the visitor expires.

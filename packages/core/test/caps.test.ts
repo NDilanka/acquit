@@ -29,7 +29,7 @@ const deployment = "maya-client/invoice-app";
 const noon = instant("2026-10-06T12:00:00.000Z");
 
 /** The counters a test starts from: nobody has done anything. */
-const usage = (over: Partial<CapUsage>): CapUsage => ({ visitorsFromIp: 0, visitorsToday: 0, jobs: 0,
+const usage = (over: Partial<CapUsage>): CapUsage => ({ visitorsToday: 0, jobs: 0,
 	budget: 0 as UsdCents, runs: 0, runsToday: 0, ...over });
 
 /** A service whose clock stands still, so a window has an exact edge. */
@@ -56,7 +56,7 @@ const jobIdOf = (outcome: CommandOutcome): JobId =>
 
 test("the cap table is the one place the limits live", () => {
 	assert.deepEqual(Object.fromEntries(Object.entries(CAPS).map(([name, spec]) => [name, spec.limit])), {
-		VISITORS_IP_DAY: 3, VISITORS_DAY: 50, VISITOR_JOBS: 3, AMOUNT: 100_000, SPEND_DAY: 200_000,
+		VISITORS_DAY: 50, VISITOR_JOBS: 3, AMOUNT: 100_000, SPEND_DAY: 200_000,
 		MODEL_RUNS: 10, MODEL_RUNS_DAY: 1_000 });
 });
 
@@ -68,9 +68,8 @@ test("the window is one rolling day, and a reservation is refused by the cap it 
 		({ kind: "JOB", scope: "v_1", ref: "job_1", cents: usd("400.00"), at: noon, ...over });
 	const run = (over: Partial<Reservation>): Reservation =>
 		({ kind: "RUN", scope: "v_1", ref: "job_1:verify:1", cents: 0 as UsdCents, at: noon, ...over });
-	// Visitors: the address's own window first, then the deployment's day.
-	assert.equal(reservationRefusal(visitor({}), usage({ visitorsFromIp: 2, visitorsToday: 49 })), null);
-	assert.equal(reservationRefusal(visitor({}), usage({ visitorsFromIp: 3 })), "CAP_VISITORS_IP_DAY");
+	// Visitors: only the deployment's day binds; one address has no allowance of its own.
+	assert.equal(reservationRefusal(visitor({}), usage({ visitorsToday: 49 })), null);
 	assert.equal(reservationRefusal(visitor({}), usage({ visitorsToday: 50 })), "CAP_VISITORS_DAY");
 	// Jobs: how many the visitor has, what one may promise, and what it has promised today.
 	assert.equal(reservationRefusal(job({ cents: usd("1000.00") }), usage({ jobs: 2 })), null);
@@ -103,10 +102,10 @@ test("the counters read the reservation table by wall clock and by scope", async
 		reserved("2026-10-06T11:50:00.000Z", "RUN", "v_1", "job_1:verify:1");
 		// One visitor's own day: its jobs and its runs. The visitor row older than the window is gone.
 		assert.deepEqual(capUsage(store.db, { scope: "v_1", since: capWindowStart(noon) }),
-			{ visitorsFromIp: 0, visitorsToday: 2, jobs: 1, budget: 40_000, runs: 1, runsToday: 1 });
-		// One address's own day: its visitors. The other visitor's job and run are not its own.
+			{ visitorsToday: 2, jobs: 1, budget: 40_000, runs: 1, runsToday: 1 });
+		// An address scope holds no jobs or runs: the other visitor's job and run are not its own.
 		assert.deepEqual(capUsage(store.db, { scope: "ip-a", since: capWindowStart(noon) }),
-			{ visitorsFromIp: 2, visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1 });
+			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1 });
 	} finally { store.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -197,7 +196,7 @@ test("a capped visitor's job and run are refused by code, and a tenant-less clie
 		const own: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 		assert.equal((await service.execute(own, parseRequestKey(randomUUID()), open(usd("1000.00")))).kind, "COMMITTED");
 		assert.deepEqual(capUsage(store.db, { scope: guest.visitor.id as string, since: capWindowStart(noon) }),
-			{ visitorsFromIp: 0, visitorsToday: 1, jobs: 3, budget: 120_000, runs: 10, runsToday: 10 });
+			{ visitorsToday: 1, jobs: 3, budget: 120_000, runs: 10, runsToday: 10 });
 		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).jobs, 0);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
