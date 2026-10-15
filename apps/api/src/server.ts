@@ -227,12 +227,15 @@ function visitorJson(visitor: VisitorRow): { id: string; client: string; operato
 }
 /**
  * The request's address as a digest, never the address. The API binds loopback behind the deployment's
- * proxy, which sets X-Forwarded-For; the first hop is the caller.
+ * proxy, which answers X-Forwarded-For with the client address it saw; the last hop is the proxy's own,
+ * so a client cannot rename itself by sending the header first. With no header the request reached the
+ * API directly and the socket address is the caller.
  */
 function ipKeyOf(req: IncomingMessage): string {
 	const forwarded = req.headers["x-forwarded-for"];
-	const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim();
-	const address = first || req.socket.remoteAddress || "unknown";
+	const hops = (Array.isArray(forwarded) ? forwarded : forwarded === undefined ? [] : [forwarded])
+		.flatMap(value => value.split(",")).map(hop => hop.trim()).filter(hop => hop.length > 0);
+	const address = hops[hops.length - 1] || req.socket.remoteAddress || "unknown";
 	return createHash("sha256").update(address).digest("hex").slice(0, 16);
 }
 function json(res: ServerResponse, status: number, value: unknown): void {
