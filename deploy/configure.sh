@@ -2,8 +2,9 @@
 # Renders and installs the deployment's configuration, then activates the units.
 # Every secret is read at configure time from a file the deploy driver staged 0600 under
 # /tmp/acquit-deploy, or is generated on this host. The tracked templates hold no secret:
-#   auth-hash            the gate's bcrypt hash, from the host's `caddy hash-password`
 #   paypal-webhook-id    the sandbox webhook's id, from the host's .env
+# The basic-auth gate came down at Close (decisions.tsv, category operator-gate-ok), so there is
+# no auth-hash input any more: the Caddyfile template installs as it is tracked.
 set -euo pipefail
 STAGE=/tmp/acquit-deploy
 
@@ -14,11 +15,8 @@ sudo install -d -m 0755 /etc/systemd/system/caddy.service.d
 sudo install -m 0644 "$STAGE/caddy-restart.conf" /etc/systemd/system/caddy.service.d/restart.conf
 sudo install -m 0600 "$STAGE/runtime.env" /etc/acquit/runtime.env
 
-# The gate's hash exists only in the rendered file, which never returns to a tracked tree.
-AUTH_HASH=$(cat "$STAGE/auth-hash")
-sed "s|AUTH_HASH|$AUTH_HASH|" "$STAGE/Caddyfile.template" > "$STAGE/Caddyfile.rendered"
-chmod 0600 "$STAGE/Caddyfile.rendered"
-sudo install -m 0644 "$STAGE/Caddyfile.rendered" /etc/caddy/Caddyfile
+# No gate hash and no placeholder: the tracked template is the file Caddy serves.
+sudo install -m 0644 "$STAGE/Caddyfile.template" /etc/caddy/Caddyfile
 sudo caddy fmt --overwrite /etc/caddy/Caddyfile
 sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 

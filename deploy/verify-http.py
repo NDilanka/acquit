@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Verify HTTP without printing credentials, HTML, or response tokens.
 
-The gate covers every path but exactly /paypal/webhook: PayPal's signed deliveries reach the
-API unauthenticated, and the API refuses them on their own signature check.
+The basic-auth gate came down at Close with the operator's explicit OK (decisions.tsv, category
+operator-gate-ok). Every public path answers without auth. PayPal's /paypal/webhook still reaches
+the API unauthenticated, where the API's own signature check refuses an unsigned delivery; the dev
+routes stay refused; and the API's privileged reads still refuse a sessionless caller.
 """
 from pathlib import Path
 import json
@@ -11,7 +13,6 @@ import sys
 
 mode = sys.argv[1] if len(sys.argv) > 1 else "loopback"
 domain = "80-225-220-230.sslip.io"
-password = (Path.home() / ".config/acquit/vm-basic-auth").read_text().strip()
 ssh = [
     "ssh", "-i", str(Path.home() / ".ssh/id_ed25519_acquit_vm"),
     "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
@@ -26,56 +27,54 @@ elif mode == "public":
 else:
     raise SystemExit("Use loopback, tls-loopback, or public")
 
-def request(path, authenticated=False, method="GET"):
+def request(path, method="GET"):
     args = ["curl", "--silent", "--show-error", "--noproxy", "*",
             "--path-as-is",
             "--connect-timeout", "10", "--max-time", "20",
             "--request", method, "--write-out", "\\n%{http_code}", *extra]
-    config = f'user = "acquit:{password}"\n' if authenticated else ""
-    if authenticated:
-        args += ["--config", "-"]
     args += [base + path]
     if mode != "public":
         import shlex
         args = [*ssh, shlex.join(args)]
-    result = subprocess.run(args, input=config, text=True, capture_output=True)
+    result = subprocess.run(args, text=True, capture_output=True)
     if result.returncode:
-        raise SystemExit(f"{mode} curl failed, exit {result.returncode}; no credential output")
+        raise SystemExit(f"{mode} curl failed, exit {result.returncode}")
     body, code = result.stdout.rsplit("\n", 1)
     return int(code), body
 
-for path in ["/", "/jobs/smoke", "/api/users", "/paypal/webhook/x", "/paypal/webhooks", "/paypal/webhook/../api/session"]:
-    code, _ = request(path)
-    assert code == 401, f"Unauthenticated {path} returned {code}"
-    print(f"{mode} unauthenticated {path}: 401")
-# The one exemption: a POST reaches the API unauthenticated, and the API's own signature check
-# refuses an unsigned body. Anything but Caddy's 401 is the API answering.
-code, _ = request("/paypal/webhook", method="POST")
-assert code != 401, f"Unauthenticated POST /paypal/webhook returned {code}"
-print(f"{mode} unauthenticated POST /paypal/webhook: {code} (API refusal, not the gate)")
 for path in ["/", "/jobs/smoke"]:
-    code, body = request(path, True)
-    assert code == 200 and "<!doctype html>" in body.lower(), f"HTML failed: {code}"
-    print(f"{mode} authenticated {path}: 200 HTML")
-code, body = request("/api/users", True)
-assert code == 200 and isinstance(json.loads(body)["users"], list)
-print(f"{mode} authenticated /api/users: 200 JSON")
-code, body = request("/api/session", True)
-assert code == 200 and json.loads(body)["user"] is None
-print(f"{mode} authenticated /api/session: 200 JSON, no app session")
+    code, body = request(path)
+    assert code == 200 and "<!doctype html>" in body.lower(), f"Public HTML failed: {code}"
+    print(f"{mode} unauthenticated {path}: 200 HTML")
+code, body = request("/api/session")
+assert code == 200 and json.loads(body)["user"] is None and json.loads(body)["mode"] == "public", \
+    f"Session read failed: {code}"
+print(f'{mode} unauthenticated /api/session: 200 JSON, mode "public", no app session')
+# The API still owns its own authz: a privileged read refuses a sessionless caller by itself.
+code, body = request("/api/users")
+assert code == 401 and json.loads(body)["error"] == "UNAUTHENTICATED", f"Privileged read: {code}"
+print(f"{mode} unauthenticated /api/users: 401 UNAUTHENTICATED (the API's own refusal)")
+# The webhook refusals are unchanged: an unsigned delivery reaches the API and its signature
+# check refuses it. Anything but the API's own refusal would be wrong.
+code, body = request("/paypal/webhook", "POST")
+assert code == 400 and json.loads(body)["received"] is False, f"Unsigned webhook: {code}"
+print(f"{mode} unauthenticated POST /paypal/webhook: 400 unsigned refusal (the API's signature check)")
+for path, method in [("/paypal/webhook/x", "GET"), ("/paypal/webhooks", "POST"),
+                     ("/paypal/webhook/../api/session", "GET")]:
+    code, body = request(path, method)
+    assert code == 404 and json.loads(body)["error"] == "NOT_FOUND", f"Lookalike {path}: {code}"
+    print(f"{mode} unauthenticated {method} {path}: 404 NOT_FOUND")
 # The dev route answers what the deployment runs: P1 ships ACQUIT_DEV=1, where the route is enabled
-# and an empty clock POST fails its body parse; public mode refuses it by name.
+# and an unauthenticated call still needs an app session; public mode refuses it by name.
 probe = subprocess.run([*ssh, "sudo grep -x 'ACQUIT_DEV=1' /etc/acquit/runtime.env || true"],
                        text=True, capture_output=True)
 if probe.returncode:
-    raise SystemExit(f"could not read the deployed mode; no credential output")
+    raise SystemExit("could not read the deployed mode")
 if probe.stdout.strip() == "ACQUIT_DEV=1":
-    # Dev mode enables the route: past the mode check it asks for an app session, which a bare gate
-    # credential does not carry, so the answer is the API's own unauthenticated refusal.
-    code, body = request("/api/dev/clock", True, "POST")
-    assert code == 401 and json.loads(body)["error"] == "UNAUTHENTICATED", f"Dev mode clock route should refuse a bare gate credential: {code}"
-    print(f"{mode} authenticated dev route: 401 UNAUTHENTICATED (ACQUIT_DEV=1; the route is on and still wants an app session)")
+    code, body = request("/api/dev/clock", "POST")
+    assert code == 401 and json.loads(body)["error"] == "UNAUTHENTICATED", f"Dev mode clock route: {code}"
+    print(f"{mode} unauthenticated dev route: 401 UNAUTHENTICATED (ACQUIT_DEV=1; the route is on and still wants an app session)")
 else:
-    code, body = request("/api/dev/clock", True, "POST")
-    assert code == 403 and json.loads(body)["error"] == "DEV_DISABLED"
-    print(f"{mode} authenticated dev route: 403 DEV_DISABLED")
+    code, body = request("/api/dev/clock", "POST")
+    assert code == 403 and json.loads(body)["error"] == "DEV_DISABLED", f"Dev route: {code}"
+    print(f"{mode} unauthenticated dev route: 403 DEV_DISABLED")
