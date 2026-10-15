@@ -54,9 +54,10 @@ Advancing one job's clock moves that job's stored instants, its wake time, and i
 
 `packages/core/src/caps.ts` is the one table. Each row is a limit, the counter it reads, and the closed code that names its refusal; the counters come from committed rows and a cap check never writes. The window is one rolling day, so no timezone decides when a judge's day ends.
 
+There is no per-address cap. Judges often share one network (a judging room, an office, a VPN exit), and a per-address limit locked them out, so the deployment-wide visitor day is the only limit on `POST /api/demo`. The request's address is still recorded on the visitor row as a digest (`ipKeyOf` in `apps/api/src/server.ts`), which keeps abuse traceable without capping it.
+
 | Code | Limit | Counts | Where it binds |
 |---|---|---|---|
-| `CAP_VISITORS_IP_DAY` | 3 | visitors created from one address in 24 h | `POST /api/demo` |
 | `CAP_VISITORS_DAY` | 50 | visitors created in 24 h | `POST /api/demo` |
 | `CAP_VISITOR_JOBS` | 3 | one visitor's jobs | `OpenJob` |
 | `CAP_AMOUNT` | 100000 cents | one job's budget | `OpenJob` |

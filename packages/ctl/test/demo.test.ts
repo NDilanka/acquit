@@ -290,10 +290,9 @@ test("a cap holds when parallel requests race it on one lane", async () => {
 		assert.equal(outcomes.filter(outcome => outcome.outcome.kind === "COMMITTED").length, 3);
 		assert.deepEqual(outcomes.filter(outcome => outcome.outcome.kind === "DENIED").map(outcome => outcome.outcome.reason),
 			["CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS", "CAP_VISITOR_JOBS"]);
-		// The address's day holds the same way: this visitor is one, so two more may be created, ever.
+		// One address has no allowance of its own: ten racing creates from it all land under the deployment's day.
 		const created = await Promise.all(Array.from({ length: 10 }, (_, index) => post(urls[index % 2], "/api/demo", {})));
-		assert.equal(created.filter(response => response.status === 201).length, 2);
-		assert.deepEqual(created.filter(response => response.status !== 201).map(response => response.status), [429, 429, 429, 429, 429, 429, 429, 429]);
+		assert.deepEqual(created.map(response => response.status), Array.from({ length: 10 }, () => 201));
 	});
 });
 
@@ -317,16 +316,16 @@ test("the API's own writes wait for the lane's write lock instead of failing the
 
 test("a demo the caps refuse leaves no fork behind", async () => {
 	await apiFixture(false, async (url, databasePath) => {
-		for (let index = 0; index < 3; index++) {
+		for (let index = 0; index < 50; index++) {
 			assert.equal((await post(url, "/api/demo", {})).status, 201);
 		}
-		// The address's day is spent: the fourth visitor is refused by code, and the App is never asked.
+		// The deployment's day is spent: the next visitor is refused by code, and the App is never asked.
 		const refused = await post(url, "/api/demo", {});
 		assert.equal(refused.status, 429);
-		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_IP_DAY" });
+		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_DAY" });
 		const calls = (await readFile(join(dirname(databasePath), "fetch.log"), "utf8")).trim().split("\n").filter(line => line !== "");
 		const forks = calls.map(line => JSON.parse(line) as { readonly url: string }).filter(call => call.url.endsWith("/forks"));
-		assert.equal(forks.length, 3, `A refused visitor never reaches the App, so three forks are made: ${calls.length} calls.`);
+		assert.equal(forks.length, 50, `A refused visitor never reaches the App, so fifty forks are made: ${calls.length} calls.`);
 	}, true);
 });
 
@@ -490,15 +489,13 @@ test("Start my demo forks the visitor's own client repository and binds it into 
 	}, true);
 });
 
-test("a visitor's own caps bind: its jobs, what one may promise, and the address's day", async () => {
+test("a visitor's own caps bind: its jobs and what one may promise, while one address is not capped", async () => {
 	await apiFixture(false, async url => {
 		const first = await (await post(url, "/api/demo", {})).json() as DemoBody;
 		const second = await (await post(url, "/api/demo", {})).json() as DemoBody;
 		await post(url, "/api/demo", {});
-		// Three visitors from one address is the day's allowance; the fourth is refused by code.
-		const refused = await post(url, "/api/demo", {});
-		assert.equal(refused.status, 429);
-		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_IP_DAY" });
+		// A shared network (a judging room, an office) can start more demos than any one visitor needs.
+		assert.equal((await post(url, "/api/demo", {})).status, 201);
 		// A budget over the ceiling is refused, and so is a fourth job: the visitor has three.
 		const repository = first.visitor.repository ?? "maya-client/invoice-app";
 		assert.deepEqual((await openOutcome(url, first.token, repository, 100001)).body,

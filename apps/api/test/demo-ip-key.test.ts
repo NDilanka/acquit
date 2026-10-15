@@ -1,4 +1,4 @@
-// The visitor cap keys on the real client address. The deployment's proxy (Caddy) answers
+// A visitor row records the real client address as a digest. The deployment's proxy (Caddy) answers
 // X-Forwarded-For itself, so the first hop a client sends is a claim the client controls; the
 // handler must read the proxy's own addition — the last hop — and the socket address when no
 // header arrives. Driven through the production handler with in-memory request streams, like the
@@ -9,10 +9,13 @@ import assert from "node:assert/strict";
 import { test, after } from "node:test";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 
 const root = join(import.meta.dirname, "..");
 
@@ -43,12 +46,12 @@ Object.assign(process.env, {
 	HOME: join(dir, "home"), FACTORY_API_KEY: "",
 });
 mkdirSync(join(dir, "home"), { recursive: true });
-await import(join(root, "src/server.ts"));
+await import(pathToFileURL(join(root, "src/server.ts")).href);
 if (!server) throw new Error("the API module never created its server");
 
 after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
 
-type Answer = { readonly status: number; readonly body: { readonly error?: string } };
+type Answer = { readonly status: number; readonly body: { readonly error?: string; readonly visitor?: { readonly id: string } } };
 
 /** One Start-my-demo request from `address`, carrying exactly `headers`, through the real handler. */
 function inject(address: string, headers: Record<string, string | string[]>) {
@@ -68,36 +71,29 @@ function inject(address: string, headers: Record<string, string | string[]>) {
 
 const startDemo = (address: string, headers: Record<string, string | string[]> = {}) => inject(address, headers).send();
 
-test("a spoofed first X-Forwarded-For hop cannot leave the visitor cap's address", async () => {
-	const address = "127.0.0.1";
-	for (let i = 0; i < 3; i += 1) {
-		const created = await startDemo(address);
-		assert.equal(created.status, 201, `plain visitor ${i + 1} of 3 from ${address}`);
-	}
+const keyOf = (address: string): string => createHash("sha256").update(address).digest("hex").slice(0, 16);
+
+/** The address key the API stored for the visitor one request created. */
+async function storedKey(address: string, headers: Record<string, string | string[]> = {}): Promise<string> {
+	const created = await startDemo(address, headers);
+	assert.equal(created.status, 201);
+	const db = new DatabaseSync(process.env.DATABASE_PATH!, { readOnly: true });
+	try {
+		const row = db.prepare("SELECT ip_key FROM visitors WHERE id = ?").get(created.body.visitor!.id) as { readonly ip_key: string };
+		return row.ip_key;
+	} finally { db.close(); }
+}
+
+test("a spoofed first X-Forwarded-For hop cannot rename the visitor's address", async () => {
 	// What the proxy delivers for a client that sent its own first hop: the spoofed entry, then the
-	// proxy's own answer for that same connection. The cap must read the proxy's answer.
-	const spoofed = await startDemo(address, { "x-forwarded-for": "1.2.3.4, 127.0.0.1" });
-	assert.equal(spoofed.status, 429, "the fourth visitor from one address is refused through the proxied header too");
-	assert.equal(spoofed.body.error, "CAP_VISITORS_IP_DAY");
+	// proxy's own answer for that same connection. The key must be the proxy's answer.
+	assert.equal(await storedKey("127.0.0.1", { "x-forwarded-for": "1.2.3.4, 127.0.0.1" }), keyOf("127.0.0.1"));
 });
 
-test("a proxied request lands in the same bucket a plain request from that address uses", async () => {
-	const address = "127.0.0.2";
-	for (let i = 0; i < 3; i += 1) {
-		const created = await startDemo(address, { "x-forwarded-for": "5.6.7.8, 127.0.0.2" });
-		assert.equal(created.status, 201, `proxied visitor ${i + 1} of 3 for ${address}`);
-	}
-	const plain = await startDemo(address);
-	assert.equal(plain.status, 429, "the fourth visitor is refused when it arrives with no header at all");
-	assert.equal(plain.body.error, "CAP_VISITORS_IP_DAY");
+test("a request with no header is keyed by its socket address", async () => {
+	assert.equal(await storedKey("127.0.0.2"), keyOf("127.0.0.2"));
 });
 
 test("several X-Forwarded-For header lines still resolve to the last hop", async () => {
-	const address = "127.0.0.3";
-	for (let i = 0; i < 3; i += 1) {
-		const created = await startDemo(address, { "x-forwarded-for": ["9.9.9.9", "127.0.0.3"] });
-		assert.equal(created.status, 201, `array-header visitor ${i + 1} of 3 for ${address}`);
-	}
-	const plain = await startDemo(address);
-	assert.equal(plain.status, 429, "the fourth visitor is refused: the array's last hop is the caller");
+	assert.equal(await storedKey("127.0.0.3", { "x-forwarded-for": ["9.9.9.9", "127.0.0.3"] }), keyOf("127.0.0.3"));
 });

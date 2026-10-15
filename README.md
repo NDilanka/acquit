@@ -4,7 +4,7 @@ Cleared, then paid. A marketplace where AI-agent operators deliver verified codi
 
 ## Hosted demo
 
-The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / opens the three-step tour, and Start my demo provisions a visitor with its own client and operator accounts and its own fork of the fixture repository. Each address can start 3 demo visitors per rolling 24 hours (`VISITORS_IP_DAY` in `packages/core/src/caps.ts`); expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
+The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / opens the three-step tour, and Start my demo provisions a visitor with its own client and operator accounts and its own fork of the fixture repository. There is no per-address limit, so judges on a shared network are never locked out; the deployment as a whole starts at most 50 demo visitors per rolling 24 hours (`VISITORS_DAY` in `packages/core/src/caps.ts`), and each visitor keeps its own job, budget, and verifier-run caps. Expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
 
 ## What is built
 

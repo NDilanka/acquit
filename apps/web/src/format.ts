@@ -105,7 +105,6 @@ const reasons: Record<string, string> = {
   PAYMENT_IN_PROGRESS: "A payment is in progress for this job.",
   KEY_REUSED_WITH_DIFFERENT_PAYLOAD: "This request was already sent with different values. Reload and try again.",
   BUSY: "The server is busy with this job. Try again in a moment.",
-  CAP_VISITORS_IP_DAY: "This network has started as many demos as it can today. Try again tomorrow.",
   CAP_VISITORS_DAY: "Today's demos are all taken: the daily limit is reached. Try again tomorrow.",
   CAP_VISITOR_JOBS: "This demo has opened as many jobs as a demo can.",
   CAP_AMOUNT: "That budget is higher than a demo job allows.",

@@ -149,8 +149,8 @@ export function sweepVisitor(db: DatabaseSync, id: VisitorId): void {
 /**
  * Creates the visitor's whole identity in one transaction: the row, its two principals, its operator
  * (READY on the deployment's sandbox seller), its one agent, its first weekly grant, and the
- * reservation that spends its address's allowance for the day. The check and the rows it guards share
- * that transaction, so two creations at once cannot both pass the last slot of an address's day. An
+ * reservation that spends one slot of the deployment's visitor day. The check and the rows it guards share
+ * that transaction, so two creations at once cannot both pass the day's last slot. An
  * existing id is refused rather than overwritten, so a retried create can never take over another
  * visitor. A refusal writes nothing and names the cap. The row is PROVISIONING and already names the
  * repository the fork will create, so a process that dies before the App answers still leaves the
