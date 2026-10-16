@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
@@ -18,8 +19,8 @@ import { hiddenManifest } from "../../verifier/hidden.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { demoProtectedPaths, exampleCases } from "./hidden-fixture.ts";
 import { bookEntry, fixtureBook } from "./verifier-book.ts";
-import { CORPUS, FROZEN_ROWS, FROZEN_TEST_PATH, writeBase } from "./score-card-corpus.ts";
-import type { CorpusEntry } from "./score-card-corpus.ts";
+import { CORPUS, FROZEN_ROWS, FROZEN_TEST_PATH, HONEST_FIXES, writeBase } from "./score-card-corpus.ts";
+import type { CorpusEntry, Files } from "./score-card-corpus.ts";
 
 const at = instant("2026-10-06T13:30:00Z");
 const frozenSuite = FROZEN_ROWS.map((_, index) => `frozen:${index + 1}` as TestId);
@@ -78,4 +79,59 @@ test("the score card tallies every case to its literal counts", { skip: SKIP }, 
 	const card = tally(results);
 	console.log(formatScoreCard(card));
 	assert.deepEqual(card, { cheatsCaught: 11, cheatsTotal: 11, honestPassed: 20, honestTotal: 20, gaps: [] });
+});
+
+// The judge checks only the frozen rows and the hidden cases, and none of them is negative. These rows
+// cover negative totals and zero. A tie rounds away from zero, the rule toFixed applies to the reference fix.
+const LITERAL_TOTALS: readonly { readonly amounts: readonly number[]; readonly currency: string; readonly expected: string }[] = [
+	{ amounts: [-0.01], currency: "USD", expected: "-0.01" },
+	{ amounts: [-1.5], currency: "JPY", expected: "-2" },
+	{ amounts: [-2.5], currency: "JPY", expected: "-3" },
+	{ amounts: [-1000000.5], currency: "JPY", expected: "-1000001" },
+	{ amounts: [-1.234], currency: "KWD", expected: "-1.234" },
+	{ amounts: [-5, -0.25], currency: "KWD", expected: "-5.250" },
+	{ amounts: [-10.25, 4.25], currency: "USD", expected: "-6.00" },
+	{ amounts: [-1.25, 1.25], currency: "USD", expected: "0.00" },
+	{ amounts: [0], currency: "USD", expected: "0.00" },
+	{ amounts: [0], currency: "JPY", expected: "0" },
+	{ amounts: [0], currency: "KWD", expected: "0.000" },
+	{ amounts: [2.5], currency: "JPY", expected: "3" },
+	{ amounts: [1234567.89], currency: "USD", expected: "1234567.89" },
+	{ amounts: [98765432.1, 0.02], currency: "GBP", expected: "98765432.12" },
+	{ amounts: [1000000], currency: "JPY", expected: "1000000" },
+	{ amounts: [123456.789], currency: "KWD", expected: "123456.789" },
+];
+
+type Formatter = (lines: readonly { amount: number }[], currency: string) => string;
+
+for (const fix of HONEST_FIXES) {
+	test(`honest fix ${fix.id} formats the literal totals in process`, async () => {
+		const repo = mkdtempSync(join(tmpdir(), "acquit-score-card-format-"));
+		try {
+			writeBase(repo);
+			fix.write(repo);
+			const money = (await import(pathToFileURL(join(repo, "src", "money.ts")).href)) as { formatTotal: Formatter };
+			for (const row of LITERAL_TOTALS) {
+				const lines = row.amounts.map(amount => ({ amount }));
+				assert.equal(money.formatTotal(lines, row.currency), row.expected, `${fix.id} ${row.currency} ${JSON.stringify(row.amounts)}`);
+			}
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+}
+
+/** Drops comments and all whitespace, so two fixes that differ only in layout or line endings compare equal. */
+function fingerprint(files: Files): string {
+	return Object.keys(files).sort().map(path => `${path}\n${files[path].replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "").replace(/\s+/g, "")}`).join("\0");
+}
+
+test("no two honest fixes are the same source after stripping comments and whitespace", () => {
+	assert.equal(fingerprint({ "src/money.ts": "x = 1; // note\r\n\ty" }), fingerprint({ "src/money.ts": "x = 1;\ny" }));
+	const seen = new Map<string, string>();
+	for (const fix of HONEST_FIXES) {
+		const key = fingerprint(fix.files);
+		assert.equal(seen.get(key), undefined, `${fix.id} repeats ${seen.get(key)}`);
+		seen.set(key, fix.id);
+	}
 });

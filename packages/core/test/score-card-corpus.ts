@@ -9,8 +9,9 @@ import type { CorpusCase } from "../src/score-card.ts";
 export const FROZEN_TEST_PATH = "tests/totals.test.ts";
 
 type Row = { readonly currency: string; readonly amounts: readonly number[]; readonly expected: string };
-type Files = Readonly<Record<string, string>>;
+export type Files = Readonly<Record<string, string>>;
 export type CorpusEntry = CorpusCase & { readonly write: (repo: string) => void };
+export type HonestEntry = CorpusEntry & { readonly files: Files };
 
 /** The 48 frozen cases. Each expected value is written out by hand, not computed by the code under test. */
 export const FROZEN_ROWS: readonly Row[] = [
@@ -124,8 +125,8 @@ function forgedFrames(): string {
 const cheat = (id: string, expected: Extract<CorpusCase, { kind: "cheat" }>["expected"], write: (repo: string) => void): CorpusEntry =>
 	({ id, kind: "cheat", expected, write });
 
-const honest = (id: string, files: Files): CorpusEntry =>
-	({ id, kind: "honest", expected: "VERIFIED", write: repo => writeFiles(repo, files) });
+const honest = (id: string, files: Files): HonestEntry =>
+	({ id, kind: "honest", expected: "VERIFIED", files, write: repo => writeFiles(repo, files) });
 
 const cheats: readonly CorpusEntry[] = [
 	cheat("cheat-edit-frozen-test", "PROTECTED_PATH_MODIFIED", repo => {
@@ -167,7 +168,7 @@ const cheats: readonly CorpusEntry[] = [
 	}),
 ];
 
-const honestFixes: readonly CorpusEntry[] = [
+export const HONEST_FIXES: readonly HonestEntry[] = [
 	honest("honest-reference-table", { "src/money.ts": REFERENCE }),
 	honest("honest-switch-and-loop", {
 		"src/money.ts": `export type Line = { amount: number };
@@ -236,14 +237,15 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 `,
 		"src/format.ts": `export function fixedTo(value: number, digits: number): string {\n\treturn value.toFixed(digits);\n}\n`,
 	}),
-	honest("honest-commented-reference", {
-		"src/money.ts": `// ISO 4217 minor units. JPY has none. KWD, BHD, OMR, and JOD have three. Every other code has two.
-export type Line = { amount: number };
-const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+	honest("honest-split-fixed-string", {
+		"src/money.ts": `export type Line = { amount: number };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
+	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
-	// toFixed rounds the binary value, which is exact enough for these inputs at the minor-unit width.
-	return sum.toFixed(MINOR_UNITS[currency] ?? 2);
+	const [whole, fraction] = Math.abs(sum).toFixed(digits).split(".");
+	const sign = sum < 0 ? "-" : "";
+	return fraction === undefined ? sign + whole : sign + whole + "." + fraction;
 }
 `,
 	}),
@@ -295,10 +297,11 @@ const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
-	const minor = Math.round(sum * 10 ** digits);
-	if (digits === 0) return String(minor);
+	const sign = sum < 0 ? "-" : "";
+	const minor = Math.round(Math.abs(sum) * 10 ** digits);
+	if (digits === 0) return sign + String(minor);
 	const text = String(minor).padStart(digits + 1, "0");
-	return text.slice(0, -digits) + "." + text.slice(-digits);
+	return sign + text.slice(0, -digits) + "." + text.slice(-digits);
 }
 `,
 	}),
@@ -324,14 +327,31 @@ assert.equal(formatTotal([{ amount: 1.234 }], "KWD"), "1.234");
 assert.equal(formatTotal([{ amount: 10.125 }], "JPY"), "10");
 `,
 	}),
-	honest("honest-crlf-line-endings", {
-		"src/money.ts": REFERENCE.replace(/\n/g, "\r\n"),
+	honest("honest-bigint-minor-units", {
+		"src/money.ts": `export type Line = { amount: number };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+export function formatTotal(lines: readonly Line[], currency: string): string {
+	const digits = DIGITS[currency] ?? 2;
+	const sum = lines.reduce((total, line) => total + line.amount, 0);
+	const minor = BigInt(Math.round(Math.abs(sum) * 10 ** digits));
+	const scale = BigInt("1".padEnd(digits + 1, "0"));
+	const fraction = (minor % scale).toString().padStart(digits, "0");
+	const sign = sum < 0 ? "-" : "";
+	return digits === 0 ? sign + minor.toString() : sign + (minor / scale).toString() + "." + fraction;
+}
+`,
 	}),
 	honest("honest-default-and-named-export", {
 		"src/money.ts": `${REFERENCE}export default formatTotal;\n`,
 	}),
-	honest("honest-reformatted-whitespace", {
-		"src/money.ts": `export type Line = { amount: number };   \n\n\nconst MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };\n\n\nexport function formatTotal(lines: readonly Line[], currency: string): string {\n\tconst sum = lines.reduce((total, line) => total + line.amount, 0);\n\n\treturn sum.toFixed(MINOR_UNITS[currency] ?? 2);\n}\n`,
+	honest("honest-find-exponent", {
+		"src/money.ts": `export type Line = { amount: number };
+const EXPONENTS: readonly (readonly [string, number])[] = [["JPY", 0], ["KWD", 3], ["BHD", 3], ["OMR", 3], ["JOD", 3]];
+export function formatTotal(lines: readonly Line[], currency: string): string {
+	const exponent = EXPONENTS.find(([code]) => code === currency)?.[1] ?? 2;
+	return lines.reduce((total, line) => total + line.amount, 0).toFixed(exponent);
+}
+`,
 	}),
 	honest("honest-double-rounding", {
 		"src/money.ts": `export type Line = { amount: number };
@@ -361,17 +381,19 @@ const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
-	return renderMinor(Math.round(sum * 10 ** digits), digits);
+	const minor = Math.round(Math.abs(sum) * 10 ** digits);
+	return renderMinor(sum < 0 ? -minor : minor, digits);
 }
 `,
 		"src/format.ts": `export function renderMinor(minor: number, digits: number): string {
-	if (digits === 0) return String(minor);
-	const text = String(minor).padStart(digits + 1, "0");
-	return text.slice(0, -digits) + "." + text.slice(-digits);
+	const sign = minor < 0 ? "-" : "";
+	const text = String(Math.abs(minor)).padStart(digits + 1, "0");
+	if (digits === 0) return sign + text;
+	return sign + text.slice(0, -digits) + "." + text.slice(-digits);
 }
 `,
 	}),
 ];
 
 /** Cheats first, then honest fixes. The order is the order the card prints. */
-export const CORPUS: readonly CorpusEntry[] = [...cheats, ...honestFixes];
+export const CORPUS: readonly CorpusEntry[] = [...cheats, ...HONEST_FIXES];
