@@ -33,7 +33,8 @@ import type { CaptureEvidence, FeeQuote, RefundEvidence, ReimbursementEvidence, 
 import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
-import type { DefinitionOfDone, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
+import type { DefinitionOfDone, RunFailure, SealedHiddenCases, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
+import type { RevealedHiddenCases } from "./hidden-seal.ts";
 
 // Worst-case timeline from capture is delivery 14d, review 72h, dispute 48h, so day 19.
 // The cutoff at day 21 leaves a week to reconcile an uncertain settlement before PayPal's day 28.
@@ -1156,6 +1157,8 @@ export type ContractProjection = {
 	readonly hiddenTests: number;
 	readonly hiddenManifest: Digest;
 	readonly protectedPaths: readonly string[];
+	/** The salted digest of an AI-drafted per-job case set, frozen at approval. Absent on a fixture's curated set, so an unsealed contract keeps its existing shape. The cases and the salt are never projected here. */
+	readonly sealedHiddenCases?: SealedHiddenCases;
 };
 
 /** The projection core adds on top of JobView. The web page and the CLI read it through the API JSON. */
@@ -1164,6 +1167,8 @@ export type JobProjection = JobView & {
 	readonly vertical: Vertical;
 	/** Null when the row was stored before F3 froze a definition of done. */
 	readonly contract: ContractProjection | null;
+	/** The per-job cases and their salt, once the job closed and the caller read the private case file. projectJob never reads it, so it serves null. */
+	readonly hiddenReveal: RevealedHiddenCases | null;
 	readonly attempts: JobView["attempts"] & {
 		readonly history: readonly AttemptView[];
 		readonly pending: PendingRunView | null;
@@ -1218,7 +1223,9 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		budget: row.contract.budget, deliveryEndsAt: row.contract.deliveryEndsAt,
 		contract: done === null ? null : { repository: done.issue.repository, issue: done.issue.number, frozenAt: done.frozenAt,
 			frozenTestPath: done.frozenTestPath, frozenTests: done.frozenTests.length,
-			hiddenTests: done.hiddenTests.length, hiddenManifest: done.hiddenManifest, protectedPaths: done.protectedPaths.map(String) },
+			hiddenTests: done.hiddenTests.length, hiddenManifest: done.hiddenManifest, protectedPaths: done.protectedPaths.map(String),
+			...(done.sealedHiddenCases === undefined ? {} : { sealedHiddenCases: done.sealedHiddenCases }) },
+		hiddenReveal: null,
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
 		// The owning client is named only to its own session. Everyone else reads null.

@@ -8,7 +8,8 @@ import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, JobId, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
-import { coverageGate, hiddenCaseOf, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { CLOSED_STATUSES, perJobCaseOf, revealHiddenCases, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
 import type { TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
@@ -186,6 +187,19 @@ if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("In
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 /** The challenge a CLI stores for a code: base64url(sha256(verifier)), the verifier never leaving the CLI. */
 const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
+/** The close's reveal. A closed job with a per-job seal serves its approved cases and their salt from the private scoping file; every other job serves null. */
+function withHiddenReveal(job: JobProjection): JobProjection {
+	const sealed = job.contract?.sealedHiddenCases ?? null;
+	if (sealed === null || !CLOSED_STATUSES.includes(job.status)) return { ...job, hiddenReveal: null };
+	const name = `${job.id}.json`;
+	let file: ReturnType<typeof parseScopingFile>;
+	try { file = parseScopingFile(readFileSync(join(scopingDir, name), "utf8"), name); }
+	catch { console.log(`[reveal] ${job.id}: the private scoping file cannot be read; nothing revealed`); return { ...job, hiddenReveal: null }; }
+	if (file.salt === undefined) { console.log(`[reveal] ${job.id}: the private scoping file holds no salt; nothing revealed`); return { ...job, hiddenReveal: null }; }
+	const outcome = revealHiddenCases(job.status, sealed, file.cases.map(perJobCaseOf), file.salt);
+	if (outcome.kind === "DIGEST_MISMATCH") console.log(`[reveal] ${job.id}: the private cases do not open the sealed digest; nothing revealed`);
+	return { ...job, hiddenReveal: outcome.kind === "REVEALED" ? outcome.value : null };
+}
 /** Both sides are fixed-length base64url digests, so the comparison is constant-time. */
 function sameChallenge(left: string, right: string): boolean {
 	const a = Buffer.from(left, "utf8");
@@ -779,9 +793,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const fixture = manifest ? fixtures.find(candidate => candidate.hiddenManifest === manifest.hiddenManifest) ?? null : null;
 		const gate = coverageGate(approved, fixture?.coverageFamilies ?? []);
 		if (!gate.ok) { json(res, 422, { error: "COVERAGE_GATE", missing: gate.missing }); return; }
-		const kept = approved.map(hiddenCaseOf);
+		const kept = approved.map(perJobCaseOf);
 		const digest = hiddenManifest(kept).digest;
 		if (!manifest) { json(res, 409, { error: "NO_MANIFEST" }); return; }
+		// The seal is drawn once and travels with the same claim: the manifest names the sealed digest and
+		// the private file keeps the salt. A failed file write rolls both back with the claim.
+		const seal = sealHiddenCases(kept);
 		// The one guarded claim: the store re-reads the job under the write lock, so an approval
 		// lands only while the job is still open for bids — OPEN with phase BIDDING, since an
 		// accepted bid keeps the status OPEN but closes this window. The row moves by
@@ -789,9 +806,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// before the commit. The loser of a race is refused by name; a file write that fails rolls
 		// the whole claim back.
 		const claimed = await scopingStore.claimApproval(jobId, {
-			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest },
+			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest, sealedHiddenCases: seal.sealed },
 			ids: kept.map(test => test.id), digest, counts: scopingRow.counts,
-			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
+			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved, salt: seal.salt }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
 		}, clock.now());
 		if (claimed !== "CLAIMED") {
 			if (claimed === "JOB_NOT_OPEN") json(res, 409, { error: "JOB_NOT_OPEN",
@@ -867,7 +884,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (match && method === "GET") {
 		const jobId = validJobId(decodeURIComponent(match[1]));
 		const result = await acquit.query(current.actor, { type: "Job", jobId });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now() });
+		if (result.kind === "JOB") json(res, 200, { job: withHiddenReveal(result.job), handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
