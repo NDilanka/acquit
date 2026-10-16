@@ -36,10 +36,46 @@ Public mode is `ACQUIT_DEV` unset. A session resolves through the `principals` t
 |---|---|---|---|
 | POST | `/api/demo` | `{}` | `201 { user, visitor, token }` and the cookie. The GitHub App forks the visitor's own client repository first, then this creates its client and operator principals, its operator with one agent and the first weekly grant, and mints the client's session. `503 { error: "DEMO_NOT_CONFIGURED" }` without a demo merchant, `502 { error: "DEMO_REPOSITORY_FAILED" }` when the App refuses the fork. Without an App configured the visitor's `repository` is null and it opens jobs on the deployment's own repository, which is the only path that exists then |
 | POST | `/api/demo/switch` | `{}` | `{ user, visitor, token }`: moves this session between the visitor's own two principals. `403 { error: "NOT_DEMO_VISITOR" }` for any session that is not a visitor's |
+| POST | `/api/demo/scenarios/:name` | `{}` | `201 { scenarioId, jobId }` once the run's job exists. Starts one of the five judge scenarios (`verified-and-paid`, `hidden-test-fail`, `test-tamper`, `dispute-arbiter`, `deadline-refund`) on a visitor provisioned for this start, so one session can start all five. The steps continue on the server, so a closed tab does not stop the run. Each refusal is listed below the table |
+| GET | `/api/demo/scenarios/:id` | | `200` with the run: `{ id, name, requesterId, visitorId, jobId, steps, state, endState }`. `state` is `RUNNING`, `DONE`, or `FAILED`. `endState` is `{ jobStatus, reason }` once the run stops. Each step is `{ name, actor, startedAt, endedAt, ms, outcome, label }`, where `ms` is `endedAt - startedAt` on the server and `label` is one of `Scripted agent (Simulated)`, `Simulated time for this job`, `Real verifier run`, `PayPal sandbox`. `404 { error: "NOT_FOUND" }` for an unknown id and for another visitor's run, which is refused the same way so a run id does not confirm that someone else's run exists |
 
-`visitor` is `{ id, client, operator, repository, expiresAt }`. The repository is `acquit-forks/demo-<id>` when the App forked one: the visitor's client is the only principal that may open a job on it, and `GET /api/repos` serves it in place of the deployment's own. A visitor's job freezes it into the contract, so its work repo is named after the visitor's fork and never after the deployment's repository. Every `/api/dev/*` route and the arbiter stay refused in public mode (`403 { error: "DEV_DISABLED" }`).
+A refused start retains no run. Each refusal answers `{ error }` with one of these codes:
+
+- `404 UNKNOWN_SCENARIO` for any name outside the five.
+- `403 NOT_DEMO_VISITOR` for a session that is not a visitor's.
+- `503 SCENARIO_FIXTURE_MISSING` when the deployment's registry does not hold the fixture named by `ACQUIT_SCENARIO_FIXTURE`.
+- `503 SCENARIO_FIXTURE_MISMATCH` when that fixture is not on the repository the App forks visitors from, before any visitor is provisioned. It also answers when the fork a visitor gets opens on a different registered fixture than the scenario's, and that visitor's place is released.
+- `429 SCENARIO_RUNNING_LIMIT` when the visitor already has 5 runs `RUNNING`.
+- `503 SCENARIO_STORE_FULL` when the store holds 500 runs and none is finished to evict.
+- `429 CAP_SCENARIOS_REQUESTER_DAY` when the requester has started 10 scenarios in 24 h, and `429 CAP_SCENARIOS_DAY` when the deployment has started 100 in 24 h. Both answer before anything is forked. A refused open answers `429` too, with the core's `CAP_*` code.
+- `503 DEMO_NOT_CONFIGURED` without `OPERATOR_DEVON_MERCHANT_ID`.
+- `502 DEMO_REPOSITORY_FAILED` when the App refuses the visitor's fork.
+- `502 SCENARIO_OPEN_FAILED` when the job did not open.
+- `409` with the core's denial reason for any other refused open.
+
+A start that fails after its visitor is provisioned keeps that visitor until the sweep removes it. It still counts against both scenario caps, and it retains no run. A start refused before its visitor is provisioned reserves nothing.
+
+A run is `DONE` only when it ends at its scenario's expected end state, shown here. Any other end is `FAILED`, and `endState` keeps the end the run reached.
+
+| Scenario | `jobStatus` | `reason` |
+|---|---|---|
+| `verified-and-paid` | `PAID` | `CLIENT_APPROVAL` |
+| `hidden-test-fail` | `IN_PROGRESS` | `TESTS_FAILED:hidden` |
+| `test-tamper` | `IN_PROGRESS` | `PROTECTED_PATH_MODIFIED` |
+| `dispute-arbiter` | `PAID` | `ARBITER_UPHELD` |
+| `deadline-refund` | `REFUNDED` | `DELIVERY_DEADLINE` |
+
+The scenario runs' snapshots are kept in the database (`scenario_runs`), written at every progress, so a finished run is still readable after a restart. A snapshot is for display only. Each committed run also has a cleanup journal row (`scenario_cleanup`), which records the run's job and its finish time and is never evicted with the snapshot. A run that was `RUNNING` when the store opens is marked `FAILED` with `failure: "RESTARTED"`. Its recorded steps stay as they were, its scripted steps are never resumed, and the job it opened stays in the core. The store keeps at most 10 runs per visitor and 500 in all, and a visitor may have at most 5 runs `RUNNING` at once. A full visitor or a full store evicts its oldest finished snapshot, and a `RUNNING` run is never evicted. An evicted run's repositories are still removed by the cleanup below. The limits are the constants `SCENARIO_RUNS_PER_REQUESTER`, `SCENARIO_RUNNING_PER_REQUESTER`, and `SCENARIO_RUNS_TOTAL` in `packages/core/src/scenarios.ts`. Only the visitor that started a run can read it.
+
+Every run opens on one fixture. `ACQUIT_SCENARIO_FIXTURE` names it by its registry key, `<owner>/<repo>#<issue>`, and defaults to `maya-client/invoice-app#12`. The scripted trees are written for that fixture's frozen suite, so a deployment whose registry lacks the fixture answers `503 SCENARIO_FIXTURE_MISSING`. A scripted tree writes only the files its corpus entry names. The honest and hardcoded trees write `src/money.ts`. The `test-tamper` tree writes the frozen suite, where that overwrite is the point. The fixture's other files stay as the fixture froze them. Before the write, the workspace checks that the job's frozen suite imports the formatter the trees write, and that the cases the verifier's own extractor reads from it match the score card's visible rows by content, in order. Test names are not part of that check. A checkout that fails the check fails the run's push with `SCENARIO_FIXTURE_INCOMPATIBLE`, and the run reads `FAILED`. A visitor's fork is made from `ACQUIT_CLIENT_REPOSITORY`, and the core resolves a fork to the one registered fixture whose demo fork prefix and issue name it. A fork that two fixtures both name matches neither.
+
+Each run's job takes card funding, as the dev card mode does, so its accept step reaches `HELD` without a buyer checkout. That step is labeled `PayPal sandbox`. The scripted agent's tree is the score card's own corpus entry, committed to the job's work repo through the House's git port. The `dispute-arbiter` path runs a scenario-only arbiter verdict (`UPHOLD`) through the core's `ResolveDispute` edge, with `ACQUIT_DEV` unset. The verdict is refused with `SCENARIO_ARBITER_NOT_OWNED` unless the run is `RUNNING`, named `dispute-arbiter`, and its own committed `OpenJob` receipt names that job. A run record the store did not commit is refused by name as well. No HTTP route reaches it. A failed step records only a closed code (`FAILED <CODE>`, or `STEP_FAILED` for an error without one), never the provider's message, so a credential in that message is not stored or returned.
+
+`visitor` is `{ id, client, operator, repository, expiresAt }`. The repository is `acquit-forks/demo-<id>` when the App forked one: the visitor's client is the only principal that may open a job on it, and `GET /api/repos` serves it in place of the deployment's own. A visitor's job freezes it into the contract, so its work repo is named after the visitor's fork and never after the deployment's repository. Every `/api/dev/*` route stays refused in public mode (`403 { error: "DEV_DISABLED" }`).
 
 A visitor lives 24 hours. `npm run -s ctl -- sweep` removes each expired visitor's own repository through the App and then its rows; a repository the deployment cannot remove (or a missing App) keeps the visitor, so the next run retries exactly that work, and a repository that is already gone is not a failure. The sweep is safe to run as often as wanted.
+
+The judge scenarios have their own cleanup, which the same `sweep` command runs and the API runs every 10 minutes on its own timer. A scenario visitor's fork goes once every run it started has been finished for 2 hours (`SCENARIO_SWEEP_TTL_MS` in `packages/core/src/sweep.ts`), and so does a fork that never started a run. A finished run's work repo goes once the run is 2 hours past its finish. A `RUNNING` run's repositories are never touched. The expiry sweep leaves a scenario visitor to this pass, even after a clock jump. A work repo's record is written when GitHub answers for the fork, before any ref write, and a record that lands after a pass reopens that job's cleanup. A creation still pending keeps its job until it settles. Each removal goes through the same ownership check as the visitor sweep, and a repository is removed only by the GitHub id the core recorded for it. A repository with no recorded id is kept with `GITHUB_FORK_UNRECORDED`, so a crash between a fork and its record leaves that fork for a person to remove.
 
 Two job actions are scoped to the caller's own visitor. Both read the stored job first: an unknown id is `404 { error: "NOT_FOUND" }`, and a job whose `client` is not the calling visitor's client handle is `403 { error: "NOT_VISITOR_JOB" }`.
 
@@ -58,14 +94,16 @@ There is no per-address cap. Judges often share one network (a judging room, an 
 
 | Code | Limit | Counts | Where it binds |
 |---|---|---|---|
-| `CAP_VISITORS_DAY` | 50 | visitors created in 24 h | `POST /api/demo` |
+| `CAP_VISITORS_DAY` | 50 | visitors created in 24 h, not counting scenario runs' visitors | `POST /api/demo` |
 | `CAP_VISITOR_JOBS` | 3 | one visitor's jobs | `OpenJob` |
 | `CAP_AMOUNT` | 100000 cents | one job's budget | `OpenJob` |
 | `CAP_SPEND_DAY` | 200000 cents | one visitor's job budgets in 24 h | `OpenJob` |
 | `CAP_MODEL_RUNS` | 10 | one visitor's verifier runs in 24 h | `Submit` |
 | `CAP_MODEL_RUNS_DAY` | 1000 | verifier runs in 24 h (the free tier's day) | `Submit` |
+| `CAP_SCENARIOS_DAY` | 100 | scenario starts in 24 h, deployment-wide | each scenario start |
+| `CAP_SCENARIOS_REQUESTER_DAY` | 10 | one requester's scenario starts in 24 h | each scenario start |
 
-`POST /api/demo` answers `429 { error }` with the code, and it checks the caps before it forks, so a refused visitor leaves no repository behind. A capped command is a `409` with the same `{ outcome: { kind: "DENIED", reason } }` shape every refusal has. The visitor caps bind a visitor's own client only: dev mode's seeded client is the operator's own, and the day-wide run cap binds the whole deployment because the free tier belongs to the key. Attempts per job stay `TERMS.maxAttempts`, which the table already enforced.
+`POST /api/demo` answers `429 { error }` with the code, and it checks the caps before it forks, so a refused visitor leaves no repository behind. A scenario start checks the two scenario caps before its run visitor forks, and it counts against those caps, never against `CAP_VISITORS_DAY`. A capped command is a `409` with the same `{ outcome: { kind: "DENIED", reason } }` shape every refusal has. The visitor caps bind a visitor's own client only: dev mode's seeded client is the operator's own, and the day-wide run cap binds the whole deployment because the free tier belongs to the key. Attempts per job stay `TERMS.maxAttempts`, which the table already enforced.
 
 ### The shared model budget
 
@@ -113,8 +151,11 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 | GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
+| GET | `/api/me/escrow` | `{ escrow: [{ jobId, cents }] }`: one row per hold the operator's release will pay, at the operator's net (the price less the 10% operator fee, the amount the release pays). A job whose refund is in flight is left out (operators only) |
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.
+
+Two fields carry a job's commit-then-reveal for its AI-drafted per-job hidden cases. A job whose approved draft froze under a seal serves `job.contract.sealedHiddenCases: { digest }` from freeze on. The digest is sha256 over the salt, a newline, and the canonical JSON of the cases, with object keys in UTF-16 code-unit order. A job that runs a fixture's curated cases alone has no `sealedHiddenCases` key. `job.hiddenReveal` is `null` until the job closes (`PAID`, `REFUNDED`, or `CLOSED`). After close it is `{ cases, salt, digest }` on a sealed job: `cases` are the approved per-job cases (`id`, `target`, `args`, `expected`, with the citation left out), `salt` is the 64-hex salt, and `digest` equals `job.contract.sealedHiddenCases.digest`. Recomputing that digest from `cases` and `salt` must give the same value. A fixture's curated cases never appear in `hiddenReveal`. The same reveal serves on `GET /api/jobs/:id`, on each `GET /api/jobs` entry, and on each operator receipt from `GET /api/me/receipts`. Core resolves it once for all three. Before close, no route serves the cases or the salt. A sealed job whose private file is unreadable, holds no salt, or does not recompute to its digest serves `hiddenReveal: null` and logs a fixed `[reveal]` line that names the job.
 
 ## Work repo credentials (operator run and submit)
 

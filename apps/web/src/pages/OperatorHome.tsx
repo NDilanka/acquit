@@ -1,34 +1,42 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ColDef, GetRowIdFunc } from "ag-grid-community";
-import type { CreditAccountView, JobView, OperatorView, ReceiptRow } from "../api-types";
+import type { CreditAccountView, OperatorView } from "../api-types";
 import { api, ApiError } from "../api";
-import { creditLine, usd, utc } from "../format";
-import { AcquitGrid } from "../grid";
-import { bidStatusWord } from "../job-status";
-import { Link } from "../router";
+import type { PlacedBid } from "../bid-confirmation";
+import { creditLine } from "../format";
+import { buildOperatorWorkspace, homeCrumbs, type OperatorWorkspace } from "../operator-workspace";
 import { useSession } from "../session";
-import { IdChip, NotFound, StatusPill } from "../ui";
-import { BidForm } from "./BidForm";
+import { NotFound } from "../ui";
+import { BidConfirmation } from "./operator/BidConfirmation";
+import { Earnings } from "./operator/Earnings";
+import { MyWork } from "./operator/MyWork";
+import { OpenJobs } from "./operator/OpenJobs";
 
 export function OperatorHome() {
   const { user } = useSession();
-  const [jobs, setJobs] = useState<JobView[] | null>(null);
+  const [workspace, setWorkspace] = useState<OperatorWorkspace | null>(null);
   const [credits, setCredits] = useState<CreditAccountView | null>(null);
   const [operator, setOperator] = useState<OperatorView | null>(null);
-  const [receipts, setReceipts] = useState<ReceiptRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bidding, setBidding] = useState<string | null>(null);
+  const [placed, setPlaced] = useState<PlacedBid | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [j, c, o, r] = await Promise.all([api.jobs("OPEN"), api.credits(), api.operator(), api.receipts()]);
-      setJobs(j.jobs);
-      setCredits(c.credits);
+      const [j, c, o, r, e] = await Promise.all([api.jobs(), api.credits(), api.operator(), api.receipts(), api.escrow()]);
       setOperator(o.operator);
-      setReceipts(r.receipts);
+      setCredits(c.credits);
+      setWorkspace(
+        buildOperatorWorkspace({
+          operatorId: o.operator.id,
+          handle: o.operator.handle,
+          jobs: j.jobs,
+          receipts: r.receipts,
+          escrow: e.escrow,
+        }),
+      );
       setError(null);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
     }
   }, []);
 
@@ -40,12 +48,22 @@ export function OperatorHome() {
     return <NotFound title="This page is for operators" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}).`} action={{ to: "/", label: "Back to your jobs" }} />;
   }
 
+  const onPlaced = (bid: PlacedBid) => {
+    setPlaced(bid);
+    setBidding(null);
+    setCredits((prev) => (prev ? { ...prev, available: bid.creditsLeft } : prev));
+    void load();
+  };
+
   return (
     <>
+      <div className="crumbs">
+        <b>{homeCrumbs(user.role).join(" / ")}</b>
+      </div>
       <div className="head">
         <div>
           <div className="eyebrow">Operator</div>
-          <h1>Open jobs</h1>
+          <h1>Your workspace</h1>
         </div>
         {credits && (
           <div className="card pad credits">
@@ -65,90 +83,31 @@ export function OperatorHome() {
         </div>
       )}
       {error && <div className="alert">{error}</div>}
-      {!jobs && !error && <p className="muted">Loading open jobs…</p>}
-      {jobs && jobs.length === 0 && <div className="card pad muted">No open jobs right now.</div>}
-      {jobs?.map((j) => {
-        const mine = j.bids.operators.find((b) => b.handle === user.handle);
-        return (
-          <div key={j.id} className="card jobcard">
-            <div className="pad jobline">
-              <div>
-                <Link to={`/jobs/${j.id}`}>
-                  <b>{j.title}</b>
-                </Link>{" "}
-                <IdChip value={j.id} />
-                <div className="meta">
-                  <span>Mode <b>Bid</b></span>
-                  <span>Budget <b className="num">{usd(j.budget)}</b></span>
-                  <span>Deadline <b className="num">{utc(j.deliveryEndsAt)}</b></span>
-                </div>
-              </div>
-              <div className="act">
-                <StatusPill job={j} />
-                {mine ? (
-                  <span className="pill ok">Bid {usd(mine.price)} · {bidStatusWord(mine.status)}</span>
-                ) : j.phase === "BIDDING" ? (
-                  <button className="btn sm" onClick={() => setBidding(bidding === j.id ? null : j.id)}>
-                    {bidding === j.id ? "Close" : "Bid"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-            {bidding === j.id && !mine && (
-              <div className="pad bidpane">
-                <BidForm
-                  job={j}
-                  onPlaced={() => {
-                    void api.credits().then((c) => setCredits(c.credits)).catch(() => undefined);
-                  }}
-                />
-              </div>
-            )}
-          </div>
-        );
-      })}
-      {receipts && <Receipts receipts={receipts} />}
+      {placed && <BidConfirmation placed={placed} onDismiss={() => setPlaced(null)} />}
+
+      <section className="ws" aria-labelledby="ws-open">
+        <h2 id="ws-open">Open jobs to bid on</h2>
+        {!workspace && !error && <p className="muted">Loading your workspace…</p>}
+        {workspace && (
+          <OpenJobs
+            jobs={workspace.open}
+            handle={operator?.handle ?? ""}
+            bidding={bidding}
+            onToggle={(id) => setBidding(bidding === id ? null : id)}
+            onPlaced={onPlaced}
+          />
+        )}
+      </section>
+
+      <section className="ws" aria-labelledby="ws-mine">
+        <h2 id="ws-mine">My work</h2>
+        {workspace && <MyWork mine={workspace.mine} />}
+      </section>
+
+      <section className="ws" aria-labelledby="ws-earn">
+        <h2 id="ws-earn">Earnings</h2>
+        {workspace && <Earnings earnings={workspace.earnings} />}
+      </section>
     </>
-  );
-}
-
-function verifiedLine(row: ReceiptRow): string {
-  if (row.jobId === null) return row.passedVerifiedCi ? "Passed verified CI" : "Not verified";
-  return `${row.frozen.passed}/${row.frozen.expected} frozen, ${row.hidden.passed}/${row.hidden.expected} hidden`;
-}
-
-const chipCell = (p: { value?: string | null }) => (p.value ? <IdChip value={p.value} /> : "—");
-
-const receiptColumns: ColDef<ReceiptRow>[] = [
-  { headerName: "Receipt", field: "id", flex: 1.4, minWidth: 72, cellRenderer: chipCell },
-  { headerName: "Job", colId: "job", minWidth: 62, valueGetter: (p) => p.data?.jobId ?? null, cellRenderer: chipCell },
-  {
-    headerName: "Amount",
-    colId: "amount",
-    minWidth: 72,
-    cellClass: "num strong",
-    valueGetter: (p) => (p.data && p.data.paid !== null ? usd(p.data.paid) : "—"),
-  },
-  { headerName: "Verified", colId: "verified", flex: 1.4, minWidth: 72, valueGetter: (p) => (p.data ? verifiedLine(p.data) : "") },
-  {
-    headerName: "Source",
-    field: "source",
-    minWidth: 70,
-    flex: 0.8,
-    cellRenderer: (p: { value?: ReceiptRow["source"] }) => (p.value === "SEED" ? <span className="pill new">Seeded</span> : null),
-  },
-];
-
-const receiptRowId: GetRowIdFunc<ReceiptRow> = (p) => p.data.id;
-
-function Receipts({ receipts }: { receipts: ReceiptRow[] }) {
-  return (
-    <section className="card receipts">
-      <div className="pad hd">
-        <h2>Receipts</h2>
-        <small className="muted">Each settled job leaves a receipt. Seeded rows are the deployment's starting history.</small>
-      </div>
-      <AcquitGrid rows={receipts} columns={receiptColumns} rowId={receiptRowId} empty="No receipts yet." />
-    </section>
   );
 }

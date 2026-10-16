@@ -4,9 +4,11 @@ import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
+import type { GitHubAppPort } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
+import type { PrivateCaseReader } from "./hidden-seal.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { JobFundingMode } from "./funding.ts";
@@ -14,7 +16,7 @@ import { SEEDED_USERS } from "./seed-data.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
-import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
+import type { PayPal, PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { platformJobLedger } from "./platform.ts";
 import type { PlatformLedgerView } from "./platform.ts";
 import { SqliteStore } from "./store.ts";
@@ -196,11 +198,18 @@ export type AcquitConfig = {
 	readonly github: { readonly appId: string; readonly privateKey: string; readonly organization: string; readonly apiBase?: string };
 	/** The deployment injects the CI adapter. Without one, a start refuses by name and no callback is accepted. */
 	readonly verifierPort?: VerifierPort;
+	/**
+	 * Injected in place of the live PayPal and GitHub clients. A test drives a whole job through them
+	 * without a network; a deployment leaves this unset and gets the live clients built from its config.
+	 */
+	readonly adapters?: { readonly paypal?: PayPal; readonly github?: GitHubAppPort };
 	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
 	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	/** The AI-scoping kickoff, run when OpenJob commits a fixture that carries a trusted fix. The
 	 * deployment owns the model, the phases, and the private store; the open never fails with it. */
 	readonly scopeDraft?: Ports["scopeDraft"];
+	/** Reads a job's private approved cases when a sealed job closes, for the reveal. Without it no sealed job reveals. */
+	readonly privateCases?: PrivateCaseReader;
 	/**
 	 * Judge mode. The merchant is the sandbox seller a visitor's operator is paid through; without it
 	 * the demo route refuses by name, because a visitor that cannot be paid cannot bid.
@@ -211,8 +220,8 @@ export type AcquitConfig = {
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
 	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
-	const github = createGitHubApp(config.github);
-	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
+	const github = config.adapters?.github ?? createGitHubApp(config.github);
+	const ports: Ports = { store, paypal: config.adapters?.paypal ?? createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		fixtures: config.fixtures,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
 		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,
@@ -222,6 +231,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
 		workRepo: github,
 		scopeDraft: config.scopeDraft,
+		privateCases: config.privateCases,
 		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
@@ -242,13 +252,13 @@ export function createAcquit(config: AcquitConfig): Acquit {
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
 					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
-					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources) } : { kind: "DENIED", reason: "NOT_OWNER" };
+					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources, ports.privateCases) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}
 				case "OpenJobs": {
 					const jobs = (await store.listJobs()).filter(row => sameWorld(row) && (row.state.status === "OPEN" ||
 						actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId)));
-					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows, sources)), nextCursor: null };
+					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows, sources, ports.privateCases)), nextCursor: null };
 				}
 				case "Operator": {
 					if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
@@ -317,14 +327,15 @@ export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: Vi
  * name, so the sweep still takes it. The route owns the session; this owns the rows.
  */
 export async function provisionDemoVisitor(service: Acquit, input: { readonly id: VisitorId; readonly ipKey: string;
-	readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
+	/** A scenario run's visitor: the requester that started it, whose scenario caps the reservation counts under. */
+	readonly scenarioOf?: string; readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
 	// Without an App there is no fork and no repository; the route answers NO_APP and the bind clears it.
 	const repository = runtime.organization ? `${runtime.organization}/${visitorRepositoryName(input.id)}` : null;
 	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey, repository,
-		merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
+		merchant: runtime.demo.merchant, now: runtime.ports.clock.now(), ...(input.scenarioOf === undefined ? {} : { scenarioOf: input.scenarioOf }) });
 	if (reserved.kind === "CAPPED") return { kind: "CAPPED", reason: reserved.reason };
 	let forked: VisitorFork | null = null;
 	try {

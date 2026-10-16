@@ -16,8 +16,8 @@ export function capWindowStart(now: Instant): Instant {
 	return instant(new Date(Date.parse(now) - CAP_WINDOW_MS).toISOString());
 }
 
-/** The three acts a cap pays for. A reservation names one, with the scope it is counted in. */
-export type CapKind = "VISITOR" | "JOB" | "RUN";
+/** The acts a cap pays for. A reservation names one, with the scope it is counted in. */
+export type CapKind = "VISITOR" | "JOB" | "RUN" | "SCENARIO";
 
 /**
  * One act's spend, written in the transaction that commits the act. Append-only: nothing releases a
@@ -44,6 +44,10 @@ export type CapUsage = {
 	readonly budget: UsdCents;
 	readonly runs: number;
 	readonly runsToday: number;
+	/** The scope's own scenario starts in the window. */
+	readonly scenarios: number;
+	/** Every scenario start in the window, deployment-wide. */
+	readonly scenariosToday: number;
 };
 
 /** One row per closed refusal code: the limit, the kind that spends it, the counter it reads, and how. */
@@ -54,6 +58,8 @@ export const CAPS = {
 	SPEND_DAY: { limit: 200_000, kind: "JOB", counter: "budget", mode: "sum", scope: "one visitor's promised budget in 24 h, in cents" },
 	MODEL_RUNS: { limit: 10, kind: "RUN", counter: "runs", mode: "count", scope: "one visitor's verifier runs in 24 h" },
 	MODEL_RUNS_DAY: { limit: 1_000, kind: "RUN", counter: "runsToday", mode: "count", scope: "verifier runs in 24 h, the free tier's day" },
+	SCENARIOS_DAY: { limit: 100, kind: "SCENARIO", counter: "scenariosToday", mode: "count", scope: "scenario starts in 24 h, deployment-wide" },
+	SCENARIOS_REQUESTER_DAY: { limit: 10, kind: "SCENARIO", counter: "scenarios", mode: "count", scope: "one requester's scenario starts in 24 h" },
 } as const satisfies Record<string, { readonly limit: number; readonly kind: CapKind;
 	readonly counter: keyof CapUsage | null; readonly mode: "count" | "sum" | "value"; readonly scope: string }>;
 
@@ -80,6 +86,8 @@ export function capUsage(db: DatabaseSync, input: { readonly scope: string; read
 		budget: sum("kind = 'JOB' AND scope = ? AND at_wall > ?", input.scope, input.since) as UsdCents,
 		runs: count("kind = 'RUN' AND scope = ? AND at_wall > ?", input.scope, input.since),
 		runsToday: count("kind = 'RUN' AND at_wall > ?", input.since),
+		scenarios: count("kind = 'SCENARIO' AND scope = ? AND at_wall > ?", input.scope, input.since),
+		scenariosToday: count("kind = 'SCENARIO' AND at_wall > ?", input.since),
 	};
 }
 

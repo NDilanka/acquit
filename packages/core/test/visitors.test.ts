@@ -91,7 +91,7 @@ test("a fork that fails leaves the visitor FAILED, kept for the sweep, and no se
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 
-test("a crash between the fork and the bind leaves the visitor's repository named for the sweep", async () => {
+test("a crash between the fork and the bind names the repository, and the sweep keeps it rather than delete it without an id", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-provision-"));
 	const path = join(root, "acquit.db");
 	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant }, clock: { now: () => now },
@@ -115,8 +115,9 @@ test("a crash between the fork and the bind leaves the visitor's repository name
 		assert.equal(namedBeforeFork, repository, "the row names the repository before the App is asked");
 		assert.equal(readVisitor(store.db, id)?.repository, repository);
 		assert.equal(readVisitor(store.db, id)?.repositoryId, null);
-		// The sweep still attempts the delete against that name. The App's id gate is the delete gate:
-		// this row recorded no id, so only the live repository's own provenance decides.
+		// The sweep attempts the removal by name, with no id. The App refuses it, because a same-source fork that
+		// took the name could not be told apart from this one. Nothing is deleted, so the repository stays until
+		// someone with the App removes it by hand: the sweep never guesses. This is the cost of the strict rule.
 		const requests: { readonly repository: string; readonly id: number | null }[] = [];
 		const recorded = { deleteClientRepo: async (request: { readonly repository: string; readonly source: string; readonly id: number | null }) => {
 			requests.push({ repository: request.repository, id: request.id });
@@ -125,7 +126,7 @@ test("a crash between the fork and the bind leaves the visitor's repository name
 		const later = instant(new Date(Date.parse(now) + 2 * 86_400_000).toISOString());
 		const report = await sweepExpiredVisitors({ db: store.db, app: recorded, source: "maya-client/invoice-app", now: later });
 		assert.deepEqual(requests, [{ repository, id: null }]);
-		assert.deepEqual(report, { swept: [id], repositories: [{ repository, outcome: "DELETED" }], kept: [] });
-		assert.equal(app.clientRepos.has(visitorRepositoryName(id)), false);
+		assert.deepEqual(report, { swept: [], repositories: [], kept: [{ id, repository, reason: "GITHUB_FORK_UNRECORDED" }] });
+		assert.equal(app.clientRepos.has(visitorRepositoryName(id)), true);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });

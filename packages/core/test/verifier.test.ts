@@ -354,15 +354,17 @@ test("the fake work repo is idempotent per job and keeps ten lanes off one repos
 	const app = createFakeGitHubApp();
 	const request = { jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit };
 	const created = await app.createWorkRepo(request, "req-1");
-	assert.deepEqual(created, { repository: "acquit-forks/invoice-app-7Q2K", remote: "https://github.com/acquit-forks/invoice-app-7Q2K.git", branch: "main", commit });
-	assert.deepEqual(await app.createWorkRepo(request, "req-2"), created);
+	assert.deepEqual(created, { repository: "acquit-forks/invoice-app-7Q2K", remote: "https://github.com/acquit-forks/invoice-app-7Q2K.git", branch: "main", commit, id: 2000 });
+	// A retry adopts only the fork the job recorded, so it carries the id. Without one, the fork is refused, never adopted.
+	await assert.rejects(app.createWorkRepo(request, "req-2"), (error: unknown) => (error as { code?: string }).code === "GITHUB_FORK_UNRECORDED");
+	assert.deepEqual(await app.createWorkRepo({ ...request, recorded: { repository: created.repository, id: created.id } }, "req-2"), created);
 	const other = await app.createWorkRepo({ ...request, jobId: "job_8Z3P" as JobId }, "req-3");
 	assert.equal(other.repository, "acquit-forks/invoice-app-8Z3P");
 	const published = await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-4");
 	assert.deepEqual(published, { repository: "maya-client/invoice-app", pullRequest: 13, mergeCommit: commit,
 		checkRunUrl: "https://github.com/maya-client/invoice-app/runs/job_7Q2K" });
 	assert.equal((await app.publishVerified({ jobId: request.jobId, repository: "maya-client/invoice-app", sourceCommit: commit, checkName: "Acquit verifier" }, "req-5")).pullRequest, 13);
-	assert.deepEqual(app.calls.map(call => call.kind), ["CREATE_WORK_REPO", "CREATE_WORK_REPO", "CREATE_WORK_REPO", "PUBLISH_VERIFIED", "PUBLISH_VERIFIED"]);
+	assert.deepEqual(app.calls.map(call => call.kind), ["CREATE_WORK_REPO", "CREATE_WORK_REPO", "CREATE_WORK_REPO", "CREATE_WORK_REPO", "PUBLISH_VERIFIED", "PUBLISH_VERIFIED"]);
 	assert.equal(verifiedBranch(request.jobId), "acquit/job_7Q2K");
 });
 

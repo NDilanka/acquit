@@ -38,7 +38,12 @@ export type DefinitionOfDone = {
 	readonly hiddenManifest: Digest;
 	readonly hiddenTests: readonly TestId[];
 	readonly protectedPaths: readonly Glob[];
+	/** Set only by an approved AI-drafted case set. A fixture's curated set never carries one. */
+	readonly sealedHiddenCases?: SealedHiddenCases;
 };
+
+/** The salted digest of an approved per-job case set. The salt stays in the job's private scoping file until the job closes. */
+export type SealedHiddenCases = { readonly digest: Digest };
 
 export type VerifierRunRequest = {
 	readonly runId: VerifierRunId;
