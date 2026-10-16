@@ -47,7 +47,7 @@ export const registry: Command[] = [
 		examples: ["ledger --job job_7Q2K", "ledger --all --check"], destructive: false, run: ledger },
 	{ name: "jobs", summary: "List every stored job in the lane database.", usage: "jobs",
 		flags: [], examples: ["jobs"], destructive: false, run: jobList },
-	{ name: "sweep", summary: "Delete expired visitors' own repositories and their rows.", usage: "sweep [--dry-run]",
+	{ name: "sweep", summary: "Delete expired visitors' own repositories and their rows, and the judge scenarios' repositories past their TTL.", usage: "sweep [--dry-run]",
 		flags: [], examples: ["sweep --dry-run", "sweep"], destructive: true, run: sweep },
 	{ name: "login", summary: "Create a local development session for a seeded handle.", usage: "login --test-user <handle> [--save]",
 		flags: [{ name: "test-user", type: "string", summary: "Development handle from GET /api/users.", required: true },

@@ -1,7 +1,7 @@
 // The scenario routes' server side, driven with the core's in-process harness: the scripted verifier, the
 // fake PayPal, and the fake GitHub app. POST starts a run on a visitor of its own and GET polls it, and the
-// visibility, dev gating, fixture, admission, and workspace rules are the route's own. No network, no child
-// process, no GitHub or PayPal call.
+// visibility, fixture, admission, cap, and workspace rules are the route's own. No network, no child process,
+// no GitHub or PayPal call.
 
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
@@ -28,15 +28,15 @@ const OTHER_FROZEN_AT = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as CommitSha;
 
 function routingOf(h: Harness, overrides: Partial<ScenarioComposition> = {}): ScenarioRouting {
 	return scenarioRoutingFor({ acquit: h.acquit, store: h.deps.store, workspace: h.deps.workspace, runs: h.deps.runs, now: h.deps.now,
-		devEnabled: h.deps.devEnabled, fixture: FIXTURE, fixtures: [demoFixture()], forkSource: DEMO_REPOSITORY, provision: h.provision,
+		fixture: FIXTURE, fixtures: [demoFixture()], forkSource: DEMO_REPOSITORY, provision: h.provision,
 		...overrides });
 }
 
 /** Provisions a run visitor whose fork the App made under the demo fork prefix, so its job opens on that fork. */
 function forkingProvision(h: Harness): (requester: VisitorRow) => Promise<DemoVisitorResult> {
-	return async () => {
+	return async requester => {
 		const id = newVisitorId();
-		return provisionDemoVisitor(h.acquit, { id, ipKey: "scenario-fork-test",
+		return provisionDemoVisitor(h.acquit, { id, ipKey: "scenario-fork-test", scenarioOf: requester.id,
 			fork: async () => ({ kind: "FORKED", repository: `acquit-forks/${visitorRepositoryName(id)}`, id: null }) });
 	};
 }
@@ -116,13 +116,16 @@ test("another visitor's run is refused as NOT_FOUND, the same answer an unknown 
 	} finally { await h.dispose(); }
 });
 
-test("dispute-arbiter is refused as DEV_DISABLED when development is off, and retains no run", async () => {
+test("dispute-arbiter starts with development off, and its verdict is the scenario's own, not a dev route", async () => {
 	const h = await harness();
 	try {
-		const routing = routingOf(h, { devEnabled: false });
-		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "dispute-arbiter"),
-			{ status: 403, body: { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." } });
-		assert.equal(h.deps.runs.size(), 0);
+		const routing = routingOf(h);
+		const posted = await scenarioReply(routing, h.visitor, "POST", "dispute-arbiter");
+		assert.equal(posted.status, 201);
+		const run = await settle(routing, h.visitor, (posted.body as { scenarioId: string }).scenarioId);
+		assert.equal(run.state, "DONE");
+		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "ARBITER_UPHELD" });
+		assert.equal(run.steps.find(step => step.name === "arbiter-verdict")?.label, "Scripted agent (Simulated)");
 	} finally { await h.dispose(); }
 });
 
@@ -203,13 +206,27 @@ test("a start the core refuses retains no run, and answers the core's own denial
 	} finally { await h.dispose(); }
 });
 
-test("a start refused by the visitor-day cap retains no run and answers the cap's own code", async () => {
+test("a start refused by the scenario cap retains no run and answers the cap's own code", async () => {
 	const h = await harness();
 	try {
-		const routing = routingOf(h, { provision: async () => ({ kind: "CAPPED", reason: "CAP_VISITORS_DAY" }) });
-		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "verified-and-paid"), { status: 429, body: { error: "CAP_VISITORS_DAY" } });
+		const routing = routingOf(h, { provision: async () => ({ kind: "CAPPED", reason: "CAP_SCENARIOS_DAY" }) });
+		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "verified-and-paid"), { status: 429, body: { error: "CAP_SCENARIOS_DAY" } });
 		assert.equal(h.deps.runs.size(), 0);
 		assert.equal(h.deps.runs.admit(h.visitor.id).kind, "ADMITTED");
+	} finally { await h.dispose(); }
+});
+
+test("a full visitor day refuses no scenario start: the start is admitted and the run completes", async () => {
+	const h = await harness();
+	try {
+		// Fill the deployment's visitor day with 50 visitor reservations, the way the rows the day counts are written.
+		for (let index = 0; index < 50; index++) h.deps.store.db.prepare("INSERT INTO cap_reservations VALUES ('VISITOR', ?, ?, 0, ?)")
+			.run(`ip-${index}`, `v_full_${index}`, "2026-10-06T11:00:00.000Z");
+		const routing = routingOf(h);
+		const posted = await scenarioReply(routing, h.visitor, "POST", "verified-and-paid");
+		assert.equal(posted.status, 201);
+		const run = await settle(routing, h.visitor, (posted.body as { scenarioId: string }).scenarioId);
+		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
 	} finally { await h.dispose(); }
 });
 
@@ -225,9 +242,9 @@ test("a sixth start while five of a requester's runs are in flight is refused be
 });
 
 test("the public wiring reaches HELD through card funding with the fake PayPal, and completes S1 with development off", async () => {
-	const h = await harness({ devEnabled: false, publicFunding: true, waitMs: 5_000 });
+	const h = await harness({ publicFunding: true, waitMs: 5_000 });
 	try {
-		const routing = routingOf(h, { devEnabled: false });
+		const routing = routingOf(h);
 		const posted = await scenarioReply(routing, h.visitor, "POST", "verified-and-paid");
 		assert.equal(posted.status, 201);
 		const { scenarioId, jobId } = posted.body as { scenarioId: string; jobId: string };

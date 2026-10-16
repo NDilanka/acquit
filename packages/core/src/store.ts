@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, ReceiptRowCounts, RecordedRequest } from "./effects.ts";
+import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, ReceiptRowCounts, RecordedRequest, WorkRepoRecord } from "./effects.ts";
 import type { Agent } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
@@ -70,6 +70,13 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		-- here because filter 4 checks every drafted citation against the body it was justified from.
 		CREATE TABLE IF NOT EXISTS job_scoping (job_id TEXT PRIMARY KEY, status TEXT NOT NULL, issue_body TEXT,
 			ids TEXT NOT NULL, digest TEXT, reason TEXT, counts TEXT, updated_at TEXT NOT NULL);
+		-- The judge scenarios' run snapshots, bounded by the run store and written at each progress. A row that
+		-- is RUNNING when the store opens is marked FAILED, RESTARTED. finished_at starts the sweep's TTL.
+		CREATE TABLE IF NOT EXISTS scenario_runs (id TEXT PRIMARY KEY, requester_id TEXT NOT NULL, visitor_id TEXT NOT NULL,
+			job_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, snapshot TEXT NOT NULL, finished_at TEXT, swept_at TEXT);
+		-- The work repository a job's CREATE_WORK_REPO effect made: its full name, GitHub's own id for it, and the
+		-- fork it was made from. The cleanup deletes only the repository this row names.
+		CREATE TABLE IF NOT EXISTS work_repos (job_id TEXT PRIMARY KEY, repository TEXT NOT NULL, repository_id INTEGER, source TEXT NOT NULL);
 	`);
 	// The M1 backfill: a database from before per-job manifests holds each job's frozen contract only
 	// inside the job row. One manifest row per such job, carrying exactly the contract it was frozen
@@ -444,6 +451,9 @@ export class SqliteStore implements Store {
 		this.db.prepare("UPDATE outbox SET state = ?, due_at = ? WHERE key = ?").run(JSON.stringify(state), outboxDue(state), key);
 	}
 	async recordEffect(key: OperationKey, state: OutboxState): Promise<void> { this.updateEffect(key, state); }
+	async recordWorkRepo(record: WorkRepoRecord): Promise<void> {
+		this.db.prepare("INSERT OR REPLACE INTO work_repos VALUES (?, ?, ?, ?)").run(record.jobId, record.repository, record.repositoryId, record.source);
+	}
 	close(): void { this.db.close(); }
 }
 

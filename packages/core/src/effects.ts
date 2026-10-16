@@ -169,7 +169,12 @@ export interface Store {
 	commit(change: AtomicCommit): Promise<CommitResult>;
 	leaseEffect(now: Instant, until: Instant, key?: OperationKey): Promise<OutboxRow | null>;
 	recordEffect(key: OperationKey, state: OutboxState): Promise<void>;
+	/** Records the work repository a job's CREATE_WORK_REPO made, so the cleanup can name the one it deletes. */
+	recordWorkRepo(record: WorkRepoRecord): Promise<void>;
 }
+
+/** A job's work repository: its full name, GitHub's id for it when the answer carried one, and the fork it was made from. */
+export type WorkRepoRecord = { readonly jobId: JobId; readonly repository: string; readonly repositoryId: number | null; readonly source: string };
 
 export type Ports = {
 	readonly fundingMode?: () => "checkout" | "card";
@@ -511,7 +516,8 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 	}
 	const attempt = (previous.kind === "UNCERTAIN" ? previous.attempt ?? 0 : 0) + 1;
 	try {
-		await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key));
+		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key));
+		await ports.store.recordWorkRepo({ jobId: effect.jobId, repository: created.repository, repositoryId: created.id, source: effect.repository });
 	} catch (error) {
 		if (error instanceof GitHubAppNotConfigured) {
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });

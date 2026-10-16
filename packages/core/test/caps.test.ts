@@ -10,8 +10,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeAcquit, createAcquit, createDemoVisitor } from "../src/acquit.ts";
-import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
+import { closeAcquit, createAcquit, createDemoVisitor, provisionDemoVisitor } from "../src/acquit.ts";
+import type { Actor, CommandOutcome, UserCommand, VisitorFork } from "../src/acquit.ts";
 import { CAPS, capUsage, capWindowStart, reservationRefusal } from "../src/caps.ts";
 import type { CapUsage, Reservation } from "../src/caps.ts";
 import { instant, parseRequestKey } from "../src/ids.ts";
@@ -30,7 +30,7 @@ const noon = instant("2026-10-06T12:00:00.000Z");
 
 /** The counters a test starts from: nobody has done anything. */
 const usage = (over: Partial<CapUsage>): CapUsage => ({ visitorsToday: 0, jobs: 0,
-	budget: 0 as UsdCents, runs: 0, runsToday: 0, ...over });
+	budget: 0 as UsdCents, runs: 0, runsToday: 0, scenarios: 0, scenariosToday: 0, ...over });
 
 /** A service whose clock stands still, so a window has an exact edge. */
 function serviceAt(path: string) {
@@ -57,7 +57,21 @@ const jobIdOf = (outcome: CommandOutcome): JobId =>
 test("the cap table is the one place the limits live", () => {
 	assert.deepEqual(Object.fromEntries(Object.entries(CAPS).map(([name, spec]) => [name, spec.limit])), {
 		VISITORS_DAY: 50, VISITOR_JOBS: 3, AMOUNT: 100_000, SPEND_DAY: 200_000,
-		MODEL_RUNS: 10, MODEL_RUNS_DAY: 1_000 });
+		MODEL_RUNS: 10, MODEL_RUNS_DAY: 1_000, SCENARIOS_DAY: 100, SCENARIOS_REQUESTER_DAY: 10 });
+});
+
+test("a scenario start is capped by the deployment's 100 and its requester's 10, and never by the visitor day", () => {
+	const scenario = (over: Partial<Reservation>): Reservation =>
+		({ kind: "SCENARIO", scope: "v_requester", ref: "v_run", cents: 0 as UsdCents, at: noon, ...over });
+	assert.equal(reservationRefusal(scenario({}), usage({ scenariosToday: 99 })), null);
+	assert.equal(reservationRefusal(scenario({}), usage({ scenariosToday: 100 })), "CAP_SCENARIOS_DAY");
+	assert.equal(reservationRefusal(scenario({}), usage({ scenarios: 9 })), null);
+	assert.equal(reservationRefusal(scenario({}), usage({ scenarios: 10 })), "CAP_SCENARIOS_REQUESTER_DAY");
+	// VISITORS_DAY is the visitor kind's alone: a full visitor day refuses no scenario start.
+	assert.equal(reservationRefusal(scenario({}), usage({ visitorsToday: 50 })), null);
+	// And the scenario counters never refuse a visitor.
+	assert.equal(reservationRefusal({ kind: "VISITOR", scope: "ip-a", ref: "v_1", cents: 0 as UsdCents, at: noon },
+		usage({ scenariosToday: 100, scenarios: 10 })), null);
 });
 
 test("the window is one rolling day, and a reservation is refused by the cap it would pass", () => {
@@ -100,12 +114,17 @@ test("the counters read the reservation table by wall clock and by scope", async
 		reserved("2026-10-06T11:30:00.000Z", "JOB", "v_1", "job_1", 40_000);
 		reserved("2026-10-06T11:45:00.000Z", "JOB", "v_2", "job_2", 25_000);
 		reserved("2026-10-06T11:50:00.000Z", "RUN", "v_1", "job_1:verify:1");
+		reserved("2026-10-06T11:55:00.000Z", "SCENARIO", "v_requester", "v_run_1");
+		reserved("2026-10-06T11:56:00.000Z", "SCENARIO", "v_other", "v_run_2");
 		// One visitor's own day: its jobs and its runs. The visitor row older than the window is gone.
 		assert.deepEqual(capUsage(store.db, { scope: "v_1", since: capWindowStart(noon) }),
-			{ visitorsToday: 2, jobs: 1, budget: 40_000, runs: 1, runsToday: 1 });
+			{ visitorsToday: 2, jobs: 1, budget: 40_000, runs: 1, runsToday: 1, scenarios: 0, scenariosToday: 2 });
 		// An address scope holds no jobs or runs: the other visitor's job and run are not its own.
 		assert.deepEqual(capUsage(store.db, { scope: "ip-a", since: capWindowStart(noon) }),
-			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1 });
+			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1, scenarios: 0, scenariosToday: 2 });
+		// A requester's scenario starts are its own; the deployment's count reads all of them.
+		assert.deepEqual(capUsage(store.db, { scope: "v_requester", since: capWindowStart(noon) }),
+			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1, scenarios: 1, scenariosToday: 2 });
 	} finally { store.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -196,7 +215,7 @@ test("a capped visitor's job and run are refused by code, and a tenant-less clie
 		const own: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 		assert.equal((await service.execute(own, parseRequestKey(randomUUID()), open(usd("1000.00")))).kind, "COMMITTED");
 		assert.deepEqual(capUsage(store.db, { scope: guest.visitor.id as string, since: capWindowStart(noon) }),
-			{ visitorsToday: 1, jobs: 3, budget: 120_000, runs: 10, runsToday: 10 });
+			{ visitorsToday: 1, jobs: 3, budget: 120_000, runs: 10, runsToday: 10, scenarios: 0, scenariosToday: 0 });
 		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).jobs, 0);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
@@ -230,5 +249,57 @@ test("a tenant-less job's eleventh submit is not refused by the visitor run cap"
 		// A run outside any visitor's world spends no cap: the ten stale rows stay the whole count.
 		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).runs, 10);
 		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).runsToday, 10);
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a scenario start reserves a requester place, a failed start still counts, and a capped start leaves no visitor", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-caps-"));
+	const path = join(root, "acquit.db");
+	const service = serviceAt(path);
+	const store = new SqliteStore(path);
+	const count = (kind: string, scope: string): number => Number((store.db.prepare("SELECT COUNT(*) AS n FROM cap_reservations WHERE kind = ? AND scope = ?")
+		.get(kind, scope) as { n: number }).n);
+	const noFork = async (): Promise<VisitorFork> => ({ kind: "NO_APP" });
+	try {
+		const requester = await createDemoVisitor(service, { id: newVisitorId(), ipKey: "ip-scenario", repository: null });
+		assert.equal(requester.kind, "CREATED");
+		if (requester.kind !== "CREATED") throw new Error("The requester was not created");
+		// Ten starts. The fifth's fork is refused after its place is taken, so that start is FAILED and still counts.
+		for (let index = 1; index <= 10; index++) {
+			const started = await provisionDemoVisitor(service, { id: newVisitorId(), ipKey: "ip-scenario", scenarioOf: requester.visitor.id,
+				fork: index === 5 ? async () => { throw new Error("fork refused"); } : noFork });
+			assert.equal(started.kind, index === 5 ? "FAILED" : "CREATED", `start ${index}`);
+		}
+		const eleventh = await provisionDemoVisitor(service, { id: newVisitorId(), ipKey: "ip-scenario", scenarioOf: requester.visitor.id, fork: noFork });
+		assert.deepEqual(eleventh, { kind: "CAPPED", reason: "CAP_SCENARIOS_REQUESTER_DAY" });
+		assert.equal(count("SCENARIO", requester.visitor.id), 10);
+		// Scenario starts spend no visitor day: the one visitor the requester is counts alone.
+		assert.equal(count("VISITOR", "ip-scenario"), 1);
+	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the deployment's 100 scenario starts in a day refuse the 101st by name, whichever requesters started them", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-caps-"));
+	const path = join(root, "acquit.db");
+	const service = serviceAt(path);
+	const store = new SqliteStore(path);
+	const noFork = async (): Promise<VisitorFork> => ({ kind: "NO_APP" });
+	try {
+		const requesters: string[] = [];
+		for (let index = 0; index < 11; index++) {
+			const requester = await createDemoVisitor(service, { id: newVisitorId(), ipKey: `ip-deployment-${index}`, repository: null });
+			if (requester.kind !== "CREATED") throw new Error(`The requester was not created: ${requester.kind}`);
+			requesters.push(requester.visitor.id);
+		}
+		// Ten requesters start ten scenarios each: one hundred starts, none refused by a requester's own place.
+		for (const requester of requesters.slice(0, 10)) {
+			for (let index = 0; index < 10; index++) {
+				const started = await provisionDemoVisitor(service, { id: newVisitorId(), ipKey: "ip-deployment-run", scenarioOf: requester, fork: noFork });
+				assert.equal(started.kind, "CREATED", `start ${index} of ${requester}`);
+			}
+		}
+		const refused = await provisionDemoVisitor(service, { id: newVisitorId(), ipKey: "ip-deployment-run", scenarioOf: requesters[10]!, fork: noFork });
+		assert.deepEqual(refused, { kind: "CAPPED", reason: "CAP_SCENARIOS_DAY" });
+		assert.equal(Number((store.db.prepare("SELECT COUNT(*) AS n FROM cap_reservations WHERE kind = 'SCENARIO'").get() as { n: number }).n), 100);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });

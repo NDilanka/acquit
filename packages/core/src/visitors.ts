@@ -6,7 +6,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
-import type { CapRefusal } from "./caps.ts";
+import type { CapRefusal, Reservation } from "./caps.ts";
 import { creditWeek, reduceCredits } from "./credits.ts";
 import type { CreditAccount, Credits } from "./credits.ts";
 import { parseVisitorId } from "./ids.ts";
@@ -60,6 +60,11 @@ export type NewVisitor = {
 	/** The sandbox seller the visitor's operator is paid through. */
 	readonly merchant: MerchantId;
 	readonly now: Instant;
+	/**
+	 * Set for a scenario run's visitor: the requester that started the run. Its reservation is a scenario
+	 * start counted under that requester, not a visitor counted under the address, so VISITORS_DAY is untouched.
+	 */
+	readonly scenarioOf?: string;
 };
 
 /** `v_` plus 48 random bits, so two visitors cannot collide on a handle or a repository name. */
@@ -170,12 +175,14 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 	const empty: CreditAccount = { operator: operator.id, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
 	const account = reduceCredits(empty, { kind: "Grant", week: creditWeek(input.now), paidReceipts: 0, at: input.now });
 	if (account === "INSUFFICIENT_CREDITS") throw new Error("Visitor grant failed");
+	const spend: Reservation = input.scenarioOf === undefined
+		? { kind: "VISITOR", scope: input.ipKey, ref: input.id, cents: 0 as UsdCents, at: input.now }
+		: { kind: "SCENARIO", scope: input.scenarioOf, ref: input.id, cents: 0 as UsdCents, at: input.now };
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		// The allowance is re-read inside the write transaction, so the answer this transaction commits on
 		// is the answer of the rows it is about to write.
-		const refused = reservationRefusal({ kind: "VISITOR", scope: input.ipKey, ref: input.id, cents: 0 as UsdCents, at: input.now },
-			capUsage(db, { scope: input.ipKey, since: capWindowStart(input.now) }));
+		const refused = reservationRefusal(spend, capUsage(db, { scope: spend.scope, since: capWindowStart(input.now) }));
 		if (refused !== null) { db.exec("ROLLBACK"); return { kind: "CAPPED", reason: refused }; }
 		db.prepare("INSERT INTO visitors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			.run(visitor.id, visitor.createdAt, visitor.expiresAt, visitor.ipKey, visitor.clientHandle, visitor.operatorHandle,
@@ -186,7 +193,7 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
 		db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(account.operator, account.version, JSON.stringify(account));
 		db.prepare("INSERT INTO cap_reservations VALUES (?, ?, ?, ?, ?)")
-			.run("VISITOR", input.ipKey, input.id, 0, input.now);
+			.run(spend.kind, spend.scope, spend.ref, 0, input.now);
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");

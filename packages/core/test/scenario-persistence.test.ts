@@ -1,0 +1,114 @@
+// The scenario run store across a reopen of its database: a finished snapshot comes back as it was, a run
+// that was RUNNING is marked FAILED with RESTARTED and its steps are not resumed, and the bounds hold in
+// the table as they do in memory. A real chain run is the first case; the others commit synthetic runs.
+
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { type TestContext } from "node:test";
+import { boundedRuns } from "../src/scenarios.ts";
+import type { RunBounds, ScenarioRun, ScenarioRuns, ScenarioStep } from "../src/scenarios.ts";
+import { openDatabase } from "../src/store.ts";
+import { drive, harness } from "./scenario-harness.ts";
+
+async function tempDatabase(t: TestContext): Promise<string> {
+	const root = await mkdtemp(join(tmpdir(), "acquit-runs-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	return join(root, "runs.db");
+}
+
+function runOf(id: string, requesterId: string, state: ScenarioRun["state"], steps: readonly ScenarioStep[] = []): ScenarioRun {
+	return { id, name: "verified-and-paid", requesterId, visitorId: `vis_${id}`, jobId: `job_${id}`, steps, state,
+		endState: state === "DONE" ? { jobStatus: "PAID", reason: "CLIENT_APPROVAL" } : null, failure: null };
+}
+
+function commit(runs: ScenarioRuns, run: ScenarioRun): void {
+	const admitted = runs.admit(run.requesterId);
+	if (admitted.kind !== "ADMITTED") throw new Error(`admission refused: ${admitted.code}`);
+	admitted.slot.commit(run);
+}
+
+function rowIds(path: string): string[] {
+	const db = openDatabase(path);
+	try {
+		return db.prepare("SELECT id FROM scenario_runs ORDER BY rowid").all().map(row => String(row.id));
+	} finally { db.close(); }
+}
+
+test("a finished run's snapshot survives a reopen of the database, unchanged", async () => {
+	const h = await harness();
+	try {
+		const run = await drive(h, "verified-and-paid");
+		assert.equal(run.state, "DONE");
+		const reopened = openDatabase(h.path);
+		try {
+			assert.deepEqual(boundedRuns(undefined, reopened).get(run.id), run);
+		} finally { reopened.close(); }
+	} finally { await h.dispose(); }
+});
+
+test("a run RUNNING when the store reopens is FAILED with RESTARTED, keeps its recorded steps, and resumes none", async t => {
+	const path = await tempDatabase(t);
+	const step: ScenarioStep = { name: "open-job", actor: "CLIENT", startedAt: "2026-10-06T12:00:00.000Z", endedAt: "2026-10-06T12:00:00.010Z",
+		ms: 10, outcome: "opened job_scn_run_a", label: "Scripted agent (Simulated)" };
+	const first = openDatabase(path);
+	try {
+		commit(boundedRuns(undefined, first), runOf("scn_run_a", "req-a", "RUNNING", [step]));
+	} finally { first.close(); }
+
+	const reopened = openDatabase(path);
+	try {
+		const recovered = boundedRuns(undefined, reopened).get("scn_run_a");
+		assert.deepEqual(recovered, { ...runOf("scn_run_a", "req-a", "FAILED", [step]), failure: "RESTARTED" });
+		const row = reopened.prepare("SELECT state FROM scenario_runs WHERE id = ?").get("scn_run_a");
+		assert.equal(row?.state, "FAILED", "the row is rewritten, so the next reopen keeps the same answer");
+	} finally { reopened.close(); }
+	const again = openDatabase(path);
+	try {
+		assert.deepEqual(boundedRuns(undefined, again).get("scn_run_a"), { ...runOf("scn_run_a", "req-a", "FAILED", [step]), failure: "RESTARTED" });
+	} finally { again.close(); }
+});
+
+test("the per-requester bound holds after a reopen: the oldest finished run is gone from the table too", async t => {
+	const path = await tempDatabase(t);
+	const bounds: RunBounds = { perRequester: 2, running: 5, total: 100 };
+	const first = openDatabase(path);
+	try {
+		const runs = boundedRuns(bounds, first);
+		for (let index = 0; index < 3; index++) commit(runs, runOf(`scn_a_${index}`, "req-a", "DONE"));
+		assert.equal(runs.size(), 2);
+	} finally { first.close(); }
+	assert.deepEqual(rowIds(path), ["scn_a_1", "scn_a_2"]);
+
+	const reopened = openDatabase(path);
+	try {
+		const runs = boundedRuns(bounds, reopened);
+		assert.equal(runs.size(), 2);
+		assert.equal(runs.get("scn_a_0"), undefined);
+		assert.equal(runs.get("scn_a_2")?.state, "DONE");
+	} finally { reopened.close(); }
+});
+
+test("the store-wide bound holds after a reopen: the oldest finished run goes across requesters, in the table too", async t => {
+	const path = await tempDatabase(t);
+	const bounds: RunBounds = { perRequester: 10, running: 5, total: 3 };
+	const first = openDatabase(path);
+	try {
+		const runs = boundedRuns(bounds, first);
+		commit(runs, runOf("scn_0", "req-a", "DONE"));
+		commit(runs, runOf("scn_1", "req-b", "DONE"));
+		commit(runs, runOf("scn_2", "req-a", "DONE"));
+		commit(runs, runOf("scn_3", "req-b", "DONE"));
+		assert.equal(runs.size(), 3);
+	} finally { first.close(); }
+	assert.deepEqual(rowIds(path), ["scn_1", "scn_2", "scn_3"]);
+
+	const reopened = openDatabase(path);
+	try {
+		const runs = boundedRuns(bounds, reopened);
+		assert.equal(runs.size(), 3);
+		assert.equal(runs.get("scn_0"), undefined);
+		assert.equal(runs.get("scn_3")?.requesterId, "req-b");
+	} finally { reopened.close(); }
+});

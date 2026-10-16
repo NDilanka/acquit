@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { closeAcquit, createAcquit, provisionDemoVisitor } from "../src/acquit.ts";
 import type { Acquit, DemoVisitorResult } from "../src/acquit.ts";
 import { createFakeGitHubApp } from "../src/github.ts";
+import type { FakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, CommitSha, Digest, Instant, JobId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId, TestId } from "../src/ids.ts";
 import type { FixtureContract } from "../src/fixtures.ts";
@@ -102,9 +103,10 @@ function fakePayPal(now: () => Instant): PayPal {
 }
 
 export type HarnessOptions = {
-	readonly devEnabled?: boolean;
 	/** The registry the core opens jobs against. Defaults to the one demo fixture. */
 	readonly fixtures?: readonly FixtureContract[];
+	/** The fake GitHub App the composition uses. Defaults to a fresh one, which the harness exposes. */
+	readonly github?: FakeGitHubApp;
 	/** Public funding: the deployment's default is checkout, so only a job's own choice can make it a card. */
 	readonly publicFunding?: boolean;
 	/** Answers a scripted tree with another tree, so a test can make a scenario's verdict differ from its name. */
@@ -117,9 +119,13 @@ export type HarnessOptions = {
 export type Harness = {
 	readonly acquit: Acquit;
 	readonly store: SqliteStore;
+	/** The fake App the forks, work repos, and cleanup go through. */
+	readonly github: FakeGitHubApp;
+	/** The database file the store, the run snapshots, and the cleanup share. A test may open it again. */
+	readonly path: string;
 	readonly deps: ScenarioDeps;
 	readonly visitor: VisitorRow;
-	/** Provisions one run visitor the way the API does, with no fork: the run's job opens on the fixture's repository. */
+	/** Provisions one run visitor the way the API does, with no fork, counted under the requester's scenario caps. */
 	readonly provision: (requester: VisitorRow) => Promise<DemoVisitorResult>;
 	readonly dispose: () => Promise<void>;
 	readonly setClock: (at: Instant) => void;
@@ -154,15 +160,16 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 			return parseCallbackBody(JSON.parse(raw) as unknown);
 		},
 	};
+	const github = options.github ?? createFakeGitHubApp();
 	acquit = createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
 		github: { appId: "", privateKey: "", organization: "" },
-		adapters: { paypal: fakePayPal(clock), github: createFakeGitHubApp() } });
+		adapters: { paypal: fakePayPal(clock), github } });
 	const store = new SqliteStore(path);
-	const noFork = async (): Promise<DemoVisitorResult> => provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test",
-		fork: async () => ({ kind: "NO_APP" }) });
+	const noFork = async (scenarioOf?: string): Promise<DemoVisitorResult> => provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test",
+		...(scenarioOf === undefined ? {} : { scenarioOf }), fork: async () => ({ kind: "NO_APP" }) });
 	const provisioned = await noFork();
 	if (provisioned.kind !== "CREATED") throw new Error(`the visitor was not created: ${provisioned.kind}`);
 	const workspace = {
@@ -173,10 +180,11 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 			return commit;
 		},
 	};
-	const runs: ScenarioRuns = boundedRuns();
-	const deps: ScenarioDeps = { acquit, store: { readJob: id => store.readJob(id), db: openDatabase(path) }, workspace, runs,
-		now: clock, devEnabled: options.devEnabled ?? true, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
-	return { acquit, store, deps, visitor: provisioned.visitor, provision: async () => noFork(), setClock: at => { now = at; },
+	const db = openDatabase(path);
+	const runs: ScenarioRuns = boundedRuns(undefined, db);
+	const deps: ScenarioDeps = { acquit, store: { readJob: id => store.readJob(id), db }, workspace, runs,
+		now: clock, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
+	return { acquit, store, github, deps, path, visitor: provisioned.visitor, provision: async requester => noFork(requester.id), setClock: at => { now = at; },
 		dispose: async () => {
 			deps.store.db.close();
 			store.close();

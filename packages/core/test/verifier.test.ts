@@ -354,7 +354,7 @@ test("the fake work repo is idempotent per job and keeps ten lanes off one repos
 	const app = createFakeGitHubApp();
 	const request = { jobId: "job_7Q2K" as JobId, repository: "maya-client/invoice-app", frozenCommit: commit };
 	const created = await app.createWorkRepo(request, "req-1");
-	assert.deepEqual(created, { repository: "acquit-forks/invoice-app-7Q2K", remote: "https://github.com/acquit-forks/invoice-app-7Q2K.git", branch: "main", commit });
+	assert.deepEqual(created, { repository: "acquit-forks/invoice-app-7Q2K", remote: "https://github.com/acquit-forks/invoice-app-7Q2K.git", branch: "main", commit, id: 2000 });
 	assert.deepEqual(await app.createWorkRepo(request, "req-2"), created);
 	const other = await app.createWorkRepo({ ...request, jobId: "job_8Z3P" as JobId }, "req-3");
 	assert.equal(other.repository, "acquit-forks/invoice-app-8Z3P");

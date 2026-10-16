@@ -72,7 +72,8 @@ test("sweep reports an expired visitor on a dry run, then removes its repository
 		assert.equal(readVisitor(after.db, staying.id)?.state, "ACTIVE");
 		after.close();
 		// Idempotent: a second sweep has nothing left to do.
-		assert.deepEqual(await sweep({}, ctx), { databasePath: path, swept: [], repositories: [], kept: [] });
+		assert.deepEqual(await sweep({}, ctx), { databasePath: path, swept: [], repositories: [], kept: [],
+			scenarios: { swept: [], workRepos: [], kept: [] } });
 	} finally {
 		for (const [name, value] of saved) if (value === undefined) delete process.env[name]; else process.env[name] = value;
 		await rm(dir, { recursive: true, force: true });

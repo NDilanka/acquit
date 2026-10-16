@@ -340,7 +340,9 @@ for (const harness of HARNESSES) {
 		const app = await harness.make();
 		t.after(app.close);
 		const created = await app.port.createWorkRepo(workRepoRequest, "req-1");
-		assert.deepEqual(created, { repository: WORK_REPO, remote: `https://github.com/${WORK_REPO}.git`, branch: "main", commit: FROZEN });
+		const { id, ...rest } = created;
+		assert.deepEqual(rest, { repository: WORK_REPO, remote: `https://github.com/${WORK_REPO}.git`, branch: "main", commit: FROZEN });
+		assert.equal(typeof id, "number", "the work repo's own GitHub id is recorded");
 		assert.deepEqual(await app.port.createWorkRepo(workRepoRequest, "req-2"), created);
 		const other = await app.port.createWorkRepo({ ...workRepoRequest, jobId: OTHER_JOB }, "req-3");
 		assert.equal(other.repository, `${ORG}/invoice-app-8Z3P`);
@@ -902,6 +904,42 @@ test("a fork is deleted only while the repository id is the one the visitor fork
 	assert.equal(stub.state.repos.has(again.repository), false);
 });
 
+for (const harness of HARNESSES) {
+	test(`a work repo is deleted only while its source and recorded id match, then it is absent (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const created = await app.port.createWorkRepo(workRepoRequest, "req-1");
+		assert.ok(typeof created.id === "number", "the work repo's GitHub id is recorded");
+		const wrongSource = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: `${CLIENT_OWNER}/other-app`, id: created.id }));
+		assert.equal(wrongSource.code, "GITHUB_FORK_MISMATCH");
+		const wrongId = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id + 1 }));
+		assert.equal(wrongId.code, "GITHUB_FORK_MISMATCH");
+		assert.match(wrongId.detail, /is not the repository this job forked/);
+		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }), "DELETED");
+		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }), "ABSENT");
+	});
+}
+
+test("a same-named repository this client did not fork is refused by name and never deleted", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const created = await port.createWorkRepo(workRepoRequest, "req-1");
+	const before = repoMutations(stub).length;
+	// Another fork of the same source now holds the work name, under its own id.
+	plant(stub, WORK_REPO, { forkOf: CLIENT, commits: [], main: null });
+	assert.notEqual(stub.state.repos.get(WORK_REPO)?.id, created.id);
+	const foreign = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }));
+	assert.equal(foreign.code, "GITHUB_FORK_MISMATCH");
+	assert.match(foreign.detail, /invoice-app-7Q2K/);
+	assert.equal(stub.state.repos.has(WORK_REPO), true, "the foreign fork is kept");
+	// A repository this client did not fork at the name is refused even without a recorded id.
+	plant(stub, WORK_REPO, { forkOf: null, commits: [], main: null });
+	const unmarked = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+	assert.equal(unmarked.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.repos.has(WORK_REPO), true);
+	assert.deepEqual(repoMutations(stub).slice(before), []);
+});
+
 test("the sweep never deletes a repository this client did not create", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);
@@ -925,7 +963,9 @@ test("a fork this client created converges after its ref move failed", async t =
 	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), HEAD);
 	// The retry finds the fork this client made: main is moved to the frozen commit instead of refused.
 	const adopted = await port.createWorkRepo(workRepoRequest, "req-2");
-	assert.deepEqual(adopted, { repository: WORK_REPO, remote: `https://github.com/${WORK_REPO}.git`, branch: "main", commit: FROZEN });
+	const { id, ...rest } = adopted;
+	assert.deepEqual(rest, { repository: WORK_REPO, remote: `https://github.com/${WORK_REPO}.git`, branch: "main", commit: FROZEN });
+	assert.equal(typeof id, "number", "the adopted fork's id is recorded");
 	assert.equal(stub.state.refs.get(`${WORK_REPO}:main`), FROZEN);
 });
 
