@@ -1,18 +1,45 @@
-export type TourStep = { readonly title: string; readonly body: string };
+import type { ScenarioCard } from "./scenario-run.ts";
 
 export const START_DEMO_ACTION = "Start my demo";
 
-export const JUDGE_TOUR: readonly [TourStep, TourStep, TourStep] = [
+/** The label every scripted step carries on screen, so the scripted agent is never read as a real model. */
+export const SCRIPTED_LABEL = "Scripted agent (Simulated)";
+
+/** The five judge scenarios, in the order the sign-in page shows them. */
+export const SCENARIO_CARDS: readonly ScenarioCard[] = [
   {
-    title: "Get your own sandbox",
-    body: "You get your own client, your own operator, and your own copy of the demo repository. It lasts 24 hours.",
+    name: "verified-and-paid",
+    title: "Verified and paid",
+    promise: "An honest fix passes the verifier. The client approves it, and the operator is paid.",
+    scripted: `${SCRIPTED_LABEL} opens the job, bids, and writes the honest fix.`,
+    endStateText: "Paid. The client approved a verified fix.",
   },
   {
-    title: "Post a job",
-    body: "Describe the work as the client and watch operators bid on it.",
+    name: "hidden-test-fail",
+    title: "Hidden test fail",
+    promise: "A fix that only copies the visible rows passes the frozen tests and fails a hidden case. The attempt is rejected.",
+    scripted: `${SCRIPTED_LABEL} opens the job, bids, and writes the shortcut.`,
+    endStateText: "Rejected on hidden tests. The escrow stays held.",
   },
   {
-    title: "Accept a bid and pay",
-    body: "Pay into PayPal sandbox escrow. A verified delivery releases the payout. No real money moves.",
+    name: "test-tamper",
+    title: "Test tamper",
+    promise: "A fix edits the frozen test file. The verifier refuses the change as an edit to a protected file.",
+    scripted: `${SCRIPTED_LABEL} opens the job, bids, and edits the frozen test.`,
+    endStateText: "Rejected for changing a protected test file. The escrow stays held.",
+  },
+  {
+    name: "dispute-arbiter",
+    title: "Dispute to arbiter",
+    promise: "The client disputes a verified fix, and the arbiter upholds it. The operator is paid.",
+    scripted: `${SCRIPTED_LABEL} opens the job, bids, writes the fix, and gives the arbiter's verdict.`,
+    endStateText: "Paid. The arbiter upheld the delivered fix.",
+  },
+  {
+    name: "deadline-refund",
+    title: "Deadline refund",
+    promise: "The delivery deadline passes with no submission, and the escrow is refunded to the client.",
+    scripted: `${SCRIPTED_LABEL} opens the job and bids. Simulated time for this job moves its clock 2 days.`,
+    endStateText: "Refunded. The delivery deadline passed.",
   },
 ];
