@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { api, ApiError } from "../api";
-import { approveFailure, codeHint, signInPrompt } from "../cli";
+import { approveFailure, codeHint, type Copy, type Failure, isCodeFormat, NOT_VALID, signInPrompt } from "../cli";
 import { useRouter } from "../router";
 import { useSession } from "../session";
 
-type State = { kind: "ready" } | { kind: "busy" } | { kind: "done" } | { kind: "dead"; message: string };
+type State = { kind: "ready" } | { kind: "busy" } | { kind: "done" } | { kind: "dead"; failure: Failure };
 
 export function CliLogin() {
   const { user } = useSession();
@@ -20,9 +20,9 @@ export function CliLogin() {
       await api.approveCli(code);
       setState({ kind: "done" });
     } catch (e) {
-      const dead = e instanceof ApiError ? approveFailure(e.status, e.code) : null;
-      if (dead) {
-        setState({ kind: "dead", message: dead });
+      const failure = e instanceof ApiError ? approveFailure(e.status, e.code) : null;
+      if (failure) {
+        setState({ kind: "dead", failure });
         return;
       }
       setError(e instanceof ApiError ? e.message : `Network error: ${String(e)}. Retry is safe.`);
@@ -30,23 +30,29 @@ export function CliLogin() {
     }
   };
 
+  const refusal = code !== "" && !isCodeFormat(code) ? NOT_VALID : state.kind === "dead" ? state.failure : null;
+
   return (
     <div className="signin card">
       <div className="eyebrow">Acquit CLI</div>
       {!code ? (
         <>
           <h1>No sign-in code</h1>
-          <p className="muted">This link has no sign-in code. Run `acquit login` again.</p>
+          <p className="muted">
+            This link has no sign-in code. Run <span className="mono">acquit login</span> again.
+          </p>
+        </>
+      ) : refusal ? (
+        <>
+          <h1>{refusal.title}</h1>
+          <p className="muted">
+            <CopyLine copy={refusal.body} />
+          </p>
         </>
       ) : state.kind === "done" ? (
         <>
           <h1>CLI approved</h1>
           <p>Signed in. You can return to the terminal.</p>
-        </>
-      ) : state.kind === "dead" ? (
-        <>
-          <h1>Link no longer valid</h1>
-          <p className="muted">{state.message}</p>
         </>
       ) : (
         <>
@@ -62,5 +68,16 @@ export function CliLogin() {
         </>
       )}
     </div>
+  );
+}
+
+/** Renders CLI copy, drawing each code part as inline code. */
+function CopyLine({ copy }: { copy: Copy }) {
+  return (
+    <>
+      {copy.map((part, i) =>
+        typeof part === "string" ? part : <span key={i} className="mono">{part.code}</span>,
+      )}
+    </>
   );
 }

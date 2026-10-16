@@ -240,8 +240,13 @@ export type SessionUser = { readonly handle: string; readonly role: "CLIENT" | "
 /** `public` offers only Start my demo; `dev` offers the seeded picker. */
 export type DeploymentMode = "public" | "dev";
 
-/** `GET /api/session`. `visitor` is null for a seeded session. */
-export type SessionResponse = { readonly user: SessionUser | null; readonly visitor: VisitorView | null; readonly mode: DeploymentMode };
+/** `GET /api/session`. `visitor` is null for a seeded session. `fundingMode` is the deployment's default for a job nobody chose for. */
+export type SessionResponse = {
+  readonly user: SessionUser | null;
+  readonly visitor: VisitorView | null;
+  readonly mode: DeploymentMode;
+  readonly fundingMode: FundingMode;
+};
 
 /** `POST /api/session`, `POST /api/demo`, and `POST /api/demo/switch`. */
 export type SignedInResponse = { readonly user: SessionUser; readonly visitor: VisitorView | null; readonly token: string };

@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
-import type { DeploymentMode, VisitorView } from "./api-types";
+import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
 import { Link, match, useRouter } from "./router";
 import { SessionContext, useSession, type Session } from "./session";
-import { RepoLink } from "./ui";
+import { NotFound, RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
 import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
@@ -28,6 +28,7 @@ const ROLE_CAPTION = { CLIENT: "client", OPERATOR: "operator", PLATFORM: "platfo
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [mode, setMode] = useState<DeploymentMode | null>(null);
+  const [fundingMode, setFundingMode] = useState<FundingMode>("checkout");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,6 +36,7 @@ export function App() {
       .session()
       .then((r) => {
         setMode(r.mode);
+        setFundingMode(r.fundingMode);
         setSession(r.user ? { user: r.user, visitor: r.visitor } : null);
       })
       .catch((e: unknown) => {
@@ -43,7 +45,7 @@ export function App() {
       });
   }, []);
 
-  const { navigate } = useRouter();
+  const { navigate, location } = useRouter();
   const signOut = () => {
     // A demo has no way back in: Start my demo makes a new visitor, which counts against the day's caps.
     if (session?.visitor && !window.confirm("Leave this demo? You cannot return to it. Start my demo makes a new one.")) return;
@@ -62,12 +64,14 @@ export function App() {
       <main className="wrap">
         {error && !session && <div className="alert">{error}</div>}
         {session ? (
-          <SessionContext.Provider value={{ ...session, signOut }}>
+          <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>
             {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
             <Routes key={session.user.handle} />
           </SessionContext.Provider>
         ) : (
-          mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
+          mode && (match(location.path).name === "notFound"
+            ? <NotFound action={{ to: "/", label: "Sign in" }} />
+            : <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />)
         )}
       </main>
     </>
@@ -127,12 +131,17 @@ function DemoBar({ session, visitor, onSwitched }: { session: Session; visitor: 
 
 function Routes() {
   const { location } = useRouter();
+  const { user } = useSession();
   const route = match(location.path);
   switch (route.name) {
     case "home":
       return <Home />;
     case "newJob":
-      return <NewJob />;
+      return user.role === "CLIENT" ? (
+        <NewJob />
+      ) : (
+        <NotFound title="Clients post jobs" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}). Operators bid on open jobs.`} action={{ to: "/", label: "Back to the dashboard" }} />
+      );
     case "job":
       return <JobPage key={route.id} id={route.id} />;
     case "operator":
@@ -142,14 +151,7 @@ function Routes() {
     case "studio":
       return <Studio />;
     case "notFound":
-      return (
-        <div className="card pad">
-          <h2>Page not found</h2>
-          <p className="muted">
-            <Link to="/">Back to the dashboard</Link>
-          </p>
-        </div>
-      );
+      return <NotFound action={{ to: "/", label: "Back to the dashboard" }} />;
   }
 }
 

@@ -10,15 +10,16 @@ import { pollInterval } from "../poll";
 import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, seededLabel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
-import { allBids, houseName, lockedBid, payeeBid, StatusPill } from "../ui";
+import { allBids, houseName, lockedBid, NotFound, payeeBid, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 
 export function JobPage({ id }: { id: string }) {
-  const { user, visitor } = useSession();
+  const { user, visitor, fundingMode } = useSession();
   const { location } = useRouter();
   const [job, setJob] = useState<JobView | null>(null);
   const [diff, setDiff] = useState<JobDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [missing, setMissing] = useState(false);
   const [checkout, setCheckout] = useState<BidView | null>(null);
   const [confirm, setConfirm] = useState<BidView | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
@@ -37,10 +38,12 @@ export function JobPage({ id }: { id: string }) {
       setJob(r.job);
       setDiff(r.diff ?? null);
       setError(null);
+      setMissing(false);
       return r.job;
     } catch (e) {
       setDiff(null);
-      setError(e instanceof ApiError ? (e.status === 404 ? "Job not found." : e.message) : String(e));
+      setMissing(e instanceof ApiError && e.status === 404);
+      setError(e instanceof ApiError ? e.message : String(e));
       return null;
     }
   }, [id]);
@@ -61,6 +64,7 @@ export function JobPage({ id }: { id: string }) {
     if (checkout && job?.approveUrl) window.location.assign(job.approveUrl);
   }, [checkout, job?.approveUrl]);
 
+  if (missing && !job) return <NotFound title="Job not found" action={{ to: user.role === "CLIENT" ? "/" : "/operator", label: "Back to jobs" }} />;
   if (error && !job) {
     return (
       <div className="card pad">
@@ -92,6 +96,8 @@ export function JobPage({ id }: { id: string }) {
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
   const controls = demoControls(job, { user, visitor });
+  // A job's own choice wins; before accept, a job nobody chose for funds with the deployment's default.
+  const source: FundingMode = job.funding ?? fundingMode;
 
   const doAccept = async (bid: BidView) => {
     const outcome = await accept.send(`accept:${bid.id}`, (): UserCommand => ({
@@ -191,7 +197,7 @@ export function JobPage({ id }: { id: string }) {
           {accept.error && <div className="alert">{accept.error}</div>}
 
           {job.status === "OPEN" && (checkout || (funding && isClient)) && (
-            <Checkout job={job} bid={checkout ?? payeeBid(job)} redirecting={checkout !== null} />
+            <Checkout job={job} bid={checkout ?? payeeBid(job)} redirecting={checkout !== null} card={source === "card"} />
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
@@ -333,15 +339,16 @@ export function JobPage({ id }: { id: string }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Accept {confirm.label === "HOUSE" ? `House: ${houseName(confirm.handle)}` : confirm.handle}?</h3>
             <p>
-              Acquit creates a PayPal order that can pay only this operator. You pay now
-              {job.funding === "card" ? " with the sandbox test card" : ""}; money is released on verified proof.
+              {source === "card"
+                ? "Acquit charges the sandbox test card now, for a payment that can pay only this operator. Money is released on verified proof."
+                : "Acquit creates a PayPal order that can pay only this operator. You pay now; money is released on verified proof."}
             </p>
             <Breakdown price={confirm.price} payee={confirm.handle} />
             {accept.error && <div className="alert">{accept.error}</div>}
             <div className="act">
               <button className="btn ghost" onClick={() => setConfirm(null)}>Back</button>
               <button className="btn green" disabled={accept.busy} onClick={() => void doAccept(confirm)}>
-                {accept.busy ? "Creating order…" : job.funding === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal"}
+                {accept.busy ? "Creating order…" : source === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal"}
               </button>
             </div>
           </div>
@@ -756,8 +763,7 @@ const CHECKOUT_STEP: Record<CheckoutPhase, string> = {
 };
 
 /** Names the stored checkout substate, so a reload mid-checkout still says where the payment is. */
-function Checkout({ job, bid, redirecting }: { job: JobView; bid: BidView | null; redirecting: boolean }) {
-  const card = job.funding === "card";
+function Checkout({ job, bid, redirecting, card }: { job: JobView; bid: BidView | null; redirecting: boolean; card: boolean }) {
   const phase = job.checkoutPhase;
   const step = phase
     ? CHECKOUT_STEP[phase]

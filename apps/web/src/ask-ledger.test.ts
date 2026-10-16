@@ -6,6 +6,7 @@ import {
   ASK_INSTRUCTIONS,
   ASK_PROMPT_STARTERS,
   ASK_VALIDATION_QUESTION,
+  askGate,
   askLedgerAdapter,
   askParamFields,
   askRows,
@@ -383,4 +384,12 @@ test("a delegation the child failed shows failed in the panel, not done", () => 
     { kind: "step", key: "d1-0", label: "Handing off to the widget builder", state: "failed" },
     { kind: "step", key: "d2-0", label: "Handing off to the widget builder", state: "done" },
   ]);
+});
+
+test("Ask the ledger takes a question only with a model key on the server and an open conversation", () => {
+  assert.deepEqual(askGate({ kind: "ready", keyConfigured: true }, true), { ready: true, keyMissing: false });
+  assert.deepEqual(askGate({ kind: "ready", keyConfigured: false }, true), { ready: false, keyMissing: true });
+  assert.deepEqual(askGate({ kind: "ready", keyConfigured: true }, false), { ready: false, keyMissing: false });
+  assert.deepEqual(askGate({ kind: "loading" }, true), { ready: false, keyMissing: false });
+  assert.deepEqual(askGate({ kind: "failed" }, true), { ready: false, keyMissing: false });
 });

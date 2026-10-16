@@ -6,6 +6,7 @@ import { creditLine, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
 import { Link } from "../router";
 import { useSession } from "../session";
+import { NotFound } from "../ui";
 import { BidForm } from "./BidForm";
 
 export function OperatorHome() {
@@ -35,12 +36,7 @@ export function OperatorHome() {
   }, [load, user.role]);
 
   if (user.role !== "OPERATOR") {
-    return (
-      <div className="card pad">
-        <p>This page is for operators. You are signed in as a client.</p>
-        <Link to="/">Back to your jobs</Link>
-      </div>
-    );
+    return <NotFound title="This page is for operators" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}).`} action={{ to: "/", label: "Back to your jobs" }} />;
   }
 
   return (

@@ -3,7 +3,7 @@ import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgAiHarnessSetupPar
 import { api } from "../api";
 import type { AskToolSchema } from "../api-types";
 import { createAskLedgerHarness, openAskThread } from "../ask-harness.ts";
-import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, askRows, askStatusText } from "../ask-ledger";
+import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, askGate, askRows, askStatusText } from "../ask-ledger";
 import type { DashboardId } from "../dashboard-widgets.ts";
 import { errorText } from "../demo";
 
@@ -112,9 +112,9 @@ export function AskLedgerDrawer({ id, ask, open, onClose }: { id: string; ask: A
   }, [rows]);
 
   const running = snapshot.status === "running";
-  const ready = session !== null && ask.load.kind === "ready";
+  const { ready, keyMissing } = askGate(ask.load, session !== null);
   const send = (text: string) => {
-    if (!session || running || text.trim() === "") return;
+    if (!session || keyMissing || running || text.trim() === "") return;
     session.sendMessage(text.trim());
     setDraft("");
   };
@@ -142,7 +142,7 @@ export function AskLedgerDrawer({ id, ask, open, onClose }: { id: string; ask: A
       </div>
       {ask.load.kind === "failed" && <div className="alert">The ledger agent's tools could not be loaded: {ask.load.error}</div>}
       {ask.load.kind === "ready" && !ask.load.keyConfigured && (
-        <div className="alert warn">The server has no model key configured, so questions will not be answered yet.</div>
+        <div className="alert warn">The server has no model key configured, so Ask the ledger is off. Its starter questions and Send stay disabled until a key is set.</div>
       )}
       {openError && <div className="alert">The conversation could not be opened: {openError}</div>}
       {rows.length > 0 ? (
@@ -176,13 +176,13 @@ export function AskLedgerDrawer({ id, ask, open, onClose }: { id: string; ask: A
         </div>
       )}
       <p className="ask-status muted small" role="status" aria-live="polite">
-        {ready || ask.load.kind === "failed" ? askStatusText(snapshot.status) : "Opening the conversation…"}
+        {keyMissing ? "Off until the server has a model key." : ready || ask.load.kind === "failed" ? askStatusText(snapshot.status) : "Opening the conversation…"}
       </p>
       <form className="ask-form" onSubmit={onSubmit}>
         <label htmlFor={inputId} className="small">
           Your question
         </label>
-        <textarea id={inputId} rows={2} value={draft} placeholder={ASK_PROMPT_STARTERS[0]?.prompt} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKeyDown} />
+        <textarea id={inputId} rows={2} value={draft} disabled={keyMissing} placeholder={ASK_PROMPT_STARTERS[0]?.prompt} onChange={(e) => setDraft(e.target.value)} onKeyDown={onKeyDown} />
         <div className="ask-actions">
           {running && (
             <button type="button" className="btn sm ghost" onClick={() => session?.cancel()}>

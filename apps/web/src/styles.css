@@ -69,6 +69,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .alert { background: var(--red-bg); color: var(--red); border: 1px solid #f0c9c0; border-radius: 8px; padding: 10px 14px; margin: 10px 0; }
 .alert.warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-line); }
+.field-error { display: block; color: var(--red); font-size: 13px; }
 
 .signin { max-width: 520px; margin: 40px auto; padding: 28px; }
 .tour { margin: 18px 0 20px; padding-left: 1.4em; display: grid; gap: 12px; }

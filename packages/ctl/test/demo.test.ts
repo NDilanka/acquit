@@ -205,7 +205,7 @@ test("a visitor's session dies with its visitor, and never outlives it", async (
 			// Once the visitor's own expiry passes, the session is refused even though its row stands.
 			db.prepare("UPDATE visitors SET expires_at = ? WHERE id = ?").run("2025-10-08T12:00:00.000Z", created.visitor.id);
 		} finally { db.close(); }
-		assert.deepEqual(await sessionOf(url, created.token), { user: null, visitor: null, mode: "public" });
+		assert.deepEqual(await sessionOf(url, created.token), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${created.token}` } })).status, 401);
 	});
 });
@@ -221,7 +221,7 @@ test("public mode refuses a seeded session that an earlier run left behind", asy
 		} finally { db.close(); }
 		const restored = await fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } });
 		assert.equal(restored.status, 200);
-		assert.deepEqual(await restored.json(), { user: null, visitor: null, mode: "public" });
+		assert.deepEqual(await restored.json(), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
 	});
 });
@@ -274,7 +274,7 @@ test("public mode mints no session from a visitor handle, and dev mode keeps see
 		assert.deepEqual(body.user, { handle: "maya-client", role: "CLIENT" });
 		assert.deepEqual(await (await fetch(`${url}/api/users`)).json(),
 			{ users: [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] });
-		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null, mode: "dev" });
+		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null, mode: "dev", fundingMode: "checkout" });
 	});
 });
 
@@ -458,12 +458,12 @@ test("the session route names the mode it serves, so the page knows which sign-i
 	await apiFixture(false, async url => {
 		const anonymous = await fetch(`${url}/api/session`);
 		assert.equal(anonymous.status, 200);
-		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "public" });
+		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
 	});
 	await apiFixture(true, async url => {
 		const anonymous = await fetch(`${url}/api/session`);
 		assert.equal(anonymous.status, 200);
-		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "dev" });
+		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "dev", fundingMode: "checkout" });
 	});
 });
 
@@ -501,7 +501,7 @@ test("a visitor's own caps bind: its jobs and what one may promise, while one ad
 		assert.deepEqual((await openOutcome(url, first.token, repository, 100001)).body,
 			{ outcome: { kind: "DENIED", reason: "CAP_AMOUNT" } });
 		for (const budget of [40000, 40000, 40000]) assert.equal((await openOutcome(url, first.token, repository, budget)).status, 200);
-		assert.deepEqual((await openOutcome(url, first.token, repository, 1)).body,
+		assert.deepEqual((await openOutcome(url, first.token, repository, 40000)).body,
 			{ outcome: { kind: "DENIED", reason: "CAP_VISITOR_JOBS" } });
 		// The other visitor is untouched by the first one's caps.
 		assert.equal((await openOutcome(url, second.token, second.visitor.repository ?? "maya-client/invoice-app", 40000)).status, 200);
