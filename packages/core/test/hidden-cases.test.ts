@@ -145,7 +145,7 @@ test("the registry names the case files, and those files alone decide the contra
 });
 
 test("a non-dev registry refuses the committed public example, and a dev one may name it", () => {
-	assert.throws(() => buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: EXAMPLE_FIXTURES_PATH })), (error: unknown) => {
+	assert.throws(() => buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: EXAMPLE_FIXTURES_PATH }), {}), (error: unknown) => {
 		assert.ok(error instanceof FixtureConfigError, "the public example did not refuse with a config error");
 		assert.equal(error.code, "FIXTURES_CONFIG_INVALID");
 		assert.deepEqual(error.names, [FIXTURES_ENV]);
