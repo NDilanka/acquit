@@ -5,8 +5,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
-import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import type { CommitSha, JobId, StaffId } from "../../../packages/core/src/ids.ts";
+import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents, VisitorFork } from "../../../packages/core/src/acquit.ts";
+import type { CommitSha, JobId, StaffId, VisitorId } from "../../../packages/core/src/ids.ts";
 import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
 import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
 import { perJobCaseOf, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
@@ -23,7 +23,7 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { operatorEscrow } from "./escrow.ts";
@@ -34,11 +34,10 @@ import type { AskMessage, AskToolSchema } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
-import { memoryRuns } from "../../../packages/core/src/scenarios.ts";
+import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
-import { scenarioReply, scriptedWorkspace } from "./scenarios.ts";
-import type { ScenarioRouting } from "./scenarios.ts";
+import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
  * sees only the fixture its fork was made from, named by its own fork; every other signed-in
@@ -72,6 +71,18 @@ const workMint = async (job: HouseTarget) => {
 	const name = workRepoName(job.repository, job.id);
 	return { repository: `${githubEnv.organization}/${name}`, token: await githubApp.installationToken(githubEnv.organization, [name]) };
 };
+// The App's fork of one visitor's client repository. Without an App there is no fork to make: the visitor opens
+// jobs on the deployment's own repository, which is the only path that exists then. Every other refusal is named,
+// never papered over: a visitor whose own repository was not made must not fall back to a shared one.
+async function forkVisitorRepository(id: VisitorId): Promise<VisitorFork> {
+	try {
+		const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
+		return { kind: "FORKED", repository: forked.repository, id: forked.id };
+	} catch (error) {
+		if (error instanceof GitHubAppNotConfigured) return { kind: "NO_APP" };
+		throw error;
+	}
+}
 // The AI scoping kick: on OpenJob of a fixture that carries a trusted fix, the pinned model drafts
 // the acceptance contract, the four filters run it against the real frozen and fix commits, and the
 // survivors park for the client's approval. The model turn shares the ask ledger's budget log; the
@@ -423,18 +434,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/demo" && method === "POST") {
 		const ipKey = ipKeyOf(req);
 		const id = newVisitorId();
-		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: async () => {
-			try {
-				const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
-				return { kind: "FORKED", repository: forked.repository, id: forked.id };
-			} catch (error) {
-				// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
-				// repository, which is the only path that exists then. Every other refusal is named, never
-				// papered over: a visitor whose own repository was not made must not fall back to a shared one.
-				if (error instanceof GitHubAppNotConfigured) return { kind: "NO_APP" };
-				throw error;
-			}
-		} });
+		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: () => forkVisitorRepository(id) });
 		if (created.kind === "CAPPED") { json(res, 429, { error: created.reason }); return; }
 		if (created.kind === "NOT_CONFIGURED") {
 			json(res, 503, { error: "DEMO_NOT_CONFIGURED", detail: "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through." });
@@ -1072,26 +1072,25 @@ function jobHandles(job: JobProjection): Record<string, string> {
 	}
 	return handles;
 }
-// The judge scenarios' server side. One run per POST, kept in this process: a restart ends the runs, and
-// the jobs they opened stay in the core. Each visitor's run opens the job on the repository and the first
-// issue its own catalog names, the same ones /api/repos offers that visitor. The scripted push goes through
-// the House's git port, so it reaches the job's work repo the way the House's own delivery does.
-const scenarioRuns = memoryRuns();
+// The judge scenarios' server side. Each start provisions a visitor of its own for its run, so one session can run
+// all five, and each run's job lives on its own fork. The runs are kept in this process, bounded by the core's
+// store: a restart ends them, and the jobs they opened stay in the core. The scenarios open on the one fixture the
+// deployment names (ACQUIT_SCENARIO_FIXTURE), whose frozen suite the scripted trees are written for. The scripted
+// push goes through the House's git port, so it reaches the job's work repo the way the House's own delivery does.
+const scenarioRuns = boundedRuns();
 const scenarioStore = new SqliteStore(baseSettings.databaseUrl);
 const scenarioState = join(resolve(databasePath, ".."), "scenarios");
 mkdirSync(scenarioState, { recursive: true, mode: 0o700 });
 const scenarioWork = gitWorkPort({ stateRoot: join(scenarioState, "checkouts"), workRoot: join(scenarioState, "work"), mint: workMint, env: process.env });
-const scenarioRouting: ScenarioRouting = {
-	runs: scenarioRuns,
-	depsFor: visitor => {
-		const first = fixtureCatalog(fixtures, { fork: visitor.repository, source: clientRepository })[0];
-		const issue = first?.issues[0];
-		if (!first || !issue) return null;
-		return { acquit, store: { readJob: id => scenarioStore.readJob(id), db }, runs: scenarioRuns, now: clock.now, devEnabled,
-			workspace: scriptedWorkspace({ work: scenarioWork, readJob: id => scenarioStore.readJob(id) }),
-			repository: first.repository, issueNumber: issue.number };
+const scenarioRouting = scenarioRoutingFor({
+	acquit, store: { readJob: id => scenarioStore.readJob(id), db }, runs: scenarioRuns, now: clock.now, devEnabled,
+	workspace: scriptedWorkspace({ work: scenarioWork, readJob: id => scenarioStore.readJob(id) }),
+	fixture: scenarioFixtureOf(fixtures, scenarioFixtureKey),
+	provision: async requester => {
+		const id = newVisitorId();
+		return provisionDemoVisitor(acquit, { id, ipKey: requester.ipKey, fork: () => forkVisitorRepository(id) });
 	},
-};
+});
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });

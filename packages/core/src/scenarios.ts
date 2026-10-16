@@ -1,7 +1,7 @@
-// The judge scenarios: five named paths through one visitor's job, driven on the server. Each step acts
-// through acquit.execute as the visitor's own client or operator, waits on the verifier and PayPal the
-// way the job row reports them, and records its own timing. The run lives on the server, so a closed
-// tab does not stop it.
+// The judge scenarios: five named paths through one run visitor's job, driven on the server. Each step acts
+// through acquit.execute as the run visitor's own client or operator, waits on the verifier and PayPal the
+// way the job row reports them, and records its own timing. The run lives on the server, so a closed tab
+// does not stop it. A run is retained only once its job exists, and the store keeps a bounded number.
 
 import { createHash, randomUUID } from "node:crypto";
 import type { Acquit, Actor, CommandOutcome, UserCommand } from "./acquit.ts";
@@ -17,6 +17,11 @@ export const SCENARIO_NAMES = ["verified-and-paid", "hidden-test-fail", "test-ta
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 export function isScenarioName(value: string): value is ScenarioName {
 	return (SCENARIO_NAMES as readonly string[]).includes(value);
+}
+
+/** The arbiter's verdict is opened only while development is on. Outside it the start is refused before anything is retained. */
+export function scenarioNeedsDev(name: ScenarioName): boolean {
+	return name === "dispute-arbiter";
 }
 
 export const SCENARIO_LABELS = {
@@ -42,9 +47,21 @@ export type ScenarioStep = {
 /** The job's status when the run stops, and the literal reason that status was reached for. */
 export type ScenarioEndState = { readonly jobStatus: JobStatus; readonly reason: string | null };
 
+/** The end state each scenario must reach to be DONE. Any other end is FAILED, with the observed end recorded. */
+export const EXPECTED_END_STATES: Readonly<Record<ScenarioName, ScenarioEndState>> = {
+	"verified-and-paid": { jobStatus: "PAID", reason: "CLIENT_APPROVAL" },
+	"hidden-test-fail": { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
+	"test-tamper": { jobStatus: "IN_PROGRESS", reason: "PROTECTED_PATH_MODIFIED" },
+	"dispute-arbiter": { jobStatus: "PAID", reason: "ARBITER_UPHELD" },
+	"deadline-refund": { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" },
+};
+
 export type ScenarioRun = {
 	readonly id: string;
 	readonly name: ScenarioName;
+	/** The signed-in visitor that started the run. Only that visitor may read it. */
+	readonly requesterId: string;
+	/** The run's own visitor: the client and operator its job's steps act as. */
 	readonly visitorId: string;
 	readonly jobId: string;
 	readonly steps: readonly ScenarioStep[];
@@ -60,16 +77,69 @@ export type ScenarioWorkspace = { push(jobId: JobId, tree: ScriptedTree): Promis
 
 export type ScenarioVisitor = { readonly id: VisitorId; readonly clientHandle: string; readonly operatorHandle: string; readonly repository: string | null };
 
-export type ScenarioRuns = { save(run: ScenarioRun): void; get(id: string): ScenarioRun | undefined };
+/** How many runs one requester keeps, how many it may have RUNNING at once, and how many the store keeps in all. */
+export const SCENARIO_RUNS_PER_REQUESTER = 10;
+export const SCENARIO_RUNNING_PER_REQUESTER = 5;
+export const SCENARIO_RUNS_TOTAL = 500;
+export type RunBounds = { readonly perRequester: number; readonly running: number; readonly total: number };
+const DEFAULT_BOUNDS: RunBounds = { perRequester: SCENARIO_RUNS_PER_REQUESTER, running: SCENARIO_RUNNING_PER_REQUESTER, total: SCENARIO_RUNS_TOTAL };
 
-export function memoryRuns(): ScenarioRuns {
+export type RunAdmissionRefusal = "SCENARIO_RUNNING_LIMIT" | "SCENARIO_STORE_FULL";
+/** One start's place in the store, from admission until the run is committed or the start is abandoned. */
+export type RunSlot = { commit(run: ScenarioRun): void; release(): void };
+export type RunAdmission = { readonly kind: "ADMITTED"; readonly slot: RunSlot } | { readonly kind: "REFUSED"; readonly code: RunAdmissionRefusal };
+
+export type ScenarioRuns = {
+	/** Reserves a place for one start, or refuses it by name. Nothing is retained until the slot commits. */
+	admit(requesterId: string): RunAdmission;
+	/** Writes the progress of a committed run. */
+	save(run: ScenarioRun): void;
+	get(id: string): ScenarioRun | undefined;
+	size(): number;
+};
+
+/**
+ * The in-process run store. A start is admitted while its requester has fewer than `running` runs in
+ * flight and the store has room. A full requester or store evicts its oldest finished run. A running run
+ * is never evicted, so an admitted start always finds its place. The store lives in this process: a
+ * restart ends the runs, and persisting bounded snapshots is A2.4b's.
+ */
+export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS): ScenarioRuns {
 	const runs = new Map<string, ScenarioRun>();
-	return { save: run => { runs.set(run.id, run); }, get: id => runs.get(id) };
-}
+	const admitted = new Map<string, number>();
+	let admittedTotal = 0;
+	const admittedOf = (requesterId: string): number => admitted.get(requesterId) ?? 0;
+	const evictOldestFinished = (among: (run: ScenarioRun) => boolean): boolean => {
+		for (const run of runs.values()) {
+			if (run.state === "RUNNING" || !among(run)) continue;
+			runs.delete(run.id);
+			return true;
+		}
+		return false;
+	};
+	return {
+		admit(requesterId) {
+			const own = [...runs.values()].filter(run => run.requesterId === requesterId);
+			const running = own.filter(run => run.state === "RUNNING").length + admittedOf(requesterId);
+			if (running >= bounds.running) return { kind: "REFUSED", code: "SCENARIO_RUNNING_LIMIT" };
+			if (own.length + admittedOf(requesterId) >= bounds.perRequester) evictOldestFinished(run => run.requesterId === requesterId);
 
-export class ScenarioRefused extends Error {
-	readonly code: "DEV_DISABLED";
-	constructor(code: "DEV_DISABLED") { super(code); this.code = code; }
+			if (runs.size + admittedTotal >= bounds.total && !evictOldestFinished(() => true)) return { kind: "REFUSED", code: "SCENARIO_STORE_FULL" };
+			admitted.set(requesterId, admittedOf(requesterId) + 1);
+			admittedTotal++;
+			let open = true;
+			const close = () => {
+				if (!open) return;
+				open = false;
+				admitted.set(requesterId, admittedOf(requesterId) - 1);
+				admittedTotal--;
+			};
+			return { kind: "ADMITTED", slot: { commit: run => { close(); runs.set(run.id, run); }, release: close } };
+		},
+		save: run => { runs.set(run.id, run); },
+		get: id => runs.get(id),
+		size: () => runs.size,
+	};
 }
 
 export type ScenarioDeps = {
@@ -80,7 +150,7 @@ export type ScenarioDeps = {
 	/** The job clock. Deadlines are set from it, and the arbiter path is only open while it is development. */
 	readonly now: () => Instant;
 	readonly devEnabled: boolean;
-	/** The fixture the visitor's job opens on. */
+	/** The repository and issue the job opens on: the run visitor's fork, or the fixture's own repository. */
 	readonly repository: string;
 	readonly issueNumber: number;
 	/** Called once the job exists, for a deployment that sets per-job state the open does not carry. */
@@ -88,6 +158,12 @@ export type ScenarioDeps = {
 	readonly pollMs?: number;
 	readonly waitMs?: number;
 };
+
+/** A refusal the start answers by name. The code is a closed scenario code, a cap code, or the core's own denial reason. */
+export class ScenarioRefused extends Error {
+	readonly code: string;
+	constructor(code: string, detail: string = code) { super(detail); this.name = "ScenarioRefused"; this.code = code; }
+}
 
 const DAY_MS = 86_400_000;
 const PRICE = usd("400.00");
@@ -127,22 +203,23 @@ function endStateOf(row: JobRow): ScenarioEndState {
 export type StartedScenario = { readonly run: ScenarioRun; readonly finished: Promise<ScenarioRun> };
 
 /**
- * Starts one scenario for one visitor. Resolves once the job exists, with the run as it stands; the
- * rest of the chain continues in `finished`. A refused start throws ScenarioRefused before any step.
+ * Starts one scenario on one run visitor, holding the slot the store admitted for it. The open is the
+ * first step. It runs before anything is retained, so a refused open releases the slot and leaves no run
+ * behind. Once the job exists the run is committed to the slot and the rest of the chain continues in
+ * `finished`. The run is DONE only when it reaches its scenario's expected end state.
  */
-export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visitor: ScenarioVisitor): Promise<StartedScenario> {
-	if (name === "dispute-arbiter" && !deps.devEnabled) throw new ScenarioRefused("DEV_DISABLED");
+export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visitor: ScenarioVisitor, requesterId: string, slot: RunSlot): Promise<StartedScenario> {
+	if (scenarioNeedsDev(name) && !deps.devEnabled) { slot.release(); throw new ScenarioRefused("DEV_DISABLED"); }
 	const runId = `scn_${randomUUID()}`;
 	const pollMs = deps.pollMs ?? 25;
 	const waitMs = deps.waitMs ?? 120_000;
 	const ctx: Context = {};
 	const steps: ScenarioStep[] = [];
-	let current: ScenarioRun = { id: runId, name, visitorId: visitor.id, jobId: "", steps, state: "RUNNING", endState: null };
+	let current: ScenarioRun | null = null;
 	const publish = (patch: Partial<ScenarioRun>) => {
-		current = { ...current, ...patch, steps: [...steps] };
+		current = { ...current!, ...patch, steps: [...steps] };
 		deps.runs.save(current);
 	};
-	publish({});
 
 	const client: Actor = { role: "CLIENT", clientId: visitor.clientHandle as ClientId, tenant: visitor.id as VisitorId,
 		...(visitor.repository ? { repository: visitor.repository } : {}) };
@@ -153,7 +230,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			const outcome = await deps.acquit.execute(actor, stepKey(runId, stepName), command);
 			if (outcome.kind === "DENIED") {
 				if (outcome.reason === "BUSY" && attempt < 3) continue;
-				throw new Error(`${command.type} refused: ${outcome.reason}`);
+				throw new ScenarioRefused(outcome.reason, `${command.type} refused: ${outcome.reason}`);
 			}
 			return outcome;
 		}
@@ -178,10 +255,9 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	const open = (days: number): ChainStep => ({ name: "open-job", actor: "CLIENT", label: SCENARIO_LABELS.scripted, run: async () => {
 		const outcome = await send(client, "open-job", { type: "OpenJob", repository: deps.repository, issueNumber: deps.issueNumber,
 			budget: PRICE, deliveryEndsAt: deliveryEndsAt(days) });
-		if (outcome.result.kind !== "JOB") throw new Error("the open did not return a job");
+		if (outcome.result.kind !== "JOB") throw new ScenarioRefused("SCENARIO_OPEN_FAILED");
 		ctx.jobId = outcome.result.job.id;
 		deps.onOpened?.(ctx.jobId);
-		publish({ jobId: ctx.jobId });
 		return `opened ${ctx.jobId}`;
 	} });
 	const bid: ChainStep = { name: "place-bid", actor: "OPERATOR", label: SCENARIO_LABELS.scripted, run: async () => {
@@ -251,40 +327,44 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		"dispute-arbiter": [open(7), bid, accept, push("honest-reference-table"), submit, dispute, arbiter, release],
 		"deadline-refund": [open(1), bid, accept, advanceClock, refund],
 	};
-	const chain = chains[name];
+	const [opening, ...rest] = chains[name];
 
-	// The caller gets the run once the job exists: the open is the first step, and the rest runs after the reply.
-	let announce!: () => void;
-	const opened = new Promise<void>(resolve => { announce = resolve; });
+	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides.
+	const record = async (step: ChainStep): Promise<{ readonly thrown: unknown } | null> => {
+		const startedAt = new Date().toISOString();
+		let outcome: string;
+		let failure: { readonly thrown: unknown } | null = null;
+		try {
+			outcome = await step.run(ctx);
+		} catch (error) {
+			failure = { thrown: error };
+			outcome = `FAILED ${error instanceof Error ? error.message : String(error)}`;
+		}
+		const endedAt = new Date().toISOString();
+		steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
+			outcome: outcome.slice(0, 300), label: step.label });
+		return failure;
+	};
+
+	const opened = await record(opening);
+	if (opened !== null) { slot.release(); throw opened.thrown; }
+	current = { id: runId, name, requesterId, visitorId: visitor.id, jobId: ctx.jobId!, steps: [...steps], state: "RUNNING", endState: null };
+	slot.commit(current);
+
 	const runChain = async (): Promise<ScenarioRun> => {
-		for (const step of chain) {
-			const startedAt = new Date().toISOString();
-			let outcome: string;
-			try {
-				outcome = await step.run(ctx);
-			} catch (error) {
-				const detail = error instanceof Error ? error.message : String(error);
-				const endedAt = new Date().toISOString();
-				steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
-					outcome: `FAILED ${detail}`.slice(0, 300), label: step.label });
-				publish({ state: "FAILED" });
-				announce();
-				return current;
-			}
-			const endedAt = new Date().toISOString();
-			steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
-				outcome, label: step.label });
+		for (const step of rest) {
+			if (await record(step) !== null) { publish({ state: "FAILED" }); return current!; }
 			publish({});
 			await deps.acquit.tick();
-			announce();
 		}
-		const row = await rowOf();
-		publish({ state: "DONE", endState: endStateOf(row) });
-		return current;
+		const endState = endStateOf(await rowOf());
+		const expected = EXPECTED_END_STATES[name];
+		const matches = endState.jobStatus === expected.jobStatus && endState.reason === expected.reason;
+		publish({ state: matches ? "DONE" : "FAILED", endState });
+		return current!;
 	};
 	// A chain that dies outside its own steps (a tick, the final read) still ends the run as FAILED, so
 	// `finished` never rejects and no caller is left holding an unhandled rejection.
-	const finished = runChain().catch(() => { publish({ state: "FAILED" }); return current; }).finally(() => announce());
-	await opened;
-	return { run: current, finished };
+	const finished = runChain().catch(() => { publish({ state: "FAILED" }); return current!; });
+	return { run: current!, finished };
 }

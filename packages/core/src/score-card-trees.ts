@@ -86,12 +86,28 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 
 const MATCHER_STUB = `{ toBe: () => ({ pass: true, message: () => "" }) }`;
 
-function frozenTests(): string {
+export function frozenTests(): string {
 	const cases = FROZEN_ROWS.map((row, index) => {
 		const lines = row.amounts.map(amount => `{ amount: ${amount} }`).join(", ");
 		return `it('case ${index + 1}', () => { expect(formatTotal([${lines}], '${row.currency}')).toBe('${row.expected}'); });`;
 	});
 	return ["import { it, expect } from 'vitest';", "import { formatTotal } from '../src/money';", ...cases, ""].join("\n");
+}
+
+const VISIBLE_CASE = /it\('case \d+', \(\) => \{ expect\(formatTotal\(\[([^\]]*)\], '([A-Z]{3})'\)\)\.toBe\('([^']*)'\)/g;
+
+/**
+ * Whether a checkout's frozen suite carries the score card's visible rows, in order, and imports the
+ * formatter the trees write. A deployment's fixture that differs here is not the one the trees were written for.
+ */
+export function frozenSuiteMatchesCorpus(suite: string): boolean {
+	const rows = [...suite.matchAll(VISIBLE_CASE)].map(match => ({
+		amounts: [...match[1].matchAll(/amount: ([0-9.]+)/g)].map(amount => Number(amount[1])),
+		currency: match[2],
+		expected: match[3],
+	}));
+	const wanted = FROZEN_ROWS.map(row => ({ amounts: [...row.amounts], currency: row.currency, expected: row.expected }));
+	return JSON.stringify(rows) === JSON.stringify(wanted) && /import \{ formatTotal \} from ['"]\.\.\/src\/money['"]/.test(suite);
 }
 
 function writeFiles(repo: string, files: Files): void {
