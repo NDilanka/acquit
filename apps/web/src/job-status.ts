@@ -134,3 +134,12 @@ const RUN_FAILURE: Record<string, string> = {
 export function runFailureWord(name: string): string {
   return RUN_FAILURE[name] ?? name;
 }
+
+const DRAFT_FAILURE: Record<string, string> = {
+  ISSUE_BODY_UNREADABLE: "the issue text could not be read",
+  PIPELINE_ERROR: "the drafting step hit an internal error",
+};
+/** Why a scoping draft failed, in plain words. A code the table does not know reads as the server sent it. */
+export function draftFailureWord(reason: string): string {
+  return DRAFT_FAILURE[reason] ?? reason;
+}

@@ -5,7 +5,7 @@ import { api, ApiError } from "../api";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
-import { bidStatusWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel } from "../job-status";
+import { bidStatusWord, draftFailureWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel } from "../job-status";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
 import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, seededLabel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
@@ -448,7 +448,7 @@ function ScopingReview({ job }: { job: JobView }) {
       <section className="card pad">
         <h2>Acceptance contract</h2>
         <p>
-          The draft failed: <b className="mono">{panel.reason}</b>. Nothing was frozen. A draft never retries; a new job starts a new
+          The draft failed: <b>{draftFailureWord(panel.reason)}</b>. Nothing was frozen. A draft never retries; a new job starts a new
           draft.
         </p>
       </section>

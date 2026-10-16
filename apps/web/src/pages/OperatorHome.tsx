@@ -83,15 +83,16 @@ export function OperatorHome() {
                   <span>Deadline <b className="num">{utc(j.deliveryEndsAt)}</b></span>
                 </div>
               </div>
-              {mine ? (
-                <span className="pill ok">Bid {usd(mine.price)} · {bidStatusWord(mine.status)}</span>
-              ) : j.phase === "BIDDING" ? (
-                <button className="btn sm" onClick={() => setBidding(bidding === j.id ? null : j.id)}>
-                  {bidding === j.id ? "Close" : "Bid"}
-                </button>
-              ) : (
+              <div className="act">
                 <StatusPill job={j} />
-              )}
+                {mine ? (
+                  <span className="pill ok">Bid {usd(mine.price)} · {bidStatusWord(mine.status)}</span>
+                ) : j.phase === "BIDDING" ? (
+                  <button className="btn sm" onClick={() => setBidding(bidding === j.id ? null : j.id)}>
+                    {bidding === j.id ? "Close" : "Bid"}
+                  </button>
+                ) : null}
+              </div>
             </div>
             {bidding === j.id && !mine && (
               <div className="pad bidpane">

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CheckoutPhase, JobPhase, JobStatus } from "./api-types.ts";
-import { bidStatusWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel, type StatusInput } from "./job-status.ts";
+import { bidStatusWord, draftFailureWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel, type StatusInput } from "./job-status.ts";
 
 function job(status: JobStatus, phase: JobPhase, checkoutPhase: CheckoutPhase | null = null, last: "VERIFIED" | "REJECTED" | null = null): StatusInput {
   return { status, phase, checkoutPhase, attempts: { last } };
@@ -71,4 +71,6 @@ test("escrow, bid, ledger, verdict, and run failure values read in plain words",
   assert.deepEqual(verdictLabel("REJECTED"), { label: "Rejected", tone: "alert" });
   assert.equal(runFailureWord("RUN_DEADLINE_EXCEEDED"), "the run ran past its deadline");
   assert.equal(runFailureWord("SOMETHING_NEW"), "SOMETHING_NEW");
+  assert.equal(draftFailureWord("ISSUE_BODY_UNREADABLE"), "the issue text could not be read");
+  assert.equal(draftFailureWord("PIPELINE_ERROR"), "the drafting step hit an internal error");
 });
