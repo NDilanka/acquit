@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColDef, GetRowIdFunc } from "ag-grid-community";
-import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, LedgerLine, MergeProgress, ScopingCase, UserCommand } from "../api-types";
+import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, ScopingCase, UserCommand } from "../api-types";
 import { api, ApiError } from "../api";
+import { allBids, bidder, houseName, lockedBid, payeeBid, proofLine } from "../bids";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
-import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, usd, utc } from "../format";
+import { escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
-import { bidStatusWord, draftFailureWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel } from "../job-status";
+import { bidStatusWord, draftFailureWord, runFailureWord } from "../job-status";
+import { canDeliver, nextStep, timelineEvents, type TimelineJob, type Viewer } from "../job-timeline";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
-import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, seededLabel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
+import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
-import { allBids, houseName, IdChip, lockedBid, NotFound, payeeBid, StatusPill } from "../ui";
+import { IdChip, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
+import { DeliverPanel } from "./job/DeliverPanel";
+import { MoneyCard } from "./job/MoneyCard";
+import { Timeline } from "./job/Timeline";
 
 export function JobPage({ id }: { id: string }) {
   const { user, visitor, fundingMode } = useSession();
@@ -149,6 +154,10 @@ export function JobPage({ id }: { id: string }) {
     }
   };
 
+  const viewer: Viewer = { role: user.role, handle: user.handle };
+  const timeline = job as TimelineJob;
+  const operator = locked?.handle ?? "the operator";
+
   return (
     <>
       <div className="crumbs">
@@ -169,6 +178,11 @@ export function JobPage({ id }: { id: string }) {
               Deadline <b className="num">{utc(job.deliveryEndsAt)}</b>
             </span>
             {job.contract && <span>{suiteLine(job.contract)}</span>}
+            {locked && (
+              <span>
+                Operator <b>{locked.handle}</b>
+              </span>
+            )}
           </div>
         </div>
         {canCancel && (
@@ -177,6 +191,9 @@ export function JobPage({ id }: { id: string }) {
           </button>
         )}
       </div>
+      <p className="next-step">
+        <span className="eyebrow">What happens next</span> <b>{nextStep(timeline, viewer)}</b>
+      </p>
       {cancel.error && <div className="alert">{cancel.error}</div>}
 
       {fundingRetry && (
@@ -193,18 +210,14 @@ export function JobPage({ id }: { id: string }) {
       <div className="grid">
         <div>
           {isClient && <ScopingReview job={job} />}
-          {bidding ? (
-            <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={setConfirm} />
-          ) : (
-            <Ledger job={job} locked={locked} />
-          )}
+          {bidding && <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={setConfirm} />}
           {accept.error && <div className="alert">{accept.error}</div>}
 
           {job.status === "OPEN" && (checkout || (funding && isClient)) && (
             <Checkout job={job} bid={checkout ?? payeeBid(job)} redirecting={checkout !== null} card={source === "card"} />
           )}
 
-          {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
+          {canDeliver(timeline, viewer) && <DeliverPanel jobId={job.id} />}
           {(mergeCommit || disputeCommit || (reviewing && job.reviewEndsAt)) && (
             <section className="card pad">
               <h2>Client review</h2>
@@ -273,64 +286,23 @@ export function JobPage({ id }: { id: string }) {
           )}
           {approve.error && !confirmApprove && <div className="alert">{approve.error}</div>}
           {dispute.error && !disputing && <div className="alert">{dispute.error}</div>}
-          {job.dispute && (
-            <section className="card pad">
-              <h2>Disputed</h2>
-              <p>{disputeNote(job.dispute)}</p>
-              <p className="muted">
-                The review clock is paused. The arbiter releases the payment, refunds the client, or sends the work back. If the arbiter
-                misses the deadline, Acquit releases the payment.
-              </p>
-            </section>
-          )}
-          {judgedStatuses.includes(job.status) && <Verifier job={job} diff={diff} />}
-
           {!isClient && bidding && !job.bids.operators.some((b) => b.handle === user.handle) && (
             <div className="card pad">
               <h2>Place a bid</h2>
               <BidForm job={job} onPlaced={() => void load()} />
             </div>
           )}
+
+          <Timeline
+            events={timelineEvents(timeline)}
+            verifier={judgedStatuses.includes(job.status) ? <Verifier job={timeline} diff={diff} operator={operator} /> : null}
+          />
         </div>
 
         <aside>
+          <MoneyCard job={job} locked={locked} />
           {controls.funding && <FundingChoice job={job} onChosen={() => void load()} />}
           {controls.clock && <JobClock job={job} onAdvanced={setJob} />}
-          <div className="card pad">
-            <h2>Escrow</h2>
-            <div className="kv">
-              <span>Status</span>
-              <b>{statusLabel(job).label}</b>
-            </div>
-            <div className="kv">
-              <span>Escrow</span>
-              <b>{escrowWord(job.escrow)}</b>
-            </div>
-            {locked && (
-              <div className="kv">
-                <span>Locked to</span>
-                <b>{locked.handle}</b>
-              </div>
-            )}
-            {reviewing && job.reviewEndsAt && (
-              <div className="kv">
-                <span>Review ends</span>
-                <b className="num">{utc(job.reviewEndsAt)}</b>
-              </div>
-            )}
-            {job.dispute && (
-              <div className="kv">
-                <span>Arbiter decides by</span>
-                <b className="num">{utc(job.dispute.resolveBy)}</b>
-              </div>
-            )}
-            <div className="kv">
-              <span>Attempts</span>
-              <b className="num">
-                {job.receipt ? `${job.attempts.used} used` : `${job.attempts.used} used, ${job.attempts.left} left`}
-              </b>
-            </div>
-          </div>
         </aside>
       </div>
 
@@ -579,15 +551,6 @@ function CaseRow({
   );
 }
 
-function bidder(bid: BidView): string {
-  return bid.label === "HOUSE" ? `House: ${houseName(bid.handle)}` : bid.handle;
-}
-
-function proofLine(bid: BidView): string {
-  if (bid.label === "HOUSE") return bid.houseLine || `${bid.paidReceipts} passed verified CI`;
-  return `${bid.paidReceipts} verified receipt${bid.paidReceipts === 1 ? "" : "s"}`;
-}
-
 const bidRowId: GetRowIdFunc<BidView> = (p) => p.data.id;
 
 function Bids({
@@ -801,117 +764,20 @@ function Checkout({ job, bid, redirecting, card }: { job: JobView; bid: BidView 
   );
 }
 
-const mergeTone: Record<MergeProgress["phase"], string> = { PENDING: "pill held", MERGED: "pill ok", NEEDS_HUMAN: "alert warn" };
-
-function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) {
-  const { receipt, contract } = job;
-  const refund = job.ledger.find((line) => line.kind === "REFUND");
-  const pr = receipt?.pullRequest ?? job.pullRequest;
-  const reason = refundNote(job.refundReason, job.status === "REFUNDED", job.attempts.used + job.attempts.left);
-  const arbiter = arbiterNoteLine(job);
-  const seeded = receipt && seededLabel(receipt.source);
-  return (
-    <section className="card pad statuspanel">
-      <pre className="mono">
-        {`Status: ${statusLabel(job).label}\n`}
-        {locked ? `Operator: ${locked.handle}\n` : ""}
-        {`Escrow: ${escrowWord(job.escrow)}${locked && job.escrow === "HELD" ? `, locked to ${locked.handle}` : ""}`}
-        {receipt && (
-          <>
-            {"\nReceipt: "}
-            <IdChip value={receipt.id} />
-          </>
-        )}
-        {seeded && (
-          <>
-            {" "}
-            <span className="pill new">{seeded}</span>
-          </>
-        )}
-      </pre>
-      {pr !== null &&
-        (contract ? (
-          <p>
-            Pull request{" "}
-            <a href={`https://github.com/${contract.repository}/pull/${pr}`} target="_blank" rel="noreferrer">
-              {contract.repository}#{pr}
-            </a>
-          </p>
-        ) : (
-          <p>Pull request #{pr}</p>
-        ))}
-      {receipt && (
-        <p className="muted">
-          Paid {usd(receipt.paid)} at {utc(receipt.releasedAt)}. Frozen tests {receipt.frozen.passed}/{receipt.frozen.expected}, hidden
-          tests {receipt.hidden.passed}/{receipt.hidden.expected}, attempts {receipt.attemptsUsed} of {job.attempts.used + job.attempts.left}.
-          Approved commit <IdChip value={receipt.mergeCommit} />.
-        </p>
-      )}
-      {job.merge && (
-        <p>
-          <span className={`${mergeTone[job.merge.phase]} merge-note`}>{mergeNote(job.merge, job.pullRequest, job.mergeCommit)}</span>
-        </p>
-      )}
-      {job.status === "PAID" && job.releaseAuthority && (
-        <p>
-          <b>{authorityNote(job.releaseAuthority)}.</b>
-        </p>
-      )}
-      {job.release && (
-        <p className="muted small">
-          Payout item <IdChip value={job.release.payoutItemId} />, capture <IdChip value={job.release.captureId} />
-        </p>
-      )}
-      {refund && (
-        <p>
-          Refunded <b className="num">{usd(refund.cents)}</b> to the client at {utc(refund.at)}.
-        </p>
-      )}
-      {reason && (
-        <p>
-          <b>{reason}</b>
-        </p>
-      )}
-      {arbiter && <p className="muted">{arbiter}</p>}
-    </section>
-  );
-}
-
-type Tally = { readonly expected: number; readonly passed: number };
-
-type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readonly at: string } & (
-  | { readonly result: "REJECTED"; readonly reasons: readonly string[]; readonly reasonsTruncated: number }
-  | { readonly result: "VERIFIED"; readonly frozen: Tally; readonly hidden: Tally; readonly pullRequest: number }
-);
-
-type VerifierFields = {
-  readonly attempts: {
-    readonly used: number;
-    readonly left: number;
-    readonly history: readonly Attempt[];
-    readonly pending: { readonly ordinal: number; readonly sourceCommit: string; readonly submittedAt: string; readonly runEndsAt: string } | null;
-    readonly failure: { readonly sourceCommit: string; readonly name: string; readonly detail: string; readonly at: string } | null;
-  };
-};
-
-function VerdictPill({ result }: { result: "VERIFIED" | "REJECTED" }) {
-  const { label, tone } = verdictLabel(result);
-  return <span className={`pill ${tone}`}>{label}</span>;
-}
-
 /** Only these statuses carry the attempt history in the job view; a PAID job's proof lives in its receipt. */
 const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
 
-function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
-  // api-types.ts does not mirror the projection's history, pending, or failure fields.
-  const { attempts, contract } = job as JobView & VerifierFields;
+/** The verifier's run state and the House run's diff. The judged attempts themselves are on the timeline. */
+function Verifier({ job, diff, operator }: { job: TimelineJob; diff: JobDiff | null; operator: string }) {
+  const { attempts, contract } = job;
   const total = attempts.used + attempts.left;
   const { pending, failure, history } = attempts;
   // A diff recorded for an older run would describe work the verifier is no longer judging.
   const latest = [pending?.sourceCommit, history[history.length - 1]?.sourceCommit];
   const shownDiff = diff && latest.includes(diff.commit) ? diff : null;
+  const idle = history.length === 0 && !pending;
   return (
-    <section className="card bids">
+    <section className="card verifier">
       <div className="pad hd">
         <h2>Verifier</h2>
         <small className="muted">
@@ -928,66 +794,17 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
         </div>
       )}
       {pending && (
-        <>
-          <div className="section-label">Attempt {pending.ordinal} of {total}</div>
-          <p className="pad">
-            Verification in progress for commit <IdChip value={pending.sourceCommit} />, submitted{" "}
-            {utc(pending.submittedAt)}. The run ends by {utc(pending.runEndsAt)}.
-          </p>
-        </>
+        <p className="pad">
+          Attempt {pending.ordinal} of {total} is being verified for commit <IdChip value={pending.sourceCommit} />, submitted{" "}
+          {utc(pending.submittedAt)}. The run ends by {utc(pending.runEndsAt)}.
+        </p>
       )}
-      {history.length === 0 && !pending && <p className="pad muted">No attempt has been judged.</p>}
-      {history.map((a) => (
-        <div key={a.ordinal}>
-          <div className="section-label">Attempt {a.ordinal} of {total}</div>
-          <dl className="kvs pad">
-            <dt>Verifier result</dt>
-            <dd>
-              <VerdictPill result={a.result} />
-            </dd>
-            <dt>Source commit</dt>
-            <dd>
-              <IdChip value={a.sourceCommit} />
-            </dd>
-            <dt>Judged</dt>
-            <dd className="num">{utc(a.at)}</dd>
-            {a.result === "REJECTED" ? (
-              <>
-                <dt>Reasons</dt>
-                <dd>
-                  <ul className="reasons">
-                    {a.reasons.map((r) => (
-                      <li key={r}>{r}</li>
-                    ))}
-                    {a.reasonsTruncated > 0 && <li className="muted">and {a.reasonsTruncated} more reasons not shown</li>}
-                  </ul>
-                </dd>
-              </>
-            ) : (
-              <>
-                <dt>Frozen tests</dt>
-                <dd className="num">
-                  {a.frozen.passed} passed{contract && ` (suite frozen at ${contract.frozenAt.slice(0, 7)})`}
-                </dd>
-                <dt>Hidden tests</dt>
-                <dd className="num">{a.hidden.passed} passed</dd>
-                <dt>Required tests</dt>
-                <dd className="num">{a.frozen.expected + a.hidden.expected} completed, 0 skipped or missing</dd>
-                <dt>Pull request</dt>
-                <dd>
-                  {contract ? (
-                    <a href={`https://github.com/${contract.repository}/pull/${a.pullRequest}`} target="_blank" rel="noreferrer">
-                      {contract.repository}#{a.pullRequest}
-                    </a>
-                  ) : (
-                    `#${a.pullRequest}`
-                  )}
-                </dd>
-              </>
-            )}
-          </dl>
-        </div>
-      ))}
+      {idle && (
+        <p className="pad muted">
+          {operator}'s agent has {total} attempts.
+          {contract && ` Every attempt runs ${contract.frozenTests} visible and ${contract.hiddenTests} hidden tests.`}
+        </p>
+      )}
       {shownDiff && (
         <>
           <div className="section-label">House run diff</div>
@@ -1009,34 +826,6 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
           </div>
         </>
       )}
-    </section>
-  );
-}
-
-/** The ledger spine: once a bid is accepted, the money lines lead the page. */
-function Ledger({ job, locked }: { job: JobView; locked: BidView | null }) {
-  const columns = useMemo<ColDef<LedgerLine>[]>(
-    () => [
-      {
-        headerName: "Kind",
-        field: "kind",
-        minWidth: 70,
-        flex: 0.9,
-        cellRenderer: (p: { value?: LedgerLine["kind"] }) => p.value && <b className={`k ${p.value.toLowerCase()}`}>{ledgerKindWord(p.value)}</b>,
-      },
-      { headerName: "Amount", field: "cents", minWidth: 66, cellClass: "num strong", valueFormatter: (p) => usd(p.value as number) },
-      { headerName: "When", field: "at", minWidth: 70, cellClass: "num", valueFormatter: (p) => utc(p.value as string) },
-      { headerName: "Note", colId: "note", flex: 2, minWidth: 90, valueGetter: (p) => (p.data ? ledgerNote(p.data, locked) : "") },
-    ],
-    [locked],
-  );
-  return (
-    <section className="card spine">
-      <div className="pad hd">
-        <h2>Ledger</h2>
-        <small className="muted">Every movement of this job's money, in order.</small>
-      </div>
-      <AcquitGrid rows={job.ledger} columns={columns} empty="No money has moved yet." />
     </section>
   );
 }

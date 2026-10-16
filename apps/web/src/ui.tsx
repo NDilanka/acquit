@@ -1,5 +1,4 @@
 import { useState } from "react";
-import type { BidView, JobView } from "./api-types";
 import { shortId } from "./format";
 import { statusLabel, type StatusInput } from "./job-status";
 import { Link } from "./router";
@@ -73,21 +72,3 @@ export function ConnectedRepo({ repository }: { repository: string | null }) {
   );
 }
 
-export function houseName(handle: string): string {
-  return handle.replace(/^house-/, "");
-}
-
-/** Operator bids first, then the House bid: the order the API serves them in. */
-export function allBids(job: JobView): BidView[] {
-  return [...job.bids.operators, ...(job.bids.house ? [job.bids.house] : [])];
-}
-
-export function lockedBid(job: JobView): BidView | null {
-  if (!job.lockedTo) return null;
-  return allBids(job).find((b) => b.operator === job.lockedTo) ?? null;
-}
-
-/** The order's payee: the locked operator once escrow holds, the chosen bid while the order is still being made. */
-export function payeeBid(job: JobView): BidView | null {
-  return lockedBid(job) ?? allBids(job).find((b) => b.status === "CHOSEN") ?? null;
-}

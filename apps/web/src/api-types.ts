@@ -239,6 +239,21 @@ export type JobDiff = {
 /** `GET /api/jobs/:id` only: the job response plus the House run's diff, null when the job has none. */
 export type JobDetailResponse = JobResponse & { readonly diff: JobDiff | null };
 
+/** One judged attempt. A VERIFIED one carries the test tallies; a REJECTED one carries the reasons. */
+export type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readonly at: string } & (
+  | { readonly result: "REJECTED"; readonly reasons: readonly string[]; readonly reasonsTruncated: number }
+  | { readonly result: "VERIFIED"; readonly frozen: TestTally; readonly hidden: TestTally; readonly pullRequest: number }
+);
+
+/** The attempt fields the projection serves on a job, which JobView above does not mirror. */
+export type VerifierFields = {
+  readonly attempts: {
+    readonly history: readonly Attempt[];
+    readonly pending: { readonly ordinal: number; readonly sourceCommit: string; readonly submittedAt: string; readonly runEndsAt: string } | null;
+    readonly failure: { readonly sourceCommit: string; readonly name: string; readonly detail: string; readonly at: string } | null;
+  };
+};
+
 /** A judge-mode visitor: its own client and operator handles, its forked repository, and when the demo ends. */
 export interface VisitorView {
   readonly id: string;
