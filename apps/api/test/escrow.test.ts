@@ -31,9 +31,16 @@ test("a house-locked job pays the House's net on its own bid", () => {
 
 test("a refund in flight, a refunded job, and another operator's hold are left out", () => {
 	const refundPending = job({ id: "job_refunding", phase: "REFUND_PENDING" });
+	const reviewRefund = job({ id: "job_review_refund", status: "VERIFIED", phase: "REFUND_PENDING" });
 	const refunded = job({ id: "job_refunded", status: "REFUNDED", phase: "REFUNDED", escrow: "REFUNDED" });
 	const others = job({ id: "job_other", lockedTo: "op_noa", bids: { operators: [bid("op_noa", 40000)], house: null } });
-	assert.deepEqual(operatorEscrow([refundPending, refunded, others], "op_devon"), []);
+	assert.deepEqual(operatorEscrow([refundPending, reviewRefund, refunded, others], "op_devon"), []);
+});
+
+test("a checkout refund still in funding is not the operator's money", () => {
+	// A capture that did not match its quote: OPEN, FUNDING, checkoutPhase REFUND_PENDING, the escrow still HELD.
+	const captureMismatch = job({ id: "job_capture_mismatch", status: "OPEN", phase: "FUNDING", checkoutPhase: "REFUND_PENDING" });
+	assert.deepEqual(operatorEscrow([captureMismatch], "op_devon"), []);
 });
 
 test("a job nobody holds for the operator contributes nothing", () => {

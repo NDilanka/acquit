@@ -11,10 +11,15 @@ export type OperatorEscrowRow = { readonly jobId: string; readonly cents: number
 export function operatorEscrow(jobs: readonly JobView[], operatorId: string): OperatorEscrowRow[] {
 	const rows: OperatorEscrowRow[] = [];
 	for (const job of jobs) {
-		if (job.lockedTo !== operatorId || job.escrow !== "HELD" || job.phase === "REFUND_PENDING") continue;
+		if (job.lockedTo !== operatorId || job.escrow !== "HELD" || !payable(job)) continue;
 		const bid = [...job.bids.operators, ...(job.bids.house ? [job.bids.house] : [])].find(b => b.operator === operatorId);
 		if (!bid) continue;
 		rows.push({ jobId: job.id, cents: commercialSplit(bid.price).operatorNet });
 	}
 	return rows;
+}
+
+// An allowlist, because a checkout refund sits in OPEN funding with the escrow still HELD.
+function payable(job: JobView): boolean {
+	return (job.status === "IN_PROGRESS" || job.status === "VERIFIED") && job.phase !== "REFUND_PENDING";
 }
