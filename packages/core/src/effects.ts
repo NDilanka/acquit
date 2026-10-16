@@ -9,7 +9,7 @@ import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, ReceiptId, RequestKey, Version } from "./ids.ts";
-import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, TERMS, wakeAt } from "./job.ts";
+import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, storedVertical, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
@@ -23,8 +23,12 @@ import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
 import type { WebhookEventRow } from "./store.ts";
+import { CODE_VERTICAL, codeVerifier } from "./outcome.ts";
+import type { OutcomeRegistry } from "./outcome.ts";
 import type { VerifierPort } from "./verifier.ts";
 import type { DefinitionOfDone } from "./verifier.ts";
+
+type CallbackReport = NonNullable<Awaited<ReturnType<VerifierPort["parseCallback"]>>>;
 
 export type Effect = JobEffect | OperatorEffect;
 
@@ -174,6 +178,8 @@ export type Ports = {
 	readonly store: Store;
 	readonly paypal: PayPal;
 	readonly verifier: VerifierPort;
+	/** The judges by vertical. Absent means the code vertical alone, over `verifier`, so the deployment behaves as before. */
+	readonly verifiers?: OutcomeRegistry;
 	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
 	readonly workRepo?: WorkRepoPort;
 	/** The AI-scoping kickoff: on OpenJob of a fixture that carries a trusted fix, the deployment
@@ -402,6 +408,23 @@ function backoffFrom(now: Instant): Instant {
 	return instant(new Date(Date.parse(now) + 5000).toISOString());
 }
 
+/** The registry a deployment runs. A deployment that names none runs the code vertical over its one verifier port. */
+export function verifiersOf(ports: Pick<Ports, "verifier" | "verifiers">): OutcomeRegistry {
+	return ports.verifiers ?? { [CODE_VERTICAL]: codeVerifier(ports) };
+}
+
+/**
+ * The callback names no vertical, so each registered judge authenticates its own signature. The first
+ * authentic report wins, and the key it sits under is the vertical whose judge sent it.
+ */
+async function authenticateCallback(ports: Ports, request: Request): Promise<{ readonly vertical: string; readonly parsed: CallbackReport } | null> {
+	for (const [vertical, judge] of Object.entries(verifiersOf(ports))) {
+		const parsed = await judge.verifier.parseCallback(request.clone());
+		if (parsed) return { vertical, parsed };
+	}
+	return null;
+}
+
 /** Starts the run the attempt reserved. A run that was already reported, or whose slot was returned, is not started again. */
 async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "START_VERIFIER" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
 	const job = await ports.store.readJob(effect.jobId);
@@ -418,8 +441,13 @@ async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Ex
 		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "CONTRACT_NOT_FROZEN" });
 		return "WORKED";
 	}
+	const judge = verifiersOf(ports)[storedVertical(job)];
+	if (judge === undefined) {
+		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "VERTICAL_NOT_REGISTERED" });
+		return "WORKED";
+	}
 	try {
-		await ports.verifier.start({ runId: effect.attempt.runId, jobId: job.id, ordinal: effect.attempt.ordinal,
+		await judge.verifier.start({ runId: effect.attempt.runId, jobId: job.id, ordinal: effect.attempt.ordinal,
 			sourceCommit: effect.attempt.sourceCommit, definitionOfDone: done });
 	} catch {
 		// The run may or may not have started. It is never dispatched twice from here, and the run-end timer returns the slot.
@@ -722,15 +750,18 @@ async function finish(ports: Ports, delivery: Delivery, outcome: WebhookOutcome,
 }
 
 export async function ingestVerifierCallback(ports: Ports, request: Request): Promise<Response> {
-	// The port authenticates the judge's signed report. Submitted-program output never reaches this path.
-	const parsed = await ports.verifier.parseCallback(request);
-	if (!parsed) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+	// Each judge authenticates the judge's signed report. Submitted-program output never reaches this path.
+	const authentic = await authenticateCallback(ports, request);
+	if (!authentic) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
+	const { vertical, parsed } = authentic;
 	const job = await ports.store.readJob(parsed.jobId);
 	const pending = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
 	const report = parsed.report;
 	const runId = report.kind === "VERDICT" ? report.verdict.runId : report.failure.runId;
 	const sourceCommit = report.kind === "VERDICT" ? report.verdict.sourceCommit : report.failure.sourceCommit;
-	const waiting = pending !== null && pending.runId === runId && pending.sourceCommit === sourceCommit;
+	// A judge may only finish a job of its own vertical.
+	const judgedBy = job !== null && storedVertical(job) === vertical;
+	const waiting = judgedBy && pending !== null && pending.runId === runId && pending.sourceCommit === sourceCommit;
 	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
 	if (!waiting) return Response.json({ ok: true, applied: false });
 	// The run id is right but the attempt number is not: the report contradicts the attempt it names.
