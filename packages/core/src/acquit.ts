@@ -17,8 +17,8 @@ import type { FixtureContract } from "./fixtures.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
 import type { PayPal, PayPalConfig, ReleaseEvidence } from "./paypal.ts";
-import { platformJobLedger } from "./platform.ts";
-import type { PlatformLedgerView } from "./platform.ts";
+import { platformJobLedger, platformTables } from "./platform.ts";
+import type { PlatformLedgerView, PlatformTables } from "./platform.ts";
 import { SqliteStore } from "./store.ts";
 import { bindVisitorRepository, failVisitor, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
 import type { VisitorRow } from "./visitors.ts";
@@ -71,7 +71,8 @@ export type Query =
 	| { readonly type: "Receipts"; readonly operatorId: OperatorId; readonly cursor: string | null }
 	| { readonly type: "Operator" }
 	| { readonly type: "Credits" }
-	| { readonly type: "PlatformLedger" };
+	| { readonly type: "PlatformLedger" }
+	| { readonly type: "PlatformTables" };
 
 export type QueryResult =
 	/** A single job carries its full projection, so a reader of one job sees its frozen contract. */
@@ -81,6 +82,7 @@ export type QueryResult =
 	| { readonly kind: "OPERATOR"; readonly operator: OperatorView }
 	| { readonly kind: "CREDITS"; readonly credits: CreditAccountView }
 	| { readonly kind: "PLATFORM_LEDGER"; readonly ledger: PlatformLedgerView }
+	| { readonly kind: "PLATFORM_TABLES"; readonly tables: PlatformTables }
 	| { readonly kind: "DENIED"; readonly reason: Failure };
 
 export interface BidView {
@@ -277,6 +279,11 @@ export function createAcquit(config: AcquitConfig): Acquit {
 				case "PlatformLedger": {
 					if (actor.role !== "PLATFORM") return { kind: "DENIED", reason: "NOT_OWNER" };
 					return { kind: "PLATFORM_LEDGER", ledger: { jobs: (await store.listJobs()).map(platformJobLedger) } };
+				}
+				case "PlatformTables": {
+					if (actor.role !== "PLATFORM") return { kind: "DENIED", reason: "NOT_OWNER" };
+					const [rows, operators] = await Promise.all([store.listJobs(), store.listOperators()]);
+					return { kind: "PLATFORM_TABLES", tables: platformTables(rows, operators, counts) };
 				}
 				default: throw new Error("not implemented");
 			}

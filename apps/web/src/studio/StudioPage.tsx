@@ -10,12 +10,12 @@ import {
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
-import type { PlatformJobLedger } from "../api-types";
+import type { PlatformJobLedger, PlatformTables } from "../api-types";
 import { errorText } from "../demo";
 import { Link } from "../router";
 import { useSession } from "../session";
 import { ASK_TOOL_DISPLAY, AskLedgerDrawer, useAskLedger, type AskLedger } from "./AskLedger";
-import { STUDIO_EARNINGS_DATA, STUDIO_ESCROW_DATA } from "../studio-source";
+import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
 import {
   EarningsContext,
   EscrowContext,
@@ -66,9 +66,16 @@ function Notice({ title, children }: { title: string; children: ReactNode }) {
 
 type Load<T> = { kind: "loading" } | { kind: "ready"; data: T } | { kind: "failed"; error: string };
 
+/** The escrow dashboard's book: the ledger the custom widgets total, and the tables the native widgets query. */
+type EscrowBook = { readonly jobs: readonly PlatformJobLedger[]; readonly tables: PlatformTables };
+
+// Module-level sources keep their identity across renders, so Studio only rebuilds when the data does.
+const escrowSource = (book: EscrowBook) => escrowData(book.tables);
+const earningsSource = () => STUDIO_EARNINGS_DATA;
+
 function EscrowDashboard() {
   const ask = useAskLedger("escrow");
-  const [ledger, setLedger] = useState<Load<readonly PlatformJobLedger[]> | { kind: "denied" }>({ kind: "loading" });
+  const [ledger, setLedger] = useState<Load<EscrowBook> | { kind: "denied" }>({ kind: "loading" });
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -77,8 +84,8 @@ function EscrowDashboard() {
       window.removeEventListener("focus", load);
     };
     function load() {
-      api.platformLedger().then(
-        (r) => live && setLedger({ kind: "ready", data: r.jobs }),
+      Promise.all([api.platformLedger(), api.platformTables()]).then(
+        ([r, t]) => live && setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables } }),
         (e: unknown) => {
           if (!live) return;
           if (e instanceof ApiError && e.status === 403) {
@@ -108,8 +115,15 @@ function EscrowDashboard() {
     );
   }
   return (
-    <Dashboard id="escrow" title="Platform escrow" lead="Every job's money across all tenants, refreshed every 30 seconds." load={ledger} ask={ask}>
-      {(jobs, studio) => <EscrowContext.Provider value={jobs}>{studio}</EscrowContext.Provider>}
+    <Dashboard
+      id="escrow"
+      title="Platform escrow"
+      lead="Every job's money across all tenants, refreshed every 30 seconds."
+      load={ledger}
+      ask={ask}
+      source={escrowSource}
+    >
+      {(book, studio) => <EscrowContext.Provider value={book.jobs}>{studio}</EscrowContext.Provider>}
     </Dashboard>
   );
 }
@@ -127,7 +141,13 @@ function EarningsDashboard({ handle }: { handle: string }) {
     };
   }, [handle]);
   return (
-    <Dashboard id="earnings" title="Operator earnings" lead="What your verified jobs paid you, and the receipt for the newest one." load={data}>
+    <Dashboard
+      id="earnings"
+      title="Operator earnings"
+      lead="What your verified jobs paid you, and the receipt for the newest one."
+      load={data}
+      source={earningsSource}
+    >
       {(earnings, studio) => <EarningsContext.Provider value={earnings}>{studio}</EarningsContext.Provider>}
     </Dashboard>
   );
@@ -139,6 +159,7 @@ function Dashboard<T>({
   lead,
   load,
   ask,
+  source,
   children,
 }: {
   id: DashboardId;
@@ -146,12 +167,14 @@ function Dashboard<T>({
   lead: string;
   load: Load<T>;
   ask?: AskLedger;
+  source: (data: T) => AgDataSourcesDefinition<AcquitRegistry>;
   children: (data: T, studio: ReactNode) => ReactNode;
 }) {
   const layout = useSavedLayout(id);
   const narrow = useMedia(NARROW);
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState(false);
+  const studioData = useMemo(() => (load.kind === "ready" ? source(load.data) : null), [load, source]);
   return (
     <div className="studio-page">
       <div className="head">
@@ -186,6 +209,7 @@ function Dashboard<T>({
         <p className="muted">Loading the dashboard…</p>
       ) : (
         load.kind === "ready" &&
+        studioData !== null &&
         children(
           load.data,
           <AcquitStudio
@@ -194,7 +218,7 @@ function Dashboard<T>({
             state={narrow ? stacked(layout.latest.current) : layout.latest.current}
             mode={editing && !narrow ? "edit" : "view"}
             onState={narrow ? undefined : layout.save}
-            data={id === "escrow" ? STUDIO_ESCROW_DATA : STUDIO_EARNINGS_DATA}
+            data={studioData}
             widgets={WIDGETS[id]}
             ask={ask}
           />,

@@ -344,6 +344,9 @@ test("tool rows are worded by what they read", () => {
   assert.equal(askToolLabel("get_order", { id: "5O190127TN364715T" }), "Asking PayPal for order 5O190127TN364715T");
   assert.equal(askToolLabel("get_order", { id: " " }), "Asking PayPal for an order");
   assert.equal(askToolLabel("delegate_to", {}), "Handing off to the widget builder");
+  assert.equal(askToolLabel("delegate_to", { type: { id: "widget", widgetType: "acquit-held", widgetId: "w" } }), "Handing off to the widget builder");
+  assert.equal(askToolLabel("delegate_to", { type: { id: "data" } }), "Handing off to the data agent");
+  assert.equal(askToolLabel("delegate_to", { type: { id: "page" } }), "Handing off to the page agent");
   assert.equal(askToolLabel("something_else", {}), "something_else");
 });
 
@@ -377,7 +380,7 @@ test("the drawer's rows carry text, labelled steps and errors, and skip reasonin
 
 test("a delegation the child failed shows failed in the panel, not done", () => {
   const messages: AgAiChatMessage[] = [
-    { id: "d1", role: "assistant", createdAt: 1, parts: [{ type: "tool_call", toolCall: { toolCallId: "d", name: "delegate_to", status: "complete", args: { type: { id: "widget", widgetType: "acquit-held", widgetId: "held-escrow-main" } }, result: { success: false, issues: [{ message: "The widget delegate did not complete: the child turn was refused." }] } } }] },
+    { id: "d1", role: "assistant", createdAt: 1, parts: [{ type: "tool_call", toolCall: { toolCallId: "d", name: "delegate_to", status: "complete", args: { type: { id: "widget", widgetType: "acquit-held", widgetId: "held-escrow-main" } }, result: { success: false, issues: [{ message: "The delegate did not complete: the child turn was refused." }] } } }] },
     { id: "d2", role: "assistant", createdAt: 2, parts: [{ type: "tool_call", toolCall: { toolCallId: "d2", name: "delegate_to", status: "complete", args: {}, result: { success: true, response: "Added widget held-escrow-main." } } }] },
   ];
   assert.deepEqual(askRows(messages), [

@@ -34,6 +34,8 @@ export const ASK_INSTRUCTIONS = [
   "Give amounts in dollars, name the jobs and PayPal order ids you checked, and when the book and PayPal disagree, say so plainly with both figures.",
   "You only read. You cannot capture, refund, release or pay out money, and you never claim to have done so.",
   "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
+  "When the reader asks a question the escrow tables answer across jobs, operators, bids, verdicts, or PayPal events, delegate it to the data agent with delegate_to.",
+  "When the reader asks to change what the page shows or how it is laid out, delegate it to the page agent with delegate_to.",
 ].join("\n");
 
 const DELEGATION_RECIPE = [
@@ -43,13 +45,23 @@ const DELEGATION_RECIPE = [
   "Report its result honestly: if delegate_to fails, tell the reader the widget was not made and why, and never claim it was.",
 ].join("\n");
 
+/** The data and page agents are Studio's built-ins; the ledger agent hands them questions and changes the same way. */
+const DATA_AND_PAGE_RECIPES = [
+  "## Delegating a question to the data agent",
+  'Call delegate_to exactly in this shape: {"type": {"id": "data"}, "instructions": "<the question as the reader asked it>"}.',
+  "The data agent answers from the escrow tables. Report its answer and the figures it gives. If delegate_to fails, say the question was not answered and why.",
+  "## Delegating a change to the page agent",
+  'Call delegate_to exactly in this shape: {"type": {"id": "page"}, "instructions": "<the change the reader asked for>"}.',
+  "Report its result honestly: if delegate_to fails, tell the reader the page was not changed and why, and never claim it was.",
+].join("\n");
+
 /** The ledger agent's prompt, naming the widget types the dashboard publishes so a delegation picks a real one. */
 export function askInstructions(catalogue: readonly { readonly type: string; readonly description?: string }[]): string {
   if (catalogue.length === 0) {
-    return `${ASK_INSTRUCTIONS}\n\nThe dashboard currently publishes no widget types, so decline a widget request rather than delegating it.`;
+    return `${ASK_INSTRUCTIONS}\n\nThe dashboard currently publishes no widget types, so decline a widget request rather than delegating it.\n\n${DATA_AND_PAGE_RECIPES}`;
   }
   const entries = catalogue.map((entry) => (entry.description ? `- ${entry.type}: ${entry.description}` : `- ${entry.type}`));
-  return [ASK_INSTRUCTIONS, ["## Widget catalogue", ...entries].join("\n"), DELEGATION_RECIPE].join("\n\n");
+  return [ASK_INSTRUCTIONS, ["## Widget catalogue", ...entries].join("\n"), DELEGATION_RECIPE, DATA_AND_PAGE_RECIPES].join("\n\n");
 }
 
 export const ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
@@ -363,8 +375,13 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
       const id = named("id");
       return id ? `Asking PayPal for order ${id}` : "Asking PayPal for an order";
     }
-    case "delegate_to":
+    case "delegate_to": {
+      const type = args.type;
+      const id = typeof type === "object" && type !== null ? (type as { id?: unknown }).id : undefined;
+      if (id === "data") return "Handing off to the data agent";
+      if (id === "page") return "Handing off to the page agent";
       return "Handing off to the widget builder";
+    }
     default:
       return name;
   }

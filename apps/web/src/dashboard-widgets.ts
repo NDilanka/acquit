@@ -186,6 +186,62 @@ export const WIDGET_IDS: Record<DashboardId, readonly AcquitWidgetId[]> = {
   earnings: WIDGET_ROWS.earnings.flat().map((w) => w.id),
 };
 
+/**
+ * Studio's own widget types, seeded below the custom widgets. Each reads the escrow model by
+ * `table.field`, so the native totals and the custom totals come from the same rows. A native widget
+ * has no custom component: Studio draws it, and its id is its key on the page.
+ */
+export type NativeWidgetSpec = {
+  readonly id: string;
+  readonly type: "funnel-chart" | "pivot-grid" | "treemap-chart";
+  readonly title: string;
+  readonly xSpan: number;
+  readonly ySpan: number;
+  readonly dataMapping: Readonly<Record<string, readonly { readonly id: string; readonly aggregation?: "sum" | "count" }[]>>;
+};
+
+export const NATIVE_WIDGETS = {
+  escrow: [
+    [
+      {
+        id: "escrow-funnel",
+        type: "funnel-chart",
+        title: "Jobs by current stage",
+        xSpan: 4,
+        ySpan: 5,
+        dataMapping: { categoryKey: [{ id: "jobs.stage" }], valueKey: [{ id: "jobs.jobId", aggregation: "count" }] },
+      },
+      {
+        id: "escrow-pivot",
+        type: "pivot-grid",
+        title: "Status by operator",
+        xSpan: 4,
+        ySpan: 5,
+        dataMapping: {
+          rows: [{ id: "jobs.operatorHandle" }],
+          columns: [{ id: "jobs.status" }],
+          values: [{ id: "jobs.jobId", aggregation: "count" }],
+        },
+      },
+      {
+        id: "escrow-treemap",
+        type: "treemap-chart",
+        title: "Escrow by operator",
+        xSpan: 4,
+        ySpan: 5,
+        dataMapping: { categoryKey: [{ id: "jobs.operatorHandle" }], valueKey: [{ id: "jobs.held", aggregation: "sum" }] },
+      },
+    ],
+  ],
+  earnings: [],
+} as const satisfies Record<DashboardId, readonly (readonly NativeWidgetSpec[])[]>;
+
+/** Each dashboard's native widget types, which the Ask agent may add beside its custom widget ids. */
+export const NATIVE_TYPES: Record<DashboardId, readonly NativeWidgetSpec["type"][]> = {
+  escrow: NATIVE_WIDGETS.escrow.flat().map((widget) => widget.type),
+  earnings: [],
+};
+
 /** Each dashboard's widget spans by widget type, the size a widget gets when it needs a fresh placement. */
 export const WIDGET_SPANS: Record<DashboardId, Readonly<Record<string, { readonly xSpan: number; readonly ySpan: number }>>> = {
   escrow: Object.fromEntries(WIDGET_ROWS.escrow.flat().map((w) => [w.id, { xSpan: w.xSpan, ySpan: w.ySpan }])),
@@ -196,14 +252,19 @@ export const WIDGET_SPANS: Record<DashboardId, Readonly<Record<string, { readonl
 // overflow, so a widget whose content grows when it is narrowed lists a minimum height here; that
 // way no stacked widget's last line scrolls out of view. The receipt card needs room for its pill,
 // five summary rows and a caption that wraps to two lines at 390 px.
-export const STACKED_MIN_YSPAN: Partial<Record<AcquitWidgetId, number>> = {
+export const STACKED_MIN_YSPAN: Partial<Record<AcquitWidgetId | NativeWidgetSpec["type"], number>> = {
   "acquit-receipt-card": 7,
 };
 
-export type AcquitWidget = { type: AcquitWidgetId; dataMapping: Record<string, never>; format?: AgWidgetDataFormat<unknown> };
+/** A page's widget: a custom widget with no mapping, or a native widget with its table mapping. */
+export type AcquitWidget = {
+  type: AcquitWidgetId | NativeWidgetSpec["type"];
+  dataMapping: Record<string, never> | NativeWidgetSpec["dataMapping"];
+  format?: AgWidgetDataFormat<unknown>;
+};
 
 export interface AcquitRegistry extends AgRegistry {
-  widgets: readonly AgWidgetDefinition<AcquitWidgetId, AcquitWidget>[];
+  widgets: readonly AgWidgetDefinition<AcquitWidgetId | NativeWidgetSpec["type"], AcquitWidget>[];
 }
 
 export type DashboardState = AgReportState<AcquitRegistry>;
