@@ -1,4 +1,5 @@
 import type { BidView, JobView } from "./api-types";
+import { Link } from "./router";
 
 export function StatusPill({ job }: { job: JobView }) {
   const tone =
@@ -10,6 +11,27 @@ export function StatusPill({ job }: { job: JobView }) {
       {job.status}
       {showPhase && <small>· {job.phase}</small>}
     </span>
+  );
+}
+
+/** The one not-found card: a missing page, a missing job, a page another role may not open, and a signed-out bad URL. */
+export function NotFound({
+  title = "Page not found",
+  message,
+  action,
+}: {
+  title?: string;
+  message?: string;
+  action: { readonly to: string; readonly label: string };
+}) {
+  return (
+    <section className="card pad notfound">
+      <h1>{title}</h1>
+      {message && <p className="muted">{message}</p>}
+      <p>
+        <Link to={action.to}>{action.label}</Link>
+      </p>
+    </section>
   );
 }
 

@@ -390,6 +390,18 @@ export function askStatusText(status: AgAiRunStatus): string {
   }
 }
 
+/**
+ * Whether the drawer can take a question. Without a model key on the server the conversation still
+ * opens, but no question can be answered, so the starters and Send stay off and the drawer says why.
+ */
+export function askGate(
+  load: { readonly kind: "loading" } | { readonly kind: "ready"; readonly keyConfigured: boolean } | { readonly kind: "failed" },
+  sessionOpen: boolean,
+): { readonly ready: boolean; readonly keyMissing: boolean } {
+  const keyMissing = load.kind === "ready" && !load.keyConfigured;
+  return { ready: sessionOpen && load.kind === "ready" && !keyMissing, keyMissing };
+}
+
 /** One transcript row as the drawer renders it. */
 export type AskRow =
   | { readonly kind: "text"; readonly key: string; readonly role: "user" | "assistant" | "system"; readonly text: string }
