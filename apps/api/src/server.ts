@@ -8,7 +8,9 @@ import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, JobId, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
-import { coverageGate, hiddenCaseOf, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { perJobCaseOf, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
+import type { PrivateCaseReader } from "../../../packages/core/src/hidden-seal.ts";
 import type { TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
@@ -75,7 +77,16 @@ const scopeDraft: NonNullable<AcquitConfig["scopeDraft"]> = (jobId, fixture) => 
 	})(jobId).catch((error: Error) => console.log(`[scoping] ${jobId}: ${boundedDetail(error.message)}`));
 	return Promise.resolve();
 };
-const acquit = createAcquit({ ...settings, scopeDraft });
+// The close's reveal reads the private scoping file. A file that cannot be read or parsed reads as null,
+// and core names the refusal in the log.
+const privateCases: PrivateCaseReader = jobId => {
+	const name = `${jobId}.json`;
+	try {
+		const file = parseScopingFile(readFileSync(join(scopingDir, name), "utf8"), name);
+		return { candidates: file.cases, salt: file.salt ?? null };
+	} catch { return null; }
+};
+const acquit = createAcquit({ ...settings, scopeDraft, privateCases });
 // The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
 // and the journal mode come with it, so a second worker's write waits for the lock instead of failing
 // the request that carries it.
@@ -779,9 +790,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const fixture = manifest ? fixtures.find(candidate => candidate.hiddenManifest === manifest.hiddenManifest) ?? null : null;
 		const gate = coverageGate(approved, fixture?.coverageFamilies ?? []);
 		if (!gate.ok) { json(res, 422, { error: "COVERAGE_GATE", missing: gate.missing }); return; }
-		const kept = approved.map(hiddenCaseOf);
+		const kept = approved.map(perJobCaseOf);
 		const digest = hiddenManifest(kept).digest;
 		if (!manifest) { json(res, 409, { error: "NO_MANIFEST" }); return; }
+		// The seal is drawn once and travels with the same claim: the manifest names the sealed digest and
+		// the private file keeps the salt. A failed file write rolls both back with the claim.
+		const seal = sealHiddenCases(kept);
 		// The one guarded claim: the store re-reads the job under the write lock, so an approval
 		// lands only while the job is still open for bids — OPEN with phase BIDDING, since an
 		// accepted bid keeps the status OPEN but closes this window. The row moves by
@@ -789,9 +803,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// before the commit. The loser of a race is refused by name; a file write that fails rolls
 		// the whole claim back.
 		const claimed = await scopingStore.claimApproval(jobId, {
-			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest },
+			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest, sealedHiddenCases: seal.sealed },
 			ids: kept.map(test => test.id), digest, counts: scopingRow.counts,
-			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
+			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved, salt: seal.salt }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
 		}, clock.now());
 		if (claimed !== "CLAIMED") {
 			if (claimed === "JOB_NOT_OPEN") json(res, 409, { error: "JOB_NOT_OPEN",
@@ -928,7 +942,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// The book's rows for this operator: settled job receipts plus the seeded history rows, each
 		// marked with the source the receipts table holds.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
-		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository), nextCursor: null }); return;
+		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository, privateCases), nextCursor: null }); return;
 	}
 	if (url.pathname === "/api/me/payouts" && method === "GET") {
 		// The operator's payouts: one row per released job, with the referenced payout item the

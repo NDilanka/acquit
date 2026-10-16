@@ -156,6 +156,8 @@ export type ScopingFile = {
 	readonly contract: string;
 	readonly approved: Instant | null;
 	readonly cases: readonly ScopeCandidate[];
+	/** The seal's salt, 32 bytes in hex. Written at approval and kept private until the job closes. */
+	readonly salt?: string;
 };
 
 export function parseScopingFile(text: string, source: string): ScopingFile {
@@ -171,11 +173,13 @@ export function parseScopingFile(text: string, source: string): ScopingFile {
 	if (typeof value.contract !== "string" || value.contract.trim() === "" || value.contract.length > 4_000) return fail("must carry the contract prose of at most 4000 characters");
 	if (value.approved !== null && typeof value.approved !== "string") return fail("approved must be a timestamp or null");
 	if (!Array.isArray(value.cases)) return fail("must carry a cases array");
+	if (value.salt !== undefined && (typeof value.salt !== "string" || !/^[0-9a-f]{64}$/.test(value.salt))) return fail("salt must be 32 bytes of hex");
 	const seen = new Set<string>();
 	const cases = value.cases.map((raw, index) => parseCandidateValue(raw, `case ${index + 1}`, seen));
 	return { version: 1, jobId: value.jobId as JobId, repository: value.repository,
 		issue: { number: value.issue.number, title: value.issue.title }, frozenAt: value.frozenAt as CommitSha,
-		contract: value.contract, approved: value.approved === null ? null : value.approved as Instant, cases };
+		contract: value.contract, approved: value.approved === null ? null : value.approved as Instant, cases,
+		...(typeof value.salt === "string" ? { salt: value.salt } : {}) };
 }
 
 /** Canonical JSON: key order can never make two identical (target, args) look different to the dedupe. */

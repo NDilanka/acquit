@@ -7,6 +7,7 @@ import { createGitHubApp } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
+import type { PrivateCaseReader } from "./hidden-seal.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { JobFundingMode } from "./funding.ts";
@@ -201,6 +202,8 @@ export type AcquitConfig = {
 	/** The AI-scoping kickoff, run when OpenJob commits a fixture that carries a trusted fix. The
 	 * deployment owns the model, the phases, and the private store; the open never fails with it. */
 	readonly scopeDraft?: Ports["scopeDraft"];
+	/** Reads a job's private approved cases when a sealed job closes, for the reveal. Without it no sealed job reveals. */
+	readonly privateCases?: PrivateCaseReader;
 	/**
 	 * Judge mode. The merchant is the sandbox seller a visitor's operator is paid through; without it
 	 * the demo route refuses by name, because a visitor that cannot be paid cannot bid.
@@ -222,6 +225,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
 		workRepo: github,
 		scopeDraft: config.scopeDraft,
+		privateCases: config.privateCases,
 		clock };
 	let ticking: Promise<void> | null = null;
 	const service: Acquit = {
@@ -242,13 +246,13 @@ export function createAcquit(config: AcquitConfig): Acquit {
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
 					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
-					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources) } : { kind: "DENIED", reason: "NOT_OWNER" };
+					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources, ports.privateCases) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}
 				case "OpenJobs": {
 					const jobs = (await store.listJobs()).filter(row => sameWorld(row) && (row.state.status === "OPEN" ||
 						actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId)));
-					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows, sources)), nextCursor: null };
+					return { kind: "JOBS", jobs: jobs.map(row => projectJob(row, actor, counts, houseRows, sources, ports.privateCases)), nextCursor: null };
 				}
 				case "Operator": {
 					if (actor.role !== "OPERATOR") return { kind: "DENIED", reason: "NOT_OWNER" };
