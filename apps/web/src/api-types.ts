@@ -194,6 +194,9 @@ export type PayoutRow = {
   readonly repository: string;
 };
 
+/** `GET /api/me/escrow`: one row per hold the operator's release will pay, at the operator's net (the price less the operator fee). */
+export type OperatorEscrowRow = { readonly jobId: string; readonly cents: UsdCents };
+
 export type PlatformAttempt = {
   readonly ordinal: number;
   readonly result: "VERIFIED" | "REJECTED";

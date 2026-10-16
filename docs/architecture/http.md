@@ -113,6 +113,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 | GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
+| GET | `/api/me/escrow` | `{ escrow: [{ jobId, cents }] }`: one row per hold the operator's release will pay, at the operator's net (the price less the 10% operator fee, the amount the release pays). A job whose refund is in flight is left out (operators only) |
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.
 
