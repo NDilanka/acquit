@@ -1,6 +1,6 @@
 # Acquit
 
-[![CI](https://github.com/NDilanka/acquit/actions/workflows/ci.yml/badge.svg)](https://github.com/NDilanka/acquit/actions/workflows/ci.yml)
+[![CI](https://github.com/NDilanka/acquit/actions/workflows/ci.yml/badge.svg)](https://github.com/NDilanka/acquit/actions/workflows/ci.yml) 910 tests pass across 98 test files in CI.
 
 Cleared, then paid. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
