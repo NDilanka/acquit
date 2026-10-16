@@ -4,10 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectJob, TERMS } from "../src/job.ts";
-import type { JobRow, JobState, Receipt } from "../src/job.ts";
+import type { JobRow, JobState, LockedBid, Receipt } from "../src/job.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { digestOfHiddenCases, perJobCaseOf, revealHiddenCases, sealHiddenCases } from "../src/hidden-seal.ts";
-import type { PerJobHiddenCase } from "../src/hidden-seal.ts";
+import type { PerJobHiddenCase, PrivateCaseReader } from "../src/hidden-seal.ts";
 import { reduceLedger, usd } from "../src/ledger.ts";
 import { hours, instant, parseJobId } from "../src/ids.ts";
 import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OperatorId, PayoutItemId, ReceiptId, TestId, Version } from "../src/ids.ts";
@@ -48,6 +48,29 @@ function jobRow(state: JobState, contract: JobRow["contract"]): JobRow {
 }
 
 const openState: JobState = { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } };
+const closedState: JobState = { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: later, book: [] };
+const payee: LockedBid = { bidId: "bid_test-1" as BidId, operator: "devon-ops" as OperatorId, payee: merchant, agent: "ts-bugfixer" as AgentId, price: usd("360.00"), eta: hours(48) };
+
+/** The private set a job's reader returns: the drafted candidates, citations included, and the salt that sealed them. */
+const privateSetOf = (salt: string, candidates: readonly ScopeCandidate[] = drafted): PrivateCaseReader => () => ({ candidates, salt });
+
+/** Captures what a call logs, so a refusal is asserted by its fixed text. */
+function capturingLog<T>(run: () => T): { readonly value: T; readonly lines: readonly string[] } {
+	const lines: string[] = [];
+	const original = console.log;
+	console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try { return { value: run(), lines }; } finally { console.log = original; }
+}
+
+function refundedState(): JobState {
+	const held = reduceLedger([], { kind: "Hold", gross: usd("420.00"), at: now });
+	if ("kind" in held) throw new Error("law break");
+	const refunded = reduceLedger(held, { kind: "Refund", refunded: usd("420.00"), at: later });
+	if ("kind" in refunded) throw new Error("law break");
+	return { status: "REFUNDED", payee, book: refunded, reason: "DELIVERY_DEADLINE",
+		refund: { refundId: null, captureId: "TESTCAPTURE" as CaptureId, refunded: usd("420.00"), retainedProcessorFee: usd("15.15"), at: later },
+		history: [], treasury: [] };
+}
 
 function paidState(): JobState {
 	const held = reduceLedger([], { kind: "Hold", gross: usd("420.00"), at: now });
@@ -55,7 +78,7 @@ function paidState(): JobState {
 	const paid = reduceLedger(held, { kind: "Release", operatorNet: usd("360.00"), processorFee: usd("15.15"), platformFee: usd("44.85"), at: later });
 	if ("kind" in paid) throw new Error("law break");
 	return { status: "PAID",
-		payee: { bidId: "bid_test-1" as BidId, operator: "devon-ops" as OperatorId, payee: merchant, agent: "ts-bugfixer" as AgentId, price: usd("360.00"), eta: hours(48) },
+		payee,
 		book: paid,
 		receipt: { id: `rcpt_${jobId}` as ReceiptId, jobId: parseJobId(jobId), operator: "devon-ops" as OperatorId,
 			agent: "ts-bugfixer" as AgentId, pullRequest: 13, mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha,
@@ -89,9 +112,9 @@ test("sealing draws a fresh 32-byte salt and seals the kept set under it", () =>
 
 test("before close, the projection serves the sealed digest and nothing that opens it", () => {
 	const seal = sealHiddenCases(kept);
-	const job = projectJob(jobRow(openState, contractWith(seal.sealed)), maya, new Map());
+	const job = projectJob(jobRow(openState, contractWith(seal.sealed)), maya, new Map(), undefined, undefined, privateSetOf(seal.salt));
 	assert.deepEqual(job.contract?.sealedHiddenCases, { digest: seal.sealed.digest });
-	assert.equal(job.hiddenReveal, null);
+	assert.equal(job.hiddenReveal, null, "an open job reveals nothing, even with its private set on hand");
 	const wire = JSON.stringify(job);
 	assert.equal(wire.includes(seal.salt), false, "the salt never reaches an open job's projection");
 	assert.equal(wire.includes("formatTotal"), false, "no case target reaches an open job's projection");
@@ -120,40 +143,41 @@ test("the freeze lands through the store, the open job shows the digest, and the
 		store.db.prepare("UPDATE jobs SET json = ? WHERE id = ?").run(JSON.stringify(closed), jobId);
 		const after = await store.readJob(parseJobId(jobId));
 		assert.ok(after);
-		const job = projectJob(after, maya, new Map());
+		const job = projectJob(after, maya, new Map(), undefined, undefined, privateSetOf(seal.salt));
 		assert.equal(job.status, "CLOSED");
-		const outcome = revealHiddenCases(job.status, job.contract?.sealedHiddenCases ?? null, kept, seal.salt);
-		assert.deepEqual(outcome, { kind: "REVEALED", value: { cases: keptLiteral, salt: seal.salt, digest: seal.sealed.digest } });
-		assert.equal(JSON.stringify(outcome).includes("three decimals"), false, "the citation is review prose and stays out of the reveal");
+		assert.deepEqual(job.hiddenReveal, { cases: keptLiteral, salt: seal.salt, digest: seal.sealed.digest });
+		assert.equal(JSON.stringify(job.hiddenReveal).includes("three decimals"), false, "the citation is review prose and stays out of the reveal");
 	} finally {
 		store.db.close();
 	}
 });
 
-test("the reveal refuses before close for every open status, and opens for every closed one", () => {
+test("revealHiddenCases refuses before close for every open status, and returns the literal set for every closed one", () => {
 	const seal = sealHiddenCases(kept);
 	for (const status of ["OPEN", "IN_PROGRESS", "VERIFIED"] as const) {
 		assert.deepEqual(revealHiddenCases(status, seal.sealed, kept, seal.salt), { kind: "NOT_CLOSED" });
 	}
 	for (const status of ["PAID", "REFUNDED", "CLOSED"] as const) {
-		assert.equal(revealHiddenCases(status, seal.sealed, kept, seal.salt).kind, "REVEALED");
+		assert.deepEqual(revealHiddenCases(status, seal.sealed, kept, seal.salt),
+			{ kind: "REVEALED", value: { cases: keptLiteral, salt: seal.salt, digest: seal.sealed.digest } });
 	}
 });
 
-test("a paid job reveals through projectJob, and the revealed digest recomputes to the frozen one", () => {
+test("every closed status serves the approved cases and the salt on the projection, and they recompute to the frozen digest", () => {
 	const seal = sealHiddenCases(kept);
-	const job = projectJob(jobRow(paidState(), contractWith(seal.sealed)), devon, new Map());
-	assert.equal(job.status, "PAID");
-	const outcome = revealHiddenCases(job.status, job.contract?.sealedHiddenCases ?? null, kept, seal.salt);
-	assert.equal(outcome.kind, "REVEALED");
-	if (outcome.kind !== "REVEALED") throw new Error("the paid job must reveal");
-	assert.equal(digestOfHiddenCases(outcome.value.cases, outcome.value.salt), seal.sealed.digest);
+	const closedRows: readonly [JobState, string][] = [[paidState(), "PAID"], [refundedState(), "REFUNDED"], [closedState, "CLOSED"]];
+	for (const [state, status] of closedRows) {
+		const job = projectJob(jobRow(state, contractWith(seal.sealed)), devon, new Map(), undefined, undefined, privateSetOf(seal.salt));
+		assert.equal(job.status, status);
+		assert.deepEqual(job.hiddenReveal, { cases: keptLiteral, salt: seal.salt, digest: seal.sealed.digest }, `${status} reveals the approved cases`);
+		assert.equal(digestOfHiddenCases(job.hiddenReveal!.cases, job.hiddenReveal!.salt), seal.sealed.digest);
+	}
 });
 
 test("a fixture's curated set never reveals: the job is not sealed, and the type refuses its cases", () => {
-	const paid = projectJob(jobRow(paidState(), contractWith(null)), devon, new Map());
+	const paid = projectJob(jobRow(paidState(), contractWith(null)), devon, new Map(), undefined, undefined, privateSetOf("ab".repeat(32)));
 	assert.equal(paid.contract && "sealedHiddenCases" in paid.contract, false, "an unsealed contract carries no seal field");
-	assert.equal(paid.hiddenReveal, null);
+	assert.equal(paid.hiddenReveal, null, "an unsealed job reveals nothing, even when a private set is on hand");
 	const salt = "ab".repeat(32);
 	// @ts-expect-error a curated fixture case is a plain HiddenCase; only a PerJobHiddenCase reveals
 	assert.deepEqual(revealHiddenCases("PAID", null, exampleCases, salt), { kind: "NOT_SEALED" });
@@ -164,6 +188,23 @@ test("a reveal whose cases or salt do not open the seal refuses by name", () => 
 	const tampered = [perJobCaseOf({ ...drafted[0], expected: "9.999" }), kept[1]] as const;
 	assert.deepEqual(revealHiddenCases("CLOSED", seal.sealed, tampered, seal.salt), { kind: "DIGEST_MISMATCH" });
 	assert.deepEqual(revealHiddenCases("CLOSED", seal.sealed, kept, "cd".repeat(32)), { kind: "DIGEST_MISMATCH" });
+});
+
+test("a sealed closed job whose private cases do not open the seal reveals nothing and logs the refusal", () => {
+	const seal = sealHiddenCases(kept);
+	const tampered = drafted.map((candidate, index) => index === 0 ? { ...candidate, expected: "9.999" } : candidate);
+	const { value, lines } = capturingLog(() => projectJob(jobRow(paidState(), contractWith(seal.sealed)), devon, new Map(), undefined, undefined, privateSetOf(seal.salt, tampered)));
+	assert.equal(value.hiddenReveal, null);
+	assert.equal(JSON.stringify(value).includes("9.999"), false, "the tampered case never reaches the projection");
+	assert.deepEqual(lines, ["[reveal] job_commit_reveal: the private cases do not open the sealed digest; nothing revealed"]);
+});
+
+test("a sealed closed job whose private set is missing reveals nothing and logs the refusal", () => {
+	const seal = sealHiddenCases(kept);
+	const missing: PrivateCaseReader = () => null;
+	const { value, lines } = capturingLog(() => projectJob(jobRow(paidState(), contractWith(seal.sealed)), devon, new Map(), undefined, undefined, missing));
+	assert.equal(value.hiddenReveal, null);
+	assert.deepEqual(lines, ["[reveal] job_commit_reveal: the private scoping file cannot be read; nothing revealed"]);
 });
 
 test("the private scoping file's salt must be 32 bytes of hex, and a valid one is kept", () => {

@@ -27,6 +27,7 @@ import { CODE_VERTICAL, codeVerifier } from "./outcome.ts";
 import type { OutcomeRegistry } from "./outcome.ts";
 import type { VerifierPort } from "./verifier.ts";
 import type { DefinitionOfDone } from "./verifier.ts";
+import type { PrivateCaseReader } from "./hidden-seal.ts";
 
 type CallbackReport = NonNullable<Awaited<ReturnType<VerifierPort["parseCallback"]>>>;
 
@@ -189,6 +190,8 @@ export type Ports = {
 	/** The merge of the verified pull request. Its answer carries the commit GitHub landed it on. */
 	readonly github: { merge(effect: Extract<JobEffect, { kind: "MERGE" }>, requestId: string): Promise<MergeOutcome> };
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
+	/** The private case set the reveal reads when a sealed job closes. Absent means no sealed job reveals. */
+	readonly privateCases?: PrivateCaseReader;
 	readonly clock: { now(): Instant };
 };
 
@@ -241,7 +244,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		}
 		const plan = applyJobCommand(row, command as JobCommand, { actor, now, loaded });
 		if (typeof plan === "string") return { kind: "DENIED", reason: plan };
-		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources());
+		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources(), ports.privateCases);
 		let result: PublicResult = { kind: "JOB", job };
 		if (command.type === "PlaceBid") {
 			const bid = plan.next.bids.find(b => !row?.bids.some(old => old.id === b.id))!;
@@ -272,7 +275,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
 		if (plan.effects.some(effect => effect.kind === "CREATE_ORDER" && effect.fundingMode === "card")) await confirmFunding(ports, actor, plan.next.id);
 		const refreshed = await ports.store.readJob(plan.next.id);
-		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources()) };
+		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources(), ports.privateCases) };
 		await ports.store.finishRequest({ actor: actorKey, key, payloadDigest, result });
 		return { kind: "COMMITTED", result };
 	}

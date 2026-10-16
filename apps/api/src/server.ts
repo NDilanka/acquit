@@ -9,7 +9,8 @@ import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from
 import type { CommitSha, JobId, StaffId } from "../../../packages/core/src/ids.ts";
 import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
 import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
-import { CLOSED_STATUSES, perJobCaseOf, revealHiddenCases, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
+import { perJobCaseOf, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
+import type { PrivateCaseReader } from "../../../packages/core/src/hidden-seal.ts";
 import type { TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
@@ -76,7 +77,16 @@ const scopeDraft: NonNullable<AcquitConfig["scopeDraft"]> = (jobId, fixture) => 
 	})(jobId).catch((error: Error) => console.log(`[scoping] ${jobId}: ${boundedDetail(error.message)}`));
 	return Promise.resolve();
 };
-const acquit = createAcquit({ ...settings, scopeDraft });
+// The close's reveal reads the private scoping file. A file that cannot be read or parsed reads as null,
+// and core names the refusal in the log.
+const privateCases: PrivateCaseReader = jobId => {
+	const name = `${jobId}.json`;
+	try {
+		const file = parseScopingFile(readFileSync(join(scopingDir, name), "utf8"), name);
+		return { candidates: file.cases, salt: file.salt ?? null };
+	} catch { return null; }
+};
+const acquit = createAcquit({ ...settings, scopeDraft, privateCases });
 // The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
 // and the journal mode come with it, so a second worker's write waits for the lock instead of failing
 // the request that carries it.
@@ -187,19 +197,6 @@ if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("In
 const tokenDigest = (token: string) => createHash("sha256").update(token).digest("hex");
 /** The challenge a CLI stores for a code: base64url(sha256(verifier)), the verifier never leaving the CLI. */
 const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
-/** The close's reveal. A closed job with a per-job seal serves its approved cases and their salt from the private scoping file; every other job serves null. */
-function withHiddenReveal(job: JobProjection): JobProjection {
-	const sealed = job.contract?.sealedHiddenCases ?? null;
-	if (sealed === null || !CLOSED_STATUSES.includes(job.status)) return { ...job, hiddenReveal: null };
-	const name = `${job.id}.json`;
-	let file: ReturnType<typeof parseScopingFile>;
-	try { file = parseScopingFile(readFileSync(join(scopingDir, name), "utf8"), name); }
-	catch { console.log(`[reveal] ${job.id}: the private scoping file cannot be read; nothing revealed`); return { ...job, hiddenReveal: null }; }
-	if (file.salt === undefined) { console.log(`[reveal] ${job.id}: the private scoping file holds no salt; nothing revealed`); return { ...job, hiddenReveal: null }; }
-	const outcome = revealHiddenCases(job.status, sealed, file.cases.map(perJobCaseOf), file.salt);
-	if (outcome.kind === "DIGEST_MISMATCH") console.log(`[reveal] ${job.id}: the private cases do not open the sealed digest; nothing revealed`);
-	return { ...job, hiddenReveal: outcome.kind === "REVEALED" ? outcome.value : null };
-}
 /** Both sides are fixed-length base64url digests, so the comparison is constant-time. */
 function sameChallenge(left: string, right: string): boolean {
 	const a = Buffer.from(left, "utf8");
@@ -884,7 +881,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (match && method === "GET") {
 		const jobId = validJobId(decodeURIComponent(match[1]));
 		const result = await acquit.query(current.actor, { type: "Job", jobId });
-		if (result.kind === "JOB") json(res, 200, { job: withHiddenReveal(result.job), handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now() });
+		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now() });
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -945,7 +942,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// The book's rows for this operator: settled job receipts plus the seeded history rows, each
 		// marked with the source the receipts table holds.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
-		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository), nextCursor: null }); return;
+		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository, privateCases), nextCursor: null }); return;
 	}
 	if (url.pathname === "/api/me/payouts" && method === "GET") {
 		// The operator's payouts: one row per released job, with the referenced payout item the

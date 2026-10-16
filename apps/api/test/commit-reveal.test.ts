@@ -1,6 +1,7 @@
 // The commit-then-reveal over real HTTP: an open or verified job serves the sealed digest and nothing
 // that opens it, and a closed job serves the approved cases, the salt, and a digest that recomputes.
-// A job that never approved a draft reveals nothing.
+// The job route, the job list, and the operator receipt serve the same reveal. A job that never
+// approved a draft reveals nothing, and a tampered private set reveals nothing and logs why.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -103,6 +104,21 @@ const forceState = (dbPath: string, jobId: string, state: unknown) => {
 
 const closedState = { status: "CLOSED", reason: "CLIENT_CANCEL", closedAt: later, book: [] };
 
+/** A PAID job as the domain stores it: the payee, the held, released, and fee lines, the release, the merge, and devon-ops' receipt. */
+const paidStateFor = (jobId: string) => ({
+	status: "PAID",
+	payee: { bidId: "bid_seal-1", operator: "devon-ops", payee: "MERCHANT", agent: "ts-bugfixer", price: 36000, eta: 48 },
+	book: [{ kind: "HELD", cents: 42000, at: later }, { kind: "RELEASED", cents: 36000, at: later },
+		{ kind: "FEE", cents: 6000, processor: 1515, acquit: 4485, at: later }],
+	release: { payoutItemId: "PAYOUT-1", captureId: "CAPTURE", paid: 36000, at: later },
+	releaseAuthority: "CLIENT_APPROVAL",
+	history: [],
+	merge: { phase: "MERGED", at: later, sha: "d".repeat(40) },
+	treasury: [],
+	receipt: { id: `rcpt_${jobId}`, jobId, operator: "devon-ops", agent: "ts-bugfixer", pullRequest: 13, mergeCommit: "c".repeat(40),
+		frozen: { expected: 1, passed: 1 }, hidden: { expected: 2, passed: 2 }, attemptsUsed: 1, paid: 36000, releasedAt: later },
+});
+
 /** A VERIFIED job awaiting the client's review: the state the verifier's pass leaves, with the book empty. */
 const verifiedState = {
 	status: "VERIFIED",
@@ -171,6 +187,13 @@ test("an open job serves the sealed digest and no case, salt, or reveal; the app
 		assert.equal((await review.text()).includes(scopingFile.salt), false, "the review route does not serve the salt");
 		const otherReview = await get(port, `/api/jobs/${jobId}/scoping`, devon);
 		assert.equal(otherReview.status, 403, "an operator reads no draft, so no case value either");
+
+		const list = await get(port, "/api/jobs", devon);
+		assert.equal(list.status, 200);
+		const listBody = await list.text();
+		assert.equal(listBody.includes(scopingFile.salt), false, "the job list carries no salt before close");
+		assert.equal(listBody.includes("formatTotal"), false, "the job list carries no case before close");
+		assert.equal((JSON.parse(listBody) as { jobs: { id: string; hiddenReveal: unknown }[] }).jobs.find(listed => listed.id === jobId)?.hiddenReveal, null);
 	} finally {
 		child?.kill("SIGKILL");
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
@@ -206,7 +229,7 @@ test("a verified job serves the seal and no reveal until it closes", async () =>
 	}
 });
 
-test("a closed job serves the approved cases, the salt, and a digest that recomputes to the sealed one", async () => {
+test("a closed job serves the approved cases, the salt, and a digest that recomputes, on the job route and the job list", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-commit-reveal-"));
 	const scopingDir = join(dir, "scoping");
 	const dbPath = join(dir, "test.db");
@@ -237,6 +260,9 @@ test("a closed job serves the approved cases, the salt, and a digest that recomp
 		assert.equal(reveal.salt, scopingFile.salt);
 		assert.equal(reveal.digest, sealed);
 		assert.equal(digestOfHiddenCases(keptCases, reveal.salt), sealed, "the published set recomputes to the frozen digest");
+
+		const list = await (await get(port, "/api/jobs?status=CLOSED", maya)).json() as { jobs: { id: string; hiddenReveal: unknown }[] };
+		assert.deepEqual(list.jobs.find(listed => listed.id === jobId)?.hiddenReveal, reveal, "the job list serves the job route's reveal");
 	} finally {
 		child?.kill("SIGKILL");
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
@@ -259,6 +285,77 @@ test("a closed job that never approved a draft reveals nothing", async () => {
 		assert.equal(job.job.status, "CLOSED");
 		assert.equal(job.job.contract !== null && "sealedHiddenCases" in job.job.contract, false, "the fixture's curated set carries no seal");
 		assert.equal(job.job.hiddenReveal, null, "the curated set never reveals");
+	} finally {
+		child?.kill("SIGKILL");
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
+test("a paid job's operator receipt serves the same reveal as the job route", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-commit-reveal-"));
+	const scopingDir = join(dir, "scoping");
+	const dbPath = join(dir, "test.db");
+	const port = 4895;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, dbPath, scopingDir);
+		const maya = await session(port, "maya-client");
+		const devon = await session(port, "devon-ops");
+		const jobId = await openJob(port, maya);
+		await parkDraft(dbPath, scopingDir, jobId);
+		assert.equal((await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya)).status, 200);
+		const sealed = readManifest(dbPath, jobId).sealedHiddenCases!.digest;
+		const scopingFile = JSON.parse(await readFile(join(scopingDir, `${jobId}.json`), "utf8")) as { salt: string };
+
+		forceState(dbPath, jobId, paidStateFor(jobId));
+		const detail = await (await get(port, `/api/jobs/${jobId}`, maya)).json() as { job: { status: string; hiddenReveal: unknown } };
+		assert.equal(detail.job.status, "PAID");
+		assert.deepEqual(detail.job.hiddenReveal, { cases: keptCases, salt: scopingFile.salt, digest: sealed });
+
+		const receipts = await (await get(port, "/api/me/receipts", devon)).json() as { receipts: { jobId: string; hiddenReveal: unknown }[] };
+		const receipt = receipts.receipts.find(row => row.jobId === jobId);
+		assert.ok(receipt, "the operator's receipt for the paid job is listed");
+		assert.deepEqual(receipt.hiddenReveal, detail.job.hiddenReveal, "the operator receipt serves the job route's reveal");
+	} finally {
+		child?.kill("SIGKILL");
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+});
+
+test("a closed job whose private cases no longer open the seal serves no reveal, and the log names the refusal", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-commit-reveal-"));
+	const scopingDir = join(dir, "scoping");
+	const dbPath = join(dir, "test.db");
+	const port = 4896;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, dbPath, scopingDir);
+		const maya = await session(port, "maya-client");
+		const jobId = await openJob(port, maya);
+		await parkDraft(dbPath, scopingDir, jobId);
+		assert.equal((await post(port, `/api/jobs/${jobId}/scoping/approve`, { leaveOut: ["draft:3"] }, maya)).status, 200);
+		forceState(dbPath, jobId, closedState);
+
+		const scopingPath = join(scopingDir, `${jobId}.json`);
+		const tampered = JSON.parse(await readFile(scopingPath, "utf8")) as { cases: { expected: string }[] };
+		tampered.cases[0].expected = "9.999";
+		await writeFile(scopingPath, JSON.stringify(tampered, null, "\t"), { mode: 0o600 });
+
+		const logged: string[] = [];
+		child?.stdout?.on("data", (chunk: Buffer) => { logged.push(String(chunk)); });
+		const body = await (await get(port, `/api/jobs/${jobId}`, maya)).text();
+		const job = JSON.parse(body) as { job: { status: string; hiddenReveal: unknown } };
+		assert.equal(job.job.status, "CLOSED");
+		assert.equal(job.job.hiddenReveal, null, "a tampered set reveals nothing");
+		assert.equal(body.includes("9.999"), false, "the tampered case is never served");
+
+		const listBody = await (await get(port, "/api/jobs?status=CLOSED", maya)).text();
+		assert.equal((JSON.parse(listBody) as { jobs: { id: string; hiddenReveal: unknown }[] }).jobs.find(listed => listed.id === jobId)?.hiddenReveal, null);
+		assert.equal(listBody.includes("9.999"), false, "the job list never serves the tampered case");
+
+		const refusal = `[reveal] ${jobId}: the private cases do not open the sealed digest; nothing revealed`;
+		for (let waited = 0; waited < 50 && !logged.join("").includes(refusal); waited++) await new Promise(resolve => setTimeout(resolve, 100));
+		assert.ok(logged.join("").includes(refusal), "the refusal is logged by its fixed text");
 	} finally {
 		child?.kill("SIGKILL");
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });

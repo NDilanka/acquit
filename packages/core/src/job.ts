@@ -34,7 +34,8 @@ import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure, SealedHiddenCases, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
-import type { RevealedHiddenCases } from "./hidden-seal.ts";
+import { resolveHiddenReveal } from "./hidden-seal.ts";
+import type { PrivateCaseReader, RevealedHiddenCases } from "./hidden-seal.ts";
 
 // Worst-case timeline from capture is delivery 14d, review 72h, dispute 48h, so day 19.
 // The cutoff at day 21 leaves a week to reconcile an uncertain settlement before PayPal's day 28.
@@ -1167,7 +1168,7 @@ export type JobProjection = JobView & {
 	readonly vertical: Vertical;
 	/** Null when the row was stored before F3 froze a definition of done. */
 	readonly contract: ContractProjection | null;
-	/** The per-job cases and their salt, once the job closed and the caller read the private case file. projectJob never reads it, so it serves null. */
+	/** The per-job cases and their salt, once the job closed under a seal and its private set opens it. Null otherwise. */
 	readonly hiddenReveal: RevealedHiddenCases | null;
 	readonly attempts: JobView["attempts"] & {
 		readonly history: readonly AttemptView[];
@@ -1195,7 +1196,7 @@ export function houseLine(rows: { readonly total: number; readonly paid: number 
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>,
 	houseRows?: ReadonlyMap<OperatorId, { readonly total: number; readonly paid: number }>,
-	receiptSources?: ReadonlyMap<ReceiptId, ReceiptSource>): JobProjection {
+	receiptSources?: ReadonlyMap<ReceiptId, ReceiptSource>, privateCases: PrivateCaseReader = () => null): JobProjection {
 	const ranked = rankBids(row.bids, paidReceipts);
 	const viewBid = (bid: Bid) => ({ id: bid.id, operator: bid.operator, handle: bid.handle,
 		label: bid.kind, price: bid.price, eta: bid.eta, agent: String(bid.agent), runner: bid.runner,
@@ -1225,7 +1226,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 			frozenTestPath: done.frozenTestPath, frozenTests: done.frozenTests.length,
 			hiddenTests: done.hiddenTests.length, hiddenManifest: done.hiddenManifest, protectedPaths: done.protectedPaths.map(String),
 			...(done.sealedHiddenCases === undefined ? {} : { sealedHiddenCases: done.sealedHiddenCases }) },
-		hiddenReveal: null,
+		hiddenReveal: resolveHiddenReveal({ id: row.id, status: state.status, sealed: done?.sealedHiddenCases ?? null }, privateCases),
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
 		// The owning client is named only to its own session. Everyone else reads null.

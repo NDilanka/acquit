@@ -64,3 +64,30 @@ export function revealHiddenCases(status: JobStatus, sealed: SealedHiddenCases |
 	if (digest !== sealed.digest) return { kind: "DIGEST_MISMATCH" };
 	return { kind: "REVEALED", value: { cases, salt, digest } };
 }
+
+/** What the private scoping store holds for one job: the candidates that were approved and the salt that sealed them. */
+export type PrivateCaseSet = { readonly candidates: readonly ScopeCandidate[]; readonly salt: string | null };
+
+/** The core's read port for a job's private case set. The API backs it with the scoping directory. Null when no readable set exists. */
+export type PrivateCaseReader = (jobId: string) => PrivateCaseSet | null;
+
+/**
+ * The one reveal every reader serves: projectJob for the job routes, and the operator receipt reader for
+ * the receipts route. A closed job reveals only when it was sealed and its private set opens the seal.
+ * A refusal on a sealed, closed job logs its reason and serves null.
+ */
+export function resolveHiddenReveal(job: { readonly id: string; readonly status: JobStatus; readonly sealed: SealedHiddenCases | null },
+	read: PrivateCaseReader): RevealedHiddenCases | null {
+	if (job.sealed === null || !CLOSED_STATUSES.includes(job.status)) return null;
+	const set = read(job.id);
+	if (set === null) return refuse(job.id, "the private scoping file cannot be read");
+	if (set.salt === null) return refuse(job.id, "the private scoping file holds no salt");
+	const outcome = revealHiddenCases(job.status, job.sealed, set.candidates.map(perJobCaseOf), set.salt);
+	if (outcome.kind !== "REVEALED") return refuse(job.id, "the private cases do not open the sealed digest");
+	return outcome.value;
+}
+
+function refuse(jobId: string, why: string): null {
+	console.log(`[reveal] ${jobId}: ${why}; nothing revealed`);
+	return null;
+}
