@@ -13,6 +13,7 @@ import type { Acquit, DemoVisitorResult } from "../src/acquit.ts";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, CommitSha, Digest, Instant, JobId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId, TestId } from "../src/ids.ts";
+import type { FixtureContract } from "../src/fixtures.ts";
 import { usd } from "../src/ledger.ts";
 import type { Bps, CaptureEvidence, FeeQuote, PayPal, PayPalCall, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome } from "../src/paypal.ts";
 import { boundedRuns, startScenario } from "../src/scenarios.ts";
@@ -102,6 +103,8 @@ function fakePayPal(now: () => Instant): PayPal {
 
 export type HarnessOptions = {
 	readonly devEnabled?: boolean;
+	/** The registry the core opens jobs against. Defaults to the one demo fixture. */
+	readonly fixtures?: readonly FixtureContract[];
 	/** Public funding: the deployment's default is checkout, so only a job's own choice can make it a card. */
 	readonly publicFunding?: boolean;
 	/** Answers a scripted tree with another tree, so a test can make a scenario's verdict differ from its name. */
@@ -151,7 +154,7 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 			return parseCallbackBody(JSON.parse(raw) as unknown);
 		},
 	};
-	acquit = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant }, clock: { now: clock },
+	acquit = createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
