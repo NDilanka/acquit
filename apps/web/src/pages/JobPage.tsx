@@ -3,14 +3,15 @@ import type { ColDef, GetRowIdFunc } from "ag-grid-community";
 import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, LedgerLine, MergeProgress, ScopingCase, UserCommand } from "../api-types";
 import { api, ApiError } from "../api";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
-import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, releaseNote, usd, utc } from "../format";
+import { arbiterNoteLine, authorityNote, disputeNote, escrowFee, eta, ledgerNote, mergeNote, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
+import { bidStatusWord, draftFailureWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel } from "../job-status";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
 import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, seededLabel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
-import { allBids, houseName, lockedBid, NotFound, payeeBid, StatusPill } from "../ui";
+import { allBids, houseName, IdChip, lockedBid, NotFound, payeeBid, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 
 export function JobPage({ id }: { id: string }) {
@@ -151,11 +152,14 @@ export function JobPage({ id }: { id: string }) {
   return (
     <>
       <div className="crumbs">
-        <Link to={isClient ? "/" : "/operator"}>{isClient ? "Jobs" : "Open jobs"}</Link> / <b className="mono">{job.id}</b>
+        <Link to={isClient ? "/" : "/operator"}>{isClient ? "Jobs" : "Open jobs"}</Link> / <b>{job.title}</b>
       </div>
       <div className="head">
         <div>
           <h1>{job.title}</h1>
+          <div className="meta">
+            <IdChip value={job.id} />
+          </div>
           <div className="meta">
             <StatusPill job={job} />
             <span>
@@ -207,7 +211,7 @@ export function JobPage({ id }: { id: string }) {
               <p className="muted">
                 {job.mergeCommit && (
                   <>
-                    The verifier passed commit <b className="mono">{short(job.mergeCommit)}</b>.{" "}
+                    The verifier passed commit <IdChip value={job.mergeCommit} />.{" "}
                   </>
                 )}
                 {job.reviewEndsAt &&
@@ -296,15 +300,11 @@ export function JobPage({ id }: { id: string }) {
             <h2>Escrow</h2>
             <div className="kv">
               <span>Status</span>
-              <b>{job.status}</b>
-            </div>
-            <div className="kv">
-              <span>Phase</span>
-              <b>{job.phase}</b>
+              <b>{statusLabel(job).label}</b>
             </div>
             <div className="kv">
               <span>Escrow</span>
-              <b>{job.escrow}</b>
+              <b>{escrowWord(job.escrow)}</b>
             </div>
             {locked && (
               <div className="kv">
@@ -361,7 +361,7 @@ export function JobPage({ id }: { id: string }) {
             <h3>Approve and release {held ? usd(held.cents) : "the escrow"}?</h3>
             <p>
               PayPal releases the escrow: {locked ? <b>{locked.handle}</b> : "the operator"} is paid for the job and the rest covers the
-              fees. Acquit merges commit <b className="mono">{short(mergeCommit)}</b>
+              fees. Acquit merges commit <IdChip value={mergeCommit} />
               {job.pullRequest !== null && <> (pull request #{job.pullRequest})</>}. This cannot be undone.
             </p>
             <div className="rows">
@@ -379,7 +379,7 @@ export function JobPage({ id }: { id: string }) {
               )}
               <div>
                 <span>Commit to merge</span>
-                <b className="mono">{mergeCommit}</b>
+                <IdChip value={mergeCommit} />
               </div>
             </div>
             {approve.error && <div className="alert">{approve.error}</div>}
@@ -448,7 +448,7 @@ function ScopingReview({ job }: { job: JobView }) {
       <section className="card pad">
         <h2>Acceptance contract</h2>
         <p>
-          The draft failed: <b className="mono">{panel.reason}</b>. Nothing was frozen. A draft never retries; a new job starts a new
+          The draft failed: <b>{draftFailureWord(panel.reason)}</b>. Nothing was frozen. A draft never retries; a new job starts a new
           draft.
         </p>
       </section>
@@ -633,7 +633,7 @@ function Bids({
               Accept
             </button>
           ) : (
-            <small className="muted">{p.data.status}</small>
+            <small className="muted">{bidStatusWord(p.data.status)}</small>
           )),
       },
     ],
@@ -765,13 +765,14 @@ const CHECKOUT_STEP: Record<CheckoutPhase, string> = {
 /** Names the stored checkout substate, so a reload mid-checkout still says where the payment is. */
 function Checkout({ job, bid, redirecting, card }: { job: JobView; bid: BidView | null; redirecting: boolean; card: boolean }) {
   const phase = job.checkoutPhase;
+  const waiting = card ? "Waiting for the sandbox test card to confirm the payment." : "Waiting for PayPal to confirm the payment.";
   const step = phase
     ? CHECKOUT_STEP[phase]
     : redirecting
       ? card
         ? "Charging the sandbox test card…"
         : "Creating the PayPal order…"
-      : "Waiting for PayPal to confirm the payment.";
+      : waiting;
   return (
     <section className="card pad checkout">
       <h2>{card ? "Sandbox test card payment" : "PayPal sandbox checkout"}</h2>
@@ -812,10 +813,15 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
   return (
     <section className="card pad statuspanel">
       <pre className="mono">
-        {`Status: ${job.status}\n`}
+        {`Status: ${statusLabel(job).label}\n`}
         {locked ? `Operator: ${locked.handle}\n` : ""}
-        {`Escrow: ${job.escrow}${locked && job.escrow === "HELD" ? `, locked to ${locked.handle}` : ""}`}
-        {receipt ? `\nReceipt: ${receipt.id}` : ""}
+        {`Escrow: ${escrowWord(job.escrow)}${locked && job.escrow === "HELD" ? `, locked to ${locked.handle}` : ""}`}
+        {receipt && (
+          <>
+            {"\nReceipt: "}
+            <IdChip value={receipt.id} />
+          </>
+        )}
         {seeded && (
           <>
             {" "}
@@ -838,7 +844,7 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
         <p className="muted">
           Paid {usd(receipt.paid)} at {utc(receipt.releasedAt)}. Frozen tests {receipt.frozen.passed}/{receipt.frozen.expected}, hidden
           tests {receipt.hidden.passed}/{receipt.hidden.expected}, attempts {receipt.attemptsUsed} of {job.attempts.used + job.attempts.left}.
-          Approved commit <span className="mono">{short(receipt.mergeCommit)}</span>.
+          Approved commit <IdChip value={receipt.mergeCommit} />.
         </p>
       )}
       {job.merge && (
@@ -851,7 +857,11 @@ function StatusPanel({ job, locked }: { job: JobView; locked: BidView | null }) 
           <b>{authorityNote(job.releaseAuthority)}.</b>
         </p>
       )}
-      {job.release && <p className="muted small mono">{releaseNote(job.release)}</p>}
+      {job.release && (
+        <p className="muted small">
+          Payout item <IdChip value={job.release.payoutItemId} />, capture <IdChip value={job.release.captureId} />
+        </p>
+      )}
       {refund && (
         <p>
           Refunded <b className="num">{usd(refund.cents)}</b> to the client at {utc(refund.at)}.
@@ -884,7 +894,10 @@ type VerifierFields = {
   };
 };
 
-const short = (sha: string) => sha.slice(0, 7);
+function VerdictPill({ result }: { result: "VERIFIED" | "REJECTED" }) {
+  const { label, tone } = verdictLabel(result);
+  return <span className={`pill ${tone}`}>{label}</span>;
+}
 
 /** Only these statuses carry the attempt history in the job view; a PAID job's proof lives in its receipt. */
 const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
@@ -908,8 +921,8 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
       {failure && (
         <div className="pad">
           <div className="alert warn">
-            The run for commit <b className="mono">{short(failure.sourceCommit)}</b> ended without a verdict at {utc(failure.at)}:{" "}
-            <b className="mono">{failure.name}</b>
+            The run for commit <IdChip value={failure.sourceCommit} /> ended without a verdict at {utc(failure.at)}:{" "}
+            <b>{runFailureWord(failure.name)}</b>
             {failure.detail && `: ${failure.detail}`}. It did not use an attempt. Submit again.
           </div>
         </div>
@@ -918,7 +931,7 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
         <>
           <div className="section-label">Attempt {pending.ordinal} of {total}</div>
           <p className="pad">
-            Verification in progress for commit <b className="mono">{short(pending.sourceCommit)}</b>, submitted{" "}
+            Verification in progress for commit <IdChip value={pending.sourceCommit} />, submitted{" "}
             {utc(pending.submittedAt)}. The run ends by {utc(pending.runEndsAt)}.
           </p>
         </>
@@ -930,10 +943,12 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
           <dl className="kvs pad">
             <dt>Verifier result</dt>
             <dd>
-              <span className={`pill ${a.result === "VERIFIED" ? "ok" : "held"}`}>{a.result}</span>
+              <VerdictPill result={a.result} />
             </dd>
             <dt>Source commit</dt>
-            <dd className="mono">{short(a.sourceCommit)}</dd>
+            <dd>
+              <IdChip value={a.sourceCommit} />
+            </dd>
             <dt>Judged</dt>
             <dd className="num">{utc(a.at)}</dd>
             {a.result === "REJECTED" ? (
@@ -952,7 +967,7 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
               <>
                 <dt>Frozen tests</dt>
                 <dd className="num">
-                  {a.frozen.passed} passed{contract && ` (suite frozen at ${short(contract.frozenAt)})`}
+                  {a.frozen.passed} passed{contract && ` (suite frozen at ${contract.frozenAt.slice(0, 7)})`}
                 </dd>
                 <dt>Hidden tests</dt>
                 <dd className="num">{a.hidden.passed} passed</dd>
@@ -978,7 +993,7 @@ function Verifier({ job, diff }: { job: JobView; diff: JobDiff | null }) {
           <div className="section-label">House run diff</div>
           <div className="pad">
             <p>
-              Commit <b className="mono">{short(shownDiff.commit)}</b>
+              Commit <IdChip value={shownDiff.commit} />
             </p>
             <ul className="mono">
               {shownDiff.files.map((f) => (
@@ -1007,7 +1022,7 @@ function Ledger({ job, locked }: { job: JobView; locked: BidView | null }) {
         field: "kind",
         minWidth: 70,
         flex: 0.9,
-        cellRenderer: (p: { value?: LedgerLine["kind"] }) => p.value && <b className={`k ${p.value.toLowerCase()}`}>{p.value}</b>,
+        cellRenderer: (p: { value?: LedgerLine["kind"] }) => p.value && <b className={`k ${p.value.toLowerCase()}`}>{ledgerKindWord(p.value)}</b>,
       },
       { headerName: "Amount", field: "cents", minWidth: 66, cellClass: "num strong", valueFormatter: (p) => usd(p.value as number) },
       { headerName: "When", field: "at", minWidth: 70, cellClass: "num", valueFormatter: (p) => utc(p.value as string) },

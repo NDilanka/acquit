@@ -24,7 +24,7 @@ test("the funding choice closes once a bid is accepted, and the clock closes onc
   assert.deepEqual(demoControls({ client: visitor.client, status: "IN_PROGRESS", phase: "READY" }, asClient), { funding: false, clock: true });
   assert.deepEqual(demoControls({ client: visitor.client, status: "VERIFIED", phase: "AWAITING_CLIENT" }, asClient), { funding: false, clock: true });
   assert.deepEqual(demoControls({ client: visitor.client, status: "PAID", phase: "PAID" }, asClient), { funding: false, clock: false });
-  assert.deepEqual(demoControls({ client: visitor.client, status: "CLOSED", phase: "CANCELLED" }, asClient), { funding: false, clock: false });
+  assert.deepEqual(demoControls({ client: visitor.client, status: "CLOSED", phase: "CLOSED" }, asClient), { funding: false, clock: false });
 });
 
 test("another visitor's job, an operator's view, and a seeded session get neither control", () => {

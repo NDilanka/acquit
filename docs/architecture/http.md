@@ -21,7 +21,7 @@ There is no password login in the skeleton. A dev picker signs in as a seeded us
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null, visitor, mode: "public" \| "dev" }`. `mode` is the deployment's own sign-in shape, so a page draws the public one or the seeded picker without probing a second route |
+| GET | `/api/session` | | `{ user: { handle, role: "CLIENT" \| "OPERATOR" } \| null, visitor, mode: "public" \| "dev", fundingMode: "card" \| "checkout" }`. `mode` is the deployment's own sign-in shape, so a page draws the public one or the seeded picker without probing a second route. `fundingMode` is the deployment's default payment method for a job nobody chose for |
 | POST | `/api/session` | `{ handle: "maya-client" \| "devon-ops" }` | `{ user, visitor, token }` and the cookie. Public mode refuses a seeded handle `403 { error: "SEEDED_LOGIN_DISABLED" }` and any other handle `403 { error: "SESSION_MINT_DISABLED" }`; dev mode keeps the seeded sign-in |
 | DELETE | `/api/session` | | `204` |
 | GET | `/api/users` | | `{ users: [{ handle, role }] }`. Dev mode: the seeded picker. Public mode: the caller's own pair only, `401` without a session |

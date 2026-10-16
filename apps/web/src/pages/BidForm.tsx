@@ -57,7 +57,7 @@ export function BidForm({ job, onPlaced }: { job: JobView; onPlaced?: (creditsLe
   if (placed) {
     return (
       <pre className="mono receipt-box">
-        {`Bid sent on ${job.id}\n`}
+        {`Bid sent on ${job.title}\n`}
         {`  Operator: ${handle}\n`}
         {`  Price: ${usd(placed.price)}\n`}
         {`  ETA: ${etaLabel(placed.eta)}\n`}
@@ -89,7 +89,7 @@ export function BidForm({ job, onPlaced }: { job: JobView; onPlaced?: (creditsLe
         </label>
         <label>
           <span>Agent</span>
-          <select value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={!agents}>
+          <select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
             {!agents && <option>Loading agents…</option>}
             {agents?.length === 0 && <option value="">No agents yet</option>}
             {agents?.map((a) => (

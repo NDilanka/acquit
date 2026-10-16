@@ -1,16 +1,32 @@
+import { useState } from "react";
 import type { BidView, JobView } from "./api-types";
+import { shortId } from "./format";
+import { statusLabel, type StatusInput } from "./job-status";
 import { Link } from "./router";
 
-export function StatusPill({ job }: { job: JobView }) {
-  const tone =
-    job.status === "OPEN" ? "open" : job.status === "IN_PROGRESS" ? "held" : job.status === "PAID" ? "ok" : "new";
-  const showPhase = job.phase && job.phase !== job.status;
+export function StatusPill({ job }: { job: StatusInput }) {
+  const { label, tone } = statusLabel(job);
   return (
     <span className={`pill ${tone}`}>
       <span className="dot" />
-      {job.status}
-      {showPhase && <small>· {job.phase}</small>}
+      {label}
     </span>
+  );
+}
+
+/** A job id, commit, or PayPal id as a small chip. The full value rides on hover and copies on click. */
+export function IdChip({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(value).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    }, () => undefined);
+  };
+  return (
+    <button type="button" className={`idchip${copied ? " copied" : ""}`} title={value} aria-label={`Copy ${value}`} onClick={copy}>
+      {copied ? "Copied" : shortId(value)}
+    </button>
   );
 }
 

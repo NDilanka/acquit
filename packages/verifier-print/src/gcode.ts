@@ -5,7 +5,7 @@
 // open layer's Z therefore do not create layers.
 
 import { mm, mmPerSecond } from "./types.ts";
-import type { GcodeMove, ParsedGcode, PrintRejectReason } from "./types.ts";
+import type { GcodeMove, ParsedGcode, PrintRejectReason, Xy } from "./types.ts";
 
 export type GcodeResult =
 	| { readonly ok: true; readonly value: ParsedGcode }
@@ -13,6 +13,7 @@ export type GcodeResult =
 
 const WORD = /^([A-Za-z])([-+]?(?:\d+(?:\.\d*)?|\.\d+))?$/;
 const ARC_RADIUS_TOLERANCE_MM = 0.005;
+const ARC_CHORD_MM = 0.2;
 const POSITION_EPSILON_MM = 1e-9;
 const Z_COMMENT_EPSILON_MM = 1e-6;
 const AXES: readonly string[] = ["X", "Y", "Z"];
@@ -33,6 +34,8 @@ function fail(line: number): never {
 type Pos = { x: number; y: number; z: number; e: number };
 type Word = { letter: string; value: number | null };
 type MutableLayer = { index: number; z: number; extrudedMm: number; pathLengthMm: number; moveCount: number };
+
+const xy = (point: { readonly x: number; readonly y: number }): Xy => [mm(point.x), mm(point.y)];
 
 export function parseGcode(text: string): GcodeResult {
 	try {
@@ -92,7 +95,7 @@ function read(text: string): ParsedGcode {
 		};
 	};
 
-	const move = (line: number, target: Pos, xyzMm: number): void => {
+	const move = (line: number, target: Pos, xyzMm: number, path: readonly Xy[]): void => {
 		const deltaE = target.e - pos.e;
 		if (target.z !== pos.z) layerPending = true;
 		pos = target;
@@ -117,6 +120,7 @@ function read(text: string): ParsedGcode {
 		moves.push({
 			line,
 			layer,
+			path,
 			xyzMm: mm(xyzMm),
 			distanceMm: mm(xyzMm > 0 ? xyzMm : Math.abs(deltaE)),
 			feedMmPerSec: feed === null ? null : mmPerSecond(feed),
@@ -128,7 +132,7 @@ function read(text: string): ParsedGcode {
 	const linear = (line: number, params: Map<string, number>): void => {
 		readFeed(line, params);
 		const target = endpoint(params);
-		move(line, target, Math.hypot(target.x - pos.x, target.y - pos.y, target.z - pos.z));
+		move(line, target, Math.hypot(target.x - pos.x, target.y - pos.y, target.z - pos.z), [xy(pos), xy(target)]);
 	};
 
 	const arc = (line: number, params: Map<string, number>, clockwise: boolean): void => {
@@ -146,7 +150,16 @@ function read(text: string): ParsedGcode {
 			? 2 * Math.PI
 			: mod(Math.atan2(target.y - cy, target.x - cx) - Math.atan2(pos.y - cy, pos.x - cx), 2 * Math.PI);
 		const sweep = clockwise && !closed ? 2 * Math.PI - ccwTurn : ccwTurn;
-		move(line, target, Math.hypot(radius * sweep, target.z - pos.z));
+		const path: Xy[] = [xy(pos)];
+		const steps = Math.max(1, Math.ceil((radius * sweep) / ARC_CHORD_MM));
+		const start = Math.atan2(pos.y - cy, pos.x - cx);
+		const direction = clockwise ? -1 : 1;
+		for (let step = 1; step < steps; step++) {
+			const angle = start + direction * sweep * (step / steps);
+			path.push([mm(cx + radius * Math.cos(angle)), mm(cy + radius * Math.sin(angle))]);
+		}
+		path.push(xy(target));
+		move(line, target, Math.hypot(radius * sweep, target.z - pos.z), path);
 	};
 
 	const home = (line: number, params: Map<string, number>): void => {
@@ -158,7 +171,7 @@ function read(text: string): ParsedGcode {
 			z: axes.includes("Z") ? 0 : pos.z,
 			e: pos.e,
 		};
-		move(line, target, Math.hypot(target.x - pos.x, target.y - pos.y, target.z - pos.z));
+		move(line, target, Math.hypot(target.x - pos.x, target.y - pos.y, target.z - pos.z), [xy(pos), xy(target)]);
 	};
 
 	const setPosition = (params: Map<string, number>): void => {

@@ -9,6 +9,20 @@ export type Instant = string;
 
 export type JobStatus = "OPEN" | "IN_PROGRESS" | "VERIFIED" | "PAID" | "REFUNDED" | "CLOSED";
 
+/** The projected phase: OPEN's kind, then the attempt or review phase, or the status itself once the job settles or closes. */
+export type JobPhase =
+  | "BIDDING"
+  | "FUNDING"
+  | "READY"
+  | "VERIFYING"
+  | "AWAITING_CLIENT"
+  | "DISPUTED"
+  | "RELEASE_PENDING"
+  | "REFUND_PENDING"
+  | "PAID"
+  | "REFUNDED"
+  | "CLOSED";
+
 export type LedgerLine =
   | { readonly kind: "HELD"; readonly cents: UsdCents; readonly at: Instant }
   | { readonly kind: "RELEASED"; readonly cents: UsdCents; readonly at: Instant }
@@ -78,7 +92,7 @@ export interface JobView {
   readonly id: string;
   readonly title: string;
   readonly status: JobStatus;
-  readonly phase: string;
+  readonly phase: JobPhase;
   /** The stored checkout substate, non-null exactly while the job is OPEN in FUNDING. */
   readonly checkoutPhase: CheckoutPhase | null;
   readonly budget: UsdCents;

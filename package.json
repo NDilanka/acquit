@@ -11,11 +11,15 @@
     "ctl": "node packages/ctl/src/main.ts",
     "test": "node --test --test-timeout=60000 --test-concurrency=1 packages/core/test/*.test.ts packages/ctl/test/*.test.ts packages/acquit-cli/test/*.test.ts packages/house/test/*.test.ts packages/verifier-print/test/*.test.ts packages/mcp/test/*.test.ts packages/runner/test/*.test.mjs apps/api/test/*.test.ts apps/web/src/*.test.ts .factory/skills/verify-acquit/scripts/stream-guard.test.mjs .factory/skills/verify-acquit/scripts/safe-browser.test.mjs",
     "typecheck": "tsc -p . --noEmit",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "readme:counts": "node scripts/readme-counts.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
   },
-  "engines": { "node": ">=24.0.0" }
+  "engines": { "node": ">=24.0.0" },
+  "dependencies": {
+    "manifold-3d": "^3.5.4"
+  }
 }

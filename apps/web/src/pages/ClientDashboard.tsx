@@ -4,7 +4,7 @@ import { api, ApiError } from "../api";
 import { usd, utc } from "../format";
 import { Link } from "../router";
 import { rememberedJobs, useSession } from "../session";
-import { ConnectedRepo, StatusPill } from "../ui";
+import { ConnectedRepo, IdChip, StatusPill } from "../ui";
 
 /**
  * The contract documents only `GET /api/jobs?status=OPEN`. We ask for `/api/jobs` first (own jobs plus
@@ -69,7 +69,6 @@ export function JobTable({ jobs, action }: { jobs: JobView[]; action?: (job: Job
       <table className="tbl">
         <thead>
           <tr>
-            <th>ID</th>
             <th>Title</th>
             <th>Status</th>
             <th className="r">Budget</th>
@@ -81,11 +80,8 @@ export function JobTable({ jobs, action }: { jobs: JobView[]; action?: (job: Job
         <tbody>
           {jobs.map((j) => (
             <tr key={j.id}>
-              <td className="mono">
-                <Link to={`/jobs/${j.id}`}>{j.id}</Link>
-              </td>
               <td>
-                <Link to={`/jobs/${j.id}`}>{j.title}</Link>
+                <Link to={`/jobs/${j.id}`}>{j.title}</Link> <IdChip value={j.id} />
               </td>
               <td>
                 <StatusPill job={j} />
