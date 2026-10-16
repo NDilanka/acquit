@@ -5,6 +5,7 @@ import { budgetProblem, parseUsd, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link } from "../router";
 import { rememberJob, useSession } from "../session";
+import { IdChip, StatusPill } from "../ui";
 
 const DEADLINES = [3, 7, 14] as const;
 
@@ -131,12 +132,15 @@ export function NewJob() {
 function JobOpened({ job, issue }: { job: JobView; issue: RepoIssue }) {
   return (
     <div className="card pad opened">
-      <h2>
-        Job <span className="mono">{job.id}</span> opened
-      </h2>
+      <h2>{job.title}</h2>
+      <p>
+        <IdChip value={job.id} />
+      </p>
       <dl className="kvs">
         <dt>Status</dt>
-        <dd>{job.status}</dd>
+        <dd>
+          <StatusPill job={job} />
+        </dd>
         <dt>Mode</dt>
         <dd>Bid</dd>
         <dt>Budget</dt>

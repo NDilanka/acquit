@@ -41,7 +41,7 @@ test("a paid job keeps polling while its merge is pending and stops once the mer
 
 test("a refunded or closed job stops polling", () => {
   assert.equal(pollInterval({ status: "REFUNDED", phase: "REFUNDED", merge: null } satisfies PollJob, idle), null);
-  assert.equal(pollInterval({ status: "CLOSED", phase: "CANCELLED", merge: null } satisfies PollJob, idle), null);
+  assert.equal(pollInterval({ status: "CLOSED", phase: "CLOSED", merge: null } satisfies PollJob, idle), null);
 });
 
 test("an open job keeps polling through bidding and funding", () => {

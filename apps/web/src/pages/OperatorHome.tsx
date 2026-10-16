@@ -4,9 +4,10 @@ import type { CreditAccountView, JobView, OperatorView, ReceiptRow } from "../ap
 import { api, ApiError } from "../api";
 import { creditLine, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
+import { bidStatusWord } from "../job-status";
 import { Link } from "../router";
 import { useSession } from "../session";
-import { NotFound } from "../ui";
+import { IdChip, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 
 export function OperatorHome() {
@@ -72,10 +73,10 @@ export function OperatorHome() {
           <div key={j.id} className="card jobcard">
             <div className="pad jobline">
               <div>
-                <span className="mono muted">{j.id}</span>
                 <Link to={`/jobs/${j.id}`}>
-                  <b> {j.title}</b>
-                </Link>
+                  <b>{j.title}</b>
+                </Link>{" "}
+                <IdChip value={j.id} />
                 <div className="meta">
                   <span>Mode <b>Bid</b></span>
                   <span>Budget <b className="num">{usd(j.budget)}</b></span>
@@ -83,13 +84,13 @@ export function OperatorHome() {
                 </div>
               </div>
               {mine ? (
-                <span className="pill ok">Bid {usd(mine.price)} · {mine.status}</span>
-              ) : j.phase === "BIDDING" || j.phase === j.status ? (
+                <span className="pill ok">Bid {usd(mine.price)} · {bidStatusWord(mine.status)}</span>
+              ) : j.phase === "BIDDING" ? (
                 <button className="btn sm" onClick={() => setBidding(bidding === j.id ? null : j.id)}>
                   {bidding === j.id ? "Close" : "Bid"}
                 </button>
               ) : (
-                <small className="muted">{j.phase}</small>
+                <StatusPill job={j} />
               )}
             </div>
             {bidding === j.id && !mine && (
@@ -115,9 +116,11 @@ function verifiedLine(row: ReceiptRow): string {
   return `${row.frozen.passed}/${row.frozen.expected} frozen, ${row.hidden.passed}/${row.hidden.expected} hidden`;
 }
 
+const chipCell = (p: { value?: string | null }) => (p.value ? <IdChip value={p.value} /> : "—");
+
 const receiptColumns: ColDef<ReceiptRow>[] = [
-  { headerName: "Receipt", field: "id", flex: 1.4, minWidth: 72, cellClass: "mono" },
-  { headerName: "Job", colId: "job", minWidth: 62, cellClass: "mono", valueGetter: (p) => p.data?.jobId ?? "—" },
+  { headerName: "Receipt", field: "id", flex: 1.4, minWidth: 72, cellRenderer: chipCell },
+  { headerName: "Job", colId: "job", minWidth: 62, valueGetter: (p) => p.data?.jobId ?? null, cellRenderer: chipCell },
   {
     headerName: "Amount",
     colId: "amount",

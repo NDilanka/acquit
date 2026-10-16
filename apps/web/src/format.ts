@@ -1,4 +1,4 @@
-import type { CreditAccountView, DisputeView, JobView, LedgerLine, MergeProgress, RefundReason, ReleaseAuthority, ReleaseEvidence } from "./api-types";
+import type { CreditAccountView, DisputeView, JobView, LedgerLine, MergeProgress, RefundReason, ReleaseAuthority } from "./api-types";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -91,10 +91,6 @@ export function mergeNote(merge: MergeProgress, pullRequest: number | null, appr
       return `Needs a person: ${known ? `${known} (${merge.reason})` : merge.reason}`;
     }
   }
-}
-
-export function releaseNote(release: ReleaseEvidence): string {
-  return `Payout item ${release.payoutItemId}, capture ${release.captureId}`;
 }
 
 const reasons: Record<string, string> = {
@@ -198,4 +194,11 @@ export function arbiterNoteLine(job: Pick<JobView, "status" | "arbiterNote" | "r
   const decided =
     job.releaseAuthority === "ARBITER_UPHELD" || job.refundReason === "ARBITER_REFUND" || (job.status === "IN_PROGRESS" && job.refundReason === null);
   return decided ? `Arbiter's note: ${job.arbiterNote}` : null;
+}
+
+/** The chip's short form: a prefix such as `job_` kept, then eight characters of the id. */
+export function shortId(value: string): string {
+  const cut = value.indexOf("_") + 1;
+  const rest = value.slice(cut);
+  return `${value.slice(0, cut)}${rest.slice(0, 8)}${rest.length > 8 ? "…" : ""}`;
 }
