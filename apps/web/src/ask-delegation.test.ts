@@ -24,16 +24,16 @@ const SIZING = { min: { width: 20, height: 20 }, default: { width: 30, height: 4
 
 type MockTrack = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
 
+type MockPage = {
+  id: string;
+  layout?: { columns: number; rowHeight: number };
+  widgets: Record<string, Record<string, unknown>>;
+  widgetLayout?: Record<string, MockTrack>;
+};
+
 type MockState = {
   selectedPageId: string;
-  pages: [
-    {
-      id: string;
-      layout?: { columns: number; rowHeight: number };
-      widgets: Record<string, Record<string, unknown>>;
-      widgetLayout?: Record<string, MockTrack>;
-    },
-  ];
+  pages: [MockPage, ...MockPage[]];
 };
 
 const HELD_CATALOGUE: MockCatalogueEntry[] = [
@@ -57,12 +57,14 @@ const HELD_CATALOGUE: MockCatalogueEntry[] = [
  */
 function mockStudioApi(
   catalogue: MockCatalogueEntry[],
-  opts: { layout?: Record<string, MockTrack>; dropPlacement?: boolean } = {},
+  opts: { layout?: Record<string, MockTrack>; dropPlacement?: boolean; otherPage?: boolean } = {},
 ): { api: AgStudioApi; state: MockState } {
-  const state: MockState = {
-    selectedPageId: "main",
-    pages: [{ id: "main", layout: { columns: 12, rowHeight: 60 }, widgets: {}, widgetLayout: { ...opts.layout } }],
-  };
+  const main: MockPage = { id: "main", layout: { columns: 12, rowHeight: 60 }, widgets: {}, widgetLayout: { ...opts.layout } };
+  const extra: MockPage[] = opts.otherPage ? [{ id: "other", layout: { columns: 12, rowHeight: 60 }, widgets: {}, widgetLayout: {} }] : [];
+  const state: MockState = { selectedPageId: "main", pages: [main, ...extra] };
+  // A tool bound to a page (as the SDK binds page-scoped tools) writes there; unbound, it writes to the selected page.
+  const pageOf = (options?: { pageId?: string }): MockPage =>
+    state.pages.find((page) => page.id === (options?.pageId ?? state.selectedPageId)) ?? state.pages[0];
   const tool = (
     name: string,
     description: string,
@@ -105,34 +107,37 @@ function mockStudioApi(
       addPageFilter: () => tool("add_page_filter", "filter the page", async () => ok("ok")),
       removePageFilter: () => tool("remove_page_filter", "unfilter the page", async () => ok("ok")),
       positionWidget: () => tool("position_widget", "move a widget", async () => ok("ok")),
-      addWidget: () =>
+      addWidget: (options?: { pageId?: string }) =>
         tool("add_widget", "add a widget", async (call) => {
           const args = call.args as { widgetId?: string; type?: string } & Partial<Record<keyof MockTrack, unknown>>;
           if (args.widgetId == null || args.type == null) return { success: false as const, issues: [{ message: "widgetId and type are required" }] };
-          state.pages[0].widgets[args.widgetId] = { type: args.type, dataMapping: {} };
+          const page = pageOf(options);
+          page.widgets[args.widgetId] = { type: args.type, dataMapping: {} };
           const { xTrack, yTrack, xSpan, ySpan } = args;
           if (!opts.dropPlacement && typeof xTrack === "number" && typeof yTrack === "number" && typeof xSpan === "number" && typeof ySpan === "number") {
-            (state.pages[0].widgetLayout ??= {})[args.widgetId] = { xTrack, yTrack, xSpan, ySpan };
+            (page.widgetLayout ??= {})[args.widgetId] = { xTrack, yTrack, xSpan, ySpan };
           }
           return ok(`Added widget ${args.widgetId}`);
         }),
-      removeWidget: () =>
+      removeWidget: (options?: { pageId?: string }) =>
         tool("remove_widget", "remove a widget", async (call) => {
           const args = call.args as { widgetId?: string };
-          if (args.widgetId == null || state.pages[0].widgets[args.widgetId] == null) {
-            return { success: false as const, issues: [{ message: `removeWidget: widget ${args.widgetId} is not on page main` }] };
+          const page = pageOf(options);
+          if (args.widgetId == null || page.widgets[args.widgetId] == null) {
+            return { success: false as const, issues: [{ message: `removeWidget: widget ${args.widgetId} is not on page ${page.id}` }] };
           }
-          delete state.pages[0].widgets[args.widgetId];
-          delete state.pages[0].widgetLayout?.[args.widgetId];
+          delete page.widgets[args.widgetId];
+          delete page.widgetLayout?.[args.widgetId];
           return ok(`Removed widget ${args.widgetId}`);
         }),
-      configureWidget: ({ widgetType, widgetId }: { widgetType: string; widgetId: string }) => {
+      configureWidget: ({ widgetType, widgetId }: { widgetType: string; widgetId: string }, options?: { pageId?: string }) => {
         if (!catalogue.some((entry) => entry.type === widgetType)) {
           throw new Error(`DiscriminatedUnionLens.case: no variant with type === ${widgetType} in [${catalogue.map((e) => e.type).join(", ")}]`);
         }
         return tool("configure_widget", "configure the widget", async (call) => {
-          const widget = state.pages[0].widgets[widgetId];
-          if (widget == null) return { success: false as const, issues: [{ message: `configureWidget: widget ${widgetId} is not on page main` }] };
+          const page = pageOf(options);
+          const widget = page.widgets[widgetId];
+          if (widget == null) return { success: false as const, issues: [{ message: `configureWidget: widget ${widgetId} is not on page ${page.id}` }] };
           Object.assign(widget, call.args);
           return ok(`Configured widget ${widgetId}`);
         });
@@ -399,6 +404,9 @@ test("a child that adds a widget and then fails leaves no widget behind, and the
 const delegateTo = (id: "data" | "page", instructions: string): Answer =>
   call("call-1", "delegate_to", { type: { id }, instructions });
 
+const pageTo = (pageId: string, instructions: string): Answer =>
+  call("call-1", "delegate_to", { type: { id: "page", pageId }, instructions });
+
 test("a delegated data question runs the built-in data agent and returns its answer", async () => {
   const { api } = mockStudioApi([]);
   const { fetch, childBodies } = scriptedFetch([delegateTo("data", "Which operator holds the most escrow?"), text("Operator alpha holds the most.")], [
@@ -444,6 +452,38 @@ test("a page change that adds another dashboard's widget type is refused", async
   await settle(session);
   assert.ok(childBodies.length >= 2, "the page agent reached its add_widget call");
   assert.equal(state.pages[0].widgets["earnings-1"], undefined, "the foreign widget was never added to the escrow dashboard");
+});
+
+test("a page change aimed at an unselected page is refused, and no widget lands on either page", async () => {
+  const { api, state } = mockStudioApi([...HELD_CATALOGUE], { otherPage: true });
+  const { fetch, childBodies } = scriptedFetch([pageTo("other", "Add the held widget to the other page."), text("Could not do that.")], [
+    call("child-1", "add_widget", { widgetId: "held-other", type: "acquit-held", xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 }),
+    call("child-2", "complete_task", { summary: "Added the held widget to the other page.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add the held widget to the other page.");
+  await settle(session);
+  assert.equal(state.pages[1]?.widgets["held-other"], undefined, "no widget landed on the other page");
+  assert.equal(state.pages[0].widgets["held-other"], undefined, "no widget landed on the selected page");
+  assert.equal(childBodies.length, 0, "the page agent never ran");
+  const result = delegateResult(session);
+  assert.equal(result?.success, false);
+  assert.match(result?.issues?.[0]?.message ?? "", /The page other is not the selected page/);
+});
+
+test("a native funnel chart is addable on the escrow dashboard", async () => {
+  const { api, state } = mockStudioApi([...HELD_CATALOGUE]);
+  const { fetch } = scriptedFetch([delegateTo("page", "Add a jobs funnel."), text("Added it.")], [
+    call("child-1", "add_widget", { widgetId: "funnel-new", type: "funnel-chart", xTrack: 0, yTrack: 0, xSpan: 4, ySpan: 5 }),
+    call("child-2", "complete_task", { summary: "Added the jobs funnel.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add a jobs funnel.");
+  await settle(session);
+  assert.equal(delegateResult(session)?.success, true);
+  assert.equal(state.pages[0].widgets["funnel-new"]?.type, "funnel-chart");
 });
 
 test("a data delegate that dies reaches the ledger agent as a failure, not a success", async () => {

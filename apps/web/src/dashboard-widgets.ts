@@ -206,7 +206,7 @@ export const NATIVE_WIDGETS = {
       {
         id: "escrow-funnel",
         type: "funnel-chart",
-        title: "Job lifecycle",
+        title: "Jobs by current stage",
         xSpan: 4,
         ySpan: 5,
         dataMapping: { categoryKey: [{ id: "jobs.stage" }], valueKey: [{ id: "jobs.jobId", aggregation: "count" }] },
@@ -235,6 +235,12 @@ export const NATIVE_WIDGETS = {
   ],
   earnings: [],
 } as const satisfies Record<DashboardId, readonly (readonly NativeWidgetSpec[])[]>;
+
+/** Each dashboard's native widget types, which the Ask agent may add beside its custom widget ids. */
+export const NATIVE_TYPES: Record<DashboardId, readonly NativeWidgetSpec["type"][]> = {
+  escrow: NATIVE_WIDGETS.escrow.flat().map((widget) => widget.type),
+  earnings: [],
+};
 
 /** Each dashboard's widget spans by widget type, the size a widget gets when it needs a fresh placement. */
 export const WIDGET_SPANS: Record<DashboardId, Readonly<Record<string, { readonly xSpan: number; readonly ySpan: number }>>> = {

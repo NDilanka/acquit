@@ -23,7 +23,7 @@ import {
   buildAskTools,
   type AskAdapterDeps,
 } from "./ask-ledger.ts";
-import { COLUMNS, WIDGET_IDS, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
+import { COLUMNS, NATIVE_TYPES, WIDGET_IDS, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { firstFreeTrack, placementFits, selectedPage, widgetPlaced, type Track } from "./studio-data.ts";
 
 // The api is typed against Studio's default widget registry; the state it holds is this app's.
@@ -74,12 +74,21 @@ function delegatedWidgetId(args: Record<string, unknown>): string | undefined {
   return id === "widget" && typeof widgetId === "string" ? widgetId : undefined;
 }
 
+/** The page a page delegation names, when it names one. */
+function delegatedPageId(args: Record<string, unknown>): string | undefined {
+  const type = args.type;
+  if (typeof type !== "object" || type === null) return undefined;
+  const { id, pageId } = type as { id?: unknown; pageId?: unknown };
+  return id === "page" && typeof pageId === "string" ? pageId : undefined;
+}
+
 /**
  * Studio's delegate tool reports success whenever the child returns, even when it errored. This
  * passes a result through only when the child's run also finished 'ok' and the widget it was handed
  * ends with a placement of its own on the grid. A child that throws while resolving its tools ends
  * before any telemetry, so a missing outcome counts as a failure too. A failed child's partly added
- * widget is removed again, so the grid never keeps a half-made widget.
+ * widget is removed again, so the grid never keeps a half-made widget. The checks and the rollback
+ * read the selected page only, so a page change that names another page is refused before its child runs.
  */
 function honestDelegate(
   inner: AgAiTool,
@@ -94,6 +103,13 @@ function honestDelegate(
   return {
     ...inner,
     execute: async (call, ctx) => {
+      const named = delegatedPageId(call.args);
+      if (named !== undefined && named !== api.getState().selectedPageId) {
+        return {
+          success: false,
+          issues: [{ message: `The page ${named} is not the selected page, and page changes reach only the selected page. Delegate without a pageId, or select that page first.` }],
+        };
+      }
       const before = new Set(selectedWidgetIds());
       const result = (await inner.execute?.(call, ctx)) ?? { success: false, issues: [] };
       const ranOk = result.success && runs.outcomes.get(call.toolCallId) === "ok";
@@ -133,6 +149,9 @@ const countRendered = (type: string): number => {
   // No DOM on this surface (the unit tests run the harness headless): nothing to check, so the
   // state checks carry the truth and the count always satisfies.
   if (typeof document === "undefined") return Number.POSITIVE_INFINITY;
+  // The tile markup below is this app's custom widget section. Studio draws its native types itself,
+  // so for them the placement in state is the only check.
+  if ((Object.values(NATIVE_TYPES).flat() as readonly string[]).includes(type)) return Number.POSITIVE_INFINITY;
   let count = 0;
   for (const tile of document.querySelectorAll(`section.studio-widget[data-widget-type="${type}"]`)) {
     const rect = tile.getBoundingClientRect();
@@ -174,7 +193,7 @@ function dashboardAdd(
   studio: AgAiStudioTools,
   deps?: AskAdapterDeps,
 ): AgAiTool {
-  const allowed: readonly string[] = dashboard ? WIDGET_IDS[dashboard] : [];
+  const allowed: readonly string[] = dashboard ? [...WIDGET_IDS[dashboard], ...NATIVE_TYPES[dashboard]] : [];
   const spans = dashboard ? WIDGET_SPANS[dashboard] : {};
   const count = deps?.renderedCount ?? countRendered;
   return {
