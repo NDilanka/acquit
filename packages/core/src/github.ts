@@ -92,7 +92,12 @@ export type PublishedPullRequest = {
 	readonly checkRunUrl: string | null;
 };
 
-export type WorkRepoRequest = { readonly jobId: JobId; readonly repository: string; readonly frozenCommit: CommitSha };
+/**
+ * One job's work repository to create. `recorded` is the fork this job already recorded, when a retry carries one.
+ * A repository found at the name is adopted only as that recorded fork: a GET alone never establishes ownership.
+ */
+export type WorkRepoRequest = { readonly jobId: JobId; readonly repository: string; readonly frozenCommit: CommitSha;
+	readonly recorded?: WorkRepoFork | null };
 export type PublishRequest = { readonly jobId: JobId; readonly repository: string; readonly sourceCommit: CommitSha; readonly checkName: string };
 
 /** One client repository to fork: the deployment's source, and the name the fork takes in the organization. */
@@ -564,11 +569,19 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const orgToken = await tokenFor(organization);
 		const readRepo = () => call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${repository}`, allow: [200, 404], permission: "administration: write" });
 		const found = await readRepo();
-		// Adopt the repository only when it carries the ownership marker: the exact fork parent plus the
-		// job-unique name. A repository this client did not create is never moved, and never written to.
+		// A repository at the name is this job's only when it is the fork this job recorded, by GitHub's id. The
+		// marker (the exact fork parent plus the job-unique name) is not enough: a same-source replacement carries it
+		// too. A GET never establishes ownership, so a repository with no recorded id is refused, never adopted.
+		const recorded = request.recorded ?? null;
 		const adoptable = (record: unknown) => {
 			if (!isOurFork(record, repository, request.repository)) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this job creates. Nothing was moved.`);
+			}
+			if (recorded === null) {
+				throw new GitHubAppError("GITHUB_FORK_UNRECORDED", `${repository} exists, but this job has no recorded repository id, so it cannot be told from another fork. Nothing was moved.`);
+			}
+			if (idOf(record) !== recorded.id || recorded.repository.toLowerCase() !== repository.toLowerCase()) {
+				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the repository this job forked (id ${recorded.id}). Nothing was moved.`);
 			}
 			return record;
 		};
@@ -857,6 +870,15 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 				created = { repository, remote: `https://github.com/${repository}.git`, branch: "main", commit: request.frozenCommit, id };
 				workRepos.set(request.jobId, created);
 				workRepoOwners.set(repository, { source: request.repository, id });
+			} else {
+				// The same rule the real App keeps: a repository is adopted only as the fork this job recorded.
+				const recorded = request.recorded ?? null;
+				if (recorded === null) {
+					throw new GitHubAppError("GITHUB_FORK_UNRECORDED", `${created.repository} exists, but this job has no recorded repository id. Nothing was moved.`);
+				}
+				if (recorded.id !== created.id) {
+					throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${created.repository} is not the repository this job forked (id ${recorded.id}). Nothing was moved.`);
+				}
 			}
 			await onFork?.({ repository: created.repository, id: created.id });
 			return created;

@@ -133,3 +133,55 @@ test("a credential in a failing step's error text is kept out of the stored snap
 		}
 	} finally { await h.dispose(); }
 });
+
+test("an interrupted write of a finished run leaves its snapshot and journal as they were, and a reopen stamps the cleanup", async t => {
+	const path = await tempDatabase(t);
+	const db = openDatabase(path);
+	try {
+		const runs = boundedRuns(undefined, db);
+		const running = runOf("scn_run_c", "req-c", "RUNNING");
+		commit(runs, running);
+		// The journal's write is interrupted after the snapshot's, the way a stop between the two statements would leave them.
+		db.exec("CREATE TRIGGER interrupt_journal BEFORE UPDATE ON scenario_cleanup BEGIN SELECT RAISE(ABORT, 'interrupted'); END;");
+		assert.throws(() => runs.save({ ...running, state: "DONE", endState: { jobStatus: "PAID", reason: "CLIENT_APPROVAL" } }), /interrupted/);
+		assert.equal(runs.get(running.id)?.state, "RUNNING", "memory keeps the committed state");
+		db.exec("DROP TRIGGER interrupt_journal");
+		assert.equal(db.prepare("SELECT state FROM scenario_runs WHERE id = ?").get(running.id)?.state, "RUNNING");
+		assert.equal(db.prepare("SELECT finished_at FROM scenario_cleanup WHERE run_id = ?").get(running.id)?.finished_at, null);
+	} finally { db.close(); }
+
+	// The reopen finds the run RUNNING: it is FAILED with RESTARTED, and its journal is stamped so the cleanup can reach it.
+	const reopened = openDatabase(path);
+	try {
+		assert.deepEqual(boundedRuns(undefined, reopened).get("scn_run_c"), { ...runOf("scn_run_c", "req-c", "FAILED"), failure: "RESTARTED" });
+		assert.notEqual(reopened.prepare("SELECT finished_at FROM scenario_cleanup WHERE run_id = ?").get("scn_run_c")?.finished_at, null);
+	} finally { reopened.close(); }
+});
+
+test("the identity columns and a finished state are write-once in SQL, whatever writes the row", async t => {
+	const path = await tempDatabase(t);
+	const db = openDatabase(path);
+	try {
+		commit(boundedRuns(undefined, db), runOf("scn_run_d", "req-d", "DONE"));
+		assert.throws(() => db.prepare("UPDATE scenario_runs SET name = 'dispute-arbiter' WHERE id = ?").run("scn_run_d"), /write-once/);
+		assert.throws(() => db.prepare("UPDATE scenario_runs SET job_id = 'job_other' WHERE id = ?").run("scn_run_d"), /write-once/);
+		assert.throws(() => db.prepare("UPDATE scenario_cleanup SET job_id = 'job_other' WHERE run_id = ?").run("scn_run_d"), /write-once/);
+		assert.throws(() => db.prepare("UPDATE scenario_runs SET state = 'RUNNING' WHERE id = ?").run("scn_run_d"), /cannot resume/);
+		assert.deepEqual({ ...db.prepare("SELECT name, job_id, state FROM scenario_runs WHERE id = ?").get("scn_run_d") },
+			{ name: "verified-and-paid", job_id: "job_scn_run_d", state: "DONE" });
+	} finally { db.close(); }
+});
+
+test("an unfinished journal is stamped at a reopen only where the run's own receipt proves its job", async t => {
+	const path = await tempDatabase(t);
+	const first = openDatabase(path);
+	try {
+		commit(boundedRuns(undefined, first), runOf("scn_unproven", "req-u", "DONE"));
+		first.prepare("UPDATE scenario_cleanup SET finished_at = NULL WHERE run_id = ?").run("scn_unproven");
+	} finally { first.close(); }
+	const reopened = openDatabase(path);
+	try {
+		boundedRuns(undefined, reopened);
+		assert.equal(reopened.prepare("SELECT finished_at FROM scenario_cleanup WHERE run_id = ?").get("scn_unproven")?.finished_at, null);
+	} finally { reopened.close(); }
+});

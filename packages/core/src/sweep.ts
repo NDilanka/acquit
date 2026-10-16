@@ -127,17 +127,38 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 			kept.push({ id: runId, repository, reason: "WORK_REPO_PENDING" });
 			continue;
 		}
+		const recordedId = work !== undefined && typeof work.repository_id === "number" ? work.repository_id : null;
 		if (work !== undefined) {
 			try {
-				const outcome = await input.app.deleteWorkRepo({ repository, source: String(work.source),
-					id: typeof work.repository_id === "number" ? work.repository_id : null });
+				const outcome = await input.app.deleteWorkRepo({ repository, source: String(work.source), id: recordedId });
 				workRepos.push({ runId, repository, outcome });
 			} catch (error) {
 				kept.push({ id: runId, repository, reason: reasonOf(error) });
 				continue;
 			}
 		}
-		input.db.prepare("UPDATE scenario_cleanup SET work_swept_at = ? WHERE run_id = ?").run(input.now, runId);
+		// The removal awaited above can overlap a retry that records a new repository for the job. Completion applies
+		// only to the record this pass removed, and only once no creation is pending. Any other pass retries the job.
+		if (!markWorkSwept(input.db, { runId, jobId, recorded: work === undefined ? null : { repository, id: recordedId }, at: input.now })) {
+			kept.push({ id: runId, repository, reason: creationPending(input.db, jobId) ? "WORK_REPO_PENDING" : "WORK_REPO_CHANGED" });
+		}
 	}
 	return { swept, workRepos, kept };
+}
+
+/**
+ * Marks a job's work repository swept, if and only if the record is still the one that was removed (or, for no
+ * record, still absent) and no creation is pending. One statement, so no record can land between the check and the mark.
+ */
+function markWorkSwept(db: DatabaseSync, input: { readonly runId: string; readonly jobId: JobId;
+	readonly recorded: { readonly repository: string; readonly id: number | null } | null; readonly at: Instant }): boolean {
+	const sameRecord = input.recorded === null
+		? "NOT EXISTS (SELECT 1 FROM work_repos w WHERE w.job_id = scenario_cleanup.job_id)"
+		: "EXISTS (SELECT 1 FROM work_repos w WHERE w.job_id = scenario_cleanup.job_id AND w.repository = ? AND w.repository_id IS ?)";
+	const params = input.recorded === null ? [input.at, input.runId] : [input.at, input.runId, input.recorded.repository, input.recorded.id];
+	const changed = db.prepare(`UPDATE scenario_cleanup SET work_swept_at = ? WHERE run_id = ? AND ${sameRecord}
+		AND NOT EXISTS (SELECT 1 FROM outbox WHERE json_extract(json, '$.effect.kind') = 'CREATE_WORK_REPO'
+			AND json_extract(json, '$.effect.jobId') = scenario_cleanup.job_id AND json_extract(state, '$.kind') NOT IN ('CONFIRMED', 'NEEDS_HUMAN'))`)
+		.run(...params).changes;
+	return changed === 1;
 }

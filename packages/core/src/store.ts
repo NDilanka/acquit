@@ -80,6 +80,18 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		-- work_swept_at is set once the job's work repository is gone, and cleared again by a record that arrives later.
 		CREATE TABLE IF NOT EXISTS scenario_cleanup (run_id TEXT PRIMARY KEY, visitor_id TEXT NOT NULL, job_id TEXT NOT NULL,
 			finished_at TEXT, work_swept_at TEXT);
+		-- A run's identity is set once, by its commit, and a finished run never resumes. The arbiter gate and the cleanup
+		-- read these columns, so no UPDATE may change them, whatever code path or hand writes it.
+		CREATE TRIGGER IF NOT EXISTS scenario_runs_identity_fixed BEFORE UPDATE ON scenario_runs
+			WHEN OLD.id IS NOT NEW.id OR OLD.requester_id IS NOT NEW.requester_id OR OLD.visitor_id IS NOT NEW.visitor_id
+				OR OLD.job_id IS NOT NEW.job_id OR OLD.name IS NOT NEW.name
+			BEGIN SELECT RAISE(ABORT, 'scenario run identity is write-once'); END;
+		CREATE TRIGGER IF NOT EXISTS scenario_runs_no_resume BEFORE UPDATE ON scenario_runs
+			WHEN OLD.state <> 'RUNNING' AND NEW.state = 'RUNNING'
+			BEGIN SELECT RAISE(ABORT, 'a finished scenario run cannot resume'); END;
+		CREATE TRIGGER IF NOT EXISTS scenario_cleanup_identity_fixed BEFORE UPDATE ON scenario_cleanup
+			WHEN OLD.run_id IS NOT NEW.run_id OR OLD.visitor_id IS NOT NEW.visitor_id OR OLD.job_id IS NOT NEW.job_id
+			BEGIN SELECT RAISE(ABORT, 'scenario cleanup identity is write-once'); END;
 		-- The work repository a job's CREATE_WORK_REPO effect made: its full name, GitHub's own id for it, and the
 		-- fork it was made from. The cleanup deletes only the repository this row names.
 		CREATE TABLE IF NOT EXISTS work_repos (job_id TEXT PRIMARY KEY, repository TEXT NOT NULL, repository_id INTEGER, source TEXT NOT NULL);
@@ -458,9 +470,19 @@ export class SqliteStore implements Store {
 	}
 	async recordEffect(key: OperationKey, state: OutboxState): Promise<void> { this.updateEffect(key, state); }
 	async recordWorkRepo(record: WorkRepoRecord): Promise<void> {
-		this.db.prepare("INSERT OR REPLACE INTO work_repos VALUES (?, ?, ?, ?)").run(record.jobId, record.repository, record.repositoryId, record.source);
-		// A record that lands after a cleanup pass has marked the job swept reopens it, so the next pass removes the repository.
-		this.db.prepare("UPDATE scenario_cleanup SET work_swept_at = NULL WHERE job_id = ?").run(record.jobId);
+		this.db.exec("BEGIN IMMEDIATE");
+		try {
+			this.db.prepare("INSERT OR REPLACE INTO work_repos VALUES (?, ?, ?, ?)").run(record.jobId, record.repository, record.repositoryId, record.source);
+			// A record that lands after a cleanup pass has marked the job swept reopens it, so the next pass removes the repository.
+			this.db.prepare("UPDATE scenario_cleanup SET work_swept_at = NULL WHERE job_id = ?").run(record.jobId);
+			this.db.exec("COMMIT");
+		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
+	}
+	async readWorkRepo(jobId: JobId): Promise<WorkRepoRecord | null> {
+		const row = this.db.prepare("SELECT repository, repository_id, source FROM work_repos WHERE job_id = ?").get(jobId);
+		if (row === undefined) return null;
+		return { jobId, repository: String(row.repository), repositoryId: typeof row.repository_id === "number" ? row.repository_id : null,
+			source: String(row.source) };
 	}
 	close(): void { this.db.close(); }
 }

@@ -12,7 +12,7 @@ import type { AttemptRecord, JobRow, JobStatus } from "./job.ts";
 import { shiftJobClock } from "./job-clock.ts";
 import { usd } from "./ledger.ts";
 import { reasonCode } from "./score-card.ts";
-import { openedJobOf, stepKey } from "./scenario-binding.ts";
+import { arbiterOwns, openedJobOf, stepKey } from "./scenario-binding.ts";
 import type { SqliteStore } from "./store.ts";
 
 export const SCENARIO_NAMES = ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "deadline-refund"] as const;
@@ -108,14 +108,17 @@ export type ScenarioRuns = {
  * restart: it is marked FAILED with failure RESTARTED, and its scripted steps are never resumed.
  */
 export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS, db?: DatabaseSync): ScenarioRuns {
+	// The store keeps its own copies and hands out copies only, so no caller's object is ever the committed record.
 	const runs = new Map<string, ScenarioRun>();
+	const copyOf = (run: ScenarioRun): ScenarioRun => structuredClone(run);
 	const admitted = new Map<string, number>();
 	let admittedTotal = 0;
 	const records = db === undefined ? null : runRecords(db);
+	records?.reconcile();
 	for (const loaded of records?.load() ?? []) {
 		const run: ScenarioRun = loaded.state === "RUNNING" ? { ...loaded, state: "FAILED", failure: "RESTARTED" } : loaded;
-		runs.set(run.id, run);
 		if (run !== loaded) records?.write(run);
+		runs.set(run.id, run);
 	}
 	const admittedOf = (requesterId: string): number => admitted.get(requesterId) ?? 0;
 	// Eviction drops the snapshot only. The cleanup journal keeps the run's obligations until its repositories are gone.
@@ -128,7 +131,8 @@ export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS, db?: DatabaseSyn
 		}
 		return false;
 	};
-	const keep = (run: ScenarioRun): void => { runs.set(run.id, run); records?.write(run); };
+	// The snapshot and the journal commit first. Memory takes the run only once they have, so a failed write publishes nothing.
+	const keep = (run: ScenarioRun): void => { records?.write(run); runs.set(run.id, copyOf(run)); };
 	return {
 		admit(requesterId) {
 			const own = [...runs.values()].filter(run => run.requesterId === requesterId);
@@ -146,7 +150,7 @@ export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS, db?: DatabaseSyn
 				admitted.set(requesterId, admittedOf(requesterId) - 1);
 				admittedTotal--;
 			};
-			return { kind: "ADMITTED", slot: { commit: run => { close(); keep(run); }, release: close } };
+			return { kind: "ADMITTED", slot: { commit: run => { try { keep(run); } finally { close(); } }, release: close } };
 		},
 		save(run) {
 			const committed = runs.get(run.id);
@@ -154,9 +158,11 @@ export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS, db?: DatabaseSyn
 				|| committed.visitorId !== run.visitorId || committed.jobId !== run.jobId) {
 				throw new Error(`Not a committed scenario run, or its identity changed: ${run.id}`);
 			}
+			// A finished run is final: a snapshot that says RUNNING again is refused, the same as the database does.
+			if (committed.state !== "RUNNING" && run.state === "RUNNING") throw new Error(`A finished scenario run cannot resume: ${run.id}`);
 			keep(run);
 		},
-		get: id => runs.get(id),
+		get: id => { const run = runs.get(id); return run === undefined ? undefined : copyOf(run); },
 		size: () => runs.size,
 	};
 }
@@ -167,11 +173,33 @@ export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS, db?: DatabaseSyn
  * journal row per committed run, written with the snapshot and never removed by eviction. Its `finished_at` is
  * the wall-clock moment the run first left RUNNING: the scenario sweep's TTL counts from it.
  */
-function runRecords(db: DatabaseSync): { load(): ScenarioRun[]; write(run: ScenarioRun): void; remove(id: string): void } {
+function runRecords(db: DatabaseSync): { reconcile(): void; load(): ScenarioRun[]; write(run: ScenarioRun): void; remove(id: string): void } {
+	// Snapshot and journal commit together or not at all: a crash between the two statements cannot leave a finished
+	// snapshot whose journal is unfinished.
+	const transaction = (work: () => void): void => {
+		db.exec("BEGIN IMMEDIATE");
+		try { work(); db.exec("COMMIT"); } catch (error) { db.exec("ROLLBACK"); throw error; }
+	};
 	return {
+		// A finished run whose journal is missing or unfinished (a write from before the commit was atomic) is stamped
+		// now, but only where its own OpenJob receipt proves the job it names. Anything unproven is left alone.
+		reconcile: () => transaction(() => {
+			const orphaned = db.prepare(`SELECT r.id, r.visitor_id, r.job_id FROM scenario_runs r
+				LEFT JOIN scenario_cleanup k ON k.run_id = r.id
+				WHERE r.state <> 'RUNNING' AND (k.run_id IS NULL OR k.finished_at IS NULL)`).all();
+			for (const row of orphaned) {
+				const id = String(row.id);
+				const visitorId = String(row.visitor_id);
+				const jobId = String(row.job_id);
+				if (openedJobOf(db, { id, visitorId }) !== jobId) continue;
+				db.prepare(`INSERT INTO scenario_cleanup (run_id, visitor_id, job_id, finished_at) VALUES (?, ?, ?, ?)
+					ON CONFLICT(run_id) DO UPDATE SET finished_at = COALESCE(scenario_cleanup.finished_at, excluded.finished_at)`)
+					.run(id, visitorId, jobId, new Date().toISOString());
+			}
+		}),
 		load: () => db.prepare("SELECT snapshot FROM scenario_runs ORDER BY rowid").all()
 			.map(row => JSON.parse(String(row.snapshot)) as ScenarioRun),
-		write: run => {
+		write: run => transaction(() => {
 			const finishedAt = run.state === "RUNNING" ? null : new Date().toISOString();
 			db.prepare(`INSERT INTO scenario_runs (id, requester_id, visitor_id, job_id, name, state, snapshot)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -180,7 +208,7 @@ function runRecords(db: DatabaseSync): { load(): ScenarioRun[]; write(run: Scena
 			db.prepare(`INSERT INTO scenario_cleanup (run_id, visitor_id, job_id, finished_at) VALUES (?, ?, ?, ?)
 				ON CONFLICT(run_id) DO UPDATE SET finished_at = COALESCE(scenario_cleanup.finished_at, excluded.finished_at)`)
 				.run(run.id, run.visitorId, run.jobId, finishedAt);
-		},
+		}),
 		remove: id => { db.prepare("DELETE FROM scenario_runs WHERE id = ?").run(id); },
 	};
 }
@@ -255,10 +283,7 @@ export type StartedScenario = { readonly run: ScenarioRun; readonly finished: Pr
  * the scenario's own chain calls it, and no HTTP route does.
  */
 export async function arbiterVerdictForRun(deps: ScenarioDeps, runId: string, jobId: JobId): Promise<void> {
-	const run = deps.runs.get(runId);
-	const owned = run !== undefined && run.state === "RUNNING" && run.name === "dispute-arbiter" && run.jobId === jobId
-		&& openedJobOf(deps.store.db, run) === jobId;
-	if (!owned) throw new ScenarioRefused("SCENARIO_ARBITER_NOT_OWNED");
+	if (!arbiterOwns(deps.store.db, { id: runId, jobId })) throw new ScenarioRefused("SCENARIO_ARBITER_NOT_OWNED");
 	const outcome = await deps.acquit.execute({ role: "ARBITER", staffId: "staff-arbiter" as StaffId }, stepKey(runId, "arbiter-verdict"),
 		{ type: "ResolveDispute", jobId, verdict: "UPHOLD", note: "Scripted arbiter verdict: the delivered fix stands." });
 	if (outcome.kind === "DENIED") throw new ScenarioRefused(outcome.reason, `ResolveDispute refused: ${outcome.reason}`);

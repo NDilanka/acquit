@@ -11,8 +11,9 @@ import { createFakeGitHubApp, GitHubAppError } from "../src/github.ts";
 import type { FakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { Instant, JobId } from "../src/ids.ts";
-import { ScenarioRefused, startScenario } from "../src/scenarios.ts";
+import { boundedRuns, ScenarioRefused, startScenario } from "../src/scenarios.ts";
 import type { StartedScenario } from "../src/scenarios.ts";
+import { openDatabase } from "../src/store.ts";
 import { SCENARIO_SWEEP_TTL_MS, sweepExpiredVisitors, sweepScenarioRuns } from "../src/sweep.ts";
 import type { ScenarioRepoDeleter } from "../src/sweep.ts";
 import { newVisitorId, readVisitor, visitorRepositoryName } from "../src/visitors.ts";
@@ -250,6 +251,87 @@ test("the expiry sweep the CLI runs first leaves a RUNNING or fresh finished sce
 		await started?.finished;
 		await h.dispose();
 	}
+});
+
+test("a work repository recorded while the job's removal is in flight is not marked swept by that removal", async () => {
+	const github = createFakeGitHubApp();
+	let refFails = true;
+	// The fork is made and recorded, then the ref write fails until the test lets it land: the creation stays retryable.
+	const failsUntilReleased: FakeGitHubApp = { ...github, createWorkRepo: async (request, requestId, onFork) => {
+		const created = await github.createWorkRepo(request, requestId, onFork);
+		if (refFails) throw new GitHubAppError("GITHUB_NETWORK", "the ref write did not answer");
+		return created;
+	} };
+	// The removal takes effect at GitHub, and its answer is held until the test lets it go.
+	let release!: () => void;
+	const held = new Promise<void>(resolve => { release = resolve; });
+	let tookEffect!: () => void;
+	const removing = new Promise<void>(resolve => { tookEffect = resolve; });
+	const deferred: FakeGitHubApp = { ...failsUntilReleased, deleteWorkRepo: async request => {
+		const outcome = await github.deleteWorkRepo(request);
+		tookEffect();
+		await held;
+		return outcome;
+	} };
+	const h = await harness({ github: deferred });
+	let sweeping: ReturnType<typeof sweepScenarioRuns> | null = null;
+	try {
+		h.setClock(nowInstant());
+		const visitor = await forkedVisitor(h, h.visitor);
+		const run = await (await start(h, "deadline-refund", visitor)).finished;
+		assert.equal(run.state, "DONE");
+		const db = h.deps.store.db;
+		const original = [...github.workRepos.values()][0];
+		assert.ok(original);
+		assert.equal(db.prepare("SELECT repository_id FROM work_repos WHERE job_id = ?").get(run.jobId)?.repository_id, original.id);
+
+		sweeping = sweepScenarioRuns({ db, app: deferred, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		await removing;
+		// The removal has taken effect and its answer is held. The creation's retry now finds no repository at the name
+		// it recorded, so it creates a replacement and records it. The deadline-refund chain moved the job's clock two
+		// days, and the job's own retry times move with it.
+		refFails = false;
+		h.setClock(after(3 * 86_400_000));
+		await h.acquit.tick();
+		const replacement = [...github.workRepos.values()][0];
+		assert.equal(github.workRepos.size, 1);
+		assert.notEqual(replacement?.id, original.id);
+		assert.equal(db.prepare("SELECT repository_id FROM work_repos WHERE job_id = ?").get(run.jobId)?.repository_id, replacement?.id);
+		release();
+
+		const first = await sweeping;
+		assert.deepEqual(first.kept.map(item => ({ id: item.id, reason: item.reason })), [{ id: run.id, reason: "WORK_REPO_CHANGED" }]);
+		assert.equal(db.prepare("SELECT work_swept_at FROM scenario_cleanup WHERE run_id = ?").get(run.id)?.work_swept_at, null);
+		const second = await sweepScenarioRuns({ db, app: h.github, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		assert.deepEqual(second.workRepos.map(work => ({ runId: work.runId, outcome: work.outcome })), [{ runId: run.id, outcome: "DELETED" }]);
+		assert.equal(github.workRepos.size, 0);
+	} finally {
+		// The held removal is released and awaited before the database closes, so the failure above is the one reported.
+		release();
+		await sweeping?.catch(() => undefined);
+		await h.dispose();
+	}
+});
+
+test("a finished run whose journal was left unfinished is stamped at the reopen, and its work repository is then removed", async t => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		const visitor = await forkedVisitor(h, h.visitor);
+		const run = await (await start(h, "verified-and-paid", visitor)).finished;
+		assert.equal(run.state, "DONE");
+		const db = h.deps.store.db;
+		// The state an interrupted write left behind: the snapshot reads DONE and the journal never finished.
+		db.prepare("UPDATE scenario_cleanup SET finished_at = NULL WHERE run_id = ?").run(run.id);
+		const reopened = openDatabase(h.path);
+		try {
+			boundedRuns(undefined, reopened);
+			assert.notEqual(reopened.prepare("SELECT finished_at FROM scenario_cleanup WHERE run_id = ?").get(run.id)?.finished_at, null);
+		} finally { reopened.close(); }
+		const report = await sweepScenarioRuns({ db, app: h.github, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		assert.deepEqual(report.workRepos.map(work => ({ runId: work.runId, outcome: work.outcome })), [{ runId: run.id, outcome: "DELETED" }]);
+		assert.equal(h.github.workRepos.size, 0);
+	} finally { await h.dispose(); }
 });
 
 test("the API runs the scenario sweep on its own timer every ten minutes, through the function the tests above cover", () => {

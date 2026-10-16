@@ -172,6 +172,8 @@ export interface Store {
 	recordEffect(key: OperationKey, state: OutboxState): Promise<void>;
 	/** Records the work repository a job's CREATE_WORK_REPO made, so the cleanup can name the one it deletes. */
 	recordWorkRepo(record: WorkRepoRecord): Promise<void>;
+	/** The work repository a job recorded, or null when its creation has recorded none. */
+	readWorkRepo(jobId: JobId): Promise<WorkRepoRecord | null>;
 }
 
 /** A job's work repository: its full name, GitHub's id for it when the answer carried one, and the fork it was made from. */
@@ -521,7 +523,11 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 		// The record is written the moment GitHub answers for the fork, before the ref writes that can still fail,
 		// and again once the whole create has succeeded. Both writes name the same repository, so either one is enough.
 		const recordFork = (fork: WorkRepoFork) => ports.store.recordWorkRepo({ jobId: effect.jobId, repository: fork.repository, repositoryId: fork.id, source: effect.repository });
-		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key), recordFork);
+		// A retry adopts only the fork this job already recorded. A row with no id names no fork the App may adopt.
+		const known = await ports.store.readWorkRepo(effect.jobId);
+		const recorded = known !== null && known.repositoryId !== null ? { repository: known.repository, id: known.repositoryId } : null;
+		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit, recorded },
+			providerRequestId(key), recordFork);
 		await recordFork(created);
 	} catch (error) {
 		if (error instanceof GitHubAppNotConfigured) {

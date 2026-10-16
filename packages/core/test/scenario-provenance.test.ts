@@ -75,3 +75,42 @@ test("an ordinary job's work repository is not swept, even when a forged run rec
 		assert.equal(h.github.workRepos.size, 1);
 	} finally { await h.dispose(); }
 });
+
+test("a copy the caller changes into a running dispute-arbiter run is refused, and the arbiter gate reads the committed row", async () => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		// The run ends with its job still IN_PROGRESS, so the arbiter's verdict would settle it, if the gate believed the copy.
+		const run = await (await start(h, "hidden-test-fail")).finished;
+		assert.equal(run.state, "DONE");
+		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
+		const jobId = run.jobId as JobId;
+		// The object a store hands out is the caller's to change. The record it keeps is not, so the save compares against that record.
+		const alias = h.deps.runs.get(run.id);
+		assert.ok(alias);
+		Object.assign(alias, { name: "dispute-arbiter", state: "RUNNING", endState: null });
+		assert.throws(() => h.deps.runs.save(alias), /identity changed/);
+		assert.equal(h.deps.runs.get(run.id)?.name, "hidden-test-fail");
+		assert.equal(h.deps.runs.get(run.id)?.state, "DONE");
+		await assert.rejects(arbiterVerdictForRun(h.deps, run.id, jobId),
+			(error: unknown) => error instanceof ScenarioRefused && error.code === "SCENARIO_ARBITER_NOT_OWNED");
+		assert.equal((await h.store.readJob(jobId))?.state.status, "IN_PROGRESS");
+	} finally { await h.dispose(); }
+});
+
+test("a forged copy of a finished run cannot name the arbiter or resume, in memory or in the stored row", async () => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		const run = await (await start(h, "verified-and-paid")).finished;
+		const forged: ScenarioRun = { ...run, name: "dispute-arbiter", state: "RUNNING", endState: null };
+		assert.throws(() => h.deps.runs.save(forged), /identity changed/);
+		assert.throws(() => h.deps.runs.save({ ...run, state: "RUNNING" }), /cannot resume/);
+		assert.throws(() => h.deps.store.db.prepare("UPDATE scenario_runs SET name = 'dispute-arbiter' WHERE id = ?").run(run.id), /write-once/);
+		assert.throws(() => h.deps.store.db.prepare("UPDATE scenario_runs SET state = 'RUNNING' WHERE id = ?").run(run.id), /cannot resume/);
+		await assert.rejects(arbiterVerdictForRun(h.deps, run.id, run.jobId as JobId),
+			(error: unknown) => error instanceof ScenarioRefused && error.code === "SCENARIO_ARBITER_NOT_OWNED");
+		assert.equal(h.deps.runs.get(run.id)?.name, "verified-and-paid");
+		assert.equal(h.deps.runs.get(run.id)?.state, "DONE");
+	} finally { await h.dispose(); }
+});

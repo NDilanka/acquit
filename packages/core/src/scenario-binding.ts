@@ -26,3 +26,14 @@ export function openedJobOf(db: DatabaseSync, run: { readonly id: string; readon
 	const result = JSON.parse(String(receipt.result)) as { readonly kind?: unknown; readonly job?: { readonly id?: unknown } };
 	return result.kind === "JOB" && typeof result.job?.id === "string" ? result.job.id as JobId : null;
 }
+
+/**
+ * Whether a run may take the scenario arbiter's verdict on a job. The committed row must name the dispute-arbiter
+ * scenario and this job and still be RUNNING, and the run's own OpenJob receipt must name the job. The row is read
+ * from the database, where its identity is write-once, so no caller's copy of a run decides.
+ */
+export function arbiterOwns(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }): boolean {
+	const row = db.prepare("SELECT visitor_id, name, job_id, state FROM scenario_runs WHERE id = ?").get(run.id);
+	return row !== undefined && row.name === "dispute-arbiter" && row.state === "RUNNING" && row.job_id === run.jobId
+		&& openedJobOf(db, { id: run.id, visitorId: String(row.visitor_id) }) === run.jobId;
+}
