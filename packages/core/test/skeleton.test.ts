@@ -811,7 +811,8 @@ test("the outbox starts the run it reserved and provisions the work repo by requ
 	const base = fixture();
 	const ports: Ports = { ...base.ports, store,
 		workRepo: { createWorkRepo: async request => { created.push({ jobId: request.jobId, repository: request.repository, frozenCommit: request.frozenCommit });
-			return { repository: "acquit-forks/invoice-app-submit", remote: "https://github.com/acquit-forks/invoice-app-submit.git", branch: "main", commit: request.frozenCommit }; } },
+			return { repository: "acquit-forks/invoice-app-submit", remote: "https://github.com/acquit-forks/invoice-app-submit.git", branch: "main", commit: request.frozenCommit, id: 4242 }; },
+			deleteWorkRepo: async () => "ABSENT" },
 		verifier: { start: async request => { starts.push(request); }, parseCallback: async () => null } };
 	const enqueue = (effect: JobEffect) => {
 		const key = operationKey(effect);
@@ -898,7 +899,7 @@ function githubEffect(fail: () => never) {
 	let attempts = 0;
 	let current = now;
 	const ports: Ports = { ...base.ports, store, clock: { now: () => current },
-		workRepo: { createWorkRepo: async () => { attempts++; return fail(); } } };
+		workRepo: { createWorkRepo: async () => { attempts++; return fail(); }, deleteWorkRepo: async () => fail() } };
 	return { store, base, ports, key, attempts: () => attempts, at: (value: Instant) => { current = value; },
 		state: (): EffectState => JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)!.state)) as EffectState };
 }

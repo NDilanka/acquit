@@ -327,14 +327,15 @@ export type DemoVisitorResult = { readonly kind: "CREATED"; readonly visitor: Vi
  * name, so the sweep still takes it. The route owns the session; this owns the rows.
  */
 export async function provisionDemoVisitor(service: Acquit, input: { readonly id: VisitorId; readonly ipKey: string;
-	readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
+	/** A scenario run's visitor: the requester that started it, whose scenario caps the reservation counts under. */
+	readonly scenarioOf?: string; readonly fork: () => Promise<VisitorFork> }): Promise<DemoVisitorResult> {
 	const runtime = runtimes.get(service);
 	if (!runtime) throw new Error("Unknown Acquit service");
 	if (!runtime.demo) return { kind: "NOT_CONFIGURED" };
 	// Without an App there is no fork and no repository; the route answers NO_APP and the bind clears it.
 	const repository = runtime.organization ? `${runtime.organization}/${visitorRepositoryName(input.id)}` : null;
 	const reserved = reserveVisitor(runtime.store.db, { id: input.id, ipKey: input.ipKey, repository,
-		merchant: runtime.demo.merchant, now: runtime.ports.clock.now() });
+		merchant: runtime.demo.merchant, now: runtime.ports.clock.now(), ...(input.scenarioOf === undefined ? {} : { scenarioOf: input.scenarioOf }) });
 	if (reserved.kind === "CAPPED") return { kind: "CAPPED", reason: reserved.reason };
 	let forked: VisitorFork | null = null;
 	try {

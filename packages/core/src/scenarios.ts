@@ -3,25 +3,22 @@
 // way the job row reports them, and records its own timing. The run lives on the server, so a closed tab
 // does not stop it. A run is retained only once its job exists, and the store keeps a bounded number.
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 import type { Acquit, Actor, CommandOutcome, UserCommand } from "./acquit.ts";
-import { hours, instant, parseRequestKey } from "./ids.ts";
-import type { AgentId, BidId, ClientId, CommitSha, Instant, JobId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
+import { hours, instant } from "./ids.ts";
+import type { AgentId, BidId, ClientId, CommitSha, Instant, JobId, OperatorId, StaffId, VisitorId } from "./ids.ts";
 import type { AttemptRecord, JobRow, JobStatus } from "./job.ts";
 import { shiftJobClock } from "./job-clock.ts";
 import { usd } from "./ledger.ts";
 import { reasonCode } from "./score-card.ts";
+import { arbiterOwns, openedJobOf, stepKey } from "./scenario-binding.ts";
 import type { SqliteStore } from "./store.ts";
 
 export const SCENARIO_NAMES = ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "deadline-refund"] as const;
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 export function isScenarioName(value: string): value is ScenarioName {
 	return (SCENARIO_NAMES as readonly string[]).includes(value);
-}
-
-/** The arbiter's verdict is opened only while development is on. Outside it the start is refused before anything is retained. */
-export function scenarioNeedsDev(name: ScenarioName): boolean {
-	return name === "dispute-arbiter";
 }
 
 export const SCENARIO_LABELS = {
@@ -67,6 +64,8 @@ export type ScenarioRun = {
 	readonly steps: readonly ScenarioStep[];
 	readonly state: "RUNNING" | "DONE" | "FAILED";
 	readonly endState: ScenarioEndState | null;
+	/** Why the run stopped short of its end state: RESTARTED when a restart ended it. Null for every other stop. */
+	readonly failure: "RESTARTED" | null;
 };
 
 /** A scripted agent's tree, named by its score card corpus entry. The workspace writes that entry's files. */
@@ -92,31 +91,48 @@ export type RunAdmission = { readonly kind: "ADMITTED"; readonly slot: RunSlot }
 export type ScenarioRuns = {
 	/** Reserves a place for one start, or refuses it by name. Nothing is retained until the slot commits. */
 	admit(requesterId: string): RunAdmission;
-	/** Writes the progress of a committed run. */
+	/**
+	 * Writes the progress of a committed run. A run the store did not commit is refused, and so is one whose name,
+	 * requester, visitor, or job differs from the committed run: a record cannot take over another run's job.
+	 */
 	save(run: ScenarioRun): void;
 	get(id: string): ScenarioRun | undefined;
 	size(): number;
 };
 
 /**
- * The in-process run store. A start is admitted while its requester has fewer than `running` runs in
- * flight and the store has room. A full requester or store evicts its oldest finished run. A running run
- * is never evicted, so an admitted start always finds its place. The store lives in this process: a
- * restart ends the runs, and persisting bounded snapshots is A2.4b's.
+ * The run store. A start is admitted while its requester has fewer than `running` runs in flight and the
+ * store has room. A full requester or store evicts its oldest finished run. A running run is never evicted,
+ * so an admitted start always finds its place. With a database the committed snapshots are written through
+ * to it at each progress, so they survive a reopen. A run RUNNING when the store opens was cut off by a
+ * restart: it is marked FAILED with failure RESTARTED, and its scripted steps are never resumed.
  */
-export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS): ScenarioRuns {
+export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS, db?: DatabaseSync): ScenarioRuns {
+	// The store keeps its own copies and hands out copies only, so no caller's object is ever the committed record.
 	const runs = new Map<string, ScenarioRun>();
+	const copyOf = (run: ScenarioRun): ScenarioRun => structuredClone(run);
 	const admitted = new Map<string, number>();
 	let admittedTotal = 0;
+	const records = db === undefined ? null : runRecords(db);
+	records?.reconcile();
+	for (const loaded of records?.load() ?? []) {
+		const run: ScenarioRun = loaded.state === "RUNNING" ? { ...loaded, state: "FAILED", failure: "RESTARTED" } : loaded;
+		if (run !== loaded) records?.write(run);
+		runs.set(run.id, run);
+	}
 	const admittedOf = (requesterId: string): number => admitted.get(requesterId) ?? 0;
+	// Eviction drops the snapshot only. The cleanup journal keeps the run's obligations until its repositories are gone.
 	const evictOldestFinished = (among: (run: ScenarioRun) => boolean): boolean => {
 		for (const run of runs.values()) {
 			if (run.state === "RUNNING" || !among(run)) continue;
 			runs.delete(run.id);
+			records?.remove(run.id);
 			return true;
 		}
 		return false;
 	};
+	// The snapshot and the journal commit first. Memory takes the run only once they have, so a failed write publishes nothing.
+	const keep = (run: ScenarioRun): void => { records?.write(run); runs.set(run.id, copyOf(run)); };
 	return {
 		admit(requesterId) {
 			const own = [...runs.values()].filter(run => run.requesterId === requesterId);
@@ -134,11 +150,66 @@ export function boundedRuns(bounds: RunBounds = DEFAULT_BOUNDS): ScenarioRuns {
 				admitted.set(requesterId, admittedOf(requesterId) - 1);
 				admittedTotal--;
 			};
-			return { kind: "ADMITTED", slot: { commit: run => { close(); runs.set(run.id, run); }, release: close } };
+			return { kind: "ADMITTED", slot: { commit: run => { try { keep(run); } finally { close(); } }, release: close } };
 		},
-		save: run => { runs.set(run.id, run); },
-		get: id => runs.get(id),
+		save(run) {
+			const committed = runs.get(run.id);
+			if (committed === undefined || committed.name !== run.name || committed.requesterId !== run.requesterId
+				|| committed.visitorId !== run.visitorId || committed.jobId !== run.jobId) {
+				throw new Error(`Not a committed scenario run, or its identity changed: ${run.id}`);
+			}
+			// A finished run is final: a snapshot that says RUNNING again is refused, the same as the database does.
+			if (committed.state !== "RUNNING" && run.state === "RUNNING") throw new Error(`A finished scenario run cannot resume: ${run.id}`);
+			keep(run);
+		},
+		get: id => { const run = runs.get(id); return run === undefined ? undefined : copyOf(run); },
 		size: () => runs.size,
+	};
+}
+
+/**
+ * The tables the run store writes through. `scenario_runs` holds one bounded snapshot per run, in insertion
+ * order by rowid, so the oldest finished run is the first one the load returns. `scenario_cleanup` holds one
+ * journal row per committed run, written with the snapshot and never removed by eviction. Its `finished_at` is
+ * the wall-clock moment the run first left RUNNING: the scenario sweep's TTL counts from it.
+ */
+function runRecords(db: DatabaseSync): { reconcile(): void; load(): ScenarioRun[]; write(run: ScenarioRun): void; remove(id: string): void } {
+	// Snapshot and journal commit together or not at all: a crash between the two statements cannot leave a finished
+	// snapshot whose journal is unfinished.
+	const transaction = (work: () => void): void => {
+		db.exec("BEGIN IMMEDIATE");
+		try { work(); db.exec("COMMIT"); } catch (error) { db.exec("ROLLBACK"); throw error; }
+	};
+	return {
+		// A finished run whose journal is missing or unfinished (a write from before the commit was atomic) is stamped
+		// now, but only where its own OpenJob receipt proves the job it names. Anything unproven is left alone.
+		reconcile: () => transaction(() => {
+			const orphaned = db.prepare(`SELECT r.id, r.visitor_id, r.job_id FROM scenario_runs r
+				LEFT JOIN scenario_cleanup k ON k.run_id = r.id
+				WHERE r.state <> 'RUNNING' AND (k.run_id IS NULL OR k.finished_at IS NULL)`).all();
+			for (const row of orphaned) {
+				const id = String(row.id);
+				const visitorId = String(row.visitor_id);
+				const jobId = String(row.job_id);
+				if (openedJobOf(db, { id, visitorId }) !== jobId) continue;
+				db.prepare(`INSERT INTO scenario_cleanup (run_id, visitor_id, job_id, finished_at) VALUES (?, ?, ?, ?)
+					ON CONFLICT(run_id) DO UPDATE SET finished_at = COALESCE(scenario_cleanup.finished_at, excluded.finished_at)`)
+					.run(id, visitorId, jobId, new Date().toISOString());
+			}
+		}),
+		load: () => db.prepare("SELECT snapshot FROM scenario_runs ORDER BY rowid").all()
+			.map(row => JSON.parse(String(row.snapshot)) as ScenarioRun),
+		write: run => transaction(() => {
+			const finishedAt = run.state === "RUNNING" ? null : new Date().toISOString();
+			db.prepare(`INSERT INTO scenario_runs (id, requester_id, visitor_id, job_id, name, state, snapshot)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET state = excluded.state, snapshot = excluded.snapshot`)
+				.run(run.id, run.requesterId, run.visitorId, run.jobId, run.name, run.state, JSON.stringify(run));
+			db.prepare(`INSERT INTO scenario_cleanup (run_id, visitor_id, job_id, finished_at) VALUES (?, ?, ?, ?)
+				ON CONFLICT(run_id) DO UPDATE SET finished_at = COALESCE(scenario_cleanup.finished_at, excluded.finished_at)`)
+				.run(run.id, run.visitorId, run.jobId, finishedAt);
+		}),
+		remove: id => { db.prepare("DELETE FROM scenario_runs WHERE id = ?").run(id); },
 	};
 }
 
@@ -147,9 +218,8 @@ export type ScenarioDeps = {
 	readonly store: Pick<SqliteStore, "readJob" | "db">;
 	readonly workspace: ScenarioWorkspace;
 	readonly runs: ScenarioRuns;
-	/** The job clock. Deadlines are set from it, and the arbiter path is only open while it is development. */
+	/** The job clock. Deadlines are set from it. */
 	readonly now: () => Instant;
-	readonly devEnabled: boolean;
 	/** The repository and issue the job opens on: the run visitor's fork, or the fixture's own repository. */
 	readonly repository: string;
 	readonly issueNumber: number;
@@ -171,10 +241,14 @@ const PRICE = usd("400.00");
 type Context = { jobId?: JobId; bidId?: BidId; sourceCommit?: CommitSha; mergeCommit?: CommitSha };
 type ChainStep = { readonly name: string; readonly actor: ScenarioActor; readonly label: ScenarioLabel; readonly run: (ctx: Context) => Promise<string> };
 
-/** A request key derived from the run and the step, so a resent step is the same request. */
-function stepKey(runId: string, step: string): RequestKey {
-	const hex = createHash("sha256").update(`${runId}:${step}`).digest("hex");
-	return parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
+/**
+ * The closed code a failed step records. A step's own message is never kept, because a provider's text can carry a
+ * token. Only a code shaped like the refusal names is kept, and anything else is STEP_FAILED.
+ */
+function codeOf(error: unknown): string {
+	if (error instanceof ScenarioRefused) return error.code;
+	const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : undefined;
+	return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(code) ? code : "STEP_FAILED";
 }
 
 /** The attempts a job has settled, read from wherever its state keeps them. */
@@ -203,13 +277,25 @@ function endStateOf(row: JobRow): ScenarioEndState {
 export type StartedScenario = { readonly run: ScenarioRun; readonly finished: Promise<ScenarioRun> };
 
 /**
+ * The scenario-only arbiter verdict: UPHOLD on a job the named run opened as dispute-arbiter. The run must be
+ * RUNNING, of that scenario, and its own committed OpenJob receipt must name this job. A snapshot that names the
+ * job is not enough, so a forged or restarted record is refused by name before the ARBITER actor is used. Only
+ * the scenario's own chain calls it, and no HTTP route does.
+ */
+export async function arbiterVerdictForRun(deps: ScenarioDeps, runId: string, jobId: JobId): Promise<void> {
+	if (!arbiterOwns(deps.store.db, { id: runId, jobId })) throw new ScenarioRefused("SCENARIO_ARBITER_NOT_OWNED");
+	const outcome = await deps.acquit.execute({ role: "ARBITER", staffId: "staff-arbiter" as StaffId }, stepKey(runId, "arbiter-verdict"),
+		{ type: "ResolveDispute", jobId, verdict: "UPHOLD", note: "Scripted arbiter verdict: the delivered fix stands." });
+	if (outcome.kind === "DENIED") throw new ScenarioRefused(outcome.reason, `ResolveDispute refused: ${outcome.reason}`);
+}
+
+/**
  * Starts one scenario on one run visitor, holding the slot the store admitted for it. The open is the
  * first step. It runs before anything is retained, so a refused open releases the slot and leaves no run
  * behind. Once the job exists the run is committed to the slot and the rest of the chain continues in
  * `finished`. The run is DONE only when it reaches its scenario's expected end state.
  */
 export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visitor: ScenarioVisitor, requesterId: string, slot: RunSlot): Promise<StartedScenario> {
-	if (scenarioNeedsDev(name) && !deps.devEnabled) { slot.release(); throw new ScenarioRefused("DEV_DISABLED"); }
 	const runId = `scn_${randomUUID()}`;
 	const pollMs = deps.pollMs ?? 25;
 	const waitMs = deps.waitMs ?? 120_000;
@@ -241,7 +327,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			await deps.acquit.tick();
 			const row = await deps.store.readJob(ctx.jobId!);
 			if (row && predicate(row)) return row;
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+			if (Date.now() > deadline) throw new ScenarioRefused("SCENARIO_TIMED_OUT", `timed out waiting for ${what}`);
 			await new Promise(resolve => setTimeout(resolve, pollMs));
 		}
 	};
@@ -298,9 +384,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		return "DISPUTED";
 	} };
 	const arbiter: ChainStep = { name: "arbiter-verdict", actor: "ARBITER", label: SCENARIO_LABELS.scripted, run: async () => {
-		const outcome = await deps.acquit.execute({ role: "ARBITER", staffId: "staff-arbiter" as StaffId }, stepKey(runId, "arbiter-verdict"),
-			{ type: "ResolveDispute", jobId: ctx.jobId!, verdict: "UPHOLD", note: "Scripted arbiter verdict: the delivered fix stands." });
-		if (outcome.kind === "DENIED") throw new Error(`ResolveDispute refused: ${outcome.reason}`);
+		await arbiterVerdictForRun(deps, runId, ctx.jobId!);
 		return "ARBITER_UPHELD";
 	} };
 	const release: ChainStep = { name: "release", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
@@ -338,7 +422,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			outcome = await step.run(ctx);
 		} catch (error) {
 			failure = { thrown: error };
-			outcome = `FAILED ${error instanceof Error ? error.message : String(error)}`;
+			outcome = `FAILED ${codeOf(error)}`;
 		}
 		const endedAt = new Date().toISOString();
 		steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
@@ -348,7 +432,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 
 	const opened = await record(opening);
 	if (opened !== null) { slot.release(); throw opened.thrown; }
-	current = { id: runId, name, requesterId, visitorId: visitor.id, jobId: ctx.jobId!, steps: [...steps], state: "RUNNING", endState: null };
+	current = { id: runId, name, requesterId, visitorId: visitor.id, jobId: ctx.jobId!, steps: [...steps], state: "RUNNING", endState: null, failure: null };
 	slot.commit(current);
 
 	const runChain = async (): Promise<ScenarioRun> => {

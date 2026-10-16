@@ -13,7 +13,7 @@ import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import type { Instant, JobId } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import { CORPUS, FROZEN_TEST_PATH, frozenSuiteMatchesCorpus } from "../../../packages/core/src/score-card-trees.ts";
-import { isScenarioName, ScenarioRefused, scenarioNeedsDev, startScenario } from "../../../packages/core/src/scenarios.ts";
+import { isScenarioName, ScenarioRefused, startScenario } from "../../../packages/core/src/scenarios.ts";
 import type { ScenarioDeps, ScenarioRuns, ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import type { SqliteStore } from "../../../packages/core/src/store.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
@@ -26,14 +26,13 @@ export type ScenarioFixture = { readonly repository: string; readonly issueNumbe
 /** The routing one deployment answers the scenario routes with. */
 export type ScenarioRouting = {
 	readonly runs: ScenarioRuns;
-	readonly devEnabled: boolean;
 	/** The fixture the runs open on, or null when this deployment does not carry it. */
 	readonly fixture: ScenarioFixture | null;
 	/** The repository the App forks every run visitor from. The scenario fixture must be on this repository. */
 	readonly forkSource: string;
 	/** The fixture a job opened on a fork of `forkRepository` freezes, as the core's OpenJob resolves it. */
 	readonly forkedFixture: (forkRepository: string, issueNumber: number) => ScenarioFixture | null;
-	/** Provisions the run's own visitor for one start: its VISITORS_DAY slot, and its fork where the App makes one. */
+	/** Provisions the run's own visitor for one start: its SCENARIOS_DAY and requester slots, and its fork where the App makes one. */
 	readonly provision: (requester: VisitorRow) => Promise<DemoVisitorResult>;
 	/** The deps one run uses, bound to the run's own visitor. */
 	readonly depsFor: (runVisitor: VisitorRow, fixture: ScenarioFixture) => ScenarioDeps;
@@ -48,7 +47,6 @@ export type ScenarioComposition = {
 	readonly workspace: ScenarioWorkspace;
 	readonly runs: ScenarioRuns;
 	readonly now: () => Instant;
-	readonly devEnabled: boolean;
 	readonly fixture: ScenarioFixture | null;
 	/** The deployment's fixture registry, the one the core opens jobs against. */
 	readonly fixtures: readonly FixtureContract[];
@@ -61,7 +59,6 @@ export type ScenarioComposition = {
 export function scenarioRoutingFor(composition: ScenarioComposition): ScenarioRouting {
 	return {
 		runs: composition.runs,
-		devEnabled: composition.devEnabled,
 		fixture: composition.fixture,
 		forkSource: composition.forkSource,
 		forkedFixture: (forkRepository, issueNumber) => {
@@ -70,7 +67,7 @@ export function scenarioRoutingFor(composition: ScenarioComposition): ScenarioRo
 		},
 		provision: composition.provision,
 		depsFor: (runVisitor, fixture) => ({ acquit: composition.acquit, store: composition.store, workspace: composition.workspace,
-			runs: composition.runs, now: composition.now, devEnabled: composition.devEnabled,
+			runs: composition.runs, now: composition.now,
 			repository: runVisitor.repository ?? fixture.repository, issueNumber: fixture.issueNumber,
 			onOpened: jobId => defaultJobFunding(composition.store.db, jobId, "card", composition.now()) }),
 	};
@@ -92,7 +89,6 @@ function refused(status: number, error: string, detail?: string): ScenarioReply 
 
 /** A start the core refused: the denial's own reason, or a cap, which answers 429 as the demo route's caps do. */
 function coreRefusalStatus(code: string): number {
-	if (code === "DEV_DISABLED") return 403;
 	if (code === "SCENARIO_OPEN_FAILED") return 502;
 	if (code.startsWith("CAP_")) return 429;
 	return 409;
@@ -100,7 +96,6 @@ function coreRefusalStatus(code: string): number {
 
 async function startReply(routing: ScenarioRouting, requester: VisitorRow, name: string): Promise<ScenarioReply> {
 	if (!isScenarioName(name)) return refused(404, "UNKNOWN_SCENARIO");
-	if (scenarioNeedsDev(name) && !routing.devEnabled) return refused(403, "DEV_DISABLED", "Set ACQUIT_DEV=1 when starting the API.");
 	const fixture = routing.fixture;
 	if (fixture === null) return refused(503, "SCENARIO_FIXTURE_MISSING", "The deployment does not carry the fixture the judge scenarios open on.");
 	// A visitor's fork is made from the forkSource alone, so a fixture on any other repository could never be the one a run opens.

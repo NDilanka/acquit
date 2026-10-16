@@ -2,8 +2,10 @@
 // supplies the scripted verifier, the fake PayPal, and the fake GitHub app.
 
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
-import { boundedRuns, isScenarioName, ScenarioRefused, SCENARIO_NAMES, SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER,
+import type { JobId } from "../src/ids.ts";
+import { arbiterVerdictForRun, boundedRuns, isScenarioName, ScenarioRefused, SCENARIO_NAMES, SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER,
 	SCENARIO_RUNS_TOTAL, startScenario } from "../src/scenarios.ts";
 import type { RunSlot, ScenarioName, ScenarioRun, ScenarioRuns } from "../src/scenarios.ts";
 import { assertTimings, drive, harness, start } from "./scenario-harness.ts";
@@ -93,12 +95,31 @@ test("S4 dispute-arbiter: a dispute the arbiter upholds pays the operator, reaso
 	} finally { await h.dispose(); }
 });
 
-test("S4 is refused with DEV_DISABLED when development is off, and retains no run", async () => {
-	const h = await harness({ devEnabled: false });
+test("the arbiter verdict is refused by name for any job the named dispute-arbiter run did not open", async () => {
+	const h = await harness();
 	try {
-		await assert.rejects(start(h, "dispute-arbiter"), (error: unknown) => error instanceof ScenarioRefused && error.code === "DEV_DISABLED");
-		assert.equal(h.deps.runs.size(), 0);
+		const verified = await drive(h, "verified-and-paid");
+		const arbiter = await drive(h, "dispute-arbiter");
+		assert.equal(arbiter.state, "DONE");
+		const refusedBy = (runId: string, jobId: string) => assert.rejects(
+			arbiterVerdictForRun(h.deps, runId, jobId as JobId),
+			(error: unknown) => error instanceof ScenarioRefused && error.code === "SCENARIO_ARBITER_NOT_OWNED");
+		// The job is another run's: the name is not dispute-arbiter, so no ARBITER actor is used.
+		await refusedBy(verified.id, verified.jobId);
+		// The run is dispute-arbiter, but the job it names is another run's job.
+		await refusedBy(arbiter.id, verified.jobId);
+		// No run record names the job.
+		await refusedBy("scn_unknown", arbiter.jobId);
+		assert.equal((await h.store.readJob(verified.jobId as JobId))?.state.status, "PAID");
 	} finally { await h.dispose(); }
+});
+
+test("the arbiter verdict is not an HTTP route: no API source names it", () => {
+	const apiDir = new URL("../../../apps/api/src/", import.meta.url);
+	for (const name of readdirSync(apiDir)) {
+		if (!name.endsWith(".ts")) continue;
+		assert.equal(readFileSync(new URL(name, apiDir), "utf8").includes("arbiterVerdictForRun"), false, name);
+	}
 });
 
 test("S5 deadline-refund: a job past its delivery deadline is REFUNDED with reason DELIVERY_DEADLINE, and the clock step is labelled simulated", async () => {
@@ -190,7 +211,7 @@ function commitRun(runs: ScenarioRuns, requesterId: string, index: number, state
 	const admitted = runs.admit(requesterId);
 	if (admitted.kind !== "ADMITTED") throw new Error(`admission refused: ${admitted.code}`);
 	const run: ScenarioRun = { id: `scn_${requesterId}_${index}`, name: "deadline-refund", requesterId, visitorId: `vis_${index}`, jobId: `job_${index}`,
-		steps: [], state, endState: state === "DONE" ? { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" } : null };
+		steps: [], state, endState: state === "DONE" ? { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" } : null, failure: null };
 	admitted.slot.commit(run);
 	return admitted.slot;
 }

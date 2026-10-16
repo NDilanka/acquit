@@ -35,6 +35,7 @@ import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
+import { sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
 import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
@@ -1073,25 +1074,34 @@ function jobHandles(job: JobProjection): Record<string, string> {
 	return handles;
 }
 // The judge scenarios' server side. Each start provisions a visitor of its own for its run, so one session can run
-// all five, and each run's job lives on its own fork. The runs are kept in this process, bounded by the core's
-// store: a restart ends them, and the jobs they opened stay in the core. The scenarios open on the one fixture the
-// deployment names (ACQUIT_SCENARIO_FIXTURE), whose frozen suite the scripted trees are written for. The scripted
-// push goes through the House's git port, so it reaches the job's work repo the way the House's own delivery does.
-const scenarioRuns = boundedRuns();
+// all five, and each run's job lives on its own fork. The run snapshots are written to the database, bounded by the
+// core's store. A restart marks a run that was RUNNING as FAILED, RESTARTED, and never resumes its steps; the jobs
+// it opened stay in the core. The scenarios open on the one fixture the deployment names (ACQUIT_SCENARIO_FIXTURE),
+// whose frozen suite the scripted trees are written for. The scripted push goes through the House's git port, so it
+// reaches the job's work repo the way the House's own delivery does.
 const scenarioStore = new SqliteStore(baseSettings.databaseUrl);
+const scenarioRuns = boundedRuns(undefined, scenarioStore.db);
 const scenarioState = join(resolve(databasePath, ".."), "scenarios");
 mkdirSync(scenarioState, { recursive: true, mode: 0o700 });
 const scenarioWork = gitWorkPort({ stateRoot: join(scenarioState, "checkouts"), workRoot: join(scenarioState, "work"), mint: workMint, env: process.env });
 const scenarioRouting = scenarioRoutingFor({
-	acquit, store: { readJob: id => scenarioStore.readJob(id), db }, runs: scenarioRuns, now: clock.now, devEnabled,
+	acquit, store: { readJob: id => scenarioStore.readJob(id), db }, runs: scenarioRuns, now: clock.now,
 	workspace: scriptedWorkspace({ work: scenarioWork, readJob: id => scenarioStore.readJob(id) }),
 	fixture: scenarioFixtureOf(fixtures, scenarioFixtureKey),
 	fixtures, forkSource: clientRepository,
 	provision: async requester => {
 		const id = newVisitorId();
-		return provisionDemoVisitor(acquit, { id, ipKey: requester.ipKey, fork: () => forkVisitorRepository(id) });
+		return provisionDemoVisitor(acquit, { id, ipKey: requester.ipKey, scenarioOf: requester.id, fork: () => forkVisitorRepository(id) });
 	},
 });
+// The scenario cleanup's own timer: a finished run's fork and work repo go once they are past the TTL, whether or not
+// anyone runs ctl sweep. A refusal is counted in the log and retried on the next pass.
+const scenarioSweepTimer = setInterval(() => {
+	void sweepScenarioRuns({ db, app: githubApp, source: clientRepository, now: instant(new Date().toISOString()) })
+		.then(report => { if (report.kept.length > 0) console.error(`Scenario sweep kept ${report.kept.length} repositories for the next pass.`); })
+		.catch(() => console.error("Scenario sweep failed; the next pass retries."));
+}, 10 * 60_000);
+scenarioSweepTimer.unref();
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });
@@ -1122,6 +1132,7 @@ function stop(): void {
 	stopping = true;
 	clearInterval(timer);
 	clearInterval(houseTimer);
+	clearInterval(scenarioSweepTimer);
 	server.close(() => { db.close(); closeAcquit(acquit); });
 }
 process.on("SIGINT", stop);
