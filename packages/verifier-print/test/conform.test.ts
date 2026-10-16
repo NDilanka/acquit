@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { conform } from "../src/conform.ts";
+import { conform, footprintOf, partMovesByLayer } from "../src/conform.ts";
+import { parseGcode } from "../src/gcode.ts";
+import { CELL_MM, countUnits } from "../src/raster.ts";
+import type { Grid } from "../src/raster.ts";
 import { squareConformInput, squareGcode } from "./square-gcode.ts";
 
 const kinds = (reasons: readonly { readonly kind: string }[]) => [...new Set(reasons.map(reason => reason.kind))];
@@ -65,3 +68,47 @@ test("a part past the bed's right edge is rejected with BED_OUT_OF_BOUNDS on X, 
 	assert.equal(bed.boundMm, 15);
 	assert.ok(Math.abs(bed.gcodeMm - 20) < 0.01, `gcode edge ${bed.gcodeMm}`);
 });
+
+// The first part's right wall has a 0.05 mm piece with no extrusion, so the wall set lacks it. The sampled
+// row y = 19.75 sits on the wall's last extruded vertex, which is where a loop with a gap leaks.
+const GAP_WALL = [
+	"G21",
+	"G90",
+	"M82",
+	"G92 E0",
+	";LAYER_CHANGE",
+	";Z:0.6",
+	"G1 Z0.6 F1200",
+	";TYPE:External perimeter",
+	"G1 X0.2 Y0.2 F3000",
+	"G1 X19.8 Y0.2 E0.5 F1800",
+	"G1 X19.8 Y19.75 E1.0 F1800",
+	"G1 X19.8 Y19.8 F3000",
+	"G1 X0.2 Y19.8 E1.5 F1800",
+	"G1 X0.2 Y0.2 E2.0 F1800",
+	"G1 X25.2 Y0.2 F3000",
+	"G1 X48.8 Y0.2 E3.0 F1800",
+	"G1 X48.8 Y23.8 E3.5 F1800",
+	"G1 X25.2 Y23.8 E4.0 F1800",
+	"G1 X25.2 Y0.2 E4.5 F1800",
+].join("\n");
+
+test("a wall with a gap on a sampled row leaks no fill into the space between two parts", () => {
+	const parsed = parseGcode(GAP_WALL);
+	if (!parsed.ok) throw new Error("fixture does not parse");
+	const moves = partMovesByLayer(parsed.value).get(0) ?? [];
+	const grid = footprintOf(moves, 0, 0, { minX: 0, minY: 0, maxX: 50, maxY: 25 });
+	assert.equal(cellsBetween(grid, 20.5, 24.5), 0);
+	assert.equal(countUnits(grid, 1), 2);
+});
+
+function cellsBetween(grid: Grid, fromX: number, toX: number): number {
+	let count = 0;
+	for (let row = 0; row < grid.rows; row++) {
+		for (let col = 0; col < grid.cols; col++) {
+			const x = grid.x0 + (col + 0.5) * CELL_MM;
+			if (grid.on[row * grid.cols + col] === 1 && x > fromX && x < toX) count++;
+		}
+	}
+	return count;
+}

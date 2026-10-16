@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { Instant, JobId } from "../../core/src/ids.ts";
 import { checkPhotos, windowFor } from "../src/camera.ts";
 import { coupon } from "../src/coupon.ts";
-import { conform, footprintOf, INFILL_MIN_RATIO, layerIndexAt, NOZZLE_WIDTH_MM, partMovesByLayer } from "../src/conform.ts";
+import { conform, INFILL_MIN_RATIO, NOZZLE_WIDTH_MM } from "../src/conform.ts";
 import type { Conformance, ConformInput } from "../src/conform.ts";
 import { freeze } from "../src/contract.ts";
 import { sha256Hex } from "../src/digest.ts";
@@ -13,8 +13,7 @@ import { parseGcode } from "../src/gcode.ts";
 import { buildPlate } from "../src/plate.ts";
 import type { Plate } from "../src/plate.ts";
 import { prusaVersion, slicePrusa } from "../src/prusa.ts";
-import { fillEdges, gridOver, stampSegment } from "../src/raster.ts";
-import type { Ring, Segment } from "../src/raster.ts";
+import type { Ring } from "../src/raster.ts";
 import { interiorRings, sectionRings } from "../src/section.ts";
 import { validateSpec } from "../src/spec.ts";
 import { meshStats } from "../src/stl.ts";
@@ -207,84 +206,8 @@ test("the honest plate passes every P4 check: units 2, footprints, coupon marker
 	const ratios = result.measured.layers.map(layer => (layer.expectedMm > 0 ? layer.infillMm / layer.expectedMm : 0));
 	t.diagnostic(`layers ${JSON.stringify(result.measured.layers.map(layer => [layer.layer, round3(layer.iou), round3(layer.outsidePct)]))}`);
 	t.diagnostic(`infill ratio per layer ${JSON.stringify(ratios.map(round3))}; min ${round3(Math.min(...ratios))}; threshold ${INFILL_MIN_RATIO}`);
-	{
-		const at15 = layerIndexAt(gcode, 3);
-		const moves15 = partMovesByLayer(gcode).get(at15) ?? [];
-		const dx = result.measured.placement.dx;
-		const dy = result.measured.placement.dy;
-		const grid = footprintOf(moves15, dx, dy, { minX: 0, minY: 0, maxX: twinPlate.plateBox.max[0], maxY: twinPlate.plateBox.max[1] });
-		let gap = 0;
-		for (let row = 0; row < grid.rows; row++) {
-			for (let col = 0; col < grid.cols; col++) {
-				const x = grid.x0 + (col + 0.5) * 0.1;
-				if (grid.on[row * grid.cols + col] && x > 20.5 && x < 24.5) gap++;
-			}
-		}
-		const connectors = moves15.filter(move => move.path.some(([x]) => x + dx > 20.6 && x + dx < 24.4));
-		const tileMoves = moves15.filter(move => move.path.every(([x]) => x + dx > 25)).length;
-		t.diagnostic(`DIAG layer15 index ${at15} moves ${moves15.length} tileMoves ${tileMoves} gapCells ${gap} connectors ${connectors.length}`);
-		for (const move of connectors.slice(0, 6)) {
-			const path = move.path.map(([x, y]) => [round3(x + dx), round3(y + dy)]);
-			t.diagnostic(`DIAG connector line ${move.line} feature ${move.feature} dE ${round3(move.deltaEMm)} path ${JSON.stringify(path)}`);
-		}
-	}
-	{
-		const at15 = layerIndexAt(gcode, 3);
-		const moves15 = partMovesByLayer(gcode).get(at15) ?? [];
-		const dx = result.measured.placement.dx;
-		const dy = result.measured.placement.dy;
-		const rect = { minX: 0, minY: 0, maxX: twinPlate.plateBox.max[0], maxY: twinPlate.plateBox.max[1] };
-		const walls: Segment[] = [];
-		const all: Segment[] = [];
-		for (const move of moves15) {
-			const wall = /^external perimeter$/i.test(move.feature);
-			for (let i = 0; i + 1 < move.path.length; i++) {
-				const [ax, ay] = move.path[i];
-				const [bx, by] = move.path[i + 1];
-				const seg: Segment = [ax + dx, ay + dy, bx + dx, by + dy];
-				all.push(seg);
-				if (wall) walls.push(seg);
-			}
-		}
-		const strokes = gridOver(rect, 2);
-		for (const seg of all) stampSegment(strokes, seg, 0.2);
-		const wallsGrid = gridOver(rect, 2);
-		fillEdges(wallsGrid, walls);
-		const gapOn = (grid: ReturnType<typeof gridOver>) => {
-			let n = 0;
-			for (let row = 0; row < grid.rows; row++) {
-				for (let col = 0; col < grid.cols; col++) {
-					const x = grid.x0 + (col + 0.5) * 0.1;
-					if (grid.on[row * grid.cols + col] && x > 20.5 && x < 24.5) n++;
-				}
-			}
-			return n;
-		};
-		const longest = Math.max(...walls.map(([ax, ay, bx, by]) => Math.hypot(bx - ax, by - ay)));
-		t.diagnostic(`DIAG walls ${walls.length} strokes ${all.length} longestWall ${round3(longest)} strokeGap ${gapOn(strokes)} wallGap ${gapOn(wallsGrid)}`);
-		let shown = 0;
-		let gapRows = 0;
-		for (let row = 0; row < wallsGrid.rows; row++) {
-			const y = wallsGrid.y0 + (row + 0.5) * 0.1;
-			let inGap = 0;
-			for (let col = 0; col < wallsGrid.cols; col++) {
-				const x = wallsGrid.x0 + (col + 0.5) * 0.1;
-				if (wallsGrid.on[row * wallsGrid.cols + col] && x > 20.5 && x < 24.5) inGap++;
-			}
-			if (inGap === 0) continue;
-			gapRows++;
-			if (shown >= 3) continue;
-			shown++;
-			const cross = walls
-				.filter(([, ay, , by]) => ay <= y !== by <= y)
-				.map(([ax, ay, bx, by]) => [round3(ax + ((y - ay) * (bx - ax)) / (by - ay)), by > ay ? 1 : -1, round3(ay), round3(by)]);
-			t.diagnostic(`DIAG gap row ${row} y ${round3(y)} gapCells ${inGap} crossings ${JSON.stringify(cross)}`);
-		}
-		t.diagnostic(`DIAG gap rows ${gapRows}`);
-	}
-	t.diagnostic(`DIAG reasons ${JSON.stringify(result.reasons)}`);
-	t.diagnostic(`DIAG units ${result.measured.units}`);
-
+	assert.deepEqual(result.reasons, []);
+	assert.equal(result.measured.units, 2);
 	const witness = checkCoupon({
 		gcode,
 		layerHeightMm: LAYER_HEIGHT_MM,
@@ -292,7 +215,9 @@ test("the honest plate passes every P4 check: units 2, footprints, coupon marker
 		origin: twinPlate.plate.layout.couponOrigin,
 		placement: result.measured.placement,
 	});
-	t.diagnostic(`coupon ${JSON.stringify(witness.measured)} expected ${twinPlate.witness.markerId} reasons ${JSON.stringify(witness.reasons)}`);
+	t.diagnostic(`coupon ${JSON.stringify(witness.measured)}`);
+	assert.deepEqual(witness.reasons, []);
+	assert.equal(witness.measured.decoded, twinPlate.witness.markerId);
 
 	const keys = newPrinterKeys();
 	const fileHash = sha256Hex(new TextEncoder().encode(twinPlate.gcode));
@@ -304,7 +229,7 @@ test("the honest plate passes every P4 check: units 2, footprints, coupon marker
 		gcode,
 		estimateSeconds: estimateTime(gcode).totalSeconds,
 	});
-	t.diagnostic(`DIAG telemetry ${JSON.stringify(telemetry)}`);
+	assert.deepEqual(telemetry, []);
 
 	const window = windowFor(twinPlate.plateBox, result.measured.placement);
 	const photos = capturePhotos({ gcode, sampleLayers: fixture.contract.sampleLayers, layerHeightMm: LAYER_HEIGHT_MM, window, seed: SEED });
@@ -316,7 +241,7 @@ test("the honest plate passes every P4 check: units 2, footprints, coupon marker
 		archive: [],
 	});
 	t.diagnostic(`photo iou ${JSON.stringify(photoCheck.measured.layers.map(layer => [layer.layer, round3(layer.iou)]))}`);
-	t.diagnostic(`DIAG photo reasons ${JSON.stringify(photoCheck.reasons)}`);
+	assert.deepEqual(photoCheck.reasons, []);
 });
 
 test("a plate without its coupon fails UNIT_COUNT_MISMATCH: two units expected, one found", SLOW, async t => {

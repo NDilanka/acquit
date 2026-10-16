@@ -3,7 +3,7 @@
 // its mesh section, then the median over the layers. One bad layer therefore moves no other layer's check.
 // Infill is expected over the section pulled inward by the wall count, not over the whole section.
 
-import { areaMm2, countUnits, fillEdges, fillRings, gridOver, iou, ringsBox, stampSegment } from "./raster.ts";
+import { areaMm2, countUnits, emptyLike, exteriorOf, fillEdges, fillRings, gridOver, iou, ringsBox, stampSegment } from "./raster.ts";
 import type { Grid, Rect, Ring, Segment } from "./raster.ts";
 import type { Box, GcodeMove, ParsedGcode, PrintRejectReason } from "./types.ts";
 
@@ -11,8 +11,12 @@ import type { Box, GcodeMove, ParsedGcode, PrintRejectReason } from "./types.ts"
 export const NOZZLE_WIDTH_MM = 0.4;
 /** The design note sets 0.92 for a sampled layer. */
 export const FOOTPRINT_MIN_IOU = 0.92;
-/** Measured on the honest print of the P3 cube plus coupon. See the slicer test for the number. */
-export const INFILL_MIN_RATIO = 0.5;
+/**
+ * Ratio of the infill length to the 20% interior expectation. The print-slice job measured the honest
+ * cube at 1.33 on every sampled layer and the honest plate at 1.30 at its sparsest layer. 0.9 leaves 0.4
+ * of slack, so a print at 14% infill (about 0.91) passes the line and anything sparser fails it.
+ */
+export const INFILL_MIN_RATIO = 0.9;
 /** The design note allows 2% of the footprint outside the mesh section. */
 export const OUTSIDE_MAX_PCT = 2;
 /** Smaller islands are wipe strokes or seams, not units. */
@@ -216,7 +220,12 @@ export function stampFootprint(grid: Grid, moves: readonly GcodeMove[], dx: numb
 			strokes.push(segment);
 		}
 	}
-	fillEdges(grid, walls);
+	const loops = emptyLike(grid);
+	fillEdges(loops, walls);
+	const cover = emptyLike(grid);
+	for (const wall of walls) stampSegment(cover, wall, NOZZLE_WIDTH_MM / 2);
+	const exterior = exteriorOf(cover);
+	for (let i = 0; i < grid.on.length; i++) grid.on[i] |= loops.on[i] & (1 - exterior[i]);
 	for (const stroke of strokes) stampSegment(grid, stroke, NOZZLE_WIDTH_MM / 2);
 }
 
