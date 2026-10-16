@@ -5,7 +5,7 @@
 import type { ClientId, Instant, JobId, JobStatus, OperatorId, UsdCents, VisitorId } from "./acquit.ts";
 import type { CaptureId, MerchantId, OrderId } from "./ids.ts";
 import { attemptView, storedBook } from "./job.ts";
-import type { JobRow } from "./job.ts";
+import type { HeldEscrow, JobRow } from "./job.ts";
 import type { LedgerLine } from "./ledger.ts";
 import type { OperatorRow } from "./operator.ts";
 import { isTestTamper } from "./verifier.ts";
@@ -28,6 +28,7 @@ export type PlatformJobLedger = {
 	readonly tenant: VisitorId | null;
 	readonly client: ClientId;
 	readonly status: JobStatus;
+	/** HELD while captured money sits in escrow, including a capture still awaiting its mismatch refund. */
 	readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
 	/** The operator the job is locked to or was paid through. Null before any accept. */
 	readonly operator: { readonly id: OperatorId; readonly handle: string } | null;
@@ -51,8 +52,17 @@ export type PlatformJobLedger = {
 
 export type PlatformLedgerView = { readonly jobs: readonly PlatformJobLedger[] };
 
+/** The escrow a row still holds: an IN_PROGRESS or VERIFIED job, or a funded capture awaiting its mismatch refund. */
+function heldEscrowOf(row: JobRow): HeldEscrow | null {
+	const state = row.state;
+	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") return state.escrow;
+	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") return state.phase.checkout.escrow;
+	return null;
+}
+
 export function platformJobLedger(row: JobRow): PlatformJobLedger {
 	const state = row.state;
+	const holding = heldEscrowOf(row);
 	const payeeOperator = state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator
 		: state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? state.escrow.payee.operator : null;
 	const accepted = payeeOperator === null ? null
@@ -73,13 +83,12 @@ export function platformJobLedger(row: JobRow): PlatformJobLedger {
 		? [{ ordinal: state.receipt.attemptsUsed, result: "VERIFIED" as const, at: state.receipt.releasedAt, tamper: false, reasons: [] }]
 		: judged;
 	return { jobId: row.id, title: row.title, tenant: row.tenant ?? null, client: row.client, status: state.status,
-		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED"
-			: state.status === "IN_PROGRESS" || state.status === "VERIFIED" ? "HELD" : "NONE",
+		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : holding ? "HELD" : "NONE",
 		operator: payeeOperator === null ? null : { id: payeeOperator, handle: accepted?.handle ?? payeeOperator },
 		lines, paidCents: held?.cents ?? null,
-		capture: state.status === "IN_PROGRESS" || state.status === "VERIFIED"
-			? { orderId: state.escrow.capture.orderId, captureId: state.escrow.capture.captureId,
-				payee: state.escrow.capture.payee, gross: state.escrow.capture.gross }
+		capture: holding
+			? { orderId: holding.capture.orderId, captureId: holding.capture.captureId,
+				payee: holding.capture.payee, gross: holding.capture.gross }
 			: null,
 		fee: fee ? { cents: fee.cents, processor: fee.processor, acquit: fee.acquit } : null,
 		payout: state.status === "PAID" ? { paid: state.release.paid, payoutItemId: state.release.payoutItemId,
@@ -221,13 +230,9 @@ export type PlatformTables = {
 /** The capture a job's money sits on, as the stored state names it, or null before any capture. */
 function captureOf(row: JobRow): Omit<PlatformPayPalEventRow, "grossCents"> | null {
 	const state = row.state;
-	if (state.status === "IN_PROGRESS" || state.status === "VERIFIED") {
-		const capture = state.escrow.capture;
-		return { captureId: capture.captureId, jobId: row.id, orderId: capture.orderId, merchant: capture.payee, state: "CAPTURED",
-			refundId: null, refundedCents: null, payoutItemId: null, releasedAt: null };
-	}
-	if (state.status === "OPEN" && state.phase.kind === "FUNDING" && state.phase.checkout.phase === "REFUND_PENDING") {
-		const capture = state.phase.checkout.escrow.capture;
+	const holding = heldEscrowOf(row);
+	if (holding) {
+		const capture = holding.capture;
 		return { captureId: capture.captureId, jobId: row.id, orderId: capture.orderId, merchant: capture.payee, state: "CAPTURED",
 			refundId: null, refundedCents: null, payoutItemId: null, releasedAt: null };
 	}

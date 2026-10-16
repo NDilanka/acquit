@@ -88,6 +88,42 @@ function refundedRow(): JobRow {
 				refunded: usd("420.00"), retainedProcessorFee: usd("15.15"), at: later }, history: [], treasury: [] } };
 }
 
+/**
+ * A job whose checkout captured 421.00 against its 420.00 quote. The capture mismatches, so the job
+ * enters REFUND_PENDING holding the captured money until the refund settles. Reached through the
+ * transition table, so the state is the one the funding path leaves behind.
+ */
+function captureMismatchRow(): JobRow {
+	const id = parseJobId("job_ledger_mismatch");
+	const priced = quote(commercialSplit(usd("420.00")), model);
+	const bidId = "bid_mismatch-1" as BidId;
+	const orderId = "ORDER_MISMATCH" as OrderId;
+	const lena: Actor = { role: "CLIENT", clientId: "lena-client" as ClientId, tenant: "v_c" as VisitorId };
+	const system = { actor: { role: "SYSTEM", source: "PAYPAL" } as const, now: later, loaded: { kind: "NONE" } as const };
+	const bidding: JobRow = { id, version: 1 as Version, client: "lena-client" as ClientId, tenant: "v_c" as VisitorId,
+		title: "mismatch job", contract: contract(), openedAt: now, bids: [{ id: bidId, operator: "devon-ops" as OperatorId,
+			handle: "devon-ops", kind: "INDEPENDENT", payee: merchant, agent: "ts-bugfixer" as AgentId, runner: "claude-code",
+			price: priced.split.price, eta: hours(48), pitch: "test", placedAt: now, respondBy: later, status: "PENDING" }],
+		state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } };
+	const accepted = applyJobCommand(bidding, { type: "AcceptBid", jobId: id, bidId },
+		{ actor: lena, now, loaded: { kind: "ACCEPT_BID", quote: priced } });
+	if (typeof accepted === "string") throw new Error(accepted);
+	const ordered = applyJobCommand(accepted.next, { type: "OrderCreated", jobId: id, round: 1, orderId,
+		approveUrl: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER_MISMATCH" }, system);
+	if (typeof ordered === "string") throw new Error(ordered);
+	const approved = applyJobCommand(ordered.next, { type: "BuyerApproved", jobId: id, orderId }, system);
+	if (typeof approved === "string") throw new Error(approved);
+	const captured = applyJobCommand(approved.next, { type: "CaptureCompleted", jobId: id, capture: { orderId,
+		captureId: "CAP_MISMATCH" as CaptureId, payee: merchant, disbursement: "DELAYED", gross: usd("421.00"),
+		processorFee: usd("15.15"), platformFee: priced.platformFeeInstruction, sellerNet: usd("361.00"), capturedAt: later } }, system);
+	if (typeof captured === "string") throw new Error(captured);
+	const state = captured.next.state;
+	if (state.status !== "OPEN" || state.phase.kind !== "FUNDING" || state.phase.checkout.phase !== "REFUND_PENDING") {
+		throw new Error("the $421.00 capture did not mismatch its quote");
+	}
+	return captured.next;
+}
+
 async function serviceWith(rows: readonly JobRow[]) {
 	const root = await mkdtemp(join(tmpdir(), "acquit-platform-test-"));
 	const databaseUrl = join(root, "platform.db");
@@ -290,9 +326,26 @@ test("the platform tables project the stored book into seven joined tables with 
 	assert.deepEqual(tables.clients, [{ clientId: "maya-client", jobCount: 2 }, { clientId: "splitter-client", jobCount: 1 }]);
 });
 
+test("a capture that mismatches its quote is held escrow until its refund settles", () => {
+	const row = captureMismatchRow();
+	const view = platformJobLedger(row);
+	assert.equal(view.escrow, "HELD");
+	assert.deepEqual(view.lines, [{ kind: "HELD", cents: 42100, at: later }]);
+	assert.equal(view.paidCents, 42100);
+	assert.equal(view.capture?.captureId, "CAP_MISMATCH");
+	assert.equal(view.capture?.gross, 42100);
+	assert.deepEqual(platformEscrowTotals([view]), { held: 42100, released: 0, refunded: 0, fees: 0 });
+	const tables = platformTables([row], [devonReady], new Map());
+	assert.deepEqual(tables.jobs.map(job => ({ escrow: job.escrow, grossCents: job.grossCents, heldCents: job.heldCents })),
+		[{ escrow: "HELD", grossCents: 42100, heldCents: 42100 }]);
+	assert.deepEqual(tables.paypal_events.map(event => ({ state: event.state, grossCents: event.grossCents })),
+		[{ state: "CAPTURED", grossCents: 42100 }]);
+	assert.deepEqual(tables.ledger_entries.map(entry => ({ kind: entry.kind, cents: entry.cents })), [{ kind: "HELD", cents: 42100 }]);
+});
+
 test("the table totals conserve: held, released, refunded, and fees add up to the funded gross", () => {
 	const rows = [withCapture(paidRow("v_a" as VisitorId), "CAP_PAID"), withCapture(heldTamperRow(), "CAP_HELD"),
-		withCapture(refundedRow(), "CAP_REFUNDED")];
+		withCapture(refundedRow(), "CAP_REFUNDED"), captureMismatchRow()];
 	const { jobs } = platformTables(rows, [devonReady], new Map());
 	const sum = (pick: (job: (typeof jobs)[number]) => number) => jobs.reduce((total, job) => total + pick(job), 0);
 	const funded = sum(job => job.grossCents);
@@ -300,7 +353,7 @@ test("the table totals conserve: held, released, refunded, and fees add up to th
 	const released = sum(job => job.releasedCents);
 	const refunded = sum(job => job.refundedCents);
 	const fees = sum(job => job.feeCents);
-	assert.deepEqual({ funded, held, released, refunded, fees }, { funded: 121800, held: 37800, released: 36000, refunded: 42000, fees: 6000 });
+	assert.deepEqual({ funded, held, released, refunded, fees }, { funded: 163900, held: 79900, released: 36000, refunded: 42000, fees: 6000 });
 	assert.equal(held + released + refunded + fees, funded);
 	assert.deepEqual(platformEscrowTotals(rows.map(platformJobLedger)), { held, released, refunded, fees });
 });
