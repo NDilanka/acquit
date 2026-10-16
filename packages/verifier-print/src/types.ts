@@ -92,10 +92,14 @@ export type FrozenPrintContract = {
 	readonly frozenAt: Instant;
 };
 
+export type Xy = readonly [Mm, Mm];
+
 export type GcodeMove = {
 	readonly line: number;
 	/** Index into the layers array. -1 for moves that run before the first layer opens. */
 	readonly layer: number;
+	/** The XY path from the move's start to its end. Arcs are sampled into chords. */
+	readonly path: readonly Xy[];
 	readonly xyzMm: Mm;
 	/** What the estimator times: xyzMm, or |deltaEMm| for an E-only move. */
 	readonly distanceMm: Mm;
@@ -134,7 +138,11 @@ export type TimeEstimate = {
 	readonly layers: readonly { readonly index: number; readonly z: Mm; readonly seconds: Seconds }[];
 };
 
-/** The subset of print reasons the parts of this package built so far can produce. */
+/** The print reasons the parts of this package built so far can produce. */
 export type PrintRejectReason =
 	| { readonly kind: "MESH_NOT_MANIFOLD" }
-	| { readonly kind: "GCODE_UNPARSEABLE"; readonly line: number };
+	| { readonly kind: "GCODE_UNPARSEABLE"; readonly line: number }
+	| { readonly kind: "INFILL_BELOW_CONTRACT"; readonly layer: number; readonly pct: number; readonly contractPct: number }
+	| { readonly kind: "FOOTPRINT_MISMATCH"; readonly layer: number; readonly iou: number }
+	| { readonly kind: "SCALE_OUT_OF_TOLERANCE"; readonly axis: "X" | "Y" | "Z"; readonly gcodeMm: number; readonly meshMm: number }
+	| { readonly kind: "UNIT_COUNT_MISMATCH"; readonly expected: number; readonly found: number };

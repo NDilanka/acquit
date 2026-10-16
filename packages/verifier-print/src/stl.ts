@@ -58,6 +58,12 @@ function refuse(message: string): Checked<MeshStats> {
 	return { ok: false, errors: [{ path: "model", message }] };
 }
 
+/** Triangle corners in file order, three per triangle. Null when the bytes are neither binary nor ASCII STL. */
+export function stlCorners(bytes: Uint8Array): Point[] | null {
+	const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	return parseBinary(buffer) ?? parseAscii(buffer);
+}
+
 export function meshStats(bytes: Uint8Array): Checked<MeshStats> {
 	const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	const binary = parseBinary(buffer);
