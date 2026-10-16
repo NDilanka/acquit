@@ -138,11 +138,26 @@ export type TimeEstimate = {
 	readonly layers: readonly { readonly index: number; readonly z: Mm; readonly seconds: Seconds }[];
 };
 
-/** The print reasons the parts of this package built so far can produce. */
+/** The print reasons this package can produce. */
 export type PrintRejectReason =
 	| { readonly kind: "MESH_NOT_MANIFOLD" }
 	| { readonly kind: "GCODE_UNPARSEABLE"; readonly line: number }
 	| { readonly kind: "INFILL_BELOW_CONTRACT"; readonly layer: number; readonly pct: number; readonly contractPct: number }
 	| { readonly kind: "FOOTPRINT_MISMATCH"; readonly layer: number; readonly iou: number }
+	| { readonly kind: "OUTSIDE_MATERIAL"; readonly layer: number; readonly pct: number }
+	| { readonly kind: "BED_OUT_OF_BOUNDS"; readonly axis: "X" | "Y"; readonly gcodeMm: number; readonly boundMm: number }
 	| { readonly kind: "SCALE_OUT_OF_TOLERANCE"; readonly axis: "X" | "Y" | "Z"; readonly gcodeMm: number; readonly meshMm: number }
-	| { readonly kind: "UNIT_COUNT_MISMATCH"; readonly expected: number; readonly found: number };
+	| { readonly kind: "UNIT_COUNT_MISMATCH"; readonly expected: number; readonly found: number }
+	| { readonly kind: "COUPON_MISSING" }
+	| { readonly kind: "COUPON_IOU_LOW"; readonly iou: number }
+	| { readonly kind: "COUPON_MARKER_MISMATCH"; readonly expected: number; readonly found: number }
+	| { readonly kind: "PHOTO_UNREADABLE"; readonly layer: number }
+	| { readonly kind: "GEOMETRY_MISMATCH"; readonly layer: number; readonly iou: number }
+	| { readonly kind: "PHOTO_REUSED"; readonly layer: number; readonly distance: number }
+	| { readonly kind: "TELEMETRY_MISSING" }
+	| { readonly kind: "TELEMETRY_SIGNATURE_INVALID"; readonly seq: number }
+	| { readonly kind: "TELEMETRY_CHAIN_BROKEN"; readonly seq: number }
+	| { readonly kind: "FILE_HASH_MISMATCH"; readonly seq: number }
+	| { readonly kind: "LAYER_SEQUENCE_MISMATCH"; readonly seq: number }
+	| { readonly kind: "FILAMENT_MISMATCH"; readonly gcodeMm: number; readonly telemetryMm: number }
+	| { readonly kind: "DURATION_IMPLAUSIBLE"; readonly estimateS: number; readonly telemetryS: number };

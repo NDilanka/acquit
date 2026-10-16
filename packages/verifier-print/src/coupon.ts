@@ -14,6 +14,16 @@ const RAISED_MM = 2;
 const ORIGIN_MM = (TILE[0] - GRID * CELL_MM) / 2;
 const MARKER_MAX = 0xffff;
 
+export const COUPON_TILE_MM = TILE;
+export const COUPON_GRID = GRID;
+export const COUPON_CELL_MM = CELL_MM;
+export const COUPON_RAISED_MM = RAISED_MM;
+
+/** Centre of cell (row, col) in tile coordinates, in mm. The decoder samples the footprint here. */
+export function couponCellCentreMm(row: number, col: number): readonly [number, number] {
+	return [ORIGIN_MM + col * CELL_MM + CELL_MM / 2, ORIGIN_MM + row * CELL_MM + CELL_MM / 2];
+}
+
 export function coupon(jobId: JobId, seed: Uint8Array): Coupon {
 	const markerId = 1 + seededDraw(seed, `coupon:${jobId}`)(MARKER_MAX);
 	const markerCells: boolean[][] = [];
