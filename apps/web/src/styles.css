@@ -173,6 +173,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .ws-earn { grid-template-columns: minmax(0, 1fr); }
   .receipt-row { grid-template-columns: minmax(0, 1fr); }
   .bidpane .row3 { grid-template-columns: minmax(0, 1fr); }
+  .confirm .confirm-kvs { grid-template-columns: 9rem minmax(0, 1fr); }
 }
 
 .scrim { position: fixed; inset: 0; background: rgba(17, 21, 18, 0.38); display: grid; place-items: center; z-index: 40; }
