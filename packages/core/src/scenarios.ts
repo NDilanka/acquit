@@ -231,9 +231,13 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		await waitFor(row => row.state.status === "PAID", "the release to pay the operator");
 		return "PAID";
 	} };
+	// A shift that loses its compare-and-set re-reads the row and goes again, three times at most, as the
+	// web's clock button does (withJobChangedRetry in apps/web/src/demo.ts).
 	const advanceClock: ChainStep = { name: "advance-clock", actor: "CLIENT", label: SCENARIO_LABELS.clock, run: async () => {
-		if (shiftJobClock(deps.store.db, ctx.jobId!, 2 * DAY_MS) === null) throw new Error("the job clock did not move");
-		return "advanced 2 days";
+		for (let attempt = 1; ; attempt++) {
+			if (shiftJobClock(deps.store.db, ctx.jobId!, 2 * DAY_MS) !== null) return "advanced 2 days";
+			if (attempt >= 3) throw new Error("the job clock did not move: JOB_CHANGED");
+		}
 	} };
 	const refund: ChainStep = { name: "refund", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
 		await waitFor(row => row.state.status === "REFUNDED", "the refund to settle");
