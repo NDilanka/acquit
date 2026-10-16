@@ -120,11 +120,11 @@ test("the arbiter's note shows only where the arbiter decided", () => {
   assert.equal(arbiterNoteLine({ ...base, arbiterNote: null, status: "PAID", releaseAuthority: "ARBITER_UPHELD" }), null);
 });
 
-test("a budget must be a number of cents at least the seeded minimum", () => {
+test("a budget must be a number of cents at least the floor", () => {
   assert.equal(budgetProblem(null), "Enter the budget in dollars, such as 400 or 400.00.");
-  assert.equal(budgetProblem(0), "The budget must be at least 400.00 USD.");
-  assert.equal(budgetProblem(39_999), "The budget must be at least 400.00 USD.");
-  assert.equal(budgetProblem(40_000), null);
+  assert.equal(budgetProblem(0), "The budget must be at least 10.00 USD.");
+  assert.equal(budgetProblem(999), "The budget must be at least 10.00 USD.");
+  assert.equal(budgetProblem(1_000), null);
   assert.equal(budgetProblem(123_456), null);
 });
 

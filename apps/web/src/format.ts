@@ -19,7 +19,7 @@ export function parseUsd(input: string): number | null {
 }
 
 /** The smallest budget a job opens with; apps/api/src/server.ts refuses below the same amount. */
-export const MIN_BUDGET_CENTS = 40_000;
+export const MIN_BUDGET_CENTS = 1_000;
 
 /** Why a budget cannot open a job, or null when it can. A blank or unreadable budget is not a number of cents. */
 export function budgetProblem(cents: number | null): string | null {

@@ -14,7 +14,7 @@ import { allBids, houseName, lockedBid, NotFound, payeeBid, StatusPill } from ".
 import { BidForm } from "./BidForm";
 
 export function JobPage({ id }: { id: string }) {
-  const { user, visitor } = useSession();
+  const { user, visitor, fundingMode } = useSession();
   const { location } = useRouter();
   const [job, setJob] = useState<JobView | null>(null);
   const [diff, setDiff] = useState<JobDiff | null>(null);
@@ -85,6 +85,8 @@ export function JobPage({ id }: { id: string }) {
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
   const controls = demoControls(job, { user, visitor });
+  // A job's own choice wins; before accept, a job nobody chose for funds with the deployment's default.
+  const source: FundingMode = job.funding ?? fundingMode;
 
   const doAccept = async (bid: BidView) => {
     const outcome = await accept.send(`accept:${bid.id}`, (): UserCommand => ({
@@ -184,7 +186,7 @@ export function JobPage({ id }: { id: string }) {
           {accept.error && <div className="alert">{accept.error}</div>}
 
           {job.status === "OPEN" && (checkout || (funding && isClient)) && (
-            <Checkout job={job} bid={checkout ?? payeeBid(job)} redirecting={checkout !== null} />
+            <Checkout job={job} bid={checkout ?? payeeBid(job)} redirecting={checkout !== null} card={source === "card"} />
           )}
 
           {job.status !== "OPEN" && <StatusPanel job={job} locked={locked} />}
@@ -326,7 +328,7 @@ export function JobPage({ id }: { id: string }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Accept {confirm.label === "HOUSE" ? `House: ${houseName(confirm.handle)}` : confirm.handle}?</h3>
             <p>
-              {job.funding === "card"
+              {source === "card"
                 ? "Acquit charges the sandbox test card now, for a payment that can pay only this operator. Money is released on verified proof."
                 : "Acquit creates a PayPal order that can pay only this operator. You pay now; money is released on verified proof."}
             </p>
@@ -335,7 +337,7 @@ export function JobPage({ id }: { id: string }) {
             <div className="act">
               <button className="btn ghost" onClick={() => setConfirm(null)}>Back</button>
               <button className="btn green" disabled={accept.busy} onClick={() => void doAccept(confirm)}>
-                {accept.busy ? "Creating order…" : job.funding === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal"}
+                {accept.busy ? "Creating order…" : source === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal"}
               </button>
             </div>
           </div>
@@ -750,8 +752,7 @@ const CHECKOUT_STEP: Record<CheckoutPhase, string> = {
 };
 
 /** Names the stored checkout substate, so a reload mid-checkout still says where the payment is. */
-function Checkout({ job, bid, redirecting }: { job: JobView; bid: BidView | null; redirecting: boolean }) {
-  const card = job.funding === "card";
+function Checkout({ job, bid, redirecting, card }: { job: JobView; bid: BidView | null; redirecting: boolean; card: boolean }) {
   const phase = job.checkoutPhase;
   const step = phase
     ? CHECKOUT_STEP[phase]

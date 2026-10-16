@@ -1,5 +1,5 @@
-// The open-job budget floor over real HTTP. A budget under the seeded minimum is refused by name
-// before any job opens, the seeded amount opens, and an operator's open is refused by the domain.
+// The open-job budget floor over real HTTP. A budget under the floor is refused by name before any
+// job opens, the floor itself opens, and an operator's open is refused by the domain.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -50,7 +50,7 @@ const open = (port: number, token: string, budget: number) =>
 		command: { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
 			budget, deliveryEndsAt: "2026-10-21T12:00:00Z" } }, token);
 
-test("a budget under the seeded minimum is refused by name, the seeded amount opens, and an operator cannot open", async () => {
+test("a budget under the floor is refused by name, the floor opens, and an operator cannot open", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-u1-budget-"));
 	const port = 4889;
 	let child: ReturnType<typeof spawn> | null = null;
@@ -59,14 +59,14 @@ test("a budget under the seeded minimum is refused by name, the seeded amount op
 		const maya = await session(port, "maya-client");
 		const devon = await session(port, "devon-ops");
 
-		for (const budget of [0, 1, 39_999]) {
+		for (const budget of [0, 1, 999]) {
 			const refused = await open(port, maya, budget);
 			assert.equal(refused.status, 400, `a budget of ${budget} cents is refused`);
-			assert.deepEqual(await refused.json(), { error: "BUDGET_BELOW_MINIMUM", detail: "The budget must be at least 400.00 USD." });
+			assert.deepEqual(await refused.json(), { error: "BUDGET_BELOW_MINIMUM", detail: "The budget must be at least 10.00 USD." });
 		}
 
-		const opened = await open(port, maya, 40_000);
-		assert.equal(opened.status, 200, "the seeded minimum opens a job");
+		const opened = await open(port, maya, 1_000);
+		assert.equal(opened.status, 200, "the floor opens a job");
 		const committed = await opened.json() as { outcome: { kind: string; result?: { kind: string } } };
 		assert.equal(committed.outcome.result?.kind, "JOB");
 

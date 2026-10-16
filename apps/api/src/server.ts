@@ -323,9 +323,9 @@ function integer(value: unknown, label: string, max = 10_000_000): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > max) throw new BadBody(`Invalid ${label}`);
 	return value;
 }
-// The smallest budget a job opens with. The seed and fixtures open at this amount, and the web form
-// refuses below it too (apps/web/src/format.ts), so the two must move together.
-const MIN_BUDGET_CENTS = 40_000;
+// The smallest budget a job opens with. The web form refuses below the same amount (apps/web/src/format.ts),
+// so the two must move together. The floor refuses zero and trivial amounts; the visitor caps bind above it.
+const MIN_BUDGET_CENTS = 1_000;
 function openBudget(value: unknown): UsdCents {
 	if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < MIN_BUDGET_CENTS) {
 		throw new BudgetBelowMinimum(`The budget must be at least ${(MIN_BUDGET_CENTS / 100).toFixed(2)} USD.`);
@@ -430,8 +430,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (method === "GET") { const current = session(req); json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
 			visitor: current?.visitor ? visitorJson(current.visitor) : null,
 			// The deployment's own sign-in shape, so a page draws the public one or the seeded picker
-			// without probing a second route for it.
-			mode: devEnabled ? "dev" : "public" }); return; }
+			// without probing a second route for it. The funding mode a job without its own choice
+			// accepts with, so the accept dialog names the same method the order will use.
+			mode: devEnabled ? "dev" : "public", fundingMode: settings.paypal.fundingMode() }); return; }
 		if (method === "POST") {
 			const handle = text(object(await body(req)).handle, "handle");
 			if (!devEnabled) {

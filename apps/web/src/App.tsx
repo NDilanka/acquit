@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
-import type { DeploymentMode, VisitorView } from "./api-types";
+import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
 import { Link, match, useRouter } from "./router";
 import { SessionContext, useSession, type Session } from "./session";
@@ -28,6 +28,7 @@ const ROLE_CAPTION = { CLIENT: "client", OPERATOR: "operator", PLATFORM: "platfo
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [mode, setMode] = useState<DeploymentMode | null>(null);
+  const [fundingMode, setFundingMode] = useState<FundingMode>("checkout");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,6 +36,7 @@ export function App() {
       .session()
       .then((r) => {
         setMode(r.mode);
+        setFundingMode(r.fundingMode);
         setSession(r.user ? { user: r.user, visitor: r.visitor } : null);
       })
       .catch((e: unknown) => {
@@ -62,7 +64,7 @@ export function App() {
       <main className="wrap">
         {error && !session && <div className="alert">{error}</div>}
         {session ? (
-          <SessionContext.Provider value={{ ...session, signOut }}>
+          <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>
             {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
             <Routes key={session.user.handle} />
           </SessionContext.Provider>
