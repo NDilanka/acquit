@@ -86,7 +86,7 @@ async function waitForContainerMount(source: string, timeoutMs: number): Promise
 	}
 }
 
-/** Real-Docker tests need the subject image already in the local store. CI does not pull or build it, so they skip there. */
+/** Real-Docker tests need the subject image already in the local store, so they skip when it is absent. The workflow pulls it before npm test. */
 function realDockerSkip(): string | false {
 	if (!dockerReachable()) return "Docker is not reachable.";
 	// The image dockerSubject() runs when no image is passed (packages/verifier/subject.ts).
@@ -986,6 +986,10 @@ test("a real Docker subject that exits 137 on its own stays a REJECTED attempt",
 	const fixture = repositoryWith(`process.exit(137);\nexport function formatTotal(): string { return "1"; }\n`);
 	chmodSync(fixture.repo, 0o755);
 	try {
+		const call: SubjectCall = { id: "frozen:1" as TestId, target: { module: "src/money.ts", export: "formatTotal" }, args: [] };
+		// A missing image makes docker run exit 125 before any container starts, so 137 proves the container ran.
+		const launched = await dockerSubject().run(fixture.repo, [call], 20_000);
+		assert.equal(launched.exitCode, 137, launched.stderr);
 		const real = gitSource(fixture.repo);
 		const source: JudgeSource = { diff: real.diff, readFile: () => frozenTestSource, materialize: real.materialize };
 		const request: VerifierRunRequest = { runId: "run_docker_137" as VerifierRunId, jobId: "job_docker_137" as JobId, ordinal: 1,
