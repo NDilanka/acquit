@@ -54,6 +54,10 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .pill.open { color: var(--blue); background: var(--blue-bg); border-color: #cdd9f3; }
 .pill.ok { color: var(--green); background: var(--green-bg); border-color: var(--green-line); }
 .pill.new { color: var(--muted); background: #f3f2ed; border-color: var(--line); }
+.pill.alert { color: var(--red); background: var(--red-bg); border-color: #f0c9c0; }
+.idchip { display: inline-flex; align-items: center; max-width: 100%; font: 500 12px/1.2 var(--mono); padding: 3px 7px; border-radius: 6px; border: 1px solid var(--line-2); background: #fbfaf7; color: var(--ink-2); cursor: copy; }
+.idchip:hover { border-color: var(--muted); }
+.idchip.copied { color: var(--green); background: var(--green-bg); border-color: var(--green-line); }
 .merge-note { white-space: normal; overflow-wrap: anywhere; max-width: 100%; }
 .statuspanel .mono { overflow-wrap: anywhere; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }

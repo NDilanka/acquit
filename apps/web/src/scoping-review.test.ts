@@ -168,5 +168,5 @@ test("a job past OPEN closes the approval window and says the job has moved on",
   assert.deepEqual(approvalWindow({ status: "IN_PROGRESS", phase: "READY" }), movedOn);
   assert.deepEqual(approvalWindow({ status: "VERIFIED", phase: "AWAITING_CLIENT" }), movedOn);
   assert.deepEqual(approvalWindow({ status: "PAID", phase: "PAID" }), movedOn);
-  assert.deepEqual(approvalWindow({ status: "CLOSED", phase: "CANCELLED" }), movedOn);
+  assert.deepEqual(approvalWindow({ status: "CLOSED", phase: "CLOSED" }), movedOn);
 });

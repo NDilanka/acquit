@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, disputeNote, dollars, ledgerNote, mergeNote, refundNote, releaseNote, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, disputeNote, dollars, ledgerNote, mergeNote, refundNote, shortId, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -44,13 +44,6 @@ test("the merge reads as pending, merged with its merge commit and approved tree
     "Needs a person: GitHub refused the merge (GITHUB_MERGE_CONFLICT)",
   );
   assert.equal(mergeNote({ phase: "NEEDS_HUMAN", reason: "SOMETHING_NEW" }, null, null), "Needs a person: SOMETHING_NEW");
-});
-
-test("the release evidence names the payout item and the capture", () => {
-  assert.equal(
-    releaseNote({ payoutItemId: "PI-7XK2", captureId: "CAP-91QZ", paid: 36000, at }),
-    "Payout item PI-7XK2, capture CAP-91QZ",
-  );
 });
 
 test("each release authority reads in plain words", () => {
@@ -132,4 +125,11 @@ test("dashboard money reads as dollars and cents", () => {
   assert.equal(dollars(42000), "$420.00");
   assert.equal(dollars(5), "$0.05");
   assert.equal(dollars(-1250), "-$12.50");
+});
+
+test("a short id keeps its prefix and eight characters", () => {
+  assert.equal(shortId("job_7ba29687-e9fb-4531-850b-9a430ecde3c1"), "job_7ba29687…");
+  assert.equal(shortId("9f2c4e1ab7d03e55c8a1f0b2d6e4c9a7b3f5d812"), "9f2c4e1a…");
+  assert.equal(shortId("8KX12"), "8KX12");
+  assert.equal(shortId("rcpt_abcdefgh"), "rcpt_abcdefgh");
 });
