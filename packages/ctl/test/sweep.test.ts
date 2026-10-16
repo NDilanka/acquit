@@ -16,7 +16,8 @@ import type { Context } from "../src/state.ts";
 import { instant } from "../../core/src/ids.ts";
 import type { MerchantId } from "../../core/src/ids.ts";
 import { SqliteStore } from "../../core/src/store.ts";
-import { insertVisitor, newVisitorId, readVisitor } from "../../core/src/visitors.ts";
+import { boundedRuns } from "../../core/src/scenarios.ts";
+import { insertVisitor, newVisitorId, readVisitor, reserveVisitor } from "../../core/src/visitors.ts";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const merchant = "sandbox-seller" as MerchantId;
@@ -74,6 +75,68 @@ test("sweep reports an expired visitor on a dry run, then removes its repository
 		// Idempotent: a second sweep has nothing left to do.
 		assert.deepEqual(await sweep({}, ctx), { databasePath: path, swept: [], repositories: [], kept: [],
 			scenarios: { swept: [], workRepos: [], kept: [] } });
+	} finally {
+		for (const [name, value] of saved) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+		await rm(dir, { recursive: true, force: true });
+		stub.closeAllConnections();
+		await new Promise<void>(resolve => stub.close(() => resolve()));
+	}
+});
+
+test("sweep leaves a RUNNING scenario's fork even though its visitor has expired, and removes only the ordinary visitor's fork", async () => {
+	const deleted: string[] = [];
+	const stub = createServer((request, response) => {
+		response.setHeader("content-type", "application/json");
+		const url = request.url ?? "";
+		if (url.startsWith("/app/installations?")) { response.writeHead(200); response.end(JSON.stringify([{ id: 42, account: { login: "acquit-forks" } }])); return; }
+		if (url === "/app/installations/42/access_tokens" && request.method === "POST") {
+			response.writeHead(201); response.end(JSON.stringify({ token: "ghs_sweep", expires_at: new Date(Date.now() + 3_600_000).toISOString() })); return;
+		}
+		const fork = /^\/repos\/acquit-forks\/(demo-old|demo-scn)$/.exec(url)?.[1];
+		if (fork !== undefined && request.method === "GET") {
+			response.writeHead(200); response.end(JSON.stringify({ id: fork === "demo-old" ? 7001 : 7002, full_name: `acquit-forks/${fork}`, fork: true,
+				parent: { full_name: "maya-client/invoice-app" } })); return;
+		}
+		if (fork !== undefined && request.method === "DELETE") { deleted.push(`acquit-forks/${fork}`); response.writeHead(204); response.end(); return; }
+		response.writeHead(404); response.end(JSON.stringify({ message: "Not Found" }));
+	});
+	await new Promise<void>(resolve => stub.listen(0, "127.0.0.1", () => resolve()));
+	const stubBase = `http://127.0.0.1:${(stub.address() as AddressInfo).port}`;
+	const dir = await mkdtemp(join(tmpdir(), "acquit-sweep-scenario-"));
+	const path = join(dir, "acquit.db");
+	const store = new SqliteStore(path);
+	const threeDaysAgo = instant(new Date(Date.now() - 3 * 86_400_000).toISOString());
+	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old", repositoryId: 7001,
+		merchant, now: threeDaysAgo });
+	// A scenario's visitor, expired by the same clock, whose run is still RUNNING. The run is committed through the core
+	// run store, so its journal row is the one the app writes.
+	const scenarioId = newVisitorId();
+	const reserved = reserveVisitor(store.db, { id: scenarioId, ipKey: "ip-s", repository: "acquit-forks/demo-scn", repositoryId: 7002,
+		merchant, now: threeDaysAgo, scenarioOf: "req-owner" });
+	if (reserved.kind !== "RESERVED") throw new Error(`the scenario visitor was not reserved: ${reserved.reason}`);
+	const admitted = boundedRuns(undefined, store.db).admit("req-owner");
+	if (admitted.kind !== "ADMITTED") throw new Error(`the run was not admitted: ${admitted.code}`);
+	admitted.slot.commit({ id: "scn_running", name: "verified-and-paid", requesterId: "req-owner", visitorId: scenarioId, jobId: "job_running",
+		steps: [], state: "RUNNING", endState: null, failure: null });
+	store.close();
+	const ctx: Context = { root, dir, stateFile: join(dir, "run.json"), databasePath: path, apiPort: 4310, webPort: 5173,
+		verifierPort: 4311, browserSession: "acquit-sweep-scenario-test" };
+	const saved = new Map(NAMES.map(name => [name, process.env[name]]));
+	const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+	try {
+		process.env.ACQUIT_GITHUB_APP_ID = "4242";
+		process.env.ACQUIT_GITHUB_APP_ORG = "acquit-forks";
+		process.env.ACQUIT_GITHUB_API_BASE = stubBase;
+		process.env.ACQUIT_GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+		const report = await sweep({}, ctx);
+		assert.deepEqual(report.swept, [expired.id]);
+		assert.deepEqual(report.repositories, [{ repository: "acquit-forks/demo-old", outcome: "DELETED" }]);
+		assert.deepEqual(report.kept, []);
+		assert.deepEqual(report.scenarios, { swept: [], workRepos: [], kept: [] });
+		assert.deepEqual(deleted, ["acquit-forks/demo-old"]);
+		const after = new SqliteStore(path);
+		assert.notEqual(readVisitor(after.db, scenarioId)?.state, "SWEPT");
+		after.close();
 	} finally {
 		for (const [name, value] of saved) if (value === undefined) delete process.env[name]; else process.env[name] = value;
 		await rm(dir, { recursive: true, force: true });

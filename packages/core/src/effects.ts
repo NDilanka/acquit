@@ -12,6 +12,7 @@ import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, Re
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, storedVertical, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
+import type { WorkRepoFork } from "./github.ts";
 import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
 import { logQuoted } from "./log.ts";
@@ -474,6 +475,7 @@ export const GITHUB_REFUSAL_DISPOSITIONS: Readonly<Record<GitHubFailureCode, Git
 	GITHUB_INSTALLATION_MISSING: { kind: "NEEDS_HUMAN" },
 	GITHUB_PERMISSION_MISSING: { kind: "NEEDS_HUMAN" },
 	GITHUB_FORK_MISMATCH: { kind: "NEEDS_HUMAN" },
+	GITHUB_FORK_UNRECORDED: { kind: "NEEDS_HUMAN" },
 	GITHUB_REF_CONFLICT: { kind: "NEEDS_HUMAN" },
 	GITHUB_COMMIT_ABSENT: { kind: "NEEDS_HUMAN" },
 	GITHUB_NOT_FOUND: { kind: "NEEDS_HUMAN" },
@@ -516,8 +518,11 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 	}
 	const attempt = (previous.kind === "UNCERTAIN" ? previous.attempt ?? 0 : 0) + 1;
 	try {
-		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key));
-		await ports.store.recordWorkRepo({ jobId: effect.jobId, repository: created.repository, repositoryId: created.id, source: effect.repository });
+		// The record is written the moment GitHub answers for the fork, before the ref writes that can still fail,
+		// and again once the whole create has succeeded. Both writes name the same repository, so either one is enough.
+		const recordFork = (fork: WorkRepoFork) => ports.store.recordWorkRepo({ jobId: effect.jobId, repository: fork.repository, repositoryId: fork.id, source: effect.repository });
+		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit }, providerRequestId(key), recordFork);
+		await recordFork(created);
 	} catch (error) {
 		if (error instanceof GitHubAppNotConfigured) {
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });

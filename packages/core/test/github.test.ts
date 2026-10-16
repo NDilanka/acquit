@@ -361,10 +361,13 @@ for (const harness of HARNESSES) {
 		const other = await app.port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
 		assert.equal(other.repository, `${ORG}/demo-def456`);
 		assert.notEqual(other.repository, created.repository);
-		// The expiry sweep removes the visitor's own fork, and a second removal finds it absent.
-		assert.equal(await app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }), "DELETED");
-		assert.equal(await app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }), "ABSENT");
-		assert.equal(await app.port.deleteClientRepo({ repository: other.repository, source: CLIENT, id: null }), "DELETED");
+		// The expiry sweep removes the visitor's own fork by its recorded id, and a second removal finds it absent.
+		// With no recorded id the marker alone decides nothing, so the removal is refused and nothing is deleted.
+		const unrecorded = await refusal(app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }));
+		assert.equal(unrecorded.code, "GITHUB_FORK_UNRECORDED");
+		assert.equal(await app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: created.id }), "DELETED");
+		assert.equal(await app.port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: created.id }), "ABSENT");
+		assert.equal(await app.port.deleteClientRepo({ repository: other.repository, source: CLIENT, id: other.id }), "DELETED");
 	});
 
 	test(`the verified commit is one pull request and a second call adopts it (${harness.name})`, async t => {
@@ -896,8 +899,10 @@ test("a fork is deleted only while the repository id is the one the visitor fork
 	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
 	assert.match(failure.detail, /demo-abc123/);
 	assert.equal(stub.state.repos.has(created.repository), true, "nothing is deleted");
-	// A visitor row from before the id was recorded still deletes by the marker alone.
-	assert.equal(await port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }), "DELETED");
+	// A visitor row with no recorded id is refused even when the marker matches: the marker cannot tell this fork from another.
+	const unrecorded = await refusal(port.deleteClientRepo({ repository: created.repository, source: CLIENT, id: null }));
+	assert.equal(unrecorded.code, "GITHUB_FORK_UNRECORDED");
+	assert.equal(stub.state.repos.has(created.repository), true, "nothing is deleted without the id");
 	// And the fork this client did make, with the id it recorded, is deleted.
 	const again = await port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
 	assert.equal(await port.deleteClientRepo({ repository: again.repository, source: CLIENT, id: again.id }), "DELETED");
@@ -915,6 +920,8 @@ for (const harness of HARNESSES) {
 		const wrongId = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id + 1 }));
 		assert.equal(wrongId.code, "GITHUB_FORK_MISMATCH");
 		assert.match(wrongId.detail, /is not the repository this job forked/);
+		const unrecorded = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+		assert.equal(unrecorded.code, "GITHUB_FORK_UNRECORDED", "no recorded id, nothing deleted");
 		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }), "DELETED");
 		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }), "ABSENT");
 	});
@@ -947,11 +954,27 @@ test("the sweep never deletes a repository this client did not create", async t 
 	const failure = await refusal(port.deleteClientRepo({ repository: `${ORG}/demo-abc123`, source: CLIENT, id: null }));
 	assert.equal(failure.code, "GITHUB_FORK_MISMATCH");
 	assert.equal(stub.state.repos.has(`${ORG}/demo-abc123`), true);
-	// A repository this client did create is removed, and a name that is not there is already gone.
-	await port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
-	assert.equal(await port.deleteClientRepo({ repository: `${ORG}/demo-def456`, source: CLIENT, id: null }), "DELETED");
+	// A repository this client did create is removed by its recorded id, and a name that is not there is already gone.
+	const made = await port.createClientRepo({ repository: CLIENT, name: "demo-def456" });
+	const unrecorded = await refusal(port.deleteClientRepo({ repository: `${ORG}/demo-def456`, source: CLIENT, id: null }));
+	assert.equal(unrecorded.code, "GITHUB_FORK_UNRECORDED");
+	assert.equal(await port.deleteClientRepo({ repository: `${ORG}/demo-def456`, source: CLIENT, id: made.id }), "DELETED");
 	assert.equal(await port.deleteClientRepo({ repository: `${ORG}/demo-def456`, source: CLIENT, id: null }), "ABSENT");
 	assert.equal(stub.state.repos.has(`${ORG}/demo-def456`), false);
+});
+
+test("a same-source replacement fork with no recorded id is refused by both removals, and never deleted", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const created = await port.createWorkRepo(workRepoRequest, "req-1");
+	// Another fork of the same source now holds the work name. Its marker matches, so only the recorded id tells them apart.
+	plant(stub, WORK_REPO, { forkOf: CLIENT, commits: [], main: null });
+	assert.notEqual(stub.state.repos.get(WORK_REPO)?.id, created.id);
+	const work = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+	assert.equal(work.code, "GITHUB_FORK_UNRECORDED");
+	const client = await refusal(port.deleteClientRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+	assert.equal(client.code, "GITHUB_FORK_UNRECORDED");
+	assert.equal(stub.state.repos.has(WORK_REPO), true, "the same-source fork is kept");
 });
 
 test("a fork this client created converges after its ref move failed", async t => {

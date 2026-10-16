@@ -70,10 +70,16 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		-- here because filter 4 checks every drafted citation against the body it was justified from.
 		CREATE TABLE IF NOT EXISTS job_scoping (job_id TEXT PRIMARY KEY, status TEXT NOT NULL, issue_body TEXT,
 			ids TEXT NOT NULL, digest TEXT, reason TEXT, counts TEXT, updated_at TEXT NOT NULL);
-		-- The judge scenarios' run snapshots, bounded by the run store and written at each progress. A row that
-		-- is RUNNING when the store opens is marked FAILED, RESTARTED. finished_at starts the sweep's TTL.
+		-- The judge scenarios' run snapshots, bounded by the run store and written at each progress. Eviction deletes
+		-- a row, and the cleanup journal below keeps what the run owns. A row RUNNING when the store opens is marked
+		-- FAILED, RESTARTED. Only the snapshot is here: its progress never decides who owns a job.
 		CREATE TABLE IF NOT EXISTS scenario_runs (id TEXT PRIMARY KEY, requester_id TEXT NOT NULL, visitor_id TEXT NOT NULL,
-			job_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, snapshot TEXT NOT NULL, finished_at TEXT, swept_at TEXT);
+			job_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL, snapshot TEXT NOT NULL);
+		-- The cleanup journal: one row per run the run store committed, never evicted with its snapshot. It is written
+		-- only by that commit, so job_id is the job the run's own OpenJob committed. finished_at starts the sweep's TTL.
+		-- work_swept_at is set once the job's work repository is gone, and cleared again by a record that arrives later.
+		CREATE TABLE IF NOT EXISTS scenario_cleanup (run_id TEXT PRIMARY KEY, visitor_id TEXT NOT NULL, job_id TEXT NOT NULL,
+			finished_at TEXT, work_swept_at TEXT);
 		-- The work repository a job's CREATE_WORK_REPO effect made: its full name, GitHub's own id for it, and the
 		-- fork it was made from. The cleanup deletes only the repository this row names.
 		CREATE TABLE IF NOT EXISTS work_repos (job_id TEXT PRIMARY KEY, repository TEXT NOT NULL, repository_id INTEGER, source TEXT NOT NULL);
@@ -453,6 +459,8 @@ export class SqliteStore implements Store {
 	async recordEffect(key: OperationKey, state: OutboxState): Promise<void> { this.updateEffect(key, state); }
 	async recordWorkRepo(record: WorkRepoRecord): Promise<void> {
 		this.db.prepare("INSERT OR REPLACE INTO work_repos VALUES (?, ?, ?, ?)").run(record.jobId, record.repository, record.repositoryId, record.source);
+		// A record that lands after a cleanup pass has marked the job swept reopens it, so the next pass removes the repository.
+		this.db.prepare("UPDATE scenario_cleanup SET work_swept_at = NULL WHERE job_id = ?").run(record.jobId);
 	}
 	close(): void { this.db.close(); }
 }

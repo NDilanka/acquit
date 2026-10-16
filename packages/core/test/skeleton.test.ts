@@ -811,7 +811,7 @@ test("the outbox starts the run it reserved and provisions the work repo by requ
 	const base = fixture();
 	const ports: Ports = { ...base.ports, store,
 		workRepo: { createWorkRepo: async request => { created.push({ jobId: request.jobId, repository: request.repository, frozenCommit: request.frozenCommit });
-			return { repository: "acquit-forks/invoice-app-submit", remote: "https://github.com/acquit-forks/invoice-app-submit.git", branch: "main", commit: request.frozenCommit, id: null }; },
+			return { repository: "acquit-forks/invoice-app-submit", remote: "https://github.com/acquit-forks/invoice-app-submit.git", branch: "main", commit: request.frozenCommit, id: 4242 }; },
 			deleteWorkRepo: async () => "ABSENT" },
 		verifier: { start: async request => { starts.push(request); }, parseCallback: async () => null } };
 	const enqueue = (effect: JobEffect) => {

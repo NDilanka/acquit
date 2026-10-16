@@ -6,6 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ClientRepoDeleteRequest, ClientRepoRemoval } from "./github.ts";
 import type { Instant, JobId, VisitorId } from "./ids.ts";
+import { openedJobOf } from "./scenario-binding.ts";
 import { expiredVisitors, readVisitor, sweepVisitor } from "./visitors.ts";
 
 /** What the sweep needs of the App, and nothing else. */
@@ -68,12 +69,18 @@ export type ScenarioSweepReport = {
 	readonly kept: readonly { readonly id: string; readonly repository: string; readonly reason: string }[];
 };
 
+/** Whether a job's CREATE_WORK_REPO effect may still create its repository: any state but CONFIRMED or NEEDS_HUMAN. */
+const creationPending = (db: DatabaseSync, jobId: JobId): boolean => db.prepare(`SELECT 1 FROM outbox
+	WHERE json_extract(json, '$.effect.kind') = 'CREATE_WORK_REPO' AND json_extract(json, '$.effect.jobId') = ?
+	AND json_extract(state, '$.kind') NOT IN ('CONFIRMED', 'NEEDS_HUMAN')`).get(jobId) !== undefined;
+
 /**
- * One pass over the scenario runs' repositories. A scenario visitor's fork goes once every run it started has
- * finished longer than the TTL ago (or it never started one), and it was created longer than the TTL ago. A
- * finished run's work repo goes once it is past the TTL. A RUNNING run is never touched, and neither is a fresh
- * one. Each removal goes through the App's own guard, so a repository this deployment did not make is refused
- * and kept. A refused removal keeps its row, so the next pass retries exactly that work.
+ * One pass over the scenario runs' repositories, read from the cleanup journal and never from a snapshot. A
+ * scenario visitor's fork goes once every run it started has finished longer than the TTL ago (or it never
+ * started one), and it was created longer than the TTL ago. A finished run's work repo goes once it is past the
+ * TTL, and only when its job is the one the run's own OpenJob committed. A RUNNING run is never touched, and
+ * neither is a fresh one. Each removal goes through the App's own guard, so a repository this deployment did not
+ * make is refused and kept. A refused removal keeps its row, so the next pass retries exactly that work.
  */
 export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; readonly app: ScenarioRepoDeleter;
 	readonly source: string; readonly now: Instant; readonly ttlMs?: number }): Promise<ScenarioSweepReport> {
@@ -84,8 +91,8 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 	const visitorIds = input.db.prepare(`SELECT v.id FROM visitors v
 			JOIN cap_reservations c ON c.kind = 'SCENARIO' AND c.ref = v.id
 			WHERE v.state <> 'SWEPT' AND v.created_at <= ?
-			AND NOT EXISTS (SELECT 1 FROM scenario_runs r WHERE r.visitor_id = v.id
-				AND (r.state = 'RUNNING' OR r.finished_at IS NULL OR r.finished_at > ?))
+			AND NOT EXISTS (SELECT 1 FROM scenario_cleanup k WHERE k.visitor_id = v.id
+				AND (k.finished_at IS NULL OR k.finished_at > ?))
 			ORDER BY v.created_at`).all(cutoff, cutoff).map(row => String(row.id) as VisitorId);
 	for (const id of visitorIds) {
 		const visitor = readVisitor(input.db, id);
@@ -101,13 +108,26 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 		sweepVisitor(input.db, id);
 		swept.push(id);
 	}
-	const finished = input.db.prepare(`SELECT id, job_id FROM scenario_runs
-			WHERE state <> 'RUNNING' AND swept_at IS NULL AND finished_at <= ? ORDER BY rowid`).all(cutoff);
-	for (const row of finished) {
-		const runId = String(row.id);
-		const work = input.db.prepare("SELECT repository, repository_id, source FROM work_repos WHERE job_id = ?").get(String(row.job_id) as JobId);
+	// Only the journal is read here, and only a scenario visitor's run counts. The job must be the one the run's own
+	// OpenJob committed, so a row that names another job (a crafted snapshot, say) never reaches an ordinary job's repo.
+	const due = input.db.prepare(`SELECT k.run_id, k.visitor_id, k.job_id FROM scenario_cleanup k
+			JOIN cap_reservations c ON c.kind = 'SCENARIO' AND c.ref = k.visitor_id
+			WHERE k.finished_at IS NOT NULL AND k.finished_at <= ? AND k.work_swept_at IS NULL ORDER BY k.rowid`).all(cutoff);
+	for (const row of due) {
+		const runId = String(row.run_id);
+		const jobId = String(row.job_id) as JobId;
+		const work = input.db.prepare("SELECT repository, repository_id, source FROM work_repos WHERE job_id = ?").get(jobId);
+		const repository = work === undefined ? "" : String(work.repository);
+		if (openedJobOf(input.db, { id: runId, visitorId: String(row.visitor_id) }) !== jobId) {
+			kept.push({ id: runId, repository, reason: "SCENARIO_BINDING_MISSING" });
+			continue;
+		}
+		// No record yet and the creation may still land: the record, when it comes, reopens the job's cleanup.
+		if (work === undefined && creationPending(input.db, jobId)) {
+			kept.push({ id: runId, repository, reason: "WORK_REPO_PENDING" });
+			continue;
+		}
 		if (work !== undefined) {
-			const repository = String(work.repository);
 			try {
 				const outcome = await input.app.deleteWorkRepo({ repository, source: String(work.source),
 					id: typeof work.repository_id === "number" ? work.repository_id : null });
@@ -117,7 +137,7 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 				continue;
 			}
 		}
-		input.db.prepare("UPDATE scenario_runs SET swept_at = ? WHERE id = ?").run(input.now, runId);
+		input.db.prepare("UPDATE scenario_cleanup SET work_swept_at = ? WHERE run_id = ?").run(input.now, runId);
 	}
 	return { swept, workRepos, kept };
 }

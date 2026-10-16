@@ -7,7 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { boundedRuns } from "../src/scenarios.ts";
+import { boundedRuns, startScenario } from "../src/scenarios.ts";
 import type { RunBounds, ScenarioRun, ScenarioRuns, ScenarioStep } from "../src/scenarios.ts";
 import { openDatabase } from "../src/store.ts";
 import { drive, harness } from "./scenario-harness.ts";
@@ -111,4 +111,25 @@ test("the store-wide bound holds after a reopen: the oldest finished run goes ac
 		assert.equal(runs.get("scn_0"), undefined);
 		assert.equal(runs.get("scn_3")?.requesterId, "req-b");
 	} finally { reopened.close(); }
+});
+
+test("a credential in a failing step's error text is kept out of the stored snapshot and the polling body", async () => {
+	const h = await harness();
+	try {
+		const leaked = ["token=sentinel-app-token-value", "Authorization: Bearer sentinel-bearer-value-0000",
+			"https://x-access-token:sentinel-url-password@github.com/owner/repo.git"];
+		const failingPush = { push: async () => { throw new Error(`git push failed: ${leaked.join(" ")}`); } };
+		const admitted = h.deps.runs.admit(h.visitor.id);
+		if (admitted.kind !== "ADMITTED") throw new Error(`admission refused: ${admitted.code}`);
+		const started = await startScenario({ ...h.deps, workspace: failingPush }, "verified-and-paid", h.visitor, h.visitor.id, admitted.slot);
+		const run = await started.finished;
+		assert.equal(run.state, "FAILED");
+		assert.equal(run.steps.at(-1)?.outcome, "FAILED STEP_FAILED");
+		const polled = JSON.stringify(h.deps.runs.get(run.id));
+		const stored = String(h.deps.store.db.prepare("SELECT snapshot FROM scenario_runs WHERE id = ?").get(run.id)?.snapshot);
+		for (const secret of ["sentinel-app-token-value", "sentinel-bearer-value", "sentinel-url-password"]) {
+			assert.equal(polled.includes(secret), false, `the polling body holds ${secret}`);
+			assert.equal(stored.includes(secret), false, `the stored snapshot holds ${secret}`);
+		}
+	} finally { await h.dispose(); }
 });

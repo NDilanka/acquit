@@ -126,9 +126,15 @@ export function repositoryForClient(db: DatabaseSync, clientHandle: string): str
 	return readVisitor(db, principal.visitorId)?.repository ?? null;
 }
 
-/** Every visitor past its expiry, oldest first, that no earlier sweep has already taken. The sweep's input. */
+/**
+ * Every visitor past its expiry, oldest first, that no earlier sweep has already taken. The sweep's input. A scenario
+ * run's visitor is left out: its fork belongs to the scenario sweep, which waits for the run to finish, so an
+ * ordinary pass never removes a fork a RUNNING or freshly finished run still uses.
+ */
 export function expiredVisitors(db: DatabaseSync, now: Instant): readonly VisitorRow[] {
-	return db.prepare(`SELECT ${VISITOR_COLUMNS} FROM visitors WHERE expires_at <= ? AND state <> 'SWEPT' ORDER BY created_at`)
+	return db.prepare(`SELECT ${VISITOR_COLUMNS} FROM visitors WHERE expires_at <= ? AND state <> 'SWEPT'
+			AND NOT EXISTS (SELECT 1 FROM cap_reservations c WHERE c.kind = 'SCENARIO' AND c.ref = visitors.id)
+			ORDER BY created_at`)
 		.all(now).map(row);
 }
 

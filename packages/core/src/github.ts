@@ -43,6 +43,8 @@ export type GitHubFailureCode =
 	| "GITHUB_INSTALLATION_MISSING"
 	| "GITHUB_PERMISSION_MISSING"
 	| "GITHUB_FORK_MISMATCH"
+	/** A repository's recorded GitHub id is missing, so the removal cannot prove which fork it is. Nothing is deleted. */
+	| "GITHUB_FORK_UNRECORDED"
 	| "GITHUB_REF_CONFLICT"
 	| "GITHUB_COMMIT_ABSENT"
 	| "GITHUB_NOT_FOUND"
@@ -75,9 +77,12 @@ export type WorkRepo = {
 	readonly remote: string;
 	readonly branch: string;
 	readonly commit: CommitSha;
-	/** GitHub's own id for the repository, when the answer carried one. The cleanup refuses another repository at the name. */
-	readonly id: number | null;
+	/** GitHub's own id for the repository. The cleanup refuses another repository at the name. */
+	readonly id: number;
 };
+
+/** A work repository as soon as GitHub answers for it, before any ref is written. */
+export type WorkRepoFork = { readonly repository: string; readonly id: number };
 
 export type PublishedPullRequest = {
 	readonly repository: string;
@@ -94,7 +99,7 @@ export type PublishRequest = { readonly jobId: JobId; readonly repository: strin
 export type ClientRepoRequest = { readonly repository: string; readonly name: string };
 
 /** One client repository to remove: the fork's own name, the source it must be a fork of, and the
- * repository id the visitor's row recorded, when it has one. */
+ * repository id the visitor's row recorded. A null id is refused, so nothing is removed without one. */
 export type ClientRepoDeleteRequest = { readonly repository: string; readonly source: string; readonly id: number | null };
 
 /** The fork a visitor's own jobs freeze. Its remote is derived, never stored. The id is GitHub's own,
@@ -119,8 +124,12 @@ export interface ClientRepoPort {
 
 /** What the core's outbox needs. */
 export interface WorkRepoPort {
-	/** Idempotent per job: a retry adopts the existing repository instead of creating a second one. */
-	createWorkRepo(request: WorkRepoRequest, requestId: string): Promise<WorkRepo>;
+	/**
+	 * Idempotent per job: a retry adopts the existing repository instead of creating a second one. `onFork` is
+	 * called with the repository and its id as soon as GitHub answers, so a failure after the fork still leaves
+	 * the cleanup a repository it can remove by id.
+	 */
+	createWorkRepo(request: WorkRepoRequest, requestId: string, onFork?: (fork: WorkRepoFork) => Promise<void>): Promise<WorkRepo>;
 	/** Removes one job's work repository under the same rule as a client repository: this client's own fork of
 	 * exactly `source`, under exactly this name, and the recorded id when one is given. Absent is ABSENT. */
 	deleteWorkRepo(request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval>;
@@ -545,7 +554,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		return typeof found === "number" && Number.isSafeInteger(found) && found > 0 ? found : null;
 	};
 
-	const createWorkRepo = async (request: WorkRepoRequest): Promise<WorkRepo> => {
+	const createWorkRepo = async (request: WorkRepoRequest, onFork?: (fork: WorkRepoFork) => Promise<void>): Promise<WorkRepo> => {
 		const organization = checkedOwner(parsed.organization);
 		const source = splitRepository(request.repository);
 		const commit = checkedCommit(request.frozenCommit);
@@ -569,6 +578,11 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 			const forked = await forkInto(organization, repository, name, source, orgToken);
 			record = forked.outcome === "created" ? forked.record : adoptable((await readRepo()).body);
 		}
+		// The identity is handed out before any ref moves, so a failed ref write still leaves the cleanup a repository
+		// it can remove by id. A record without an id is refused: the cleanup could not prove which repository it is.
+		const id = idOf(record);
+		if (id === null) throw new GitHubAppError("GITHUB_RESPONSE_INVALID", `${repository} answered without a repository id.`);
+		await onFork?.({ repository, id });
 		const existing = await readRef(repository, WORK_REPO_BRANCH, orgToken);
 		if (existing === null) await createRef(repository, WORK_REPO_BRANCH, commit, orgToken);
 		else if (existing !== commit) {
@@ -577,7 +591,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 			await call(`Bearer ${orgToken}`, { method: "PATCH", path: `/repos/${repository}/git/refs/heads/${WORK_REPO_BRANCH}`, allow: [200],
 				permission: "contents: write", body: { sha: commit, force: true } });
 		}
-		return { repository, remote: `https://github.com/${repository}.git`, branch: WORK_REPO_BRANCH, commit, id: idOf(record) };
+		return { repository, remote: `https://github.com/${repository}.git`, branch: WORK_REPO_BRANCH, commit, id };
 	};
 
 	/**
@@ -638,7 +652,13 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		if (!isOurFork(found.body, request.repository, request.source)) {
 			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not the fork of ${request.source} this deployment created. Nothing was deleted.`);
 		}
-		if (request.id !== null && idOf(found.body) !== request.id) {
+		// A repository this deployment forked is removed only by the id it recorded. Without one, a same-source fork
+		// that later took the name would pass the marker, so the removal is refused and nothing is deleted.
+		if (request.id === null) {
+			throw new GitHubAppError("GITHUB_FORK_UNRECORDED",
+				`${request.repository} has no recorded repository id, so this ${owner} cannot tell it from another fork of ${request.source}. Nothing was deleted.`);
+		}
+		if (idOf(found.body) !== request.id) {
 			// The name now holds a different repository, forked from the same source. A fork is one repository,
 			// identified by GitHub's own id: another one at the same name is never deleted for it.
 			throw new GitHubAppError("GITHUB_FORK_MISMATCH",
@@ -790,7 +810,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		}
 	};
 	return {
-		async createWorkRepo(request) { return createWorkRepo(request); },
+		async createWorkRepo(request, _requestId, onFork) { return createWorkRepo(request, onFork); },
 		async createClientRepo(request) { return createClientRepo(request); },
 		async deleteClientRepo(request) { return deleteClientRepo(request); },
 		async deleteWorkRepo(request) { return deleteWorkRepo(request); },
@@ -828,15 +848,17 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			const scope = tokenScope(repositories);
 			return `fake-installation-token-${checkedOwner(owner)}${scope === null ? "" : `-${scope.join("+")}`}`;
 		},
-		async createWorkRepo(request, requestId) {
+		async createWorkRepo(request, requestId, onFork) {
 			calls.push({ kind: "CREATE_WORK_REPO", jobId: request.jobId, requestId });
-			const existing = workRepos.get(request.jobId);
-			if (existing) return existing;
-			const repository = `${organization}/${workRepoName(request.repository, request.jobId)}`;
-			const id = nextWorkRepoId++;
-			const created: WorkRepo = { repository, remote: `https://github.com/${repository}.git`, branch: "main", commit: request.frozenCommit, id };
-			workRepos.set(request.jobId, created);
-			workRepoOwners.set(repository, { source: request.repository, id });
+			let created = workRepos.get(request.jobId);
+			if (created === undefined) {
+				const repository = `${organization}/${workRepoName(request.repository, request.jobId)}`;
+				const id = nextWorkRepoId++;
+				created = { repository, remote: `https://github.com/${repository}.git`, branch: "main", commit: request.frozenCommit, id };
+				workRepos.set(request.jobId, created);
+				workRepoOwners.set(repository, { source: request.repository, id });
+			}
+			await onFork?.({ repository: created.repository, id: created.id });
 			return created;
 		},
 		async deleteWorkRepo(request) {
@@ -848,7 +870,10 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			if (owner.source !== request.source) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not the fork of ${request.source} this deployment created. Nothing was deleted.`);
 			}
-			if (request.id !== null && owner.id !== request.id) {
+			if (request.id === null) {
+				throw new GitHubAppError("GITHUB_FORK_UNRECORDED", `${request.repository} has no recorded repository id. Nothing was deleted.`);
+			}
+			if (owner.id !== request.id) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH",
 					`${request.repository} is not the repository this job forked (id ${request.id}). Nothing was deleted.`);
 			}
@@ -871,7 +896,10 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			const name = request.repository.split("/").at(-1) ?? request.repository;
 			const existing = clientRepos.get(name);
 			if (existing === undefined) return "ABSENT";
-			if (request.id !== null && existing.id !== request.id) {
+			if (request.id === null) {
+				throw new GitHubAppError("GITHUB_FORK_UNRECORDED", `${request.repository} has no recorded repository id. Nothing was deleted.`);
+			}
+			if (existing.id !== request.id) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH",
 					`${request.repository} is not the repository this visitor forked (id ${request.id}). Nothing was deleted.`);
 			}
