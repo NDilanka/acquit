@@ -13,7 +13,8 @@ import { parseGcode } from "../src/gcode.ts";
 import { buildPlate } from "../src/plate.ts";
 import type { Plate } from "../src/plate.ts";
 import { prusaVersion, slicePrusa } from "../src/prusa.ts";
-import type { Ring } from "../src/raster.ts";
+import { fillEdges, gridOver, stampSegment } from "../src/raster.ts";
+import type { Ring, Segment } from "../src/raster.ts";
 import { interiorRings, sectionRings } from "../src/section.ts";
 import { validateSpec } from "../src/spec.ts";
 import { meshStats } from "../src/stl.ts";
@@ -226,6 +227,60 @@ test("the honest plate passes every P4 check: units 2, footprints, coupon marker
 			const path = move.path.map(([x, y]) => [round3(x + dx), round3(y + dy)]);
 			t.diagnostic(`DIAG connector line ${move.line} feature ${move.feature} dE ${round3(move.deltaEMm)} path ${JSON.stringify(path)}`);
 		}
+	}
+	{
+		const at15 = layerIndexAt(gcode, 3);
+		const moves15 = partMovesByLayer(gcode).get(at15) ?? [];
+		const dx = result.measured.placement.dx;
+		const dy = result.measured.placement.dy;
+		const rect = { minX: 0, minY: 0, maxX: twinPlate.plateBox.max[0], maxY: twinPlate.plateBox.max[1] };
+		const walls: Segment[] = [];
+		const all: Segment[] = [];
+		for (const move of moves15) {
+			const wall = /^external perimeter$/i.test(move.feature);
+			for (let i = 0; i + 1 < move.path.length; i++) {
+				const [ax, ay] = move.path[i];
+				const [bx, by] = move.path[i + 1];
+				const seg: Segment = [ax + dx, ay + dy, bx + dx, by + dy];
+				all.push(seg);
+				if (wall) walls.push(seg);
+			}
+		}
+		const strokes = gridOver(rect, 2);
+		for (const seg of all) stampSegment(strokes, seg, 0.2);
+		const wallsGrid = gridOver(rect, 2);
+		fillEdges(wallsGrid, walls);
+		const gapOn = (grid: ReturnType<typeof gridOver>) => {
+			let n = 0;
+			for (let row = 0; row < grid.rows; row++) {
+				for (let col = 0; col < grid.cols; col++) {
+					const x = grid.x0 + (col + 0.5) * 0.1;
+					if (grid.on[row * grid.cols + col] && x > 20.5 && x < 24.5) n++;
+				}
+			}
+			return n;
+		};
+		const longest = Math.max(...walls.map(([ax, ay, bx, by]) => Math.hypot(bx - ax, by - ay)));
+		t.diagnostic(`DIAG walls ${walls.length} strokes ${all.length} longestWall ${round3(longest)} strokeGap ${gapOn(strokes)} wallGap ${gapOn(wallsGrid)}`);
+		let shown = 0;
+		let gapRows = 0;
+		for (let row = 0; row < wallsGrid.rows; row++) {
+			const y = wallsGrid.y0 + (row + 0.5) * 0.1;
+			let inGap = 0;
+			for (let col = 0; col < wallsGrid.cols; col++) {
+				const x = wallsGrid.x0 + (col + 0.5) * 0.1;
+				if (wallsGrid.on[row * wallsGrid.cols + col] && x > 20.5 && x < 24.5) inGap++;
+			}
+			if (inGap === 0) continue;
+			gapRows++;
+			if (shown >= 3) continue;
+			shown++;
+			const cross = walls
+				.filter(([, ay, , by]) => ay <= y !== by <= y)
+				.map(([ax, ay, bx, by]) => [round3(ax + ((y - ay) * (bx - ax)) / (by - ay)), by > ay ? 1 : -1, round3(ay), round3(by)]);
+			t.diagnostic(`DIAG gap row ${row} y ${round3(y)} gapCells ${inGap} crossings ${JSON.stringify(cross)}`);
+		}
+		t.diagnostic(`DIAG gap rows ${gapRows}`);
 	}
 	t.diagnostic(`DIAG reasons ${JSON.stringify(result.reasons)}`);
 	t.diagnostic(`DIAG units ${result.measured.units}`);
