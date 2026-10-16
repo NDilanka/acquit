@@ -2,10 +2,11 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type SessionUser } from "../api";
 import type { DeploymentMode } from "../api-types";
 import { errorText } from "../demo";
-import { JUDGE_TOUR, START_DEMO_ACTION } from "../judge-tour";
+import { START_DEMO_ACTION } from "../judge-tour";
 import { useRouter } from "../router";
 import type { Session } from "../session";
 import { ConnectedRepo } from "../ui";
+import { JudgeScenarios } from "./JudgeScenarios";
 
 type SignedIn = (session: Session) => void;
 
@@ -46,14 +47,22 @@ const ROLE_CHOICES: readonly [RoleChoice, RoleChoice] = [
 
 function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
   const [connected, setConnected] = useState<Session | null>(null);
-  // A demo starts once per sign-up: a retry after a failed switch reuses it instead of opening another visitor.
-  const created = useRef<Session | null>(null);
+  // A demo starts once per sign-up, whether a role choice or a scenario asks first: a retry after a failed switch,
+  // or a scenario run started from this page, reuses it instead of opening another visitor.
+  const created = useRef<Promise<Session> | null>(null);
   const { error, busy, run } = useSignIn(setConnected);
   const id = useId();
+  const ensureDemo = (): Promise<Session> => {
+    created.current ??= api.startDemo().catch((e: unknown) => {
+      created.current = null;
+      throw e;
+    });
+    return created.current;
+  };
   const choose = (choice: RoleChoice) =>
     run(choice.role, async () => {
-      created.current ??= await api.startDemo();
-      if (created.current.user.role === choice.role) return created.current;
+      const demo = await ensureDemo();
+      if (demo.user.role === choice.role) return demo;
       return await api.switchDemo();
     });
   const chosen = connected && ROLE_CHOICES.find((c) => c.role === connected.user.role);
@@ -65,14 +74,7 @@ function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
         You get a client and an operator of your own and a fresh copy of the demo repository. Nobody else sees your jobs. Payments
         run against the PayPal sandbox, and the demo ends after 24 hours.
       </p>
-      <ol className="tour">
-        {JUDGE_TOUR.map((step) => (
-          <li key={step.title}>
-            <b>{step.title}</b>
-            <span className="muted">{step.body}</span>
-          </li>
-        ))}
-      </ol>
+      <JudgeScenarios ensureDemo={ensureDemo} />
       {connected && chosen ? (
         <div className="connected-step">
           <ConnectedRepo repository={connected.visitor?.repository ?? null} />

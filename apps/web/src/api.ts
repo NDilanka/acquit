@@ -16,6 +16,9 @@ import type {
   PlatformSignedInResponse,
   PlatformTables,
   ReceiptRow,
+  ScenarioName,
+  ScenarioRun,
+  ScenarioStartResponse,
   ScopingApproveResponse,
   ScopingResponse,
   SessionResponse,
@@ -121,4 +124,6 @@ export const api = {
   askLedgerTurn: (body: AskTurnRequest, init?: CallOptions) => request<AskTurnResponse>("POST", "/api/ask-ledger/turn", body, init),
   askLedgerTool: (name: string, args: Record<string, unknown>, init?: CallOptions) =>
     request<AskToolResponse>("POST", "/api/ask-ledger/tool", { name, arguments: args }, init),
+  startScenario: (name: ScenarioName) => request<ScenarioStartResponse>("POST", `/api/demo/scenarios/${encodeURIComponent(name)}`),
+  scenarioRun: (scenarioId: string) => request<ScenarioRun>("GET", `/api/demo/scenarios/${encodeURIComponent(scenarioId)}`),
 };

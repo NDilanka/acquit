@@ -500,3 +500,38 @@ export type ScopingResponse = {
 
 /** `POST /api/jobs/:id/scoping/approve` on 200. */
 export type ScopingApproveResponse = { readonly jobId: string; readonly digest: string; readonly approvedIds: readonly string[] };
+
+/** The five judge scenarios, as core SCENARIO_NAMES names them. */
+export type ScenarioName = "verified-and-paid" | "hidden-test-fail" | "test-tamper" | "dispute-arbiter" | "deadline-refund";
+
+/** The four honest labels a scenario step carries, as core SCENARIO_LABELS spells them. */
+export type ScenarioLabel = "Scripted agent (Simulated)" | "Simulated time for this job" | "Real verifier run" | "PayPal sandbox";
+
+export type ScenarioStep = {
+  readonly name: string;
+  readonly actor: "CLIENT" | "OPERATOR" | "ARBITER" | "SYSTEM";
+  readonly startedAt: Instant;
+  readonly endedAt: Instant;
+  /** Server-measured duration of the step, in milliseconds. */
+  readonly ms: number;
+  readonly outcome: string;
+  readonly label: ScenarioLabel;
+};
+
+export type ScenarioEndState = { readonly jobStatus: JobStatus; readonly reason: string | null };
+
+/** `GET /api/demo/scenarios/:runId`, and the run `POST /api/demo/scenarios/:name` starts. */
+export type ScenarioRun = {
+  readonly id: string;
+  readonly name: ScenarioName;
+  readonly requesterId: string;
+  readonly visitorId: string;
+  readonly jobId: string;
+  readonly steps: readonly ScenarioStep[];
+  readonly state: "RUNNING" | "DONE" | "FAILED";
+  readonly endState: ScenarioEndState | null;
+  readonly failure: "RESTARTED" | null;
+};
+
+/** `POST /api/demo/scenarios/:name` on 201. */
+export type ScenarioStartResponse = { readonly scenarioId: string; readonly jobId: string };
