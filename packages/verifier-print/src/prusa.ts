@@ -1,13 +1,17 @@
 // Runs PrusaSlicer headless on one STL with one profile and returns the G-code text. The binary is named by
 // the caller, so the same code runs against a PATH install in CI and a full path on a workstation.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// PrusaSlicer 2.7 has no --version flag. Its --help banner carries the version, and it can exit non-zero.
 export function prusaVersion(binary: string): string {
-	return execFileSync(binary, ["--version"], { encoding: "utf8", stdio: "pipe", timeout: 60_000 }).trim();
+	const help = spawnSync(binary, ["--help"], { encoding: "utf8", stdio: "pipe", timeout: 60_000 });
+	const banner = /PrusaSlicer-\S+/.exec(`${help.stdout ?? ""}${help.stderr ?? ""}`);
+	if (!banner) throw new Error(`no PrusaSlicer banner from "${binary} --help"`);
+	return banner[0];
 }
 
 export function slicePrusa(binary: string, profilePath: string, stl: Uint8Array): string {

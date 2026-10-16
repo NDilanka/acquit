@@ -38,6 +38,6 @@ jobs:
       - name: Install PrusaSlicer
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prusa-slicer xvfb xauth
       - name: Slicer version
-        run: xvfb-run -a prusa-slicer --version
+        run: xvfb-run -a prusa-slicer --help 2>&1 | grep -m1 PrusaSlicer-
       - name: Slicer conformance tests
         run: xvfb-run -a node --test packages/verifier-print/test/slicer.test.ts
