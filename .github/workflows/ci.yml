@@ -22,3 +22,22 @@ jobs:
       - run: npm run typecheck
       - run: docker pull node:24-bookworm-slim
       - run: npm test
+
+  print-slice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ACQUIT_PRUSA: prusa-slicer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install PrusaSlicer
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prusa-slicer xvfb xauth
+      - name: Slicer version
+        run: xvfb-run -a prusa-slicer --version
+      - name: Slicer conformance tests
+        run: xvfb-run -a node --test packages/verifier-print/test/slicer.test.ts
