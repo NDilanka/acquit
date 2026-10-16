@@ -4,6 +4,7 @@ import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
 import type { Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
+import type { GitHubAppPort } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
@@ -15,7 +16,7 @@ import { SEEDED_USERS } from "./seed-data.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import type { OperatorCommand } from "./operator.ts";
 import { createPayPal } from "./paypal.ts";
-import type { PayPalConfig, ReleaseEvidence } from "./paypal.ts";
+import type { PayPal, PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { platformJobLedger } from "./platform.ts";
 import type { PlatformLedgerView } from "./platform.ts";
 import { SqliteStore } from "./store.ts";
@@ -197,6 +198,11 @@ export type AcquitConfig = {
 	readonly github: { readonly appId: string; readonly privateKey: string; readonly organization: string; readonly apiBase?: string };
 	/** The deployment injects the CI adapter. Without one, a start refuses by name and no callback is accepted. */
 	readonly verifierPort?: VerifierPort;
+	/**
+	 * Injected in place of the live PayPal and GitHub clients. A test drives a whole job through them
+	 * without a network; a deployment leaves this unset and gets the live clients built from its config.
+	 */
+	readonly adapters?: { readonly paypal?: PayPal; readonly github?: GitHubAppPort };
 	/** Where a row's ALERT effect goes. Without one it is written to the process log. */
 	readonly alerts?: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	/** The AI-scoping kickoff, run when OpenJob commits a fixture that carries a trusted fix. The
@@ -214,8 +220,8 @@ export type AcquitConfig = {
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
 	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
-	const github = createGitHubApp(config.github);
-	const ports: Ports = { store, paypal: createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
+	const github = config.adapters?.github ?? createGitHubApp(config.github);
+	const ports: Ports = { store, paypal: config.adapters?.paypal ?? createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		fixtures: config.fixtures,
 		verifier: config.verifierPort ?? unconfiguredVerifier(),
 		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,

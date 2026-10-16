@@ -55,6 +55,11 @@ export const clientRepository = clientRepositoryEnv();
 export const fixtureRegistry = loadFixtureRegistry();
 export const fixtures: readonly FixtureContract[] = fixtureContracts(fixtureRegistry);
 /**
+ * The fixture the judge scenarios open on, by its registry key (`<owner>/<repo>#<issue>`). Its scripted trees are
+ * written for the score card's frozen suite, so the deployment names the one fixture whose suite they match.
+ */
+export const scenarioFixtureKey = process.env.ACQUIT_SCENARIO_FIXTURE?.trim() || "maya-client/invoice-app#12";
+/**
  * The sandbox seller a judge-mode visitor's operator is paid through. Absent refuses POST /api/demo by
  * name rather than minting an operator that cannot be paid.
  */
