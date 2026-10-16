@@ -1086,6 +1086,7 @@ const scenarioRouting = scenarioRoutingFor({
 	acquit, store: { readJob: id => scenarioStore.readJob(id), db }, runs: scenarioRuns, now: clock.now, devEnabled,
 	workspace: scriptedWorkspace({ work: scenarioWork, readJob: id => scenarioStore.readJob(id) }),
 	fixture: scenarioFixtureOf(fixtures, scenarioFixtureKey),
+	fixtures, forkSource: clientRepository,
 	provision: async requester => {
 		const id = newVisitorId();
 		return provisionDemoVisitor(acquit, { id, ipKey: requester.ipKey, fork: () => forkVisitorRepository(id) });

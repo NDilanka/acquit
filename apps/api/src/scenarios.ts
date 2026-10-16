@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Acquit, DemoVisitorResult } from "../../../packages/core/src/acquit.ts";
 import { defaultJobFunding } from "../../../packages/core/src/funding.ts";
-import { fixtureKey } from "../../../packages/core/src/fixtures.ts";
+import { fixtureKey, matchFixture } from "../../../packages/core/src/fixtures.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import type { Instant, JobId } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
@@ -18,6 +18,7 @@ import type { ScenarioDeps, ScenarioRuns, ScenarioWorkspace } from "../../../pac
 import type { SqliteStore } from "../../../packages/core/src/store.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import type { HouseTarget, HouseWorkPort } from "../../../packages/house/src/runner.ts";
+import { invoiceFixtureFrozenCases } from "../../../packages/verifier/frozen-cases.ts";
 
 /** The fixture every judge scenario opens on: the repository and issue its registry entry names. */
 export type ScenarioFixture = { readonly repository: string; readonly issueNumber: number };
@@ -28,6 +29,10 @@ export type ScenarioRouting = {
 	readonly devEnabled: boolean;
 	/** The fixture the runs open on, or null when this deployment does not carry it. */
 	readonly fixture: ScenarioFixture | null;
+	/** The repository the App forks every run visitor from. The scenario fixture must be on this repository. */
+	readonly forkSource: string;
+	/** The fixture a job opened on a fork of `forkRepository` freezes, as the core's OpenJob resolves it. */
+	readonly forkedFixture: (forkRepository: string, issueNumber: number) => ScenarioFixture | null;
 	/** Provisions the run's own visitor for one start: its VISITORS_DAY slot, and its fork where the App makes one. */
 	readonly provision: (requester: VisitorRow) => Promise<DemoVisitorResult>;
 	/** The deps one run uses, bound to the run's own visitor. */
@@ -45,6 +50,10 @@ export type ScenarioComposition = {
 	readonly now: () => Instant;
 	readonly devEnabled: boolean;
 	readonly fixture: ScenarioFixture | null;
+	/** The deployment's fixture registry, the one the core opens jobs against. */
+	readonly fixtures: readonly FixtureContract[];
+	/** The repository the App forks each run visitor from. */
+	readonly forkSource: string;
 	readonly provision: (requester: VisitorRow) => Promise<DemoVisitorResult>;
 };
 
@@ -54,12 +63,21 @@ export function scenarioRoutingFor(composition: ScenarioComposition): ScenarioRo
 		runs: composition.runs,
 		devEnabled: composition.devEnabled,
 		fixture: composition.fixture,
+		forkSource: composition.forkSource,
+		forkedFixture: (forkRepository, issueNumber) => {
+			const fixture = matchFixture(composition.fixtures, forkRepository, issueNumber, forkRepository);
+			return fixture === null ? null : { repository: fixture.repository, issueNumber: fixture.issue.number };
+		},
 		provision: composition.provision,
 		depsFor: (runVisitor, fixture) => ({ acquit: composition.acquit, store: composition.store, workspace: composition.workspace,
 			runs: composition.runs, now: composition.now, devEnabled: composition.devEnabled,
 			repository: runVisitor.repository ?? fixture.repository, issueNumber: fixture.issueNumber,
 			onOpened: jobId => defaultJobFunding(composition.store.db, jobId, "card", composition.now()) }),
 	};
+}
+
+function sameFixture(a: ScenarioFixture | null, b: ScenarioFixture): boolean {
+	return a !== null && a.repository === b.repository && a.issueNumber === b.issueNumber;
 }
 
 /** The registry entry a key names, as the scenarios' fixture, or null when the deployment does not carry it. */
@@ -85,6 +103,10 @@ async function startReply(routing: ScenarioRouting, requester: VisitorRow, name:
 	if (scenarioNeedsDev(name) && !routing.devEnabled) return refused(403, "DEV_DISABLED", "Set ACQUIT_DEV=1 when starting the API.");
 	const fixture = routing.fixture;
 	if (fixture === null) return refused(503, "SCENARIO_FIXTURE_MISSING", "The deployment does not carry the fixture the judge scenarios open on.");
+	// A visitor's fork is made from the forkSource alone, so a fixture on any other repository could never be the one a run opens.
+	if (fixture.repository !== routing.forkSource) {
+		return refused(503, "SCENARIO_FIXTURE_MISMATCH", "The scenario fixture is not on the repository the App forks visitors from.");
+	}
 	// The place is reserved before anything is provisioned or opened, so a refused start costs no visitor and no job.
 	const admitted = routing.runs.admit(requester.id);
 	if (admitted.kind === "REFUSED") return refused(admitted.code === "SCENARIO_RUNNING_LIMIT" ? 429 : 503, admitted.code);
@@ -101,6 +123,13 @@ async function startReply(routing: ScenarioRouting, requester: VisitorRow, name:
 		return refused(503, "DEMO_NOT_CONFIGURED", "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through.");
 	}
 	if (provisioned.kind === "FAILED") { admitted.slot.release(); return refused(502, "DEMO_REPOSITORY_FAILED", provisioned.detail); }
+	// A fork opens the job on the repository the App made, and the core resolves that fork to one registered fixture.
+	// The run must open on the scenario's fixture, so a different resolution is refused before the open.
+	const fork = provisioned.visitor.repository;
+	if (fork !== null && !sameFixture(routing.forkedFixture(fork, fixture.issueNumber), fixture)) {
+		admitted.slot.release();
+		return refused(503, "SCENARIO_FIXTURE_MISMATCH", "A visitor's fork opens on another registered fixture than the scenario's.");
+	}
 	try {
 		const started = await startScenario(routing.depsFor(provisioned.visitor, fixture), name, provisioned.visitor, requester.id, admitted.slot);
 		return { status: 201, body: { scenarioId: started.run.id, jobId: started.run.jobId } };
@@ -130,7 +159,7 @@ export async function scenarioReply(routing: ScenarioRouting, visitor: VisitorRo
 function frozenSuiteCompatible(workDir: string, frozenTestPath: string): boolean {
 	if (frozenTestPath !== FROZEN_TEST_PATH) return false;
 	const path = join(workDir, frozenTestPath);
-	return existsSync(path) && frozenSuiteMatchesCorpus(readFileSync(path, "utf8"));
+	return existsSync(path) && frozenSuiteMatchesCorpus(readFileSync(path, "utf8"), invoiceFixtureFrozenCases);
 }
 
 /**

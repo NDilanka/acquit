@@ -94,20 +94,27 @@ export function frozenTests(): string {
 	return ["import { it, expect } from 'vitest';", "import { formatTotal } from '../src/money';", ...cases, ""].join("\n");
 }
 
-const VISIBLE_CASE = /it\('case \d+', \(\) => \{ expect\(formatTotal\(\[([^\]]*)\], '([A-Z]{3})'\)\)\.toBe\('([^']*)'\)/g;
+/** One frozen case in the verifier's extracted shape: the export it exercises, its arguments, and its expected value. */
+export type FrozenCase = { readonly target: { readonly module: string; readonly export: string }; readonly args: readonly unknown[]; readonly expected: string };
+
+/** The visible rows as the verifier extracts them from the frozen suite: the same target, arguments, and expected values. */
+export function frozenCorpusCases(): readonly FrozenCase[] {
+	return FROZEN_ROWS.map(row => ({ target: { module: "src/money.ts", export: "formatTotal" },
+		args: [row.amounts.map(amount => ({ amount })), row.currency], expected: row.expected }));
+}
 
 /**
- * Whether a checkout's frozen suite carries the score card's visible rows, in order, and imports the
- * formatter the trees write. A deployment's fixture that differs here is not the one the trees were written for.
+ * Whether a checkout's frozen suite is the one the trees were written for: it imports the formatter the trees
+ * write, and the cases `extractCases` (the verifier's own extractor) reads from it match the visible rows by
+ * content, in order. Test names are not part of the contract; an extractor that refuses the suite refuses it here.
  */
-export function frozenSuiteMatchesCorpus(suite: string): boolean {
-	const rows = [...suite.matchAll(VISIBLE_CASE)].map(match => ({
-		amounts: [...match[1].matchAll(/amount: ([0-9.]+)/g)].map(amount => Number(amount[1])),
-		currency: match[2],
-		expected: match[3],
-	}));
-	const wanted = FROZEN_ROWS.map(row => ({ amounts: [...row.amounts], currency: row.currency, expected: row.expected }));
-	return JSON.stringify(rows) === JSON.stringify(wanted) && /import \{ formatTotal \} from ['"]\.\.\/src\/money['"]/.test(suite);
+export function frozenSuiteMatchesCorpus(suite: string,
+	extractCases: (source: string) => readonly { readonly target: unknown; readonly args: unknown; readonly expected: unknown }[]): boolean {
+	if (!/import \{ formatTotal \} from ['"]\.\.\/src\/money['"]/.test(suite)) return false;
+	let cases: readonly { readonly target: unknown; readonly args: unknown; readonly expected: unknown }[];
+	try { cases = extractCases(suite); } catch { return false; }
+	const extracted = cases.map(({ target, args, expected }) => ({ target, args, expected }));
+	return JSON.stringify(extracted) === JSON.stringify(frozenCorpusCases());
 }
 
 function writeFiles(repo: string, files: Files): void {
