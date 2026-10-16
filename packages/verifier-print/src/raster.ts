@@ -79,6 +79,34 @@ export function ringEdges(ring: Ring): Segment[] {
 	});
 }
 
+export function fillRings(grid: Grid, rings: readonly Ring[]): void {
+	fillEdges(grid, rings.flatMap(ring => ringEdges(ring)));
+}
+
+export function translateRings(rings: readonly Ring[], dx: number, dy: number): Ring[] {
+	return rings.map(ring => ring.map(([x, y]): [number, number] => [x + dx, y + dy]));
+}
+
+export function ringsBox(rings: readonly Ring[]): Rect {
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const ring of rings) {
+		for (const [x, y] of ring) {
+			minX = Math.min(minX, x);
+			minY = Math.min(minY, y);
+			maxX = Math.max(maxX, x);
+			maxY = Math.max(maxY, y);
+		}
+	}
+	return { minX, minY, maxX, maxY };
+}
+
+export function rectRing(rect: Rect): Ring {
+	return [[rect.minX, rect.minY], [rect.maxX, rect.minY], [rect.maxX, rect.maxY], [rect.minX, rect.maxY]];
+}
+
 export function cellCount(grid: Grid): number {
 	let count = 0;
 	for (const value of grid.on) count += value;
