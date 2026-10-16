@@ -116,6 +116,8 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.
 
+Two fields carry a job's commit-then-reveal for its AI-drafted per-job hidden cases. A job whose approved draft froze under a seal serves `job.contract.sealedHiddenCases: { digest }` from freeze on. The digest is sha256 over the salt, a newline, and the canonical JSON of the cases, with object keys in UTF-16 code-unit order. A job that runs a fixture's curated cases alone has no `sealedHiddenCases` key. `job.hiddenReveal` is `null` until the job closes (`PAID`, `REFUNDED`, or `CLOSED`). After close it is `{ cases, salt, digest }` on a sealed job: `cases` are the approved per-job cases (`id`, `target`, `args`, `expected`, with the citation left out), `salt` is the 64-hex salt, and `digest` equals `job.contract.sealedHiddenCases.digest`. Recomputing that digest from `cases` and `salt` must give the same value. A fixture's curated cases never appear in `hiddenReveal`.
+
 ## Work repo credentials (operator run and submit)
 
 `acquit run` clones the job's work repo and pushes the agent's commit there, and `acquit submit`
