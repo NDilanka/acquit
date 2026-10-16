@@ -595,6 +595,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { jobs: result.ledger.jobs, now: clock.now() });
 		return;
 	}
+	if (url.pathname === "/api/platform/tables" && method === "GET") {
+		// The platform dashboards' relational tables: the same platform-only gate as the ledger, and
+		// no other reader. Read-only projection of the stored rows; nothing here writes.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		const result = await acquit.query(current.actor, { type: "PlatformTables" });
+		if (result.kind !== "PLATFORM_TABLES") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { tables: result.tables, now: clock.now() });
+		return;
+	}
 	if (url.pathname === "/api/ask-ledger/tools" && method === "GET") {
 		// The ledger agent's tool list: the closed read-only set, with the model it runs on and
 		// whether a usable provider key sits in process. The platform role alone holds it.

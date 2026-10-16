@@ -13,6 +13,7 @@ import type {
   PayoutRow,
   PlatformJobLedger,
   PlatformSignedInResponse,
+  PlatformTables,
   ReceiptRow,
   ScopingApproveResponse,
   ScopingResponse,
@@ -106,6 +107,7 @@ export const api = {
   payouts: () => request<{ payouts: PayoutRow[] }>("GET", "/api/me/payouts"),
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
   platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
+  platformTables: () => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables"),
   loadStudioLayout: (dashboard: string) =>
     request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),
   saveStudioLayout: (dashboard: string, state: string) =>

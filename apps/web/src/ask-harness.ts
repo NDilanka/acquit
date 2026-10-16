@@ -102,7 +102,7 @@ function honestDelegate(
       if (ranOk && !unplaced) return result;
       const head = unplaced
         ? `The delegated widget ${widgetId} is not on the dashboard's grid with a placement of its own`
-        : "The widget delegate did not complete";
+        : "The delegate did not complete";
       const detail =
         (ranOk && runs.failures.get(call.toolCallId)) ||
         (result.success ? result.response : result.issues.map((issue) => issue.message).join("; "));
@@ -222,8 +222,9 @@ function dashboardAdd(
 }
 
 /**
- * The dashboard's harness: the ledger agent fronting the conversation, and Studio's widget agent as
- * its delegate. Both run on the one adapter, so every model turn goes through the app's own route.
+ * The dashboard's harness: the ledger agent fronting the conversation, and Studio's widget, data, and
+ * page agents as its delegates. All run on the one adapter, so every model turn goes through the app's
+ * own route.
  */
 export function createAskLedgerHarness(
   studio: AgStudioApi,
@@ -247,7 +248,7 @@ export function createAskLedgerHarness(
         description: "Answers questions about Acquit's escrow ledger and PayPal's view of it, from read-only tools.",
         instructions: (ctx) => askInstructions(widgetCatalogue(ctx.api)),
         maxTurns: ASK_MAX_TURNS,
-        tools: (ctx) => [...ledgerTools(ctx.api), honestDelegate(ctx.tools.delegateTo(["widget"]), { outcomes, failures }, ctx.api, ctx.studio)],
+        tools: (ctx) => [...ledgerTools(ctx.api), honestDelegate(ctx.tools.delegateTo(["widget", "data", "page"]), { outcomes, failures }, ctx.api, ctx.studio)],
         adapter,
       }),
       directLlmRunner({
@@ -262,6 +263,17 @@ export function createAskLedgerHarness(
         // The widget agent's own tools take the type and widget ids as strings anyway.
         schema: (s) =>
           s.object({ widgetType: s.string(), widgetId: s.string(), pageId: s.string().optional() }),
+      }),
+      directLlmRunner({ ...builtIn.data, adapter }),
+      directLlmRunner({
+        ...builtIn.page,
+        adapter,
+        // The page agent's add_widget is Studio's own tool, the same one the widget agent gets, so it
+        // takes the same dashboard guard and the same rollback.
+        tools: (ctx, params) =>
+          (builtIn.page.tools?.(ctx, params) ?? []).map((tool) =>
+            tool.name === "add_widget" ? dashboardAdd(tool, deps?.dashboard, ctx.api, ctx.studio, deps) : tool,
+          ),
       }),
     ],
     primary: ASK_AGENT_ID,

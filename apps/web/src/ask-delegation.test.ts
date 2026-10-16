@@ -10,7 +10,17 @@ import { stacked } from "./studio-data.ts";
 // symbol with test doubles, so no DOM, licence, or live model is involved. Every model turn rides
 // the injected fetch, exactly as the app's route would carry it.
 
-type MockCatalogueEntry = { type: string; name: string; description: string; usage?: string; configuration?: string };
+type MockCatalogueEntry = {
+  type: string;
+  name: string;
+  description: string;
+  usage?: string;
+  configuration?: string;
+  sizing?: { min: { width: number; height: number }; default: { width: number; height: number } };
+};
+
+// The page agent's catalogue text reads each entry's sizing, so a catalogue entry without it throws.
+const SIZING = { min: { width: 20, height: 20 }, default: { width: 30, height: 40 } };
 
 type MockTrack = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
 
@@ -33,6 +43,7 @@ const HELD_CATALOGUE: MockCatalogueEntry[] = [
     description: "Total escrow held.",
     usage: "When the reader asks how much is held.",
     configuration: "Map one numeric value.",
+    sizing: SIZING,
   },
 ];
 
@@ -85,6 +96,15 @@ function mockStudioApi(
       viewSchema: () => tool("view_schema", "view the schema", async () => ok("{}")),
       addWidgetFilter: () => tool("add_widget_filter", "filter a widget", async () => ok("ok")),
       removeWidgetFilter: () => tool("remove_widget_filter", "unfilter a widget", async () => ok("ok")),
+      // The data and page agents build their tool lists from these; the tests only need them present.
+      executeQuery: () => tool("execute_query", "run a query", async () => ok("{}")),
+      createExpression: () => tool("create_expression", "add a calculated column", async () => ok("{}")),
+      updateExpression: () => tool("update_expression", "change a calculated column", async () => ok("{}")),
+      deleteExpression: () => tool("delete_expression", "remove a calculated column", async () => ok("{}")),
+      viewPage: () => tool("view_page", "view the page", async () => ok("{}")),
+      addPageFilter: () => tool("add_page_filter", "filter the page", async () => ok("ok")),
+      removePageFilter: () => tool("remove_page_filter", "unfilter the page", async () => ok("ok")),
+      positionWidget: () => tool("position_widget", "move a widget", async () => ok("ok")),
       addWidget: () =>
         tool("add_widget", "add a widget", async (call) => {
           const args = call.args as { widgetId?: string; type?: string } & Partial<Record<keyof MockTrack, unknown>>;
@@ -374,6 +394,71 @@ test("a child that adds a widget and then fails leaves no widget behind, and the
   assert.match(JSON.stringify(parentBodies[1]), /removed/i, "the ledger agent's next turn carried the rollback");
   const last = session.messages.filter((m) => m.role === "assistant").at(-1);
   assert.ok(last?.parts.some((p) => p.type === "text" && p.text === REPLY), "the reader's final word is the failure reply");
+});
+
+const delegateTo = (id: "data" | "page", instructions: string): Answer =>
+  call("call-1", "delegate_to", { type: { id }, instructions });
+
+test("a delegated data question runs the built-in data agent and returns its answer", async () => {
+  const { api } = mockStudioApi([]);
+  const { fetch, childBodies } = scriptedFetch([delegateTo("data", "Which operator holds the most escrow?"), text("Operator alpha holds the most.")], [
+    call("child-1", "complete_task", { summary: "Operator alpha holds the most escrow, $378.00.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Which operator holds the most escrow?");
+  await settle(session);
+  const result = delegateResult(session);
+  assert.equal(result?.success, true);
+  assert.equal(result?.response, "Operator alpha holds the most escrow, $378.00.");
+  assert.ok(childBodies[0]?.instructions?.includes("You are a data analyst."), "the delegate ran the built-in data agent");
+});
+
+test("a delegated page change runs the built-in page agent and returns its summary", async () => {
+  const { api } = mockStudioApi([]);
+  const { fetch, childBodies } = scriptedFetch([delegateTo("page", "Move the held widget to the top row."), text("Moved it.")], [
+    call("child-1", "complete_task", { summary: "Moved the held widget to the top row.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Move the held widget to the top.");
+  await settle(session);
+  const result = delegateResult(session);
+  assert.equal(result?.success, true);
+  assert.equal(result?.response, "Moved the held widget to the top row.");
+  assert.ok(childBodies[0]?.instructions?.includes("You are the page manager."), "the delegate ran the built-in page agent");
+});
+
+test("a page change that adds another dashboard's widget type is refused", async () => {
+  const { api, state } = mockStudioApi([
+    ...HELD_CATALOGUE,
+    { type: "acquit-paid-out", name: "acquit-paid-out", description: "Total paid out.", usage: "...", configuration: "...", sizing: SIZING },
+  ]);
+  const { fetch, childBodies } = scriptedFetch([delegateTo("page", "Add a paid-out widget."), text("Could not add it.")], [
+    call("child-1", "add_widget", { widgetId: "earnings-1", type: "acquit-paid-out", xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 }),
+    call("child-2", "complete_task", { summary: "I could not add the widget: that type is not on this dashboard.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch, dashboard: "escrow" });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Add a paid-out widget.");
+  await settle(session);
+  assert.ok(childBodies.length >= 2, "the page agent reached its add_widget call");
+  assert.equal(state.pages[0].widgets["earnings-1"], undefined, "the foreign widget was never added to the escrow dashboard");
+});
+
+test("a data delegate that dies reaches the ledger agent as a failure, not a success", async () => {
+  const { api } = mockStudioApi([]);
+  const { fetch, parentBodies } = scriptedFetch([delegateTo("data", "Which operator holds the most escrow?"), text("The question was not answered.")], [
+    providerFailure(),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Which operator holds the most escrow?");
+  await settle(session);
+  const result = delegateResult(session);
+  assert.equal(result?.success, false, "a data run that died is not a success");
+  assert.match(result?.issues?.[0]?.message ?? "", /^The delegate did not complete/, "the failure names the delegate, not the widget agent");
+  assert.doesNotMatch(JSON.stringify(parentBodies[1] ?? {}), /widget delegate/, "the ledger agent's next turn does not blame the widget agent");
 });
 
 test("the stacked narrow layout leaves room for the receipt card's caption", () => {

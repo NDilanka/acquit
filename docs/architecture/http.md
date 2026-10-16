@@ -113,6 +113,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 | GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
+| GET | `/api/platform/tables` | `{ tables: { jobs, bids, verdicts, ledger_entries, paypal_events, operators, clients }, now }`. Each table is an array of rows keyed for the escrow dashboard's relationships, with money in integer cents. Platform role only: `401` without a session, `403 { error: "PLATFORM_ONLY" }` for any other role. Read-only |
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.
 

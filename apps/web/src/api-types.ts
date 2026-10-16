@@ -212,6 +212,98 @@ export type PlatformJobLedger = {
   readonly attempts: readonly PlatformAttempt[];
 };
 
+/** The platform's relational tables in `GET /api/platform/tables`. Mirrored from packages/core/src/platform.ts. Money is integer cents. */
+export type PlatformStage = "1 Posted" | "2 Bid" | "3 Funded" | "4 Verified" | "5 Paid" | "6 Refunded" | "7 Closed";
+
+export type PlatformJobRow = {
+  readonly jobId: string;
+  readonly title: string;
+  readonly tenant: string | null;
+  readonly clientId: string;
+  readonly status: JobStatus;
+  readonly escrow: "NONE" | "HELD" | "RELEASED" | "REFUNDED";
+  readonly stage: PlatformStage;
+  readonly operatorId: string | null;
+  readonly operatorHandle: string | null;
+  readonly openedAt: Instant;
+  readonly releasedAt: Instant | null;
+  readonly bidCount: number;
+  readonly attemptCount: number;
+  readonly grossCents: number;
+  readonly heldCents: number;
+  readonly releasedCents: number;
+  readonly feeCents: number;
+  readonly refundedCents: number;
+};
+
+export type PlatformBidRow = {
+  readonly bidId: string;
+  readonly jobId: string;
+  readonly operatorId: string;
+  readonly handle: string;
+  readonly kind: "INDEPENDENT" | "HOUSE";
+  readonly status: string;
+  readonly priceCents: number;
+  readonly etaHours: number;
+  readonly placedAt: Instant;
+};
+
+export type PlatformVerdictRow = {
+  readonly verdictId: string;
+  readonly jobId: string;
+  readonly ordinal: number;
+  readonly result: "VERIFIED" | "REJECTED";
+  readonly verified: 0 | 1;
+  readonly tamper: 0 | 1;
+  readonly reasonCount: number;
+  readonly at: Instant;
+};
+
+export type PlatformLedgerEntryRow = {
+  readonly entryId: string;
+  readonly jobId: string;
+  readonly kind: LedgerLine["kind"];
+  readonly cents: number;
+  readonly at: Instant;
+  readonly captureId: string | null;
+  readonly operatorId: string | null;
+  readonly processorCents: number | null;
+  readonly acquitCents: number | null;
+};
+
+export type PlatformPayPalEventRow = {
+  readonly captureId: string;
+  readonly jobId: string;
+  readonly orderId: string | null;
+  readonly merchant: string;
+  readonly state: "CAPTURED" | "RELEASED" | "REFUNDED";
+  readonly grossCents: number;
+  readonly refundId: string | null;
+  readonly refundedCents: number | null;
+  readonly payoutItemId: string | null;
+  readonly releasedAt: Instant | null;
+};
+
+export type PlatformOperatorRow = {
+  readonly operatorId: string;
+  readonly handle: string;
+  readonly kind: "INDEPENDENT" | "HOUSE";
+  readonly payoutReadiness: "NOT_STARTED" | "AWAITING_CONSENT" | "READY" | null;
+  readonly paidReceipts: number;
+};
+
+export type PlatformClientRow = { readonly clientId: string; readonly jobCount: number };
+
+export type PlatformTables = {
+  readonly jobs: readonly PlatformJobRow[];
+  readonly bids: readonly PlatformBidRow[];
+  readonly verdicts: readonly PlatformVerdictRow[];
+  readonly ledger_entries: readonly PlatformLedgerEntryRow[];
+  readonly paypal_events: readonly PlatformPayPalEventRow[];
+  readonly operators: readonly PlatformOperatorRow[];
+  readonly clients: readonly PlatformClientRow[];
+};
+
 /** `GET /api/jobs/:id`, and `POST /api/jobs/:id/clock` after the job's own time moved. */
 export type JobResponse = { readonly job: JobView; readonly handles: Readonly<Record<string, string>>; readonly now: Instant };
 
