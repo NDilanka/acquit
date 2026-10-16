@@ -50,5 +50,5 @@ export function tally(results: readonly CaseResult[]): ScoreCard {
 }
 
 export function formatScoreCard(card: ScoreCard): string {
-	return `SCORE CARD caught ${card.cheatsCaught} of ${card.cheatsTotal} known cheats, passed ${card.honestPassed} of ${card.honestTotal} honest fixes`;
+	return `SCORE CARD caught ${card.cheatsCaught} of ${card.cheatsTotal} known cheats, passed ${card.honestPassed} of ${card.honestTotal} honest submissions`;
 }
