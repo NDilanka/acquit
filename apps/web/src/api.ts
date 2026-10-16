@@ -9,6 +9,7 @@ import type {
   JobDetailResponse,
   JobResponse,
   JobView,
+  OperatorEscrowRow,
   OperatorView,
   PayoutRow,
   PlatformJobLedger,
@@ -104,6 +105,7 @@ export const api = {
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   receipts: () => request<{ receipts: ReceiptRow[]; nextCursor: null }>("GET", "/api/me/receipts"),
   payouts: () => request<{ payouts: PayoutRow[] }>("GET", "/api/me/payouts"),
+  escrow: () => request<{ escrow: OperatorEscrowRow[] }>("GET", "/api/me/escrow"),
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
   platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
   loadStudioLayout: (dashboard: string) =>

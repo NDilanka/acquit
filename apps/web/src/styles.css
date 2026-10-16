@@ -156,6 +156,24 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .jobline { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .jobline a { text-decoration: none; }
 .bidpane { border-top: 1px solid var(--line); background: #fbfaf7; }
+.ws { margin-top: 26px; }
+.ws > h2 { font-size: 16px; margin: 0 0 10px; }
+.work-next { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.ws-earn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.ws-earn .card { margin-bottom: 0; }
+.ws-earn .big { font-size: 24px; font-weight: 600; margin: 4px 0; }
+.ws-earn small { display: block; }
+.receipt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.receipt-row > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.confirm { margin: 10px 0 16px; border-color: var(--green-line); background: var(--green-bg); }
+.confirm-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.confirm-kvs { margin: 10px 0 0; grid-template-columns: 180px 1fr; }
+.confirm-kvs dt { color: var(--ink-2); }
+@media (max-width: 640px) {
+  .ws-earn { grid-template-columns: minmax(0, 1fr); }
+  .receipt-row { grid-template-columns: minmax(0, 1fr); }
+  .bidpane .row3 { grid-template-columns: minmax(0, 1fr); }
+}
 
 .scrim { position: fixed; inset: 0; background: rgba(17, 21, 18, 0.38); display: grid; place-items: center; z-index: 40; }
 .modal { width: min(480px, calc(100vw - 32px)); background: #fff; border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); padding: 24px; }

@@ -26,6 +26,7 @@ import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
+import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 import { askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, paypalAskReader } from "./ask.ts";
@@ -950,6 +951,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// another operator never appears.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { payouts: operatorPayouts(db, current.actor.operatorId, clientRepository) }); return;
+	}
+	if (url.pathname === "/api/me/escrow" && method === "GET") {
+		// The escrow the operator's release will pay, at the operator's net. The projection carries the
+		// hold, the bid, and the phase, so the number is read from the same rows the jobs list serves.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: null });
+		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { escrow: operatorEscrow(result.jobs, current.actor.operatorId) }); return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
 	if (tokenMatch && method === "POST") {
