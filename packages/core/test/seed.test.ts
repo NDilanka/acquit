@@ -26,7 +26,7 @@ const seedScript = join(root, "scripts/seed.ts");
 function seed(databasePath: string): void {
 	const child = spawnSync(process.execPath, [seedScript], { cwd: root, encoding: "utf8", timeout: 30_000,
 		env: { ...process.env, DATABASE_PATH: databasePath, ACQUIT_DEV: "1", PAYPAL_CLIENT_ID: "test-client",
-			PAYPAL_CLIENT_SECRET: "test-secret", OPERATOR_DEVON_MERCHANT_ID: merchant } });
+			PAYPAL_CLIENT_SECRET: "test-secret", OPERATOR_DEVON_MERCHANT_ID: merchant, OPERATOR_HOUSE_MERCHANT_ID: "sandbox-house" } });
 	assert.equal(child.status, 0, child.stderr);
 }
 
