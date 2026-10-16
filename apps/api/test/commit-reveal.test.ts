@@ -33,7 +33,8 @@ function bootServer(port: number, dbPath: string, scopingDir: string): Promise<R
 		});
 		let out = "";
 		let err = "";
-		const timer = setTimeout(() => rejectBoot(new Error(`server did not boot: ${out} ${err}`)), 30_000);
+		// A server that never prints its banner is killed here: the caller holds no handle to it yet, and its open pipes would keep the runner alive.
+		const timer = setTimeout(() => { child.kill("SIGKILL"); rejectBoot(new Error(`server did not boot: ${out} ${err}`)); }, 30_000);
 		child.stdout.on("data", (chunk: Buffer) => {
 			out += String(chunk);
 			if (out.includes("Acquit API:")) { clearTimeout(timer); resolveBoot(child); }
