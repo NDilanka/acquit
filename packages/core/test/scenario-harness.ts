@@ -9,14 +9,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeAcquit, createAcquit, provisionDemoVisitor } from "../src/acquit.ts";
-import type { Acquit } from "../src/acquit.ts";
+import type { Acquit, DemoVisitorResult } from "../src/acquit.ts";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, CommitSha, Digest, Instant, JobId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId, TestId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
 import type { Bps, CaptureEvidence, FeeQuote, PayPal, PayPalCall, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome } from "../src/paypal.ts";
-import { memoryRuns, startScenario } from "../src/scenarios.ts";
-import type { ScenarioDeps, ScenarioName, ScenarioRun, ScriptedTree } from "../src/scenarios.ts";
+import { boundedRuns, startScenario } from "../src/scenarios.ts";
+import type { ScenarioDeps, ScenarioName, ScenarioRun, ScenarioRuns, ScriptedTree, StartedScenario } from "../src/scenarios.ts";
 import { SqliteStore, openDatabase } from "../src/store.ts";
 import { newVisitorId } from "../src/visitors.ts";
 import type { VisitorRow } from "../src/visitors.ts";
@@ -27,7 +27,7 @@ import { demoFixture, DEMO_REPOSITORY } from "./hidden-fixture.ts";
 const CALLBACK_SECRET = "scenario-callback-secret";
 const merchant = "sandbox-seller" as MerchantId;
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
-const start = instant("2026-10-06T12:00:00Z");
+const EPOCH = instant("2026-10-06T12:00:00Z");
 const PULL_REQUEST = 13;
 
 const sha = (text: string): CommitSha => createHash("sha1").update(text).digest("hex") as CommitSha;
@@ -45,8 +45,14 @@ function verdictFor(tree: ScriptedTree, request: VerifierRunRequest, at: Instant
 	return { result: "REJECTED", ...common, reasons, reasonsTruncated: 0 };
 }
 
+/**
+ * A PayPal fake that answers as the live client does for the two funding sources. A card order is captured
+ * when it is created, so its order reads as completed. A checkout order reads PENDING until a buyer approves
+ * it, and nothing in these scenarios approves one.
+ */
 function fakePayPal(now: () => Instant): PayPal {
 	const quotes = new Map<string, FeeQuote>();
+	const cardOrders = new Set<string>();
 	const quoteOf = (key: string): FeeQuote => {
 		const quote = quotes.get(key);
 		if (!quote) throw new Error(`no order for ${key}`);
@@ -63,6 +69,7 @@ function fakePayPal(now: () => Instant): PayPal {
 			if (call.kind === "CREATE_ORDER") {
 				const orderId = `ORDER-${call.jobId}` as OrderId;
 				quotes.set(orderId, call.quote);
+				if (call.fundingMode === "card") cardOrders.add(orderId);
 				return { kind: "CONFIRMED", observation: { kind: "ORDER_CREATED", orderId, approveUrl: "https://www.sandbox.paypal.com/checkoutnow?token=ORDER" } };
 			}
 			if (call.kind === "CAPTURE") return { kind: "CONFIRMED", observation: { kind: "CAPTURE_COMPLETED", capture: capture(call.orderId, call.payee) } };
@@ -86,18 +93,39 @@ function fakePayPal(now: () => Instant): PayPal {
 		},
 		async reconcile(): Promise<RemoteOutcome> { return { kind: "NOT_FOUND" }; },
 		async getOrder(orderId: OrderId, payee: MerchantId): Promise<RemoteOutcome> {
+			if (!cardOrders.has(orderId)) return { kind: "PENDING", checkAt: now() };
 			return { kind: "CONFIRMED", observation: { kind: "CAPTURE_COMPLETED", capture: capture(orderId, payee) } };
 		},
 		parseWebhook: unused, verifyWebhookDelivery: unused, readResource: unused,
 	} as unknown as PayPal;
 }
 
-export type Harness = { readonly acquit: Acquit; readonly store: SqliteStore; readonly deps: ScenarioDeps; readonly visitor: VisitorRow; readonly dispose: () => Promise<void>; readonly setClock: (at: Instant) => void };
+export type HarnessOptions = {
+	readonly devEnabled?: boolean;
+	/** Public funding: the deployment's default is checkout, so only a job's own choice can make it a card. */
+	readonly publicFunding?: boolean;
+	/** Answers a scripted tree with another tree, so a test can make a scenario's verdict differ from its name. */
+	readonly treeFor?: (tree: ScriptedTree) => ScriptedTree;
+	/** Holds every verifier verdict until this resolves, so runs stay RUNNING. */
+	readonly verdictGate?: Promise<void>;
+	readonly waitMs?: number;
+};
 
-export async function harness(options: { devEnabled?: boolean } = {}): Promise<Harness> {
+export type Harness = {
+	readonly acquit: Acquit;
+	readonly store: SqliteStore;
+	readonly deps: ScenarioDeps;
+	readonly visitor: VisitorRow;
+	/** Provisions one run visitor the way the API does, with no fork: the run's job opens on the fixture's repository. */
+	readonly provision: (requester: VisitorRow) => Promise<DemoVisitorResult>;
+	readonly dispose: () => Promise<void>;
+	readonly setClock: (at: Instant) => void;
+};
+
+export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const root = await mkdtemp(join(tmpdir(), "acquit-scenarios-"));
 	const path = join(root, "acquit.db");
-	let now = start;
+	let now = EPOCH;
 	const clock = () => now;
 	const treeBySha = new Map<string, ScriptedTree>();
 	let acquit!: Acquit;
@@ -108,10 +136,12 @@ export async function harness(options: { devEnabled?: boolean } = {}): Promise<H
 			const verdict = verdictFor(tree, request, clock());
 			const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report: { kind: "VERDICT", verdict } });
 			const signature = createHmac("sha256", CALLBACK_SECRET).update(body).digest("hex");
-			setImmediate(() => {
+			const answer = () => setImmediate(() => {
 				void acquit.handleVerifierCallback(new Request("http://acquit.test/api/verifier/callback", { method: "POST",
 					headers: { "x-acquit-signature": `sha256=${signature}` }, body }));
 			});
+			if (options.verdictGate) void options.verdictGate.then(answer);
+			else answer();
 		},
 		async parseCallback(request: Request) {
 			const raw = await request.text();
@@ -123,23 +153,27 @@ export async function harness(options: { devEnabled?: boolean } = {}): Promise<H
 	};
 	acquit = createAcquit({ databaseUrl: path, fixtures: [demoFixture()], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
-			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => "card" },
+			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
 		github: { appId: "", privateKey: "", organization: "" },
 		adapters: { paypal: fakePayPal(clock), github: createFakeGitHubApp() } });
 	const store = new SqliteStore(path);
-	const provisioned = await provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test", fork: async () => ({ kind: "NO_APP" }) });
+	const noFork = async (): Promise<DemoVisitorResult> => provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test",
+		fork: async () => ({ kind: "NO_APP" }) });
+	const provisioned = await noFork();
 	if (provisioned.kind !== "CREATED") throw new Error(`the visitor was not created: ${provisioned.kind}`);
 	const workspace = {
 		async push(jobId: JobId, tree: ScriptedTree): Promise<CommitSha> {
+			const scripted = options.treeFor?.(tree) ?? tree;
 			const commit = sha(`${tree}:${jobId}`);
-			treeBySha.set(commit, tree);
+			treeBySha.set(commit, scripted);
 			return commit;
 		},
 	};
-	const deps: ScenarioDeps = { acquit, store: { readJob: id => store.readJob(id), db: openDatabase(path) }, workspace, runs: memoryRuns(),
-		now: clock, devEnabled: options.devEnabled ?? true, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: 20_000 };
-	return { acquit, store, deps, visitor: provisioned.visitor, setClock: at => { now = at; },
+	const runs: ScenarioRuns = boundedRuns();
+	const deps: ScenarioDeps = { acquit, store: { readJob: id => store.readJob(id), db: openDatabase(path) }, workspace, runs,
+		now: clock, devEnabled: options.devEnabled ?? true, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
+	return { acquit, store, deps, visitor: provisioned.visitor, provision: async () => noFork(), setClock: at => { now = at; },
 		dispose: async () => {
 			deps.store.db.close();
 			store.close();
@@ -148,9 +182,18 @@ export async function harness(options: { devEnabled?: boolean } = {}): Promise<H
 		} };
 }
 
+/**
+ * Starts one scenario the way the route does: the store admits the requester first, then the run starts
+ * on the visitor it names. The job opens on that visitor's repository, or the fixture's own when it has none.
+ */
+export async function start(h: Harness, name: ScenarioName, visitor: VisitorRow = h.visitor): Promise<StartedScenario> {
+	const admitted = h.deps.runs.admit(h.visitor.id);
+	if (admitted.kind === "REFUSED") throw new Error(`admission refused: ${admitted.code}`);
+	return startScenario({ ...h.deps, repository: visitor.repository ?? DEMO_REPOSITORY }, name, visitor, h.visitor.id, admitted.slot);
+}
+
 export async function drive(h: Harness, name: ScenarioName): Promise<ScenarioRun> {
-	const started = await startScenario(h.deps, name, h.visitor);
-	return started.finished;
+	return (await start(h, name)).finished;
 }
 
 export function assertTimings(run: ScenarioRun): void {

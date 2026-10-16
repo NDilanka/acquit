@@ -1,25 +1,30 @@
 // The scenario routes' server side, driven with the core's in-process harness: the scripted verifier, the
-// fake PayPal, and the fake GitHub app. POST starts a run and GET polls it, and the visibility, dev gating,
-// and fixture rules are the route's own. No network, no child process, no GitHub or PayPal call.
+// fake PayPal, and the fake GitHub app. POST starts a run on a visitor of its own and GET polls it, and the
+// visibility, dev gating, fixture, admission, and workspace rules are the route's own. No network, no child
+// process, no GitHub or PayPal call.
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertTimings, harness } from "../../../packages/core/test/scenario-harness.ts";
+import { assertTimings, harness, start } from "../../../packages/core/test/scenario-harness.ts";
 import type { Harness } from "../../../packages/core/test/scenario-harness.ts";
+import { demoFixture, DEMO_REPOSITORY } from "../../../packages/core/test/hidden-fixture.ts";
 import type { CommitSha, JobId } from "../../../packages/core/src/ids.ts";
-import { startScenario } from "../../../packages/core/src/scenarios.ts";
-import type { ScenarioRun } from "../../../packages/core/src/scenarios.ts";
+import type { ScenarioRun, ScenarioRuns } from "../../../packages/core/src/scenarios.ts";
+import { frozenTests } from "../../../packages/core/src/score-card-trees.ts";
 import { newVisitorId } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import type { HouseWorkPort } from "../../../packages/house/src/runner.ts";
-import { scenarioReply, scriptedWorkspace } from "../src/scenarios.ts";
-import type { ScenarioRouting } from "../src/scenarios.ts";
+import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "../src/scenarios.ts";
+import type { ScenarioComposition, ScenarioRouting } from "../src/scenarios.ts";
 
-function routingOf(h: Harness): ScenarioRouting {
-	return { runs: h.deps.runs, depsFor: () => h.deps };
+const FIXTURE = { repository: DEMO_REPOSITORY, issueNumber: 12 };
+
+function routingOf(h: Harness, overrides: Partial<ScenarioComposition> = {}): ScenarioRouting {
+	return scenarioRoutingFor({ acquit: h.acquit, store: h.deps.store, workspace: h.deps.workspace, runs: h.deps.runs, now: h.deps.now,
+		devEnabled: h.deps.devEnabled, fixture: FIXTURE, provision: h.provision, ...overrides });
 }
 
 /** GET one run through the route until it stops running. */
@@ -34,6 +39,14 @@ async function settle(routing: ScenarioRouting, visitor: VisitorRow, id: string)
 	throw new Error(`run ${id} did not stop`);
 }
 
+/** Holds every running slot of a requester, so the next start meets the running limit. */
+function holdSlots(runs: ScenarioRuns, requesterId: string, count: number): void {
+	for (let index = 0; index < count; index++) {
+		const admitted = runs.admit(requesterId);
+		if (admitted.kind !== "ADMITTED") throw new Error(`admission refused: ${admitted.code}`);
+	}
+}
+
 test("an unknown scenario name is refused as UNKNOWN_SCENARIO", async () => {
 	const h = await harness();
 	try {
@@ -41,7 +54,7 @@ test("an unknown scenario name is refused as UNKNOWN_SCENARIO", async () => {
 	} finally { await h.dispose(); }
 });
 
-test("POST starts verified-and-paid and GET polls the run to DONE, PAID on CLIENT_APPROVAL", async () => {
+test("POST starts verified-and-paid on a visitor of its own, and GET polls the run to DONE, PAID on CLIENT_APPROVAL", async () => {
 	const h = await harness();
 	try {
 		const routing = routingOf(h);
@@ -53,6 +66,8 @@ test("POST starts verified-and-paid and GET polls the run to DONE, PAID on CLIEN
 		const run = await settle(routing, h.visitor, scenarioId);
 		assert.equal(run.state, "DONE");
 		assert.equal(run.jobId, jobId);
+		assert.equal(run.requesterId, h.visitor.id);
+		assert.notEqual(run.visitorId, h.visitor.id);
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit", "approve"]);
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
 		assertTimings(run);
@@ -87,41 +102,147 @@ test("another visitor's run is refused as NOT_FOUND, the same answer an unknown 
 	} finally { await h.dispose(); }
 });
 
-test("dispute-arbiter is refused as DEV_DISABLED when development is off", async () => {
+test("dispute-arbiter is refused as DEV_DISABLED when development is off, and retains no run", async () => {
 	const h = await harness();
 	try {
-		const routing: ScenarioRouting = { runs: h.deps.runs, depsFor: () => ({ ...h.deps, devEnabled: false }) };
+		const routing = routingOf(h, { devEnabled: false });
 		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "dispute-arbiter"),
 			{ status: 403, body: { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." } });
+		assert.equal(h.deps.runs.size(), 0);
 	} finally { await h.dispose(); }
 });
 
-test("a visitor whose deployment has no fixture is answered NO_FIXTURE and starts nothing", async () => {
+test("a deployment without the scenario fixture answers SCENARIO_FIXTURE_MISSING and provisions nothing", async () => {
 	const h = await harness();
 	try {
-		const routing: ScenarioRouting = { runs: h.deps.runs, depsFor: () => null };
+		let provisions = 0;
+		const routing = routingOf(h, { fixture: null, provision: async requester => { provisions++; return h.provision(requester); } });
 		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "verified-and-paid"),
-			{ status: 503, body: { error: "NO_FIXTURE", detail: "The deployment has no fixture for this visitor." } });
+			{ status: 503, body: { error: "SCENARIO_FIXTURE_MISSING", detail: "The deployment does not carry the fixture the judge scenarios open on." } });
+		assert.equal(provisions, 0);
+		assert.equal(h.deps.runs.size(), 0);
 	} finally { await h.dispose(); }
 });
 
-test("the scripted push writes the score card tree the scenario names, over the score card base", async () => {
+test("the scenario fixture is the registry entry its key names, and nothing else", () => {
+	const fixtures = [demoFixture()];
+	assert.deepEqual(scenarioFixtureOf(fixtures, `${DEMO_REPOSITORY}#12`), FIXTURE);
+	assert.equal(scenarioFixtureOf(fixtures, `${DEMO_REPOSITORY}#13`), null);
+	assert.equal(scenarioFixtureOf([], `${DEMO_REPOSITORY}#12`), null);
+});
+
+test("a start the core refuses retains no run, and answers the core's own denial", async () => {
+	const h = await harness();
+	try {
+		const routing = routingOf(h, { fixture: { repository: DEMO_REPOSITORY, issueNumber: 999 } });
+		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "verified-and-paid"), { status: 409, body: { error: "NOT_FOUND" } });
+		assert.equal(h.deps.runs.size(), 0);
+		assert.equal(h.deps.runs.admit(h.visitor.id).kind, "ADMITTED");
+	} finally { await h.dispose(); }
+});
+
+test("a start refused by the visitor-day cap retains no run and answers the cap's own code", async () => {
+	const h = await harness();
+	try {
+		const routing = routingOf(h, { provision: async () => ({ kind: "CAPPED", reason: "CAP_VISITORS_DAY" }) });
+		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "verified-and-paid"), { status: 429, body: { error: "CAP_VISITORS_DAY" } });
+		assert.equal(h.deps.runs.size(), 0);
+		assert.equal(h.deps.runs.admit(h.visitor.id).kind, "ADMITTED");
+	} finally { await h.dispose(); }
+});
+
+test("a sixth start while five of a requester's runs are in flight is refused before a visitor is provisioned", async () => {
+	const h = await harness();
+	try {
+		holdSlots(h.deps.runs, h.visitor.id, 5);
+		let provisions = 0;
+		const routing = routingOf(h, { provision: async requester => { provisions++; return h.provision(requester); } });
+		assert.deepEqual(await scenarioReply(routing, h.visitor, "POST", "verified-and-paid"), { status: 429, body: { error: "SCENARIO_RUNNING_LIMIT" } });
+		assert.equal(provisions, 0);
+	} finally { await h.dispose(); }
+});
+
+test("the public wiring reaches HELD through card funding with the fake PayPal, and completes S1 with development off", async () => {
+	const h = await harness({ devEnabled: false, publicFunding: true, waitMs: 5_000 });
+	try {
+		const routing = routingOf(h, { devEnabled: false });
+		const posted = await scenarioReply(routing, h.visitor, "POST", "verified-and-paid");
+		assert.equal(posted.status, 201);
+		const { scenarioId, jobId } = posted.body as { scenarioId: string; jobId: string };
+		const run = await settle(routing, h.visitor, scenarioId);
+		const funding = run.steps.find(step => step.name === "accept-and-fund");
+		assert.equal(funding?.outcome, "HELD");
+		assert.equal(funding?.label, "PayPal sandbox");
+		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
+		const chosen = h.deps.store.db.prepare("SELECT mode FROM job_funding WHERE job_id = ?").get(jobId) as { mode?: unknown } | undefined;
+		assert.equal(chosen?.mode, "card");
+	} finally { await h.dispose(); }
+});
+
+/** A frozen checkout the way the House prepares one: the fixture's own package, its own suite, and the buggy formatter. */
+async function frozenCheckout(root: string, name: string, suite: string): Promise<string> {
+	const workDir = join(root, name);
+	await mkdir(join(workDir, "tests"), { recursive: true });
+	await mkdir(join(workDir, "src"), { recursive: true });
+	await writeFile(join(workDir, "README.md"), "invoice-app\n");
+	await writeFile(join(workDir, "package.json"), `{"name":"invoice-app","private":true,"type":"module","description":"the fixture's own"}\n`);
+	await writeFile(join(workDir, "tests/totals.test.ts"), suite);
+	await writeFile(join(workDir, "src/money.ts"), "export const base = true;\n");
+	return workDir;
+}
+
+test("the scripted push keeps the frozen package and suite, and writes only the entry's own files", async () => {
 	const h = await harness();
 	const root = await mkdtemp(join(tmpdir(), "acquit-scripted-"));
 	try {
-		const started = await startScenario(h.deps, "deadline-refund", h.visitor);
+		const started = await start(h, "deadline-refund");
 		await started.finished;
 		const jobId = started.run.jobId as JobId;
-		const workDir = join(root, "work");
+		let checkouts = 0;
 		const work: HouseWorkPort = {
-			prepare: async () => ({ workDir }),
+			prepare: async () => ({ workDir: await frozenCheckout(root, `checkout-${checkouts++}`, frozenTests()) }),
 			finalize: async () => ({ commit: "a".repeat(40) as CommitSha, files: [], patch: "" }),
 			remove: () => {},
 		};
 		const workspace = scriptedWorkspace({ work, readJob: id => h.store.readJob(id) });
-		assert.equal(await workspace.push(jobId, "cheat-edit-frozen-test"), "a".repeat(40));
-		assert.match(await readFile(join(workDir, "tests/totals.test.ts"), "utf8"), /toBe\('1\.2'\)/);
-		assert.equal(await readFile(join(workDir, "README.md"), "utf8"), "invoice-app\n");
+
+		assert.equal(await workspace.push(jobId, "honest-reference-table"), "a".repeat(40));
+		const honest = join(root, "checkout-0");
+		assert.match(await readFile(join(honest, "src/money.ts"), "utf8"), /MINOR_UNITS/);
+		assert.equal(await readFile(join(honest, "package.json"), "utf8"), `{"name":"invoice-app","private":true,"type":"module","description":"the fixture's own"}\n`);
+		assert.equal(await readFile(join(honest, "tests/totals.test.ts"), "utf8"), frozenTests());
+		assert.equal(await readFile(join(honest, "README.md"), "utf8"), "invoice-app\n");
+
+		await workspace.push(jobId, "cheat-hardcode-visible-values");
+		const hardcoded = join(root, "checkout-1");
+		assert.match(await readFile(join(hardcoded, "src/money.ts"), "utf8"), /const visible = new Map/);
+		assert.equal(await readFile(join(hardcoded, "package.json"), "utf8"), `{"name":"invoice-app","private":true,"type":"module","description":"the fixture's own"}\n`);
+		assert.equal(await readFile(join(hardcoded, "tests/totals.test.ts"), "utf8"), frozenTests());
+
+		await workspace.push(jobId, "cheat-edit-frozen-test");
+		assert.match(await readFile(join(root, "checkout-2", "tests/totals.test.ts"), "utf8"), /toBe\('1\.2'\)/);
+	} finally {
+		await h.dispose();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a fixture whose visible rows differ from the score card's is refused before any file is written", async () => {
+	const h = await harness();
+	const root = await mkdtemp(join(tmpdir(), "acquit-scripted-"));
+	try {
+		const started = await start(h, "deadline-refund");
+		await started.finished;
+		const jobId = started.run.jobId as JobId;
+		const drifted = frozenTests().replace("toBe('1.25')", "toBe('1.26')");
+		const work: HouseWorkPort = {
+			prepare: async () => ({ workDir: await frozenCheckout(root, "drifted", drifted) }),
+			finalize: async () => { throw new Error("nothing is finalized for an incompatible fixture"); },
+			remove: () => {},
+		};
+		const workspace = scriptedWorkspace({ work, readJob: id => h.store.readJob(id) });
+		await assert.rejects(workspace.push(jobId, "honest-reference-table"), /^Error: SCENARIO_FIXTURE_INCOMPATIBLE/);
+		assert.equal(await readFile(join(root, "drifted", "src/money.ts"), "utf8"), "export const base = true;\n");
 	} finally {
 		await h.dispose();
 		await rm(root, { recursive: true, force: true });
