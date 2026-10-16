@@ -30,6 +30,8 @@ import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 import type { CaptureEvidence, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
+import { CODE_VERTICAL } from "./outcome.ts";
+import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
 
@@ -302,6 +304,8 @@ export type JobRow<S extends JobState = JobState> = {
 	 * moves the row's instants.
 	 */
 	readonly clockShiftMs?: number;
+	/** The judge that decides this job's work. A row stored before the registry has none; storedVertical reads it as code. */
+	readonly vertical?: Vertical;
 	readonly state: S;
 };
 
@@ -379,6 +383,13 @@ type Work = JobRow<WorkState>;
 type Verified = JobRow<VerifiedState>;
 type JobRef = { readonly jobId: JobId };
 
+/** The judged tree a review names. `artifact` is the name; `mergeCommit` is the alias older callers send. */
+type JudgedArtifact = { readonly artifact: CommitSha } | { readonly mergeCommit: CommitSha };
+
+function artifactOf(command: JudgedArtifact): CommitSha {
+	return "artifact" in command ? command.artifact : command.mergeCommit;
+}
+
 function transitionTable(): {
 	OpenJob: Edge<null, { readonly repository: string; readonly issueNumber: number; readonly budget: UsdCents; readonly deliveryEndsAt: Instant }, Open, "CLIENT">;
 	PlaceBid: Edge<Open, JobRef & { readonly price: UsdCents; readonly eta: Hours; readonly agent: AgentId; readonly pitch: string }, Open, "OPERATOR">;
@@ -390,8 +401,8 @@ function transitionTable(): {
 	CaptureCompleted: Edge<Open, JobRef & { readonly capture: CaptureEvidence }, Open | Work, "SYSTEM">;
 	Submit: Edge<Work, JobRef & { readonly sourceCommit: CommitSha }, Work, "OPERATOR">;
 	VerifierFinished: Edge<Work, JobRef & { readonly report: VerifierReport }, Work | Verified, "SYSTEM">;
-	Approve: Edge<Verified, JobRef & { readonly mergeCommit: CommitSha }, Verified, "CLIENT">;
-	Dispute: Edge<Verified, JobRef & { readonly mergeCommit: CommitSha; readonly reason: string }, Verified, "CLIENT">;
+	Approve: Edge<Verified, JobRef & JudgedArtifact, Verified, "CLIENT">;
+	Dispute: Edge<Verified, JobRef & JudgedArtifact & { readonly reason: string }, Verified, "CLIENT">;
 	ResolveDispute: Edge<Verified, JobRef & { readonly verdict: "UPHOLD" | "REWORK" | "REFUND"; readonly note: string }, Verified | Work, "ARBITER">;
 	ReleaseSettled: Edge<JobRow, JobRef & { readonly release: ReleaseEvidence }, JobRow<PaidState> | JobRow, "SYSTEM">;
 	RefundSettled: Edge<JobRow, JobRef & { readonly refund: RefundEvidence }, JobRow<RefundedState> | JobRow, "SYSTEM">;
@@ -639,7 +650,7 @@ function transitionTable(): {
 		Approve: { by: "CLIENT", apply: (row, command, facts) => {
 			// The client approves the artifact the verifier judged, not a moving pull request head.
 			if (row.state.review.phase !== "AWAITING_CLIENT" || facts.now >= row.state.review.endsAt) return "REVIEW_CLOSED";
-			if (command.mergeCommit !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
+			if (artifactOf(command) !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: facts.now } } } },
 				credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
@@ -647,7 +658,7 @@ function transitionTable(): {
 		Dispute: { by: "CLIENT", apply: (row, command, facts) => {
 			// A dispute names the same judged artifact an approval would: a moved head is refused by name.
 			if (row.state.review.phase !== "AWAITING_CLIENT" || facts.now >= row.state.review.endsAt) return "REVIEW_CLOSED";
-			if (command.mergeCommit !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
+			if (artifactOf(command) !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
 			// The review clock pauses here: the row keeps no endsAt in DISPUTED, and wakeAt holds the
 			// arbiter's resolveBy instead, so the old deadline can never release the escrow.
 			return { next: { ...row, version: (row.version + 1) as Version,
@@ -1076,6 +1087,11 @@ export function storedDefinitionOfDone(row: JobRow): DefinitionOfDone | null {
 	return done === null || done === undefined ? null : done as DefinitionOfDone;
 }
 
+/** The judge a stored row belongs to. A row stored before the registry names none, and it is the code vertical. */
+export function storedVertical(row: JobRow): Vertical {
+	return row.vertical ?? CODE_VERTICAL;
+}
+
 /** Where a stored row keeps its book and the raw parsed value exactly as stored. NONE means the state cannot hold one yet; UNREADABLE means the state shape is not recognized. The check path judges this value; storedBook above keeps the API projection's defaults for the same rows. */
 export type StoredBookRaw =
 	| { readonly kind: "NONE" }
@@ -1144,6 +1160,8 @@ export type ContractProjection = {
 
 /** The projection core adds on top of JobView. The web page and the CLI read it through the API JSON. */
 export type JobProjection = JobView & {
+	/** The judge that decides this job's work. The web job page picks its components by it. */
+	readonly vertical: Vertical;
 	/** Null when the row was stored before F3 froze a definition of done. */
 	readonly contract: ContractProjection | null;
 	readonly attempts: JobView["attempts"] & {
@@ -1192,7 +1210,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const used = state.status === "PAID" ? state.receipt.attemptsUsed : history.length + (pending ? 1 : 0);
 	const judged = history.map(attemptView);
 	const done = storedDefinitionOfDone(row);
-	return { id: row.id, title: row.title, status: state.status,
+	return { id: row.id, title: row.title, status: state.status, vertical: storedVertical(row),
 		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
 		// The stored checkout substate while the job waits for its money, so the page names the phase
 		// the row holds instead of guessing from side fields. Null once funding is over.

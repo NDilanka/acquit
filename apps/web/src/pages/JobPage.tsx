@@ -70,6 +70,17 @@ export function JobPage({ id }: { id: string }) {
     );
   }
   if (!job) return <p className="muted">Loading job…</p>;
+  // Only the code vertical has a page here. The API names the vertical; a row stored before it reads as code.
+  const vertical = (job as JobView & { readonly vertical?: string }).vertical ?? "code";
+  if (vertical !== "code") {
+    return (
+      <div className="card pad">
+        <h2>Unsupported vertical</h2>
+        <p>This job is judged by the {vertical} vertical. This page does not show that vertical yet.</p>
+        <Link to="/">Back to jobs</Link>
+      </div>
+    );
+  }
 
   const locked = lockedBid(job);
   const funding = job.status === "OPEN" && job.phase === "FUNDING";
