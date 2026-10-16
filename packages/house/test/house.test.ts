@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -22,6 +22,9 @@ import { modelCallLog, DROID_INSTRUCTION_PATH } from "../../core/src/model.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const ctl = join(root, "packages/ctl/src/main.ts");
+// The seed reads these from the environment and from .env, so each run names them here: a developer's
+// .env or a CI runner without one must not decide whether these tests pass.
+const seedEnv = { PAYPAL_CLIENT_ID: "test-client", PAYPAL_CLIENT_SECRET: "test-secret", OPERATOR_DEVON_MERCHANT_ID: "sandbox-devon" };
 
 // Every fakeDeps call borrows its own temp call-log directory; the exit sweep takes them all back.
 const budgetDirs: string[] = [];
@@ -39,7 +42,7 @@ test("seed run without the House merchant id fails and writes no House operator 
 	const database = join(mkdtempSync(join(tmpdir(), "acquit-house-seed-")), "acquit.db");
 	try {
 		const run = spawnSync(process.execPath, [ctl, "seed-db", "--yes"],
-			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "" } });
+			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ...seedEnv, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "" } });
 		assert.notEqual(run.status, 0, "the seed must fail without OPERATOR_HOUSE_MERCHANT_ID");
 		assert.match(`${run.stdout}\n${run.stderr}`, /OPERATOR_HOUSE_MERCHANT_ID/);
 		assert.ok(!existsSync(database) || !houseOperator(database), "a failed seed writes no house-tsfix operator");
@@ -53,7 +56,7 @@ test("seed writes the configured House merchant, different from Devon's, with 41
 	const configured = "HOUSESEEDMERCHANT";
 	try {
 		const run = spawnSync(process.execPath, [ctl, "seed-db", "--yes"],
-			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: configured } });
+			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ...seedEnv, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: configured } });
 		assert.equal(run.status, 0, `the seed with the House merchant id set must pass: ${run.stderr.slice(0, 300)}`);
 		const db = new DatabaseSync(database, { readOnly: true });
 		try {
@@ -74,7 +77,7 @@ test("migrate applies to an existing database without data loss, and twice chang
 	try {
 		// A database from before the receipts table: seed one, then drop exactly what the migration adds.
 		const seeded = spawnSync(process.execPath, [ctl, "seed-db", "--yes"],
-			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "HOUSESEEDMERCHANT" } });
+			{ encoding: "utf8", timeout: 120_000, env: { ...process.env, ...seedEnv, ACQUIT_DEV: "1", DATABASE_PATH: database, OPERATOR_HOUSE_MERCHANT_ID: "HOUSESEEDMERCHANT" } });
 		assert.equal(seeded.status, 0, `the seed for the migration test must pass: ${seeded.stderr.slice(0, 300)}`);
 		const before = new DatabaseSync(database);
 		const jobsBefore = Number(before.prepare("SELECT COUNT(*) AS n FROM jobs").get()?.n);
@@ -127,7 +130,6 @@ function merchantOf(db: DatabaseSync, operator: string): string | null {
 
 // ---- the runner --------------------------------------------------------------------------------
 
-const suffixFile = "/home/factory-user/repos/acquit/data/trail/house-instruction-suffix.txt";
 const target: HouseTarget = {
 	id: "job_9e0f6b72-1111-4222-8333-444455556666" as JobId, title: "Totals round wrong for 3-decimal currencies",
 	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567" as CommitSha, tenant: null,
@@ -173,8 +175,10 @@ function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overri
 
 test("the House runner pins the provider's model and the CLI default instruction plus the committed suffix", async () => {
 	assert.equal(HOUSE_MODEL_OPENROUTER, "nvidia/nemotron-3-ultra-550b-a55b:free", "the nemotron :free id stays the openrouter path's model");
-	// The committed suffix is byte-identical to the ruling file the mission names.
-	assert.equal(HOUSE_INSTRUCTION_SUFFIX, readFileSync(suffixFile, "utf8").replace(/\n$/, ""));
+	// The ruled suffix is pinned as a literal: the ruling file is gitignored, so CI has no copy to compare.
+	assert.equal(HOUSE_INSTRUCTION_SUFFIX, "Fix the root cause, not only the example in the title. Identify the general rule the bug "
+		+ "violates, find the standard or specification that defines it, and make the code correct for every case that rule covers, "
+		+ "including cases the issue does not mention. Do not leave a case the rule defines on a guessed default. Do not edit tests.");
 	const expected = houseInstruction(defaultInstruction({ title: target.title }));
 	const { deps, plans, deliveries } = fakeDeps();
 	const outcome = await runHouseDelivery(deps, target);
