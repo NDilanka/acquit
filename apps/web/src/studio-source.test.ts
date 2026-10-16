@@ -56,6 +56,7 @@ test("relationships join every table to jobs, a capture to its events, and a rel
   });
   assert.deepEqual(relations, [
     "bids_jobs: bids.jobId -> jobs.jobId many-to-one",
+    "bids_operators: bids.operatorId -> operators.operatorId many-to-one",
     "verdicts_jobs: verdicts.jobId -> jobs.jobId many-to-one",
     "ledger_jobs: ledger_entries.jobId -> jobs.jobId many-to-one",
     "paypal_jobs: paypal_events.jobId -> jobs.jobId many-to-one",

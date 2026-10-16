@@ -26,7 +26,7 @@ export function engineRows(rows: readonly object[]): Record<string, unknown>[] {
 export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<AcquitRegistry> {
   return {
     description:
-      "Acquit's escrow book across every tenant. One row per job in jobs; bids, verdicts, ledger_entries, paypal_events, and clients join to jobs, and jobs join to operators. Money is in dollars. A job's held amount is in escrow only while its status is IN_PROGRESS or VERIFIED. Released, refunded, and fee amounts are settled. A verdict is one judged attempt.",
+      "Acquit's escrow book across every tenant. One row per job in jobs; bids, verdicts, ledger_entries, paypal_events, and clients join to jobs. Each bid joins to the operator who placed it, and each job to the operator it was locked to. Money is in dollars. A job's held amount is in escrow only while its status is IN_PROGRESS or VERIFIED. Released, refunded, and fee amounts are settled. A verdict is one judged attempt.",
     sources: [
       {
         id: "jobs",
@@ -148,6 +148,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
     ],
     relationships: [
       { id: "bids_jobs", source: { tableId: "bids", fieldId: "jobId" }, target: { tableId: "jobs", fieldId: "jobId" }, type: "many-to-one" },
+      { id: "bids_operators", source: { tableId: "bids", fieldId: "operatorId" }, target: { tableId: "operators", fieldId: "operatorId" }, type: "many-to-one" },
       { id: "verdicts_jobs", source: { tableId: "verdicts", fieldId: "jobId" }, target: { tableId: "jobs", fieldId: "jobId" }, type: "many-to-one" },
       { id: "ledger_jobs", source: { tableId: "ledger_entries", fieldId: "jobId" }, target: { tableId: "jobs", fieldId: "jobId" }, type: "many-to-one" },
       { id: "paypal_jobs", source: { tableId: "paypal_events", fieldId: "jobId" }, target: { tableId: "jobs", fieldId: "jobId" }, type: "many-to-one" },
