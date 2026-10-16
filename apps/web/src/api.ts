@@ -9,6 +9,7 @@ import type {
   JobDetailResponse,
   JobResponse,
   JobView,
+  OperatorEscrowRow,
   OperatorView,
   PayoutRow,
   PlatformJobLedger,
@@ -21,6 +22,7 @@ import type {
   SessionUser,
   SignedInResponse,
   UserCommand,
+  VerifierFields,
 } from "./api-types";
 
 export type { SessionUser };
@@ -89,7 +91,7 @@ export const api = {
   users: () => request<{ users: SessionUser[] }>("GET", "/api/users"),
   repos: () => request<{ repos: Repo[] }>("GET", "/api/repos"),
   jobs: (status?: string) =>
-    request<{ jobs: JobView[]; nextCursor: string | null }>(
+    request<{ jobs: (JobView & VerifierFields)[]; nextCursor: string | null }>(
       "GET",
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),
@@ -105,6 +107,7 @@ export const api = {
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   receipts: () => request<{ receipts: ReceiptRow[]; nextCursor: null }>("GET", "/api/me/receipts"),
   payouts: () => request<{ payouts: PayoutRow[] }>("GET", "/api/me/payouts"),
+  escrow: () => request<{ escrow: OperatorEscrowRow[] }>("GET", "/api/me/escrow"),
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
   platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
   platformTables: () => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables"),

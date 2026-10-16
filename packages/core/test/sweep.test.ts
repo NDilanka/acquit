@@ -9,7 +9,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { closeAcquit, createAcquit, createDemoVisitor } from "../src/acquit.ts";
+import { closeAcquit, createAcquit, provisionDemoVisitor } from "../src/acquit.ts";
 import type { Actor } from "../src/acquit.ts";
 import { createFakeGitHubApp, GitHubAppError, unconfiguredGitHubApp } from "../src/github.ts";
 import { instant, parseRequestKey } from "../src/ids.ts";
@@ -30,10 +30,10 @@ const now = instant(new Date().toISOString());
 test("a sweep deletes an expired visitor's repository, marks its row SWEPT, and leaves a live visitor alone", async () => {
 	const store = new SqliteStore(":memory:");
 	const app = createFakeGitHubApp();
-	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old", merchant, now: long });
-	const staying = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: "acquit-forks/demo-live", merchant, now: live });
-	await app.createClientRepo({ repository: source, name: "demo-old" });
-	await app.createClientRepo({ repository: source, name: "demo-live" });
+	const oldFork = await app.createClientRepo({ repository: source, name: "demo-old" });
+	const liveFork = await app.createClientRepo({ repository: source, name: "demo-live" });
+	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: oldFork.repository, repositoryId: oldFork.id, merchant, now: long });
+	const staying = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: liveFork.repository, repositoryId: liveFork.id, merchant, now: live });
 	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
 	assert.deepEqual(report, { swept: [expired.id], repositories: [{ repository: "acquit-forks/demo-old", outcome: "DELETED" }], kept: [] });
 	// The row stays as the record of a visitor that lived: it is marked, not deleted, so the jobs it opened
@@ -124,7 +124,8 @@ test("a swept visitor keeps its operator, credits, and jobs, loses its sessions,
 		// The visitor the API would mint, with the fork the App would make for it and a session per principal.
 		const id = newVisitorId();
 		const forked = await app.createClientRepo({ repository: source, name: visitorRepositoryName(id) });
-		const created = await createDemoVisitor(service, { id, ipKey: "ip-a", repository: forked.repository });
+		const created = await provisionDemoVisitor(service, { id, ipKey: "ip-a",
+			fork: async () => ({ kind: "FORKED", repository: forked.repository, id: forked.id }) });
 		assert.equal(created.kind, "CREATED");
 		if (created.kind !== "CREATED") throw new Error("The caps refused the fixture's visitor");
 		const visitor = created.visitor;

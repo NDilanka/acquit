@@ -1,23 +1,20 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { Credits, JobView, UserCommand } from "../api-types";
+import type { JobView, UserCommand } from "../api-types";
 import { api, ApiError, type AgentSummary } from "../api";
+import { type PlacedBid } from "../bid-confirmation";
 import { eta as etaLabel, parseUsd, usd } from "../format";
 import { useIntent } from "../intent";
+import { BID_COST_CREDITS } from "../operator-workspace";
 
 const ETAS = [24, 48, 72, 120] as const;
 
-type Placed = { price: number; eta: number; agent: AgentSummary; creditsLeft: Credits; paidReceipts: number };
-
-export function BidForm({ job, onPlaced }: { job: JobView; onPlaced?: (creditsLeft: number) => void }) {
+export function BidForm({ job, onPlaced }: { job: JobView; onPlaced: (placed: PlacedBid) => void }) {
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
-  const [handle, setHandle] = useState("");
-  const [paidReceipts, setPaidReceipts] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [price, setPrice] = useState((job.budget / 100).toFixed(2));
   const [eta, setEta] = useState<number>(48);
   const [agentId, setAgentId] = useState("");
   const [pitch, setPitch] = useState("");
-  const [placed, setPlaced] = useState<Placed | null>(null);
   const intent = useIntent();
 
   useEffect(() => {
@@ -25,8 +22,6 @@ export function BidForm({ job, onPlaced }: { job: JobView; onPlaced?: (creditsLe
       .operator()
       .then((r) => {
         setAgents(r.agents);
-        setHandle(r.operator.handle);
-        setPaidReceipts(r.operator.paidReceipts);
         if (r.agents[0]) setAgentId(r.agents[0].id);
       })
       .catch((e: unknown) => setLoadError(e instanceof ApiError ? e.message : String(e)));
@@ -49,24 +44,9 @@ export function BidForm({ job, onPlaced }: { job: JobView; onPlaced?: (creditsLe
       pitch,
     }));
     if (outcome && outcome.result.kind === "BID") {
-      setPlaced({ price: cents, eta, agent, creditsLeft: outcome.result.creditsLeft, paidReceipts });
-      onPlaced?.(outcome.result.creditsLeft);
+      onPlaced({ jobId: job.id, title: job.title, price: cents, eta, agentName: agent.name, creditsLeft: outcome.result.creditsLeft });
     }
   };
-
-  if (placed) {
-    return (
-      <pre className="mono receipt-box">
-        {`Bid sent on ${job.title}\n`}
-        {`  Operator: ${handle}\n`}
-        {`  Price: ${usd(placed.price)}\n`}
-        {`  ETA: ${etaLabel(placed.eta)}\n`}
-        {`  Agent: ${placed.agent.name} (${placed.agent.runner})\n`}
-        {`  Verified receipts: ${placed.paidReceipts}${placed.paidReceipts === 0 ? " (new operator)" : ""}\n`}
-        {`Credits spent: 10 (${placed.creditsLeft} left this week)`}
-      </pre>
-    );
-  }
 
   return (
     <form className="form" onSubmit={(e) => void submit(e)}>
@@ -106,12 +86,12 @@ export function BidForm({ job, onPlaced }: { job: JobView; onPlaced?: (creditsLe
           rows={2}
           value={pitch}
           onChange={(e) => setPitch(e.target.value)}
-          placeholder="TypeScript currency fix with a dedicated bug-fix agent. Source changes only."
+          placeholder="Describe the approach and what you will deliver."
         />
       </label>
       {intent.error && <div className="alert">{intent.error}</div>}
       <div className="act">
-        <small className="muted">A bid costs 10 credits.</small>
+        <small className="muted">A bid costs {BID_COST_CREDITS} credits.</small>
         <button className="btn" disabled={intent.busy || !agent}>
           {intent.busy ? "Sending…" : "Send bid"}
         </button>

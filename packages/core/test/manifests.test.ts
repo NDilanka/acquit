@@ -207,6 +207,13 @@ test("matchFixture keys on fixture repository and issue, with the demo fork rule
 	assert.equal(matchFixture(fixtures, "acquit-forks/other-aabbcc112233", 12, "acquit-forks/other-aabbcc112233"), null, "a fork outside the fixture's demo prefix");
 });
 
+test("a fork that two registered fixtures both name matches neither, so it never freezes the listed first", () => {
+	const sharing: FixtureContract = { ...fixtureA, repository: "other-client/invoice-app", frozenAt: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as CommitSha };
+	const fork = "acquit-forks/demo-aabbcc112233";
+	assert.equal(matchFixture([sharing, fixtureA], fork, 12, fork), null, "both entries carry the same prefix and issue");
+	assert.equal(matchFixture([fixtureA, sharing], fork, 12, fork), null, "the order of the registry does not decide it");
+});
+
 test("two jobs on two fixtures in one verifier process: each run receives only its own cases", async () => {
 	// Both fixture books load in one process; the run request's own manifest digest picks its case
 	// set. The subject spy records the ids each run was handed: fixture A's 48 frozen and 6 hidden,

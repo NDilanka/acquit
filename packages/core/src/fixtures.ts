@@ -93,16 +93,18 @@ export function manifestOf(fixture: FixtureContract, repository: string): Defini
 type FixtureKeyed = { readonly repository: string; readonly issue: { readonly number: number }; readonly demoForkPrefix?: string };
 
 /**
- * The fixture a job is opened against: an exact repository and issue match, or — for a visitor
- * actor opening a job on the very repository its session carries — the fixture whose demo fork
- * prefix that repository sits under. Anything else is unregistered.
+ * The fixture a job is opened against: an exact repository and issue match, or, for a visitor
+ * actor opening a job on the very repository its session carries, the one fixture whose demo fork
+ * prefix and issue that repository names. Two fixtures that both name it are ambiguous and match
+ * nothing, so a fork never freezes whichever entry happens to be listed first.
  */
 export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], repository: string, issueNumber: number, actorRepository: string | null): T | null {
 	const exact = fixtures.find(f => f.repository === repository && f.issue.number === issueNumber && (actorRepository === null || actorRepository === repository));
 	if (exact) return exact;
 	if (actorRepository !== null && actorRepository === repository) {
-		return fixtures.find(f => f.issue.number === issueNumber && f.demoForkPrefix !== undefined
-			&& repository.startsWith(`${f.demoForkPrefix}demo-`)) ?? null;
+		const forks = fixtures.filter(f => f.issue.number === issueNumber && f.demoForkPrefix !== undefined
+			&& repository.startsWith(`${f.demoForkPrefix}demo-`));
+		return forks.length === 1 ? forks[0] : null;
 	}
 	return null;
 }

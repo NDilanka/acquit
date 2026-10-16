@@ -1,14 +1,16 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
-import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents } from "../../../packages/core/src/acquit.ts";
-import type { CommitSha, JobId, StaffId } from "../../../packages/core/src/ids.ts";
+import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents, VisitorFork } from "../../../packages/core/src/acquit.ts";
+import type { CommitSha, JobId, StaffId, VisitorId } from "../../../packages/core/src/ids.ts";
 import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
-import { coverageGate, hiddenCaseOf, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
+import { perJobCaseOf, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
+import type { PrivateCaseReader } from "../../../packages/core/src/hidden-seal.ts";
 import type { TestId } from "../../../packages/core/src/ids.ts";
 import { hiddenManifest } from "../../../packages/verifier/hidden.ts";
 import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName } from "../../../packages/core/src/github.ts";
@@ -21,9 +23,10 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { operatorReceipts } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
+import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 import { askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, paypalAskReader } from "./ask.ts";
@@ -31,6 +34,11 @@ import type { AskMessage, AskToolSchema } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
+import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
+import { sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
+import { gitWorkPort } from "../../../packages/house/src/runner.ts";
+import type { HouseTarget } from "../../../packages/house/src/runner.ts";
+import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
  * sees only the fixture its fork was made from, named by its own fork; every other signed-in
@@ -58,6 +66,24 @@ const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? cre
 // The runner's own App client. The core holds one for its outbox; this one mints the per-run
 // credential the operator CLI asks for, and it keeps the same bounded, redacted calls.
 const githubApp = createGitHubApp(githubEnv);
+// A job's work repo, pushed with one token scoped to that repository alone. The House and the scenarios'
+// scripted pushes both mint through here.
+const workMint = async (job: HouseTarget) => {
+	const name = workRepoName(job.repository, job.id);
+	return { repository: `${githubEnv.organization}/${name}`, token: await githubApp.installationToken(githubEnv.organization, [name]) };
+};
+// The App's fork of one visitor's client repository. Without an App there is no fork to make: the visitor opens
+// jobs on the deployment's own repository, which is the only path that exists then. Every other refusal is named,
+// never papered over: a visitor whose own repository was not made must not fall back to a shared one.
+async function forkVisitorRepository(id: VisitorId): Promise<VisitorFork> {
+	try {
+		const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
+		return { kind: "FORKED", repository: forked.repository, id: forked.id };
+	} catch (error) {
+		if (error instanceof GitHubAppNotConfigured) return { kind: "NO_APP" };
+		throw error;
+	}
+}
 // The AI scoping kick: on OpenJob of a fixture that carries a trusted fix, the pinned model drafts
 // the acceptance contract, the four filters run it against the real frozen and fix commits, and the
 // survivors park for the client's approval. The model turn shares the ask ledger's budget log; the
@@ -75,7 +101,16 @@ const scopeDraft: NonNullable<AcquitConfig["scopeDraft"]> = (jobId, fixture) => 
 	})(jobId).catch((error: Error) => console.log(`[scoping] ${jobId}: ${boundedDetail(error.message)}`));
 	return Promise.resolve();
 };
-const acquit = createAcquit({ ...settings, scopeDraft });
+// The close's reveal reads the private scoping file. A file that cannot be read or parsed reads as null,
+// and core names the refusal in the log.
+const privateCases: PrivateCaseReader = jobId => {
+	const name = `${jobId}.json`;
+	try {
+		const file = parseScopingFile(readFileSync(join(scopingDir, name), "utf8"), name);
+		return { candidates: file.cases, salt: file.salt ?? null };
+	} catch { return null; }
+};
+const acquit = createAcquit({ ...settings, scopeDraft, privateCases });
 // The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
 // and the journal mode come with it, so a second worker's write waits for the lock instead of failing
 // the request that carries it.
@@ -400,18 +435,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/demo" && method === "POST") {
 		const ipKey = ipKeyOf(req);
 		const id = newVisitorId();
-		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: async () => {
-			try {
-				const forked = await githubApp.createClientRepo({ repository: clientRepository, name: visitorRepositoryName(id) });
-				return { kind: "FORKED", repository: forked.repository, id: forked.id };
-			} catch (error) {
-				// Without an App there is no fork to make: the visitor opens jobs on the deployment's own
-				// repository, which is the only path that exists then. Every other refusal is named, never
-				// papered over: a visitor whose own repository was not made must not fall back to a shared one.
-				if (error instanceof GitHubAppNotConfigured) return { kind: "NO_APP" };
-				throw error;
-			}
-		} });
+		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: () => forkVisitorRepository(id) });
 		if (created.kind === "CAPPED") { json(res, 429, { error: created.reason }); return; }
 		if (created.kind === "NOT_CONFIGURED") {
 			json(res, 503, { error: "DEMO_NOT_CONFIGURED", detail: "Set OPERATOR_DEVON_MERCHANT_ID to the sandbox seller the demo pays through." });
@@ -583,6 +607,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const target = toClient ? current.visitor.clientHandle : current.visitor.operatorHandle;
 		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
 		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
+		return;
+	}
+	// The judge scenarios. Only a visitor's own session starts or reads one; the run itself lives on the
+	// server, so the chain goes on when the tab that started it is closed.
+	if (url.pathname.startsWith("/api/demo/scenarios/")) {
+		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
+		const reply = await scenarioReply(scenarioRouting, current.visitor, method, url.pathname.slice("/api/demo/scenarios/".length));
+		json(res, reply.status, reply.body);
 		return;
 	}
 	if (url.pathname === "/api/platform/ledger" && method === "GET") {
@@ -788,9 +820,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const fixture = manifest ? fixtures.find(candidate => candidate.hiddenManifest === manifest.hiddenManifest) ?? null : null;
 		const gate = coverageGate(approved, fixture?.coverageFamilies ?? []);
 		if (!gate.ok) { json(res, 422, { error: "COVERAGE_GATE", missing: gate.missing }); return; }
-		const kept = approved.map(hiddenCaseOf);
+		const kept = approved.map(perJobCaseOf);
 		const digest = hiddenManifest(kept).digest;
 		if (!manifest) { json(res, 409, { error: "NO_MANIFEST" }); return; }
+		// The seal is drawn once and travels with the same claim: the manifest names the sealed digest and
+		// the private file keeps the salt. A failed file write rolls both back with the claim.
+		const seal = sealHiddenCases(kept);
 		// The one guarded claim: the store re-reads the job under the write lock, so an approval
 		// lands only while the job is still open for bids — OPEN with phase BIDDING, since an
 		// accepted bid keeps the status OPEN but closes this window. The row moves by
@@ -798,9 +833,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// before the commit. The loser of a race is refused by name; a file write that fails rolls
 		// the whole claim back.
 		const claimed = await scopingStore.claimApproval(jobId, {
-			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest },
+			manifest: { ...manifest, hiddenTests: kept.map(test => test.id), hiddenManifest: digest, sealedHiddenCases: seal.sealed },
 			ids: kept.map(test => test.id), digest, counts: scopingRow.counts,
-			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
+			persist: () => writeFileSync(filePath, JSON.stringify({ ...file, approved: clock.now(), cases: approved, salt: seal.salt }, null, "\t"), { mode: 0o600, encoding: "utf8" }),
 		}, clock.now());
 		if (claimed !== "CLAIMED") {
 			if (claimed === "JOB_NOT_OPEN") json(res, 409, { error: "JOB_NOT_OPEN",
@@ -937,7 +972,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// The book's rows for this operator: settled job receipts plus the seeded history rows, each
 		// marked with the source the receipts table holds.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
-		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository), nextCursor: null }); return;
+		json(res, 200, { receipts: operatorReceipts(db, current.actor.operatorId, clientRepository, privateCases), nextCursor: null }); return;
 	}
 	if (url.pathname === "/api/me/payouts" && method === "GET") {
 		// The operator's payouts: one row per released job, with the referenced payout item the
@@ -945,6 +980,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// another operator never appears.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { payouts: operatorPayouts(db, current.actor.operatorId, clientRepository) }); return;
+	}
+	if (url.pathname === "/api/me/escrow" && method === "GET") {
+		// The escrow the operator's release will pay, at the operator's net. The projection carries the
+		// hold, the bid, and the phase, so the number is read from the same rows the jobs list serves.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: null });
+		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { escrow: operatorEscrow(result.jobs, current.actor.operatorId) }); return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
 	if (tokenMatch && method === "POST") {
@@ -1039,6 +1082,35 @@ function jobHandles(job: JobProjection): Record<string, string> {
 	}
 	return handles;
 }
+// The judge scenarios' server side. Each start provisions a visitor of its own for its run, so one session can run
+// all five, and each run's job lives on its own fork. The run snapshots are written to the database, bounded by the
+// core's store. A restart marks a run that was RUNNING as FAILED, RESTARTED, and never resumes its steps; the jobs
+// it opened stay in the core. The scenarios open on the one fixture the deployment names (ACQUIT_SCENARIO_FIXTURE),
+// whose frozen suite the scripted trees are written for. The scripted push goes through the House's git port, so it
+// reaches the job's work repo the way the House's own delivery does.
+const scenarioStore = new SqliteStore(baseSettings.databaseUrl);
+const scenarioRuns = boundedRuns(undefined, scenarioStore.db);
+const scenarioState = join(resolve(databasePath, ".."), "scenarios");
+mkdirSync(scenarioState, { recursive: true, mode: 0o700 });
+const scenarioWork = gitWorkPort({ stateRoot: join(scenarioState, "checkouts"), workRoot: join(scenarioState, "work"), mint: workMint, env: process.env });
+const scenarioRouting = scenarioRoutingFor({
+	acquit, store: { readJob: id => scenarioStore.readJob(id), db }, runs: scenarioRuns, now: clock.now,
+	workspace: scriptedWorkspace({ work: scenarioWork, readJob: id => scenarioStore.readJob(id) }),
+	fixture: scenarioFixtureOf(fixtures, scenarioFixtureKey),
+	fixtures, forkSource: clientRepository,
+	provision: async requester => {
+		const id = newVisitorId();
+		return provisionDemoVisitor(acquit, { id, ipKey: requester.ipKey, scenarioOf: requester.id, fork: () => forkVisitorRepository(id) });
+	},
+});
+// The scenario cleanup's own timer: a finished run's fork and work repo go once they are past the TTL, whether or not
+// anyone runs ctl sweep. A refusal is counted in the log and retried on the next pass.
+const scenarioSweepTimer = setInterval(() => {
+	void sweepScenarioRuns({ db, app: githubApp, source: clientRepository, now: instant(new Date().toISOString()) })
+		.then(report => { if (report.kept.length > 0) console.error(`Scenario sweep kept ${report.kept.length} repositories for the next pass.`); })
+		.catch(() => console.error("Scenario sweep failed; the next pass retries."));
+}, 10 * 60_000);
+scenarioSweepTimer.unref();
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });
@@ -1052,10 +1124,7 @@ server.listen(port, "127.0.0.1", () => console.log(`Acquit API: http://localhost
 // the domain applies to an operator's submit applies to the House's too.
 const houseKick = createHouseDelivery({
 	jobs: () => db.prepare("SELECT json FROM jobs").all().map(row => JSON.parse(String(row.json)) as JobRow),
-	mint: async job => {
-		const name = workRepoName(job.repository, job.id);
-		return { repository: `${githubEnv.organization}/${name}`, token: await githubApp.installationToken(githubEnv.organization, [name]) };
-	},
+	mint: workMint,
 	execute: (actor, command) => acquit.execute(actor, parseRequestKey(randomUUID()), command),
 	recordDiff: async (jobId, commit, files, patch) => {
 		db.prepare("INSERT OR REPLACE INTO house_diffs VALUES (?, ?, ?, ?)").run(jobId, commit, JSON.stringify(files), patch);
@@ -1072,6 +1141,7 @@ function stop(): void {
 	stopping = true;
 	clearInterval(timer);
 	clearInterval(houseTimer);
+	clearInterval(scenarioSweepTimer);
 	server.close(() => { db.close(); closeAcquit(acquit); });
 }
 process.on("SIGINT", stop);

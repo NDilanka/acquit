@@ -28,14 +28,14 @@ test("the operator's receipts read marks job rows JOB and seeded rows SEED", () 
 				receipt: { ...receipt, id: "rcpt_housejob", jobId: "job_paidtwo", releasedAt: now } } };
 		store.db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run("job_paidtwo", JSON.stringify(other));
 
-		const devon = operatorReceipts(store.db, "devon-ops", "maya-client/invoice-app");
+		const devon = operatorReceipts(store.db, "devon-ops", "maya-client/invoice-app", () => null);
 		assert.equal(devon.length, 1);
 		assert.equal(devon[0]?.id, "rcpt_devonjob");
 		assert.equal(devon[0]?.source, "JOB");
 		assert.equal(devon[0]?.paid, 360_00);
 		assert.equal(devon[0]?.repository, "maya-client/invoice-app");
 
-		const house = operatorReceipts(store.db, "house-tsfix", "maya-client/invoice-app");
+		const house = operatorReceipts(store.db, "house-tsfix", "maya-client/invoice-app", () => null);
 		// The paid job's receipt row is SEED in the table (the F6 backfill marks it so), so the read
 		// labels it seeded exactly where the book marks it.
 		assert.deepEqual(house.map(r => [r.id, r.source, r.jobId, r.passedVerifiedCi]), [
@@ -60,7 +60,7 @@ test("a job receipt carries the fee and the gross its book held, for the receipt
 		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'JOB', ?, ?)").run("rcpt_devonjob", "job_paidone", "devon-ops", 1, now);
 		store.db.prepare("INSERT INTO receipts VALUES (?, ?, ?, 'SEED', ?, ?)").run("rcpt_house-seed-001", null, "devon-ops", 1, now);
 
-		const devon = operatorReceipts(store.db, "devon-ops", "maya-client/invoice-app");
+		const devon = operatorReceipts(store.db, "devon-ops", "maya-client/invoice-app", () => null);
 		const jobRow = devon.find(row => row.source === "JOB");
 		assert.ok(jobRow, "the job receipt row is present");
 		assert.equal(jobRow.fee, 6_000);

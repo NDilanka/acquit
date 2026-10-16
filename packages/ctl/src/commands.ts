@@ -117,12 +117,13 @@ export async function jobList(_parsed: Parsed, ctx: Context): Promise<Result> {
  * The expiry sweep. A visitor lives 24 hours and its repository must not outlive it, so this removes
  * each expired visitor's own fork and then its rows, through the App the deployment already holds: no
  * personal access token, and a repository this deployment did not fork is refused rather than deleted.
- * A refusal keeps the visitor for the next run, so the sweep is safe to repeat as often as wanted.
+ * A refusal keeps the visitor for the next run, so the sweep is safe to repeat as often as wanted. The judge
+ * scenarios' forks and work repos past their TTL go in the same pass, as the API's own timer removes them.
  */
 export async function sweep(parsed: Parsed, ctx: Context): Promise<Result> {
 	const run = await readState(ctx);
 	const path = run?.databasePath ?? ctx.databasePath;
-	const [store, { expiredVisitors }, { sweepExpiredVisitors }, { createGitHubApp }, { clientRepositoryEnv, githubAppEnv }] = await Promise.all([
+	const [store, { expiredVisitors }, { sweepExpiredVisitors, sweepScenarioRuns }, { createGitHubApp }, { clientRepositoryEnv, githubAppEnv }] = await Promise.all([
 		import("../../core/src/store.ts"), import("../../core/src/visitors.ts"), import("../../core/src/sweep.ts"),
 		import("../../core/src/github.ts"), import("../../verifier/config.ts")]);
 	const sqlite = new store.SqliteStore(path);
@@ -133,8 +134,11 @@ export async function sweep(parsed: Parsed, ctx: Context): Promise<Result> {
 			return { databasePath: path, expired: expired.map(visitor => ({ id: visitor.id, repository: visitor.repository, expiresAt: visitor.expiresAt })),
 				hint: "A real sweep deletes each expired visitor's repository through the GitHub App, then its rows." };
 		}
-		const report = await sweepExpiredVisitors({ db: sqlite.db, app: createGitHubApp(githubAppEnv()), source: clientRepositoryEnv(), now });
-		return { databasePath: path, ...report };
+		const app = createGitHubApp(githubAppEnv());
+		const source = clientRepositoryEnv();
+		const report = await sweepExpiredVisitors({ db: sqlite.db, app, source, now });
+		const scenarios = await sweepScenarioRuns({ db: sqlite.db, app, source, now });
+		return { databasePath: path, ...report, scenarios };
 	} finally { sqlite.close(); }
 }
 export async function fundMode(parsed: Parsed, ctx: Context): Promise<Result> {
