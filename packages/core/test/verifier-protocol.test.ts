@@ -86,6 +86,15 @@ async function waitForContainerMount(source: string, timeoutMs: number): Promise
 	}
 }
 
+/** Real-Docker tests need the subject image already in the local store. CI does not pull or build it, so they skip there. */
+function realDockerSkip(): string | false {
+	if (!dockerReachable()) return "Docker is not reachable.";
+	// The image dockerSubject() runs when no image is passed (packages/verifier/subject.ts).
+	const image = process.env.VERIFIER_NODE_IMAGE ?? "node:24-bookworm-slim";
+	const inspected = spawnSync("docker", ["image", "inspect", image], { encoding: "utf8", timeout: 5_000 });
+	return inspected.status === 0 ? false : `Docker image ${image} is not in the local store.`;
+}
+
 /** The container id the shim writes for `--cidfile`, the way the docker client does at container start. */
 const SHIM_CONTAINER_ID = "c".repeat(64);
 
@@ -935,7 +944,7 @@ test("a client the judge stopped is removed even when it exits 137 with no signa
 	}
 });
 
-test("a real Docker container the judge stopped at its deadline is removed by name", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+test("a real Docker container the judge stopped at its deadline is removed by name", { skip: realDockerSkip(), timeout: 60_000 }, async () => {
 	const fixture = repositoryWith(`export function formatTotal(): Promise<string> { return new Promise(() => {}); }\n`);
 	chmodSync(fixture.repo, 0o755);
 	let name: string | null = null;
@@ -953,7 +962,7 @@ test("a real Docker container the judge stopped at its deadline is removed by na
 	}
 });
 
-test("a real Docker subject killed from outside returns the run as an external kill with no container left", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+test("a real Docker subject killed from outside returns the run as an external kill with no container left", { skip: realDockerSkip(), timeout: 60_000 }, async () => {
 	const fixture = repositoryWith(`export function formatTotal(): Promise<string> { return new Promise(() => {}); }\n`);
 	chmodSync(fixture.repo, 0o755);
 	let name: string | null = null;
@@ -973,7 +982,7 @@ test("a real Docker subject killed from outside returns the run as an external k
 	}
 });
 
-test("a real Docker subject that exits 137 on its own stays a REJECTED attempt", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+test("a real Docker subject that exits 137 on its own stays a REJECTED attempt", { skip: realDockerSkip(), timeout: 60_000 }, async () => {
 	const fixture = repositoryWith(`process.exit(137);\nexport function formatTotal(): string { return "1"; }\n`);
 	chmodSync(fixture.repo, 0o755);
 	try {
@@ -990,7 +999,7 @@ test("a real Docker subject that exits 137 on its own stays a REJECTED attempt",
 	} finally { fixture.remove(); }
 });
 
-test("a real Docker subject killed by the memory cap stays a verdict fault", { skip: dockerReachable() ? false : "Docker is not reachable.", timeout: 60_000 }, async () => {
+test("a real Docker subject killed by the memory cap stays a verdict fault", { skip: realDockerSkip(), timeout: 60_000 }, async () => {
 	const fixture = repositoryWith(`export function formatTotal(): string { const held: Buffer[] = []; for (;;) held.push(Buffer.alloc(1 << 20)); }\n`);
 	chmodSync(fixture.repo, 0o755);
 	try {
