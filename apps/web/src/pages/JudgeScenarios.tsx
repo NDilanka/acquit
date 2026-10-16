@@ -62,8 +62,8 @@ export function JudgeScenarios({ ensureDemo }: { ensureDemo: () => Promise<unkno
     <section className="scenarios" aria-labelledby={`${id}-title`}>
       <h2 id={`${id}-title`}>Run a whole job story</h2>
       <p className="muted">
-        Each button runs one job from start to end on the server, and its steps appear here as they finish. Each run starts a
-        demo of its own, so it counts as one demo for today.
+        Each button runs one job from start to end on the server, and its steps appear here as they finish. Each run gets its own
+        client and operator, separate from your demo.
       </p>
       <div className="scenario-grid">
         {SCENARIO_CARDS.map(card => (
