@@ -79,6 +79,71 @@ export function ringEdges(ring: Ring): Segment[] {
 	});
 }
 
+export function fillRings(grid: Grid, rings: readonly Ring[]): void {
+	fillEdges(grid, rings.flatMap(ring => ringEdges(ring)));
+}
+
+/** An empty grid with the same geometry as grid. */
+export function emptyLike(grid: Grid): Grid {
+	return { x0: grid.x0, y0: grid.y0, cols: grid.cols, rows: grid.rows, on: new Uint8Array(grid.on.length) };
+}
+
+/**
+ * The cells a flood from the grid's border reaches without entering a cell that cover sets. A closed
+ * wall keeps its inside out of this set. A gap in the wall is closed by the wall's stamp, not left open.
+ */
+export function exteriorOf(cover: Grid): Uint8Array {
+	const outside = new Uint8Array(cover.on.length);
+	const stack: number[] = [];
+	const reach = (index: number): void => {
+		if (cover.on[index] !== 0 || outside[index] === 1) return;
+		outside[index] = 1;
+		stack.push(index);
+	};
+	for (let col = 0; col < cover.cols; col++) {
+		reach(col);
+		reach((cover.rows - 1) * cover.cols + col);
+	}
+	for (let row = 0; row < cover.rows; row++) {
+		reach(row * cover.cols);
+		reach(row * cover.cols + cover.cols - 1);
+	}
+	while (stack.length > 0) {
+		const index = stack.pop() as number;
+		const col = index % cover.cols;
+		const row = (index - col) / cover.cols;
+		if (col > 0) reach(index - 1);
+		if (col < cover.cols - 1) reach(index + 1);
+		if (row > 0) reach(index - cover.cols);
+		if (row < cover.rows - 1) reach(index + cover.cols);
+	}
+	return outside;
+}
+
+export function translateRings(rings: readonly Ring[], dx: number, dy: number): Ring[] {
+	return rings.map(ring => ring.map(([x, y]): [number, number] => [x + dx, y + dy]));
+}
+
+export function ringsBox(rings: readonly Ring[]): Rect {
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const ring of rings) {
+		for (const [x, y] of ring) {
+			minX = Math.min(minX, x);
+			minY = Math.min(minY, y);
+			maxX = Math.max(maxX, x);
+			maxY = Math.max(maxY, y);
+		}
+	}
+	return { minX, minY, maxX, maxY };
+}
+
+export function rectRing(rect: Rect): Ring {
+	return [[rect.minX, rect.minY], [rect.maxX, rect.minY], [rect.maxX, rect.maxY], [rect.minX, rect.maxY]];
+}
+
 export function cellCount(grid: Grid): number {
 	let count = 0;
 	for (const value of grid.on) count += value;
