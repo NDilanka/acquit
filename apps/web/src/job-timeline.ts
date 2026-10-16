@@ -9,7 +9,10 @@ export type TimelineJob = JobView & VerifierFields;
 
 export type Viewer = { readonly role: "CLIENT" | "OPERATOR" | "PLATFORM"; readonly handle: string };
 
-export type TimelineKind = "CONTRACT" | "BID" | "HELD" | "ATTEMPT" | "REVIEW" | "DISPUTE" | "PAYOUT" | "REFUND" | "RECEIPT";
+export type TimelineKind = "CONTRACT" | "BID" | "HELD" | "ATTEMPT" | "ARBITER" | "REVIEW" | "DISPUTE" | "PAYOUT" | "REFUND" | "RECEIPT";
+
+/** An id shown as a copyable chip. The label, when present, names what the id is. */
+export type TimelineId = { readonly value: string; readonly label?: string };
 
 export type TimelineEvent = {
   /** Null when the job view serves no time for the event. Bids carry none. */
@@ -18,8 +21,8 @@ export type TimelineEvent = {
   readonly title: string;
   readonly detail: string;
   readonly tone: StatusTone;
-  /** Ids shown as copyable chips: the hidden-case digest, commits, PayPal ids, the receipt id. */
-  readonly ids: readonly string[];
+  /** Ids shown as copyable chips: the frozen commit, the hidden-case digest, commits, PayPal ids, the receipt id. */
+  readonly ids: readonly TimelineId[];
   /** The pull request that carries an attempt or the receipt. Null when there is none to link. */
   readonly href: string | null;
 };
@@ -36,7 +39,8 @@ export type MoneyRow = {
 type Seat = "CLIENT" | "LOCKED" | "BIDDER" | "OTHER";
 
 function seatOf(job: TimelineJob, viewer: Viewer): Seat {
-  if (viewer.role === "CLIENT") return "CLIENT";
+  // The projection names the owning client only to that client, so another client reads as an observer.
+  if (viewer.role === "CLIENT") return job.client === viewer.handle ? "CLIENT" : "OTHER";
   if (viewer.role === "OPERATOR" && lockedBid(job)?.handle === viewer.handle) return "LOCKED";
   if (allBids(job).some((b) => b.handle === viewer.handle)) return "BIDDER";
   return "OTHER";
@@ -54,12 +58,16 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
   if (job.contract) {
     const c = job.contract;
     events.push({
-      at: c.frozenAt,
+      // The projection serves the frozen commit under frozenAt. No time is served, so the event has none.
+      at: null,
       kind: "CONTRACT",
       title: "Acceptance contract frozen",
       detail: `${c.frozenTests} visible and ${c.hiddenTests} hidden tests. Hidden cases sealed.`,
       tone: "open",
-      ids: [c.hiddenManifest],
+      ids: [
+        { value: c.frozenAt, label: "Frozen commit" },
+        { value: c.hiddenManifest, label: "Hidden cases sealed" },
+      ],
       href: null,
     });
   }
@@ -71,7 +79,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       title: `${bidder(bid)} bid ${usd(bid.price)}`,
       detail: `${eta(bid.eta)}. ${proofLine(bid)}. ${bidStatusWord(bid.status)}.`,
       tone: "open",
-      ids: [bid.id],
+      ids: [{ value: bid.id }],
       href: null,
     });
   }
@@ -89,9 +97,16 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
     });
   }
 
-  for (const attempt of job.attempts.history) {
+  // The arbiter decides on the latest verified attempt, so its note sits right after that attempt. A later
+  // attempt is then judged after the note, as it happened.
+  const history = job.attempts.history;
+  const decided = history.map((a) => a.result).lastIndexOf("VERIFIED");
+  const decision = arbiter === null ? null : arbiterEvent(job, arbiter);
+  history.forEach((attempt, i) => {
     events.push(attemptEvent(attempt, total, job.status, prHref));
-  }
+    if (i === decided && decision) events.push(decision);
+  });
+  if (decision && decided === -1) events.push(decision);
 
   const verified = [...job.attempts.history].reverse().find((a) => a.result === "VERIFIED");
   if (job.reviewEndsAt !== null) {
@@ -128,10 +143,9 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
         `${usd(release.paid)} released to ${operator}.`,
         job.releaseAuthority && `${authorityNote(job.releaseAuthority)}.`,
         job.merge && `${mergeNote(job.merge, job.pullRequest, job.mergeCommit)}.`,
-        arbiter,
       ]),
       tone: "ok",
-      ids: [release.payoutItemId, release.captureId],
+      ids: [{ value: release.payoutItemId }, { value: release.captureId }],
       href: null,
     });
   }
@@ -145,7 +159,6 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       detail: sentences([
         `${usd(refund.cents)} refunded.`,
         refundNote(job.refundReason, job.status === "REFUNDED", total),
-        arbiter,
       ]),
       tone: "new",
       ids: [],
@@ -162,7 +175,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       title: seeded ? `Receipt (${seeded})` : "Receipt",
       detail: `${usd(r.paid)} paid. Frozen tests ${r.frozen.passed} of ${r.frozen.expected}, hidden tests ${r.hidden.passed} of ${r.hidden.expected}, attempts ${r.attemptsUsed} of ${total}.`,
       tone: "ok",
-      ids: [r.id, r.mergeCommit],
+      ids: [{ value: r.id }, { value: r.mergeCommit }],
       href: prHref(r.pullRequest),
     });
   }
@@ -179,28 +192,44 @@ function attemptEvent(attempt: Attempt, total: number, status: JobView["status"]
       title: `${title} verified`,
       detail: `${attempt.frozen.passed} of ${attempt.frozen.expected} visible and ${attempt.hidden.passed} of ${attempt.hidden.expected} hidden tests passed. Pull request #${attempt.pullRequest}.`,
       tone: "ok",
-      ids: [attempt.sourceCommit],
+      ids: [{ value: attempt.sourceCommit }],
       href: prHref(attempt.pullRequest),
     };
   }
-  const [first = "The verifier rejected the work", ...rest] = attempt.reasons;
-  const more = rest.length + attempt.reasonsTruncated;
+  const reasons = attempt.reasons.length > 0 ? attempt.reasons.map(sentence) : ["The verifier rejected the work."];
+  const unlisted = attempt.reasonsTruncated;
   return {
     at: attempt.at,
     kind: "ATTEMPT",
     title: `${title} rejected`,
     detail: sentences([
-      `${first}${more > 0 ? ` (and ${more} more ${more === 1 ? "reason" : "reasons"})` : ""}.`,
+      ...reasons,
+      unlisted > 0 && `${unlisted} more ${unlisted === 1 ? "reason" : "reasons"} not listed.`,
       status === "IN_PROGRESS" && "Escrow still held.",
     ]),
     tone: "alert",
-    ids: [attempt.sourceCommit],
+    ids: [{ value: attempt.sourceCommit }],
     href: null,
   };
 }
 
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
 function sentences(parts: readonly (string | false | null | undefined)[]): string {
   return parts.filter((part): part is string => typeof part === "string" && part !== "").join(" ");
+}
+
+/** The arbiter's decision. Its title says which way it went, and the note is the arbiter's own words. */
+function arbiterEvent(job: TimelineJob, note: string): TimelineEvent {
+  if (job.releaseAuthority === "ARBITER_UPHELD") {
+    return { at: null, kind: "ARBITER", title: "Arbiter upheld the work", detail: note, tone: "ok", ids: [], href: null };
+  }
+  if (job.refundReason === "ARBITER_REFUND") {
+    return { at: null, kind: "ARBITER", title: "Arbiter refunded the client", detail: note, tone: "new", ids: [], href: null };
+  }
+  return { at: null, kind: "ARBITER", title: "Arbiter sent the work back", detail: note, tone: "alert", ids: [], href: null };
 }
 
 /**
@@ -233,6 +262,17 @@ export function moneyRows(job: Pick<JobView, "ledger">, operator: string): Money
   ];
 }
 
+/**
+ * The verifier block's first line. The escrow sentence is a warning only while the money is held; a refunded
+ * job says where the money went.
+ */
+export function verifierLine(job: Pick<JobView, "attempts" | "escrow">): string {
+  const count = `${job.attempts.used} of ${job.attempts.used + job.attempts.left} attempts used.`;
+  if (job.escrow === "HELD") return `${count} A rejection keeps escrow held.`;
+  if (job.escrow === "REFUNDED") return `${count} Escrow was refunded to the client.`;
+  return count;
+}
+
 /** Only the locked operator delivers, and only while the escrow holds work that is ready to submit. */
 export function canDeliver(job: TimelineJob, viewer: Viewer): boolean {
   return job.status === "IN_PROGRESS" && job.phase === "READY" && seatOf(job, viewer) === "LOCKED";
@@ -262,7 +302,9 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
   },
   "OPEN/FUNDING/CREATING_ORDER": () => FUNDING_WAIT,
   "OPEN/FUNDING/AWAITING_APPROVAL": ({ seat }) =>
-    seat === "CLIENT" ? "Approve the payment on PayPal to hold it in escrow." : FUNDING_WAIT,
+    seat === "CLIENT"
+      ? "Approve the payment on PayPal to hold it in escrow."
+      : "The client is approving the payment on PayPal. Escrow holds the money once it does.",
   "OPEN/FUNDING/CAPTURING": () => FUNDING_WAIT,
   "OPEN/FUNDING/REFUND_PENDING": () => "The payment did not match its order, so PayPal is refunding it.",
   "IN_PROGRESS/READY": ({ job, seat, operator }) => {

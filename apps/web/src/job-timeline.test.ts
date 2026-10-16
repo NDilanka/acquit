@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Attempt, BidView, Receipt } from "./api-types.ts";
-import { canDeliver, moneyRows, nextStep, timelineEvents, verifierIndex, type TimelineJob, type Viewer } from "./job-timeline.ts";
+import { canDeliver, moneyRows, nextStep, timelineEvents, verifierIndex, verifierLine, type TimelineJob, type Viewer } from "./job-timeline.ts";
 
 const CLIENT: Viewer = { role: "CLIENT", handle: "ada" };
+const OTHER_CLIENT: Viewer = { role: "CLIENT", handle: "grace" };
 const DEVON: Viewer = { role: "OPERATOR", handle: "devon" };
 const NOA: Viewer = { role: "OPERATOR", handle: "noa" };
 
 const CONTRACT = {
   repository: "NDilanka/acquit-demo",
   issue: 7,
-  frozenAt: "2026-10-10T09:00:00.000Z",
+  frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4",
   frozenTestPath: "tests/frozen.test.ts",
   frozenTests: 48,
   hiddenTests: 6,
@@ -92,6 +93,12 @@ const rejected: Attempt = {
   reasonsTruncated: 0,
 };
 
+const twoReasons: Attempt = {
+  ...rejected,
+  reasons: ["Frozen tests failed: test_a", "Hidden tests did not complete: t9"],
+  reasonsTruncated: 2,
+};
+
 const verified: Attempt = {
   ordinal: 1,
   sourceCommit: "e4f5a6b",
@@ -117,6 +124,51 @@ const RECEIPT: Receipt = {
   source: "JOB",
 };
 
+/** A paid job whose release the client approved. */
+function paidJob(over: Partial<TimelineJob> = {}): TimelineJob {
+  return {
+    ...locked({}),
+    status: "PAID",
+    phase: "PAID",
+    escrow: "RELEASED",
+    releaseAuthority: "CLIENT_APPROVAL",
+    merge: { phase: "MERGED", at: "2026-10-15T10:00:00.000Z", sha: "c0ffee1234567" },
+    pullRequest: 12,
+    mergeCommit: "abcdef1234567",
+    release: { payoutItemId: "PAYOUT-ITEM-1", captureId: "CAPTURE-1", paid: 34200, at: "2026-10-15T10:00:00.000Z" },
+    receipt: RECEIPT,
+    ledger: [
+      { kind: "HELD", cents: 37800, at: "2026-10-11T08:00:00.000Z" },
+      { kind: "RELEASED", cents: 34200, at: "2026-10-15T10:00:00.000Z" },
+      { kind: "FEE", cents: 3600, processor: 1100, acquit: 2500, at: "2026-10-15T10:00:00.000Z" },
+    ],
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [], pending: null, failure: null },
+    ...over,
+  };
+}
+
+/** A refund the attempts ran out for: three rejected or judged deliveries, then the money went back. */
+function attemptsExhausted(): TimelineJob {
+  return {
+    ...BASE,
+    status: "REFUNDED",
+    phase: "REFUNDED",
+    escrow: "REFUNDED",
+    refundReason: "ATTEMPTS_EXHAUSTED",
+    bids: { operators: [bid({ status: "ACCEPTED" })], house: null },
+    lockedTo: "op_devon",
+    attempts: { used: 3, left: 0, last: "REJECTED", reasons: twoReasons.reasons, history: [twoReasons], pending: null, failure: null },
+    ledger: [
+      { kind: "HELD", cents: 37800, at: "2026-10-11T08:00:00.000Z" },
+      { kind: "REFUND", cents: 37800, at: "2026-10-14T08:00:00.000Z" },
+    ],
+  };
+}
+
+function withBid(): TimelineJob {
+  return { ...BASE, bids: { operators: [bid({})], house: null } };
+}
+
 test("open for bids: the client accepts a bid, and an operator who has not bid is asked to place one", () => {
   const open = withBid();
   assert.equal(nextStep(open, CLIENT), "Accept one bid to pay it into escrow.");
@@ -125,16 +177,19 @@ test("open for bids: the client accepts a bid, and an operator who has not bid i
   assert.equal(nextStep(BASE, CLIENT), "Waiting for the first bid. Accept one to pay it into escrow.");
 });
 
-test("open for bids: the timeline shows the frozen contract, then each bid with no time served", () => {
+test("open for bids: the timeline shows the frozen contract with no time, then each bid with no time served", () => {
   const events = timelineEvents({ ...withBid(), contract: CONTRACT });
   assert.deepEqual(events, [
     {
-      at: "2026-10-10T09:00:00.000Z",
+      at: null,
       kind: "CONTRACT",
       title: "Acceptance contract frozen",
       detail: "48 visible and 6 hidden tests. Hidden cases sealed.",
       tone: "open",
-      ids: ["9f2c4a7be1d3"],
+      ids: [
+        { value: "a3b6ead29f4e367d1871e753b516cc9e832871e4", label: "Frozen commit" },
+        { value: "9f2c4a7be1d3", label: "Hidden cases sealed" },
+      ],
       href: null,
     },
     {
@@ -143,7 +198,7 @@ test("open for bids: the timeline shows the frozen contract, then each bid with 
       title: "devon bid 360.00 USD",
       detail: "2 days. 4 verified receipts. Pending.",
       tone: "open",
-      ids: ["bid_devon"],
+      ids: [{ value: "bid_devon" }],
       href: null,
     },
   ]);
@@ -179,32 +234,76 @@ test("rejected attempt: the timeline names the reason in red and says escrow is 
     title: "Attempt 1 of 3 rejected",
     detail: "Frozen tests failed: test_a, test_b. Escrow still held.",
     tone: "alert",
-    ids: ["a1b2c3d"],
+    ids: [{ value: "a1b2c3d" }],
     href: null,
   });
 });
 
-test("rejected attempt: extra reasons are counted in words, and a refunded job does not claim escrow is held", () => {
-  const twoReasons: Attempt = { ...rejected, reasons: ["Frozen tests failed: test_a", "Hidden tests did not complete: t9"], reasonsTruncated: 2 };
-  const refunded: TimelineJob = {
-    ...BASE,
-    status: "REFUNDED",
-    phase: "REFUNDED",
-    escrow: "REFUNDED",
-    refundReason: "ATTEMPTS_EXHAUSTED",
-    bids: { operators: [bid({ status: "ACCEPTED" })], house: null },
-    lockedTo: "op_devon",
-    attempts: { used: 3, left: 0, last: "REJECTED", reasons: twoReasons.reasons, history: [twoReasons], pending: null, failure: null },
-    ledger: [
-      { kind: "HELD", cents: 37800, at: "2026-10-11T08:00:00.000Z" },
-      { kind: "REFUND", cents: 37800, at: "2026-10-14T08:00:00.000Z" },
-    ],
-  };
-  const events = timelineEvents(refunded);
-  assert.equal(events.at(-2)?.detail, "Frozen tests failed: test_a (and 3 more reasons).");
+test("rejected attempt: every reason the server sent stays in the line, and only unlisted reasons are counted", () => {
+  const both = locked({
+    attempts: { used: 1, left: 2, last: "REJECTED", reasons: twoReasons.reasons, history: [{ ...twoReasons, reasonsTruncated: 0 }], pending: null, failure: null },
+  });
+  assert.equal(timelineEvents(both).at(-1)?.detail, "Frozen tests failed: test_a. Hidden tests did not complete: t9. Escrow still held.");
+  const cut = locked({
+    attempts: { used: 1, left: 2, last: "REJECTED", reasons: twoReasons.reasons, history: [twoReasons], pending: null, failure: null },
+  });
+  assert.equal(
+    timelineEvents(cut).at(-1)?.detail,
+    "Frozen tests failed: test_a. Hidden tests did not complete: t9. 2 more reasons not listed. Escrow still held.",
+  );
+});
+
+test("rejected attempt: a refunded job does not claim escrow is held", () => {
+  const events = timelineEvents(attemptsExhausted());
+  assert.equal(events.at(-2)?.detail, "Frozen tests failed: test_a. Hidden tests did not complete: t9. 2 more reasons not listed.");
   assert.equal(events.at(-1)?.title, "Refunded to the client");
   assert.equal(events.at(-1)?.detail, "378.00 USD refunded. Refunded after all 3 delivery attempts were used.");
-  assert.equal(nextStep(refunded, CLIENT), "Refunded to the client. No money is held.");
+  assert.equal(nextStep(attemptsExhausted(), CLIENT), "Refunded to the client. No money is held.");
+});
+
+test("rework: the arbiter's note sits after the verified attempt, and the operator is still asked to deliver", () => {
+  const job = locked({
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+    arbiterNote: "Fix rounding for returned invoices.",
+  });
+  assert.deepEqual(timelineEvents(job).slice(-2), [
+    {
+      at: "2026-10-12T10:00:00.000Z",
+      kind: "ATTEMPT",
+      title: "Attempt 1 of 3 verified",
+      detail: "48 of 48 visible and 6 of 6 hidden tests passed. Pull request #12.",
+      tone: "ok",
+      ids: [{ value: "e4f5a6b" }],
+      href: "https://github.com/NDilanka/acquit-demo/pull/12",
+    },
+    {
+      at: null,
+      kind: "ARBITER",
+      title: "Arbiter sent the work back",
+      detail: "Arbiter's note: Fix rounding for returned invoices.",
+      tone: "alert",
+      ids: [],
+      href: null,
+    },
+  ]);
+  assert.equal(canDeliver(job, DEVON), true);
+});
+
+test("rework followed by a rejected attempt: the arbiter's note stays between the two attempts", () => {
+  const second: Attempt = { ...rejected, ordinal: 2, at: "2026-10-13T10:00:00.000Z", sourceCommit: "d7e8f9a" };
+  const job = locked({
+    attempts: { used: 2, left: 1, last: "REJECTED", reasons: rejected.reasons, history: [verified, second], pending: null, failure: null },
+    arbiterNote: "Fix rounding for returned invoices.",
+  });
+  const events = timelineEvents(job);
+  assert.deepEqual(
+    events.slice(-3).map((e) => [e.kind, e.title]),
+    [
+      ["ATTEMPT", "Attempt 1 of 3 verified"],
+      ["ARBITER", "Arbiter sent the work back"],
+      ["ATTEMPT", "Attempt 2 of 3 rejected"],
+    ],
+  );
 });
 
 test("verified awaiting review: the client is asked to approve or dispute by the review deadline", () => {
@@ -234,7 +333,7 @@ test("verified awaiting review: the client is asked to approve or dispute by the
       title: "Attempt 1 of 3 verified",
       detail: "48 of 48 visible and 6 of 6 hidden tests passed. Pull request #12.",
       tone: "ok",
-      ids: ["e4f5a6b"],
+      ids: [{ value: "e4f5a6b" }],
       href: "https://github.com/NDilanka/acquit-demo/pull/12",
     },
     {
@@ -249,25 +348,47 @@ test("verified awaiting review: the client is asked to approve or dispute by the
   ]);
 });
 
+test("the arbiter's selected release or refund shows its note before the settlement", () => {
+  const note = "Fix rounding for returned invoices.";
+  const upheld = locked({
+    status: "VERIFIED",
+    phase: "RELEASE_PENDING",
+    releaseAuthority: "ARBITER_UPHELD",
+    arbiterNote: note,
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+  });
+  assert.equal(nextStep(upheld, CLIENT), "The payment is being released to devon.");
+  assert.deepEqual(timelineEvents(upheld).at(-1), {
+    at: null,
+    kind: "ARBITER",
+    title: "Arbiter upheld the work",
+    detail: "Arbiter's note: Fix rounding for returned invoices.",
+    tone: "ok",
+    ids: [],
+    href: null,
+  });
+
+  const refund = locked({
+    status: "VERIFIED",
+    phase: "REFUND_PENDING",
+    refundReason: "ARBITER_REFUND",
+    arbiterNote: note,
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+  });
+  assert.equal(nextStep(refund, CLIENT), "The arbiter's refund is in flight. Nothing to do.");
+  assert.deepEqual(timelineEvents(refund).at(-1), {
+    at: null,
+    kind: "ARBITER",
+    title: "Arbiter refunded the client",
+    detail: "Arbiter's note: Fix rounding for returned invoices.",
+    tone: "new",
+    ids: [],
+    href: null,
+  });
+});
+
 test("paid: the payout names the approval and the merge, and the receipt is the proof", () => {
-  const job: TimelineJob = {
-    ...locked({}),
-    status: "PAID",
-    phase: "PAID",
-    escrow: "RELEASED",
-    releaseAuthority: "CLIENT_APPROVAL",
-    merge: { phase: "MERGED", at: "2026-10-15T10:00:00.000Z", sha: "c0ffee1234567" },
-    pullRequest: 12,
-    mergeCommit: "abcdef1234567",
-    release: { payoutItemId: "PAYOUT-ITEM-1", captureId: "CAPTURE-1", paid: 34200, at: "2026-10-15T10:00:00.000Z" },
-    receipt: RECEIPT,
-    ledger: [
-      { kind: "HELD", cents: 37800, at: "2026-10-11T08:00:00.000Z" },
-      { kind: "RELEASED", cents: 34200, at: "2026-10-15T10:00:00.000Z" },
-      { kind: "FEE", cents: 3600, processor: 1100, acquit: 2500, at: "2026-10-15T10:00:00.000Z" },
-    ],
-    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [], pending: null, failure: null },
-  };
+  const job = paidJob();
   assert.equal(nextStep(job, CLIENT), "Paid to devon. The receipt below is the proof.");
   const events = timelineEvents(job);
   assert.deepEqual(events.slice(-2), [
@@ -278,7 +399,7 @@ test("paid: the payout names the approval and the merge, and the receipt is the 
       detail:
         "342.00 USD released to devon. Released on the client's approval. Merged 2026-10-15 10:00 UTC: pull request #12, merge commit c0ffee1, approved abcdef1.",
       tone: "ok",
-      ids: ["PAYOUT-ITEM-1", "CAPTURE-1"],
+      ids: [{ value: "PAYOUT-ITEM-1" }, { value: "CAPTURE-1" }],
       href: null,
     },
     {
@@ -287,12 +408,30 @@ test("paid: the payout names the approval and the merge, and the receipt is the 
       title: "Receipt",
       detail: "342.00 USD paid. Frozen tests 48 of 48, hidden tests 6 of 6, attempts 1 of 3.",
       tone: "ok",
-      ids: ["rcpt_0001", "abcdef1234567"],
+      ids: [{ value: "rcpt_0001" }, { value: "abcdef1234567" }],
       href: "https://github.com/NDilanka/acquit-demo/pull/12",
     },
   ]);
   assert.equal(events.at(-1)?.title, "Receipt");
   assert.equal(timelineEvents({ ...job, receipt: { ...RECEIPT, source: "SEED" } }).at(-1)?.title, "Receipt (Seeded)");
+});
+
+test("paid after the arbiter upheld the work: the note sits before the payout, and the payout does not repeat it", () => {
+  const job = paidJob({ releaseAuthority: "ARBITER_UPHELD", arbiterNote: "Fix rounding for returned invoices." });
+  const events = timelineEvents(job);
+  assert.deepEqual(events.slice(-3)[0], {
+    at: null,
+    kind: "ARBITER",
+    title: "Arbiter upheld the work",
+    detail: "Arbiter's note: Fix rounding for returned invoices.",
+    tone: "ok",
+    ids: [],
+    href: null,
+  });
+  assert.equal(
+    events.slice(-2)[0]?.detail,
+    "342.00 USD released to devon. Released by the arbiter. Merged 2026-10-15 10:00 UTC: pull request #12, merge commit c0ffee1, approved abcdef1.",
+  );
 });
 
 test("paid: the money card holds the held, released, refunded, and fee rows with the fee split", () => {
@@ -317,6 +456,11 @@ test("paid: the money card holds the held, released, refunded, and fee rows with
 test("refunded: the money card and the timeline both show the refund", () => {
   const rows = moneyRows({ ledger: [{ kind: "REFUND", cents: 37800, at: "2026-10-14T08:00:00.000Z" }] }, "devon");
   assert.deepEqual(rows[2], { key: "REFUND", label: "Refunded", cents: 37800, note: "To the client." });
+});
+
+test("the verifier line keeps the held warning only while escrow is held", () => {
+  assert.equal(verifierLine(locked({})), "0 of 3 attempts used. A rejection keeps escrow held.");
+  assert.equal(verifierLine(attemptsExhausted()), "3 of 3 attempts used. Escrow was refunded to the client.");
 });
 
 test("the verifier block sits before the first judged attempt, and after the held payment when none is judged", () => {
@@ -349,10 +493,31 @@ test("a House bid reads as the House, with its receipts line", () => {
       title: "House: ledger bid 300.00 USD",
       detail: "1 day. 41 fixes, 39 passed verified CI. Pending.",
       tone: "open",
-      ids: ["bid_house"],
+      ids: [{ value: "bid_house" }],
       href: null,
     },
   ]);
+});
+
+test("another client reads as an observer, not the owning client", () => {
+  const open = withBid();
+  assert.equal(nextStep(open, OTHER_CLIENT), "The client accepts one bid to fund escrow.");
+  assert.equal(nextStep(BASE, OTHER_CLIENT), "The client accepts one bid to fund escrow.");
+  // The projection serves client null to a viewer who does not own the job.
+  assert.equal(nextStep({ ...open, client: null }, CLIENT), "The client accepts one bid to fund escrow.");
+
+  const funding: TimelineJob = {
+    ...open,
+    bids: { operators: [bid({ status: "ACCEPTED" })], house: null },
+    status: "OPEN",
+    phase: "FUNDING",
+    checkoutPhase: "AWAITING_APPROVAL",
+  };
+  assert.equal(nextStep(funding, CLIENT), "Approve the payment on PayPal to hold it in escrow.");
+  assert.equal(
+    nextStep(funding, OTHER_CLIENT),
+    "The client is approving the payment on PayPal. Escrow holds the money once it does.",
+  );
 });
 
 test("disputed and closed read their own next step", () => {
@@ -364,7 +529,3 @@ test("disputed and closed read their own next step", () => {
   assert.equal(nextStep(disputed, CLIENT), "The payment is paused. An arbiter decides by 2026-10-18 08:00 UTC.");
   assert.equal(nextStep({ ...BASE, status: "CLOSED", phase: "CLOSED" }, CLIENT), "Closed. Nothing else happens on this job.");
 });
-
-function withBid(): TimelineJob {
-  return { ...BASE, bids: { operators: [bid({})], house: null } };
-}

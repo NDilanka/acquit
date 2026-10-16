@@ -7,7 +7,7 @@ import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry }
 import { escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
 import { bidStatusWord, draftFailureWord, runFailureWord } from "../job-status";
-import { canDeliver, nextStep, timelineEvents, type TimelineJob, type Viewer } from "../job-timeline";
+import { canDeliver, nextStep, timelineEvents, verifierLine, type TimelineJob, type Viewer } from "../job-timeline";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
 import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
@@ -780,9 +780,7 @@ function Verifier({ job, diff, operator }: { job: TimelineJob; diff: JobDiff | n
     <section className="card verifier">
       <div className="pad hd">
         <h2>Verifier</h2>
-        <small className="muted">
-          {attempts.used} of {total} attempts used. A rejection keeps escrow held.
-        </small>
+        <small className="muted">{verifierLine(job)}</small>
       </div>
       {failure && (
         <div className="pad">

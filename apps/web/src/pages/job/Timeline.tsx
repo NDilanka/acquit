@@ -41,8 +41,11 @@ function EventNode({ event }: { event: TimelineEvent }) {
         )}
         {event.ids.length > 0 && (
           <div className="tl-ids">
-            {event.ids.map((id) => (
-              <IdChip key={id} value={id} />
+            {event.ids.map((id, i) => (
+              <span key={`${i}-${id.value}`} className="tl-id">
+                {id.label && <small className="muted">{id.label}</small>}
+                <IdChip value={id.value} />
+              </span>
             ))}
           </div>
         )}

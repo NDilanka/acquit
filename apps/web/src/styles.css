@@ -220,6 +220,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tl-node.alert .tl-detail { color: var(--red); }
 .tl-link { margin: 4px 0 0; font-size: 13px; }
 .tl-ids { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.tl-id { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
 .money-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .money-head h2 { margin-bottom: 0; }
 .money .rows { margin-top: 10px; }
