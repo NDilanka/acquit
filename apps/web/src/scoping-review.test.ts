@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ScopingCase, ScopingResponse } from "./api-types";
 import { ApiError } from "./api.ts";
-import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, type ScopingPanel } from "./scoping-review.ts";
+import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, readPanel, shortDigest, type ScopingPanel } from "./scoping-review.ts";
 
 const usd250: ScopingCase = {
   id: "h-usd-250",
@@ -82,6 +82,27 @@ test("a read maps to its panel: a draft in progress, a failure by name, a review
     kind: "UNREADABLE",
     message: "The request was refused. (INTERNAL)",
   });
+});
+
+test("a failed draft on a job with a frozen contract says the draft froze nothing and the job keeps its existing contract", () => {
+  assert.equal(
+    failedDraftCopy("ISSUE_BODY_UNREADABLE", true),
+    "The AI draft failed because the issue text could not be read. No cases from this draft were frozen. This job uses its existing frozen contract, shown in the proof timeline.",
+  );
+});
+
+test("a failed draft on a job with no contract says nothing was frozen and a new job starts a new draft", () => {
+  assert.equal(
+    failedDraftCopy("PIPELINE_ERROR", false),
+    "The draft failed because the drafting step hit an internal error. Nothing was frozen. A draft never retries; a new job starts a new draft.",
+  );
+});
+
+test("a draft failure code the copy table does not know reads as the server sent it, in the contract branch too", () => {
+  assert.equal(
+    failedDraftCopy("DRAFT_BUDGET", true),
+    "The AI draft failed because DRAFT_BUDGET. No cases from this draft were frozen. This job uses its existing frozen contract, shown in the proof timeline.",
+  );
 });
 
 test("a later read of a frozen draft keeps the digest the server's frozen row names, so a fresh page shows what froze", () => {
