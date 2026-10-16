@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { JobView, UserCommand } from "../api-types";
 import { api, ApiError, type Repo, type RepoIssue } from "../api";
-import { parseUsd, usd, utc } from "../format";
+import { budgetProblem, parseUsd, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link } from "../router";
 import { rememberJob, useSession } from "../session";
@@ -39,13 +39,11 @@ export function NewJob() {
   }, [repos, issueRef]);
 
   const cents = parseUsd(budget);
+  const problem = budgetProblem(cents);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!selected || cents === null || cents <= 0) {
-      intent.setError("Pick an issue and enter a budget in whole dollars or cents, such as 400 or 400.00.");
-      return;
-    }
+    if (!selected || cents === null || problem !== null) return;
     const signature = JSON.stringify([issueRef, cents, days]);
     const outcome = await intent.send(signature, (): UserCommand => ({
       type: "OpenJob",
@@ -102,8 +100,8 @@ export function NewJob() {
 
         <label>
           <span>Budget (USD)</span>
-          <input inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} />
-          {cents !== null && <small className="muted num">{usd(cents)}</small>}
+          <input inputMode="decimal" value={budget} aria-invalid={problem !== null} onChange={(e) => setBudget(e.target.value)} />
+          {problem ? <small className="field-error">{problem}</small> : cents !== null && <small className="muted num">{usd(cents)}</small>}
         </label>
 
         <label>
@@ -120,7 +118,7 @@ export function NewJob() {
         {intent.error && <div className="alert">{intent.error}</div>}
         <div className="act">
           <Link to="/" className="btn ghost">Cancel</Link>
-          <button className="btn" disabled={intent.busy || !selected}>
+          <button className="btn" disabled={intent.busy || !selected || problem !== null}>
             {intent.busy ? "Opening…" : "Open job"}
           </button>
         </div>

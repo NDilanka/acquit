@@ -264,6 +264,7 @@ function mintSession(handle: string): string {
 function redirect(res: ServerResponse, path: string): void { res.writeHead(302, { Location: path, "Cache-Control": "no-store" }); res.end(); }
 class BadBody extends Error {}
 class TooLarge extends Error {}
+class BudgetBelowMinimum extends Error {}
 async function body(req: IncomingMessage): Promise<unknown> {
 	let size = 0;
 	const chunks: Buffer[] = [];
@@ -322,6 +323,15 @@ function integer(value: unknown, label: string, max = 10_000_000): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > max) throw new BadBody(`Invalid ${label}`);
 	return value;
 }
+// The smallest budget a job opens with. The seed and fixtures open at this amount, and the web form
+// refuses below it too (apps/web/src/format.ts), so the two must move together.
+const MIN_BUDGET_CENTS = 40_000;
+function openBudget(value: unknown): UsdCents {
+	if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < MIN_BUDGET_CENTS) {
+		throw new BudgetBelowMinimum(`The budget must be at least ${(MIN_BUDGET_CENTS / 100).toFixed(2)} USD.`);
+	}
+	return integer(value, "budget") as UsdCents;
+}
 function parseCommand(value: unknown): UserCommand {
 	const command = object(value);
 	const keys: Record<string, readonly string[]> = {
@@ -337,7 +347,7 @@ function parseCommand(value: unknown): UserCommand {
 	if (!allowed || Object.keys(command).some(key => !allowed.includes(key))) throw new BadBody("Unsupported command or field");
 	switch (command.type) {
 		case "OpenJob": return { type: "OpenJob", repository: text(command.repository, "repository"),
-			issueNumber: integer(command.issueNumber, "issue number"), budget: integer(command.budget, "budget") as UsdCents,
+			issueNumber: integer(command.issueNumber, "issue number"), budget: openBudget(command.budget),
 			deliveryEndsAt: instant(text(command.deliveryEndsAt, "deadline")) };
 		case "PlaceBid": return { type: "PlaceBid", jobId: parseJobId(text(command.jobId, "job id")),
 			price: integer(command.price, "price") as UsdCents, eta: hours(integer(command.eta, "ETA", 336)),
@@ -653,7 +663,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			const input = object(await body(req));
 			if (Object.keys(input).some(key => !["key", "command"].includes(key))) throw new BadBody("Unsupported request field");
 			parsed = { key: parseRequestKey(text(input.key, "request key")), command: parseCommand(input.command) };
-		} catch (error) { json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return; }
+		} catch (error) {
+			if (error instanceof BudgetBelowMinimum) { json(res, 400, { error: "BUDGET_BELOW_MINIMUM", detail: error.message }); return; }
+			json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return;
+		}
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
 		// A visitor's job funds with the test card unless its client chooses otherwise: a judge has no
 		// sandbox buyer account, and the card is the one path to a funded escrow without one.

@@ -18,6 +18,16 @@ export function parseUsd(input: string): number | null {
   return Number.isSafeInteger(cents) ? cents : null;
 }
 
+/** The smallest budget a job opens with; apps/api/src/server.ts refuses below the same amount. */
+export const MIN_BUDGET_CENTS = 40_000;
+
+/** Why a budget cannot open a job, or null when it can. A blank or unreadable budget is not a number of cents. */
+export function budgetProblem(cents: number | null): string | null {
+  if (cents === null) return "Enter the budget in dollars, such as 400 or 400.00.";
+  if (cents < MIN_BUDGET_CENTS) return `The budget must be at least ${usd(MIN_BUDGET_CENTS)}.`;
+  return null;
+}
+
 /** Client escrow fee is 5% of the job price, half-up to the cent. Display only; the API is authoritative. */
 export function escrowFee(price: number): number {
   return Math.floor((price * 500 + 5000) / 10000);
