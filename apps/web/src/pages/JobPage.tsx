@@ -6,11 +6,11 @@ import { allBids, bidder, houseName, lockedBid, payeeBid, proofLine } from "../b
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
-import { bidStatusWord, draftFailureWord, runFailureWord } from "../job-status";
+import { bidStatusWord, runFailureWord } from "../job-status";
 import { canDeliver, nextStep, timelineEvents, verifierLine, type TimelineJob, type Viewer } from "../job-timeline";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
-import { approvalStep, approvalWindow, countsLine, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
+import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { useSession } from "../session";
 import { IdChip, NotFound, StatusPill } from "../ui";
@@ -419,10 +419,7 @@ function ScopingReview({ job }: { job: JobView }) {
     return (
       <section className="card pad">
         <h2>Acceptance contract</h2>
-        <p>
-          The draft failed: <b>{draftFailureWord(panel.reason)}</b>. Nothing was frozen. A draft never retries; a new job starts a new
-          draft.
-        </p>
+        <p>{failedDraftCopy(panel.reason, job.contract !== null)}</p>
       </section>
     );
   }

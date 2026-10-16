@@ -1,6 +1,7 @@
 import type { FilterCounts, JobView, Receipt, ScopingApproveResponse, ScopingCase, ScopingResponse } from "./api-types";
 import { ApiError } from "./api.ts";
 import { errorText } from "./demo.ts";
+import { draftFailureWord } from "./job-status.ts";
 
 /** What the client's scoping panel shows. Only REVIEW takes input; a frozen draft is immutable. */
 export type ScopingPanel =
@@ -61,6 +62,15 @@ export const shortDigest = (digest: string) => digest.slice(0, 12);
  * OpenJob or when the client approved the draft), never the fixture catalog's curated copy. */
 export function suiteLine(contract: Pick<NonNullable<JobView["contract"]>, "frozenAt" | "frozenTests" | "hiddenTests">): string {
   return `Suite frozen at ${contract.frozenAt.slice(0, 7)} (${contract.frozenTests} tests, ${contract.hiddenTests} hidden)`;
+}
+
+/** The FAILED panel's copy. A job with a frozen contract keeps running on it, so the failed draft froze nothing new. */
+export function failedDraftCopy(reason: string, hasContract: boolean): string {
+  const why = draftFailureWord(reason);
+  if (hasContract) {
+    return `The AI draft failed because ${why}. No cases from this draft were frozen. This job uses its existing frozen contract, shown in the proof timeline.`;
+  }
+  return `The draft failed because ${why}. Nothing was frozen. A draft never retries; a new job starts a new draft.`;
 }
 
 /** The job page receipt panel's Seeded label: the same provenance the receipts grid and the Studio receipt card
