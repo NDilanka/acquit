@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColDef, GetRowIdFunc } from "ag-grid-community";
 import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, ScopingCase, UserCommand } from "../api-types";
 import { api, ApiError } from "../api";
+import type { PlacedBid } from "../bid-confirmation";
 import { allBids, bidder, houseName, lockedBid, payeeBid, proofLine } from "../bids";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { escrowFee, eta, refundNote, usd, utc } from "../format";
@@ -15,6 +16,7 @@ import { Link, useRouter } from "../router";
 import { useSession } from "../session";
 import { IdChip, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
+import { BidConfirmation } from "./operator/BidConfirmation";
 import { DeliverPanel } from "./job/DeliverPanel";
 import { MoneyCard } from "./job/MoneyCard";
 import { Timeline } from "./job/Timeline";
@@ -31,6 +33,7 @@ export function JobPage({ id }: { id: string }) {
   const [confirmApprove, setConfirmApprove] = useState(false);
   const [disputing, setDisputing] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
+  const [placed, setPlaced] = useState<PlacedBid | null>(null);
   const accept = useIntent();
   const cancel = useIntent();
   const approve = useIntent();
@@ -286,10 +289,17 @@ export function JobPage({ id }: { id: string }) {
           )}
           {approve.error && !confirmApprove && <div className="alert">{approve.error}</div>}
           {dispute.error && !disputing && <div className="alert">{dispute.error}</div>}
+          {placed?.jobId === job.id && <BidConfirmation placed={placed} onDismiss={() => setPlaced(null)} />}
           {!isClient && bidding && !job.bids.operators.some((b) => b.handle === user.handle) && (
             <div className="card pad">
               <h2>Place a bid</h2>
-              <BidForm job={job} onPlaced={() => void load()} />
+              <BidForm
+                job={job}
+                onPlaced={(bid) => {
+                  setPlaced(bid);
+                  void load();
+                }}
+              />
             </div>
           )}
 

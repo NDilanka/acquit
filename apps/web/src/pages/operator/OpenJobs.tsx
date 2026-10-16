@@ -1,9 +1,10 @@
+import type { PlacedBid } from "../../bid-confirmation";
 import type { JobView } from "../../api-types";
 import { usd, utc } from "../../format";
 import { bidStatusWord } from "../../job-status";
 import { Link } from "../../router";
 import { IdChip, StatusPill } from "../../ui";
-import { BidForm, type PlacedBid } from "../BidForm";
+import { BidForm } from "../BidForm";
 
 export function OpenJobs({
   jobs,

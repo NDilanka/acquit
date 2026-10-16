@@ -1,21 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { JobView, UserCommand } from "../api-types";
 import { api, ApiError, type AgentSummary } from "../api";
+import { type PlacedBid } from "../bid-confirmation";
 import { eta as etaLabel, parseUsd, usd } from "../format";
 import { useIntent } from "../intent";
 import { BID_COST_CREDITS } from "../operator-workspace";
 
 const ETAS = [24, 48, 72, 120] as const;
-
-/** A bid the server took. `creditsLeft` is the server's balance, not one the page computed. */
-export type PlacedBid = {
-  readonly jobId: string;
-  readonly title: string;
-  readonly price: number;
-  readonly eta: number;
-  readonly agentName: string;
-  readonly creditsLeft: number;
-};
 
 export function BidForm({ job, onPlaced }: { job: JobView; onPlaced: (placed: PlacedBid) => void }) {
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);

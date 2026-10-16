@@ -1,27 +1,26 @@
-import { eta as etaLabel, usd } from "../../format";
-import { BID_COST_CREDITS } from "../../operator-workspace";
-import type { PlacedBid } from "../BidForm";
+import { bidConfirmation, type PlacedBid } from "../../bid-confirmation";
 
 export function BidConfirmation({ placed, onDismiss }: { placed: PlacedBid; onDismiss: () => void }) {
+  const view = bidConfirmation(placed);
   return (
     <section className="card pad confirm" role="status">
       <div className="confirm-head">
-        <b>Bid sent on {placed.title}</b>
+        <b>{view.heading}</b>
         <button className="btn ghost sm" onClick={onDismiss}>
           Dismiss
         </button>
       </div>
       <dl className="kvs confirm-kvs">
         <dt>Price</dt>
-        <dd className="num">{usd(placed.price)}</dd>
+        <dd className="num">{view.price}</dd>
         <dt>ETA</dt>
-        <dd>{etaLabel(placed.eta)}</dd>
+        <dd>{view.eta}</dd>
         <dt>Agent</dt>
-        <dd>{placed.agentName}</dd>
+        <dd>{view.agent}</dd>
         <dt>Credits spent</dt>
-        <dd className="num">{BID_COST_CREDITS}</dd>
+        <dd className="num">{view.creditsSpent}</dd>
         <dt>Credits left this week</dt>
-        <dd className="num">{placed.creditsLeft}</dd>
+        <dd className="num">{view.creditsLeft}</dd>
       </dl>
     </section>
   );

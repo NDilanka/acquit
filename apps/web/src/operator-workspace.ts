@@ -1,6 +1,6 @@
 import type { JobView, OperatorEscrowRow, ReceiptRow } from "./api-types.ts";
 import { statusLabel, type StatusLabel } from "./job-status.ts";
-import { nextStep, type Viewer } from "./job-timeline.ts";
+import { nextStep, type TimelineJob, type Viewer } from "./job-timeline.ts";
 
 /**
  * What one bid spends. The bid result serves only the balance left, so the spend mirrors
@@ -21,7 +21,7 @@ export type OperatorWorkspace = {
 export type OperatorSnapshot = {
   readonly operatorId: string;
   readonly handle: string;
-  readonly jobs: readonly JobView[];
+  readonly jobs: readonly TimelineJob[];
   readonly receipts: readonly ReceiptRow[];
   readonly escrow: readonly OperatorEscrowRow[];
 };
@@ -37,6 +37,14 @@ export function buildOperatorWorkspace(snapshot: OperatorSnapshot): OperatorWork
   // A seeded history row carries no amount, so it adds nothing here and still lists under receipts.
   const paidCents = snapshot.receipts.reduce((sum, row) => sum + (row.paid ?? 0), 0);
   return { open, mine, earnings: { heldCents, paidCents, receipts: snapshot.receipts } };
+}
+
+/**
+ * A receipt row's marks. The Seeded badge follows the receipts table's source, and the job link follows the
+ * job the row belongs to, so a job-backed seed carries both marks and a detached seed carries the badge only.
+ */
+export function receiptMarks(row: Pick<ReceiptRow, "source" | "jobId">): { readonly seeded: boolean; readonly jobHref: string | null } {
+  return { seeded: row.source === "SEED", jobHref: row.jobId === null ? null : `/jobs/${row.jobId}` };
 }
 
 /** The trail above a page, by the signed-in role. An operator's page never shows the client's crumbs. */

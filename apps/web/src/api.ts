@@ -21,6 +21,7 @@ import type {
   SessionUser,
   SignedInResponse,
   UserCommand,
+  VerifierFields,
 } from "./api-types";
 
 export type { SessionUser };
@@ -89,7 +90,7 @@ export const api = {
   users: () => request<{ users: SessionUser[] }>("GET", "/api/users"),
   repos: () => request<{ repos: Repo[] }>("GET", "/api/repos"),
   jobs: (status?: string) =>
-    request<{ jobs: JobView[]; nextCursor: string | null }>(
+    request<{ jobs: (JobView & VerifierFields)[]; nextCursor: string | null }>(
       "GET",
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),

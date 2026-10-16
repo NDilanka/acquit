@@ -1,7 +1,7 @@
 import type { ReceiptRow } from "../../api-types";
 import { usd } from "../../format";
 import { Link } from "../../router";
-import type { OperatorWorkspace } from "../../operator-workspace";
+import { receiptMarks, type OperatorWorkspace } from "../../operator-workspace";
 import { IdChip } from "../../ui";
 
 function verifiedLine(row: ReceiptRow): string {
@@ -32,16 +32,20 @@ export function Earnings({ earnings }: { earnings: OperatorWorkspace["earnings"]
         {earnings.receipts.length === 0 ? (
           <div className="pad muted">No receipts yet.</div>
         ) : (
-          earnings.receipts.map((row) => (
-            <div key={row.id} className="receipt-row">
-              <div>
-                <IdChip value={row.id} />
-                {row.jobId === null ? <span className="pill new">Seeded</span> : <Link to={`/jobs/${row.jobId}`}>Job page</Link>}
+          earnings.receipts.map((row) => {
+            const marks = receiptMarks(row);
+            return (
+              <div key={row.id} className="receipt-row">
+                <div>
+                  <IdChip value={row.id} />
+                  {marks.seeded && <span className="pill new">Seeded</span>}
+                  {marks.jobHref !== null && <Link to={marks.jobHref}>Job page</Link>}
+                </div>
+                <div className="num strong">{row.paid === null ? "—" : usd(row.paid)}</div>
+                <small className="muted">{verifiedLine(row)}</small>
               </div>
-              <div className="num strong">{row.paid === null ? "—" : usd(row.paid)}</div>
-              <small className="muted">{verifiedLine(row)}</small>
-            </div>
-          ))
+            );
+          })
         )}
       </section>
     </>

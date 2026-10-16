@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CreditAccountView, OperatorView } from "../api-types";
 import { api, ApiError } from "../api";
+import type { PlacedBid } from "../bid-confirmation";
 import { creditLine } from "../format";
 import { buildOperatorWorkspace, homeCrumbs, type OperatorWorkspace } from "../operator-workspace";
 import { useSession } from "../session";
 import { NotFound } from "../ui";
-import type { PlacedBid } from "./BidForm";
 import { BidConfirmation } from "./operator/BidConfirmation";
 import { Earnings } from "./operator/Earnings";
 import { MyWork } from "./operator/MyWork";

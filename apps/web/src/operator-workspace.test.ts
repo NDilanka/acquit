@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BidView, OperatorEscrowRow, ReceiptRow } from "./api-types.ts";
-import { buildOperatorWorkspace, homeCrumbs, type OperatorSnapshot } from "./operator-workspace.ts";
+import { buildOperatorWorkspace, homeCrumbs, receiptMarks, type OperatorSnapshot } from "./operator-workspace.ts";
 import type { TimelineJob } from "./job-timeline.ts";
 
 const OPERATOR = { operatorId: "op_devon", handle: "devon" };
@@ -99,6 +99,12 @@ const PAID_RECEIPT: ReceiptRow = {
   result: "VERIFIED",
 };
 
+const SEEDED_HISTORY: ReceiptRow = {
+  id: "rcpt_seed_1", jobId: null, operator: "op_devon", agent: null, pullRequest: null, mergeCommit: null,
+  frozen: null, hidden: null, attemptsUsed: null, paid: null, releasedAt: "2026-09-01T00:00:00.000Z",
+  repository: null, source: "SEED", passedVerifiedCi: true, grossPaid: null, fee: null, feeSplit: null, result: null,
+};
+
 function snapshot(jobs: TimelineJob[], over: Partial<OperatorSnapshot> = {}): OperatorSnapshot {
   return { ...OPERATOR, jobs, receipts: [], escrow: [], ...over };
 }
@@ -152,15 +158,31 @@ test("a refunded job counts neither held nor paid", () => {
 });
 
 test("settled receipts add up in whole cents and the seeded history row adds nothing", () => {
-  const seeded: ReceiptRow = {
-    id: "rcpt_seed_1", jobId: null, operator: "op_devon", agent: null, pullRequest: null, mergeCommit: null,
-    frozen: null, hidden: null, attemptsUsed: null, paid: null, releasedAt: "2026-09-01T00:00:00.000Z",
-    repository: null, source: "SEED", passedVerifiedCi: true, grossPaid: null, fee: null, feeSplit: null, result: null,
-  };
   const second: ReceiptRow = { ...PAID_RECEIPT, id: "rcpt_devon_2", jobId: "job_paid_two", paid: 22500 };
-  const ws = buildOperatorWorkspace(snapshot([], { receipts: [PAID_RECEIPT, second, seeded] }));
+  const ws = buildOperatorWorkspace(snapshot([], { receipts: [PAID_RECEIPT, second, SEEDED_HISTORY] }));
   assert.equal(ws.earnings.paidCents, 58500);
   assert.equal(ws.earnings.receipts.length, 3);
+});
+
+test("a job-backed seed keeps its paid amount in the total", () => {
+  const jobBackedSeed: ReceiptRow = { ...PAID_RECEIPT, source: "SEED" };
+  const ws = buildOperatorWorkspace(snapshot([], { receipts: [jobBackedSeed] }));
+  assert.equal(ws.earnings.paidCents, 36000);
+});
+
+test("a job-backed seed shows the Seeded badge and its job link, and a detached seed shows the badge alone", () => {
+  assert.deepEqual(receiptMarks({ ...PAID_RECEIPT, source: "SEED" }), { seeded: true, jobHref: "/jobs/job_paid" });
+  assert.deepEqual(receiptMarks(SEEDED_HISTORY), { seeded: true, jobHref: null });
+  assert.deepEqual(receiptMarks(PAID_RECEIPT), { seeded: false, jobHref: "/jobs/job_paid" });
+});
+
+test("a checkout refund still in funding holds nothing for the operator", () => {
+  // The projected capture-mismatch shape: the escrow reads HELD, and the server's escrow rows leave the job out.
+  const mismatch = job({ id: "job_capture_mismatch", status: "OPEN", phase: "FUNDING", checkoutPhase: "REFUND_PENDING",
+    escrow: "HELD", lockedTo: "op_devon", bids: { operators: [bid({ status: "CHOSEN" })], house: null }, refundReason: "CAPTURE_MISMATCH" });
+  const ws = buildOperatorWorkspace(snapshot([mismatch], { escrow: [] }));
+  assert.equal(ws.earnings.heldCents, 0);
+  assert.equal(ws.earnings.paidCents, 0);
 });
 
 test("the escrow rows of jobs the operator does not hold add nothing", () => {
