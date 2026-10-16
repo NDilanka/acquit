@@ -157,7 +157,7 @@ function attemptsExhausted(): TimelineJob {
     refundReason: "ATTEMPTS_EXHAUSTED",
     bids: { operators: [bid({ status: "ACCEPTED" })], house: null },
     lockedTo: "op_devon",
-    attempts: { used: 3, left: 0, last: "REJECTED", reasons: twoReasons.reasons, history: [twoReasons], pending: null, failure: null },
+    attempts: { used: 3, left: 0, last: "REJECTED", reasons: ["Frozen tests failed: test_a", "Hidden tests did not complete: t9"], history: [twoReasons], pending: null, failure: null },
     ledger: [
       { kind: "HELD", cents: 37800, at: "2026-10-11T08:00:00.000Z" },
       { kind: "REFUND", cents: 37800, at: "2026-10-14T08:00:00.000Z" },
@@ -245,7 +245,7 @@ test("rejected attempt: every reason the server sent stays in the line, and only
   });
   assert.equal(timelineEvents(both).at(-1)?.detail, "Frozen tests failed: test_a. Hidden tests did not complete: t9. Escrow still held.");
   const cut = locked({
-    attempts: { used: 1, left: 2, last: "REJECTED", reasons: twoReasons.reasons, history: [twoReasons], pending: null, failure: null },
+    attempts: { used: 1, left: 2, last: "REJECTED", reasons: ["Frozen tests failed: test_a", "Hidden tests did not complete: t9"], history: [twoReasons], pending: null, failure: null },
   });
   assert.equal(
     timelineEvents(cut).at(-1)?.detail,
