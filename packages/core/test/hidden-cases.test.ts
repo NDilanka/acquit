@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Digest, TestId } from "../src/ids.ts";
@@ -261,8 +261,9 @@ test("the deployment's private case file sits outside every git repository", { s
 });
 
 test("the ancestor walk reaches the filesystem root itself", () => {
-	assert.ok(ancestorsAbove(join(tmpdir(), "deep", "path", "hidden-cases.json")).includes("/"),
-		"the walk stopped before /; a store under a repository mounted at the root would slip past it");
+	const store = join(tmpdir(), "deep", "path", "hidden-cases.json");
+	assert.ok(ancestorsAbove(store).includes(parse(store).root),
+		"the walk stopped before the filesystem root; a store under a repository mounted at the root would slip past it");
 });
 
 test("the ancestor walk detects a bare repository above the store", () => {
@@ -305,7 +306,7 @@ test("a relative ACQUIT_PRIVATE_CASES terminates", () => {
 
 test("the private-case path honors its environment knob", () => {
 	assert.equal(privateCasesPath({}), DEFAULT_PRIVATE_CASES_PATH, "no knob value keeps the laptop default");
-	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "/var/lib/acquit/private/hidden-cases.json" }), "/var/lib/acquit/private/hidden-cases.json",
+	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "/var/lib/acquit/private/hidden-cases.json" }), resolve("/var/lib/acquit/private/hidden-cases.json"),
 		"the knob names the deployment's own store");
 	assert.equal(privateCasesPath({ ACQUIT_PRIVATE_CASES: "  " }), DEFAULT_PRIVATE_CASES_PATH, "a blank knob value keeps the default");
 	assert.equal(isAbsolute(privateCasesPath({ ACQUIT_PRIVATE_CASES: "private/hidden-cases.json" })), true, "a relative knob value resolves to an absolute path");
