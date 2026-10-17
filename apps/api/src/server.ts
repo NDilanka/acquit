@@ -40,7 +40,7 @@ import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
 import { platformStream } from "./platform-stream.ts";
-import { paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
+import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
  * sees only the fixture its fork was made from, named by its own fork; every other signed-in
@@ -159,10 +159,11 @@ const askCallLog = modelCallLog(join(resolve(databasePath, ".."), "model-calls.j
 const askPaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
 	? paypalAskReader({ clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret }) : null;
 // The platform reconciliation reads each ledger line's PayPal object through the toolkit-backed reader, and Transaction
-// Search for the platform account's other activity. Both read through the same toolkit client.
+// Search for the platform account's other activity. Both read through the same toolkit client. Refreshes run one at a
+// time, so open tabs share the object cache instead of reading PayPal together.
 const reconcileConfig = { clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret };
 const reconcilePaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
-	? reconciliationService({ fetchPage: paypalTransactionFetch(reconcileConfig), readObject: paypalObjectRead(reconcileConfig) }) : null;
+	? coalesced(reconciliationService({ fetchPage: paypalTransactionFetch(reconcileConfig), readObject: paypalObjectRead(reconcileConfig) })) : null;
 const askExecutor = askToolExecutor({
 	platformView: async () => {
 		const result = await acquit.query({ role: "PLATFORM" }, { type: "PlatformLedger" });

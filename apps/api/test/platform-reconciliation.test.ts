@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OBJECT_TTL_MS, RECONCILE_CACHE_MS, paypalObjectRead, reconciliationService } from "../src/reconciliation.ts";
+import { OBJECT_TTL_MS, RECONCILE_CACHE_MS, coalesced, paypalObjectRead, reconciliationService } from "../src/reconciliation.ts";
 import type { LedgerTables, ObjectRead, TransactionFetch } from "../src/reconciliation.ts";
 import { factOf } from "../../../packages/core/src/reconcile.ts";
 import type { CaptureEventInput, LedgerLineInput, ObjectTarget, Reading } from "../../../packages/core/src/reconcile.ts";
@@ -184,6 +184,53 @@ test("Transaction Search rows a checked object claims are not other activity; th
 	assert.deepEqual(result.other.sample.map(t => t.transactionId), ["TREASURY-1"]);
 });
 
+test("a capture cached as COMPLETED is read again once a refund with no refund id names it, and the refund matches at once", async () => {
+	const completed = fixture("capture-completed-with-fee.json");
+	const refunded = { ...(completed as Record<string, unknown>), status: "REFUNDED" };
+	let onPayPal: unknown = completed;
+	const objects = fakeObjects(() => ({ state: "FOUND", fact: factOf("CAPTURE", onPayPal) }));
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const refundLine: LedgerLineInput = { entryId: "job_a#1", jobId: "job_a", kind: "REFUND", cents: 37800, at: "2026-10-12T10:00:00Z", captureId: CAPTURE, processorCents: null };
+
+	const before = await reconcile({ entries: [hold("job_a#0", CAPTURE)], events: [event(CAPTURE)] }, NOW);
+	assert.deepEqual(before.rows.map(r => r.status), ["MATCHED"]);
+
+	// PayPal completes the full refund at t=1 s, and the job stores it with no refund id, so the capture now carries it.
+	onPayPal = refunded;
+	const after = await reconcile({ entries: [hold("job_a#0", CAPTURE), refundLine], events: [event(CAPTURE)] }, NOW + 1_000);
+	assert.deepEqual(after.rows.map(r => [r.kind, r.status, r.reason]), [["HELD", "MATCHED", null], ["REFUND", "MATCHED", null]]);
+	assert.deepEqual(after.objects, { read: 1, cached: 0, budget: 60 }, "the stale COMPLETED reading is replaced by one fresh read");
+	assert.equal(objects.calls.length, 2);
+
+	const later = await reconcile({ entries: [hold("job_a#0", CAPTURE), refundLine], events: [event(CAPTURE)] }, NOW + 2_000);
+	assert.deepEqual(later.objects, { read: 0, cached: 1, budget: 60 }, "a REFUNDED reading answers the refund line from the cache");
+	assert.equal(objects.calls.length, 2);
+});
+
+test("a stale capture reading with no budget left is not checked yet, never a mismatch", async () => {
+	const completed = fixture("capture-completed-with-fee.json");
+	const refunded = { ...(completed as Record<string, unknown>), status: "REFUNDED" };
+	let capOnPayPal: unknown = completed;
+	const objects = fakeObjects(target => ({ state: "FOUND", fact: factOf("CAPTURE", target.id === CAPTURE ? capOnPayPal : completed) }));
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject }, { budget: 1 });
+	await reconcile({ entries: [hold("job_a#0", CAPTURE)], events: [event(CAPTURE)] }, NOW);
+
+	capOnPayPal = refunded;
+	// The other capture is listed first, so the one read this refresh allows goes to it, and the refunded capture has none left.
+	const result = await reconcile({
+		entries: [hold("job_c#0", "CAP-2"), { entryId: "job_a#1", jobId: "job_a", kind: "REFUND", cents: 37800, at: "2026-10-12T10:00:00Z", captureId: CAPTURE, processorCents: null }, hold("job_a#0", CAPTURE)],
+		events: [event(CAPTURE), event("CAP-2")],
+	}, NOW + 1_000);
+	assert.deepEqual(result.rows.map(r => [r.entryId, r.status, r.reason]), [
+		["job_c#0", "MATCHED", null],
+		["job_a#1", "NOT_CHECKED", "NOT_READ_YET"],
+		["job_a#0", "NOT_CHECKED", "NOT_READ_YET"],
+	]);
+	assert.deepEqual(result.counts, { matched: 1, pending: 0, mismatched: 0, notChecked: 2 });
+	assert.deepEqual(result.objects, { read: 1, cached: 0, budget: 1 });
+	assert.deepEqual(objects.calls.map(t => t.id), [CAPTURE, "CAP-2"], "the stale capture was not read a second time");
+});
+
 test("the same capture id under another merchant is read under that merchant, never answered from the first merchant's reading", async () => {
 	const objects = fakeObjects(target => (target.merchant === "MERCHANT_B" ? { state: "NOT_FOUND" } : liveCapture()));
 	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
@@ -195,6 +242,67 @@ test("the same capture id under another merchant is read under that merchant, ne
 	assert.deepEqual(second.objects, { read: 1, cached: 0, budget: 60 });
 	assert.deepEqual(objects.calls.map(t => t.merchant), [MERCHANT, "MERCHANT_B"]);
 });
+
+test("other activity reads at most four Transaction Search pages, and says so when the list is cut short", async () => {
+	const search = fakeSearch((_start, current) => page([row(`T-${current}`, "1.00")], current, 10));
+	const reconcile = reconciliationService({ fetchPage: search.fetchPage, readObject: fakeObjects(liveCapture).readObject });
+	const result = await reconcile({ entries: [], events: [] }, NOW);
+	assert.deepEqual(search.calls.map(([, , current]) => current), [1, 2, 3, 4]);
+	assert.equal(result.other.state, "READ");
+	if (result.other.state !== "READ") return;
+	assert.equal(result.other.truncated, true);
+	assert.equal(result.other.count, 4);
+});
+
+test("three refreshes at once read PayPal at most four at a time, and each object once", async () => {
+	const objects = fakeObjects(liveCapture, 5);
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const ids = Array.from({ length: 90 }, (_, i) => `CAP-${String(i).padStart(2, "0")}`);
+	const tables: LedgerTables = { entries: ids.map((id, i) => hold(`job_${i}#0`, id)), events: ids.map(id => event(id)) };
+	const [tab1, tab2, tab3] = await Promise.all([reconcile(tables, NOW), reconcile(tables, NOW), reconcile(tables, NOW)]);
+	assert.equal(objects.peak(), 4, "one cap holds across the three refreshes");
+	assert.equal(objects.calls.length, 90);
+	assert.equal(new Set(objects.calls.map(t => t.id)).size, 90, "no object is read twice");
+	assert.deepEqual([tab1.objects, tab2.objects, tab3.objects], [
+		{ read: 60, cached: 0, budget: 60 },
+		{ read: 30, cached: 60, budget: 60 },
+		{ read: 0, cached: 90, budget: 60 },
+	]);
+	assert.deepEqual([tab1.counts, tab2.counts, tab3.counts].map(c => [c.matched, c.notChecked]), [[60, 30], [90, 0], [90, 0]]);
+});
+
+test("a target that keeps failing cannot starve the targets after it: each refresh starts where the last one stopped", async () => {
+	const id = (i: number) => `CAP-${String(i).padStart(2, "0")}`;
+	const failing = new Set(Array.from({ length: 60 }, (_, i) => id(i)));
+	const objects = fakeObjects(target => (failing.has(target.id) ? { state: "UNAVAILABLE", detail: "PayPal answered 503" } : liveCapture()));
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const ids = Array.from({ length: 90 }, (_, i) => id(i));
+	const tables: LedgerTables = { entries: ids.map((x, i) => hold(`job_${i}#0`, x)), events: ids.map(x => event(x)) };
+
+	const first = await reconcile(tables, NOW);
+	assert.deepEqual(first.counts, { matched: 0, pending: 0, mismatched: 0, notChecked: 90 });
+	assert.equal(first.objects.read, 60);
+	const second = await reconcile(tables, NOW + MINUTE);
+	assert.deepEqual(second.counts, { matched: 30, pending: 0, mismatched: 0, notChecked: 60 }, "the targets past the first 60 read on the second refresh");
+	assert.deepEqual(second.rows.slice(60).map(r => r.status), Array(30).fill("MATCHED"));
+});
+
+test("refreshes that arrive while one runs wait for it, and those that arrive meanwhile share one run on the latest ledger", async () => {
+	const log: string[] = [];
+	const refresh = coalesced(async (tables: string) => {
+		log.push(`start ${tables}`);
+		await new Promise(resolve => setTimeout(resolve, 5));
+		log.push(`end ${tables}`);
+		return tables;
+	});
+	const first = refresh("one");
+	await new Promise(resolve => setTimeout(resolve, 1));
+	const second = refresh("two");
+	const third = refresh("three");
+	assert.deepEqual(await Promise.all([first, second, third]), ["one", "three", "three"]);
+	assert.deepEqual(log, ["start one", "end one", "start three", "end three"]);
+});
+
 // ---- the object reader: which authority reads which object, and what its refusals become --------------------------
 
 type Seen = { readonly path: string; readonly assertion: string | null };

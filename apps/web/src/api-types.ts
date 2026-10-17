@@ -362,7 +362,7 @@ export type PlatformOtherTransaction = {
 
 export type PlatformOtherActivity =
   | { readonly state: "READ"; readonly from: string; readonly to: string; readonly fetchedAt: string; readonly cached: boolean;
-      readonly count: number; readonly unreadable: number; readonly sample: readonly PlatformOtherTransaction[] }
+      readonly count: number; readonly unreadable: number; readonly truncated: boolean; readonly sample: readonly PlatformOtherTransaction[] }
   | { readonly state: "NOT_READ"; readonly reason: "SPAN_TOO_LONG" | "PAYPAL_UNREADABLE" };
 
 export type PlatformReconciliation = {
