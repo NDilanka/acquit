@@ -2,6 +2,7 @@
 // as a "changed" event within two seconds, and every other holder is refused before the stream opens.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -123,6 +124,14 @@ test("the platform stream refuses everyone but the platform role, and a committe
 		assert.equal((await post(port, "/api/dev/paypal/webhook", probe("WH-STREAM-2"))).status, 202);
 		assert.ok(await until(() => open.text().split('data: {"kind":"changed"').length - 1 > countBefore, 2_000),
 			"a second commit sends a second event");
+
+		// A write through the API's own connection is a commit too: the CLI login mints its code row there, and
+		// no other connection writes in this step, so only a stream that watches its own connection sees it.
+		const countMain = open.text().split('data: {"kind":"changed"').length - 1;
+		const challenge = createHash("sha256").update("stream-test-verifier").digest("base64url");
+		assert.equal((await post(port, "/api/cli/codes", { challenge })).status, 201);
+		assert.ok(await until(() => open.text().split('data: {"kind":"changed"').length - 1 > countMain, 2_000),
+			"a commit on the API's own connection sends an event");
 	} finally {
 		// Windows keeps the SQLite file locked until the server process has exited; an open stream must not
 		// hold the server's shutdown.
