@@ -210,7 +210,7 @@ export type PublicReceiptResponse = {
     readonly scripted: boolean;
     readonly releasedAt: Instant;
     readonly releaseAuthority: ReleaseAuthority | null;
-    readonly operator: { readonly handle: string | null; readonly label: "INDEPENDENT" | "HOUSE" | null; readonly agent: string };
+    readonly operator: { readonly handle: string | null; readonly label: "INDEPENDENT" | "HOUSE" | null };
     readonly money: { readonly heldCents: UsdCents | null; readonly paidCents: UsdCents; readonly feeCents: UsdCents | null;
       readonly processorFeeCents: UsdCents | null; readonly acquitFeeCents: UsdCents | null };
     readonly verdict: { readonly attemptsUsed: number; readonly attemptsAllowed: number; readonly frozen: { readonly expected: number; readonly passed: number };

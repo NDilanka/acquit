@@ -109,7 +109,7 @@ export type PublicReceipt = {
 		readonly scripted: boolean;
 		readonly releasedAt: string;
 		readonly releaseAuthority: string | null;
-		readonly operator: { readonly handle: string | null; readonly label: "INDEPENDENT" | "HOUSE" | null; readonly agent: string };
+		readonly operator: { readonly handle: string | null; readonly label: "INDEPENDENT" | "HOUSE" | null };
 		readonly money: { readonly heldCents: number | null; readonly paidCents: number; readonly feeCents: number | null;
 			readonly processorFeeCents: number | null; readonly acquitFeeCents: number | null };
 		readonly verdict: { readonly attemptsUsed: number; readonly attemptsAllowed: number; readonly frozen: { readonly expected: number; readonly passed: number };
@@ -194,7 +194,7 @@ export function publicReceipt(db: InstanceType<typeof import("node:sqlite").Data
 		releasedAt: receipt.releasedAt,
 		releaseAuthority: typeof state.releaseAuthority === "string" ? state.releaseAuthority : null,
 		operator: { handle: typeof bid?.handle === "string" ? bid.handle : null,
-			label: bid?.kind === "HOUSE" || bid?.kind === "INDEPENDENT" ? bid.kind : null, agent: String(receipt.agent) },
+			label: bid?.kind === "HOUSE" || bid?.kind === "INDEPENDENT" ? bid.kind : null },
 		money: { heldCents: held?.cents ?? null, paidCents: receipt.paid, feeCents: fee?.cents ?? null,
 			processorFeeCents: fee?.processor ?? null, acquitFeeCents: fee?.acquit ?? null },
 		verdict: { attemptsUsed: receipt.attemptsUsed, attemptsAllowed: TERMS.maxAttempts, frozen: receipt.frozen, hidden: receipt.hidden,

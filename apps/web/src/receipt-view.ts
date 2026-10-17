@@ -109,7 +109,7 @@ export function scoreCardLines(card: PublicReceipt["scoreCard"]): readonly strin
 export function operatorLine(operator: PublicReceipt["operator"]): string {
   const who = operator.handle ?? "The operator";
   const kind = operator.label === "HOUSE" ? "House operator" : operator.label === "INDEPENDENT" ? "Independent operator" : "Operator";
-  return `${who}, ${kind}, agent ${operator.agent}.`;
+  return `${who}, ${kind}.`;
 }
 
 /** The sandbox line every receipt carries, so no PayPal figure reads as real money. */
