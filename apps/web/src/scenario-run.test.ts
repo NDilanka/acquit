@@ -7,6 +7,7 @@ const SCRIPTED: ScenarioLabel = "Scripted agent (Simulated)";
 const PAYPAL: ScenarioLabel = "PayPal sandbox";
 const VERIFIER: ScenarioLabel = "Real verifier run";
 const SERVER: ScenarioLabel = "Server record (no outside call)";
+const GITHUB: ScenarioLabel = "GitHub work repository";
 
 function step(name: string, actor: ScenarioStep["actor"], label: ScenarioLabel, ms: number, outcome: string): ScenarioStep {
   return { name, actor, label, ms, outcome, startedAt: "2026-05-01T10:00:00.000Z", endedAt: "2026-05-01T10:00:01.000Z" };
@@ -161,17 +162,27 @@ test("each start refusal reads in plain words, and the code stays visible", () =
   assert.equal(startRefusalWords("SOME_UNNAMED_CODE"), "The request was refused. (SOME_UNNAMED_CODE)");
 });
 
-test("a settle step reads Pending PayPal sandbox work settles, with the sandbox note and the time it measured", () => {
+test("a settle step reads Pending work settles, with the sandbox note only when PayPal ran, and the time it measured", () => {
   const view = buildRunView({
     ...RUN,
     steps: [
       step("place-bid", "OPERATOR", SCRIPTED, 388, "bid bid_1"),
-      step("settle", "SYSTEM", PAYPAL, 4235, "SETTLED"),
+      step("settle", "SYSTEM", PAYPAL, 4235, "SETTLED REFUND, REIMBURSE"),
     ],
   });
   assert.deepEqual(view.steps, [
     { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", sandboxNote: null, result: "bid bid_1", ms: 388 },
-    { title: "Pending PayPal sandbox work settles", actorText: "System", label: "PayPal sandbox", sandboxNote: "No real money moves.", result: "SETTLED", ms: 4235 },
+    { title: "Pending work settles", actorText: "System", label: "PayPal sandbox", sandboxNote: "No real money moves.", result: "SETTLED REFUND, REIMBURSE", ms: 4235 },
+  ]);
+});
+
+test("a settle step that ran GitHub work reads GitHub work repository, with no sandbox note", () => {
+  const view = buildRunView({
+    ...RUN,
+    steps: [step("settle", "SYSTEM", GITHUB, 6, "SETTLED MERGE")],
+  });
+  assert.deepEqual(view.steps, [
+    { title: "Pending work settles", actorText: "System", label: "GitHub work repository", sandboxNote: null, result: "SETTLED MERGE", ms: 6 },
   ]);
 });
 
@@ -197,7 +208,7 @@ test("a FAILED run whose settle step failed names that step and its code, and sa
     ],
     endState: null,
   });
-  assert.equal(view.endText, "Failed at Pending PayPal sandbox work settles. The step failed (PAYPAL_UNAVAILABLE). The run reached no end state.");
+  assert.equal(view.endText, "Failed at Pending work settles. The step failed (PAYPAL_UNAVAILABLE). The run reached no end state.");
   assert.equal(view.observed, null);
 });
 
