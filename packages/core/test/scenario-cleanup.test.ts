@@ -14,7 +14,7 @@ import type { Instant, JobId } from "../src/ids.ts";
 import { boundedRuns, ScenarioRefused, startScenario } from "../src/scenarios.ts";
 import type { StartedScenario } from "../src/scenarios.ts";
 import { openDatabase } from "../src/store.ts";
-import { SCENARIO_SWEEP_TTL_MS, sweepExpiredVisitors, sweepScenarioRuns } from "../src/sweep.ts";
+import { keptSummary, SCENARIO_SWEEP_TTL_MS, sweepExpiredVisitors, sweepScenarioRuns } from "../src/sweep.ts";
 import type { ScenarioRepoDeleter } from "../src/sweep.ts";
 import { newVisitorId, readVisitor, visitorRepositoryName } from "../src/visitors.ts";
 import type { VisitorRow } from "../src/visitors.ts";
@@ -334,8 +334,40 @@ test("a finished run whose journal was left unfinished is stamped at the reopen,
 	} finally { await h.dispose(); }
 });
 
+test("a work repository whose visitor fork was removed first is swept, and its row is marked swept", async () => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		const visitor = await forkedVisitor(h, h.visitor);
+		const run = await (await start(h, "verified-and-paid", visitor)).finished;
+		assert.equal(run.state, "DONE");
+		const fork = visitor.repository;
+		if (fork === null) throw new Error("the run visitor has no fork");
+		// The visitor's fork is removed before the sweep reaches the work repo, as an earlier pass would leave it.
+		assert.equal(await h.github.deleteClientRepo({ repository: fork, source: DEMO_REPOSITORY, id: visitor.repositoryId }), "DELETED");
+		assert.equal(h.github.clientRepos.size, 0);
+		assert.equal(h.github.workRepos.size, 1);
+
+		const db = h.deps.store.db;
+		const report = await sweepScenarioRuns({ db, app: h.github, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		assert.deepEqual(report.swept, [visitor.id]);
+		assert.deepEqual(report.workRepos.map(work => ({ runId: work.runId, outcome: work.outcome })), [{ runId: run.id, outcome: "DELETED" }]);
+		assert.deepEqual(report.kept, []);
+		assert.equal(h.github.workRepos.size, 0);
+		assert.notEqual(db.prepare("SELECT work_swept_at FROM scenario_cleanup WHERE run_id = ?").get(run.id)?.work_swept_at, null);
+	} finally { await h.dispose(); }
+});
+
+test("the kept log names each kept repository with the reason that kept it", () => {
+	assert.equal(keptSummary([
+		{ repository: "acquit-forks/demo-abc123", reason: "GITHUB_FORK_MISMATCH" },
+		{ repository: "", reason: "WORK_REPO_PENDING" },
+	]), "acquit-forks/demo-abc123 (GITHUB_FORK_MISMATCH), no repository recorded (WORK_REPO_PENDING)");
+});
+
 test("the API runs the scenario sweep on its own timer every ten minutes, through the function the tests above cover", () => {
 	const server = readFileSync(new URL("../../../apps/api/src/server.ts", import.meta.url), "utf8");
 	assert.match(server, /setInterval\(\(\) => \{\s*void sweepScenarioRuns\(/);
 	assert.match(server, /\}, 10 \* 60_000\);/);
+	assert.match(server, /kept \$\{report\.kept\.length\} repositories for the next pass: \$\{keptSummary\(report\.kept\)\}/);
 });
