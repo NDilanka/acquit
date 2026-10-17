@@ -122,6 +122,22 @@ export const WIDGET_ROWS = {
         },
       },
     ],
+    [
+      {
+        id: "acquit-reconciliation",
+        label: "PayPal reconciliation",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 6,
+        ai: {
+          description:
+            "A check card: each platform ledger line against PayPal's Transaction Search, with counts of matched, pending, and mismatched lines, and the PayPal rows no ledger line explains.",
+          usage: "Use when the reader asks whether PayPal agrees with the ledger, or why a ledger line does not match.",
+          configuration:
+            "Takes no data mapping, filters, or format; it reads the platform reconciliation itself. Give it the full 12 columns and at least 6 rows.",
+        },
+      },
+    ],
   ],
   earnings: [
     [

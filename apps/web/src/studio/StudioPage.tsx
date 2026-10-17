@@ -11,7 +11,7 @@ import {
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
-import type { PlatformJobLedger, PlatformTables } from "../api-types";
+import type { PlatformJobLedger, PlatformReconciliation, PlatformTables } from "../api-types";
 import { errorText } from "../demo";
 import { Link } from "../router";
 import { useSession } from "../session";
@@ -20,6 +20,7 @@ import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
 import {
   EarningsContext,
   EscrowContext,
+  ReconcileContext,
   PAGE_LAYOUT,
   WIDGETS,
   freshState,
@@ -68,11 +69,13 @@ function Notice({ title, children }: { title: string; children: ReactNode }) {
 type Load<T> = { kind: "loading" } | { kind: "ready"; data: T } | { kind: "failed"; error: string };
 
 /** The escrow dashboard's book: the ledger the custom widgets total, and the tables the native widgets query. */
-type EscrowBook = { readonly jobs: readonly PlatformJobLedger[]; readonly tables: PlatformTables };
+type EscrowBook = { readonly jobs: readonly PlatformJobLedger[]; readonly tables: PlatformTables; readonly reconciliation: PlatformReconciliation | null };
 
 // Module-level sources keep their identity across renders, so Studio only rebuilds when the data does.
 const escrowSource = (book: EscrowBook) => escrowData(book.tables);
 const earningsSource = () => STUDIO_EARNINGS_DATA;
+// PayPal's read is separate from the ledger's: a PayPal outage leaves the ledger on screen and the card says so.
+const readReconciliation = (): Promise<PlatformReconciliation | null> => api.platformReconciliation().catch(() => null);
 
 function EscrowDashboard() {
   const ask = useAskLedger("escrow");
@@ -100,10 +103,10 @@ function EscrowDashboard() {
       if (step.read) load();
     }
     function load() {
-      Promise.all([api.platformLedger(), api.platformTables()]).then(
-        ([r, t]) => {
+      Promise.all([api.platformLedger(), api.platformTables(), readReconciliation()]).then(
+        ([r, t, reconciliation]) => {
           if (!live) return;
-          setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables } });
+          setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables, reconciliation } });
           settle();
         },
         (e: unknown) => {
@@ -155,7 +158,11 @@ function EscrowDashboard() {
       ask={ask}
       source={escrowSource}
     >
-      {(book, studio) => <EscrowContext.Provider value={book.jobs}>{studio}</EscrowContext.Provider>}
+      {(book, studio) => (
+        <EscrowContext.Provider value={book.jobs}>
+          <ReconcileContext.Provider value={book.reconciliation}>{studio}</ReconcileContext.Provider>
+        </EscrowContext.Provider>
+      )}
     </Dashboard>
   );
 }

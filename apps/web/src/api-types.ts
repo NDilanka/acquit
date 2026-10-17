@@ -321,6 +321,47 @@ export type PlatformTables = {
   readonly clients: readonly PlatformClientRow[];
 };
 
+/** `GET /api/platform/reconciliation`: the platform ledger against PayPal's Transaction Search. Mirrored from packages/core/src/reconcile.ts. Money is signed integer cents. */
+export type PlatformReconcileStatus = "MATCHED" | "PENDING_AT_PAYPAL" | "MISMATCHED";
+export type PlatformReconcileReason = "AMOUNT" | "CURRENCY" | "UNREADABLE_AMOUNT" | "MISSING_AT_PAYPAL" | "NO_PAYPAL_ID";
+
+export type PlatformReconcileRow = {
+  readonly entryId: string;
+  readonly jobId: string;
+  readonly kind: "HELD" | "RELEASED" | "FEE" | "REFUND";
+  readonly at: string;
+  readonly paypalId: string | null;
+  readonly leg: "AMOUNT" | "FEE";
+  readonly expectedCents: number;
+  readonly observedCents: number | null;
+  readonly status: PlatformReconcileStatus;
+  readonly reason: PlatformReconcileReason | null;
+};
+
+/** A PayPal row no ledger line claims: the UNKNOWN_AT_ACQUIT class. */
+export type PlatformReconcileUnknown = {
+  readonly transactionId: string;
+  readonly eventCode: string;
+  readonly initiatedAt: string;
+  readonly amountCents: number | null;
+  readonly feeCents: number | null;
+  readonly currency: string;
+};
+
+export type PlatformReconciliation = {
+  readonly counts: { readonly matched: number; readonly pending: number; readonly mismatched: number; readonly unknown: number };
+  readonly rows: readonly PlatformReconcileRow[];
+  readonly unknown: readonly PlatformReconcileUnknown[];
+  readonly from: string;
+  readonly to: string;
+  /** When PayPal's rows were read. A cached read is at most a minute old. */
+  readonly fetchedAt: string;
+  readonly cached: boolean;
+  readonly transactions: number;
+  readonly unreadable: number;
+  readonly pendingWindowHours: number;
+};
+
 /** One data line of `GET /api/platform/stream`: the store committed a write. It carries no data; the page reads again. */
 export type PlatformStreamEvent = { readonly kind: "changed"; readonly at: string };
 
