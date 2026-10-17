@@ -150,7 +150,7 @@ export function PublicReceiptPage({ receiptId }: { receiptId: string }) {
         )}
       </section>
 
-      <section className="card pad">
+      <section className="card pad money">
         <h2>PayPal ids</h2>
         <div className="rows">
           {paypalLines(r.paypal).map((line) => (
