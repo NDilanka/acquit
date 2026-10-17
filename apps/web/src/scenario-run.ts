@@ -100,6 +100,7 @@ const REFUSAL_WORDS: Readonly<Record<string, string>> = {
   SCENARIO_STORE_FULL: "The server is keeping every scenario run it can, and all of them are still going. Try again in a few minutes.",
   SCENARIO_OPEN_FAILED: "The scenario could not open its job, so nothing was started. Try again.",
   SCENARIO_TIMED_OUT: "The server stopped waiting for a step to finish.",
+  VERDICT_UNEXPECTED: "The verifier's verdict was not the one this scenario needs.",
   SCENARIO_ARBITER_NOT_OWNED: "The arbiter may rule only on a job its own scenario opened.",
   CAP_SCENARIOS_DAY: "Scenario runs have reached today's limit for the whole deployment. Try again tomorrow.",
   CAP_SCENARIOS_REQUESTER_DAY: "You have used today's scenario runs. Try again tomorrow.",
@@ -150,16 +151,22 @@ function stepView(step: ScenarioStep): RunStepView {
   };
 }
 
+function endedText(run: ScenarioRun, end: ScenarioEndState): string {
+  return `The job ended ${observedWords(end)}, and this scenario needs ${observedWords(EXPECTED_END[run.name])}.`;
+}
+
 function failedText(run: ScenarioRun): string {
   if (run.failure === "RESTARTED") return RESTARTED_TEXT;
   const refused = run.steps.find(step => step.outcome.startsWith(STEP_FAILED_PREFIX));
   if (refused !== undefined) {
-    return `Failed at ${stepTitle(refused.name)}. ${stepWords(refused.outcome.slice(STEP_FAILED_PREFIX.length))} The run reached no end state.`;
+    const words = stepWords(refused.outcome.slice(STEP_FAILED_PREFIX.length));
+    const reached = run.endState === null ? "The run reached no end state." : endedText(run, run.endState);
+    return `Failed at ${stepTitle(refused.name)}. ${words} ${reached}`;
   }
   const last = run.steps.at(-1);
   const where = last === undefined ? "Failed before its first step" : `Failed after ${stepTitle(last.name)}`;
   if (run.endState === null) return `${where}. ${NO_END_TEXT}`;
-  return `${where}. The job ended ${observedWords(run.endState)}, and this scenario needs ${observedWords(EXPECTED_END[run.name])}.`;
+  return `${where}. ${endedText(run, run.endState)}`;
 }
 
 function endTextOf(run: ScenarioRun): string {

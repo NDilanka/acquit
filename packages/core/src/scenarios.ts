@@ -53,6 +53,23 @@ export const EXPECTED_END_STATES: Readonly<Record<ScenarioName, ScenarioEndState
 	"deadline-refund": { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" },
 };
 
+/** What a submit step records for the verifier's verdict: VERIFIED, or REJECTED with the job's rejection reason. */
+export type SubmitVerdict = "VERIFIED" | `REJECTED ${string}`;
+
+/** The scenarios whose chain submits a tree. deadline-refund never submits, so it names no verdict. */
+export type SubmittingScenario = Exclude<ScenarioName, "deadline-refund">;
+
+/**
+ * The verdict each submitting scenario's submit needs. A different verdict stops the run at submit, with
+ * FAILED VERDICT_UNEXPECTED, and no later step runs. The REJECTED reasons are the end states EXPECTED_END_STATES names.
+ */
+export const EXPECTED_SUBMIT_VERDICTS: Readonly<Record<SubmittingScenario, SubmitVerdict>> = {
+	"verified-and-paid": "VERIFIED",
+	"hidden-test-fail": "REJECTED TESTS_FAILED:hidden",
+	"test-tamper": "REJECTED PROTECTED_PATH_MODIFIED",
+	"dispute-arbiter": "VERIFIED",
+};
+
 export type ScenarioRun = {
 	readonly id: string;
 	readonly name: ScenarioName;
@@ -238,7 +255,7 @@ export class ScenarioRefused extends Error {
 const DAY_MS = 86_400_000;
 const PRICE = usd("400.00");
 
-type Context = { jobId?: JobId; bidId?: BidId; sourceCommit?: CommitSha; mergeCommit?: CommitSha };
+type Context = { jobId?: JobId; bidId?: BidId; sourceCommit?: CommitSha; mergeCommit?: CommitSha; observedEnd?: ScenarioEndState };
 type ChainStep = { readonly name: string; readonly actor: ScenarioActor; readonly label: ScenarioLabel; readonly run: (ctx: Context) => Promise<string> };
 
 /**
@@ -373,17 +390,22 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		ctx.sourceCommit = await deps.workspace.push(ctx.jobId!, tree);
 		return `pushed ${tree}`;
 	} });
-	const submit: ChainStep = { name: "submit", actor: "OPERATOR", label: SCENARIO_LABELS.verifier, run: async () => {
+	// A verdict other than the scenario's own stops the run here, with the job's end recorded as observed. Otherwise the
+	// chain would go on to approve a fix the verifier refused.
+	const submit = (name: SubmittingScenario): ChainStep => ({ name: "submit", actor: "OPERATOR", label: SCENARIO_LABELS.verifier, run: async () => {
 		const before = historyOf(await rowOf()).length;
 		await send(operator, "submit", { type: "Submit", jobId: ctx.jobId!, sourceCommit: ctx.sourceCommit! });
 		const row = await waitFor(settled => settled.state.status === "VERIFIED" ||
 			(settled.state.status === "IN_PROGRESS" && settled.state.attempts.phase === "READY" && historyOf(settled).length > before), "the verifier verdict");
-		if (row.state.status === "VERIFIED") {
-			ctx.mergeCommit = row.state.passed.verdict.mergeCommit;
-			return "VERIFIED";
+		const verdict: SubmitVerdict = row.state.status === "VERIFIED" ? "VERIFIED" : `REJECTED ${lastRejectionReason(row)}`;
+		const expected = EXPECTED_SUBMIT_VERDICTS[name];
+		if (verdict !== expected) {
+			ctx.observedEnd = endStateOf(row);
+			throw new ScenarioRefused("VERDICT_UNEXPECTED", `submit returned ${verdict}, and ${name} needs ${expected}`);
 		}
-		return `REJECTED ${lastRejectionReason(row)}`;
-	} };
+		if (row.state.status === "VERIFIED") ctx.mergeCommit = row.state.passed.verdict.mergeCommit;
+		return verdict;
+	} });
 	const approve: ChainStep = { name: "approve", actor: "CLIENT", label: SCENARIO_LABELS.paypal, run: async () => {
 		await send(client, "approve", { type: "Approve", jobId: ctx.jobId!, mergeCommit: ctx.mergeCommit! });
 		await waitFor(row => row.state.status === "PAID", "the release to pay the operator");
@@ -416,10 +438,10 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	} };
 
 	const chains: Record<ScenarioName, readonly ChainStep[]> = {
-		"verified-and-paid": [open(7), bid, accept, push("honest-reference-table"), submit, approve],
-		"hidden-test-fail": [open(7), bid, accept, push("cheat-hardcode-visible-values"), submit],
-		"test-tamper": [open(7), bid, accept, push("cheat-edit-frozen-test"), submit],
-		"dispute-arbiter": [open(7), bid, accept, push("honest-reference-table"), submit, dispute, arbiter, release],
+		"verified-and-paid": [open(7), bid, accept, push("honest-reference-table"), submit("verified-and-paid"), approve],
+		"hidden-test-fail": [open(7), bid, accept, push("cheat-hardcode-visible-values"), submit("hidden-test-fail")],
+		"test-tamper": [open(7), bid, accept, push("cheat-edit-frozen-test"), submit("test-tamper")],
+		"dispute-arbiter": [open(7), bid, accept, push("honest-reference-table"), submit("dispute-arbiter"), dispute, arbiter, release],
 		"deadline-refund": [open(1), bid, accept, advanceClock, refund],
 	};
 	const [opening, ...rest] = chains[name];
@@ -451,7 +473,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 
 	const runChain = async (): Promise<ScenarioRun> => {
 		for (const step of rest) {
-			if (await record(step) !== null) { publish({ state: "FAILED" }); return current!; }
+			if (await record(step) !== null) { publish({ state: "FAILED", endState: ctx.observedEnd ?? null }); return current!; }
 			publish({});
 			await deps.acquit.tick();
 		}

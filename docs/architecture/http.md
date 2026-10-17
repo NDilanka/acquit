@@ -55,7 +55,7 @@ A refused start retains no run. Each refusal answers `{ error }` with one of the
 
 A start that fails after its visitor is provisioned keeps that visitor until the sweep removes it. It still counts against both scenario caps, and it retains no run. A start refused before its visitor is provisioned reserves nothing.
 
-A run is `DONE` only when it ends at its scenario's expected end state, shown here. Any other end is `FAILED`, and `endState` keeps the end the run reached.
+A run is `DONE` only when it ends at its scenario's expected end state, shown here. Any other end is `FAILED`, and `endState` keeps the end the run reached. A scenario's submit also names the verdict it needs (`EXPECTED_SUBMIT_VERDICTS` in `packages/core/src/scenarios.ts`: `VERIFIED` for `verified-and-paid` and `dispute-arbiter`, `REJECTED TESTS_FAILED:hidden` for `hidden-test-fail`, `REJECTED PROTECTED_PATH_MODIFIED` for `test-tamper`). A different verdict stops the run at that submit: the step reads `FAILED VERDICT_UNEXPECTED`, no later step runs, and `endState` records the job's observed status and the reason its verdict gave.
 
 | Scenario | `jobStatus` | `reason` |
 |---|---|---|

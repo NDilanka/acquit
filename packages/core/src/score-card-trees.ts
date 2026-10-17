@@ -75,12 +75,15 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 }
 `;
 
-/** The reference fix. Cheats that wrap a working formatter reuse it, so only the cheat differs. */
+/**
+ * The reference fix. Cheats that wrap a working formatter reuse it, so only the cheat differs. Intl knows each
+ * currency's ISO 4217 minor units (KRW 0, KWD 3), so the reference does not keep a table that misses one.
+ */
 const REFERENCE = `export type Line = { amount: number };
-const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
-	return sum.toFixed(MINOR_UNITS[currency] ?? 2);
+	const digits = new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits;
+	return sum.toFixed(digits);
 }
 `;
 
