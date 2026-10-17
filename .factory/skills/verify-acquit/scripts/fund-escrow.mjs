@@ -336,7 +336,8 @@ try {
 		await browser("click", `@${acceptRef}`);
 		await browser("wait", "--text", "Accept devon-ops?");
 		await capture("07-accept-confirm");
-		await browser("find", "role", "button", "click", "--name", "Accept and pay with PayPal", "--exact");
+		const payLabel = process.env.ACQUIT_FUND_MODE === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal";
+		await browser("find", "role", "button", "click", "--name", payLabel, "--exact");
 		if (process.env.ACQUIT_FUND_MODE === "card") {
 			await browser("wait", "--text", "Escrow: HELD, locked to devon-ops");
 			const held = await api(`/api/jobs/${jobId}`, "maya-client");
