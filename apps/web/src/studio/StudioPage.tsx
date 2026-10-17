@@ -6,6 +6,7 @@ import {
   type AgDataSourcesDefinition,
   type AgPanelConfig,
   type AgReportState,
+  type AgStudioApi,
   type AgWidgetsConfig,
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
@@ -244,8 +245,7 @@ function Dashboard<T>({
         children(
           load.data,
           <AcquitStudio
-            // Studio reads initialState once, so a narrow/wide switch remounts it with the matching arrangement.
-            key={narrow ? "narrow" : "wide"}
+            narrow={narrow}
             state={narrow ? stacked(layout.latest.current) : layout.latest.current}
             mode={editing && !narrow ? "edit" : "view"}
             onState={narrow ? undefined : layout.save}
@@ -373,6 +373,7 @@ const ASK_PANEL_ID = "ask-ledger-panel";
 
 function AcquitStudio({
   state,
+  narrow,
   mode,
   onState,
   data,
@@ -380,6 +381,7 @@ function AcquitStudio({
   ask,
 }: {
   state: DashboardState;
+  narrow: boolean;
   mode: "view" | "edit";
   onState: ((state: DashboardState) => void) | undefined;
   data: AgDataSourcesDefinition<AcquitRegistry>;
@@ -391,6 +393,23 @@ function AcquitStudio({
   const handler = useRef(onState);
   handler.current = onState;
   const onStateUpdated = useCallback((event: { state: AgReportState }) => handler.current?.(event.state as unknown as DashboardState), []);
+  // Studio reads initialState once, so the narrow/wide switch sets the arrangement on the mounted instance: a
+  // remount would also drop the ask harness, which belongs to one Studio API (AskLedger.tsx).
+  const [studio, setStudio] = useState<AgStudioApi | null>(null);
+  const shown = useRef(narrow);
+  const wanted = useRef(state);
+  wanted.current = state;
+  useEffect(() => {
+    if (studio === null || shown.current === narrow) return;
+    shown.current = narrow;
+    studio.setState(wanted.current as unknown as AgReportState);
+  }, [studio, narrow]);
+  const readyHandler = useRef(ask?.onApiReady);
+  readyHandler.current = ask?.onApiReady;
+  const onApiReady = useCallback((event: { api: AgStudioApi }) => {
+    setStudio(event.api);
+    readyHandler.current?.(event);
+  }, []);
   return (
     <AgStudioProvider licenseKey={import.meta.env.VITE_AG_STUDIO_LICENSE_KEY as string}>
       <AgStudio<AcquitRegistry>
@@ -404,7 +423,7 @@ function AcquitStudio({
         panels={ask ? STUDIO_PANELS_WITH_AI : STUDIO_PANELS}
         ai={ask?.setup}
         aiToolDisplay={ask ? ASK_TOOL_DISPLAY : undefined}
-        onApiReady={ask?.onApiReady}
+        onApiReady={onApiReady}
         onStateUpdated={onStateUpdated}
       />
     </AgStudioProvider>
