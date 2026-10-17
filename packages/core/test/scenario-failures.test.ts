@@ -77,6 +77,7 @@ test("a tick that throws ends the run FAILED at its settle step, with the coded 
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle"]);
 		assert.equal(run.steps.at(-1)?.outcome, "FAILED PAYPAL_UNAVAILABLE");
 		assert.equal(run.steps.at(-1)?.label, "PayPal sandbox");
+		assert.deepEqual(run.steps.at(-1)?.reached, ["PayPal sandbox"]);
 		assert.equal(run.endState, null);
 		assert.equal(errors.mock.callCount(), 0);
 	} finally { await h.dispose(); }

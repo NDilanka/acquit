@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Acquit, Actor, CommandOutcome, UserCommand } from "./acquit.ts";
-import type { OutboxRan } from "./effects.ts";
+import type { OutboxReach, OutboxRan, RanObserver } from "./effects.ts";
 import { hours, instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Instant, JobId, OperatorId, StaffId, VisitorId } from "./ids.ts";
 import type { AttemptRecord, JobRow, JobStatus } from "./job.ts";
@@ -32,17 +32,34 @@ export const SCENARIO_LABELS = {
 } as const;
 export type ScenarioLabel = (typeof SCENARIO_LABELS)[keyof typeof SCENARIO_LABELS];
 
+/** The outside places a step's own work can reach. A row names each one it reached, and none for work that stayed on the server. */
+export type ScenarioReachLabel = typeof SCENARIO_LABELS.paypal | typeof SCENARIO_LABELS.verifier | typeof SCENARIO_LABELS.github;
+
+/** Each outside place, in the order a row names them, with the outbox reach that places it. */
+const REACH: readonly { readonly label: ScenarioReachLabel; readonly reach: OutboxReach }[] = [
+	{ label: SCENARIO_LABELS.paypal, reach: "PAYPAL" },
+	{ label: SCENARIO_LABELS.verifier, reach: "VERIFIER" },
+	{ label: SCENARIO_LABELS.github, reach: "GITHUB" },
+];
+
+/** The outside places the effects reached, each named once, in REACH order. An alert or a server-only effect names none. */
+export function reachedOf(ran: readonly OutboxRan[]): ScenarioReachLabel[] {
+	const reached = new Set(ran.map(effect => effect.reach));
+	return REACH.filter(place => reached.has(place.reach)).map(place => place.label);
+}
+
+/** A row's label when it names what the row reached: the first place it reached, or a server record when none. */
+function labelOfReached(reached: readonly ScenarioReachLabel[]): ScenarioLabel {
+	return reached[0] ?? SCENARIO_LABELS.server;
+}
+
 /**
  * The label a settle step carries, from what its tick ran for the job. PayPal work wins, so a tick that ran both
  * names PayPal, and the outcome names every effect. An effect that reached nobody outside is a server record. An
  * alert is one too: it goes to the process log, and the API wires no alert sink.
  */
 export function settleLabelOf(ran: readonly OutboxRan[]): ScenarioLabel {
-	const reached = new Set(ran.map(effect => effect.reach));
-	if (reached.has("PAYPAL")) return SCENARIO_LABELS.paypal;
-	if (reached.has("VERIFIER")) return SCENARIO_LABELS.verifier;
-	if (reached.has("GITHUB")) return SCENARIO_LABELS.github;
-	return SCENARIO_LABELS.server;
+	return labelOfReached(reachedOf(ran));
 }
 
 export type ScenarioActor = "CLIENT" | "OPERATOR" | "ARBITER" | "SYSTEM";
@@ -54,7 +71,10 @@ export type ScenarioStep = {
 	readonly endedAt: string;
 	readonly ms: number;
 	readonly outcome: string;
+	/** Who acted. On a system step it names what the step reached, as a settle row always has. */
 	readonly label: ScenarioLabel;
+	/** The outside places the step's own work reached, in PayPal, verifier, GitHub order. Empty when nothing left the server. */
+	readonly reached: readonly ScenarioReachLabel[];
 };
 
 /** The job's status when the run stops, and the literal reason that status was reached for. */
@@ -272,7 +292,8 @@ const DAY_MS = 86_400_000;
 const PRICE = usd("400.00");
 
 type Context = { jobId?: JobId; bidId?: BidId; sourceCommit?: CommitSha; mergeCommit?: CommitSha; observedEnd?: ScenarioEndState };
-type ChainStep = { readonly name: string; readonly actor: ScenarioActor; readonly label: ScenarioLabel; readonly run: (ctx: Context) => Promise<string> };
+/** A step with no label names what it reached, as a settle row does. */
+type ChainStep = { readonly name: string; readonly actor: ScenarioActor; readonly label?: ScenarioLabel; readonly run: (ctx: Context) => Promise<string> };
 
 /**
  * The closed code of a failed step's error, or null when the error carries none. A step's own message is never kept,
@@ -326,10 +347,10 @@ export type StartedScenario = { readonly run: ScenarioRun; readonly finished: Pr
  * job is not enough, so a forged or restarted record is refused by name before the ARBITER actor is used. Only
  * the scenario's own chain calls it, and no HTTP route does.
  */
-export async function arbiterVerdictForRun(deps: ScenarioDeps, runId: string, jobId: JobId): Promise<void> {
+export async function arbiterVerdictForRun(deps: ScenarioDeps, runId: string, jobId: JobId, observe?: RanObserver): Promise<void> {
 	if (!arbiterOwns(deps.store.db, { id: runId, jobId })) throw new ScenarioRefused("SCENARIO_ARBITER_NOT_OWNED");
 	const outcome = await deps.acquit.execute({ role: "ARBITER", staffId: "staff-arbiter" as StaffId }, stepKey(runId, "arbiter-verdict"),
-		{ type: "ResolveDispute", jobId, verdict: "UPHOLD", note: "Scripted arbiter verdict: the delivered fix stands." });
+		{ type: "ResolveDispute", jobId, verdict: "UPHOLD", note: "Scripted arbiter verdict: the delivered fix stands." }, observe);
 	if (outcome.kind === "DENIED") throw new ScenarioRefused(outcome.reason, `ResolveDispute refused: ${outcome.reason}`);
 }
 
@@ -345,6 +366,10 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	const waitMs = deps.waitMs ?? 120_000;
 	const ctx: Context = {};
 	const steps: ScenarioStep[] = [];
+	// The outside places the step now running has reached. Its own commands and the ticks its waits run feed it.
+	const stepReach = new Set<OutboxReach>();
+	const observe: RanObserver = ran => { stepReach.add(ran.reach); };
+	const reachedNow = (): ScenarioReachLabel[] => REACH.filter(place => stepReach.has(place.reach)).map(place => place.label);
 	let current: ScenarioRun | null = null;
 	const publish = (patch: Partial<ScenarioRun>) => {
 		current = { ...current!, ...patch, steps: [...steps] };
@@ -357,7 +382,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 
 	const send = async (actor: Actor, stepName: string, command: UserCommand): Promise<Extract<CommandOutcome, { kind: "COMMITTED" | "REPLAY" }>> => {
 		for (let attempt = 0; ; attempt++) {
-			const outcome = await deps.acquit.execute(actor, stepKey(runId, stepName), command);
+			const outcome = await deps.acquit.execute(actor, stepKey(runId, stepName), command, observe);
 			if (outcome.kind === "DENIED") {
 				if (outcome.reason === "BUSY" && attempt < 3) continue;
 				throw new ScenarioRefused(outcome.reason, `${command.type} refused: ${outcome.reason}`);
@@ -368,7 +393,8 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	const waitFor = async (predicate: (row: JobRow) => boolean, what: string): Promise<JobRow> => {
 		const deadline = Date.now() + waitMs;
 		for (;;) {
-			await deps.acquit.tick();
+			const ticked = await deps.acquit.tick();
+			for (const effect of ticked.ran) if (effect.jobId === ctx.jobId) stepReach.add(effect.reach);
 			const row = await deps.store.readJob(ctx.jobId!);
 			if (row && predicate(row)) return row;
 			if (Date.now() > deadline) throw new ScenarioRefused("SCENARIO_TIMED_OUT", `timed out waiting for ${what}`);
@@ -397,18 +423,20 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		ctx.bidId = outcome.result.bid;
 		return `bid ${ctx.bidId}`;
 	} };
-	const accept: ChainStep = { name: "accept-and-fund", actor: "CLIENT", label: SCENARIO_LABELS.paypal, run: async () => {
+	const accept: ChainStep = { name: "accept-and-fund", actor: "CLIENT", label: SCENARIO_LABELS.scripted, run: async () => {
 		await send(client, "accept-and-fund", { type: "AcceptBid", jobId: ctx.jobId!, bidId: ctx.bidId! });
 		await waitFor(row => row.state.status === "IN_PROGRESS" && row.state.attempts.phase === "READY", "the escrow to hold");
 		return "HELD";
 	} };
 	const push = (tree: ScriptedTree): ChainStep => ({ name: `push-${tree}`, actor: "OPERATOR", label: SCENARIO_LABELS.scripted, run: async () => {
+		// A push goes to the job's work repository, so the step reaches GitHub even if the push then fails.
+		stepReach.add("GITHUB");
 		ctx.sourceCommit = await deps.workspace.push(ctx.jobId!, tree);
 		return `pushed ${tree}`;
 	} });
 	// A verdict other than the scenario's own stops the run here, with the job's end recorded as observed. Otherwise the
 	// chain would go on to approve a fix the verifier refused.
-	const submit = (name: SubmittingScenario): ChainStep => ({ name: "submit", actor: "OPERATOR", label: SCENARIO_LABELS.verifier, run: async () => {
+	const submit = (name: SubmittingScenario): ChainStep => ({ name: "submit", actor: "OPERATOR", label: SCENARIO_LABELS.scripted, run: async () => {
 		const before = historyOf(await rowOf()).length;
 		await send(operator, "submit", { type: "Submit", jobId: ctx.jobId!, sourceCommit: ctx.sourceCommit! });
 		const row = await waitFor(settled => settled.state.status === "VERIFIED" ||
@@ -422,7 +450,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		if (row.state.status === "VERIFIED") ctx.mergeCommit = row.state.passed.verdict.mergeCommit;
 		return verdict;
 	} });
-	const approve: ChainStep = { name: "approve", actor: "CLIENT", label: SCENARIO_LABELS.paypal, run: async () => {
+	const approve: ChainStep = { name: "approve", actor: "CLIENT", label: SCENARIO_LABELS.scripted, run: async () => {
 		await send(client, "approve", { type: "Approve", jobId: ctx.jobId!, mergeCommit: ctx.mergeCommit! });
 		await waitFor(row => row.state.status === "PAID", "the release to pay the operator");
 		return "PAID";
@@ -433,13 +461,20 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		return "DISPUTED";
 	} };
 	const arbiter: ChainStep = { name: "arbiter-verdict", actor: "ARBITER", label: SCENARIO_LABELS.scripted, run: async () => {
-		await arbiterVerdictForRun(deps, runId, ctx.jobId!);
+		await arbiterVerdictForRun(deps, runId, ctx.jobId!, observe);
 		return "ARBITER_UPHELD";
 	} };
-	const release: ChainStep = { name: "release", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
-		await waitFor(row => row.state.status === "PAID", "the release to pay the operator");
-		return "PAID";
-	} };
+	// A step that only waits for a state an earlier step already produced reaches nothing itself, and names the step that
+	// produced it: the last step that reached PayPal is the one whose money movement left the job in that state.
+	const waitOnly = async (status: JobStatus, word: string, what: string): Promise<string> => {
+		if ((await rowOf()).state.status === status) {
+			const by = [...steps].reverse().find(step => step.reached.includes(SCENARIO_LABELS.paypal));
+			return by === undefined ? `${word} (already settled)` : `${word} (already settled by ${by.name})`;
+		}
+		await waitFor(row => row.state.status === status, what);
+		return word;
+	};
+	const release: ChainStep = { name: "release", actor: "SYSTEM", run: () => waitOnly("PAID", "PAID", "the release to pay the operator") };
 	// A shift that loses its compare-and-set re-reads the row and goes again, three times at most, as the
 	// web's clock button does (withJobChangedRetry in apps/web/src/demo.ts).
 	const advanceClock: ChainStep = { name: "advance-clock", actor: "CLIENT", label: SCENARIO_LABELS.clock, run: async () => {
@@ -448,10 +483,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			if (attempt >= 3) throw new ScenarioRefused("JOB_CHANGED", "the job clock did not move");
 		}
 	} };
-	const refund: ChainStep = { name: "refund", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
-		await waitFor(row => row.state.status === "REFUNDED", "the refund to settle");
-		return "REFUNDED";
-	} };
+	const refund: ChainStep = { name: "refund", actor: "SYSTEM", run: () => waitOnly("REFUNDED", "REFUNDED", "the refund to settle") };
 	const chains: Record<ScenarioName, readonly ChainStep[]> = {
 		"verified-and-paid": [open(7), bid, accept, push("honest-reference-table"), submit("verified-and-paid"), approve],
 		"hidden-test-fail": [open(7), bid, accept, push("cheat-hardcode-visible-values"), submit("hidden-test-fail")],
@@ -470,6 +502,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides.
 	const record = async (step: ChainStep): Promise<{ readonly thrown: unknown } | null> => {
 		const startedAt = new Date().toISOString();
+		stepReach.clear();
 		let outcome: string;
 		let failure: { readonly thrown: unknown } | null = null;
 		try {
@@ -479,8 +512,9 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			outcome = outcomeOfFailure(step.name, error);
 		}
 		const endedAt = new Date().toISOString();
+		const reached = reachedNow();
 		steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
-			outcome: outcome.slice(0, 300), label: step.label });
+			outcome: outcome.slice(0, 300), label: step.label ?? labelOfReached(reached), reached });
 		return failure;
 	};
 	// The tick after a step settles what the step caused, and PayPal's release or refund can run inside it. The tick is
@@ -494,8 +528,9 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			ran = (await deps.acquit.tick()).ran.filter(effect => effect.jobId === ctx.jobId);
 		} catch (error) {
 			const endedAt = new Date().toISOString();
+			// The tick threw before it reported what it ran, so this row keeps the PayPal label a settle tick has always carried.
 			steps.push({ name: "settle", actor: "SYSTEM", startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
-				outcome: outcomeOfFailure("settle", error).slice(0, 300), label: SCENARIO_LABELS.paypal });
+				outcome: outcomeOfFailure("settle", error).slice(0, 300), label: SCENARIO_LABELS.paypal, reached: [SCENARIO_LABELS.paypal] });
 			return { thrown: error };
 		}
 		const endedAt = new Date().toISOString();
@@ -505,7 +540,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			return null;
 		}
 		steps.push({ name: "settle", actor: "SYSTEM", startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
-			outcome: `SETTLED ${ran.map(effect => effect.kind).join(", ")}`.slice(0, 300), label: settleLabelOf(ran) });
+			outcome: `SETTLED ${ran.map(effect => effect.kind).join(", ")}`.slice(0, 300), label: settleLabelOf(ran), reached: reachedOf(ran) });
 		return null;
 	};
 
@@ -533,7 +568,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		const startedAt = steps.at(-1)?.endedAt ?? new Date().toISOString();
 		const endedAt = new Date().toISOString();
 		steps.push({ name: "record-run", actor: "SYSTEM", startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
-			outcome: outcomeOfFailure("record-run", error).slice(0, 300), label: SCENARIO_LABELS.server });
+			outcome: outcomeOfFailure("record-run", error).slice(0, 300), label: SCENARIO_LABELS.server, reached: [] });
 		publish({ state: "FAILED" });
 		return current!;
 	});

@@ -253,7 +253,8 @@ test("the public wiring reaches HELD through card funding with the fake PayPal, 
 		const run = await settle(routing, h.visitor, scenarioId);
 		const funding = run.steps.find(step => step.name === "accept-and-fund");
 		assert.equal(funding?.outcome, "HELD");
-		assert.equal(funding?.label, "PayPal sandbox");
+		assert.equal(funding?.label, "Scripted agent (Simulated)");
+		assert.deepEqual(funding?.reached, ["PayPal sandbox", "GitHub work repository"]);
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
 		const chosen = h.deps.store.db.prepare("SELECT mode FROM job_funding WHERE job_id = ?").get(jobId) as { mode?: unknown } | undefined;
 		assert.equal(chosen?.mode, "card");

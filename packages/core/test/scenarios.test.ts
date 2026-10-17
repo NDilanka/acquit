@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import type { JobId } from "../src/ids.ts";
 import { arbiterVerdictForRun, boundedRuns, EXPECTED_END_STATES, EXPECTED_SUBMIT_VERDICTS, isScenarioName, ScenarioRefused, SCENARIO_NAMES,
-	SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER, SCENARIO_RUNS_TOTAL, settleLabelOf, startScenario } from "../src/scenarios.ts";
+	SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER, SCENARIO_RUNS_TOTAL, reachedOf, settleLabelOf, startScenario } from "../src/scenarios.ts";
 import type { RunSlot, ScenarioName, ScenarioRun, ScenarioRuns } from "../src/scenarios.ts";
 import { assertTimings, drive, harness, start } from "./scenario-harness.ts";
 import { DEMO_REPOSITORY } from "./hidden-fixture.ts";
@@ -24,8 +24,14 @@ test("S1 verified-and-paid: the honest tree verifies and the release pays the op
 		assert.equal(run.state, "DONE");
 		// Each command drains its own money effects, and each step's wait drains the rest, so no settle tick runs anything for this job.
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit", "approve"]);
-		assert.deepEqual(run.steps.map(step => step.label), ["Scripted agent (Simulated)", "Scripted agent (Simulated)", "PayPal sandbox",
-			"Scripted agent (Simulated)", "Real verifier run", "PayPal sandbox"]);
+		assert.deepEqual(run.steps.map(step => [step.label, step.reached]), [
+			["Scripted agent (Simulated)", []],
+			["Scripted agent (Simulated)", []],
+			["Scripted agent (Simulated)", ["PayPal sandbox", "GitHub work repository"]],
+			["Scripted agent (Simulated)", ["GitHub work repository"]],
+			["Scripted agent (Simulated)", ["Real verifier run"]],
+			["Scripted agent (Simulated)", ["PayPal sandbox", "GitHub work repository"]],
+		]);
 		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "VERIFIED");
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
 		assertTimings(run);
@@ -38,6 +44,7 @@ test("S2 hidden-test-fail: the visible-table cheat is REJECTED with TESTS_FAILED
 		const run = await drive(h, "hidden-test-fail");
 		assert.equal(run.state, "DONE");
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-cheat-hardcode-visible-values", "submit"]);
+		assert.deepEqual(run.steps.map(step => step.reached), [[], [], ["PayPal sandbox", "GitHub work repository"], ["GitHub work repository"], ["Real verifier run"]]);
 		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "REJECTED TESTS_FAILED:hidden");
 		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
 		assertTimings(run);
@@ -50,6 +57,7 @@ test("S3 test-tamper: an edited frozen test is REJECTED with PROTECTED_PATH_MODI
 		const run = await drive(h, "test-tamper");
 		assert.equal(run.state, "DONE");
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-cheat-edit-frozen-test", "submit"]);
+		assert.deepEqual(run.steps.map(step => step.reached), [[], [], ["PayPal sandbox", "GitHub work repository"], ["GitHub work repository"], ["Real verifier run"]]);
 		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "REJECTED PROTECTED_PATH_MODIFIED");
 		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "PROTECTED_PATH_MODIFIED" });
 		assertTimings(run);
@@ -117,10 +125,21 @@ test("S4 dispute-arbiter: a dispute the arbiter upholds pays the operator, reaso
 		assert.equal(run.state, "DONE");
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit",
 			"dispute", "arbiter-verdict", "settle", "release"]);
-		assert.equal(run.steps.find(step => step.name === "arbiter-verdict")?.label, "Scripted agent (Simulated)");
-		// The tick after the arbiter's verdict ran only GitHub's merge for the job, so its row names GitHub, not PayPal.
+		// The verdict's own drain ran the release, so the verdict row reaches PayPal. The tick after it ran only GitHub's merge,
+		// so its row names GitHub, not PayPal. The release row waits on a PAID the verdict already set, and reaches nothing.
+		assert.deepEqual(run.steps.map(step => [step.name, step.label, step.reached]), [
+			["open-job", "Scripted agent (Simulated)", []],
+			["place-bid", "Scripted agent (Simulated)", []],
+			["accept-and-fund", "Scripted agent (Simulated)", ["PayPal sandbox", "GitHub work repository"]],
+			["push-honest-reference-table", "Scripted agent (Simulated)", ["GitHub work repository"]],
+			["submit", "Scripted agent (Simulated)", ["Real verifier run"]],
+			["dispute", "Scripted agent (Simulated)", []],
+			["arbiter-verdict", "Scripted agent (Simulated)", ["PayPal sandbox"]],
+			["settle", "GitHub work repository", ["GitHub work repository"]],
+			["release", "Server record (no outside call)", []],
+		]);
+		assert.equal(run.steps.find(step => step.name === "release")?.outcome, "PAID (already settled by arbiter-verdict)");
 		const settle = run.steps.find(step => step.name === "settle");
-		assert.equal(settle?.label, "GitHub work repository");
 		assert.equal(settle?.outcome, "SETTLED MERGE");
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "ARBITER_UPHELD" });
 		assertTimings(run);
@@ -160,10 +179,18 @@ test("S5 deadline-refund: a job past its delivery deadline is REFUNDED with reas
 		const run = await drive(h, "deadline-refund");
 		assert.equal(run.state, "DONE");
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "advance-clock", "settle", "refund"]);
-		assert.equal(run.steps.find(step => step.name === "advance-clock")?.label, "Simulated time for this job");
-		// The clock shift makes the refund due, and the tick after it runs the refund and the fee's reimbursement.
+		// The clock shift makes the refund due, and the tick after it runs the refund and the fee's reimbursement. The refund
+		// row waits on a REFUNDED that tick already set, so it reaches nothing itself.
+		assert.deepEqual(run.steps.map(step => [step.name, step.label, step.reached]), [
+			["open-job", "Scripted agent (Simulated)", []],
+			["place-bid", "Scripted agent (Simulated)", []],
+			["accept-and-fund", "Scripted agent (Simulated)", ["PayPal sandbox", "GitHub work repository"]],
+			["advance-clock", "Simulated time for this job", []],
+			["settle", "PayPal sandbox", ["PayPal sandbox"]],
+			["refund", "Server record (no outside call)", []],
+		]);
+		assert.equal(run.steps.find(step => step.name === "refund")?.outcome, "REFUNDED (already settled by settle)");
 		const settle = run.steps.find(step => step.name === "settle");
-		assert.equal(settle?.label, "PayPal sandbox");
 		assert.equal(settle?.outcome, "SETTLED REFUND, REIMBURSE");
 		assert.deepEqual(run.endState, { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" });
 		assertTimings(run);
@@ -219,7 +246,7 @@ test("a tick that ran GitHub work for this job is labelled GitHub at every settl
 		const settles = run.steps.filter(step => step.name === "settle");
 		assert.equal(settles.length, 5);
 		for (const step of settles) assert.equal(step.label, "GitHub work repository", step.outcome);
-		assert.deepEqual(run.steps.filter(step => step.label === "PayPal sandbox").map(step => step.name), ["accept-and-fund", "approve"]);
+		assert.deepEqual(run.steps.filter(step => step.reached.includes("PayPal sandbox")).map(step => step.name), ["accept-and-fund", "approve"]);
 		assertTimings(run);
 	} finally { await h.dispose(); }
 });
@@ -251,6 +278,14 @@ test("a settle row names what its tick reached: PayPal over the verifier over Gi
 	assert.equal(settleLabelOf([{ kind: "START_VERIFIER", jobId: null, reach: "VERIFIER" }]), "Real verifier run");
 	assert.equal(settleLabelOf([{ kind: "MERGE", jobId: null, reach: "GITHUB" }]), "GitHub work repository");
 	assert.equal(settleLabelOf([{ kind: "RELEASE", jobId: null, reach: "NONE" }]), "Server record (no outside call)");
+});
+
+test("a step's reach names each outside place once, in PayPal, verifier, GitHub order, and names none for a server-only effect", () => {
+	assert.deepEqual(reachedOf([{ kind: "MERGE", jobId: null, reach: "GITHUB" }, { kind: "RELEASE", jobId: null, reach: "PAYPAL" },
+		{ kind: "RELEASE", jobId: null, reach: "PAYPAL" }]), ["PayPal sandbox", "GitHub work repository"]);
+	assert.deepEqual(reachedOf([{ kind: "START_VERIFIER", jobId: null, reach: "VERIFIER" }, { kind: "MERGE", jobId: null, reach: "GITHUB" },
+		{ kind: "RELEASE", jobId: null, reach: "PAYPAL" }]), ["PayPal sandbox", "Real verifier run", "GitHub work repository"]);
+	assert.deepEqual(reachedOf([{ kind: "ALERT", jobId: null, reach: "ALERT" }, { kind: "RELEASE", jobId: null, reach: "NONE" }]), []);
 });
 
 test("a run keeps its own visitor and job, and the start returns the job before the chain ends", async () => {

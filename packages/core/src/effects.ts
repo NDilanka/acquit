@@ -203,7 +203,7 @@ export type Ports = {
 	readonly clock: { now(): Instant };
 };
 
-export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey, command: UserCommand): Promise<CommandOutcome> {
+export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey, command: UserCommand, observe?: RanObserver): Promise<CommandOutcome> {
 	// TODO Digest the payload. A recorded (actor, key) with the same digest returns REPLAY with its result.
 	//      A different digest returns DENIED KEY_REUSED_WITH_DIFFERENT_PAYLOAD.
 	// TODO Load facts for the command, call applyJobCommand or applyOperatorCommand, commit with CAS.
@@ -279,8 +279,12 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			// scoped, and a deployment without the port opens exactly as it always did.
 			if (ports.scopeDraft && openFixture?.trustedFix) await ports.scopeDraft(plan.next.id, openFixture);
 		}
-		// Drain only this command's own effects, not somebody else's checkout.
-		for (const effect of plan.effects.slice(0, 4)) await runOutboxOnce(ports, operationKey(effect));
+		// Drain only this command's own effects, not somebody else's checkout. A caller that keeps a record is told what
+		// each drained effect reached; the drain itself is the same with or without it.
+		for (const effect of plan.effects.slice(0, 4)) {
+			const sweep = await runOutboxEffect(ports, operationKey(effect));
+			if (sweep.kind === "WORKED") observe?.(sweep.ran);
+		}
 		if (plan.effects.some(effect => effect.kind === "CREATE_ORDER" && effect.fundingMode === "card")) await confirmFunding(ports, actor, plan.next.id);
 		const refreshed = await ports.store.readJob(plan.next.id);
 		if (refreshed && (result.kind === "JOB" || result.kind === "BID")) result = { ...result, job: projectJob(refreshed, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources(), ports.privateCases) };
@@ -348,6 +352,8 @@ export type OutboxReach = "PAYPAL" | "GITHUB" | "VERIFIER" | "ALERT" | "NONE";
 /** One effect the outbox ran. `jobId` is null for an operator's effect, which belongs to no job. */
 export type OutboxRan = { readonly kind: Effect["kind"]; readonly jobId: JobId | null; readonly reach: OutboxReach };
 export type OutboxSweep = { readonly kind: "IDLE" } | { readonly kind: "WORKED"; readonly ran: OutboxRan };
+/** Told each outbox effect a command's own inline drain ran. A caller that keeps no record passes nothing. */
+export type RanObserver = (ran: OutboxRan) => void;
 
 export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"IDLE" | "WORKED"> {
 	return (await runOutboxEffect(ports, key)).kind;
