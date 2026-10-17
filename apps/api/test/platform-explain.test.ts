@@ -71,7 +71,7 @@ test("the explain route refuses anonymous and non-platform sessions, and names a
 	}
 });
 
-test("the explain route answers every figure with its total and its line shape, and reads no PayPal object for an empty figure", async () => {
+test("the explain route answers every figure with its total and line shape, and the ask tool's trace_figure answers the same body", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-explain-"));
 	const port = 4900;
 	let child: ReturnType<typeof spawn> | null = null;
@@ -79,6 +79,7 @@ test("the explain route answers every figure with its total and its line shape, 
 		child = await bootServer(port, join(dir, "test.db"));
 		const minted = await post(port, "/api/platform/session", { key: PLATFORM_KEY });
 		const { token } = await minted.json() as { token: string };
+		const routeBodies = new Map<string, unknown>();
 		for (const figure of ["held", "released", "refunded", "fees", "paid-by-clients"]) {
 			const answer = await fetch(`http://127.0.0.1:${port}/api/platform/explain?figure=${figure}`, { headers: { authorization: `Bearer ${token}` } });
 			assert.equal(answer.status, 200, `${figure} is answered`);
@@ -90,7 +91,18 @@ test("the explain route answers every figure with its total and its line shape, 
 			for (const line of body.lines) assert.deepEqual(Object.keys(line).sort(), ["at", "cents", "entryId", "jobId", "kind", "paypal", "receiptId"]);
 			if (body.lines.length === 0) assert.equal(body.totalCents, 0, `${figure}: an empty figure totals zero`);
 			assert.doesNotMatch(text, /merchant|payee|@/i, "the body names no merchant, payee, or email");
+			routeBodies.set(figure, body);
 		}
+
+		const callTool = (figure: string) => fetch(`http://127.0.0.1:${port}/api/ask-ledger/tool`, { method: "POST",
+			headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+			body: JSON.stringify({ name: "trace_figure", arguments: { figure } }) });
+		const traced = await callTool("fees");
+		assert.equal(traced.status, 200);
+		assert.deepEqual(await traced.json(), { result: routeBodies.get("fees") }, "the ask tool and the route answer the same fees trace");
+		const refused = await callTool("pass-rate");
+		assert.equal(refused.status, 502, "a verifier rate is refused by the ask tool too");
+		await refused.text();
 	} finally {
 		if (child && child.exitCode === null) {
 			const exited = once(child, "exit");
