@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Acquit, Actor, CommandOutcome, UserCommand } from "./acquit.ts";
+import type { OutboxRan } from "./effects.ts";
 import { hours, instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Instant, JobId, OperatorId, StaffId, VisitorId } from "./ids.ts";
 import type { AttemptRecord, JobRow, JobStatus } from "./job.ts";
@@ -26,9 +27,23 @@ export const SCENARIO_LABELS = {
 	clock: "Simulated time for this job",
 	verifier: "Real verifier run",
 	paypal: "PayPal sandbox",
+	github: "GitHub work repository",
 	server: "Server record (no outside call)",
 } as const;
 export type ScenarioLabel = (typeof SCENARIO_LABELS)[keyof typeof SCENARIO_LABELS];
+
+/**
+ * The label a settle step carries, from what its tick ran for the job. PayPal work wins, so a tick that ran both
+ * names PayPal, and the outcome names every effect. An effect that reached nobody outside is a server record. An
+ * alert is one too: it goes to the process log, and the API wires no alert sink.
+ */
+export function settleLabelOf(ran: readonly OutboxRan[]): ScenarioLabel {
+	const reached = new Set(ran.map(effect => effect.reach));
+	if (reached.has("PAYPAL")) return SCENARIO_LABELS.paypal;
+	if (reached.has("VERIFIER")) return SCENARIO_LABELS.verifier;
+	if (reached.has("GITHUB")) return SCENARIO_LABELS.github;
+	return SCENARIO_LABELS.server;
+}
 
 export type ScenarioActor = "CLIENT" | "OPERATOR" | "ARBITER" | "SYSTEM";
 
@@ -437,13 +452,6 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		await waitFor(row => row.state.status === "REFUNDED", "the refund to settle");
 		return "REFUNDED";
 	} };
-	// The tick after each step settles what that step caused, and PayPal's release or refund can run inside it. It is a
-	// step of its own, so that time counts toward the run, and a tick that throws ends the run with a coded outcome.
-	const settle: ChainStep = { name: "settle", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
-		await deps.acquit.tick();
-		return "SETTLED";
-	} };
-
 	const chains: Record<ScenarioName, readonly ChainStep[]> = {
 		"verified-and-paid": [open(7), bid, accept, push("honest-reference-table"), submit("verified-and-paid"), approve],
 		"hidden-test-fail": [open(7), bid, accept, push("cheat-hardcode-visible-values"), submit("hidden-test-fail")],
@@ -475,6 +483,31 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			outcome: outcome.slice(0, 300), label: step.label });
 		return failure;
 	};
+	// The tick after a step settles what the step caused, and PayPal's release or refund can run inside it. The tick is
+	// recorded as a settle step only when it ran an outbox effect for this run's job, and the label is what that effect
+	// reached. A tick that ran nothing for the job is the step's own bookkeeping, so its time joins the step before it.
+	// A tick that throws is a settle step with its coded outcome, and it ends the run.
+	const settle = async (): Promise<{ readonly thrown: unknown } | null> => {
+		const startedAt = new Date().toISOString();
+		let ran: readonly OutboxRan[];
+		try {
+			ran = (await deps.acquit.tick()).ran.filter(effect => effect.jobId === ctx.jobId);
+		} catch (error) {
+			const endedAt = new Date().toISOString();
+			steps.push({ name: "settle", actor: "SYSTEM", startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
+				outcome: outcomeOfFailure("settle", error).slice(0, 300), label: SCENARIO_LABELS.paypal });
+			return { thrown: error };
+		}
+		const endedAt = new Date().toISOString();
+		if (ran.length === 0) {
+			const previous = steps.at(-1)!;
+			steps[steps.length - 1] = { ...previous, endedAt, ms: Date.parse(endedAt) - Date.parse(previous.startedAt) };
+			return null;
+		}
+		steps.push({ name: "settle", actor: "SYSTEM", startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
+			outcome: `SETTLED ${ran.map(effect => effect.kind).join(", ")}`.slice(0, 300), label: settleLabelOf(ran) });
+		return null;
+	};
 
 	const opened = await record(opening);
 	if (opened !== null) { slot.release(); throw opened.thrown; }
@@ -483,10 +516,10 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 
 	const runChain = async (): Promise<ScenarioRun> => {
 		for (const step of rest) {
-			for (const next of [step, settle]) {
-				if (await record(next) !== null) { publish({ state: "FAILED", endState: ctx.observedEnd ?? null }); return current!; }
-				publish({});
-			}
+			if (await record(step) !== null) { publish({ state: "FAILED", endState: ctx.observedEnd ?? null }); return current!; }
+			publish({});
+			if (await settle() !== null) { publish({ state: "FAILED", endState: ctx.observedEnd ?? null }); return current!; }
+			publish({});
 		}
 		const endState = endStateOf(await rowOf());
 		const expected = EXPECTED_END_STATES[name];
