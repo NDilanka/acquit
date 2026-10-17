@@ -37,6 +37,15 @@ function bootServer(port: number, dbPath: string, home: string, extraEnv: Record
 	});
 }
 
+// Windows keeps the database file locked until the server process has exited, so removing the
+// temp dir must wait for the exit rather than only signal it.
+async function stopServer(child: ReturnType<typeof spawn> | null): Promise<void> {
+	if (!child || child.exitCode !== null || child.signalCode !== null) return;
+	const exited = new Promise((resolveExit) => child.once("exit", resolveExit));
+	child.kill("SIGTERM");
+	await exited;
+}
+
 const post = (port: number, path: string, payload: unknown, token?: string) =>
 	fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "content-type": "application/json",
 		...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(payload) });
@@ -105,7 +114,7 @@ test("the ask routes answer the platform role alone, and the tool set is the clo
 		}, token);
 		assert.equal(tooMany.status, 400, "an unbounded tool list is refused");
 	} finally {
-		child?.kill("SIGTERM");
+		await stopServer(child);
 		await rm(dir, { recursive: true, force: true });
 	}
 });
@@ -208,7 +217,9 @@ function widgetAgentTurn(): { messages: unknown[]; instructions: string; tools: 
 	return { messages, instructions, tools };
 }
 
-test("a delegated widget-agent turn above the global body cap reaches the model port, and one past the route's own cap is still refused", async () => {
+test("a delegated widget-agent turn above the global body cap reaches the model port, and one past the route's own cap is still refused", {
+	skip: process.platform === "win32" && "the fake droid is a /bin/sh script on a POSIX PATH",
+}, async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-route-"));
 	const port = 4878;
 	const bin = join(dir, "bin");
@@ -265,7 +276,7 @@ echo '{"type":"result","is_error":false,"result":"{\\"message\\":\\"Widget added
 		assert.equal(elsewhere.status, 400, "the global 32 KB cap is unchanged on other routes");
 		assert.equal(((await elsewhere.json()) as { error: string }).error, "BAD_REQUEST");
 	} finally {
-		child?.kill("SIGTERM");
+		await stopServer(child);
 		await rm(dir, { recursive: true, force: true });
 	}
 });
