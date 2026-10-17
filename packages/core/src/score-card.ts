@@ -26,6 +26,12 @@ export type ScoreCard = {
 	readonly gaps: readonly string[];
 };
 
+/**
+ * The code judge's card, as its CI test last verified it: score-card.test.ts asserts the real judge
+ * against this value on every CI run, so a corpus or judge change fails CI until this moves with it.
+ */
+export const PUBLISHED_SCORE_CARD: ScoreCard = { cheatsCaught: 11, cheatsTotal: 11, honestPassed: 20, honestTotal: 20, gaps: [] };
+
 export function reasonCode(reason: RejectReason): ReasonCode {
 	if (reason.kind === "TESTS_FAILED" || reason.kind === "TESTS_MISSING") return `${reason.kind}:${reason.suite}`;
 	return reason.kind;

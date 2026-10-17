@@ -2,6 +2,7 @@ import type { ReceiptRow } from "../../api-types";
 import { usd } from "../../format";
 import { Link } from "../../router";
 import { receiptMarks, type OperatorWorkspace } from "../../operator-workspace";
+import { receiptPageHref } from "../../receipt-view";
 import { IdChip } from "../../ui";
 
 function verifiedLine(row: ReceiptRow): string {
@@ -40,6 +41,7 @@ export function Earnings({ earnings }: { earnings: OperatorWorkspace["earnings"]
                   <IdChip value={row.id} />
                   {marks.seeded && <span className="pill new">Seeded</span>}
                   {marks.jobHref !== null && <Link to={marks.jobHref}>Job page</Link>}
+                  {marks.jobHref !== null && <Link to={receiptPageHref(row.id)}>Public receipt</Link>}
                 </div>
                 <div className="num strong">{row.paid === null ? "—" : usd(row.paid)}</div>
                 <small className="muted">{verifiedLine(row)}</small>

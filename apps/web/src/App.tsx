@@ -9,6 +9,7 @@ import { SignIn } from "./pages/SignIn";
 import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
+import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
 
@@ -54,6 +55,19 @@ export function App() {
       navigate("/");
     });
   };
+
+  // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
+  const publicRoute = match(location.path);
+  if (publicRoute.name === "receipt") {
+    return (
+      <>
+        <TopBar session={session ?? null} onSignOut={signOut} />
+        <main className="wrap">
+          <PublicReceiptPage receiptId={publicRoute.id} />
+        </main>
+      </>
+    );
+  }
 
   if (session === undefined) return <div className="wrap muted">Loading…</div>;
 

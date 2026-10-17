@@ -15,6 +15,7 @@ import type {
   PlatformJobLedger,
   PlatformSignedInResponse,
   PlatformTables,
+  PublicReceiptResponse,
   ReceiptRow,
   ScenarioName,
   ScenarioRun,
@@ -109,6 +110,8 @@ export const api = {
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   receipts: () => request<{ receipts: ReceiptRow[]; nextCursor: null }>("GET", "/api/me/receipts"),
+  publicReceipt: (receiptId: string) =>
+    request<PublicReceiptResponse>("GET", `/api/receipts/${encodeURIComponent(receiptId)}`),
   payouts: () => request<{ payouts: PayoutRow[] }>("GET", "/api/me/payouts"),
   escrow: () => request<{ escrow: OperatorEscrowRow[] }>("GET", "/api/me/escrow"),
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),

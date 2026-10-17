@@ -24,7 +24,7 @@ import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
-import { operatorReceipts } from "./receipts.ts";
+import { operatorReceipts, publicReceipt } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
@@ -598,6 +598,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const token = mintSession("platform");
 		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 		json(res, 201, { user: { handle: "platform", role: "PLATFORM" }, token });
+		return;
+	}
+	// The public receipt: one PAID job's proof, read by anyone who holds its receipt id (a seller's link). It sits
+	// before the session gate, as the CLI login routes do. Every other answer is the same 404, so a non-party
+	// learns nothing from a job that is open, refunded, unknown, or simply not this receipt.
+	const receiptRoute = url.pathname.match(/^\/api\/receipts\/([^/]+)$/);
+	if (receiptRoute && method === "GET") {
+		let receiptId: string | null = null;
+		try { receiptId = decodeURIComponent(receiptRoute[1] ?? ""); } catch { receiptId = null; }
+		const receipt = receiptId === null ? null : publicReceipt(db, receiptId, privateCases);
+		if (receipt === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, receipt);
 		return;
 	}
 	const current = session(req);

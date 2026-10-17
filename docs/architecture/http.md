@@ -26,7 +26,7 @@ There is no password login in the skeleton. A dev picker signs in as a seeded us
 | DELETE | `/api/session` | | `204` |
 | GET | `/api/users` | | `{ users: [{ handle, role }] }`. Dev mode: the seeded picker. Public mode: the caller's own pair only, `401` without a session |
 
-Every other `/api` route returns `401 { error: "UNAUTHENTICATED" }` without a session.
+Every other `/api` route returns `401 { error: "UNAUTHENTICATED" }` without a session. The one public read is `GET /api/receipts/:receiptId` (see Public receipt below).
 
 ## Judge mode (visitors)
 
@@ -247,6 +247,22 @@ A release or refund whose inline answer was lost settles from the webhook route'
 The review fields: `job.reviewEndsAt` is the 72-hour deadline while `AWAITING_CLIENT` and null otherwise; `job.viewerCanDispute` is true exactly when the viewer is the owning client and the review is open; `job.dispute` is `{ reason, openedAt, resolveBy }` while `phase` reads `DISPUTED`; `job.releaseAuthority` names what selected the release while it is `RELEASE_PENDING` and on the settled `PAID` row (`CLIENT_APPROVAL`, `REVIEW_SILENCE`, `ARBITER_UPHELD`, `ARBITER_SLA_MISSED`, or `CAPTURE_CUTOFF`), and is null before any release and on a row stored before F4; `job.refundReason` names the reason the refund selected while one is pending (the row's `REFUND_PENDING` phase, or the checkout's refund while an `OPEN` job is `FUNDING`) and on the settled `REFUNDED` row (`DELIVERY_DEADLINE`, `ATTEMPTS_EXHAUSTED`, `ARBITER_REFUND`, `CAPTURE_CUTOFF`, or `CAPTURE_MISMATCH`), and is null before any refund and on a row stored before the reason was recorded. `job.arbiterNote` is the note from the arbiter's last decision (UPHOLD, REFUND, or REWORK). It is null before any arbiter decision and on a row stored before F4, and it stays on the row after the decision, so the page shows it only where that decision still stands.
 
 The paid view carries what a lane and the page read. `job.release` is the observed release evidence: `payoutItemId` names the referenced payout item the capture paid through (`GET /v1/payments/referenced-payouts-items/<item id>`), and `captureId`, `paid`, and `at` are what that item observed. `job.merge` is the merge of the verified pull request, null until `PAID` and then `PENDING`, `MERGED` with `at` and `sha`, or `NEEDS_HUMAN` with the reason. `sha` is GitHub's merge commit, the commit that landed on the base branch, read from the merge answer or the pull's `merge_commit_sha` when the client adopts a merge that already landed; it is not `job.mergeCommit`, which names the tree the verifier judged and the client approved. A row stored before the field existed serves `sha: null`. `job.pullRequest` names the pull. `job.client` names the owning client only to that client's own session and is `null` for every other viewer, and `job.viewerCanApprove` is the API's own answer to whether this session is that client with the review awaiting its approval, so the page gates the control on ownership rather than on role (a window that has already closed is still the edge's `REVIEW_CLOSED` refusal). `job.attempts` counts what the job actually used: a settled job serves the attempts its receipt or history recorded, so a PAID job's `used` is its receipt's `attemptsUsed`.
+
+## Public receipt
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| GET | `/api/receipts/:receiptId` | | `200 { receipt }` for the one PAID job whose receipt id this is. Every other answer is the same `404 { error: "NOT_FOUND" }`: an unknown id, a job that is not PAID, a job id given in place of a receipt id, and a malformed id. No session is needed; the route sits before the session gate |
+
+The receipt id is the capability. A job id is visible to every signed-in viewer while the job is OPEN, so the receipt is keyed by the id that exists only once the job settles, and that id is the link a seller shares. The body carries `id`, `title`, `issue`, `source` (`JOB` or `SEED`), `scripted` (true when a judge scenario started the job, so its agent was a script and the page labels it Simulated), `releasedAt`, `releaseAuthority`, `operator` as `{ handle, label, agent }`, `money` in integer cents (`heldCents`, `paidCents`, `feeCents`, `processorFeeCents`, `acquitFeeCents`), `verdict` (attempts used and allowed, the frozen and hidden tallies, the pull request, the judged merge commit, and `history`), `paypal` (`captureId`, `payoutItemId`, `feeBatchId`), `hiddenCases`, and `scoreCard`.
+
+`verdict.history` lists each judged attempt as `ordinal`, `result`, `at`, its tallies when it verified, and its reasons as closed codes (`TESTS_FAILED:hidden`, `PROTECTED_PATH_MODIFIED`). A test id never appears in a reason.
+
+`hiddenCases` is `null` for a job that ran only the fixture's curated tests, which are shared by every visitor and never published. For a sealed job it is `{ committedDigest, committedAt, revealed }`: `committedAt` is when the approval claimed the seal, and `revealed` is `{ salt, cases }` once the job closed and its private file opens the seal (the same reveal the job routes serve), otherwise `null`. A browser recomputes the digest from `cases` and `salt` and compares it with `committedDigest`.
+
+`scoreCard` is the code judge's card as its CI test last verified it (`PUBLISHED_SCORE_CARD` in `packages/core/src/score-card.ts`). It is not a per-job record.
+
+Nothing else reaches the body: no email, no merchant id, no operator id, no verdict run id or report digest, and no scoping citation. The operator is shown by handle and label only.
 
 ## Review, disputes, and credits
 

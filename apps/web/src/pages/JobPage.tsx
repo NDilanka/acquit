@@ -13,6 +13,7 @@ import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
 import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
+import { receiptPageHref } from "../receipt-view";
 import { useSession } from "../session";
 import { IdChip, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
@@ -184,6 +185,11 @@ export function JobPage({ id }: { id: string }) {
             {locked && (
               <span>
                 Operator <b>{locked.handle}</b>
+              </span>
+            )}
+            {job.receipt && (
+              <span>
+                <Link to={receiptPageHref(job.receipt.id)}>Public receipt</Link>
               </span>
             )}
           </div>
