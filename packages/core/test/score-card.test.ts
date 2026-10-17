@@ -11,7 +11,7 @@ import test from "node:test";
 import { createFakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
 import type { CommitSha, JobId, TestId } from "../src/ids.ts";
-import { formatScoreCard, observedOutcome, tally } from "../src/score-card.ts";
+import { formatScoreCard, observedOutcome, PUBLISHED_SCORE_CARD, tally } from "../src/score-card.ts";
 import type { CaseResult } from "../src/score-card.ts";
 import type { DefinitionOfDone, VerifierRunId, VerifierRunRequest } from "../src/verifier.ts";
 import { gitSource, runJudge } from "../../verifier/judge.ts";
@@ -78,7 +78,7 @@ test("the score card tallies every case to its literal counts", { skip: SKIP }, 
 	for (const result of results) console.log(`${result.kind}\t${result.id}\texpected ${result.expected}\tactual ${result.actual}`);
 	const card = tally(results);
 	console.log(formatScoreCard(card));
-	assert.deepEqual(card, { cheatsCaught: 11, cheatsTotal: 11, honestPassed: 20, honestTotal: 20, gaps: [] });
+	assert.deepEqual(card, PUBLISHED_SCORE_CARD);
 });
 
 // The judge checks only the frozen rows and the hidden cases, and none of them is negative. These rows

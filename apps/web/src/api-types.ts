@@ -183,6 +183,47 @@ export type SeededReceiptRow = {
 
 export type ReceiptRow = JobReceiptRow | SeededReceiptRow;
 
+/** `GET /api/receipts/:receiptId`: the public receipt of one PAID job. Mirrors apps/api/src/receipts.ts. */
+export type PublicAttempt = {
+  readonly ordinal: number;
+  readonly result: "VERIFIED" | "REJECTED";
+  readonly at: Instant;
+  readonly frozen: { readonly expected: number; readonly passed: number } | null;
+  readonly hidden: { readonly expected: number; readonly passed: number } | null;
+  /** Closed reason codes such as TESTS_FAILED:hidden. Test ids stay private. */
+  readonly reasons: readonly string[];
+};
+
+export type PublicHiddenCase = {
+  readonly id: string;
+  readonly target: { readonly module: string; readonly export: string };
+  readonly args: readonly unknown[];
+  readonly expected: unknown;
+};
+
+export type PublicReceiptResponse = {
+  readonly receipt: {
+    readonly id: string;
+    readonly title: string | null;
+    readonly issue: number | null;
+    readonly source: "SEED" | "JOB";
+    readonly scripted: boolean;
+    readonly releasedAt: Instant;
+    readonly releaseAuthority: ReleaseAuthority | null;
+    readonly operator: { readonly handle: string | null; readonly label: "INDEPENDENT" | "HOUSE" | null; readonly agent: string };
+    readonly money: { readonly heldCents: UsdCents | null; readonly paidCents: UsdCents; readonly feeCents: UsdCents | null;
+      readonly processorFeeCents: UsdCents | null; readonly acquitFeeCents: UsdCents | null };
+    readonly verdict: { readonly attemptsUsed: number; readonly attemptsAllowed: number; readonly frozen: { readonly expected: number; readonly passed: number };
+      readonly hidden: { readonly expected: number; readonly passed: number }; readonly pullRequest: number; readonly mergeCommit: string;
+      readonly history: readonly PublicAttempt[] };
+    readonly paypal: { readonly captureId: string | null; readonly payoutItemId: string | null; readonly feeBatchId: string | null };
+    readonly hiddenCases: { readonly committedDigest: string; readonly committedAt: Instant | null;
+      readonly revealed: { readonly salt: string; readonly cases: readonly PublicHiddenCase[] } | null } | null;
+    readonly scoreCard: { readonly cheatsCaught: number; readonly cheatsTotal: number; readonly honestPassed: number; readonly honestTotal: number;
+      readonly gaps: readonly string[] };
+  };
+};
+
 /** `GET /api/me/payouts`: one row per released job the operator was paid. */
 export type PayoutRow = {
   readonly jobId: string;
