@@ -15,6 +15,8 @@ import { classifyDroidRun, droidResultText, DROID_MODEL, factoryApiKey, modelPro
 import type { ModelCallLog } from "../../../packages/core/src/model.ts";
 import { platformEscrowTotals } from "../../../packages/core/src/platform.ts";
 import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
+import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
+import type { FigureId } from "../../../packages/core/src/explain.ts";
 import { HOUSE_MODEL_OPENROUTER, keyringKey } from "../../../packages/house/src/runner.ts";
 import { authAssertion } from "../../../packages/core/src/paypal.ts";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
@@ -163,7 +165,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 
 /** The tools the ledger agent may call. Read-only by name and by execution: the executor below is
  * the only thing that runs them, and it holds no create, capture, refund, payout, or update tool. */
-export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order"] as const;
+export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "trace_figure"] as const;
 
 export type PaypalAskReader = { readonly getOrder: (id: string, payee: string | null) => Promise<unknown> };
 
@@ -175,6 +177,8 @@ export type AskExecutorDeps = {
 	/** PayPal's read side, through the toolkit's own API client. Null when the deployment has no
 	 * PayPal credentials, in which case get_order reports the tool as unavailable. */
 	readonly paypal: PaypalAskReader | null;
+	/** The figure trace the Studio's Explain panel reads: the same route answer, for the ask tool. */
+	readonly traceFigure: (figure: FigureId) => Promise<unknown>;
 };
 
 export function askToolExecutor(deps: AskExecutorDeps): AskToolExecutor {
@@ -205,6 +209,11 @@ export function askToolExecutor(deps: AskExecutorDeps): AskToolExecutor {
 				return { ...platformEscrowTotals(jobs), heldJobs: jobs.filter(job => job.escrow === "HELD").length };
 			}
 			case "get_order": return readOrder(args);
+			case "trace_figure": {
+				const figure = args["figure"];
+				if (!isFigureId(figure)) throw new Error(`trace_figure needs one figure: ${FIGURE_IDS.join(", ")}`);
+				return deps.traceFigure(figure);
+			}
 			default: throw new Error(`no tool named ${name}`);
 		}
 	};
@@ -222,6 +231,9 @@ export function askToolList(paypalConfigured: boolean): readonly { readonly name
 		{ name: "platform_totals", kind: "client",
 			description: "The book's totals: held, released, refunded, and fee cents, plus how many jobs currently hold escrow.",
 			parameters: { type: "object", properties: {}, required: [] } },
+		{ name: "trace_figure", kind: "client",
+			description: "One escrow figure traced to the money behind it: its total and the ledger lines that sum to it (job, kind, cents, receipt id), each with its PayPal object's id and live status (MATCHED, PENDING_AT_PAYPAL, MISMATCHED, or NOT_CHECKED with a note). Read-only.",
+			parameters: { type: "object", properties: { figure: { type: "string", enum: [...FIGURE_IDS], description: "held, released, refunded, fees, or paid-by-clients" } }, required: ["figure"] } },
 	];
 	if (paypalConfigured) {
 		list.push({ name: "get_order", kind: "client",

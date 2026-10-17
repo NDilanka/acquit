@@ -209,12 +209,14 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	const readBook = async () => book;
 	const paypalOrders = new Map([["ORDER1", { status: "COMPLETED", amount: "378.00" }]]);
 	const asked: (readonly (string | null)[])[] = [];
-	const executor = askToolExecutor({ platformView: readBook, paypal: { getOrder: async (id, payee) => {
-		asked.push([id, payee]);
-		const found = paypalOrders.get(id);
-		if (!found) throw new Error(`PayPal answered 404 for ${id}.`);
-		return found;
-	} } });
+	const traced: string[] = [];
+	const executor = askToolExecutor({ platformView: readBook, traceFigure: async (figure) => { traced.push(figure); return { figure }; },
+		paypal: { getOrder: async (id, payee) => {
+			asked.push([id, payee]);
+			const found = paypalOrders.get(id);
+			if (!found) throw new Error(`PayPal answered 404 for ${id}.`);
+			return found;
+		} } });
 
 	const totals = await executor("platform_totals", {});
 	assert.deepEqual(totals, { held: 37800, released: 0, refunded: 0, fees: 0, heldJobs: 1 });
@@ -225,9 +227,12 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	assert.deepEqual(asked, [["ORDER1", "sandbox-seller"]]);
 	await assert.rejects(executor("get_order", { id: "ORDER2" }), /PayPal answered 404/);
 	await assert.rejects(executor("capture_order", {}), /no tool named capture_order/, "the executor is a closed set");
+	assert.deepEqual(await executor("trace_figure", { figure: "held" }), { figure: "held" });
+	assert.deepEqual(traced, ["held"]);
+	await assert.rejects(executor("trace_figure", { figure: "pass-rate" }), /trace_figure needs one figure/, "a verifier rate is not a ledger figure");
 
 	// The registered set is read-only by name: no create, capture, refund, payout, or update tool.
-	assert.deepEqual([...ASK_TOOL_NAMES].sort(), ["get_job", "get_order", "list_jobs", "platform_totals"]);
+	assert.deepEqual([...ASK_TOOL_NAMES].sort(), ["get_job", "get_order", "list_jobs", "platform_totals", "trace_figure"]);
 	for (const name of ASK_TOOL_NAMES) assert.doesNotMatch(name, /create|capture|refund|payout|update|send|cancel/);
 });
 
@@ -253,7 +258,7 @@ test("the openrouter ask port runs on an injected transport, :free only, and nev
 
 test("the executor answers a job's own book, with its capture, lines, and verdicts", async () => {
 	const book = [heldBookRow()];
-	const executor = askToolExecutor({ platformView: async () => book, paypal: { getOrder: async () => ({}) } });
+	const executor = askToolExecutor({ platformView: async () => book, paypal: { getOrder: async () => ({}) }, traceFigure: async () => ({}) });
 	const job = await executor("get_job", { jobId: "job_held" }) as PlatformJobLedger;
 	assert.equal(job.jobId, "job_held");
 	assert.deepEqual(job.capture, { orderId: "ORDER1", captureId: "CAP1", payee: "sandbox-seller", gross: 37800 });

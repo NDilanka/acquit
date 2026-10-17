@@ -70,7 +70,7 @@ test("the ask routes answer the platform role alone, and the tool set is the clo
 		const tools = await get(port, "/api/ask-ledger/tools", token);
 		assert.equal(tools.status, 200);
 		const listed = await tools.json() as { tools: { name: string }[]; model: string; keyConfigured: boolean };
-		assert.deepEqual(listed.tools.map(tool => tool.name).sort(), ["get_job", "get_order", "list_jobs", "platform_totals"]);
+		assert.deepEqual(listed.tools.map(tool => tool.name).sort(), ["get_job", "get_order", "list_jobs", "platform_totals", "trace_figure"]);
 		assert.equal(listed.model, "glm-5.3-flash", "the default provider's ask model is the ruled one");
 		assert.equal(listed.keyConfigured, false, "a boot with no Factory key says so, without naming one");
 
