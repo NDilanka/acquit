@@ -125,6 +125,9 @@ test("dashboard money reads as dollars and cents", () => {
   assert.equal(dollars(42000), "$420.00");
   assert.equal(dollars(5), "$0.05");
   assert.equal(dollars(-1250), "-$12.50");
+  assert.equal(dollars(100000), "$1,000.00");
+  assert.equal(dollars(1104600), "$11,046.00");
+  assert.equal(dollars(-123456789), "-$1,234,567.89");
 });
 
 test("a short id keeps its prefix and eight characters", () => {
