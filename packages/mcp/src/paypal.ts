@@ -18,6 +18,15 @@ export type PaypalConfig = {
 	readonly sandbox: boolean;
 };
 
+/** PayPal refused a read with this status. The message names the path only, never the body. */
+export class PayPalHttpError extends Error {
+	readonly status: number;
+	constructor(status: number, path: string) {
+		super(`PayPal answered ${status} for ${path.split("?")[0]}.`);
+		this.status = status;
+	}
+}
+
 /** The toolkit client built around one minted token, and when that token stops serving. */
 type Minted = {
 	readonly api: PayPalAPI;
@@ -75,7 +84,7 @@ export async function paypalReader(options: PaypalConfig, fetchImpl: typeof fetc
 				const fresh = await mint();
 				response = await read(path, fresh.api, named);
 			}
-			if (!response.ok) throw new Error(`PayPal answered ${response.status} for ${path.split("?")[0]}.`);
+			if (!response.ok) throw new PayPalHttpError(response.status, path);
 			return response.json();
 		},
 	};

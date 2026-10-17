@@ -40,7 +40,7 @@ import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
 import { platformStream } from "./platform-stream.ts";
-import { paypalTransactionFetch, reconciliationService, ReconcileSpanError } from "./reconciliation.ts";
+import { paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
  * sees only the fixture its fork was made from, named by its own fork; every other signed-in
@@ -158,9 +158,11 @@ function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; file
 const askCallLog = modelCallLog(join(resolve(databasePath, ".."), "model-calls.jsonl"));
 const askPaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
 	? paypalAskReader({ clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret }) : null;
-// The platform reconciliation reads Transaction Search through the same toolkit-backed reader, one fetch per cache window.
+// The platform reconciliation reads each ledger line's PayPal object through the toolkit-backed reader, and Transaction
+// Search for the platform account's other activity. Both read through the same toolkit client.
+const reconcileConfig = { clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret };
 const reconcilePaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
-	? reconciliationService(paypalTransactionFetch({ clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret })) : null;
+	? reconciliationService({ fetchPage: paypalTransactionFetch(reconcileConfig), readObject: paypalObjectRead(reconcileConfig) }) : null;
 const askExecutor = askToolExecutor({
 	platformView: async () => {
 		const result = await acquit.query({ role: "PLATFORM" }, { type: "PlatformLedger" });
@@ -645,17 +647,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		return;
 	}
 	if (url.pathname === "/api/platform/reconciliation" && method === "GET") {
-		// The platform ledger against PayPal's Transaction Search: the platform role's only read of it. The
-		// ledger's lines come from the same tables read the dashboards make; PayPal is read at most once a minute.
+		// The platform ledger checked line by line against the PayPal object each line names. The ledger's lines
+		// come from the same tables read the dashboards make; PayPal objects are cached and budgeted per refresh.
 		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
 		if (reconcilePaypal === null) { json(res, 503, { error: "PAYPAL_NOT_CONFIGURED" }); return; }
 		const result = await acquit.query(current.actor, { type: "PlatformTables" });
 		if (result.kind !== "PLATFORM_TABLES") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		try {
 			json(res, 200, await reconcilePaypal({ entries: result.tables.ledger_entries, events: result.tables.paypal_events }, Date.parse(clock.now())));
-		} catch (error) {
-			if (error instanceof ReconcileSpanError) { json(res, 422, { error: "RECONCILE_SPAN_TOO_LONG" }); return; }
-			// PayPal's refusal text can name a path, so the response carries only the code, never the detail.
+		} catch {
+			// Each PayPal read reports its own failure inside the body, so a throw here is a bug, not a PayPal outage.
 			json(res, 502, { error: "PAYPAL_READ_FAILED" });
 		}
 		return;

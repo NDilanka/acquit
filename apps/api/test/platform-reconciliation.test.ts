@@ -1,18 +1,28 @@
-// The platform reconciliation's server side: the Transaction Search walk (windows, pages, the span limit), the
-// one-minute cache, and the refusal of every holder but the platform role. PayPal is replaced by a fake that
-// records each call, so these tests name the exact windows and pages the route asks for.
+// The platform reconciliation's server side: each ledger line's PayPal object read under the right authority, the
+// per-object cache, the refresh budget and its concurrency, Transaction Search as other activity, and the refusal of
+// every holder but the platform role. PayPal is replaced by fakes that record each call, so these tests name the exact
+// objects, windows, and pages the route asks for.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ReconcileSpanError, reconciliationService } from "../src/reconciliation.ts";
-import type { LedgerTables, TransactionFetch } from "../src/reconciliation.ts";
+import { OBJECT_TTL_MS, RECONCILE_CACHE_MS, paypalObjectRead, reconciliationService } from "../src/reconciliation.ts";
+import type { LedgerTables, ObjectRead, TransactionFetch } from "../src/reconciliation.ts";
+import { factOf } from "../../../packages/core/src/reconcile.ts";
+import type { CaptureEventInput, LedgerLineInput, ObjectTarget, Reading } from "../../../packages/core/src/reconcile.ts";
 
+const fixture = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../../packages/core/test/fixtures/paypal-reconcile/${name}`, import.meta.url), "utf8"));
+const CAPTURE = "5JG93436967627628";
+const RELEASED_CAPTURE = "20P48555BH2356736";
+const PAYOUT_ITEM = "9gOgdaF5wfRSLI3kq8V7Boe9yIED2EzXBOksl3cCejMKFr60SucjaQN58AOIYo0=";
+const MERCHANT = "MERCHANT_SANDBOX";
 const NOW = Date.parse("2026-10-13T12:00:00Z");
+const MINUTE = 60_000;
 
 /** One Transaction Search page as PayPal answers it. */
 function page(rows: readonly unknown[], current: number, totalPages: number): unknown {
@@ -20,12 +30,12 @@ function page(rows: readonly unknown[], current: number, totalPages: number): un
 }
 
 function row(id: string, value: string): unknown {
-	return { transaction_info: { transaction_id: id, transaction_event_code: "T0006", transaction_initiation_date: "2026-08-01T10:00:00Z",
+	return { transaction_info: { transaction_id: id, transaction_event_code: "T0001", transaction_initiation_date: "2026-10-12T10:00:00Z",
 		transaction_amount: { currency_code: "USD", value } } };
 }
 
-/** A fake PayPal: records every (start, end, page) it is asked for and answers from `answer`. */
-function fakePayPal(answer: (start: string, page: number) => unknown) {
+/** A fake Transaction Search that records every (start, end, page) it is asked for. */
+function fakeSearch(answer: (start: string, current: number) => unknown) {
 	const calls: [string, string, number][] = [];
 	const fetchPage: TransactionFetch = async (start, end, current) => {
 		calls.push([start, end, current]);
@@ -34,77 +44,190 @@ function fakePayPal(answer: (start: string, page: number) => unknown) {
 	return { calls, fetchPage };
 }
 
-const EMPTY: LedgerTables = { entries: [], events: [] };
+/** A fake object reader: records each object asked for, optionally holds each read for a while, and answers from `answer`. */
+function fakeObjects(answer: (target: ObjectTarget) => Reading, delayMs = 0) {
+	const calls: ObjectTarget[] = [];
+	let inFlight = 0;
+	let peak = 0;
+	const readObject: ObjectRead = async target => {
+		calls.push(target);
+		inFlight++;
+		peak = Math.max(peak, inFlight);
+		if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+		inFlight--;
+		return answer(target);
+	};
+	return { calls, readObject, peak: () => peak };
+}
 
-test("an empty ledger reads the last 31 days in two windows, and a read inside the cache window does not reach PayPal", async () => {
-	const { calls, fetchPage } = fakePayPal(() => page([], 1, 1));
-	const reconcile = reconciliationService(fetchPage, 60_000);
-	const first = await reconcile(EMPTY, NOW);
-	assert.equal(first.cached, false);
+const liveCapture = (): Reading => ({ state: "FOUND", fact: factOf("CAPTURE", fixture("capture-completed-with-fee.json")) });
+const liveRelease = (): Reading => ({ state: "FOUND", fact: factOf("PAYOUT_ITEM", fixture("referenced-payout-success.json")) });
+
+const EMPTY_SEARCH = () => fakeSearch(() => page([], 1, 1));
+const hold = (entryId: string, captureId: string, cents = 37800): LedgerLineInput =>
+	({ entryId, jobId: entryId.split("#")[0] ?? "job", kind: "HELD", cents, at: "2026-10-12T10:00:00Z", captureId, processorCents: null });
+const event = (captureId: string, extra: Partial<CaptureEventInput> = {}): CaptureEventInput =>
+	({ captureId, merchant: MERCHANT, refundId: null, payoutItemId: null, ...extra });
+
+test("an empty ledger reads other activity for the last 31 days in two windows, and a read inside the cache window does not reach PayPal", async () => {
+	const { calls, fetchPage } = fakeSearch(() => page([], 1, 1));
+	const reconcile = reconciliationService({ fetchPage, readObject: fakeObjects(liveCapture).readObject });
+	const empty: LedgerTables = { entries: [], events: [] };
+	const first = await reconcile(empty, NOW);
 	assert.deepEqual(calls, [
 		["2026-09-12T00:00:00Z", "2026-10-13T00:00:00Z", 1],
 		["2026-10-13T00:00:00Z", "2026-10-13T12:00:00Z", 1],
 	]);
+	assert.equal(first.other.state, "READ");
+	if (first.other.state !== "READ") return;
+	assert.equal(first.other.cached, false);
 
-	const inside = await reconcile(EMPTY, NOW + 30_000);
-	assert.equal(inside.cached, true);
-	assert.equal(inside.fetchedAt, "2026-10-13T12:00:00Z", "the cached read keeps its own time");
-	assert.equal(calls.length, 2, "a read inside the window is served from the cache");
+	const inside = await reconcile(empty, NOW + 30_000);
+	assert.equal(inside.other.state === "READ" && inside.other.cached, true);
+	assert.equal(inside.other.state === "READ" && inside.other.fetchedAt, "2026-10-13T12:00:00Z", "the cached read keeps its own time");
+	assert.equal(calls.length, 2, "a read inside the search window is served from the cache");
 
-	const after = await reconcile(EMPTY, NOW + 61_000);
-	assert.equal(after.cached, false);
-	assert.equal(calls.length, 4, "the first read after the window goes back to PayPal");
+	await reconcile(empty, NOW + RECONCILE_CACHE_MS + 1_000);
+	assert.equal(calls.length, 4, "the first read after the search window goes back to PayPal");
 });
 
-test("the walk pages each window to total_pages, and every window is at most 31 days", async () => {
-	const { calls, fetchPage } = fakePayPal((start, current) => {
-		if (start === "2026-08-01T00:00:00Z") return current === 1 ? page([row("CAP-A", "420.00")], 1, 2) : page([row("CAP-B", "100.00")], 2, 2);
-		if (start === "2026-09-01T00:00:00Z") return page([], 1, 1);
-		return page([row("CAP-C", "50.00")], 1, 1);
+test("each object is read once per refresh, and a settled capture is reused for five minutes", async () => {
+	const objects = fakeObjects(liveCapture);
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const tables: LedgerTables = { entries: [
+		hold("job_a#0", CAPTURE),
+		{ entryId: "job_a#2", jobId: "job_a", kind: "FEE", cents: 6000, at: "2026-10-12T10:00:00Z", captureId: CAPTURE, processorCents: 1028 },
+	], events: [event(CAPTURE)] };
+
+	const first = await reconcile(tables, NOW);
+	assert.deepEqual(first.rows.map(r => r.status), ["MATCHED", "MATCHED"]);
+	assert.deepEqual(first.objects, { read: 1, cached: 0, budget: 60 }, "the hold and the fee share one capture read");
+	assert.equal(objects.calls.length, 1);
+
+	const inside = await reconcile(tables, NOW + 4 * MINUTE);
+	assert.deepEqual(inside.objects, { read: 0, cached: 1, budget: 60 });
+	assert.equal(objects.calls.length, 1, "a settled capture four minutes on is not read again");
+
+	const after = await reconcile(tables, NOW + 6 * MINUTE);
+	assert.deepEqual(after.objects, { read: 1, cached: 0, budget: 60 });
+	assert.equal(objects.calls.length, 2, "a settled capture past its five minutes is read again");
+	assert.equal(OBJECT_TTL_MS.CAPTURE, 5 * MINUTE);
+});
+
+test("a pending payout is never cached: the next refresh reads it again, and the line matches once PayPal settles it", async () => {
+	const pendingItem = { ...(fixture("referenced-payout-success.json") as Record<string, unknown>), processing_state: { status: "PENDING" } };
+	const answers: Reading[] = [{ state: "FOUND", fact: factOf("PAYOUT_ITEM", pendingItem) }, liveRelease()];
+	const objects = fakeObjects(() => answers.shift() ?? liveRelease());
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const tables: LedgerTables = { entries: [{ entryId: "job_a#1", jobId: "job_a", kind: "RELEASED", cents: 36378, at: "2026-10-12T10:00:00Z", captureId: RELEASED_CAPTURE, processorCents: null }],
+		events: [event(RELEASED_CAPTURE, { payoutItemId: PAYOUT_ITEM })] };
+
+	const pending = await reconcile(tables, NOW);
+	assert.deepEqual([pending.rows[0]?.status, pending.rows[0]?.reason], ["PENDING_AT_PAYPAL", "PAYPAL_PENDING"]);
+	const settledNow = await reconcile(tables, NOW + MINUTE);
+	assert.deepEqual([settledNow.rows[0]?.status, settledNow.rows[0]?.payoutTransactionId], ["MATCHED", "51P63583VW950112R"]);
+	assert.equal(objects.calls.length, 2, "the pending reading was not reused");
+});
+
+test("the refresh's read budget caps PayPal reads: a line past it is not checked yet, never a mismatch", async () => {
+	const objects = fakeObjects(liveCapture);
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject }, { budget: 2 });
+	const tables: LedgerTables = { entries: [hold("job_a#0", "CAP-A"), hold("job_b#0", "CAP-B"), hold("job_c#0", "CAP-C")],
+		events: [event("CAP-A"), event("CAP-B"), event("CAP-C")] };
+	const result = await reconcile(tables, NOW);
+	assert.deepEqual(result.counts, { matched: 2, pending: 0, mismatched: 0, notChecked: 1 });
+	assert.deepEqual([result.rows[2]?.status, result.rows[2]?.reason], ["NOT_CHECKED", "NOT_READ_YET"]);
+	assert.deepEqual(result.objects, { read: 2, cached: 0, budget: 2 });
+	assert.equal(objects.calls.length, 2);
+});
+
+test("PayPal object reads run at most the concurrency at a time", async () => {
+	const objects = fakeObjects(liveCapture, 2);
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject }, { concurrency: 2 });
+	const ids = ["CAP-1", "CAP-2", "CAP-3", "CAP-4", "CAP-5"];
+	const result = await reconcile({ entries: ids.map((id, i) => hold(`job_${i}#0`, id)), events: ids.map(id => event(id)) }, NOW);
+	assert.equal(objects.calls.length, 5);
+	assert.equal(objects.peak(), 2);
+	assert.deepEqual(result.counts, { matched: 5, pending: 0, mismatched: 0, notChecked: 0 });
+});
+
+test("a failed Transaction Search is other activity not read, and the checked lines still show", async () => {
+	const reconcile = reconciliationService({
+		fetchPage: async () => { throw new Error("PayPal answered 500 for /v1/reporting/transactions."); },
+		readObject: fakeObjects(liveCapture).readObject,
 	});
-	const tables: LedgerTables = {
-		entries: [{ entryId: "job_a#0", jobId: "job_a", kind: "HELD", cents: 42000, at: "2026-08-01T10:00:00Z", captureId: "CAP-A", processorCents: null }],
-		events: [],
-	};
-	const body = await reconciliationService(fetchPage)(tables, NOW);
-	assert.deepEqual(calls, [
-		["2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z", 1],
-		["2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z", 2],
-		["2026-09-01T00:00:00Z", "2026-10-02T00:00:00Z", 1],
-		["2026-10-02T00:00:00Z", "2026-10-13T12:00:00Z", 1],
+	const result = await reconcile({ entries: [hold("job_a#0", CAPTURE)], events: [event(CAPTURE)] }, NOW);
+	assert.deepEqual(result.other, { state: "NOT_READ", reason: "PAYPAL_UNREADABLE" });
+	assert.deepEqual(result.counts, { matched: 1, pending: 0, mismatched: 0, notChecked: 0 });
+});
+
+test("a span longer than the search limit skips other activity with SPAN_TOO_LONG, and still checks the objects", async () => {
+	const search = fakeSearch(() => page([], 1, 1));
+	const objects = fakeObjects(liveCapture);
+	const reconcile = reconciliationService({ fetchPage: search.fetchPage, readObject: objects.readObject });
+	const old: LedgerTables = { entries: [{ ...hold("job_old#0", CAPTURE), at: "2023-10-13T12:00:00Z" }], events: [event(CAPTURE)] };
+	const result = await reconcile(old, NOW);
+	assert.deepEqual(result.other, { state: "NOT_READ", reason: "SPAN_TOO_LONG" });
+	assert.equal(search.calls.length, 0, "no search page is asked for a span past the limit");
+	assert.equal(result.counts.matched, 1);
+});
+
+test("Transaction Search rows a checked object claims are not other activity; the rest are, and are counted", async () => {
+	const search = fakeSearch(() => page([row("51P63583VW950112R", "363.78"), row("TREASURY-1", "-15.15")], 1, 1));
+	const reconcile = reconciliationService({ fetchPage: search.fetchPage, readObject: fakeObjects(liveRelease).readObject });
+	const tables: LedgerTables = { entries: [{ entryId: "job_a#1", jobId: "job_a", kind: "RELEASED", cents: 36378, at: "2026-10-12T10:00:00Z", captureId: RELEASED_CAPTURE, processorCents: null }],
+		events: [event(RELEASED_CAPTURE, { payoutItemId: PAYOUT_ITEM })] };
+	const result = await reconcile(tables, NOW);
+	assert.equal(result.other.state, "READ");
+	if (result.other.state !== "READ") return;
+	assert.equal(result.other.count, 1);
+	assert.deepEqual(result.other.sample.map(t => t.transactionId), ["TREASURY-1"]);
+});
+
+// ---- the object reader: which authority reads which object, and what its refusals become --------------------------
+
+type Seen = { readonly path: string; readonly assertion: string | null };
+
+/** A fake fetch: answers the OAuth token, records every other request's path and assertion, and answers from `answer`. */
+function fakeFetch(answer: (url: string) => Response) {
+	const seen: Seen[] = [];
+	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = String(input);
+		if (url.endsWith("/v1/oauth2/token")) return Response.json({ access_token: "fake-access-for-tests", expires_in: 3600 });
+		const headers = new Headers(init?.headers);
+		seen.push({ path: url.replace(/^https?:\/\/[^/]+/, ""), assertion: headers.get("PayPal-Auth-Assertion") });
+		return answer(url);
+	}) as typeof fetch;
+	return { seen, fetchImpl };
+}
+
+const CONFIG = { clientId: "test-client-id", clientSecret: "test-secret" };
+
+test("a capture is read under its merchant's assertion, and a payout item under the platform token alone", async () => {
+	const { seen, fetchImpl } = fakeFetch(url => Response.json(url.includes("/v2/payments/captures/") ? fixture("capture-completed-with-fee.json") : fixture("referenced-payout-success.json")));
+	const read = paypalObjectRead(CONFIG, fetchImpl);
+	const capture = await read({ kind: "CAPTURE", id: CAPTURE, merchant: MERCHANT });
+	const payout = await read({ kind: "PAYOUT_ITEM", id: PAYOUT_ITEM, merchant: null });
+	assert.deepEqual(capture, liveCapture());
+	assert.deepEqual(payout, liveRelease());
+	assert.deepEqual(seen, [
+		{ path: "/v2/payments/captures/5JG93436967627628", assertion: "eyJhbGciOiJub25lIn0=.eyJpc3MiOiJ0ZXN0LWNsaWVudC1pZCIsInBheWVyX2lkIjoiTUVSQ0hBTlRfU0FOREJPWCJ9." },
+		{ path: "/v1/payments/referenced-payouts-items/9gOgdaF5wfRSLI3kq8V7Boe9yIED2EzXBOksl3cCejMKFr60SucjaQN58AOIYo0%3D", assertion: null },
 	]);
-	assert.equal(body.from, "2026-08-01T00:00:00Z");
-	assert.equal(body.to, "2026-10-13T12:00:00Z");
-	assert.equal(body.transactions, 3);
-	assert.deepEqual(body.counts, { matched: 1, pending: 0, mismatched: 0, unknown: 2 });
-	assert.deepEqual(body.unknown.map(t => t.transactionId), ["CAP-B", "CAP-C"]);
-	assert.equal(body.pendingWindowHours, 3);
 });
 
-test("a ledger spanning more windows than the limit is refused before any PayPal call", async () => {
-	const { calls, fetchPage } = fakePayPal(() => page([], 1, 1));
-	const tables: LedgerTables = {
-		entries: [{ entryId: "job_old#0", jobId: "job_old", kind: "HELD", cents: 42000, at: "2023-10-13T12:00:00Z", captureId: "CAP-OLD", processorCents: null }],
-		events: [],
-	};
-	await assert.rejects(reconciliationService(fetchPage)(tables, NOW), ReconcileSpanError);
-	assert.equal(calls.length, 0);
-});
-
-test("a refused PayPal read is not cached: the next request asks PayPal again and can succeed", async () => {
-	let calls = 0;
-	let refusing = true;
-	const fetchPage: TransactionFetch = async () => {
-		calls++;
-		if (refusing) throw new Error("PayPal answered 500 for /v1/reporting/transactions.");
-		return page([], 1, 1);
-	};
-	const reconcile = reconciliationService(fetchPage);
-	await assert.rejects(reconcile(EMPTY, NOW), /PayPal answered 500/);
-	refusing = false;
-	const recovered = await reconcile(EMPTY, NOW);
-	assert.equal(recovered.cached, false);
-	assert.equal(calls, 3, "the refused read stops at its first window; the recovered read asks both windows");
+test("PayPal's 404 is NOT_FOUND; a 5xx or a 403 is UNAVAILABLE and names only the status, never PayPal's body", async () => {
+	const statuses: Record<string, number> = { [CAPTURE]: 404 };
+	const { fetchImpl } = fakeFetch(url => {
+		const id = url.split("/").at(-1) ?? "";
+		const status = statuses[id] ?? 503;
+		return new Response(JSON.stringify({ name: "RESOURCE_NOT_FOUND", message: "account detail that must not leak" }), { status });
+	});
+	const read = paypalObjectRead(CONFIG, fetchImpl);
+	assert.deepEqual(await read({ kind: "CAPTURE", id: CAPTURE, merchant: MERCHANT }), { state: "NOT_FOUND" });
+	assert.deepEqual(await read({ kind: "CAPTURE", id: "CAP-DOWN", merchant: MERCHANT }), { state: "UNAVAILABLE", detail: "PayPal answered 503" });
+	statuses["CAP-FORBIDDEN"] = 403;
+	assert.deepEqual(await read({ kind: "CAPTURE", id: "CAP-FORBIDDEN", merchant: MERCHANT }), { state: "UNAVAILABLE", detail: "PayPal answered 403" });
 });
 
 // ---- the route over real HTTP: the platform role alone may read it, and nothing is fetched for anyone else ----

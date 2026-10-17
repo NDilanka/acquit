@@ -1,0 +1,26 @@
+{
+  "item_id": "9gOgdaF5wfRSLI3kq8V7Boe9yIED2EzXBOksl3cCejMKFr60SucjaQN58AOIYo0=",
+  "processing_state": {
+    "status": "SUCCESS"
+  },
+  "reference_id": "20P48555BH2356736",
+  "reference_type": "TRANSACTION_ID",
+  "payout_transaction_id": "51P63583VW950112R",
+  "external_reference_id": "aq-aa3140e59ddeb75e1616c2e7fbf89321",
+  "payout_amount": {
+    "currency_code": "USD",
+    "value": "363.78"
+  },
+  "payout_destination": "D3SSQU3ZEN7R2",
+  "custom": "job_6c887790-0559-460b-a616-89361ed54bcf",
+  "last_response_code": 0,
+  "time_updated": 0,
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/payments/referenced-payouts-items/9gOgdaF5wfRSLI3kq8V7Boe9yIED2EzXBOksl3cCejMKFr60SucjaQN58AOIYo0=",
+      "rel": "self",
+      "method": "GET",
+      "encType": "application/json"
+    }
+  ]
+}

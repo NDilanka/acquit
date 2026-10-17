@@ -1,0 +1,49 @@
+{
+  "id": "88B878042R851314U",
+  "amount": {
+    "currency_code": "USD",
+    "value": "420.00"
+  },
+  "seller_payable_breakdown": {
+    "gross_amount": {
+      "currency_code": "USD",
+      "value": "420.00"
+    },
+    "paypal_fee": {
+      "currency_code": "USD",
+      "value": "0.00"
+    },
+    "platform_fees": [
+      {
+        "amount": {
+          "currency_code": "USD",
+          "value": "44.85"
+        }
+      }
+    ],
+    "net_amount": {
+      "currency_code": "USD",
+      "value": "375.15"
+    },
+    "total_refunded_amount": {
+      "currency_code": "USD",
+      "value": "420.00"
+    }
+  },
+  "custom_id": "job_f7a3921f-329f-49b3-a80b-9b545a4515bd",
+  "status": "COMPLETED",
+  "create_time": "2026-10-13T22:01:25-07:00",
+  "update_time": "2026-10-13T22:01:25-07:00",
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v2/payments/refunds/88B878042R851314U",
+      "rel": "self",
+      "method": "GET"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v2/payments/captures/6JF13492HA714842D",
+      "rel": "up",
+      "method": "GET"
+    }
+  ]
+}
