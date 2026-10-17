@@ -18,6 +18,7 @@ import type { AgAiToolDisplay } from "ag-studio-react";
 import type { AskMessage, AskToolSchema, AskTurnRequest, AskTurnResponse } from "./api-types";
 import { api, ApiError } from "./api.ts";
 import type { DashboardId } from "./dashboard-widgets.ts";
+import { FIGURE_LABELS, isFigureId } from "../../../packages/core/src/explain.ts";
 
 export const ASK_AGENT_ID = "ask-ledger";
 export const ASK_AGENT_NAME = "Ask the ledger";
@@ -346,9 +347,13 @@ function shapeFields(s: AgAiParamsBuilder, fields: readonly AskParamField[]) {
   return shapes;
 }
 
+/** Tools whose result a Studio card draws from `data`. The model reads only the response text, which is the same either way. */
+const CARD_TOOLS: readonly string[] = ["trace_figure"];
+
 export async function runTool(call: AskToolCaller, name: string, args: Record<string, unknown>, ctx: AgAiToolContext): Promise<AgAiToolResult> {
   try {
-    return ctx.success(JSON.stringify((await call(name, args ?? {}, ctx.signal)) ?? null));
+    const value = (await call(name, args ?? {}, ctx.signal)) ?? null;
+    return CARD_TOOLS.includes(name) ? ctx.success(JSON.stringify(value), value) : ctx.success(JSON.stringify(value));
   } catch (error) {
     return ctx.error([error instanceof ApiError ? (error.detail ?? askErrorText(error)) : errorMessage(error)]);
   }
@@ -382,12 +387,16 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
       if (id === "page") return "Handing off to the page agent";
       return "Handing off to the widget builder";
     }
+    case "trace_figure": {
+      const figure = args.figure;
+      return isFigureId(figure) ? `Tracing ${FIGURE_LABELS[figure].toLowerCase()} to its ledger lines` : "Tracing a figure to its ledger lines";
+    }
     default:
       return name;
   }
 }
 
-export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order"] as const;
+export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "trace_figure"] as const;
 
 /** How the Studio chat panel words the ledger tools' rows; Studio's own tools keep theirs. */
 export const ASK_TOOL_DISPLAY: Record<string, AgAiToolDisplay> = Object.fromEntries(

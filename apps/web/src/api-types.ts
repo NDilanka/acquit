@@ -416,6 +416,35 @@ export type PlatformReconciliation = {
   readonly other: PlatformOtherActivity;
 };
 
+export type FigureId = "held" | "released" | "refunded" | "fees" | "paid-by-clients";
+
+/**
+ * `GET /api/platform/explain?figure=` and the ask tool's `trace_figure`: one escrow figure and the ledger lines that sum to
+ * it, each with the PayPal object it names. Mirrored from apps/api/src/figure-trace.ts. Money is integer cents. `receiptId` is
+ * set on a PAID job only.
+ */
+export type FigureTraceLine = {
+  readonly entryId: string;
+  readonly jobId: string;
+  readonly kind: "HELD" | "RELEASED" | "FEE" | "REFUND";
+  readonly cents: number;
+  readonly at: string;
+  readonly receiptId: string | null;
+  readonly paypal: {
+    readonly id: string | null;
+    readonly status: PlatformReconcileStatus;
+    readonly observedCents: number | null;
+    readonly note: string | null;
+  };
+};
+
+export type FigureTrace = {
+  readonly figure: FigureId;
+  readonly label: string;
+  readonly totalCents: number;
+  readonly lines: readonly FigureTraceLine[];
+};
+
 /** One data line of `GET /api/platform/stream`: the store committed a write. It carries no data; the page reads again. */
 export type PlatformStreamEvent = { readonly kind: "changed"; readonly at: string };
 

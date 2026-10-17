@@ -5,6 +5,8 @@ import type {
   AskTurnResponse,
   CommandResponse,
   CreditAccountView,
+  FigureId,
+  FigureTrace,
   FundingMode,
   JobDetailResponse,
   JobResponse,
@@ -119,6 +121,7 @@ export const api = {
   platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
   platformTables: () => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables"),
   platformReconciliation: () => request<PlatformReconciliation>("GET", "/api/platform/reconciliation"),
+  platformExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/platform/explain?figure=${encodeURIComponent(figure)}`),
   loadStudioLayout: (dashboard: string) =>
     request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),
   saveStudioLayout: (dashboard: string, state: string) =>

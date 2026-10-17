@@ -55,6 +55,15 @@ const RULES: Record<FigureId, { readonly label: string; readonly selects: (job: 
 	"paid-by-clients": { label: "Paid by clients", selects: (job, line) => job.escrow === "RELEASED" && line.kind === "HELD" },
 };
 
+/** The words a figure carries on every screen: the Studio tiles, the Explain panel, and the ask tool's rows. */
+export const FIGURE_LABELS: Readonly<Record<FigureId, string>> = {
+	held: RULES.held.label,
+	released: RULES.released.label,
+	refunded: RULES.refunded.label,
+	fees: RULES.fees.label,
+	"paid-by-clients": RULES["paid-by-clients"].label,
+};
+
 /** The lines that make up one figure, and their sum. The figure's value is this sum, by construction. */
 export function figureLines(jobs: readonly FigureJob[], figure: FigureId): FigureLines {
 	const rule = RULES[figure];
