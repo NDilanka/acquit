@@ -188,7 +188,9 @@ export function publicReceipt(db: InstanceType<typeof import("node:sqlite").Data
 		title: typeof job.title === "string" ? job.title : null,
 		issue: typeof issue === "number" ? issue : null,
 		source: source?.source === "SEED" ? "SEED" : "JOB",
-		scripted: db.prepare("SELECT 1 FROM scenario_runs WHERE job_id = ?").get(jobId) !== undefined,
+		// scenario_runs is a bounded snapshot table that evicts old runs; the cleanup journal keeps every committed run.
+		scripted: db.prepare(`SELECT 1 FROM scenario_cleanup WHERE job_id = ?
+			UNION ALL SELECT 1 FROM scenario_runs WHERE job_id = ? LIMIT 1`).get(jobId, jobId) !== undefined,
 		releasedAt: receipt.releasedAt,
 		releaseAuthority: typeof state.releaseAuthority === "string" ? state.releaseAuthority : null,
 		operator: { handle: typeof bid?.handle === "string" ? bid.handle : null,

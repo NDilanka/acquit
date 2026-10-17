@@ -132,7 +132,7 @@ export function PublicReceiptPage({ receiptId }: { receiptId: string }) {
               )}
               {verdict === "NOT_REVEALED" && (
                 <span className="muted">
-                  The cases are not revealed here: the server could not read the private case file. The commitment still stands.
+                  The cases are not revealed here, so this browser cannot check them. The commitment above still stands.
                 </span>
               )}
             </p>

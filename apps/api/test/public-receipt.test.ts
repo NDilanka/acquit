@@ -125,6 +125,19 @@ test("a job a judge scenario started reads as scripted, and a job nobody scripte
 	} finally { store.close(); }
 });
 
+test("a scripted job stays scripted after its run's snapshot is evicted, because the cleanup journal keeps the run", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		seed(store, true);
+		store.db.prepare("INSERT INTO scenario_runs (id, requester_id, visitor_id, job_id, name, state, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)")
+			.run("run_1", "visitor_1", "visitor_1", PAID_JOB, "verified-and-paid", "DONE", "{}");
+		store.db.prepare("INSERT INTO scenario_cleanup (run_id, visitor_id, job_id, finished_at) VALUES (?, ?, ?, ?)")
+			.run("run_1", "visitor_1", PAID_JOB, RELEASED_AT);
+		store.db.prepare("DELETE FROM scenario_runs WHERE id = ?").run("run_1");
+		assert.equal(publicReceipt(store.db, RECEIPT, reader)?.receipt.scripted, true);
+	} finally { store.close(); }
+});
+
 test("a PAID job whose contract carried no sealed set serves no hidden-case section", () => {
 	const store = new SqliteStore(":memory:");
 	try {
