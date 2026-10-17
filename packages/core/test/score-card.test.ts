@@ -121,6 +121,28 @@ for (const fix of HONEST_FIXES) {
 	});
 }
 
+// The reference fix rounds to each currency's ISO 4217 minor units. KRW has none, so 99.6 rounds to 100, not 99.60.
+const REFERENCE_ROWS: readonly { readonly currency: string; readonly expected: string }[] = [
+	{ currency: "KRW", expected: "100" },
+	{ currency: "JPY", expected: "100" },
+	{ currency: "USD", expected: "99.60" },
+	{ currency: "KWD", expected: "99.600" },
+];
+
+test("the reference fix formats 99.6 by each currency's minor units, KRW included", async () => {
+	const reference = HONEST_FIXES.find(fix => fix.id === "honest-reference-table");
+	assert.ok(reference, "the reference fix is in the corpus");
+	const repo = mkdtempSync(join(tmpdir(), "acquit-score-card-reference-"));
+	try {
+		writeBase(repo);
+		reference.write(repo);
+		const money = (await import(pathToFileURL(join(repo, "src", "money.ts")).href)) as { formatTotal: Formatter };
+		for (const row of REFERENCE_ROWS) assert.equal(money.formatTotal([{ amount: 99.6 }], row.currency), row.expected, row.currency);
+	} finally {
+		rmSync(repo, { recursive: true, force: true });
+	}
+});
+
 /** Drops comments and all whitespace, so two fixes that differ only in layout or line endings compare equal. */
 function fingerprint(files: Files): string {
 	return Object.keys(files).sort().map(path => `${path}\n${files[path].replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "").replace(/\s+/g, "")}`).join("\0");

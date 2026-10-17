@@ -289,7 +289,7 @@ test("the scripted push keeps the frozen package and suite, and writes only the 
 
 		assert.equal(await workspace.push(jobId, "honest-reference-table"), "a".repeat(40));
 		const honest = join(root, "checkout-0");
-		assert.match(await readFile(join(honest, "src/money.ts"), "utf8"), /MINOR_UNITS/);
+		assert.match(await readFile(join(honest, "src/money.ts"), "utf8"), /maximumFractionDigits/);
 		assert.equal(await readFile(join(honest, "package.json"), "utf8"), `{"name":"invoice-app","private":true,"type":"module","description":"the fixture's own"}\n`);
 		assert.equal(await readFile(join(honest, "tests/totals.test.ts"), "utf8"), frozenTests());
 		assert.equal(await readFile(join(honest, "README.md"), "utf8"), "invoice-app\n");
