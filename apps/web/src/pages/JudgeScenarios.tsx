@@ -117,11 +117,22 @@ function RunStep({ step }: { step: RunStepView }) {
       </div>
       <div className="run-meta">
         <span>{step.label}</span>
-        {step.sandboxNote !== null && (
-          <>
-            <span className="sandbox">Sandbox</span>
-            <span className="muted">{step.sandboxNote}</span>
-          </>
+        {step.reached === null ? (
+          <span className="muted">Reach not recorded for this step</span>
+        ) : step.reached.length === 0 ? (
+          <span className="muted">Reached nothing outside</span>
+        ) : (
+          step.reached.map(place => (
+            <span key={place.label}>
+              Reached {place.label}
+              {place.sandboxNote !== null && (
+                <>
+                  {" "}
+                  <span className="sandbox">Sandbox</span> <span className="muted">{place.sandboxNote}</span>
+                </>
+              )}
+            </span>
+          ))
         )}
         <span className="mono">{step.ms} ms</span>
       </div>

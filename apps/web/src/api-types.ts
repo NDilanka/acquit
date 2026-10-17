@@ -510,6 +510,9 @@ export type ScenarioName = "verified-and-paid" | "hidden-test-fail" | "test-tamp
 /** The honest labels a scenario step carries, as core SCENARIO_LABELS spells them. */
 export type ScenarioLabel = "Scripted agent (Simulated)" | "Simulated time for this job" | "Real verifier run" | "PayPal sandbox" | "GitHub work repository" | "Server record (no outside call)";
 
+/** The outside places a step's own work can reach, as core SCENARIO_LABELS spells them. */
+export type ScenarioReachLabel = "Real verifier run" | "PayPal sandbox" | "GitHub work repository";
+
 export type ScenarioStep = {
   readonly name: string;
   readonly actor: "CLIENT" | "OPERATOR" | "ARBITER" | "SYSTEM";
@@ -518,7 +521,10 @@ export type ScenarioStep = {
   /** Server-measured duration of the step, in milliseconds. */
   readonly ms: number;
   readonly outcome: string;
+  /** Who acted. On a system step it names what the step reached. */
   readonly label: ScenarioLabel;
+  /** The outside places the step's own work reached, in order. Empty when nothing left the server. Absent on a run stored before reach was kept. */
+  readonly reached?: readonly ScenarioReachLabel[];
 };
 
 export type ScenarioEndState = { readonly jobStatus: JobStatus; readonly reason: string | null };

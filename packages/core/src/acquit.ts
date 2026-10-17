@@ -2,7 +2,7 @@ import type { CapRefusal } from "./caps.ts";
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
 import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxEffect } from "./effects.ts";
-import type { OutboxRan, Ports } from "./effects.ts";
+import type { OutboxRan, Ports, RanObserver } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import type { GitHubAppPort } from "./github.ts";
 import { instant } from "./ids.ts";
@@ -171,8 +171,11 @@ export interface CreditAccountView {
 }
 
 export interface Acquit {
-	/** Authenticates ownership and commits one whole domain action. The key is bound to the payload digest. */
-	execute(actor: Actor, key: RequestKey, command: UserCommand): Promise<CommandOutcome>;
+	/**
+	 * Authenticates ownership and commits one whole domain action. The key is bound to the payload digest. An
+	 * observer, when given, is told each outbox effect the command's own drain ran, and its outcome is unchanged.
+	 */
+	execute(actor: Actor, key: RequestKey, command: UserCommand, observe?: RanObserver): Promise<CommandOutcome>;
 	query(actor: Actor, query: Query): Promise<QueryResult>;
 	/** Verifies, re-reads the resource, and applies it. Safe to deliver any number of times. */
 	handlePayPalWebhook(request: Request): Promise<Response>;
@@ -242,7 +245,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		clock };
 	let ticking: Promise<TickSummary> | null = null;
 	const service: Acquit = {
-		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
+		execute: (actor, key, command, observe) => executeCommand(ports, actor, key, command, observe),
 		query: async (actor, query) => {
 			const counts = await store.receiptCounts();
 			const houseRows = await store.receiptRowCounts();

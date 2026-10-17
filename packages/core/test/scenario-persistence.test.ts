@@ -51,7 +51,7 @@ test("a finished run's snapshot survives a reopen of the database, unchanged", a
 test("a run RUNNING when the store reopens is FAILED with RESTARTED, keeps its recorded steps, and resumes none", async t => {
 	const path = await tempDatabase(t);
 	const step: ScenarioStep = { name: "open-job", actor: "CLIENT", startedAt: "2026-10-06T12:00:00.000Z", endedAt: "2026-10-06T12:00:00.010Z",
-		ms: 10, outcome: "opened job_scn_run_a", label: "Scripted agent (Simulated)" };
+		ms: 10, outcome: "opened job_scn_run_a", label: "Scripted agent (Simulated)", reached: [] };
 	const first = openDatabase(path);
 	try {
 		commit(boundedRuns(undefined, first), runOf("scn_run_a", "req-a", "RUNNING", [step]));
