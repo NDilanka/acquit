@@ -6,6 +6,7 @@ import { buildRunView, nextPollMs, startRefusalWords } from "./scenario-run.ts";
 const SCRIPTED: ScenarioLabel = "Scripted agent (Simulated)";
 const PAYPAL: ScenarioLabel = "PayPal sandbox";
 const VERIFIER: ScenarioLabel = "Real verifier run";
+const SERVER: ScenarioLabel = "Server record (no outside call)";
 
 function step(name: string, actor: ScenarioStep["actor"], label: ScenarioLabel, ms: number, outcome: string): ScenarioStep {
   return { name, actor, label, ms, outcome, startedAt: "2026-05-01T10:00:00.000Z", endedAt: "2026-05-01T10:00:01.000Z" };
@@ -158,6 +159,57 @@ test("each start refusal reads in plain words, and the code stays visible", () =
   assert.equal(startRefusalWords("NOT_DEMO_VISITOR"), "Start your demo first. A scenario runs on a demo of your own.");
   assert.equal(startRefusalWords("SCENARIO_FIXTURE_MISMATCH"), "The scenarios' job is not on the repository this deployment copies demos from, so no scenario can run here.");
   assert.equal(startRefusalWords("SOME_UNNAMED_CODE"), "The request was refused. (SOME_UNNAMED_CODE)");
+});
+
+test("a settle step reads Pending PayPal sandbox work settles, with the sandbox note and the time it measured", () => {
+  const view = buildRunView({
+    ...RUN,
+    steps: [
+      step("place-bid", "OPERATOR", SCRIPTED, 388, "bid bid_1"),
+      step("settle", "SYSTEM", PAYPAL, 4235, "SETTLED"),
+    ],
+  });
+  assert.deepEqual(view.steps, [
+    { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", sandboxNote: null, result: "bid bid_1", ms: 388 },
+    { title: "Pending PayPal sandbox work settles", actorText: "System", label: "PayPal sandbox", sandboxNote: "No real money moves.", result: "SETTLED", ms: 4235 },
+  ]);
+});
+
+test("a record-run step reads Server records the run, with its own label and no sandbox note", () => {
+  const view = buildRunView({
+    ...RUN,
+    state: "FAILED",
+    steps: [step("record-run", "SYSTEM", SERVER, 3, "FAILED STORE_WRITE_FAILED")],
+  });
+  assert.deepEqual(view.steps, [
+    { title: "Server records the run", actorText: "System", label: "Server record (no outside call)", sandboxNote: null, result: "FAILED STORE_WRITE_FAILED", ms: 3 },
+  ]);
+});
+
+test("a FAILED run whose settle step failed names that step and its code, and says no end state was reached", () => {
+  const view = buildRunView({
+    ...RUN,
+    state: "FAILED",
+    steps: [
+      step("open-job", "CLIENT", SCRIPTED, 412, "opened job_1"),
+      step("place-bid", "OPERATOR", SCRIPTED, 388, "bid bid_1"),
+      step("settle", "SYSTEM", PAYPAL, 61, "FAILED PAYPAL_UNAVAILABLE"),
+    ],
+    endState: null,
+  });
+  assert.equal(view.endText, "Failed at Pending PayPal sandbox work settles. The step failed (PAYPAL_UNAVAILABLE). The run reached no end state.");
+  assert.equal(view.observed, null);
+});
+
+test("a FAILED run whose final write failed names the record-run step and keeps the end the job observed", () => {
+  const view = buildRunView({
+    ...RUN,
+    state: "FAILED",
+    steps: [step("record-run", "SYSTEM", SERVER, 3, "FAILED STORE_WRITE_FAILED")],
+    endState: { jobStatus: "PAID", reason: "CLIENT_APPROVAL" },
+  });
+  assert.equal(view.endText, "Failed at Server records the run. The step failed (STORE_WRITE_FAILED). The job ended PAID (CLIENT_APPROVAL), and this scenario needs PAID (CLIENT_APPROVAL).");
+  assert.equal(view.observed, "PAID (CLIENT_APPROVAL)");
 });
 
 test("a run still going is read again in 2 seconds, and a stopped run is not read again", () => {
