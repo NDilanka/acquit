@@ -149,9 +149,20 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 	return { swept, workRepos, kept };
 }
 
-/** The kept repositories as one log line: each named with the reason code that kept it. Codes and names only, never a payload. */
+/** How many kept repositories one log line names; refused rows are retried forever, so the backlog itself is unbounded. */
+export const KEPT_SUMMARY_NAMED = 10;
+
+/**
+ * The kept repositories as one bounded log line: the first few named with the reason code that kept them, then a
+ * count per reason for every one kept. Codes and names only, never a payload.
+ */
 export function keptSummary(kept: readonly { readonly repository: string; readonly reason: string }[]): string {
-	return kept.map(item => `${item.repository || "no repository recorded"} (${item.reason})`).join(", ");
+	const named = kept.slice(0, KEPT_SUMMARY_NAMED).map(item => `${item.repository || "no repository recorded"} (${item.reason})`).join(", ");
+	if (kept.length <= KEPT_SUMMARY_NAMED) return named;
+	const counts = new Map<string, number>();
+	for (const item of kept) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+	const byReason = [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([reason, n]) => `${reason} ${n}`).join(", ");
+	return `${named}, and ${kept.length - KEPT_SUMMARY_NAMED} more; all kept by reason: ${byReason}`;
 }
 
 /**

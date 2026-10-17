@@ -363,6 +363,12 @@ test("the kept log names each kept repository with the reason that kept it", () 
 		{ repository: "acquit-forks/demo-abc123", reason: "GITHUB_FORK_MISMATCH" },
 		{ repository: "", reason: "WORK_REPO_PENDING" },
 	]), "acquit-forks/demo-abc123 (GITHUB_FORK_MISMATCH), no repository recorded (WORK_REPO_PENDING)");
+	const backlog = Array.from({ length: 10_000 }, (_, i) => ({ repository: `acquit-forks/demo-${String(i).padStart(12, "0")}-job_${i}`,
+		reason: i % 3 === 0 ? "WORK_REPO_PENDING" : "GITHUB_FORK_MISMATCH" }));
+	const line = keptSummary(backlog);
+	assert.ok(line.length < 1_000, `a 10,000-row backlog logs ${line.length} characters`);
+	assert.ok(line.startsWith("acquit-forks/demo-000000000000-job_0 (WORK_REPO_PENDING), acquit-forks/demo-000000000001-job_1 (GITHUB_FORK_MISMATCH)"));
+	assert.ok(line.endsWith(", and 9990 more; all kept by reason: GITHUB_FORK_MISMATCH 6666, WORK_REPO_PENDING 3334"), line);
 });
 
 test("the API runs the scenario sweep on its own timer every ten minutes, through the function the tests above cover", () => {
