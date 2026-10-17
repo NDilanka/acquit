@@ -371,6 +371,8 @@ export type Plan<Next> = {
 	readonly credits: readonly CreditAccount[];
 	readonly effects: readonly JobEffect[];
 	readonly refused?: Refusal;
+	/** The observation is the settlement the row already holds: nothing moves and nothing alerts. */
+	readonly alreadySettled?: true;
 	/** The caps this write spends, checked and written in the committing transaction. See caps.ts. */
 	readonly reservations?: readonly Reservation[];
 };
@@ -692,8 +694,12 @@ function transitionTable(): {
 		ReleaseSettled: { by: "SYSTEM", apply: (row, command) => {
 			const release = command.release;
 			// One disposition per job: a release is applied only to the release this row selected, and only
-			// when its evidence names the held capture and adds up to the held gross.
-			if (row.state.status !== "VERIFIED" || row.state.review.phase !== "RELEASE_PENDING" || release.captureId !== row.state.escrow.capture.captureId) return settlementMismatch(row);
+			// when its evidence names the held capture and adds up to the held gross. The payout a PAID row
+			// already holds is a no-op, whichever of the outbox and the webhook lands second.
+			const decision = decideRelease(row, release);
+			if (decision === "ALREADY_SETTLED") return { ...unchanged(row), alreadySettled: true };
+			// The guard repeats decideRelease's APPLY test so the state narrows for the code below.
+			if (decision !== "APPLY" || row.state.status !== "VERIFIED" || row.state.review.phase !== "RELEASE_PENDING") return settlementMismatch(row);
 			const escrow = row.state.escrow;
 			const book = reduceLedger(escrow.book, { kind: "Release", operatorNet: release.paid,
 				processorFee: escrow.capture.processorFee, platformFee: escrow.capture.platformFee, at: release.at });
@@ -868,6 +874,23 @@ function receiptOf(fields: Omit<Receipt, typeof receiptBrand>): Receipt {
 /** A settlement observation that does not match the selected disposition is never applied. It is an ALERT. */
 function settlementMismatch<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
 	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }], refused: "SETTLEMENT_MISMATCH" };
+}
+
+/**
+ * What a release observation means against the row it arrives at. APPLY is the release this row selected.
+ * ALREADY_SETTLED is the payout a PAID row already holds. MISMATCH is everything else, and it is an ALERT.
+ */
+export type ReleaseDecision = "APPLY" | "ALREADY_SETTLED" | "MISMATCH";
+
+export function decideRelease(row: JobRow, release: ReleaseEvidence): ReleaseDecision {
+	if (row.state.status === "PAID") return sameRelease(row.state.release, release) ? "ALREADY_SETTLED" : "MISMATCH";
+	if (row.state.status !== "VERIFIED" || row.state.review.phase !== "RELEASE_PENDING" || release.captureId !== row.state.escrow.capture.captureId) return "MISMATCH";
+	return "APPLY";
+}
+
+/** The fields PayPal reported for the payout. `at` is the clock the read ran on, so two reads of one payout can differ in it. */
+function sameRelease(held: ReleaseEvidence, observed: ReleaseEvidence): boolean {
+	return held.payoutItemId === observed.payoutItemId && held.captureId === observed.captureId && held.paid === observed.paid;
 }
 
 /**

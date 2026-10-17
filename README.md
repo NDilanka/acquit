@@ -8,6 +8,10 @@ The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest 
 
 Cleared, then paid. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Concurrency proof
+
+[`packages/core/test/concurrency-proof.test.ts`](packages/core/test/concurrency-proof.test.ts) (test at line 123) delivers one verified job's Submit, verdict, capture, and PayPal payout 20 times in parallel against one store and one fake PayPal. CI prints `CONCURRENCY delivered 20 times in parallel, paid once`: one payout request, one released ledger line, and the job ends PAID.
+
 ## Hosted demo
 
 The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / opens the three-step tour, and Start my demo provisions a visitor with its own client and operator accounts and its own fork of the fixture repository. There is no per-address limit, so judges on a shared network are never locked out; the deployment as a whole starts at most 50 demo visitors per rolling 24 hours (`VISITORS_DAY` in `packages/core/src/caps.ts`), and each visitor keeps its own job, budget, and verifier-run caps. Expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
