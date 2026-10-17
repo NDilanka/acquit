@@ -13,6 +13,7 @@ import type {
   OperatorView,
   PayoutRow,
   PlatformJobLedger,
+  PlatformReconciliation,
   PlatformSignedInResponse,
   PlatformTables,
   PublicReceiptResponse,
@@ -117,6 +118,7 @@ export const api = {
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
   platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
   platformTables: () => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables"),
+  platformReconciliation: () => request<PlatformReconciliation>("GET", "/api/platform/reconciliation"),
   loadStudioLayout: (dashboard: string) =>
     request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),
   saveStudioLayout: (dashboard: string, state: string) =>

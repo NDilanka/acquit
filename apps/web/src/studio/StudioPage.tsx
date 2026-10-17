@@ -20,6 +20,7 @@ import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
 import {
   EarningsContext,
   EscrowContext,
+  ReconcileContext,
   PAGE_LAYOUT,
   WIDGETS,
   freshState,
@@ -28,6 +29,7 @@ import {
   type DashboardId,
   type DashboardState,
   type EarningsData,
+  type ReconcileView,
 } from "./dashboards";
 import { parseSaved } from "../studio-data";
 import { FALLBACK_POLL_MS, onChange, onSettled, parseStreamEvent, PLATFORM_STREAM_PATH, READ_IDLE, type ReadState } from "./live";
@@ -73,19 +75,37 @@ type EscrowBook = { readonly jobs: readonly PlatformJobLedger[]; readonly tables
 // Module-level sources keep their identity across renders, so Studio only rebuilds when the data does.
 const escrowSource = (book: EscrowBook) => escrowData(book.tables);
 const earningsSource = () => STUDIO_EARNINGS_DATA;
+// PayPal's read is separate from the ledger's: a slow or failed PayPal read never holds the ledger back, and the card says so.
+const readReconciliation = (): Promise<ReconcileView> => api.platformReconciliation().catch((): ReconcileView => "UNAVAILABLE");
+// PayPal settles a line with no write to the local database, so the stream never announces it: the card reads again on its own.
+const RECONCILE_REFRESH_MS = 3 * 60 * 1000;
 
 function EscrowDashboard() {
   const ask = useAskLedger("escrow");
   const [ledger, setLedger] = useState<Load<EscrowBook> | { kind: "denied" }>({ kind: "loading" });
+  const [reconciliation, setReconciliation] = useState<ReconcileView>("READING");
   const [streaming, setStreaming] = useState(true);
   useEffect(() => {
     let live = true;
+    // Reads can overlap (a ledger change during a slow PayPal read), so only the newest answer reaches the card.
+    let cardRead = 0;
+    const readCard = () => {
+      const mine = ++cardRead;
+      readReconciliation().then((view) => {
+        if (live && mine === cardRead) setReconciliation(view);
+      });
+    };
     let reads: ReadState = READ_IDLE;
     let fallback: ReturnType<typeof setInterval> | undefined;
     const source = new EventSource(PLATFORM_STREAM_PATH);
+    // Only the PayPal card re-reads here, and only while the page is on screen: the ledger still waits for the stream.
+    const reconcileTimer = setInterval(() => {
+      if (document.visibilityState === "visible") readCard();
+    }, RECONCILE_REFRESH_MS);
     const stop = () => {
       source.close();
       clearInterval(fallback);
+      clearInterval(reconcileTimer);
       window.removeEventListener("focus", refresh);
     };
     // A change, a reconnect, or a focus asks for a read; reads run one at a time (see studio/live.ts).
@@ -100,6 +120,7 @@ function EscrowDashboard() {
       if (step.read) load();
     }
     function load() {
+      readCard();
       Promise.all([api.platformLedger(), api.platformTables()]).then(
         ([r, t]) => {
           if (!live) return;
@@ -155,7 +176,11 @@ function EscrowDashboard() {
       ask={ask}
       source={escrowSource}
     >
-      {(book, studio) => <EscrowContext.Provider value={book.jobs}>{studio}</EscrowContext.Provider>}
+      {(book, studio) => (
+        <EscrowContext.Provider value={book.jobs}>
+          <ReconcileContext.Provider value={reconciliation}>{studio}</ReconcileContext.Provider>
+        </EscrowContext.Provider>
+      )}
     </Dashboard>
   );
 }

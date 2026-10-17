@@ -18,6 +18,15 @@ export type PaypalConfig = {
 	readonly sandbox: boolean;
 };
 
+/** PayPal refused a read with this status. The message names the path only, never the body. */
+export class PayPalHttpError extends Error {
+	readonly status: number;
+	constructor(status: number, path: string) {
+		super(`PayPal answered ${status} for ${path.split("?")[0]}.`);
+		this.status = status;
+	}
+}
+
 /** The toolkit client built around one minted token, and when that token stops serving. */
 type Minted = {
 	readonly api: PayPalAPI;
@@ -37,7 +46,9 @@ export async function paypalReader(options: PaypalConfig, fetchImpl: typeof fetc
 	if (!options.sandbox) throw new Error("Only the PayPal sandbox is supported.");
 	const base = "https://api-m.sandbox.paypal.com";
 	let minted: Minted | null = null;
-	const mint = async (): Promise<Minted> => {
+	/** The token request in flight, if any: reads that arrive meanwhile wait for it rather than minting their own. */
+	let minting: Promise<Minted> | null = null;
+	const requestToken = async (): Promise<Minted> => {
 		const tokenResponse = await fetchImpl(`${base}/v1/oauth2/token`, {
 			method: "POST",
 			headers: { Authorization: `Basic ${Buffer.from(`${options.clientId}:${options.clientSecret}`).toString("base64")}`,
@@ -53,6 +64,10 @@ export async function paypalReader(options: PaypalConfig, fetchImpl: typeof fetc
 			? answer.expires_in * 1000 : 0;
 		minted = { api: new PayPalAPI(answer.access_token, { sandbox: true }), expiresAt: now() + lifetime };
 		return minted;
+	};
+	const mint = (): Promise<Minted> => {
+		minting ??= requestToken().finally(() => { minting = null; });
+		return minting;
 	};
 	/** The token to read with: the minted one while it still serves, a fresh mint when it nears
 	 * its expiry or when nothing is minted yet. */
@@ -70,12 +85,13 @@ export async function paypalReader(options: PaypalConfig, fetchImpl: typeof fetc
 			const first = await current();
 			let response = await read(path, first.api, named);
 			if (response.status === 401) {
-				// The token was refused before its expiry could catch it. Drop it, mint once, retry once.
-				minted = null;
-				const fresh = await mint();
+				// The token was refused before its expiry could catch it. Drop that token unless a read already replaced it,
+				// mint once (or take the token a concurrent read just minted), and retry once.
+				if (minted === first) minted = null;
+				const fresh = minted ?? await mint();
 				response = await read(path, fresh.api, named);
 			}
-			if (!response.ok) throw new Error(`PayPal answered ${response.status} for ${path.split("?")[0]}.`);
+			if (!response.ok) throw new PayPalHttpError(response.status, path);
 			return response.json();
 		},
 	};

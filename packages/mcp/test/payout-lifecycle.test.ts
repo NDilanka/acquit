@@ -78,6 +78,20 @@ describe("the payout reader's token lifecycle", () => {
 		assert.equal(referencedPayoutItem(item, "probe-item").status, "SUCCESS");
 	});
 
+	it("reads that arrive together share one token mint, and a read after the mint rides the same token", async () => {
+		const { transport, calls } = syntheticPaypal(3600, [200]);
+		const slowMint = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (new URL(String(input)).pathname === "/v1/oauth2/token") await new Promise(resolve => setTimeout(resolve, 20));
+			return transport(input, init);
+		}) as typeof fetch;
+		const reader = await paypalReader({ clientId: "probe-id", clientSecret: "probe-value", sandbox: true }, slowMint);
+		const path = "/v1/payments/referenced-payouts-items/probe-item";
+		await Promise.all([reader.get(path), reader.get(path), reader.get(path), reader.get(path)]);
+		await reader.get(path);
+		assert.equal(calls.oauth, 1, "one token request serves all five reads");
+		assert.deepEqual(calls.reads, ["Bearer token-1", "Bearer token-1", "Bearer token-1", "Bearer token-1", "Bearer token-1"]);
+	});
+
 	it("answers a persistent 401 with one error, after exactly one re-mint and retry", async () => {
 		const { transport, calls } = syntheticPaypal(3600, [401]);
 		const reader = await paypalReader(

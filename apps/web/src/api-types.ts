@@ -362,6 +362,60 @@ export type PlatformTables = {
   readonly clients: readonly PlatformClientRow[];
 };
 
+/**
+ * `GET /api/platform/reconciliation`: each ledger line checked against the PayPal object it names, read live. Mirrored
+ * from packages/core/src/reconcile.ts and apps/api/src/reconciliation.ts. Money is integer cents, unsigned: the line's
+ * kind gives the direction.
+ */
+export type PlatformReconcileStatus = "MATCHED" | "PENDING_AT_PAYPAL" | "MISMATCHED" | "NOT_CHECKED";
+export type PlatformReconcileReason =
+  | "NOT_AT_PAYPAL" | "AMOUNT" | "CURRENCY" | "STATUS" | "NOT_REFUNDED" | "PAYPAL_PENDING"
+  | "NO_PAYPAL_ID" | "PAYPAL_UNREADABLE" | "NOT_READ_YET" | "UNREADABLE_AMOUNT" | "NO_STATUS";
+
+export type PlatformReconcileRow = {
+  readonly entryId: string;
+  readonly jobId: string;
+  readonly kind: "HELD" | "RELEASED" | "FEE" | "REFUND";
+  readonly at: string;
+  readonly leg: "AMOUNT" | "FEE";
+  /** The ledger's own cents for the line; null when the line names none. */
+  readonly expectedCents: number | null;
+  readonly objectKind: "CAPTURE" | "REFUND" | "PAYOUT_ITEM" | null;
+  readonly objectId: string | null;
+  readonly status: PlatformReconcileStatus;
+  readonly reason: PlatformReconcileReason | null;
+  /** A sentence for the screen: what matched, or what PayPal said. */
+  readonly note: string | null;
+  readonly observedCents: number | null;
+  readonly paypalStatus: string | null;
+  readonly payoutTransactionId: string | null;
+};
+
+/** A Transaction Search row on the platform account that no checked object claims: other activity, not escrow. */
+export type PlatformOtherTransaction = {
+  readonly transactionId: string;
+  readonly eventCode: string;
+  readonly initiatedAt: string;
+  readonly amountCents: number | null;
+  readonly feeCents: number | null;
+  readonly currency: string;
+};
+
+export type PlatformOtherActivity =
+  | { readonly state: "READ"; readonly from: string; readonly to: string; readonly fetchedAt: string; readonly cached: boolean;
+      readonly count: number; readonly unreadable: number; readonly truncated: boolean; readonly sample: readonly PlatformOtherTransaction[] }
+  | { readonly state: "NOT_READ"; readonly reason: "SPAN_TOO_LONG" | "PAYPAL_UNREADABLE" };
+
+export type PlatformReconciliation = {
+  readonly counts: { readonly matched: number; readonly pending: number; readonly mismatched: number; readonly notChecked: number };
+  readonly rows: readonly PlatformReconcileRow[];
+  /** When this refresh read PayPal. */
+  readonly checkedAt: string;
+  /** PayPal object reads this refresh made, the ones answered from the cache, and the budget it ran under. */
+  readonly objects: { readonly read: number; readonly cached: number; readonly budget: number };
+  readonly other: PlatformOtherActivity;
+};
+
 /** One data line of `GET /api/platform/stream`: the store committed a write. It carries no data; the page reads again. */
 export type PlatformStreamEvent = { readonly kind: "changed"; readonly at: string };
 
