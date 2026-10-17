@@ -406,6 +406,19 @@ test("a delegation the child failed shows failed in the panel, not done", () => 
   ]);
 });
 
+test("a traced figure reads as its step and then as the figure card, and a refused trace reads as a failed step alone", () => {
+  const trace = { figure: "fees", label: "Fees collected", totalCents: 300, lines: [] };
+  const messages: AgAiChatMessage[] = [
+    { id: "f1", role: "assistant", createdAt: 1, parts: [{ type: "tool_call", toolCall: { toolCallId: "f", name: "trace_figure", status: "complete", args: { figure: "fees" }, result: { success: true, response: "{}", data: trace } } }] },
+    { id: "f2", role: "assistant", createdAt: 2, parts: [{ type: "tool_call", toolCall: { toolCallId: "g", name: "trace_figure", status: "complete", args: { figure: "fees" }, result: { success: false, issues: [{ message: "no" }] } } }] },
+  ];
+  assert.deepEqual(askRows(messages), [
+    { kind: "step", key: "f1-0", label: "Tracing fees collected to its ledger lines", state: "done" },
+    { kind: "figure", key: "f1-0-figure", trace },
+    { kind: "step", key: "f2-0", label: "Tracing fees collected to its ledger lines", state: "failed" },
+  ]);
+});
+
 test("Ask the ledger takes a question only with a model key on the server and an open conversation", () => {
   assert.deepEqual(askGate({ kind: "ready", keyConfigured: true }, true), { ready: true, keyMissing: false });
   assert.deepEqual(askGate({ kind: "ready", keyConfigured: false }, true), { ready: false, keyMissing: true });

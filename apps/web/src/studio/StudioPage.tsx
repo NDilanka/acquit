@@ -15,7 +15,7 @@ import type { PlatformJobLedger, PlatformTables } from "../api-types";
 import { errorText } from "../demo";
 import { Link } from "../router";
 import { useSession } from "../session";
-import { ASK_TOOL_DISPLAY, AskLedgerDrawer, useAskLedger, type AskLedger } from "./AskLedger";
+import { ASK_TOOL_DISPLAY_CARDS, AskLedgerDrawer, useAskLedger, type AskLedger } from "./AskLedger";
 import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
 import {
   EarningsContext,
@@ -447,7 +447,7 @@ function AcquitStudio({
         data={data}
         panels={ask ? STUDIO_PANELS_WITH_AI : STUDIO_PANELS}
         ai={ask?.setup}
-        aiToolDisplay={ask ? ASK_TOOL_DISPLAY : undefined}
+        aiToolDisplay={ask ? ASK_TOOL_DISPLAY_CARDS : undefined}
         onApiReady={onApiReady}
         onStateUpdated={onStateUpdated}
       />

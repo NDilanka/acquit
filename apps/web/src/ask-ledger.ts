@@ -15,10 +15,11 @@ import type {
   AgStudioApi,
 } from "ag-studio";
 import type { AgAiToolDisplay } from "ag-studio-react";
-import type { AskMessage, AskToolSchema, AskTurnRequest, AskTurnResponse } from "./api-types";
+import type { AskMessage, AskToolSchema, AskTurnRequest, AskTurnResponse, FigureTrace } from "./api-types";
 import { api, ApiError } from "./api.ts";
 import type { DashboardId } from "./dashboard-widgets.ts";
 import { FIGURE_LABELS, isFigureId } from "../../../packages/core/src/explain.ts";
+import { isFigureTrace } from "./figure-trace.ts";
 
 export const ASK_AGENT_ID = "ask-ledger";
 export const ASK_AGENT_NAME = "Ask the ledger";
@@ -432,7 +433,15 @@ export function askGate(
 export type AskRow =
   | { readonly kind: "text"; readonly key: string; readonly role: "user" | "assistant" | "system"; readonly text: string }
   | { readonly kind: "step"; readonly key: string; readonly label: string; readonly state: "running" | "done" | "failed" | "cancelled" }
+  | { readonly kind: "figure"; readonly key: string; readonly trace: FigureTrace }
   | { readonly kind: "error"; readonly key: string; readonly text: string };
+
+/** trace_figure's answer, when it is a figure the drawer can show as a card. */
+function figureOf(name: string, result: unknown): FigureTrace | null {
+  if (name !== "trace_figure" || typeof result !== "object" || result === null) return null;
+  const data = (result as { data?: unknown }).data;
+  return isFigureTrace(data) ? data : null;
+}
 
 export function askRows(messages: readonly AgAiChatMessage[]): AskRow[] {
   return messages.flatMap((message) =>
@@ -446,7 +455,9 @@ export function askRows(messages: readonly AgAiChatMessage[]): AskRow[] {
           // A tool that returns Studio's failure shape still settles at "complete".
           const reportedFailure = typeof result === "object" && result !== null && (result as { success?: unknown }).success === false;
           const state = reportedFailure ? "failed" : status === "complete" ? "done" : status === "error" ? "failed" : status === "cancelled" ? "cancelled" : "running";
-          return [{ kind: "step", key, label: askToolLabel(part.toolCall.name, part.toolCall.args), state }];
+          const step: AskRow = { kind: "step", key, label: askToolLabel(part.toolCall.name, part.toolCall.args), state };
+          const trace = reportedFailure ? null : figureOf(part.toolCall.name, result);
+          return trace === null ? [step] : [step, { kind: "figure", key: `${key}-figure`, trace }];
         }
         case "error":
           return [{ kind: "error", key, text: part.message }];

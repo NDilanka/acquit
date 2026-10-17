@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgAiHarnessSetupParams, AgAiRunStatus, AgStudioApi } from "ag-studio";
+import type { AgAiToolDisplay } from "ag-studio-react";
 import { api } from "../api";
 import type { AskToolSchema } from "../api-types";
 import { createAskLedgerHarness, openAskThread } from "../ask-harness.ts";
-import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, askGate, askRows, askStatusText } from "../ask-ledger";
+import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, ASK_TOOL_DISPLAY, askGate, askRows, askStatusText, askToolLabel } from "../ask-ledger";
 import type { DashboardId } from "../dashboard-widgets.ts";
 import { errorText } from "../demo";
+import { FigureCallCard, FigureTraceView } from "./FigureExplain";
 
 export { createAskLedgerHarness, openAskThread };
-export { ASK_TOOL_DISPLAY } from "../ask-ledger.ts";
+/** The ledger tools' rows as the Studio chat draws them: the same words, and trace_figure's expanded body is the figure card. */
+export const ASK_TOOL_DISPLAY_CARDS: Record<string, AgAiToolDisplay> = {
+  ...ASK_TOOL_DISPLAY,
+  trace_figure: { label: ({ args }) => ({ text: askToolLabel("trace_figure", args) }), detail: FigureCallCard, hidden: false },
+};
 
 export type AskLoad = { kind: "loading" } | { kind: "ready"; keyConfigured: boolean } | { kind: "failed"; error: string };
 
@@ -158,6 +164,10 @@ export function AskLedgerDrawer({ id, ask, open, onClose }: { id: string; ask: A
                 <span className="dot" aria-hidden="true" />
                 <span>{row.label}</span>
                 <span className="muted small">{STEP_WORDS[row.state]}</span>
+              </li>
+            ) : row.kind === "figure" ? (
+              <li key={row.key} className="ask-figure">
+                <FigureTraceView trace={row.trace} />
               </li>
             ) : (
               <li key={row.key} className="alert">
