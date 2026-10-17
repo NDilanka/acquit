@@ -723,6 +723,9 @@ function transitionTable(): {
 					history: row.state.history, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
 		} },
 		RefundSettled: { by: "SYSTEM", apply: (row, command) => {
+			// The refund a REFUNDED row already holds is a no-op whichever of the outbox and the webhook lands
+			// second. A refund that differs in money or refund id is a fact this row never settled.
+			if (row.state.status === "REFUNDED") return sameRefund(row.state.refund, command.refund) ? { ...unchanged(row), alreadySettled: true } : settlementMismatch(row);
 			const escrow = heldEscrowOf(row);
 			const intent = refundIntentOf(row);
 			const refund = command.refund;
@@ -741,7 +744,7 @@ function transitionTable(): {
 			const effects: JobEffect[] = owed ? [{ kind: "REIMBURSE", jobId: row.id, merchant: escrow.payee.payee,
 				amount: refund.retainedProcessorFee }] : [];
 			const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
-				: row.state.status === "VERIFIED" || row.state.status === "REFUNDED" ? row.state.history : [];
+				: row.state.status === "VERIFIED" ? row.state.history : [];
 			// The arbiter's note survives the settlement when there was one; a deadline refund has none and
 			// the key stays absent, so a row read back from the store deep-equals the row that produced it.
 			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, tenant: row.tenant, title: row.title,
@@ -752,14 +755,15 @@ function transitionTable(): {
 		} },
 		ReimbursementSettled: { by: "SYSTEM", apply: (row, command) => {
 			const reimbursement = command.reimbursement;
-			// A redelivery of the batch this row already recorded changes nothing.
+			// A redelivery of the payout this row already recorded changes nothing. The same batch with other money,
+			// or another batch, is a second payout of a settled debt: a fact a person has to see, not a second line.
 			const paid = row.state.treasury.find((entry): entry is Extract<TreasuryEntry, { kind: "PAYOUT_FEE_PAID" }> => entry.kind === "PAYOUT_FEE_PAID");
-			if (paid !== undefined && paid.batchId === reimbursement.batchId) return unchanged(row);
+			if (paid !== undefined) return paid.batchId === reimbursement.batchId && paid.paid === reimbursement.paid && paid.fee === reimbursement.fee
+				? { ...unchanged(row), alreadySettled: true } : settlementMismatch(row);
 			const owed = row.state.treasury.find((entry): entry is Extract<TreasuryEntry, { kind: "OPERATOR_REIMBURSEMENT_OWED" }> =>
 				entry.kind === "OPERATOR_REIMBURSEMENT_OWED");
-			// Only the payout this row owes, to the payee it owes, settles the debt. Another batch is a
-			// second payout of a settled debt, and it is a fact a person has to see, not a second line.
-			if (paid !== undefined || owed === undefined || reimbursement.merchant !== row.state.payee.payee || reimbursement.paid !== owed.cents)
+			// Only the payout this row owes, to the payee it owes, settles the debt.
+			if (owed === undefined || reimbursement.merchant !== row.state.payee.payee || reimbursement.paid !== owed.cents)
 				return settlementMismatch(row);
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, treasury: [...row.state.treasury, { kind: "PAYOUT_FEE_PAID", jobId: row.id,
@@ -891,6 +895,15 @@ export function decideRelease(row: JobRow, release: ReleaseEvidence): ReleaseDec
 /** The fields PayPal reported for the payout. `at` is the clock the read ran on, so two reads of one payout can differ in it. */
 function sameRelease(held: ReleaseEvidence, observed: ReleaseEvidence): boolean {
 	return held.payoutItemId === observed.payoutItemId && held.captureId === observed.captureId && held.paid === observed.paid;
+}
+
+/**
+ * The fields PayPal reported for the refund. A refund read back from its capture names no refund id, and a capture
+ * refunds in full only once, so the money names the same refund then.
+ */
+function sameRefund(held: RefundEvidence, observed: RefundEvidence): boolean {
+	return held.captureId === observed.captureId && held.refunded === observed.refunded && held.retainedProcessorFee === observed.retainedProcessorFee
+		&& (held.refundId === null || observed.refundId === null || held.refundId === observed.refundId);
 }
 
 /**

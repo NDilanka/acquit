@@ -652,6 +652,16 @@ function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObserv
 		const { captureId, payoutItemId, paid } = observation.release;
 		return `webhook:${command.type}:${command.jobId}:${captureId}:${payoutItemId}:${paid}`;
 	}
+	// A refund or a reimbursement names its money too, so a fact that differs from one already applied is judged.
+	// A refund read back from its capture has no refund id; the placeholder is not a PayPal id, so it matches none.
+	if (observation.kind === "REFUND_COMPLETED") {
+		const { captureId, refundId, refunded, retainedProcessorFee } = observation.refund;
+		return `webhook:${command.type}:${command.jobId}:${captureId}:${refundId ?? "NO_REFUND_ID"}:${refunded}:${retainedProcessorFee}`;
+	}
+	if (observation.kind === "REIMBURSEMENT_COMPLETED") {
+		const { batchId, paid, fee } = observation.reimbursement;
+		return `webhook:${command.type}:${command.jobId}:${batchId}:${paid}:${fee}`;
+	}
 	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
 }
 
