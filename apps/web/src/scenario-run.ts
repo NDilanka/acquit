@@ -1,8 +1,8 @@
 // The judge scenarios' view model. One pure function turns a run the server reports into the rows the page
-// shows: each step's title, who acted, its honest label, the server's own milliseconds, and the run's end in
-// words. It reads no clock and no network, so a test can hand it a literal run.
+// shows: each step's title, who acted, its honest label, the outside places it reached, the server's own
+// milliseconds, and the run's end in words. It reads no clock and no network, so a test can hand it a literal run.
 
-import type { ScenarioEndState, ScenarioLabel, ScenarioName, ScenarioRun, ScenarioStep } from "./api-types";
+import type { ScenarioEndState, ScenarioLabel, ScenarioName, ScenarioReachLabel, ScenarioRun, ScenarioStep } from "./api-types";
 import { refusalText } from "./format.ts";
 import { SCENARIO_CARDS } from "./judge-tour.ts";
 
@@ -16,12 +16,19 @@ export type ScenarioCard = {
   readonly endStateText: string;
 };
 
+/** One outside place a step reached. A PayPal place carries the note that goes with its Sandbox badge. */
+export type RunReachView = {
+  readonly label: ScenarioReachLabel;
+  readonly sandboxNote: string | null;
+};
+
 export type RunStepView = {
   readonly title: string;
   readonly actorText: string;
+  /** Who acted, or on a system step what it reached. */
   readonly label: ScenarioLabel;
-  /** Set only on a PayPal step: the note that goes with its Sandbox badge. */
-  readonly sandboxNote: string | null;
+  /** Each outside place the step reached, in the server's order. Empty when nothing left the server. Null on a run that kept no reach. */
+  readonly reached: readonly RunReachView[] | null;
   /** The server's own outcome for the step, such as the verifier's verdict. */
   readonly result: string;
   readonly ms: number;
@@ -145,11 +152,12 @@ function stepWords(code: string): string {
 }
 
 function stepView(step: ScenarioStep): RunStepView {
+  // A run stored before reach was kept has no list for its steps, so its reach is unknown, not none.
   return {
     title: stepTitle(step.name),
     actorText: ACTOR_WORDS[step.actor],
     label: step.label,
-    sandboxNote: LABEL_NOTE[step.label],
+    reached: step.reached === undefined ? null : step.reached.map(place => ({ label: place, sandboxNote: LABEL_NOTE[place] })),
     result: step.outcome,
     ms: step.ms,
   };

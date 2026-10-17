@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { JobStatus, ScenarioLabel, ScenarioName, ScenarioRun, ScenarioStep } from "./api-types.ts";
+import type { JobStatus, ScenarioLabel, ScenarioName, ScenarioReachLabel, ScenarioRun, ScenarioStep } from "./api-types.ts";
 import { buildRunView, nextPollMs, startRefusalWords } from "./scenario-run.ts";
 
-const SCRIPTED: ScenarioLabel = "Scripted agent (Simulated)";
-const PAYPAL: ScenarioLabel = "PayPal sandbox";
-const VERIFIER: ScenarioLabel = "Real verifier run";
-const SERVER: ScenarioLabel = "Server record (no outside call)";
-const GITHUB: ScenarioLabel = "GitHub work repository";
+// Literal types, so one constant reads as a label and as a place the step reached.
+const SCRIPTED = "Scripted agent (Simulated)" as const;
+const PAYPAL = "PayPal sandbox" as const;
+const VERIFIER = "Real verifier run" as const;
+const SERVER = "Server record (no outside call)" as const;
+const GITHUB = "GitHub work repository" as const;
 
-function step(name: string, actor: ScenarioStep["actor"], label: ScenarioLabel, ms: number, outcome: string): ScenarioStep {
-  return { name, actor, label, ms, outcome, startedAt: "2026-05-01T10:00:00.000Z", endedAt: "2026-05-01T10:00:01.000Z" };
+function step(name: string, actor: ScenarioStep["actor"], label: ScenarioLabel, ms: number, outcome: string,
+  reached: readonly ScenarioReachLabel[] = []): ScenarioStep {
+  return { name, actor, label, ms, outcome, reached, startedAt: "2026-05-01T10:00:00.000Z", endedAt: "2026-05-01T10:00:01.000Z" };
 }
 
 const RUN: ScenarioRun = {
@@ -31,7 +33,7 @@ test("a RUNNING run mid-way shows its finished steps with their labels and times
     steps: [
       step("open-job", "CLIENT", SCRIPTED, 412, "opened job_1"),
       step("place-bid", "OPERATOR", SCRIPTED, 388, "bid bid_1"),
-      step("accept-and-fund", "CLIENT", PAYPAL, 9120, "HELD"),
+      step("accept-and-fund", "CLIENT", SCRIPTED, 9120, "HELD", [PAYPAL, GITHUB]),
     ],
   });
   assert.deepEqual(view, {
@@ -39,9 +41,11 @@ test("a RUNNING run mid-way shows its finished steps with their labels and times
     state: "RUNNING",
     stateWords: "Running",
     steps: [
-      { title: "Client opens the job", actorText: "Client", label: "Scripted agent (Simulated)", sandboxNote: null, result: "opened job_1", ms: 412 },
-      { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", sandboxNote: null, result: "bid bid_1", ms: 388 },
-      { title: "Client accepts and funds escrow", actorText: "Client", label: "PayPal sandbox", sandboxNote: "No real money moves.", result: "HELD", ms: 9120 },
+      { title: "Client opens the job", actorText: "Client", label: "Scripted agent (Simulated)", reached: [], result: "opened job_1", ms: 412 },
+      { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", reached: [], result: "bid bid_1", ms: 388 },
+      { title: "Client accepts and funds escrow", actorText: "Client", label: "Scripted agent (Simulated)",
+        reached: [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }, { label: "GitHub work repository", sandboxNote: null }],
+        result: "HELD", ms: 9120 },
     ],
     endText: "Running. Each step appears when the server finishes it, with the time it measured.",
     observed: null,
@@ -136,19 +140,46 @@ test("a FAILED run whose verdict was not the one its scenario needs names the st
   assert.equal(view.endText.includes("no end state"), false);
 });
 
-test("every scripted step reads Scripted agent (Simulated), and every PayPal step carries the sandbox note", () => {
+test("every step names its label, and a PayPal place it reached carries the sandbox note", () => {
   const view = buildRunView({
     ...RUN,
     name: "deadline-refund",
     steps: [
       step("open-job", "CLIENT", SCRIPTED, 400, "opened job_1"),
       step("advance-clock", "CLIENT", "Simulated time for this job", 35, "advanced 2 days"),
-      step("refund", "SYSTEM", PAYPAL, 2210, "REFUNDED"),
+      step("refund", "SYSTEM", PAYPAL, 2210, "REFUNDED", [PAYPAL]),
     ],
   });
   assert.deepEqual(view.steps.map(s => s.label), ["Scripted agent (Simulated)", "Simulated time for this job", "PayPal sandbox"]);
-  assert.deepEqual(view.steps.map(s => s.sandboxNote), [null, null, "No real money moves."]);
+  assert.deepEqual(view.steps.map(s => s.reached), [[], [], [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }]]);
   assert.deepEqual(view.steps.map(s => s.ms), [400, 35, 2210]);
+});
+
+test("a scripted step that moved sandbox money or wrote to GitHub names what it reached beside its Simulated label", () => {
+  const view = buildRunView({
+    ...RUN,
+    name: "dispute-arbiter",
+    steps: [
+      step("arbiter-verdict", "ARBITER", SCRIPTED, 1734, "ARBITER_UPHELD", [PAYPAL]),
+      step("push-honest-reference-table", "OPERATOR", SCRIPTED, 6783, "pushed honest-reference-table", [GITHUB]),
+    ],
+  });
+  // Each row keeps its Simulated label, and the place it reached rides beside it, so the badge never sits alone.
+  assert.deepEqual(view.steps.map(s => s.label), [SCRIPTED, SCRIPTED]);
+  assert.deepEqual(view.steps.map(s => s.reached), [
+    [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }],
+    [{ label: "GitHub work repository", sandboxNote: null }],
+  ]);
+});
+
+test("a run stored before reach was kept shows its labels and says its reach was not recorded, never none", () => {
+  // No reached list, as a run recorded before this change carries.
+  const legacy: ScenarioStep = { name: "arbiter-verdict", actor: "ARBITER", label: SCRIPTED, ms: 1734, outcome: "ARBITER_UPHELD",
+    startedAt: "2026-05-01T10:00:00.000Z", endedAt: "2026-05-01T10:00:01.000Z" };
+  const view = buildRunView({ ...RUN, name: "dispute-arbiter", steps: [legacy] });
+  assert.deepEqual(view.steps, [
+    { title: "Arbiter rules on the dispute", actorText: "Arbiter", label: "Scripted agent (Simulated)", reached: null, result: "ARBITER_UPHELD", ms: 1734 },
+  ]);
 });
 
 test("each start refusal reads in plain words, and the code stays visible", () => {
@@ -167,33 +198,35 @@ test("a settle step reads Pending work settles, with the sandbox note only when 
     ...RUN,
     steps: [
       step("place-bid", "OPERATOR", SCRIPTED, 388, "bid bid_1"),
-      step("settle", "SYSTEM", PAYPAL, 4235, "SETTLED REFUND, REIMBURSE"),
+      step("settle", "SYSTEM", PAYPAL, 4235, "SETTLED REFUND, REIMBURSE", [PAYPAL]),
     ],
   });
   assert.deepEqual(view.steps, [
-    { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", sandboxNote: null, result: "bid bid_1", ms: 388 },
-    { title: "Pending work settles", actorText: "System", label: "PayPal sandbox", sandboxNote: "No real money moves.", result: "SETTLED REFUND, REIMBURSE", ms: 4235 },
+    { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", reached: [], result: "bid bid_1", ms: 388 },
+    { title: "Pending work settles", actorText: "System", label: "PayPal sandbox",
+      reached: [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }], result: "SETTLED REFUND, REIMBURSE", ms: 4235 },
   ]);
 });
 
 test("a settle step that ran GitHub work reads GitHub work repository, with no sandbox note", () => {
   const view = buildRunView({
     ...RUN,
-    steps: [step("settle", "SYSTEM", GITHUB, 6, "SETTLED MERGE")],
+    steps: [step("settle", "SYSTEM", GITHUB, 6, "SETTLED MERGE", [GITHUB])],
   });
   assert.deepEqual(view.steps, [
-    { title: "Pending work settles", actorText: "System", label: "GitHub work repository", sandboxNote: null, result: "SETTLED MERGE", ms: 6 },
+    { title: "Pending work settles", actorText: "System", label: "GitHub work repository",
+      reached: [{ label: "GitHub work repository", sandboxNote: null }], result: "SETTLED MERGE", ms: 6 },
   ]);
 });
 
-test("a record-run step reads Server records the run, with its own label and no sandbox note", () => {
+test("a record-run step reads Server records the run, with its own label and reaches nothing", () => {
   const view = buildRunView({
     ...RUN,
     state: "FAILED",
     steps: [step("record-run", "SYSTEM", SERVER, 3, "FAILED STORE_WRITE_FAILED")],
   });
   assert.deepEqual(view.steps, [
-    { title: "Server records the run", actorText: "System", label: "Server record (no outside call)", sandboxNote: null, result: "FAILED STORE_WRITE_FAILED", ms: 3 },
+    { title: "Server records the run", actorText: "System", label: "Server record (no outside call)", reached: [], result: "FAILED STORE_WRITE_FAILED", ms: 3 },
   ]);
 });
 
