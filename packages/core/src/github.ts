@@ -107,6 +107,10 @@ export type ClientRepoRequest = { readonly repository: string; readonly name: st
  * repository id the visitor's row recorded. A null id is refused, so nothing is removed without one. */
 export type ClientRepoDeleteRequest = { readonly repository: string; readonly source: string; readonly id: number | null };
 
+/** One job's work repository to remove. `root` is the configured client repository every visitor fork is a fork of. A work
+ * repo is made from its visitor's fork, and GitHub reports the root as its parent once that fork is gone. */
+export type WorkRepoDeleteRequest = ClientRepoDeleteRequest & { readonly root: string };
+
 /** The fork a visitor's own jobs freeze. Its remote is derived, never stored. The id is GitHub's own,
  * recorded so the sweep can tell this fork from another repository that later takes the same name. */
 export type ClientRepo = { readonly repository: string; readonly remote: string; readonly id: number | null };
@@ -135,9 +139,9 @@ export interface WorkRepoPort {
 	 * the cleanup a repository it can remove by id.
 	 */
 	createWorkRepo(request: WorkRepoRequest, requestId: string, onFork?: (fork: WorkRepoFork) => Promise<void>): Promise<WorkRepo>;
-	/** Removes one job's work repository under the same rule as a client repository: this client's own fork of
-	 * exactly `source`, under exactly this name, and the recorded id when one is given. Absent is ABSENT. */
-	deleteWorkRepo(request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval>;
+	/** Removes one job's work repository under the same rule as a client repository, except that its parent may be
+	 * `root` as well as `source`: the recorded id decides which repository it is. Absent is ABSENT. */
+	deleteWorkRepo(request: WorkRepoDeleteRequest): Promise<ClientRepoRemoval>;
 }
 
 /** What the judge needs after a clean run. */
@@ -313,14 +317,18 @@ async function readBounded(response: Response, spec: Call): Promise<string> {
 	return Buffer.concat(chunks).toString("utf8");
 }
 
-/** The durable ownership marker for a repository this client forked: a fork of exactly this source, under exactly this name. */
-function isOurFork(record: unknown, repository: string, source: string): boolean {
+/**
+ * The durable ownership marker for a repository this client forked: a fork under exactly this name whose parent is one of
+ * `parents`. A visitor's fork has one parent, its source. A work repo has two, its visitor fork and the network root that
+ * GitHub reports once that fork is removed. The recorded id, not this marker, says which repository it is.
+ */
+function isOurFork(record: unknown, repository: string, parents: readonly string[]): boolean {
 	const shape = record as { full_name?: unknown; fork?: unknown; parent?: unknown } | null;
 	if (shape === null || typeof shape !== "object") return false;
 	if (String(shape.full_name ?? "").toLowerCase() !== repository.toLowerCase()) return false;
 	if (shape.fork !== true) return false;
-	const parent = (shape.parent as { full_name?: unknown } | null | undefined)?.full_name;
-	return String(parent ?? "").toLowerCase() === source.toLowerCase();
+	const parent = String((shape.parent as { full_name?: unknown } | null | undefined)?.full_name ?? "").toLowerCase();
+	return parents.some(source => parent === source.toLowerCase());
 }
 
 /** One token per owner and scope, refreshed shortly before GitHub expires it. */
@@ -574,7 +582,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		// too. A GET never establishes ownership, so a repository with no recorded id is refused, never adopted.
 		const recorded = request.recorded ?? null;
 		const adoptable = (record: unknown) => {
-			if (!isOurFork(record, repository, request.repository)) {
+			if (!isOurFork(record, repository, [request.repository])) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this job creates. Nothing was moved.`);
 			}
 			if (recorded === null) {
@@ -629,11 +637,11 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 				// The name was taken between the read and the fork. Read it once more and adopt it only when it
 				// carries the ownership marker: a repository this client did not fork is never adopted.
 				record = (await readRepo()).body;
-				if (!isOurFork(record, repository, request.repository)) {
+				if (!isOurFork(record, repository, [request.repository])) {
 					throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this visitor creates. Nothing was moved.`);
 				}
 			}
-		} else if (!isOurFork(record, repository, request.repository)) {
+		} else if (!isOurFork(record, repository, [request.repository])) {
 			// The same ownership marker the work repo carries. A visitor's name is not a claim on someone
 			// else's repository: a mismatch refuses by name and moves nothing.
 			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this visitor creates. Nothing was moved.`);
@@ -647,12 +655,20 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 	 * deleted, and one that is already gone is ABSENT, so a retried sweep converges instead of failing
 	 * on work it already did.
 	 */
-	const deleteClientRepo = async (request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval> => deleteOwnedFork(request, "visitor");
+	const deleteClientRepo = async (request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval> =>
+		deleteOwnedFork(request, "visitor", [request.source]);
 
-	/** Removes one job's work repository under the rule the client repository keeps. */
-	const deleteWorkRepo = async (request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval> => deleteOwnedFork(request, "job");
+	/**
+	 * Removes one job's work repository under the rule the client repository keeps, with one addition: its parent may be
+	 * the root. GitHub reports the root as a work repo's parent once the visitor fork it was made from is removed, and the
+	 * sweep removes that fork first. The recorded id still decides which repository it is.
+	 */
+	const deleteWorkRepo = async (request: WorkRepoDeleteRequest): Promise<ClientRepoRemoval> => {
+		splitRepository(request.root);
+		return deleteOwnedFork(request, "job", [request.source, request.root]);
+	};
 
-	const deleteOwnedFork = async (request: ClientRepoDeleteRequest, owner: "visitor" | "job"): Promise<ClientRepoRemoval> => {
+	const deleteOwnedFork = async (request: ClientRepoDeleteRequest, owner: "visitor" | "job", parents: readonly string[]): Promise<ClientRepoRemoval> => {
 		const target = splitRepository(request.repository);
 		splitRepository(request.source);
 		const organization = checkedOwner(parsed.organization);
@@ -662,7 +678,7 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		const orgToken = await tokenFor(organization);
 		const found = await call(`Bearer ${orgToken}`, { method: "GET", path: `/repos/${request.repository}`, allow: [200, 404], permission: "administration: write" });
 		if (found.status === 404) return "ABSENT";
-		if (!isOurFork(found.body, request.repository, request.source)) {
+		if (!isOurFork(found.body, request.repository, parents)) {
 			throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not the fork of ${request.source} this deployment created. Nothing was deleted.`);
 		}
 		// A repository this deployment forked is removed only by the id it recorded. Without one, a same-source fork
@@ -847,8 +863,11 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 	const organization = options.organization ?? "acquit-forks";
 	const calls: GitHubCall[] = [];
 	const workRepos = new Map<JobId, WorkRepo>();
-	/** The fork each fake work repo was made from, and its id, keyed by the repository's full name. */
-	const workRepoOwners = new Map<string, { readonly source: string; readonly id: number }>();
+	/** The id of each fake work repo this fake made, keyed by the repository's full name. */
+	const workRepoOwners = new Map<string, { readonly id: number }>();
+	/** The parent GitHub reports for each fake fork, keyed by the fork's full name. Removing a fork reparents its forks to the
+	 * network root, the parent it had, as GitHub does once the middle fork is gone. */
+	const parents = new Map<string, string>();
 	const clientRepos = new Map<string, ClientRepo>();
 	const pullRequests = new Map<JobId, PublishedPullRequest>();
 	let nextPullRequest = options.firstPullRequest ?? 13;
@@ -869,7 +888,8 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 				const id = nextWorkRepoId++;
 				created = { repository, remote: `https://github.com/${repository}.git`, branch: "main", commit: request.frozenCommit, id };
 				workRepos.set(request.jobId, created);
-				workRepoOwners.set(repository, { source: request.repository, id });
+				workRepoOwners.set(repository, { id });
+				parents.set(repository, request.repository);
 			} else {
 				// The same rule the real App keeps: a repository is adopted only as the fork this job recorded.
 				const recorded = request.recorded ?? null;
@@ -884,12 +904,13 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			return created;
 		},
 		async deleteWorkRepo(request) {
-			// The same rule the real App keeps: only a work repo this fake made, from exactly this source, under the
-			// recorded id, is removed. A name the fake never made is already gone.
+			// The same rule the real App keeps: only a work repo this fake made is removed, under its parent (the fork it was
+			// made from, or the root once that fork is gone) and the recorded id. A name the fake never made is already gone.
 			const owner = workRepoOwners.get(request.repository);
 			const jobId = [...workRepos.entries()].find(([, repo]) => repo.repository === request.repository)?.[0];
 			if (owner === undefined || jobId === undefined) return "ABSENT";
-			if (owner.source !== request.source) {
+			const parent = parents.get(request.repository);
+			if (parent !== request.source && parent !== request.root) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${request.repository} is not the fork of ${request.source} this deployment created. Nothing was deleted.`);
 			}
 			if (request.id === null) {
@@ -901,6 +922,7 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			}
 			workRepos.delete(jobId);
 			workRepoOwners.delete(request.repository);
+			parents.delete(request.repository);
 			return "DELETED";
 		},
 		async createClientRepo(request) {
@@ -910,6 +932,7 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 			const repository = `${organization}/${request.name}`;
 			const created: ClientRepo = { repository, remote: `https://github.com/${repository}.git`, id: nextClientRepoId++ };
 			clientRepos.set(request.name, created);
+			parents.set(repository, request.repository);
 			return created;
 		},
 		async deleteClientRepo(request) {
@@ -926,6 +949,11 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 					`${request.repository} is not the repository this visitor forked (id ${request.id}). Nothing was deleted.`);
 			}
 			clientRepos.delete(name);
+			// The forks of this fork answer to its parent from now on: the network root.
+			const repository = `${organization}/${name}`;
+			const root = parents.get(repository);
+			parents.delete(repository);
+			for (const [child, parent] of parents) if (parent === repository && root !== undefined) parents.set(child, root);
 			return "DELETED";
 		},
 		async publishVerified(request, requestId) {

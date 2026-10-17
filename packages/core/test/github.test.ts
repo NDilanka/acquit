@@ -166,8 +166,10 @@ async function createGitHubStub(options: { readonly appId: string; readonly publ
 			const found = state.repos.get(repository);
 			if (method === "GET") return found ? json(response, 200, found) : json(response, 404, { message: "Not Found" });
 			if (method === "DELETE" && found) {
-				// GitHub answers 204 with no body for a repository it removed.
+				// GitHub answers 204 with no body for a repository it removed. Its forks report the removed fork's parent,
+				// the network root, from then on.
 				state.repos.delete(repository);
+				for (const child of state.repos.values()) if (child.parent?.full_name === repository) child.parent = found.parent;
 				response.writeHead(204);
 				response.end();
 				return;
@@ -918,17 +920,75 @@ for (const harness of HARNESSES) {
 		t.after(app.close);
 		const created = await app.port.createWorkRepo(workRepoRequest, "req-1");
 		assert.ok(typeof created.id === "number", "the work repo's GitHub id is recorded");
-		const wrongSource = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: `${CLIENT_OWNER}/other-app`, id: created.id }));
+		// The work repo's parent is CLIENT, so a claim naming another source and that source's root is refused.
+		const wrongSource = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: `${CLIENT_OWNER}/other-app`, root: `${CLIENT_OWNER}/other-app`, id: created.id }));
 		assert.equal(wrongSource.code, "GITHUB_FORK_MISMATCH");
-		const wrongId = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id + 1 }));
+		const wrongId = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: created.id + 1 }));
 		assert.equal(wrongId.code, "GITHUB_FORK_MISMATCH");
 		assert.match(wrongId.detail, /is not the repository this job forked/);
-		const unrecorded = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+		const unrecorded = await refusal(app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: null }));
 		assert.equal(unrecorded.code, "GITHUB_FORK_UNRECORDED", "no recorded id, nothing deleted");
-		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }), "DELETED");
-		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }), "ABSENT");
+		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: created.id }), "DELETED");
+		assert.equal(await app.port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: created.id }), "ABSENT");
 	});
 }
+
+/** A visitor's fork, a job's work repo forked from it, and then the visitor's fork removed: GitHub's view of the work repo after that. */
+async function workRepoAfterVisitorRemoved(port: GitHubAppPort) {
+	const visitor = await port.createClientRepo({ repository: CLIENT, name: "demo-abc123" });
+	const work = await port.createWorkRepo({ jobId: JOB, repository: visitor.repository, frozenCommit: FROZEN }, "req-1");
+	assert.equal(await port.deleteClientRepo({ repository: visitor.repository, source: CLIENT, id: visitor.id }), "DELETED");
+	return { visitor, work };
+}
+
+for (const harness of HARNESSES) {
+	test(`a work repo whose visitor fork is gone is deleted by its root and recorded id, then absent (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const { visitor, work } = await workRepoAfterVisitorRemoved(app.port);
+		const removal = { repository: work.repository, source: visitor.repository, root: CLIENT, id: work.id };
+		assert.equal(await app.port.deleteWorkRepo(removal), "DELETED");
+		assert.equal(await app.port.deleteWorkRepo(removal), "ABSENT");
+	});
+
+	test(`a work repo whose visitor fork is gone is kept for a wrong root or a wrong id (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const { visitor, work } = await workRepoAfterVisitorRemoved(app.port);
+		const wrongRoot = await refusal(app.port.deleteWorkRepo({ repository: work.repository, source: visitor.repository, root: `${CLIENT_OWNER}/other-app`, id: work.id }));
+		assert.equal(wrongRoot.code, "GITHUB_FORK_MISMATCH");
+		const wrongId = await refusal(app.port.deleteWorkRepo({ repository: work.repository, source: visitor.repository, root: CLIENT, id: work.id + 1 }));
+		assert.equal(wrongId.code, "GITHUB_FORK_MISMATCH");
+		assert.equal(await app.port.deleteWorkRepo({ repository: work.repository, source: visitor.repository, root: CLIENT, id: work.id }), "DELETED",
+			"the refusals removed nothing");
+	});
+}
+
+test("a work repo whose visitor fork is still there is removed when GitHub reports the root as its parent", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const visitor = await port.createClientRepo({ repository: CLIENT, name: "demo-abc123" });
+	const work = await port.createWorkRepo({ jobId: JOB, repository: visitor.repository, frozenCommit: FROZEN }, "req-1");
+	// GitHub may report the root from the start, not only after the visitor fork is removed. The guard accepts either.
+	const record = stub.state.repos.get(work.repository);
+	assert.ok(record);
+	record.parent = { full_name: CLIENT };
+	assert.equal(stub.state.repos.has(visitor.repository), true, "the visitor fork is still there");
+	assert.equal(await port.deleteWorkRepo({ repository: work.repository, source: visitor.repository, root: CLIENT, id: work.id }), "DELETED");
+});
+
+test("a work repo whose visitor fork is gone is kept when GitHub no longer reports it as a fork", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const { visitor, work } = await workRepoAfterVisitorRemoved(port);
+	const record = stub.state.repos.get(work.repository);
+	assert.ok(record);
+	assert.equal(record.parent?.full_name, CLIENT, "its parent is the root once the visitor fork is gone");
+	record.fork = false;
+	const refused = await refusal(port.deleteWorkRepo({ repository: work.repository, source: visitor.repository, root: CLIENT, id: work.id }));
+	assert.equal(refused.code, "GITHUB_FORK_MISMATCH");
+	assert.equal(stub.state.repos.has(work.repository), true, "nothing is deleted");
+});
 
 test("a same-named repository this client did not fork is refused by name and never deleted", async t => {
 	const { port, stub, close } = await withStub();
@@ -938,13 +998,13 @@ test("a same-named repository this client did not fork is refused by name and ne
 	// Another fork of the same source now holds the work name, under its own id.
 	plant(stub, WORK_REPO, { forkOf: CLIENT, commits: [], main: null });
 	assert.notEqual(stub.state.repos.get(WORK_REPO)?.id, created.id);
-	const foreign = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: created.id }));
+	const foreign = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: created.id }));
 	assert.equal(foreign.code, "GITHUB_FORK_MISMATCH");
 	assert.match(foreign.detail, /invoice-app-7Q2K/);
 	assert.equal(stub.state.repos.has(WORK_REPO), true, "the foreign fork is kept");
 	// A repository this client did not fork at the name is refused even without a recorded id.
 	plant(stub, WORK_REPO, { forkOf: null, commits: [], main: null });
-	const unmarked = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+	const unmarked = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: null }));
 	assert.equal(unmarked.code, "GITHUB_FORK_MISMATCH");
 	assert.equal(stub.state.repos.has(WORK_REPO), true);
 	assert.deepEqual(repoMutations(stub).slice(before), []);
@@ -973,7 +1033,7 @@ test("a same-source replacement fork with no recorded id is refused by both remo
 	// Another fork of the same source now holds the work name. Its marker matches, so only the recorded id tells them apart.
 	plant(stub, WORK_REPO, { forkOf: CLIENT, commits: [], main: null });
 	assert.notEqual(stub.state.repos.get(WORK_REPO)?.id, created.id);
-	const work = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
+	const work = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: null }));
 	assert.equal(work.code, "GITHUB_FORK_UNRECORDED");
 	const client = await refusal(port.deleteClientRepo({ repository: WORK_REPO, source: CLIENT, id: null }));
 	assert.equal(client.code, "GITHUB_FORK_UNRECORDED");
@@ -1004,7 +1064,7 @@ test("a retry after a post-fork failure refuses a same-source replacement: it is
 	assert.deepEqual(repoMutations(stub).slice(mutationsBefore), [], "the replacement is never written to");
 	assert.equal(stub.state.repos.get(WORK_REPO)?.id, replacement, "the replacement stays in place");
 	// The removal names the recorded id, so the replacement is refused and kept.
-	const removal = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, id: original.id }));
+	const removal = await refusal(port.deleteWorkRepo({ repository: WORK_REPO, source: CLIENT, root: CLIENT, id: original.id }));
 	assert.equal(removal.code, "GITHUB_FORK_MISMATCH");
 	assert.equal(stub.state.repos.has(WORK_REPO), true, "the replacement is not deleted");
 });

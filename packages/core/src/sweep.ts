@@ -4,7 +4,7 @@
 // failure. Nothing a job needs is deleted: a swept visitor's job still settles through the tick.
 
 import type { DatabaseSync } from "node:sqlite";
-import type { ClientRepoDeleteRequest, ClientRepoRemoval } from "./github.ts";
+import type { ClientRepoRemoval, WorkRepoDeleteRequest } from "./github.ts";
 import type { Instant, JobId, VisitorId } from "./ids.ts";
 import { openedJobOf } from "./scenario-binding.ts";
 import { expiredVisitors, readVisitor, sweepVisitor } from "./visitors.ts";
@@ -14,7 +14,7 @@ export type ClientRepoDeleter = { deleteClientRepo(request: { readonly repositor
 	readonly id: number | null }): Promise<ClientRepoRemoval> };
 
 /** What the scenario sweep needs of the App: a visitor's fork and a job's work repo, each removed under the same guard. */
-export type ScenarioRepoDeleter = ClientRepoDeleter & { deleteWorkRepo(request: ClientRepoDeleteRequest): Promise<ClientRepoRemoval> };
+export type ScenarioRepoDeleter = ClientRepoDeleter & { deleteWorkRepo(request: WorkRepoDeleteRequest): Promise<ClientRepoRemoval> };
 
 export type SweepReport = {
 	/** The visitors whose repository is gone, whose sessions are deleted, and whose row now reads SWEPT. */
@@ -80,7 +80,8 @@ const creationPending = (db: DatabaseSync, jobId: JobId): boolean => db.prepare(
  * started one), and it was created longer than the TTL ago. A finished run's work repo goes once it is past the
  * TTL, and only when its job is the one the run's own OpenJob committed. A RUNNING run is never touched, and
  * neither is a fresh one. Each removal goes through the App's own guard, so a repository this deployment did not
- * make is refused and kept. A refused removal keeps its row, so the next pass retries exactly that work.
+ * make is refused and kept. A refused removal keeps its row, so the next pass retries exactly that work. The
+ * visitor forks go first in the same pass, so a work repo is usually removed after its visitor fork is gone.
  */
 export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; readonly app: ScenarioRepoDeleter;
 	readonly source: string; readonly now: Instant; readonly ttlMs?: number }): Promise<ScenarioSweepReport> {
@@ -130,7 +131,9 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 		const recordedId = work !== undefined && typeof work.repository_id === "number" ? work.repository_id : null;
 		if (work !== undefined) {
 			try {
-				const outcome = await input.app.deleteWorkRepo({ repository, source: String(work.source), id: recordedId });
+				// The root is the configured client repository this pass was given: the parent a work repo reports once its
+				// visitor fork (work.source) is gone.
+				const outcome = await input.app.deleteWorkRepo({ repository, source: String(work.source), root: input.source, id: recordedId });
 				workRepos.push({ runId, repository, outcome });
 			} catch (error) {
 				kept.push({ id: runId, repository, reason: reasonOf(error) });
@@ -144,6 +147,22 @@ export async function sweepScenarioRuns(input: { readonly db: DatabaseSync; read
 		}
 	}
 	return { swept, workRepos, kept };
+}
+
+/** How many kept repositories one log line names; refused rows are retried forever, so the backlog itself is unbounded. */
+export const KEPT_SUMMARY_NAMED = 10;
+
+/**
+ * The kept repositories as one bounded log line: the first few named with the reason code that kept them, then a
+ * count per reason for every one kept. Codes and names only, never a payload.
+ */
+export function keptSummary(kept: readonly { readonly repository: string; readonly reason: string }[]): string {
+	const named = kept.slice(0, KEPT_SUMMARY_NAMED).map(item => `${item.repository || "no repository recorded"} (${item.reason})`).join(", ");
+	if (kept.length <= KEPT_SUMMARY_NAMED) return named;
+	const counts = new Map<string, number>();
+	for (const item of kept) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+	const byReason = [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([reason, n]) => `${reason} ${n}`).join(", ");
+	return `${named}, and ${kept.length - KEPT_SUMMARY_NAMED} more; all kept by reason: ${byReason}`;
 }
 
 /**

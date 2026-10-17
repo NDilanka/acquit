@@ -35,7 +35,7 @@ import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
-import { sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
+import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
 import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
@@ -1119,7 +1119,7 @@ const scenarioRouting = scenarioRoutingFor({
 // anyone runs ctl sweep. A refusal is counted in the log and retried on the next pass.
 const scenarioSweepTimer = setInterval(() => {
 	void sweepScenarioRuns({ db, app: githubApp, source: clientRepository, now: instant(new Date().toISOString()) })
-		.then(report => { if (report.kept.length > 0) console.error(`Scenario sweep kept ${report.kept.length} repositories for the next pass.`); })
+		.then(report => { if (report.kept.length > 0) console.error(`Scenario sweep kept ${report.kept.length} repositories for the next pass: ${keptSummary(report.kept)}.`); })
 		.catch(() => console.error("Scenario sweep failed; the next pass retries."));
 }, 10 * 60_000);
 scenarioSweepTimer.unref();
