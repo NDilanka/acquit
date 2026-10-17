@@ -1,6 +1,7 @@
 // A traced figure, drawn once: the Ask chat's card and the Explain panel both show a FigureTrace through FigureTraceView.
 
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { AgAiToolDetailParams } from "ag-studio";
 import { api } from "../api";
 import type { FigureId, FigureTrace, FigureTraceLine } from "../api-types";
@@ -105,8 +106,21 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
     );
     return () => { current = false; };
   }, [figure]);
-  return (
-    <dialog ref={dialog} className="explain-dialog" aria-labelledby={titleId} onClose={onClose}>
+  // Portalled to body: inside a widget, row styles such as `.rows div` reach the dialog's own divs,
+  // and the dashboard's key handling can swallow Escape before the dialog sees it.
+  return createPortal(
+    <dialog
+      ref={dialog}
+      className="explain-dialog"
+      aria-labelledby={titleId}
+      onClose={onClose}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        dialog.current?.close();
+      }}
+    >
       <div className="explain-head">
         <h2 id={titleId}>{FIGURE_LABELS[figure]}</h2>
         <button type="button" className="btn sm ghost" onClick={() => dialog.current?.close()}>
@@ -116,7 +130,8 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
       {state.kind === "reading" && <p className="muted small">Reading the ledger lines and PayPal's status for each one.</p>}
       {state.kind === "failed" && <div className="alert">The figure could not be traced just now: {state.error}</div>}
       {state.kind === "ready" && <FigureTraceView trace={state.trace} />}
-    </dialog>
+    </dialog>,
+    document.body,
   );
 }
 
