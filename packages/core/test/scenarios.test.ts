@@ -22,9 +22,10 @@ test("S1 verified-and-paid: the honest tree verifies and the release pays the op
 	try {
 		const run = await drive(h, "verified-and-paid");
 		assert.equal(run.state, "DONE");
-		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit", "approve"]);
-		assert.deepEqual(run.steps.map(step => step.label), ["Scripted agent (Simulated)", "Scripted agent (Simulated)", "PayPal sandbox",
-			"Scripted agent (Simulated)", "Real verifier run", "PayPal sandbox"]);
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle", "accept-and-fund", "settle", "push-honest-reference-table",
+			"settle", "submit", "settle", "approve", "settle"]);
+		assert.deepEqual(run.steps.map(step => step.label), ["Scripted agent (Simulated)", "Scripted agent (Simulated)", "PayPal sandbox", "PayPal sandbox",
+			"PayPal sandbox", "Scripted agent (Simulated)", "PayPal sandbox", "Real verifier run", "PayPal sandbox", "PayPal sandbox", "PayPal sandbox"]);
 		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "VERIFIED");
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
 		assertTimings(run);
@@ -36,7 +37,8 @@ test("S2 hidden-test-fail: the visible-table cheat is REJECTED with TESTS_FAILED
 	try {
 		const run = await drive(h, "hidden-test-fail");
 		assert.equal(run.state, "DONE");
-		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-cheat-hardcode-visible-values", "submit"]);
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle", "accept-and-fund", "settle",
+			"push-cheat-hardcode-visible-values", "settle", "submit", "settle"]);
 		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "REJECTED TESTS_FAILED:hidden");
 		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
 		assertTimings(run);
@@ -89,7 +91,8 @@ test("a verified-and-paid run whose verifier rejects its fix on the hidden tests
 	try {
 		const run = await drive(h, "verified-and-paid");
 		assert.equal(run.state, "FAILED");
-		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit"]);
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle", "accept-and-fund", "settle",
+			"push-honest-reference-table", "settle", "submit"]);
 		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "FAILED VERDICT_UNEXPECTED");
 		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
 		assert.equal((await h.store.readJob(run.jobId as JobId))?.state.status, "IN_PROGRESS");
@@ -113,8 +116,8 @@ test("S4 dispute-arbiter: a dispute the arbiter upholds pays the operator, reaso
 	try {
 		const run = await drive(h, "dispute-arbiter");
 		assert.equal(run.state, "DONE");
-		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit", "dispute",
-			"arbiter-verdict", "release"]);
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle", "accept-and-fund", "settle", "push-honest-reference-table",
+			"settle", "submit", "settle", "dispute", "settle", "arbiter-verdict", "settle", "release", "settle"]);
 		assert.equal(run.steps.find(step => step.name === "arbiter-verdict")?.label, "Scripted agent (Simulated)");
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "ARBITER_UPHELD" });
 		assertTimings(run);
@@ -153,9 +156,26 @@ test("S5 deadline-refund: a job past its delivery deadline is REFUNDED with reas
 	try {
 		const run = await drive(h, "deadline-refund");
 		assert.equal(run.state, "DONE");
-		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "advance-clock", "refund"]);
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle", "accept-and-fund", "settle", "advance-clock",
+			"settle", "refund", "settle"]);
 		assert.equal(run.steps.find(step => step.name === "advance-clock")?.label, "Simulated time for this job");
 		assert.deepEqual(run.endState, { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" });
+		assertTimings(run);
+	} finally { await h.dispose(); }
+});
+
+test("a tick that takes time is counted in a settle step after the step that caused it, and the steps sum to the run's total", async () => {
+	const h = await harness();
+	try {
+		// Each tick waits 150 ms before the real tick runs, so every settle step carries that wait.
+		const slowTick = { ...h.acquit, tick: async () => { await new Promise(resolve => setTimeout(resolve, 150)); return h.acquit.tick(); } };
+		const admitted = h.deps.runs.admit(h.visitor.id);
+		if (admitted.kind !== "ADMITTED") throw new Error(`admission refused: ${admitted.code}`);
+		const run = await (await startScenario({ ...h.deps, acquit: slowTick }, "verified-and-paid", h.visitor, h.visitor.id, admitted.slot)).finished;
+		assert.equal(run.state, "DONE");
+		const settles = run.steps.filter(step => step.name === "settle");
+		assert.equal(settles.length, 5);
+		for (const step of settles) assert.ok(step.ms >= 140, `settle ms ${step.ms}`);
 		assertTimings(run);
 	} finally { await h.dispose(); }
 });

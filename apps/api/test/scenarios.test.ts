@@ -84,7 +84,8 @@ test("POST starts verified-and-paid on a visitor of its own, and GET polls the r
 		assert.equal(run.jobId, jobId);
 		assert.equal(run.requesterId, h.visitor.id);
 		assert.notEqual(run.visitorId, h.visitor.id);
-		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit", "approve"]);
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "settle", "accept-and-fund", "settle", "push-honest-reference-table",
+			"settle", "submit", "settle", "approve", "settle"]);
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
 		assertTimings(run);
 	} finally { await h.dispose(); }

@@ -26,6 +26,7 @@ export const SCENARIO_LABELS = {
 	clock: "Simulated time for this job",
 	verifier: "Real verifier run",
 	paypal: "PayPal sandbox",
+	server: "Server record (no outside call)",
 } as const;
 export type ScenarioLabel = (typeof SCENARIO_LABELS)[keyof typeof SCENARIO_LABELS];
 
@@ -436,6 +437,12 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		await waitFor(row => row.state.status === "REFUNDED", "the refund to settle");
 		return "REFUNDED";
 	} };
+	// The tick after each step settles what that step caused, and PayPal's release or refund can run inside it. It is a
+	// step of its own, so that time counts toward the run, and a tick that throws ends the run with a coded outcome.
+	const settle: ChainStep = { name: "settle", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
+		await deps.acquit.tick();
+		return "SETTLED";
+	} };
 
 	const chains: Record<ScenarioName, readonly ChainStep[]> = {
 		"verified-and-paid": [open(7), bid, accept, push("honest-reference-table"), submit("verified-and-paid"), approve],
@@ -446,8 +453,13 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	};
 	const [opening, ...rest] = chains[name];
 
-	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides. An error with no
-	// closed code records STEP_FAILED, and its message is logged once with the run and the step it came from.
+	// The outcome a failed step records: its closed code, or STEP_FAILED with its message logged once, masked, with the run and step.
+	const outcomeOfFailure = (stepName: string, error: unknown): string => {
+		const code = closedCodeOf(error);
+		if (code === null) console.error(`scenario run ${runId} step ${stepName} failed: ${logTextOf(error)}`);
+		return `FAILED ${code ?? "STEP_FAILED"}`;
+	};
+	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides.
 	const record = async (step: ChainStep): Promise<{ readonly thrown: unknown } | null> => {
 		const startedAt = new Date().toISOString();
 		let outcome: string;
@@ -456,9 +468,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			outcome = await step.run(ctx);
 		} catch (error) {
 			failure = { thrown: error };
-			const code = closedCodeOf(error);
-			outcome = `FAILED ${code ?? "STEP_FAILED"}`;
-			if (code === null) console.error(`scenario run ${runId} step ${step.name} failed: ${logTextOf(error)}`);
+			outcome = outcomeOfFailure(step.name, error);
 		}
 		const endedAt = new Date().toISOString();
 		steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
@@ -473,9 +483,10 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 
 	const runChain = async (): Promise<ScenarioRun> => {
 		for (const step of rest) {
-			if (await record(step) !== null) { publish({ state: "FAILED", endState: ctx.observedEnd ?? null }); return current!; }
-			publish({});
-			await deps.acquit.tick();
+			for (const next of [step, settle]) {
+				if (await record(next) !== null) { publish({ state: "FAILED", endState: ctx.observedEnd ?? null }); return current!; }
+				publish({});
+			}
 		}
 		const endState = endStateOf(await rowOf());
 		const expected = EXPECTED_END_STATES[name];
@@ -483,8 +494,15 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		publish({ state: matches ? "DONE" : "FAILED", endState });
 		return current!;
 	};
-	// A chain that dies outside its own steps (a tick, the final read) still ends the run as FAILED, so
-	// `finished` never rejects and no caller is left holding an unhandled rejection.
-	const finished = runChain().catch(() => { publish({ state: "FAILED" }); return current!; });
+	// Outside a step there is only the progress written between steps and the final read. If one of those fails, the
+	// failure is kept as a record-run step, so the run still names what stopped it.
+	const finished = runChain().catch(error => {
+		const startedAt = steps.at(-1)?.endedAt ?? new Date().toISOString();
+		const endedAt = new Date().toISOString();
+		steps.push({ name: "record-run", actor: "SYSTEM", startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),
+			outcome: outcomeOfFailure("record-run", error).slice(0, 300), label: SCENARIO_LABELS.server });
+		publish({ state: "FAILED" });
+		return current!;
+	});
 	return { run: current!, finished };
 }
