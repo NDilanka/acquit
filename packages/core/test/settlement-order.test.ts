@@ -8,10 +8,10 @@ import type { Ports } from "../src/effects.ts";
 import { applyJobCommand, decideRelease } from "../src/job.ts";
 import type { JobRow, TrustedActor } from "../src/job.ts";
 import { hours, instant, parseRequestKey } from "../src/ids.ts";
-import type { AgentId, CaptureId, ClientId, CommitSha, Digest, JobId, MerchantId, OperatorId, OrderId, PayoutItemId, Version } from "../src/ids.ts";
+import type { AgentId, CaptureId, ClientId, CommitSha, Digest, JobId, MerchantId, OperatorId, OrderId, PayoutBatchId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
 import { checkLaws, usd } from "../src/ledger.ts";
 import { parseWebhookEnvelope } from "../src/paypal.ts";
-import type { Bps, PayPal, RemoteOutcome, ReleaseEvidence, ResourceRead } from "../src/paypal.ts";
+import type { Bps, PayPal, RefundEvidence, RemoteOutcome, ReimbursementEvidence, ReleaseEvidence, ResourceRead } from "../src/paypal.ts";
 import type { HiddenContract } from "../src/fixtures.ts";
 import { SqliteStore } from "../src/store.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
@@ -47,6 +47,18 @@ const payoutBodyFor = (item: PayoutItemId, event = "WH-PAYOUT-1") => JSON.string
 	resource_type: "referenced_payouts_items", resource: { id: item } });
 const payoutBody = payoutBodyFor(payoutItemId);
 const releaseKeyOf = (jobId: JobId) => operationKey({ kind: "RELEASE", jobId, captureId: capture.captureId, payee: merchant });
+const arbiter: Actor = { role: "ARBITER", staffId: "staff-arbiter" as StaffId };
+const payoutBatch = "PAYOUTBATCH1" as PayoutBatchId;
+const refundOf = (overrides: Partial<RefundEvidence> = {}): RefundEvidence => ({ refundId: "REFUND1" as RefundId,
+	captureId: capture.captureId, refunded: usd("420.00"), retainedProcessorFee: usd("15.15"), at: later, ...overrides });
+const reimbursementOf = (overrides: Partial<ReimbursementEvidence> = {}): ReimbursementEvidence => ({ batchId: payoutBatch,
+	itemId: "REIMBURSEMENT-ITEM-1" as PayoutItemId, merchant, paid: usd("15.15"), fee: usd("0.25"), at: later, ...overrides });
+const refundBodyFor = (id: string, event: string) => JSON.stringify({ id: event, event_type: "PAYMENT.CAPTURE.REFUNDED",
+	resource_type: "refund", resource: { id } });
+const captureBodyFor = (event: string) => JSON.stringify({ id: event, event_type: "PAYMENT.CAPTURE.COMPLETED",
+	resource_type: "capture", resource: { id: capture.captureId } });
+const payoutItemBodyFor = (item: string, event: string) => JSON.stringify({ id: event, event_type: "PAYMENT.PAYOUTS-ITEM.SUCCEEDED",
+	resource_type: "payouts_item", resource: { id: item } });
 
 function emptyAccount(operator = "devon-ops" as OperatorId): CreditAccount {
 	return { operator, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
@@ -146,6 +158,16 @@ async function verifiedJob(h: Harness): Promise<JobId> {
 /** The client's approval. Its RELEASE dispatch runs inline, before the approval returns. */
 const approving = (h: Harness, jobId: JobId) => executeCommand(h.ports, maya, requestKey(), { type: "Approve", jobId, mergeCommit });
 
+/** The client disputes the judged work and the arbiter refunds it: the row now waits on PayPal's refund. */
+async function refundPendingJob(h: Harness): Promise<JobId> {
+	const jobId = await verifiedJob(h);
+	assert.equal((await executeCommand(h.ports, maya, requestKey(), { type: "Dispute", jobId, mergeCommit,
+		reason: "The export path regressed." })).kind, "COMMITTED");
+	assert.equal((await executeCommand(h.ports, arbiter, requestKey(), { type: "ResolveDispute", jobId, verdict: "REFUND",
+		note: "The contract was not met." })).kind, "COMMITTED");
+	return jobId;
+}
+
 /** The PAID row a settled release leaves: one RELEASED line, one receipt, one payout sent. */
 async function assertPaidOnce(h: Harness, jobId: JobId): Promise<void> {
 	const paid = await h.store.readJob(jobId);
@@ -227,6 +249,93 @@ test("a different payout after a matching payout webhook on a paid job is refuse
 			assert.deepEqual(await store.readJob(jobId), paid, wrong.why);
 			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
 			await assertPaidOnce(h, jobId);
+		} finally { store.close(); }
+	}
+});
+
+test("a refund that differs in money from the one a job already refunded is refused with one alert, and its replays are no-ops", async () => {
+	for (const wrong of [
+		{ why: "a different refunded amount", id: "REFUND-SHORT", refund: refundOf({ refundId: "REFUND-SHORT" as RefundId, refunded: usd("419.00") }) },
+		{ why: "a different retained fee", id: "REFUND-FEE", refund: refundOf({ refundId: "REFUND-FEE" as RefundId, retainedProcessorFee: usd("15.16") }) },
+		{ why: "another full refund id", id: "REFUND-OTHER", refund: refundOf({ refundId: "REFUND-OTHER" as RefundId }) },
+	]) {
+		const h = harness();
+		const { store, ports, reads } = h;
+		try {
+			const jobId = await refundPendingJob(h);
+			reads.set("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundOf() } });
+			assert.equal((await webhook(ports, refundBodyFor("REFUND1", "WH-REFUND-1"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-REFUND-1"), "verified, applied", wrong.why);
+			const refunded = await store.readJob(jobId);
+			assert.equal(refunded?.state.status, "REFUNDED", wrong.why);
+			reads.set(wrong.id, { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: wrong.refund } });
+			assert.equal((await webhook(ports, refundBodyFor(wrong.id, "WH-REFUND-2"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-REFUND-2"), "verified, refused, the job did not take this settlement", wrong.why);
+			assert.deepEqual(await store.readJob(jobId), refunded, wrong.why);
+			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
+			// The same refund read again at a later time is the same delivery: it finds the key the refusal recorded.
+			reads.set(wrong.id, { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: { ...wrong.refund, at: thirteen } } });
+			assert.equal((await webhook(ports, refundBodyFor(wrong.id, "WH-REFUND-3"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-REFUND-3"), "verified, no-op, job already REFUNDED", wrong.why);
+			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
+			// An identical replay of the refund the job holds is a no-op too.
+			assert.equal((await webhook(ports, refundBodyFor("REFUND1", "WH-REFUND-4"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-REFUND-4"), "verified, no-op, job already REFUNDED", wrong.why);
+			assert.deepEqual(await store.readJob(jobId), refunded, wrong.why);
+			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
+		} finally { store.close(); }
+	}
+});
+
+test("a refund read back from its capture without a refund id is the same refund, not a mismatch", async () => {
+	const h = harness();
+	const { store, ports, reads } = h;
+	try {
+		const jobId = await refundPendingJob(h);
+		reads.set("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundOf() } });
+		assert.equal((await webhook(ports, refundBodyFor("REFUND1", "WH-REFUND-1"))).status, 202);
+		const refunded = await store.readJob(jobId);
+		// The capture's own event reads the same full refund back from the capture, which names no refund id.
+		reads.set(capture.captureId, { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundOf({ refundId: null }) } });
+		assert.equal((await webhook(ports, captureBodyFor("WH-CAPTURE-1"))).status, 202);
+		assert.equal(outcomeOf(store, "WH-CAPTURE-1"), "verified, no-op, job already REFUNDED");
+		assert.deepEqual(await store.readJob(jobId), refunded);
+		assert.deepEqual(alertReasons(store), []);
+	} finally { store.close(); }
+});
+
+test("a payout that differs in money from the one a refunded job recorded is refused with one alert, and its replays are no-ops", async () => {
+	for (const wrong of [
+		{ why: "a different paid amount", item: "PAYOUT-ITEM-SHORT", reimbursement: reimbursementOf({ paid: usd("10.00") }) },
+		{ why: "a different fee", item: "PAYOUT-ITEM-FEE", reimbursement: reimbursementOf({ fee: usd("0.26") }) },
+	]) {
+		const h = harness();
+		const { store, ports, reads } = h;
+		try {
+			const jobId = await refundPendingJob(h);
+			reads.set("REFUND1", { kind: "SETTLED", observation: { kind: "REFUND_COMPLETED", refund: refundOf() } });
+			assert.equal((await webhook(ports, refundBodyFor("REFUND1", "WH-REFUND-1"))).status, 202, wrong.why);
+			// The outbox's payout indexes its batch on settlement, and this harness does not run that dispatch.
+			store.db.prepare("INSERT OR IGNORE INTO resources VALUES (?, ?)").run(payoutBatch, jobId);
+			reads.set("REIMBURSEMENT-ITEM-1", { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement: reimbursementOf() } });
+			assert.equal((await webhook(ports, payoutItemBodyFor("REIMBURSEMENT-ITEM-1", "WH-PAYOUT-1"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-PAYOUT-1"), "verified, applied", wrong.why);
+			const reimbursed = await store.readJob(jobId);
+			reads.set(wrong.item, { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement: wrong.reimbursement } });
+			assert.equal((await webhook(ports, payoutItemBodyFor(wrong.item, "WH-PAYOUT-2"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-PAYOUT-2"), "verified, refused, the job did not take this settlement", wrong.why);
+			assert.deepEqual(await store.readJob(jobId), reimbursed, wrong.why);
+			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
+			// The same payout read again at a later time is the same delivery: it finds the key the refusal recorded.
+			reads.set(wrong.item, { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement: { ...wrong.reimbursement, at: thirteen } } });
+			assert.equal((await webhook(ports, payoutItemBodyFor(wrong.item, "WH-PAYOUT-3"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-PAYOUT-3"), "verified, no-op, job already REFUNDED", wrong.why);
+			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
+			// An identical replay of the payout the row holds is a no-op too.
+			assert.equal((await webhook(ports, payoutItemBodyFor("REIMBURSEMENT-ITEM-1", "WH-PAYOUT-4"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-PAYOUT-4"), "verified, no-op, job already REFUNDED", wrong.why);
+			assert.deepEqual(await store.readJob(jobId), reimbursed, wrong.why);
+			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
 		} finally { store.close(); }
 	}
 });
