@@ -76,6 +76,8 @@ const escrowSource = (book: EscrowBook) => escrowData(book.tables);
 const earningsSource = () => STUDIO_EARNINGS_DATA;
 // PayPal's read is separate from the ledger's: a PayPal outage leaves the ledger on screen and the card says so.
 const readReconciliation = (): Promise<PlatformReconciliation | null> => api.platformReconciliation().catch(() => null);
+// PayPal settles a line with no write to the local database, so the stream never announces it: the card reads again on its own.
+const RECONCILE_REFRESH_MS = 3 * 60 * 1000;
 
 function EscrowDashboard() {
   const ask = useAskLedger("escrow");
@@ -86,9 +88,18 @@ function EscrowDashboard() {
     let reads: ReadState = READ_IDLE;
     let fallback: ReturnType<typeof setInterval> | undefined;
     const source = new EventSource(PLATFORM_STREAM_PATH);
+    // Only the PayPal card re-reads here, and only while the page is on screen: the ledger still waits for the stream.
+    const reconcileTimer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      readReconciliation().then((reconciliation) => {
+        if (!live) return;
+        setLedger((prev) => (prev.kind === "ready" ? { kind: "ready", data: { ...prev.data, reconciliation } } : prev));
+      });
+    }, RECONCILE_REFRESH_MS);
     const stop = () => {
       source.close();
       clearInterval(fallback);
+      clearInterval(reconcileTimer);
       window.removeEventListener("focus", refresh);
     };
     // A change, a reconnect, or a focus asks for a read; reads run one at a time (see studio/live.ts).
