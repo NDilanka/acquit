@@ -105,9 +105,12 @@ export function targetOf(line: LedgerLineInput, event: CaptureEventInput | undef
 
 const none = (why: string): LineTarget => ({ ok: false, why });
 
-/** One key per object, so a capture a hold and a fee both name is read once. */
+/**
+ * One key per object, so a capture a hold and a fee both name is read once. The merchant is part of the key: the same
+ * capture id read under another merchant's assertion is a different read, and must not reuse this one's fact.
+ */
 export function targetKey(target: ObjectTarget): string {
-	return `${target.kind}:${target.id}`;
+	return JSON.stringify([target.kind, target.id, target.merchant]);
 }
 
 /** The path PayPal serves one object on. */

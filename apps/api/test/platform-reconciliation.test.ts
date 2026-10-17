@@ -184,6 +184,17 @@ test("Transaction Search rows a checked object claims are not other activity; th
 	assert.deepEqual(result.other.sample.map(t => t.transactionId), ["TREASURY-1"]);
 });
 
+test("the same capture id under another merchant is read under that merchant, never answered from the first merchant's reading", async () => {
+	const objects = fakeObjects(target => (target.merchant === "MERCHANT_B" ? { state: "NOT_FOUND" } : liveCapture()));
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const first = await reconcile({ entries: [hold("job_a#0", CAPTURE)], events: [event(CAPTURE)] }, NOW);
+	assert.deepEqual(first.rows.map(r => r.status), ["MATCHED"]);
+
+	const second = await reconcile({ entries: [hold("job_b#0", CAPTURE)], events: [event(CAPTURE, { merchant: "MERCHANT_B" })] }, NOW + MINUTE);
+	assert.deepEqual([second.rows[0]?.status, second.rows[0]?.reason], ["MISMATCHED", "NOT_AT_PAYPAL"]);
+	assert.deepEqual(second.objects, { read: 1, cached: 0, budget: 60 });
+	assert.deepEqual(objects.calls.map(t => t.merchant), [MERCHANT, "MERCHANT_B"]);
+});
 // ---- the object reader: which authority reads which object, and what its refusals become --------------------------
 
 type Seen = { readonly path: string; readonly assertion: string | null };
