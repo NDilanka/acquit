@@ -1,7 +1,7 @@
 import { Component, createContext, useContext, type ComponentType, type ReactNode } from "react";
 import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
-import type { PayoutRow, PlatformJobLedger, PlatformReconcileRow, PlatformReconciliation, ReceiptRow } from "../api-types";
+import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformReconcileRow, PlatformReconciliation, ReceiptRow } from "../api-types";
 import { dollars, utc } from "../format";
 import { COLUMNS, NATIVE_WIDGETS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
 import { conserves, earnings, escrowTotals, newestReceipt, placeRows, verifierStats } from "../studio-data";
@@ -71,7 +71,7 @@ function LedgerConserves() {
   );
 }
 
-const KIND_WORDS: Record<PlatformReconcileRow["kind"], string> = { HELD: "Hold", RELEASED: "Release", FEE: "Fee", REFUND: "Refund" };
+const KIND_WORDS: Record<PlatformReconcileRow["kind"], string> = { HELD: "Hold", RELEASED: "Release", FEE: "PayPal processing fee on the capture", REFUND: "Refund" };
 
 const money = (cents: number | null) => (cents === null ? "not recorded" : dollars(cents));
 
@@ -84,6 +84,12 @@ function ReconciliationCard() {
   const { counts, other } = recon;
   const mismatched = recon.rows.filter((row) => row.status === "MISMATCHED");
   const refundsOnCapture = recon.rows.filter((row) => row.status === "MATCHED" && row.note !== null).length;
+  const payouts = recon.rows.filter((row) => row.status === "MATCHED" && row.payoutTransactionId !== null);
+  const uncheckedFor = (reason: PlatformReconcileReason) => recon.rows.filter((row) => row.status === "NOT_CHECKED" && row.reason === reason).length;
+  const noPayPalId = uncheckedFor("NO_PAYPAL_ID");
+  const unreadable = uncheckedFor("PAYPAL_UNREADABLE");
+  const pastBudget = uncheckedFor("NOT_READ_YET");
+  const otherUnchecked = counts.notChecked - noPayPalId - unreadable - pastBudget;
   const pill = counts.mismatched > 0 ? "break" : counts.notChecked > 0 ? "new" : "ok";
   const headline = counts.mismatched > 0 ? `${counts.mismatched} mismatched`
     : counts.notChecked > 0 ? `No mismatches, ${counts.notChecked} not checked yet` : "No mismatches";
@@ -113,11 +119,24 @@ function ReconciliationCard() {
       </div>
       {mismatched.slice(0, 5).map((row) => (
         <small key={row.entryId} className="muted">
-          {KIND_WORDS[row.kind]} on <span className="mono">{row.jobId}</span>: ledger {money(row.expectedCents)}, PayPal{" "}
+          {KIND_WORDS[row.kind]} for <span className="mono">{row.jobId}</span>: ledger {money(row.expectedCents)}, PayPal{" "}
           {row.observedCents === null ? "shows no amount" : money(row.observedCents)}. {row.note}
         </small>
       ))}
       {mismatched.length > 5 && <small className="muted">and {mismatched.length - 5} more mismatched lines.</small>}
+      {payouts.slice(0, 5).map((row) => (
+        <small key={`${row.entryId}-payout`} className="muted">
+          Release for <span className="mono">{row.jobId}</span> moved money under PayPal payout transaction{" "}
+          <span className="mono">{row.payoutTransactionId}</span>.
+        </small>
+      ))}
+      {payouts.length > 5 && <small className="muted">and {payouts.length - 5} more releases with a PayPal payout transaction.</small>}
+      {counts.notChecked > 0 && (
+        <small className="muted">
+          Not checked yet: {noPayPalId} with no PayPal id recorded on the line, {unreadable} that PayPal could not be read, and {pastBudget} past
+          this refresh's read budget{otherUnchecked > 0 ? `, and ${otherUnchecked} with an incomplete PayPal answer` : ""}. None of these is a mismatch.
+        </small>
+      )}
       {refundsOnCapture > 0 && (
         <small className="muted">
           {refundsOnCapture} {refundsOnCapture === 1 ? "refund line matched" : "refund lines matched"} on the capture it refunded, because PayPal's refund id
@@ -126,12 +145,13 @@ function ReconciliationCard() {
       )}
       <small className="muted">
         Each line is checked against the PayPal object it names: the capture for a hold or fee, the refund for a refund, the payout item for a release.
-        Pending at PayPal means PayPal itself reports that object as pending. Not checked yet means this read did not reach that object (PayPal refused or
-        failed it, or the read budget ran out); it is never counted as a mismatch.
+        A fee line checks PayPal's processor fee on the capture only, not the fee's total or Acquit's share. Pending at PayPal means PayPal itself
+        reports that object as pending. Not checked yet means this read did not reach that object (PayPal refused or failed it, or the read budget
+        ran out); it is never counted as a mismatch.
       </small>
       <small className="muted">
         {other.state === "READ"
-          ? `Other activity on the platform PayPal account, not Acquit escrow: ${other.count} rows from ${utc(other.from)} to ${utc(other.to)}. Escrow captures, refunds, and releases sit on each operator's merchant account, so they are checked above. Treasury refund-fee reimbursements are not ledger lines, so they are counted here.`
+          ? `Other activity on the platform PayPal account, not Acquit escrow: ${other.count} rows from ${utc(other.from)} to ${utc(other.to)}.${other.truncated ? " Only the first few Transaction Search pages are read per refresh, so this count may be partial." : ""} Escrow captures, refunds, and releases sit on each operator's merchant account, so they are checked above. Treasury refund-fee reimbursements are not ledger lines, so they are counted here.`
           : other.reason === "SPAN_TOO_LONG"
             ? "Other activity on the platform PayPal account is not read: the ledger spans more than about two years."
             : "Other activity on the platform PayPal account could not be read just now."}
