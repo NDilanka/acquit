@@ -13,8 +13,9 @@ export type EarningsData = { readonly receipts: readonly ReceiptRow[]; readonly 
 
 export const EscrowContext = createContext<readonly PlatformJobLedger[] | null>(null);
 export const EarningsContext = createContext<EarningsData | null>(null);
-/** Null when PayPal's read failed, so the ledger still renders and the card says so. */
-export const ReconcileContext = createContext<PlatformReconciliation | null>(null);
+/** The PayPal card's own read: READING until the first answer, UNAVAILABLE when PayPal's read failed. */
+export type ReconcileView = PlatformReconciliation | "READING" | "UNAVAILABLE";
+export const ReconcileContext = createContext<ReconcileView>("READING");
 
 function useEscrow() {
   const jobs = useContext(EscrowContext);
@@ -78,7 +79,8 @@ const money = (cents: number | null) => (cents === null ? "not recorded" : dolla
 /** Each ledger line checked against the PayPal object it names, read live: the counts, the lines PayPal disagrees with, and other activity. */
 function ReconciliationCard() {
   const recon = useContext(ReconcileContext);
-  if (!recon) {
+  if (recon === "READING") return <p className="muted">Reading PayPal…</p>;
+  if (recon === "UNAVAILABLE") {
     return <p className="muted">PayPal could not be read just now. The ledger above still loads, and this card reads again within a few minutes.</p>;
   }
   const { counts, other } = recon;
