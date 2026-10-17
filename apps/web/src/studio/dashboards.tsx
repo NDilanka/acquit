@@ -63,7 +63,7 @@ function LedgerConserves() {
         </div>
       </div>
       <small className="muted">
-        Over released jobs, payout + fee = paid: {dollars(payout)} + {dollars(fee)} {holds ? "=" : "≠"} {dollars(paid)}. Refreshes every 30 seconds.
+        Over released jobs, payout + fee = paid: {dollars(payout)} + {dollars(fee)} {holds ? "=" : "≠"} {dollars(paid)}. Updates as the ledger changes.
       </small>
     </>
   );

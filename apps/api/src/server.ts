@@ -39,6 +39,7 @@ import { sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
 import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
+import { platformStream } from "./platform-stream.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
  * sees only the fixture its fork was made from, named by its own fork; every other signed-in
@@ -137,6 +138,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS house_diffs (
 db.exec(`CREATE TABLE IF NOT EXISTS studio_layouts (
 	user_handle TEXT NOT NULL, dashboard TEXT NOT NULL, json TEXT NOT NULL, updated_at TEXT NOT NULL,
 	PRIMARY KEY (user_handle, dashboard))`);
+// The platform dashboards' live signal. It watches this database through a connection of its own, so a commit
+// from any connection, this process's own routes included, reaches an open stream without the writer calling it.
+const platformLive = platformStream(settings.databaseUrl, () => clock.now());
 /** The recorded diff for one job's House run, or null when the job has none. */
 function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; files: unknown; patch: string } | null {
 	const row = db.prepare("SELECT commit_sha, files, patch FROM house_diffs WHERE job_id = ?").get(jobId);
@@ -634,6 +638,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const result = await acquit.query(current.actor, { type: "PlatformTables" });
 		if (result.kind !== "PLATFORM_TABLES") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { tables: result.tables, now: clock.now() });
+		return;
+	}
+	if (url.pathname === "/api/platform/stream" && method === "GET") {
+		// The platform dashboards' live signal: a "changed" event each time the store commits a write, and no
+		// data. The page answers an event with the same platform-only reads it makes on load, so this route
+		// serves no table of its own.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		platformLive.open(res);
 		return;
 	}
 	if (url.pathname === "/api/ask-ledger/tools" && method === "GET") {
@@ -1142,6 +1154,8 @@ function stop(): void {
 	clearInterval(timer);
 	clearInterval(houseTimer);
 	clearInterval(scenarioSweepTimer);
+	// An open stream never ends on its own, and server.close waits for every connection.
+	platformLive.close();
 	server.close(() => { db.close(); closeAcquit(acquit); });
 }
 process.on("SIGINT", stop);

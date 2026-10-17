@@ -321,6 +321,9 @@ export type PlatformTables = {
   readonly clients: readonly PlatformClientRow[];
 };
 
+/** One data line of `GET /api/platform/stream`: the store committed a write. It carries no data; the page reads again. */
+export type PlatformStreamEvent = { readonly kind: "changed"; readonly at: string };
+
 /** `GET /api/jobs/:id`, and `POST /api/jobs/:id/clock` after the job's own time moved. */
 export type JobResponse = { readonly job: JobView; readonly handles: Readonly<Record<string, string>>; readonly now: Instant };
 
