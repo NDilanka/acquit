@@ -1,10 +1,14 @@
 // A traced figure, drawn once: the Ask chat's card and the Explain panel both show a FigureTrace through FigureTraceView.
 
+import { useEffect, useId, useRef, useState } from "react";
 import type { AgAiToolDetailParams } from "ag-studio";
-import type { FigureTrace, FigureTraceLine } from "../api-types";
+import { api } from "../api";
+import type { FigureId, FigureTrace, FigureTraceLine } from "../api-types";
+import { errorText } from "../demo";
 import { figureCheck, isFigureTrace, paypalWords } from "../figure-trace";
 import { dollars } from "../format";
 import { Link } from "../router";
+import { FIGURE_LABELS } from "../../../../packages/core/src/explain.ts";
 
 const LINE_WORDS: Record<FigureTraceLine["kind"], string> = {
   HELD: "Hold",
@@ -61,6 +65,53 @@ export function FigureTraceView({ trace }: { trace: FigureTrace }) {
         </small>
       </div>
     </div>
+  );
+}
+
+type ExplainState = { readonly kind: "reading" } | { readonly kind: "ready"; readonly trace: FigureTrace } | { readonly kind: "failed"; readonly error: string };
+
+/** The Explain button for one escrow figure. It opens the figure's lines in a modal dialog, read live each time it opens. */
+export function FigureExplain({ figure }: { figure: FigureId }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className="btn sm ghost explain-open" aria-haspopup="dialog" onClick={() => setOpen(true)}>
+        Explain
+      </button>
+      {open && <ExplainDialog figure={figure} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+/** A native modal dialog: Escape and Close dismiss it, and focus stays inside while it is open. */
+function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const [state, setState] = useState<ExplainState>({ kind: "reading" });
+  useEffect(() => {
+    const el = dialog.current;
+    if (el && !el.open) el.showModal();
+  }, []);
+  useEffect(() => {
+    let current = true;
+    api.platformExplain(figure).then(
+      (trace) => { if (current) setState({ kind: "ready", trace }); },
+      (error: unknown) => { if (current) setState({ kind: "failed", error: errorText(error) }); },
+    );
+    return () => { current = false; };
+  }, [figure]);
+  return (
+    <dialog ref={dialog} className="explain-dialog" aria-labelledby={titleId} onClose={onClose}>
+      <div className="explain-head">
+        <h2 id={titleId}>{FIGURE_LABELS[figure]}</h2>
+        <button type="button" className="btn sm ghost" onClick={() => dialog.current?.close()}>
+          Close
+        </button>
+      </div>
+      {state.kind === "reading" && <p className="muted small">Reading the ledger lines and PayPal's status for each one.</p>}
+      {state.kind === "failed" && <div className="alert">The figure could not be traced just now: {state.error}</div>}
+      {state.kind === "ready" && <FigureTraceView trace={state.trace} />}
+    </dialog>
   );
 }
 
