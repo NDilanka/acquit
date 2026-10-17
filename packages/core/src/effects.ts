@@ -343,48 +343,61 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 	throw new Error("System command busy");
 }
 
+/** Where an outbox effect's work went. NONE is an effect the outbox settled without calling anyone outside. */
+export type OutboxReach = "PAYPAL" | "GITHUB" | "VERIFIER" | "ALERT" | "NONE";
+/** One effect the outbox ran. `jobId` is null for an operator's effect, which belongs to no job. */
+export type OutboxRan = { readonly kind: Effect["kind"]; readonly jobId: JobId | null; readonly reach: OutboxReach };
+export type OutboxSweep = { readonly kind: "IDLE" } | { readonly kind: "WORKED"; readonly ran: OutboxRan };
+
 export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"IDLE" | "WORKED"> {
+	return (await runOutboxEffect(ports, key)).kind;
+}
+
+/** Leases one row and runs it, and says what the run reached, so a caller can tell which effects a tick ran. */
+export async function runOutboxEffect(ports: Ports, key?: OperationKey): Promise<OutboxSweep> {
 	// Lease one row. For a row that was LEASED or UNCERTAIN before, reconcile first; dispatch only when
 	// reconcile says NOT_FOUND. CONFIRMED feeds the observation, with the effect's settlement, in one commit.
 	// UNKNOWN or PENDING becomes UNCERTAIN with a backoff. It never selects another disposition.
 	// PERMANENT_FAILURE on CREATE_ORDER or CAPTURE feeds FundingFailed. On a settlement it parks for a person.
 	const now = ports.clock.now();
 	const row = await ports.store.leaseEffect(now, instant(new Date(Date.parse(now) + 120_000).toISOString()), key);
-	if (!row) return "IDLE";
+	if (!row) return { kind: "IDLE" };
 	const effect = row.effect;
-	if (effect.kind === "START_VERIFIER") return dispatchVerifierStart(ports, row.key, effect, now);
-	if (effect.kind === "CREATE_WORK_REPO") return dispatchWorkRepo(ports, row.key, effect, now, row.state);
-	if (effect.kind === "MERGE") return dispatchMerge(ports, row.key, effect, now);
+	const worked = (reach: OutboxReach): OutboxSweep => ({ kind: "WORKED", ran: { kind: effect.kind, jobId: "jobId" in effect ? effect.jobId : null, reach } });
+	if (effect.kind === "START_VERIFIER") return worked(await dispatchVerifierStart(ports, row.key, effect, now));
+	if (effect.kind === "CREATE_WORK_REPO") return worked(await dispatchWorkRepo(ports, row.key, effect, now, row.state));
+	if (effect.kind === "MERGE") return worked(await dispatchMerge(ports, row.key, effect, now));
 	if (effect.kind === "ALERT") {
 		try { await ports.alerts.raise(effect); }
 		catch (error) {
 			// An undeliverable alert is itself a fact a person has to see, and it is not retried blindly.
 			await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "ALERT_UNDELIVERED",
 				detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
-			return "WORKED";
+			return worked("ALERT");
 		}
 		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now });
-		return "WORKED";
+		return worked("ALERT");
 	}
 	const call = toPayPalCall(effect);
 	// PAYPAL_ONBOARD belongs to an operator row, and the skeleton has no onboarding effect to deliver.
 	if (call === null || !("jobId" in effect)) {
 		await ports.store.recordEffect(row.key, { kind: "NEEDS_HUMAN", reason: "OUTSIDE_SKELETON" });
-		return "WORKED";
+		return worked("NONE");
 	}
 	const job = await ports.store.readJob(effect.jobId);
-	if (!job) { await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED"; }
+	if (!job) { await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return worked("NONE"); }
 	if (effect.kind === "CREATE_ORDER" || effect.kind === "CAPTURE") {
 		// A cancelled/expired create must never create a fresh payable order.
 		if (job.state.status !== "OPEN" || job.state.phase.kind !== "FUNDING" ||
 			job.state.phase.round !== effect.round || (effect.kind === "CREATE_ORDER" && job.state.phase.checkout.phase !== "CREATING_ORDER")) {
-			await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED";
+			await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return worked("NONE");
 		}
 	} else if (!effectWanted(job, effect)) {
 		// The row no longer holds the disposition this money movement belongs to: deliver it as done and
 		// never move money the row did not ask for.
-		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return "WORKED";
+		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return worked("NONE");
 	}
+	// Every path through the try calls PayPal (reconcile or dispatch), so the effect reached PayPal even when it failed.
 	try {
 		let outcome: RemoteOutcome = { kind: "NOT_FOUND" };
 		if (row.state.kind !== "READY") outcome = await ports.paypal.reconcile(call, providerRequestId(row.key));
@@ -413,7 +426,7 @@ export async function runOutboxOnce(ports: Ports, key?: OperationKey): Promise<"
 	} catch {
 		await ports.store.recordEffect(row.key, { kind: "UNCERTAIN", reconcileAt: instant(new Date(Date.parse(now) + 5000).toISOString()) });
 	}
-	return "WORKED";
+	return worked("PAYPAL");
 }
 
 function backoffFrom(now: Instant): Instant {
@@ -438,25 +451,25 @@ async function authenticateCallback(ports: Ports, request: Request): Promise<{ r
 }
 
 /** Starts the run the attempt reserved. A run that was already reported, or whose slot was returned, is not started again. */
-async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "START_VERIFIER" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "START_VERIFIER" }>, now: Instant): Promise<OutboxReach> {
 	const job = await ports.store.readJob(effect.jobId);
 	const waiting = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" &&
 		job.state.attempts.pending.runId === effect.attempt.runId;
 	if (!job || !waiting) {
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
-		return "WORKED";
+		return "NONE";
 	}
 	// The judge reads the job's own frozen manifest, never a deployment-wide contract. A row stored
 	// before the manifest freeze has no test list to judge against. Record it for a human instead of starting a run.
 	const done = await ports.store.readManifest(job.id);
 	if (done === null) {
 		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "CONTRACT_NOT_FROZEN" });
-		return "WORKED";
+		return "NONE";
 	}
 	const judge = verifiersOf(ports)[storedVertical(job)];
 	if (judge === undefined) {
 		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "VERTICAL_NOT_REGISTERED" });
-		return "WORKED";
+		return "NONE";
 	}
 	try {
 		await judge.verifier.start({ runId: effect.attempt.runId, jobId: job.id, ordinal: effect.attempt.ordinal,
@@ -464,10 +477,10 @@ async function dispatchVerifierStart(ports: Ports, key: OperationKey, effect: Ex
 	} catch {
 		// The run may or may not have started. It is never dispatched twice from here, and the run-end timer returns the slot.
 		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
-		return "WORKED";
+		return "VERIFIER";
 	}
 	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
-	return "WORKED";
+	return "VERIFIER";
 }
 
 /** What the outbox does with one refusal from the GitHub App client. One table, one place to read. */
@@ -508,18 +521,20 @@ function backoffFor(now: Instant, attempt: number): Instant {
 
 /** Pushes the frozen commit to the per-job work repository. No App means the row waits for a human, by name. */
 async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "CREATE_WORK_REPO" }>,
-	now: Instant, previous: OutboxState): Promise<"IDLE" | "WORKED"> {
+	now: Instant, previous: OutboxState): Promise<OutboxReach> {
 	const job = await ports.store.readJob(effect.jobId);
 	// Work that never started needs no repository.
 	if (!job || job.state.status === "OPEN" || job.state.status === "CLOSED") {
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
-		return "WORKED";
+		return "NONE";
 	}
 	if (!ports.workRepo) {
 		await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
-		return "WORKED";
+		return "NONE";
 	}
 	const attempt = (previous.kind === "UNCERTAIN" ? previous.attempt ?? 0 : 0) + 1;
+	// Set once the App is asked. A store read that fails before then reached GitHub with nothing.
+	let reach: OutboxReach = "NONE";
 	try {
 		// The record is written the moment GitHub answers for the fork, before the ref writes that can still fail,
 		// and again once the whole create has succeeded. Both writes name the same repository, so either one is enough.
@@ -527,59 +542,60 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 		// A retry adopts only the fork this job already recorded. A row with no id names no fork the App may adopt.
 		const known = await ports.store.readWorkRepo(effect.jobId);
 		const recorded = known !== null && known.repositoryId !== null ? { repository: known.repository, id: known.repositoryId } : null;
+		reach = "GITHUB";
 		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit, recorded },
 			providerRequestId(key), recordFork);
 		await recordFork(created);
 	} catch (error) {
 		if (error instanceof GitHubAppNotConfigured) {
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
-			return "WORKED";
+			return reach;
 		}
 		if (error instanceof GitHubAppError && githubDisposition(error).kind === "NEEDS_HUMAN") {
 			// The operator reads the code and the bounded detail off the row. A retry cannot clear this one.
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: error.code, detail: boundedDetail(error.message) });
-			return "WORKED";
+			return reach;
 		}
 		// Transient, or a failure the client did not name: retry later, backing off as the attempts pile up.
 		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFor(now, attempt), attempt });
-		return "WORKED";
+		return reach;
 	}
 	await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
-	return "WORKED";
+	return reach;
 }
 
 /**
  * Merges the pull request the verifier opened. The App client reads the pull before it merges, so a
  * retry after an unknown answer adopts a merge that landed instead of opening a second one.
  */
-async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "MERGE" }>, now: Instant): Promise<"IDLE" | "WORKED"> {
+async function dispatchMerge(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "MERGE" }>, now: Instant): Promise<OutboxReach> {
 	const job = await ports.store.readJob(effect.jobId);
 	// Only a paid job merges, and only once: a merge already recorded is delivered, not retried.
 	if (!job || job.state.status !== "PAID" || job.state.merge.phase !== "PENDING") {
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
-		return "WORKED";
+		return "NONE";
 	}
 	let answer: MergeOutcome;
 	try { answer = await ports.github.merge(effect, providerRequestId(key)); }
 	catch (error) {
 		if (error instanceof GitHubAppNotConfigured) {
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: "GITHUB_APP_NOT_CONFIGURED" });
-			return "WORKED";
+			return "GITHUB";
 		}
 		if (error instanceof GitHubAppError && githubDisposition(error).kind === "NEEDS_HUMAN") {
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: error.code, detail: boundedDetail(error.message) });
-			return "WORKED";
+			return "GITHUB";
 		}
 		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
-		return "WORKED";
+		return "GITHUB";
 	}
-	if (answer.outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "WORKED"; }
+	if (answer.outcome === "UNKNOWN") { await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) }); return "GITHUB"; }
 	// A conflict is not retried: the row names it and a person resolves it. A merge records the commit
 	// GitHub landed it on, which is what the paid view shows next to the tree the client approved.
 	const progress: MergeProgress = answer.outcome === "MERGED" ? { phase: "MERGED", at: now, sha: answer.sha }
 		: { phase: "NEEDS_HUMAN", reason: "GITHUB_MERGE_CONFLICT" };
 	await applySystemCommand(ports, { type: "MergeFinished", jobId: effect.jobId, outcome: progress }, { key }, null);
-	return "WORKED";
+	return "GITHUB";
 }
 
 export function interpret(outcome: RemoteOutcome, row: OutboxRow, now: Instant): OutboxState {

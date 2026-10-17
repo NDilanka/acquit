@@ -1,8 +1,8 @@
 import type { CapRefusal } from "./caps.ts";
 import { nextCreditGrant, weeklyAllowance } from "./credits.ts";
 import type { Credits } from "./credits.ts";
-import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxOnce } from "./effects.ts";
-import type { Ports } from "./effects.ts";
+import { confirmFunding, executeCommand, ingestPayPalWebhook, ingestVerifierCallback, runDueTimers, runOutboxEffect } from "./effects.ts";
+import type { OutboxRan, Ports } from "./effects.ts";
 import { createGitHubApp } from "./github.ts";
 import type { GitHubAppPort } from "./github.ts";
 import { instant } from "./ids.ts";
@@ -179,9 +179,14 @@ export interface Acquit {
 	/** The dev-only replay: delivers an unsigned envelope built on this host. The API serves it under ACQUIT_DEV alone. */
 	handlePayPalWebhookDev(request: Request): Promise<Response>;
 	handleVerifierCallback(request: Request): Promise<Response>;
-	/** Timer worker. Fires due job clocks and the weekly grant, then drains the outbox. */
-	tick(): Promise<void>;
+	/** Timer worker. Fires due job clocks and the weekly grant, then drains the outbox, and says what the outbox ran. */
+	tick(): Promise<TickSummary>;
 }
+/**
+ * What one tick ran. A tick that is already in flight is shared, so every caller that joins it gets the same
+ * summary, and `ran` may name effects of other jobs. A caller keeps only the effects of the jobs it owns.
+ */
+export type TickSummary = { readonly ran: readonly OutboxRan[] };
 export interface Clock {
 	now(): Instant;
 }
@@ -235,7 +240,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		scopeDraft: config.scopeDraft,
 		privateCases: config.privateCases,
 		clock };
-	let ticking: Promise<void> | null = null;
+	let ticking: Promise<TickSummary> | null = null;
 	const service: Acquit = {
 		execute: (actor, key, command) => executeCommand(ports, actor, key, command),
 		query: async (actor, query) => {
@@ -292,9 +297,15 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		handlePayPalWebhookDev: request => ingestPayPalWebhook(ports, request, true),
 		handleVerifierCallback: request => ingestVerifierCallback(ports, request),
 		tick: () => {
-			if (!ticking) ticking = (async () => {
+			if (!ticking) ticking = (async (): Promise<TickSummary> => {
+				const ran: OutboxRan[] = [];
 				await runDueTimers(ports);
-				for (let i = 0; i < 20; i++) if (await runOutboxOnce(ports) === "IDLE") break;
+				for (let i = 0; i < 20; i++) {
+					const sweep = await runOutboxEffect(ports);
+					if (sweep.kind === "IDLE") break;
+					ran.push(sweep.ran);
+				}
+				return { ran };
 			})().finally(() => { ticking = null; });
 			return ticking;
 		},

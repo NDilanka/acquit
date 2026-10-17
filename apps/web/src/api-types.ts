@@ -507,8 +507,8 @@ export type ScopingApproveResponse = { readonly jobId: string; readonly digest: 
 /** The five judge scenarios, as core SCENARIO_NAMES names them. */
 export type ScenarioName = "verified-and-paid" | "hidden-test-fail" | "test-tamper" | "dispute-arbiter" | "deadline-refund";
 
-/** The four honest labels a scenario step carries, as core SCENARIO_LABELS spells them. */
-export type ScenarioLabel = "Scripted agent (Simulated)" | "Simulated time for this job" | "Real verifier run" | "PayPal sandbox";
+/** The honest labels a scenario step carries, as core SCENARIO_LABELS spells them. */
+export type ScenarioLabel = "Scripted agent (Simulated)" | "Simulated time for this job" | "Real verifier run" | "PayPal sandbox" | "GitHub work repository" | "Server record (no outside call)";
 
 export type ScenarioStep = {
   readonly name: string;

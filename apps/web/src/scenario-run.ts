@@ -70,6 +70,8 @@ const STEP_TITLES: Readonly<Record<string, string>> = {
   release: "Escrow releases the payout",
   "advance-clock": "Job clock moves 2 days",
   refund: "Escrow refunds the client",
+  settle: "Pending work settles",
+  "record-run": "Server records the run",
 };
 
 const ACTOR_WORDS: Readonly<Record<ScenarioStep["actor"], string>> = {
@@ -84,6 +86,8 @@ const LABEL_NOTE: Readonly<Record<ScenarioLabel, string | null>> = {
   "Simulated time for this job": null,
   "Real verifier run": null,
   "PayPal sandbox": "No real money moves.",
+  "GitHub work repository": null,
+  "Server record (no outside call)": null,
 };
 
 const STATE_WORDS: Readonly<Record<ScenarioRun["state"], string>> = { RUNNING: "Running", DONE: "Done", FAILED: "Failed" };
