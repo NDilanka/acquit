@@ -50,7 +50,8 @@ export function eta(hours: number): string {
 const bare = (cents: number) => usd(cents).replace(" USD", "");
 
 export function dollars(cents: number): string {
-  return `${cents < 0 ? "-" : ""}$${bare(Math.abs(cents))}`;
+  const [whole = "", frac = ""] = bare(Math.abs(cents)).split(".");
+  return `${cents < 0 ? "-" : ""}$${whole.replace(/\B(?=(\d{3})+$)/g, ",")}.${frac}`;
 }
 
 /** `locked` is the accepted bid, when known, so the HELD split is exact rather than inferred. */
