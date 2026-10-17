@@ -208,6 +208,22 @@ test("a settle step reads Pending work settles, with the sandbox note only when 
   ]);
 });
 
+test("a step an earlier step already settled names that step by its title, not its id", () => {
+  const view = buildRunView({
+    ...RUN,
+    steps: [
+      step("refund", "SYSTEM", SERVER, 6, "REFUNDED (already settled by settle)"),
+      step("release", "SYSTEM", SERVER, 4, "PAID (already settled by arbiter-verdict)"),
+      step("release", "SYSTEM", SERVER, 4, "PAID (already settled)"),
+    ],
+  });
+  assert.deepEqual(view.steps.map(entry => entry.result), [
+    "REFUNDED (already settled at Pending work settles)",
+    "PAID (already settled at Arbiter rules on the dispute)",
+    "PAID (already settled)",
+  ]);
+});
+
 test("a settle step that ran GitHub work reads GitHub work repository, with no sandbox note", () => {
   const view = buildRunView({
     ...RUN,

@@ -138,6 +138,13 @@ function stepTitle(name: string): string {
   return lookup(STEP_TITLES, name) ?? name;
 }
 
+// The server names the step that settled a wait-only step by its id; the page shows that step's title.
+const SETTLED_BY = /\(already settled by ([a-z-]+)\)$/;
+
+function resultWords(outcome: string): string {
+  return outcome.replace(SETTLED_BY, (_, name: string) => `(already settled at ${stepTitle(name)})`);
+}
+
 function observedWords(end: ScenarioEndState): string {
   return end.reason === null ? end.jobStatus : `${end.jobStatus} (${end.reason})`;
 }
@@ -158,7 +165,7 @@ function stepView(step: ScenarioStep): RunStepView {
     actorText: ACTOR_WORDS[step.actor],
     label: step.label,
     reached: step.reached === undefined ? null : step.reached.map(place => ({ label: place, sandboxNote: LABEL_NOTE[place] })),
-    result: step.outcome,
+    result: resultWords(step.outcome),
     ms: step.ms,
   };
 }
