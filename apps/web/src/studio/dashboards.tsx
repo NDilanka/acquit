@@ -62,7 +62,9 @@ function LedgerConserves() {
           <b className="num">{dollars(fee)}</b>
         </div>
         <div className="total">
-          <span>Paid by clients</span>
+          <span>
+            Paid by clients <FigureExplain figure="paid-by-clients" />
+          </span>
           <b className="num">{dollars(paid)}</b>
         </div>
       </div>

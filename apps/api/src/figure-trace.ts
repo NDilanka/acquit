@@ -10,6 +10,8 @@ import type { LedgerTables, ReconciliationBody } from "./reconciliation.ts";
 export type TracePayPal = {
 	readonly id: string | null;
 	readonly status: ReconcileStatus;
+	/** The cents PayPal was compared on. A FEE line compares only its processor component, so this can be less than the line. */
+	readonly checkedCents: number | null;
 	readonly observedCents: number | null;
 	readonly note: string | null;
 };
@@ -58,8 +60,8 @@ async function reconciledByEntry(deps: TraceDeps): Promise<Reconciled> {
 }
 
 function payPalOf(entryId: string, reconciled: Reconciled): TracePayPal {
-	if ("unavailable" in reconciled) return { id: null, status: "NOT_CHECKED", observedCents: null, note: reconciled.unavailable };
+	if ("unavailable" in reconciled) return { id: null, status: "NOT_CHECKED", checkedCents: null, observedCents: null, note: reconciled.unavailable };
 	const row = reconciled.rows.get(entryId);
-	if (row === undefined) return { id: null, status: "NOT_CHECKED", observedCents: null, note: NOT_IN_READ };
-	return { id: row.objectId, status: row.status, observedCents: row.observedCents, note: row.note };
+	if (row === undefined) return { id: null, status: "NOT_CHECKED", checkedCents: null, observedCents: null, note: NOT_IN_READ };
+	return { id: row.objectId, status: row.status, checkedCents: row.expectedCents, observedCents: row.observedCents, note: row.note };
 }

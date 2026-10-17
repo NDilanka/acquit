@@ -35,9 +35,9 @@ function deps(patch: Partial<TraceDeps> = {}): TraceDeps {
 test("each traced line takes its PayPal status from the reconciliation row for its entry id", async () => {
 	const rows = [
 		row("job_paid#0", { kind: "HELD", objectId: "CAP-paid", status: "MATCHED", observedCents: 10_000, note: "Matched on the capture." }),
-		row("job_paid#1", { kind: "RELEASED", objectKind: "PAYOUT_ITEM", objectId: "PAYOUT-1", status: "PENDING_AT_PAYPAL", observedCents: null,
-			note: "PayPal reports the payout item as UNCLAIMED." }),
-		row("job_paid#2", { kind: "FEE", leg: "FEE", objectId: "CAP-paid", status: "MISMATCHED", reason: "AMOUNT", observedCents: 900,
+		row("job_paid#1", { kind: "RELEASED", objectKind: "PAYOUT_ITEM", objectId: "PAYOUT-1", status: "PENDING_AT_PAYPAL", expectedCents: 9_000,
+			observedCents: null, note: "PayPal reports the payout item as UNCLAIMED." }),
+		row("job_paid#2", { kind: "FEE", leg: "FEE", objectId: "CAP-paid", status: "MISMATCHED", reason: "AMOUNT", expectedCents: 300, observedCents: 900,
 			note: "The amounts differ." }),
 		row("job_held#0", { jobId: "job_held", objectId: "CAP-held", status: "NOT_CHECKED", reason: "NOT_READ_YET", observedCents: null,
 			note: "Not checked yet: this refresh's PayPal read budget is spent." }),
@@ -48,7 +48,7 @@ test("each traced line takes its PayPal status from the reconciliation row for i
 	assert.equal(trace.totalCents, 9_000);
 	assert.deepEqual(trace.lines, [
 		{ entryId: "job_paid#1", jobId: "job_paid", kind: "RELEASED", cents: 9_000, at: T2, receiptId: "rcpt_paid",
-			paypal: { id: "PAYOUT-1", status: "PENDING_AT_PAYPAL", observedCents: null, note: "PayPal reports the payout item as UNCLAIMED." } },
+			paypal: { id: "PAYOUT-1", status: "PENDING_AT_PAYPAL", checkedCents: 9_000, observedCents: null, note: "PayPal reports the payout item as UNCLAIMED." } },
 	]);
 
 	const held = await traceFigure(deps({ reconcile: async () => body(rows) }), "held");
@@ -57,8 +57,8 @@ test("each traced line takes its PayPal status from the reconciliation row for i
 		[["job_held#0", "NOT_CHECKED", "CAP-held", null]], "a line PayPal was not asked about says so, and keeps the object it names");
 
 	const fees = await traceFigure(deps({ reconcile: async () => body(rows) }), "fees");
-	assert.deepEqual(fees.lines[0]?.paypal, { id: "CAP-paid", status: "MISMATCHED", observedCents: 900, note: "The amounts differ." },
-		"a mismatch is shown as a mismatch, with what PayPal observed");
+	assert.deepEqual(fees.lines[0]?.paypal, { id: "CAP-paid", status: "MISMATCHED", checkedCents: 300, observedCents: 900, note: "The amounts differ." },
+		"a mismatch is shown as a mismatch, with what PayPal observed and the processor cents it was compared on");
 });
 
 test("the trace's total is the sum of its lines, and a held job's lines carry no receipt", async () => {
@@ -71,13 +71,13 @@ test("a line the read names no PayPal object for is NOT_CHECKED with no id, neve
 	const rows = [row("job_held#0", { objectId: null, status: "NOT_CHECKED", reason: "NO_PAYPAL_ID", observedCents: null,
 		note: "no PayPal event is recorded for this capture", objectKind: null, paypalStatus: null })];
 	const trace = await traceFigure(deps({ reconcile: async () => body(rows) }), "held");
-	assert.deepEqual(trace.lines[0]?.paypal, { id: null, status: "NOT_CHECKED", observedCents: null,
+	assert.deepEqual(trace.lines[0]?.paypal, { id: null, status: "NOT_CHECKED", checkedCents: 0, observedCents: null,
 		note: "no PayPal event is recorded for this capture" });
 });
 
 test("without PayPal credentials every line is NOT_CHECKED with the reason, and none is MATCHED", async () => {
 	const trace = await traceFigure(deps({ reconcile: null }), "fees");
-	assert.deepEqual(trace.lines.map(line => line.paypal), [{ id: null, status: "NOT_CHECKED", observedCents: null,
+	assert.deepEqual(trace.lines.map(line => line.paypal), [{ id: null, status: "NOT_CHECKED", checkedCents: null, observedCents: null,
 		note: "PayPal is not configured on this deployment, so this line was not checked." }]);
 });
 
@@ -89,7 +89,7 @@ test("a reconciliation that throws shows every line NOT_CHECKED with the reason,
 
 test("a line the reconciliation did not return is NOT_CHECKED, never MATCHED", async () => {
 	const trace = await traceFigure(deps({ reconcile: async () => body([row("job_other#0", {})]) }), "held");
-	assert.deepEqual(trace.lines[0]?.paypal, { id: null, status: "NOT_CHECKED", observedCents: null, note: "This line is not in the PayPal read." });
+	assert.deepEqual(trace.lines[0]?.paypal, { id: null, status: "NOT_CHECKED", checkedCents: null, observedCents: null, note: "This line is not in the PayPal read." });
 });
 
 test("a figure with no lines makes no PayPal read, because it has no PayPal object to check", async () => {

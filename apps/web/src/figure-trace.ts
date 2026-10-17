@@ -3,6 +3,16 @@
 
 import { isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureTrace, FigureTraceLine } from "./api-types";
+import { dollars } from "./format.ts";
+
+/** What PayPal was compared on when that is less than the whole line: a fee line's processor fee. Null when PayPal checked the whole line. */
+export function checkedPart(line: FigureTraceLine): string | null {
+  const checked = line.paypal.checkedCents;
+  if (checked === null || checked === line.cents) return null;
+  return line.kind === "FEE"
+    ? `PayPal checked only the ${dollars(checked)} processing fee on the capture, not the whole fee or Acquit's share.`
+    : `PayPal checked ${dollars(checked)} of this line.`;
+}
 
 /** The lines summed, and whether that sum is the figure. The check runs on the lines here, not on the server's total alone. */
 export function figureCheck(trace: FigureTrace): { readonly linesCents: number; readonly holds: boolean } {

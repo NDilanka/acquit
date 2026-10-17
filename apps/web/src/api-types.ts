@@ -433,6 +433,8 @@ export type FigureTraceLine = {
   readonly paypal: {
     readonly id: string | null;
     readonly status: PlatformReconcileStatus;
+    /** The cents PayPal was compared on; a fee line's processor component only. */
+    readonly checkedCents: number | null;
     readonly observedCents: number | null;
     readonly note: string | null;
   };

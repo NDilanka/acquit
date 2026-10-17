@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FigureTrace, FigureTraceLine } from "./api-types";
-import { figureCheck, isFigureTrace, paypalWords } from "./figure-trace.ts";
+import { checkedPart, figureCheck, isFigureTrace, paypalWords } from "./figure-trace.ts";
 
-const line = (cents: number, paypal: FigureTraceLine["paypal"] = { id: "CAP-1", status: "MATCHED", observedCents: cents, note: null }): FigureTraceLine => ({
+const line = (cents: number, paypal: FigureTraceLine["paypal"] = { id: "CAP-1", status: "MATCHED", checkedCents: cents, observedCents: cents, note: null }): FigureTraceLine => ({
   entryId: `job_1#${cents}`,
   jobId: "job_1",
   kind: "HELD",
@@ -34,4 +34,11 @@ test("PayPal's status is worded as PayPal answered, and a line PayPal did not an
   assert.deepEqual(paypalWords("PENDING_AT_PAYPAL"), { text: "Pending at PayPal", tone: "new" });
   assert.deepEqual(paypalWords("MISMATCHED"), { text: "Does not match PayPal", tone: "break" });
   assert.deepEqual(paypalWords("NOT_CHECKED"), { text: "Not checked yet", tone: "" });
+});
+
+test("a fee line says PayPal checked only its processing fee, and a fully checked line says nothing extra", () => {
+  const fee: FigureTraceLine = { ...line(6000, { id: "CAP-1", status: "MATCHED", checkedCents: 1515, observedCents: 1515, note: null }), kind: "FEE" };
+  assert.equal(checkedPart(fee), "PayPal checked only the $15.15 processing fee on the capture, not the whole fee or Acquit's share.");
+  assert.equal(checkedPart(line(42000)), null);
+  assert.equal(checkedPart(line(42000, { id: null, status: "NOT_CHECKED", checkedCents: null, observedCents: null, note: "not read" })), null);
 });

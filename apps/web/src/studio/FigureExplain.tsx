@@ -5,7 +5,7 @@ import type { AgAiToolDetailParams } from "ag-studio";
 import { api } from "../api";
 import type { FigureId, FigureTrace, FigureTraceLine } from "../api-types";
 import { errorText } from "../demo";
-import { figureCheck, isFigureTrace, paypalWords } from "../figure-trace";
+import { checkedPart, figureCheck, isFigureTrace, paypalWords } from "../figure-trace";
 import { dollars } from "../format";
 import { Link } from "../router";
 import { FIGURE_LABELS } from "../../../../packages/core/src/explain.ts";
@@ -20,6 +20,7 @@ const LINE_WORDS: Record<FigureTraceLine["kind"], string> = {
 /** One ledger line: its job, kind and amount, the PayPal object it names with PayPal's answer, and the receipt once the job is paid. */
 function FigureLineItem({ line }: { line: FigureTraceLine }) {
   const status = paypalWords(line.paypal.status);
+  const partial = checkedPart(line);
   return (
     <li className="explain-line">
       <div className="explain-line-head">
@@ -31,6 +32,10 @@ function FigureLineItem({ line }: { line: FigureTraceLine }) {
         <span className={`pill ${status.tone}`}>{status.text}</span>
         {line.paypal.id !== null && <span className="mono">{line.paypal.id}</span>}
       </div>
+      {partial !== null && <small className="muted">{partial}</small>}
+      {line.paypal.status === "MISMATCHED" && line.paypal.observedCents !== null && (
+        <small className="muted">PayPal shows {dollars(line.paypal.observedCents)}.</small>
+      )}
       {line.paypal.note !== null && <small className="muted">{line.paypal.note}</small>}
       {line.receiptId !== null && <Link to={`/receipts/${encodeURIComponent(line.receiptId)}`}>Verifier receipt</Link>}
     </li>
