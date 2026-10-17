@@ -207,6 +207,27 @@ test("a capture cached as COMPLETED is read again once a refund with no refund i
 	assert.equal(objects.calls.length, 2);
 });
 
+test("refreshes that join one COMPLETED read and each need it again share one fresh read", async () => {
+	const completed = fixture("capture-completed-with-fee.json");
+	const refunded = { ...(completed as Record<string, unknown>), status: "REFUNDED" };
+	let answered = 0;
+	const objects = fakeObjects(() => ({ state: "FOUND", fact: factOf("CAPTURE", answered++ === 0 ? completed : refunded) }), 5);
+	const reconcile = reconciliationService({ fetchPage: EMPTY_SEARCH().fetchPage, readObject: objects.readObject });
+	const refundLine: LedgerLineInput = { entryId: "job_a#1", jobId: "job_a", kind: "REFUND", cents: 37800, at: "2026-10-12T10:00:00Z", captureId: CAPTURE, processorCents: null };
+	const withRefund: LedgerTables = { entries: [hold("job_a#0", CAPTURE), refundLine], events: [event(CAPTURE)] };
+
+	// The first refresh starts the capture read; the next two join it, and its COMPLETED answer cannot judge their refund line.
+	const results = await Promise.all([
+		reconcile({ entries: [hold("job_a#0", CAPTURE)], events: [event(CAPTURE)] }, NOW),
+		reconcile(withRefund, NOW),
+		reconcile(withRefund, NOW),
+	]);
+	for (const result of results.slice(1)) {
+		assert.deepEqual(result.rows.map(r => [r.kind, r.status]), [["HELD", "MATCHED"], ["REFUND", "MATCHED"]]);
+	}
+	assert.equal(objects.calls.length, 2, "one shared first read and one shared fresh read");
+});
+
 test("a stale capture reading with no budget left is not checked yet, never a mismatch", async () => {
 	const completed = fixture("capture-completed-with-fee.json");
 	const refunded = { ...(completed as Record<string, unknown>), status: "REFUNDED" };
