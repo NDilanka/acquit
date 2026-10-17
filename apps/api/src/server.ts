@@ -138,9 +138,9 @@ db.exec(`CREATE TABLE IF NOT EXISTS house_diffs (
 db.exec(`CREATE TABLE IF NOT EXISTS studio_layouts (
 	user_handle TEXT NOT NULL, dashboard TEXT NOT NULL, json TEXT NOT NULL, updated_at TEXT NOT NULL,
 	PRIMARY KEY (user_handle, dashboard))`);
-// The platform dashboards' live signal. It watches this database for commits from any connection, so the
-// core's writes reach an open stream without the core calling it.
-const platformLive = platformStream(db, () => clock.now());
+// The platform dashboards' live signal. It watches this database through a connection of its own, so a commit
+// from any connection, this process's own routes included, reaches an open stream without the writer calling it.
+const platformLive = platformStream(settings.databaseUrl, () => clock.now());
 /** The recorded diff for one job's House run, or null when the job has none. */
 function houseDiff(jobId: ReturnType<typeof parseJobId>): { commit: string; files: unknown; patch: string } | null {
 	const row = db.prepare("SELECT commit_sha, files, patch FROM house_diffs WHERE job_id = ?").get(jobId);

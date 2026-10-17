@@ -1,11 +1,11 @@
 import type { ServerResponse } from "node:http";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 
 /**
  * The platform dashboards' live signal. SQLite's data_version moves when another connection commits, so
- * a write from the core's own connection (a webhook, a House delivery, a verdict) reaches every open stream
- * without the core knowing the stream exists. The stream carries no data: each "changed" event tells the
- * page to read the platform routes again.
+ * a write from any connection (a webhook, a House delivery, a verdict, the API's own routes) reaches every
+ * open stream without the writer knowing the stream exists. The stream carries no data: each "changed"
+ * event tells the page to read the platform routes again.
  */
 const POLL_MS = 500;
 const HEARTBEAT_MS = 15_000;
@@ -17,25 +17,34 @@ export type PlatformStream = {
 	close(): void;
 };
 
-export function platformStream(db: DatabaseSync, now: () => string): PlatformStream {
+/**
+ * The stream reads data_version on a connection of its own. The version does not move for commits made on
+ * the connection that reads it, so a watcher on the API's main connection would miss every write that
+ * connection makes.
+ */
+export function platformStream(databasePath: string, now: () => string): PlatformStream {
 	const clients = new Set<ServerResponse>();
-	const version = db.prepare("PRAGMA data_version");
+	let watch: DatabaseSync | null = null;
+	let version: StatementSync | null = null;
 	let seen: number | null = null;
 	let poll: ReturnType<typeof setInterval> | undefined;
 	let beat: ReturnType<typeof setInterval> | undefined;
 
-	const dataVersion = (): number => Number((version.get() as { data_version: number }).data_version);
 	const broadcast = (frame: string): void => { for (const res of clients) res.write(frame); };
 
 	function tick(): void {
-		const current = dataVersion();
+		if (version === null) return;
+		const current = Number((version.get() as { data_version: number }).data_version);
 		if (current === seen) return;
 		seen = current;
 		broadcast(`data: ${JSON.stringify({ kind: "changed", at: now() })}\n\n`);
 	}
 
 	function start(): void {
-		seen = dataVersion();
+		watch = new DatabaseSync(databasePath);
+		watch.exec("PRAGMA busy_timeout = 5000");
+		version = watch.prepare("PRAGMA data_version");
+		seen = Number((version.get() as { data_version: number }).data_version);
 		poll = setInterval(tick, POLL_MS);
 		beat = setInterval(() => broadcast(": heartbeat\n\n"), HEARTBEAT_MS);
 	}
@@ -45,6 +54,9 @@ export function platformStream(db: DatabaseSync, now: () => string): PlatformStr
 		clearInterval(beat);
 		poll = undefined;
 		beat = undefined;
+		version = null;
+		watch?.close();
+		watch = null;
 		seen = null;
 	}
 
