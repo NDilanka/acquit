@@ -647,6 +647,11 @@ function anchorOf(observation: PayPalObservation): string | null {
 
 /** One delivery of one fact. The fact under a new event id finds this key and changes nothing. */
 function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObservation): string {
+	// A release is one capture's many payouts: the payout's own fields name it, and its read time does not.
+	if (observation.kind === "RELEASE_COMPLETED") {
+		const { captureId, payoutItemId, paid } = observation.release;
+		return `webhook:${command.type}:${command.jobId}:${captureId}:${payoutItemId}:${paid}`;
+	}
 	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
 }
 

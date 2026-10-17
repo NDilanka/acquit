@@ -43,7 +43,7 @@ const openCommand: UserCommand = { type: "OpenJob", repository: "maya-client/inv
 	budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z") };
 const acceptance = (runId: VerifierRunId): Verdict => ({ result: "VERIFIED", runId, sourceCommit, mergeCommit, pullRequest: 13,
 	frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now });
-const payoutBodyFor = (item: PayoutItemId) => JSON.stringify({ id: "WH-PAYOUT-1", event_type: "PAYMENT.REFERENCED-PAYOUT-ITEM.COMPLETED",
+const payoutBodyFor = (item: PayoutItemId, event = "WH-PAYOUT-1") => JSON.stringify({ id: event, event_type: "PAYMENT.REFERENCED-PAYOUT-ITEM.COMPLETED",
 	resource_type: "referenced_payouts_items", resource: { id: item } });
 const payoutBody = payoutBodyFor(payoutItemId);
 const releaseKeyOf = (jobId: JobId) => operationKey({ kind: "RELEASE", jobId, captureId: capture.captureId, payee: merchant });
@@ -208,7 +208,7 @@ test("the outbox settles first and the payout webhook is a recorded no-op, not a
 	} finally { store.close(); }
 });
 
-test("a different payout on a paid job is refused, leaves the job alone, and raises one alert", async () => {
+test("a different payout after a matching payout webhook on a paid job is refused, leaves the job alone, and raises one alert", async () => {
 	for (const wrong of [
 		{ why: "a different amount", item: payoutItemId, release: { ...releaseEvidence, paid: usd("359.00") } },
 		{ why: "a different payout item", item: otherItemId, release: { ...releaseEvidence, payoutItemId: otherItemId } },
@@ -218,12 +218,15 @@ test("a different payout on a paid job is refused, leaves the job alone, and rai
 		try {
 			const jobId = await verifiedJob(h);
 			assert.equal((await approving(h, jobId)).kind, "COMMITTED", wrong.why);
+			assert.equal((await webhook(ports, payoutBody)).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-PAYOUT-1"), "verified, no-op, job already PAID", wrong.why);
 			const paid = await store.readJob(jobId);
 			h.reads.set(wrong.item, { kind: "SETTLED", observation: { kind: "RELEASE_COMPLETED", release: wrong.release } });
-			assert.equal((await webhook(ports, payoutBodyFor(wrong.item))).status, 202, wrong.why);
-			assert.equal(outcomeOf(store, "WH-PAYOUT-1"), "verified, refused, the job did not take this settlement", wrong.why);
+			assert.equal((await webhook(ports, payoutBodyFor(wrong.item, "WH-PAYOUT-2"))).status, 202, wrong.why);
+			assert.equal(outcomeOf(store, "WH-PAYOUT-2"), "verified, refused, the job did not take this settlement", wrong.why);
 			assert.deepEqual(await store.readJob(jobId), paid, wrong.why);
 			assert.deepEqual(alertReasons(store), ["SETTLEMENT_MISMATCH"], wrong.why);
+			await assertPaidOnce(h, jobId);
 		} finally { store.close(); }
 	}
 });
