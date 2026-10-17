@@ -12,11 +12,13 @@ import { fixtureKey, matchFixture } from "../../../packages/core/src/fixtures.ts
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import type { Instant, JobId } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
-import { CORPUS, FROZEN_TEST_PATH, frozenSuiteMatchesCorpus } from "../../../packages/core/src/score-card-trees.ts";
+import { FROZEN_TEST_PATH, scriptedTree } from "../../../packages/core/src/score-card-trees.ts";
+import type { FrozenCase } from "../../../packages/core/src/score-card-trees.ts";
 import { isScenarioName, ScenarioRefused, startScenario } from "../../../packages/core/src/scenarios.ts";
 import type { ScenarioDeps, ScenarioRuns, ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import type { SqliteStore } from "../../../packages/core/src/store.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
+import type { HiddenCase } from "../../../packages/core/src/verifier.ts";
 import type { HouseTarget, HouseWorkPort } from "../../../packages/house/src/runner.ts";
 import { invoiceFixtureFrozenCases } from "../../../packages/verifier/frozen-cases.ts";
 
@@ -150,19 +152,47 @@ export async function scenarioReply(routing: ScenarioRouting, visitor: VisitorRo
 	return refused(404, "NOT_FOUND");
 }
 
-/** The frozen suite the scripted trees were written for, at the path the score card judges. */
-function frozenSuiteCompatible(workDir: string, frozenTestPath: string): boolean {
-	if (frozenTestPath !== FROZEN_TEST_PATH) return false;
-	const path = join(workDir, frozenTestPath);
-	return existsSync(path) && frozenSuiteMatchesCorpus(readFileSync(path, "utf8"), invoiceFixtureFrozenCases);
+const INCOMPATIBLE = "SCENARIO_FIXTURE_INCOMPATIBLE";
+
+function incompatibleFixture(detail: string): ScenarioRefused {
+	return new ScenarioRefused(INCOMPATIBLE, `the frozen suite cannot be scripted: ${detail}`);
 }
 
 /**
- * The scripted agent's push. The House's clone at the job's own frozen commit, checked for the score card's
- * visible rows, then only the named entry's files written on top. The base is not written: the frozen package
- * and the frozen suite stay as the fixture froze them, except in the tamper entry, whose overwrite of the frozen
- * suite is the point. The House's finalize commits and pushes the tree, and the commit it returns is the one
- * the Submit names.
+ * The frozen cases a checkout's suite carries, read by the verifier's own extractor, or a refusal. The suite must
+ * import formatTotal from ../src/money, and the extractor must read a case with that target from it. The trees are
+ * written from these cases, so the suite's rows need not be the score card's.
+ */
+function frozenCasesOf(workDir: string, frozenTestPath: string): readonly FrozenCase[] {
+	if (frozenTestPath !== FROZEN_TEST_PATH) throw incompatibleFixture(`the suite is at ${frozenTestPath}, not ${FROZEN_TEST_PATH}`);
+	const path = join(workDir, frozenTestPath);
+	if (!existsSync(path)) throw incompatibleFixture("the checkout has no frozen suite");
+	const suite = readFileSync(path, "utf8");
+	if (!/import \{ formatTotal \} from ['"]\.\.\/src\/money['"]/.test(suite)) {
+		throw incompatibleFixture("the suite does not import formatTotal from ../src/money");
+	}
+	let extracted: readonly HiddenCase[];
+	try {
+		extracted = invoiceFixtureFrozenCases(suite);
+	} catch {
+		throw incompatibleFixture("the verifier's extractor reads no frozen cases from the suite");
+	}
+	if (!extracted.some(frozen => frozen.target.export === "formatTotal")) {
+		throw incompatibleFixture("the extractor reads no case of formatTotal");
+	}
+	const cases: FrozenCase[] = [];
+	for (const frozen of extracted) {
+		if (typeof frozen.expected !== "string") throw incompatibleFixture("a frozen case does not expect a string");
+		cases.push({ target: frozen.target, args: frozen.args, expected: frozen.expected });
+	}
+	return cases;
+}
+
+/**
+ * The scripted agent's push. The House's clone at the job's own frozen commit, checked by frozenCasesOf, then only
+ * the named tree's files written on top. The base is not written: the frozen package and the frozen suite stay as
+ * the fixture froze them, except in the tamper tree, whose overwrite of the frozen suite is the point. The House's
+ * finalize commits and pushes the tree, and the commit it returns is the one the Submit names.
  */
 export function scriptedWorkspace(ports: { readonly work: HouseWorkPort; readonly readJob: (id: JobId) => Promise<JobRow | null> }): ScenarioWorkspace {
 	return {
@@ -171,16 +201,11 @@ export function scriptedWorkspace(ports: { readonly work: HouseWorkPort; readonl
 			if (row === null) throw new Error("the job is missing");
 			const definition = row.contract.definitionOfDone;
 			if (definition === null) throw new Error("the job has no frozen definition");
-			const entry = CORPUS.find(candidate => candidate.id === tree);
-			if (entry === undefined) throw new Error(`no score card entry named ${tree}`);
 			const target: HouseTarget = { id: jobId, title: row.title, repository: definition.issue.repository, frozenAt: definition.frozenAt,
 				tenant: row.tenant ?? null };
 			const { workDir } = await ports.work.prepare(target);
 			try {
-				if (!frozenSuiteCompatible(workDir, definition.frozenTestPath)) {
-					throw new Error("SCENARIO_FIXTURE_INCOMPATIBLE: the frozen suite does not carry the score card's visible rows");
-				}
-				entry.write(workDir);
+				scriptedTree(tree, frozenCasesOf(workDir, definition.frozenTestPath))(workDir);
 				const delivery = await ports.work.finalize(target, workDir);
 				if (delivery === null) throw new Error("the scripted tree left nothing to submit");
 				return delivery.commit;

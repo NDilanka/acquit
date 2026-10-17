@@ -242,13 +242,24 @@ type Context = { jobId?: JobId; bidId?: BidId; sourceCommit?: CommitSha; mergeCo
 type ChainStep = { readonly name: string; readonly actor: ScenarioActor; readonly label: ScenarioLabel; readonly run: (ctx: Context) => Promise<string> };
 
 /**
- * The closed code a failed step records. A step's own message is never kept, because a provider's text can carry a
- * token. Only a code shaped like the refusal names is kept, and anything else is STEP_FAILED.
+ * The closed code of a failed step's error, or null when the error carries none. A step's own message is never kept,
+ * because a provider's text can carry a token. Only a code shaped like the refusal names is kept.
  */
-function codeOf(error: unknown): string {
+function closedCodeOf(error: unknown): string | null {
 	if (error instanceof ScenarioRefused) return error.code;
 	const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : undefined;
-	return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(code) ? code : "STEP_FAILED";
+	return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/.test(code) ? code : null;
+}
+
+/** The text an uncoded failure logs: one line, cut short, with the usual shapes of a credential masked. */
+function logTextOf(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message
+		.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1***@")
+		.replace(/\bBearer\s+\S+/gi, "Bearer ***")
+		.replace(/\b([\w-]*(?:token|secret|password|credential|auth|key)[\w-]*)(\s*[=:]\s*)\S+/gi, "$1$2***")
+		.replace(/\s+/g, " ")
+		.slice(0, 300);
 }
 
 /** The attempts a job has settled, read from wherever its state keeps them. */
@@ -396,7 +407,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	const advanceClock: ChainStep = { name: "advance-clock", actor: "CLIENT", label: SCENARIO_LABELS.clock, run: async () => {
 		for (let attempt = 1; ; attempt++) {
 			if (shiftJobClock(deps.store.db, ctx.jobId!, 2 * DAY_MS) !== null) return "advanced 2 days";
-			if (attempt >= 3) throw new Error("the job clock did not move: JOB_CHANGED");
+			if (attempt >= 3) throw new ScenarioRefused("JOB_CHANGED", "the job clock did not move");
 		}
 	} };
 	const refund: ChainStep = { name: "refund", actor: "SYSTEM", label: SCENARIO_LABELS.paypal, run: async () => {
@@ -413,7 +424,8 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	};
 	const [opening, ...rest] = chains[name];
 
-	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides.
+	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides. An error with no
+	// closed code records STEP_FAILED, and its message is logged once with the run and the step it came from.
 	const record = async (step: ChainStep): Promise<{ readonly thrown: unknown } | null> => {
 		const startedAt = new Date().toISOString();
 		let outcome: string;
@@ -422,7 +434,9 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			outcome = await step.run(ctx);
 		} catch (error) {
 			failure = { thrown: error };
-			outcome = `FAILED ${codeOf(error)}`;
+			const code = closedCodeOf(error);
+			outcome = `FAILED ${code ?? "STEP_FAILED"}`;
+			if (code === null) console.error(`scenario run ${runId} step ${step.name} failed: ${logTextOf(error)}`);
 		}
 		const endedAt = new Date().toISOString();
 		steps.push({ name: step.name, actor: step.actor, startedAt, endedAt, ms: Date.parse(endedAt) - Date.parse(startedAt),

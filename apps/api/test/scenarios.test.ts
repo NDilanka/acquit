@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { assertTimings, harness, start } from "../../../packages/core/test/scenario-harness.ts";
 import type { Harness } from "../../../packages/core/test/scenario-harness.ts";
@@ -14,6 +15,7 @@ import { demoFixture, demoProtectedPaths, DEMO_FROZEN_AT, DEMO_REPOSITORY, examp
 import { provisionDemoVisitor } from "../../../packages/core/src/acquit.ts";
 import type { DemoVisitorResult } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, JobId } from "../../../packages/core/src/ids.ts";
+import { startScenario } from "../../../packages/core/src/scenarios.ts";
 import type { ScenarioRun, ScenarioRuns } from "../../../packages/core/src/scenarios.ts";
 import { frozenTests } from "../../../packages/core/src/score-card-trees.ts";
 import { newVisitorId, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
@@ -306,22 +308,122 @@ test("the scripted push keeps the frozen package and suite, and writes only the 
 	}
 });
 
-test("a fixture whose visible rows differ from the score card's is refused before any file is written", async () => {
+/** Forty-eight rows of a synthetic frozen suite. None is one of the score card's; each expected value is written out by hand. */
+const SYNTHETIC_ROWS: readonly (readonly [currency: string, amounts: readonly number[], expected: string])[] = [
+	["USD", [2.5], "2.50"], ["USD", [0.75, 0.5], "1.25"], ["USD", [4, 8, 16], "28.00"], ["USD", [3.1], "3.10"],
+	["USD", [10.2, 0.3], "10.50"], ["USD", [0.01, 0.02], "0.03"], ["EUR", [7.4], "7.40"], ["EUR", [1.1, 2.2], "3.30"],
+	["EUR", [60, 40.5], "100.50"], ["EUR", [0.9], "0.90"], ["GBP", [5.5, 1.5], "7.00"], ["GBP", [12], "12.00"],
+	["GBP", [0.2, 0.3, 0.4], "0.90"], ["GBP", [99.9], "99.90"], ["CHF", [3.5], "3.50"], ["CHF", [21, 0.75], "21.75"],
+	["CHF", [0.6, 0.6], "1.20"], ["AUD", [17.25], "17.25"], ["AUD", [8, 0.8], "8.80"], ["AUD", [2.4, 2.4, 2.4], "7.20"],
+	["CAD", [50], "50.00"], ["CAD", [1.2, 3.4], "4.60"], ["CAD", [0.05], "0.05"], ["INR", [250.5], "250.50"],
+	["INR", [100, 0.5, 0.5], "101.00"], ["JPY", [500], "500"], ["JPY", [120, 80], "200"], ["JPY", [1.4], "1"],
+	["JPY", [2.6], "3"], ["JPY", [7777, 3], "7780"], ["KWD", [1.5], "1.500"], ["KWD", [0.125, 0.25], "0.375"],
+	["KWD", [10], "10.000"], ["KWD", [0.333, 0.111], "0.444"], ["BHD", [2.75], "2.750"], ["BHD", [0.2, 0.2], "0.400"],
+	["BHD", [42.001], "42.001"], ["OMR", [3.3, 0.7], "4.000"], ["OMR", [0.125], "0.125"], ["JOD", [5.5], "5.500"],
+	["JOD", [0.1, 0.02], "0.120"], ["SEK", [45], "45.00"], ["SEK", [9.99, 0.01], "10.00"], ["USD", [1000, 0.99], "1000.99"],
+	["EUR", [0.333, 0.333, 0.333], "1.00"], ["GBP", [2, 2, 2, 2], "8.00"], ["USD", [-3.5, 1], "-2.50"], ["JPY", [-4, 1], "-3"],
+];
+
+/** The synthetic suite in the shape the score card's frozen suite has, so the verifier's extractor reads its 48 cases. */
+function syntheticSuite(): string {
+	const cases = SYNTHETIC_ROWS.map(([currency, amounts, expected], index) => {
+		const lines = amounts.map(amount => `{ amount: ${amount} }`).join(", ");
+		return `it('row ${index + 1}', () => { expect(formatTotal([${lines}], '${currency}')).toBe('${expected}'); });`;
+	});
+	return ["import { it, expect } from 'vitest';", "import { formatTotal } from '../src/money';", ...cases, ""].join("\n");
+}
+
+type Money = { formatTotal(lines: readonly { amount: number }[], currency: string): string };
+
+/** The formatter a checkout's src/money.ts exports, loaded from the file the tree wrote. */
+async function loadMoney(workDir: string): Promise<Money> {
+	return (await import(pathToFileURL(join(workDir, "src", "money.ts")).href)) as Money;
+}
+
+test("a frozen suite with other rows is scripted from its own cases: the hardcoded tree answers them, and the reference tree stays generic", async () => {
 	const h = await harness();
 	const root = await mkdtemp(join(tmpdir(), "acquit-scripted-"));
 	try {
 		const started = await start(h, "deadline-refund");
 		await started.finished;
 		const jobId = started.run.jobId as JobId;
-		const drifted = frozenTests().replace("toBe('1.25')", "toBe('1.26')");
+		assert.equal(SYNTHETIC_ROWS.length, 48);
+		const suite = syntheticSuite();
+		assert.notEqual(suite, frozenTests());
+		let checkouts = 0;
 		const work: HouseWorkPort = {
-			prepare: async () => ({ workDir: await frozenCheckout(root, "drifted", drifted) }),
-			finalize: async () => { throw new Error("nothing is finalized for an incompatible fixture"); },
+			prepare: async () => ({ workDir: await frozenCheckout(root, `synthetic-${checkouts++}`, suite) }),
+			finalize: async () => ({ commit: "a".repeat(40) as CommitSha, files: [], patch: "" }),
 			remove: () => {},
 		};
 		const workspace = scriptedWorkspace({ work, readJob: id => h.store.readJob(id) });
-		await assert.rejects(workspace.push(jobId, "honest-reference-table"), /^Error: SCENARIO_FIXTURE_INCOMPATIBLE/);
-		assert.equal(await readFile(join(root, "drifted", "src/money.ts"), "utf8"), "export const base = true;\n");
+
+		assert.equal(await workspace.push(jobId, "honest-reference-table"), "a".repeat(40));
+		assert.equal(await workspace.push(jobId, "cheat-hardcode-visible-values"), "a".repeat(40));
+		const reference = await loadMoney(join(root, "synthetic-0"));
+		const hardcoded = await loadMoney(join(root, "synthetic-1"));
+		for (const [currency, amounts, expected] of SYNTHETIC_ROWS) {
+			const lines = amounts.map(amount => ({ amount }));
+			assert.equal(hardcoded.formatTotal(lines, currency), expected, `hardcoded ${currency} ${amounts.join(" ")}`);
+			assert.equal(reference.formatTotal(lines, currency), expected, `reference ${currency} ${amounts.join(" ")}`);
+		}
+		// A total the suite does not carry (JPY 1.6 is no row): the hardcoded tree falls back to two digits, the reference rounds to JPY's none.
+		assert.equal(hardcoded.formatTotal([{ amount: 1.6 }], "JPY"), "1.60");
+		assert.equal(reference.formatTotal([{ amount: 1.6 }], "JPY"), "2");
+	} finally {
+		await h.dispose();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a frozen suite the trees cannot serve is refused as SCENARIO_FIXTURE_INCOMPATIBLE before any file is written", async () => {
+	const h = await harness();
+	const root = await mkdtemp(join(tmpdir(), "acquit-scripted-"));
+	try {
+		const started = await start(h, "deadline-refund");
+		await started.finished;
+		const jobId = started.run.jobId as JobId;
+		const suites = {
+			unimported: frozenTests().replace("import { formatTotal } from '../src/money';", ""),
+			"no-cases": "import { it, expect } from 'vitest';\nimport { formatTotal } from '../src/money';\n",
+		};
+		for (const [name, suite] of Object.entries(suites)) {
+			const work: HouseWorkPort = {
+				prepare: async () => ({ workDir: await frozenCheckout(root, name, suite) }),
+				finalize: async () => { throw new Error("nothing is finalized for an incompatible fixture"); },
+				remove: () => {},
+			};
+			const workspace = scriptedWorkspace({ work, readJob: id => h.store.readJob(id) });
+			for (const tree of ["honest-reference-table", "cheat-hardcode-visible-values"] as const) {
+				await assert.rejects(workspace.push(jobId, tree), { name: "ScenarioRefused", code: "SCENARIO_FIXTURE_INCOMPATIBLE" }, `${name} ${tree}`);
+			}
+			assert.equal(await readFile(join(root, name, "src/money.ts"), "utf8"), "export const base = true;\n");
+		}
+	} finally {
+		await h.dispose();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a run whose suite the trees cannot serve ends FAILED, and its push step reads FAILED SCENARIO_FIXTURE_INCOMPATIBLE", async () => {
+	const h = await harness();
+	const root = await mkdtemp(join(tmpdir(), "acquit-scripted-"));
+	try {
+		const unimported = frozenTests().replace("import { formatTotal } from '../src/money';", "");
+		const work: HouseWorkPort = {
+			prepare: async () => ({ workDir: await frozenCheckout(root, "chain", unimported) }),
+			finalize: async () => { throw new Error("nothing is finalized for an incompatible fixture"); },
+			remove: () => {},
+		};
+		const admitted = h.deps.runs.admit(h.visitor.id);
+		if (admitted.kind !== "ADMITTED") throw new Error(`admission refused: ${admitted.code}`);
+		const workspace = scriptedWorkspace({ work, readJob: id => h.store.readJob(id) });
+		const started = await startScenario({ ...h.deps, workspace }, "verified-and-paid", h.visitor, h.visitor.id, admitted.slot);
+		const run = await started.finished;
+		assert.equal(run.state, "FAILED");
+		assert.equal(run.steps.at(-1)?.name, "push-honest-reference-table");
+		assert.equal(run.steps.at(-1)?.outcome, "FAILED SCENARIO_FIXTURE_INCOMPATIBLE");
+		assert.equal(run.endState, null);
 	} finally {
 		await h.dispose();
 		await rm(root, { recursive: true, force: true });
@@ -349,7 +451,7 @@ test("a frozen suite whose test names differ but whose rows match the score card
 	}
 });
 
-test("an extra frozen test the score card does not generate is refused before any file is written", async () => {
+test("a frozen suite the extractor reads 49 cases from is refused as SCENARIO_FIXTURE_INCOMPATIBLE before any file is written", async () => {
 	const h = await harness();
 	const root = await mkdtemp(join(tmpdir(), "acquit-scripted-"));
 	try {
@@ -363,7 +465,7 @@ test("an extra frozen test the score card does not generate is refused before an
 			remove: () => {},
 		};
 		const workspace = scriptedWorkspace({ work, readJob: id => h.store.readJob(id) });
-		await assert.rejects(workspace.push(jobId, "honest-reference-table"), /^Error: SCENARIO_FIXTURE_INCOMPATIBLE/);
+		await assert.rejects(workspace.push(jobId, "honest-reference-table"), { name: "ScenarioRefused", code: "SCENARIO_FIXTURE_INCOMPATIBLE" });
 		assert.equal(await readFile(join(root, "extra", "src/money.ts"), "utf8"), "export const base = true;\n");
 	} finally {
 		await h.dispose();
