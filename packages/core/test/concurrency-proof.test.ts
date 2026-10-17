@@ -64,6 +64,19 @@ function bookOf(row: JobRow | null): readonly LedgerLine[] {
 }
 const webhook = (ports: Ports, body: string) => ingestPayPalWebhook(ports, new Request("http://localhost:4310/paypal/webhook", { method: "POST", body }));
 const verifierCallback = (ports: Ports) => ingestVerifierCallback(ports, new Request("http://api.test/api/verifier/callback", { method: "POST", body: "verdict" }));
+/** The lines console.log prints while `run` settles, so a test reads each delivery's own outcome line. */
+async function logOf<T>(run: () => Promise<T>): Promise<{ value: T; lines: string[] }> {
+	const lines: string[] = [];
+	const log = console.log;
+	console.log = (...line: unknown[]) => { lines.push(line.map(String).join(" ")); };
+	try { return { value: await run(), lines }; } finally { console.log = log; }
+}
+const outboxState = (store: SqliteStore, key: string): unknown => JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key)?.state));
+function alertReasons(store: SqliteStore): string[] {
+	return store.db.prepare("SELECT json FROM outbox").all()
+		.map(row => (JSON.parse(String(row.json)) as { effect: { kind: string; reason?: string } }).effect)
+		.filter(effect => effect.kind === "ALERT").map(effect => String(effect.reason));
+}
 
 /**
  * One store, one fake PayPal, and one fake judge. The payout dispatch holds open until the test
@@ -168,9 +181,14 @@ test("twenty identical deliveries of one verified job pay once", async () => {
 		assert.equal(h.payoutRequests.length, 1);
 
 		// Twenty PayPal payout webhooks for the same release, at once, while the payout is still in flight.
-		const payoutAnswers = await Promise.all(Array.from({ length: N }, () => webhook(ports, payoutBody)));
+		// One applies the release, and every other one is a no-op that names the job as the commit left it.
+		const { value: payoutAnswers, lines } = await logOf(() => Promise.all(Array.from({ length: N }, () => webhook(ports, payoutBody))));
 		assert.deepEqual(payoutAnswers.map(answer => answer.status), Array.from({ length: N }, () => 202));
 		assert.equal((await store.readJob(jobId))?.state.status, "PAID");
+		const payoutOutcomes = lines.filter(line => line.startsWith('paypal webhook "WH-PAYOUT-1" ')).map(line => line.slice('paypal webhook "WH-PAYOUT-1" '.length));
+		assert.equal(payoutOutcomes.length, N);
+		assert.equal(payoutOutcomes.filter(text => text === "verified, applied").length, 1);
+		assert.equal(payoutOutcomes.filter(text => text === "verified, no-op, job already PAID").length, N - 1);
 
 		h.openPayout();
 		assert.equal((await approving).kind, "COMMITTED");
@@ -192,6 +210,9 @@ test("twenty identical deliveries of one verified job pay once", async () => {
 		assert.equal(Number(store.db.prepare("SELECT COUNT(*) AS n FROM receipts WHERE job_id = ?").get(jobId)?.n), 1);
 		assert.equal(Number(store.db.prepare("SELECT paid_receipts AS n FROM operators WHERE id = ?").get("devon-ops")?.n), 1);
 		assert.equal(h.starts.length, 1);
+		// The outbox's own settlement lands on the PAID row as the same payout: it is CONFIRMED, not refused.
+		assert.deepEqual(outboxState(store, releaseKey), { kind: "CONFIRMED", at: "2026-10-06T12:00:00.000Z" });
+		assert.deepEqual(alertReasons(store), []);
 		console.log(`CONCURRENCY delivered ${N} times in parallel, paid once`);
 	} finally { store.close(); }
 });
