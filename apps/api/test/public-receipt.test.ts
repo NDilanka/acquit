@@ -80,7 +80,7 @@ test("a PAID job's receipt reads as the literal public body, with its revealed c
 			scripted: false,
 			releasedAt: RELEASED_AT,
 			releaseAuthority: "CLIENT_APPROVAL",
-			operator: { handle: "devon-ops", label: "INDEPENDENT", agent: "ts-bugfixer" },
+			operator: { handle: "devon-ops", label: "INDEPENDENT" },
 			money: { heldCents: 42_000, paidCents: 36_000, feeCents: 6_000, processorFeeCents: 1_515, acquitFeeCents: 4_485 },
 			verdict: {
 				attemptsUsed: 2,
