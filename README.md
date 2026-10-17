@@ -37,7 +37,7 @@ The hackathon weighs five criteria equally. [docs/win-plan.md](docs/win-plan.md)
 
 ## Live Studio updates
 
-`/studio` updates live. `GET /api/platform/stream` holds a server-sent event stream open for the platform role; the API watches the database for commits from any connection and sends one `changed` event per commit, with no data, and the page answers each event by reading its platform routes again.
+`/studio` updates live. `GET /api/platform/stream` holds a server-sent event stream open for the platform role; the API checks the database for new commits from any connection every 500 ms and sends one `changed` event when there are any, with no data, and the page answers each event by reading its platform routes again.
 The new book reaches Studio as a fresh `data` prop, which Studio applies through `engine.update`: that replaces the rows of each source it names and leaves the others alone, so the widgets re-query without a remount.
 For another AG Studio builder: keep source ids stable, pass a new sources object when the data changes, never key Studio on data or layout, switch layout with `api.setState` (a remount drops any chat history), and serialize reads so a burst of events costs at most two reads.
 If the browser gives up on the stream, the page falls back to a 30-second poll and shows "Live updates off".
