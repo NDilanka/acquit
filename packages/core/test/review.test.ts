@@ -274,10 +274,10 @@ test("a settled release counts the payee's receipt once, and the Monday grant co
 		assert.equal(first.refused, null);
 		assert.equal((await store.readJob(approved.next.id))?.state.status, "PAID");
 		assert.equal((await store.receiptCounts()).get(payee), 1, "the PAID transition counts the payee's receipt");
-		// A redelivered settlement is the same delivery, and a fresh event for the settled release is refused:
-		// neither counts the receipt a second time.
+		// A redelivered settlement is the same delivery, and a fresh event for the settled release is the same
+		// payout: a no-op that is not refused. Neither counts the receipt a second time.
 		assert.deepEqual(await applySystemCommand(ports, command, null, "WH-RELEASE-1"), { outcome: "DELIVERY_REPLAY", refused: null });
-		assert.equal((await applySystemCommand(ports, command, null, "WH-RELEASE-2")).refused, "SETTLEMENT_MISMATCH");
+		assert.deepEqual(await applySystemCommand(ports, command, null, "WH-RELEASE-2"), { outcome: "COMMITTED", refused: null, alreadySettled: true });
 		assert.equal((await store.receiptCounts()).get(payee), 1);
 		// Monday: the grant counts the one receipt the release earned.
 		current = instant("2026-10-12T00:00:00Z");

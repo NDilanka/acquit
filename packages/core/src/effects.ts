@@ -291,7 +291,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 }
 
 /** What one system commit did, and the plan's own word when it refused the observation it was given. */
-export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null };
+export type SystemCommit = { readonly outcome: "COMMITTED" | "DELIVERY_REPLAY"; readonly refused: Refusal | null; readonly alreadySettled?: true };
 
 /**
  * The payee whose receipt this write counts, exactly when the plan moves the job into PAID. The row's
@@ -336,7 +336,8 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 			reservations: plan.reservations ?? [],
 			request: null, delivery });
 		if (committed.kind === "COMMITTED" || committed.kind === "DELIVERY_REPLAY") {
-			return { outcome: committed.kind, refused: committed.kind === "COMMITTED" ? plan.refused ?? null : null };
+			const refused = committed.kind === "COMMITTED" ? plan.refused ?? null : null;
+			return committed.kind === "COMMITTED" && plan.alreadySettled ? { outcome: committed.kind, refused, alreadySettled: true } : { outcome: committed.kind, refused };
 		}
 	}
 	throw new Error("System command busy");
@@ -736,7 +737,8 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request, devRep
 /** Applies one re-read fact under its own delivery key. A row that does not take the edge is the same no-op a redelivery gets. */
 async function applyFact(ports: Ports, command: SystemJobCommand, key: string, before: JobRow | null): Promise<WebhookOutcome> {
 	const committed = await applySystemCommand(ports, command, null, key);
-	if (committed.outcome === "DELIVERY_REPLAY") return settledNoop(before);
+	// The no-op names the job as the commit left it, not as this delivery read it before the commit.
+	if (committed.outcome === "DELIVERY_REPLAY" || committed.alreadySettled) return settledNoop(await ports.store.readJob(command.jobId));
 	// A plan that refused the observation is not an "applied": the row's own alert carries it, and the
 	// envelope records the refusal instead of a change that never happened.
 	if (committed.refused !== null) return { kind: "REFUSED", reason: committed.refused };
