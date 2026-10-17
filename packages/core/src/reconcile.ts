@@ -50,7 +50,8 @@ export type LineTarget = { readonly ok: true; readonly object: ObjectTarget } | 
 
 /** The fields a reconcile reads from one object. PayPal's amounts are unsigned: the kind of object gives the direction. */
 export type ObjectFact =
-	| { readonly kind: "CAPTURE"; readonly status: string; readonly grossCents: number | null; readonly processorFeeCents: number | null; readonly currency: string | null }
+	| { readonly kind: "CAPTURE"; readonly status: string; readonly grossCents: number | null; readonly processorFeeCents: number | null;
+		readonly currency: string | null; readonly feeCurrency: string | null }
 	| { readonly kind: "REFUND"; readonly status: string; readonly amountCents: number | null; readonly currency: string | null }
 	| { readonly kind: "PAYOUT_ITEM"; readonly status: string; readonly amountCents: number | null; readonly currency: string | null; readonly payoutTransactionId: string | null };
 
@@ -134,7 +135,8 @@ export function factOf(kind: ObjectKind, json: unknown): ObjectFact {
 	if (kind === "CAPTURE") {
 		const amount = money(body.amount);
 		const status = text(body.status);
-		return { kind, status, grossCents: amount.cents, processorFeeCents: money(record(body.seller_receivable_breakdown).paypal_fee).cents, currency: amount.currency };
+		const fee = money(record(body.seller_receivable_breakdown).paypal_fee);
+		return { kind, status, grossCents: amount.cents, processorFeeCents: fee.cents, currency: amount.currency, feeCurrency: fee.currency };
 	}
 	if (kind === "REFUND") {
 		const amount = money(body.amount);
@@ -191,14 +193,25 @@ function judgeFact(line: LedgerLineInput, fact: ObjectFact): Verdict {
 	return judgePayout(fact, expected);
 }
 
-/** A hold or a fee: the capture was taken at the held gross, and PayPal kept the processor fee the ledger recorded. */
+/**
+ * A hold or a fee: the capture was taken at the held gross, and PayPal kept the processor fee the ledger recorded.
+ * Each leg checks the currency of the amount it compares, so a fee in another currency is a mismatch on a USD capture.
+ */
 function judgeCapture(line: LedgerLineInput, fact: Extract<ObjectFact, { kind: "CAPTURE" }>, expected: number): Verdict {
 	if (fact.status === "PENDING") return pending("PayPal reports the capture as PENDING.", fact.status);
 	if (!CAPTURED.includes(fact.status)) return mismatched("STATUS", `PayPal reports the capture as ${fact.status}.`, fact.status);
+	if (line.kind === "FEE") {
+		if (fact.processorFeeCents === null) return notChecked("UNREADABLE_AMOUNT", "PayPal's amount cannot be read.", fact.status);
+		if (fact.feeCurrency !== USD) return mismatched("CURRENCY", `PayPal reports the processor fee in ${fact.feeCurrency ?? "no currency"}.`, fact.status);
+		return fact.processorFeeCents === expected
+			? matched(fact.processorFeeCents, fact.status, null)
+			: mismatched("AMOUNT", "The amounts differ.", fact.status, fact.processorFeeCents);
+	}
 	if (fact.currency !== USD) return mismatched("CURRENCY", `PayPal reports the capture in ${fact.currency ?? "no currency"}.`, fact.status);
-	const observed = line.kind === "FEE" ? fact.processorFeeCents : fact.grossCents;
-	if (observed === null) return notChecked("UNREADABLE_AMOUNT", "PayPal's amount cannot be read.", fact.status);
-	return observed === expected ? matched(observed, fact.status, null) : mismatched("AMOUNT", "The amounts differ.", fact.status, observed);
+	if (fact.grossCents === null) return notChecked("UNREADABLE_AMOUNT", "PayPal's amount cannot be read.", fact.status);
+	return fact.grossCents === expected
+		? matched(fact.grossCents, fact.status, null)
+		: mismatched("AMOUNT", "The amounts differ.", fact.status, fact.grossCents);
 }
 
 /**

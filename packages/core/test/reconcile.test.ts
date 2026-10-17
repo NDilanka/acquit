@@ -50,12 +50,12 @@ test("PayPal's decimal strings become signed integer cents exactly", () => {
 
 test("the live capture 5JG93436967627628 (COMPLETED, read 2026-10-17) reads as 378.00 gross and a 10.28 processor fee", () => {
 	assert.deepEqual(captureFact(fixture("capture-completed-with-fee.json")),
-		{ kind: "CAPTURE", status: "COMPLETED", grossCents: 37800, processorFeeCents: 1028, currency: "USD" });
+		{ kind: "CAPTURE", status: "COMPLETED", grossCents: 37800, processorFeeCents: 1028, currency: "USD", feeCurrency: "USD" });
 });
 
 test("the live refunded capture 6JF13492HA714842D keeps its 420.00 gross and the 15.15 fee PayPal retained", () => {
 	assert.deepEqual(captureFact(fixture("capture-refunded-no-refund-id.json")),
-		{ kind: "CAPTURE", status: "REFUNDED", grossCents: 42000, processorFeeCents: 1515, currency: "USD" });
+		{ kind: "CAPTURE", status: "REFUNDED", grossCents: 42000, processorFeeCents: 1515, currency: "USD", feeCurrency: "USD" });
 });
 
 test("the live refund 88B878042R851314U reads as COMPLETED 420.00 USD", () => {
@@ -175,6 +175,22 @@ test("a capture in another currency is a CURRENCY mismatch (synthetic: the live 
 	assert.deepEqual([row?.status, row?.reason], ["MISMATCHED", "CURRENCY"]);
 });
 
+test("a processor fee in another currency is a CURRENCY mismatch on a USD capture; the hold on that capture still matches (synthetic: the live fee is USD)", () => {
+	const euroFee = { ...(fixture("capture-completed-with-fee.json") as Record<string, unknown>),
+		seller_receivable_breakdown: { paypal_fee: { currency_code: "EUR", value: "10.28" } } };
+	const events = [event({ captureId: CAPTURE })];
+	const readings = new Map([[targetKey(captureTarget(CAPTURE)), found(captureFact(euroFee))]]);
+	const result = reconcileLines([
+		line({ entryId: "job_a#0", kind: "HELD", cents: 37800 }),
+		line({ entryId: "job_a#2", kind: "FEE", cents: 6000, processorCents: 1028 }),
+	], events, readings);
+	assert.deepEqual(result.rows.map(r => [r.entryId, r.status, r.reason, r.note]), [
+		["job_a#0", "MATCHED", null, null],
+		["job_a#2", "MISMATCHED", "CURRENCY", "PayPal reports the processor fee in EUR."],
+	]);
+	assert.deepEqual(result.counts, { matched: 1, pending: 0, mismatched: 1, notChecked: 0 });
+});
+
 test("a released line that names no payout item is NOT_CHECKED with the reason, never a mismatch", () => {
 	const result = reconcileLines([line({ entryId: "job_a#1", kind: "RELEASED", cents: 36378, captureId: RELEASED_CAPTURE })],
 		[event({ captureId: RELEASED_CAPTURE, payoutItemId: null })], new Map());
@@ -209,7 +225,7 @@ test("only a settled object is cached; a pending one is read again next refresh"
 	assert.equal(settled(refundFact(fixture("refund-completed.json"))), true);
 	assert.equal(settled(payoutFact(fixture("referenced-payout-success.json"))), true);
 	assert.equal(settled({ kind: "PAYOUT_ITEM", status: "PENDING", amountCents: 36378, currency: "USD", payoutTransactionId: null }), false);
-	assert.equal(settled({ kind: "CAPTURE", status: "PENDING", grossCents: 37800, processorFeeCents: null, currency: "USD" }), false);
+	assert.equal(settled({ kind: "CAPTURE", status: "PENDING", grossCents: 37800, processorFeeCents: null, currency: "USD", feeCurrency: null }), false);
 });
 
 test("Transaction Search rows no checked object claims are other activity, and nothing else", () => {
