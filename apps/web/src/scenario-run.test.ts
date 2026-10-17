@@ -119,6 +119,21 @@ test("a FAILED run whose step was refused names that step and says no end state 
   assert.equal(view.observed, null);
 });
 
+test("a FAILED run whose verdict was not the one its scenario needs names the step, the observed reason, and the needed end", () => {
+  const view = buildRunView({
+    ...RUN,
+    state: "FAILED",
+    steps: [
+      step("open-job", "CLIENT", SCRIPTED, 412, "opened job_1"),
+      step("submit", "OPERATOR", VERIFIER, 74210, "FAILED VERDICT_UNEXPECTED"),
+    ],
+    endState: { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
+  });
+  assert.equal(view.endText, "Failed at Verifier judges the submission. The verifier's verdict was not the one this scenario needs. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
+  assert.equal(view.observed, "IN_PROGRESS (TESTS_FAILED:hidden)");
+  assert.equal(view.endText.includes("no end state"), false);
+});
+
 test("every scripted step reads Scripted agent (Simulated), and every PayPal step carries the sandbox note", () => {
   const view = buildRunView({
     ...RUN,

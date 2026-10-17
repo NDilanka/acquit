@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import type { JobId } from "../src/ids.ts";
-import { arbiterVerdictForRun, boundedRuns, isScenarioName, ScenarioRefused, SCENARIO_NAMES, SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER,
-	SCENARIO_RUNS_TOTAL, startScenario } from "../src/scenarios.ts";
+import { arbiterVerdictForRun, boundedRuns, EXPECTED_END_STATES, EXPECTED_SUBMIT_VERDICTS, isScenarioName, ScenarioRefused, SCENARIO_NAMES,
+	SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER, SCENARIO_RUNS_TOTAL, startScenario } from "../src/scenarios.ts";
 import type { RunSlot, ScenarioName, ScenarioRun, ScenarioRuns } from "../src/scenarios.ts";
 import { assertTimings, drive, harness, start } from "./scenario-harness.ts";
 import { DEMO_REPOSITORY } from "./hidden-fixture.ts";
@@ -59,7 +59,7 @@ test("S2 is FAILED, not DONE, when its tree verifies: the VERIFIED job is record
 	try {
 		const run = await drive(h, "hidden-test-fail");
 		assert.equal(run.state, "FAILED");
-		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "VERIFIED");
+		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "FAILED VERDICT_UNEXPECTED");
 		assert.deepEqual(run.endState, { jobStatus: "VERIFIED", reason: null });
 	} finally { await h.dispose(); }
 });
@@ -69,6 +69,7 @@ test("S2 is FAILED when its tree is rejected for the protected path, and the obs
 	try {
 		const run = await drive(h, "hidden-test-fail");
 		assert.equal(run.state, "FAILED");
+		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "FAILED VERDICT_UNEXPECTED");
 		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "PROTECTED_PATH_MODIFIED" });
 	} finally { await h.dispose(); }
 });
@@ -78,8 +79,33 @@ test("S3 is FAILED when its tree is rejected for the hidden tests, not for the p
 	try {
 		const run = await drive(h, "test-tamper");
 		assert.equal(run.state, "FAILED");
+		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "FAILED VERDICT_UNEXPECTED");
 		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
 	} finally { await h.dispose(); }
+});
+
+test("a verified-and-paid run whose verifier rejects its fix on the hidden tests stops at submit, with no approve step", async () => {
+	const h = await harness({ treeFor: tree => tree === "honest-reference-table" ? "cheat-hardcode-visible-values" : tree });
+	try {
+		const run = await drive(h, "verified-and-paid");
+		assert.equal(run.state, "FAILED");
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit"]);
+		assert.equal(run.steps.find(step => step.name === "submit")?.outcome, "FAILED VERDICT_UNEXPECTED");
+		assert.deepEqual(run.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
+		assert.equal((await h.store.readJob(run.jobId as JobId))?.state.status, "IN_PROGRESS");
+		assertTimings(run);
+	} finally { await h.dispose(); }
+});
+
+test("the submit verdicts are the literal reasons each scenario needs, and they match the end states it must reach", () => {
+	assert.deepEqual(EXPECTED_SUBMIT_VERDICTS, {
+		"verified-and-paid": "VERIFIED",
+		"hidden-test-fail": "REJECTED TESTS_FAILED:hidden",
+		"test-tamper": "REJECTED PROTECTED_PATH_MODIFIED",
+		"dispute-arbiter": "VERIFIED",
+	});
+	assert.equal(EXPECTED_SUBMIT_VERDICTS["hidden-test-fail"], `REJECTED ${EXPECTED_END_STATES["hidden-test-fail"].reason}`);
+	assert.equal(EXPECTED_SUBMIT_VERDICTS["test-tamper"], `REJECTED ${EXPECTED_END_STATES["test-tamper"].reason}`);
 });
 
 test("S4 dispute-arbiter: a dispute the arbiter upholds pays the operator, reason ARBITER_UPHELD", async () => {
