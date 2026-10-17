@@ -230,8 +230,13 @@ export function reconciliationService(deps: { readonly fetchPage: TransactionFet
 		let budgetLeft = budget;
 		let lastRead = -1;
 
-		/** One GET for an object, if this refresh still has budget for one. */
-		const readFresh = (key: string, target: ObjectTarget): Promise<Reading> => {
+		/** One GET for an object, if this refresh still has budget for one. A newer read already in flight is joined instead. */
+		const readFresh = (key: string, target: ObjectTarget, joined: Promise<Reading>): Promise<Reading> => {
+			const newer = objects.get(key);
+			if (newer !== undefined && newer.value === null && newer.reading !== joined) {
+				counts.cached++;
+				return newer.reading;
+			}
 			if (budgetLeft === 0) return Promise.resolve({ state: "NOT_READ" });
 			budgetLeft--;
 			counts.read++;
@@ -244,7 +249,7 @@ export function reconciliationService(deps: { readonly fetchPage: TransactionFet
 			if (cached !== undefined && cached.value === null) {
 				// Another refresh is reading this object now: share that read, and read again only if it cannot answer this line.
 				settling.push(cached.reading.then(async value => {
-					if (beyondCache(value, expectsRefund)) readings.set(key, await readFresh(key, target));
+					if (beyondCache(value, expectsRefund)) readings.set(key, await readFresh(key, target, cached.reading));
 					else { counts.cached++; readings.set(key, value); }
 				}));
 				continue;
