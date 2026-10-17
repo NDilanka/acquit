@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { paypalReader, referencedPayoutItem } from "../src/paypal.ts";
@@ -92,7 +92,8 @@ describe("the stdio payout tool's reader lifecycle", () => {
 	it("a failed first OAuth mint does not poison later get_payout_status calls", async () => {
 		const transport = new StdioClientTransport({
 			command: process.execPath,
-			args: ["--import", join(ROOT, "packages/mcp/test/payout-lifecycle-preload.mjs"), join(ROOT, "packages/mcp/src/main.ts")],
+			// A bare Windows path (D:\...) reads as a URL scheme to --import, so it is passed as a file URL.
+			args: ["--import", pathToFileURL(join(ROOT, "packages/mcp/test/payout-lifecycle-preload.mjs")).href, join(ROOT, "packages/mcp/src/main.ts")],
 			cwd: ROOT,
 			env: { ...process.env, ACQUIT_API: "https://lifecycle.invalid", ACQUIT_TOKEN: "synthetic-lifecycle-token",
 				PAYPAL_CLIENT_ID: "lifecycle-id", PAYPAL_CLIENT_SECRET: "lifecycle-value", PAYPAL_ENV: "sandbox",
