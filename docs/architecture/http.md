@@ -152,6 +152,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
 | GET | `/api/platform/tables` | `{ tables: { jobs, bids, verdicts, ledger_entries, paypal_events, operators, clients }, now }`. Each table is an array of rows keyed for the escrow dashboard's relationships, with money in integer cents. Platform role only: `401` without a session, `403 { error: "PLATFORM_ONLY" }` for any other role. Read-only |
+| GET | `/api/platform/stream` | `text/event-stream`, held open. One data line `{ kind: "changed", at }` each time the database commits a write from another connection (a webhook, a House delivery, a verdict), after a `retry: 2000` hint; a `: heartbeat` comment every 15 s. Carries no data: the page reads `/api/platform/tables` and `/api/platform/ledger` again. Platform role only: `401` without a session, `403 { error: "PLATFORM_ONLY" }` for any other role. Read-only |
 | GET | `/api/me/escrow` | `{ escrow: [{ jobId, cents }] }`: one row per hold the operator's release will pay, at the operator's net (the price less the 10% operator fee, the amount the release pays). A job whose refund is in flight is left out (operators only) |
 
 Clients see their own jobs and every OPEN job. A query refusal is `403` or `404` with `{ error }`.

@@ -29,13 +29,13 @@ import {
   type EarningsData,
 } from "./dashboards";
 import { parseSaved } from "../studio-data";
+import { FALLBACK_POLL_MS, onChange, onSettled, parseStreamEvent, PLATFORM_STREAM_PATH, READ_IDLE, type ReadState } from "./live";
 import "./studio.css";
 
 // The ESM entry registers only the data-engine module. The AI module brings the context service
 // whose widget catalogue and schema the dashboard's agents read.
 AgStudioModuleRegistry.registerModules([AgStudioAiModule]);
 
-const ESCROW_REFRESH_MS = 30_000;
 const SAVE_DEBOUNCE_MS = 300;
 const NARROW = "(max-width: 640px)";
 
@@ -76,16 +76,35 @@ const earningsSource = () => STUDIO_EARNINGS_DATA;
 function EscrowDashboard() {
   const ask = useAskLedger("escrow");
   const [ledger, setLedger] = useState<Load<EscrowBook> | { kind: "denied" }>({ kind: "loading" });
+  const [streaming, setStreaming] = useState(true);
   useEffect(() => {
     let live = true;
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let reads: ReadState = READ_IDLE;
+    let fallback: ReturnType<typeof setInterval> | undefined;
+    const source = new EventSource(PLATFORM_STREAM_PATH);
     const stop = () => {
-      clearInterval(timer);
-      window.removeEventListener("focus", load);
+      source.close();
+      clearInterval(fallback);
+      window.removeEventListener("focus", refresh);
     };
+    // A change, a reconnect, or a focus asks for a read; reads run one at a time (see studio/live.ts).
+    function refresh() {
+      const step = onChange(reads);
+      reads = step.state;
+      if (step.read) load();
+    }
+    function settle() {
+      const step = onSettled(reads);
+      reads = step.state;
+      if (step.read) load();
+    }
     function load() {
       Promise.all([api.platformLedger(), api.platformTables()]).then(
-        ([r, t]) => live && setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables } }),
+        ([r, t]) => {
+          if (!live) return;
+          setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables } });
+          settle();
+        },
         (e: unknown) => {
           if (!live) return;
           if (e instanceof ApiError && e.status === 403) {
@@ -95,12 +114,24 @@ function EscrowDashboard() {
           }
           // A failed refresh keeps the last good book on screen; only a first load shows the error.
           setLedger((prev) => (prev.kind === "ready" ? prev : { kind: "failed", error: errorText(e) }));
+          settle();
         },
       );
     }
-    load();
-    timer = setInterval(load, ESCROW_REFRESH_MS);
-    window.addEventListener("focus", load);
+    // The open is a read too: a commit made before the stream first watched would otherwise go unseen.
+    source.onopen = () => refresh();
+    source.onmessage = (message) => {
+      if (parseStreamEvent(String(message.data)) !== null) refresh();
+    };
+    source.onerror = () => {
+      // The browser retries a dropped stream by itself; only one it has given up on (CLOSED) falls back to a plain poll.
+      if (!live || source.readyState !== EventSource.CLOSED || fallback !== undefined) return;
+      setStreaming(false);
+      fallback = setInterval(refresh, FALLBACK_POLL_MS);
+      refresh();
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
     return () => {
       live = false;
       stop();
@@ -118,7 +149,7 @@ function EscrowDashboard() {
     <Dashboard
       id="escrow"
       title="Platform escrow"
-      lead="Every job's money across all tenants, refreshed every 30 seconds."
+      lead={streaming ? "Every job's money across all tenants, updated as PayPal and the ledger change." : "Live updates off: every job's money across all tenants, refreshed every 30 seconds."}
       load={ledger}
       ask={ask}
       source={escrowSource}
