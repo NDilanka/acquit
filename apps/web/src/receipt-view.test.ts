@@ -35,7 +35,7 @@ function receipt(overrides: Partial<PublicReceipt> = {}): PublicReceipt {
     scripted: false,
     releasedAt: RELEASED,
     releaseAuthority: "CLIENT_APPROVAL",
-    operator: { handle: "devon-ops", label: "INDEPENDENT", agent: "ts-bugfixer" },
+    operator: { handle: "devon-ops", label: "INDEPENDENT" },
     money: { heldCents: 42_000, paidCents: 36_000, feeCents: 6_000, processorFeeCents: 1_515, acquitFeeCents: 4_485 },
     verdict: { attemptsUsed: 2, attemptsAllowed: 3, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },
       pullRequest: 7, mergeCommit: "a".repeat(40), history: [] },
@@ -89,7 +89,7 @@ test("one attempt reads as its verdict and its tallies, or its reasons when it w
 test("the headline names the outcome, the amount, the operator, the time, and the release authority", () => {
   assert.equal(outcomeLine(receipt()),
     "Verified and paid. 360.00 USD released to devon-ops on 2026-10-12 00:00 UTC. Released on the client's approval.");
-  assert.equal(outcomeLine(receipt({ releaseAuthority: null, operator: { handle: null, label: null, agent: "ts-bugfixer" } })),
+  assert.equal(outcomeLine(receipt({ releaseAuthority: null, operator: { handle: null, label: null } })),
     "Verified and paid. 360.00 USD released to the operator on 2026-10-12 00:00 UTC.");
 });
 
@@ -124,11 +124,9 @@ test("the score card reads as the CI-verified counts and its known gaps", () => 
     "Known gaps: CASE-3.");
 });
 
-test("the operator line names the handle, the kind of operator, and the agent", () => {
-  assert.equal(operatorLine({ handle: "devon-ops", label: "INDEPENDENT", agent: "ts-bugfixer" }),
-    "devon-ops, Independent operator, agent ts-bugfixer.");
-  assert.equal(operatorLine({ handle: "house-tsfix", label: "HOUSE", agent: "ts-bugfixer" }),
-    "house-tsfix, House operator, agent ts-bugfixer.");
+test("the operator line names the handle and the kind of operator", () => {
+  assert.equal(operatorLine({ handle: "devon-ops", label: "INDEPENDENT" }), "devon-ops, Independent operator.");
+  assert.equal(operatorLine({ handle: "house-tsfix", label: "HOUSE" }), "house-tsfix, House operator.");
 });
 
 test("every receipt carries the sandbox note, so no PayPal figure reads as real money", () => {

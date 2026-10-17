@@ -89,6 +89,7 @@ test("the public receipt answers a PAID job's id with 200, and every other id wi
 		assert.equal(paid.status, 200);
 		const body = await paid.json() as { receipt: Record<string, unknown> };
 		assert.equal(body.receipt.id, RECEIPT);
+		assert.deepEqual(body.receipt.operator, { handle: "devon-ops", label: "INDEPENDENT" }, "the agent name stays off the public receipt");
 		assert.deepEqual(body.receipt.money, { heldCents: 42_000, paidCents: 36_000, feeCents: 6_000, processorFeeCents: 1_515, acquitFeeCents: 4_485 });
 		assert.equal(body.receipt.hiddenCases, null, "no seal was frozen, so no hidden-case section");
 		assert.deepEqual(body.receipt.scoreCard, { cheatsCaught: 11, cheatsTotal: 11, honestPassed: 20, honestTotal: 20, gaps: [] });
