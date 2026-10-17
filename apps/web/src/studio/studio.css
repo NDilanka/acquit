@@ -32,3 +32,17 @@
 .ask-form { display: grid; gap: 6px; }
 .ask-form textarea { width: 100%; min-width: 0; resize: vertical; font: inherit; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--card); color: var(--ink); }
 .ask-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.ask-figure { min-width: 0; }
+.explain-body { display: grid; gap: 10px; min-width: 0; }
+.explain-total, .explain-line-head, .explain-line-paypal, .explain-check { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.explain-total, .explain-line-head { justify-content: space-between; }
+.explain-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 420px; overflow-y: auto; overflow-x: hidden; }
+.explain-line { display: grid; gap: 6px; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.explain-line small { display: block; }
+.explain-line .mono { overflow-wrap: anywhere; }
+.explain-open { align-self: flex-start; }
+.explain-dialog { width: min(560px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: 85vh; overflow-y: auto; margin: auto; padding: 16px 18px;
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+.explain-dialog::backdrop { background: rgb(17 21 18 / 0.35); }
+.explain-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.explain-head h2 { margin: 0; font-size: 18px; }

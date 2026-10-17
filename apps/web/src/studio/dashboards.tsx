@@ -5,6 +5,7 @@ import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformRec
 import { dollars, utc } from "../format";
 import { COLUMNS, NATIVE_WIDGETS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
 import { conserves, earnings, escrowTotals, newestReceipt, placeRows, verifierStats } from "../studio-data";
+import { FigureExplain } from "./FigureExplain";
 
 export type { AcquitRegistry, AcquitWidgetId, DashboardId, DashboardState };
 export { stacked } from "../studio-data";
@@ -61,7 +62,9 @@ function LedgerConserves() {
           <b className="num">{dollars(fee)}</b>
         </div>
         <div className="total">
-          <span>Paid by clients</span>
+          <span>
+            Paid by clients <FigureExplain figure="paid-by-clients" />
+          </span>
           <b className="num">{dollars(paid)}</b>
         </div>
       </div>
@@ -209,8 +212,18 @@ function ReceiptCard() {
   );
 }
 
-const escrowTotal = (key: keyof ReturnType<typeof escrowTotals>, note: string) =>
-  stat(useEscrow, (jobs) => ({ value: dollars(escrowTotals(jobs)[key]), note }));
+/** An escrow KPI tile: its value is the core figure's sum, and its Explain button opens that figure's lines. */
+const escrowTotal = (key: keyof ReturnType<typeof escrowTotals>, note: string) => {
+  const Value = stat(useEscrow, (jobs) => ({ value: dollars(escrowTotals(jobs)[key]), note }));
+  return function EscrowTotal() {
+    return (
+      <>
+        <Value />
+        <FigureExplain figure={key} />
+      </>
+    );
+  };
+};
 
 const COMP = {
   "acquit-held": escrowTotal("held", "In escrow on jobs not yet settled"),

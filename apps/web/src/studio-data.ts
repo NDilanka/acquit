@@ -1,21 +1,14 @@
-import type { JobReceiptRow, LedgerLine, PlatformJobLedger, ReceiptRow } from "./api-types";
+import type { JobReceiptRow, PlatformJobLedger, ReceiptRow } from "./api-types";
+import { figureCents } from "../../../packages/core/src/explain.ts";
 import { COLUMNS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 
-function linesCents(jobs: readonly PlatformJobLedger[], kind: LedgerLine["kind"]): number {
-  let total = 0;
-  for (const job of jobs) for (const line of job.lines) if (line.kind === kind) total += line.cents;
-  return total;
-}
-
+/** The four money KPIs. Each is the core figure function's sum over the lines that figure names. */
 export function escrowTotals(jobs: readonly PlatformJobLedger[]) {
   return {
-    held: linesCents(
-      jobs.filter((j) => j.escrow === "HELD"),
-      "HELD",
-    ),
-    released: linesCents(jobs, "RELEASED"),
-    refunded: linesCents(jobs, "REFUND"),
-    fees: linesCents(jobs, "FEE"),
+    held: figureCents(jobs, "held"),
+    released: figureCents(jobs, "released"),
+    refunded: figureCents(jobs, "refunded"),
+    fees: figureCents(jobs, "fees"),
   };
 }
 
@@ -35,9 +28,9 @@ export function verifierStats(jobs: readonly PlatformJobLedger[]) {
 /** Over released jobs only: what the operator got plus what the fee took must equal what the client paid. */
 export function conserves(jobs: readonly PlatformJobLedger[]) {
   const released = jobs.filter((j) => j.escrow === "RELEASED");
-  const payout = linesCents(released, "RELEASED");
-  const fee = linesCents(released, "FEE");
-  const paid = linesCents(released, "HELD");
+  const payout = figureCents(released, "released");
+  const fee = figureCents(released, "fees");
+  const paid = figureCents(released, "paid-by-clients");
   return { payout, fee, paid, holds: payout + fee === paid };
 }
 

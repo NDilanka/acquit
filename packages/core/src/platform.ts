@@ -7,6 +7,7 @@ import type { CaptureId, MerchantId, OrderId } from "./ids.ts";
 import { attemptView, storedBook } from "./job.ts";
 import type { HeldEscrow, JobRow } from "./job.ts";
 import type { LedgerLine } from "./ledger.ts";
+import { figureCents, ledgerEntryId } from "./explain.ts";
 import type { OperatorRow } from "./operator.ts";
 import { isTestTamper } from "./verifier.ts";
 
@@ -104,19 +105,8 @@ export function platformJobLedger(row: JobRow): PlatformJobLedger {
 export function platformEscrowTotals(jobs: readonly PlatformJobLedger[]): {
 	readonly held: number; readonly released: number; readonly refunded: number; readonly fees: number;
 } {
-	let held = 0;
-	let released = 0;
-	let refunded = 0;
-	let fees = 0;
-	for (const job of jobs) {
-		for (const line of job.lines) {
-			if (line.kind === "RELEASED") released += line.cents;
-			else if (line.kind === "REFUND") refunded += line.cents;
-			else if (line.kind === "FEE") fees += line.cents;
-			else if (line.kind === "HELD" && job.escrow === "HELD") held += line.cents;
-		}
-	}
-	return { held, released, refunded, fees };
+	return { held: figureCents(jobs, "held"), released: figureCents(jobs, "released"), refunded: figureCents(jobs, "refunded"),
+		fees: figureCents(jobs, "fees") };
 }
 
 // ---- the platform's relational tables ----------------------------------------------------------
@@ -303,7 +293,7 @@ export function platformTables(rows: readonly JobRow[], operators: readonly Oper
 				at: attempt.at });
 		}
 		view.lines.forEach((line, index) => {
-			entries.push({ entryId: `${row.id}#${index}`, jobId: row.id, kind: line.kind, cents: line.cents, at: line.at,
+			entries.push({ entryId: ledgerEntryId(row.id, index), jobId: row.id, kind: line.kind, cents: line.cents, at: line.at,
 				captureId: capture?.captureId ?? null, operatorId: view.operator?.id ?? null,
 				processorCents: line.kind === "FEE" ? line.processor : null, acquitCents: line.kind === "FEE" ? line.acquit : null });
 		});

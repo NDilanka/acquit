@@ -41,6 +41,9 @@ import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
 import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
+import { traceFigure } from "./figure-trace.ts";
+import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
+import type { FigureId } from "../../../packages/core/src/explain.ts";
 
 /** The job catalog a session may open against, from the deployment's fixture registry: a visitor
  * sees only the fixture its fork was made from, named by its own fork; every other signed-in
@@ -164,6 +167,24 @@ const askPaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== 
 const reconcileConfig = { clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret };
 const reconcilePaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
 	? coalesced(reconciliationService({ fetchPage: paypalTransactionFetch(reconcileConfig), readObject: paypalObjectRead(reconcileConfig) })) : null;
+// A figure traced to its ledger lines and their PayPal status. The route and the ask tool both trace through
+// this, so the Explain panel and the chat card read one answer. The reconciliation is the dashboard card's own.
+function traceFor(actor: Actor, figure: FigureId) {
+	return traceFigure({
+		platformView: async () => {
+			const result = await acquit.query(actor, { type: "PlatformLedger" });
+			if (result.kind !== "PLATFORM_LEDGER") throw new Error("the platform ledger is not readable");
+			return result.ledger.jobs;
+		},
+		platformTables: async () => {
+			const result = await acquit.query(actor, { type: "PlatformTables" });
+			if (result.kind !== "PLATFORM_TABLES") throw new Error("the platform tables are not readable");
+			return { entries: result.tables.ledger_entries, events: result.tables.paypal_events };
+		},
+		reconcile: reconcilePaypal,
+		nowMs: () => Date.parse(clock.now()),
+	}, figure);
+}
 const askExecutor = askToolExecutor({
 	platformView: async () => {
 		const result = await acquit.query({ role: "PLATFORM" }, { type: "PlatformLedger" });
@@ -171,6 +192,7 @@ const askExecutor = askToolExecutor({
 		return result.ledger.jobs;
 	},
 	paypal: askPaypal,
+	traceFigure: (figure) => traceFor({ role: "PLATFORM" }, figure),
 });
 const askModel = modelProvider() === "openrouter" ? openrouterAskPort() : droidAskPort();
 const askTools = askToolList(askPaypal !== null);
@@ -671,6 +693,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			// Each PayPal read reports its own failure inside the body, so a throw here is a bug, not a PayPal outage.
 			json(res, 502, { error: "PAYPAL_READ_FAILED" });
 		}
+		return;
+	}
+	if (url.pathname === "/api/platform/explain" && method === "GET") {
+		// One Studio figure traced to the ledger lines behind it. The lines sum to the figure by construction, and each
+		// carries its PayPal object's status from the reconciliation the dashboard card reads. Platform role only.
+		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		const figure = url.searchParams.get("figure");
+		if (!isFigureId(figure)) { json(res, 400, { error: "UNKNOWN_FIGURE", figures: FIGURE_IDS }); return; }
+		json(res, 200, await traceFor(current.actor, figure));
 		return;
 	}
 	if (url.pathname === "/api/platform/stream" && method === "GET") {

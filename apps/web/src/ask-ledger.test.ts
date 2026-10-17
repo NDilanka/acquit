@@ -5,6 +5,7 @@ import type { AskToolSchema } from "./api-types";
 import {
   ASK_INSTRUCTIONS,
   ASK_PROMPT_STARTERS,
+  ASK_TOOL_NAMES,
   ASK_VALIDATION_QUESTION,
   askGate,
   askLedgerAdapter,
@@ -348,6 +349,22 @@ test("tool rows are worded by what they read", () => {
   assert.equal(askToolLabel("delegate_to", { type: { id: "data" } }), "Handing off to the data agent");
   assert.equal(askToolLabel("delegate_to", { type: { id: "page" } }), "Handing off to the page agent");
   assert.equal(askToolLabel("something_else", {}), "something_else");
+  assert.equal(askToolLabel("trace_figure", { figure: "held" }), "Tracing held escrow to its ledger lines");
+  assert.equal(askToolLabel("trace_figure", { figure: "paid-by-clients" }), "Tracing paid by clients to its ledger lines");
+  assert.equal(askToolLabel("trace_figure", { figure: "nope" }), "Tracing a figure to its ledger lines");
+});
+
+test("trace_figure is one of the read-only ledger tools, and only its result carries data for the card", async () => {
+  assert.ok(ASK_TOOL_NAMES.includes("trace_figure"));
+  const trace = { figure: "fees", label: "Fees collected", totalCents: 300, lines: [] };
+  const ctx = {
+    ...toolCtx,
+    success: (response: string, data?: unknown) => (data === undefined ? { success: true as const, response } : { success: true as const, response, data }),
+  } as unknown as AgAiToolContext;
+  const traced = await runTool(async () => trace, "trace_figure", { figure: "fees" }, ctx);
+  assert.deepEqual(traced, { success: true, response: JSON.stringify(trace), data: trace });
+  const listed = await runTool(async () => ({ jobs: [] }), "list_jobs", {}, ctx);
+  assert.deepEqual(listed, { success: true, response: '{"jobs":[]}' }, "a tool off the card list sends no data");
 });
 
 test("the prompt starters include the validation question", () => {
@@ -386,6 +403,19 @@ test("a delegation the child failed shows failed in the panel, not done", () => 
   assert.deepEqual(askRows(messages), [
     { kind: "step", key: "d1-0", label: "Handing off to the widget builder", state: "failed" },
     { kind: "step", key: "d2-0", label: "Handing off to the widget builder", state: "done" },
+  ]);
+});
+
+test("a traced figure reads as its step and then as the figure card, and a refused trace reads as a failed step alone", () => {
+  const trace = { figure: "fees", label: "Fees collected", totalCents: 300, lines: [] };
+  const messages: AgAiChatMessage[] = [
+    { id: "f1", role: "assistant", createdAt: 1, parts: [{ type: "tool_call", toolCall: { toolCallId: "f", name: "trace_figure", status: "complete", args: { figure: "fees" }, result: { success: true, response: "{}", data: trace } } }] },
+    { id: "f2", role: "assistant", createdAt: 2, parts: [{ type: "tool_call", toolCall: { toolCallId: "g", name: "trace_figure", status: "complete", args: { figure: "fees" }, result: { success: false, issues: [{ message: "no" }] } } }] },
+  ];
+  assert.deepEqual(askRows(messages), [
+    { kind: "step", key: "f1-0", label: "Tracing fees collected to its ledger lines", state: "done" },
+    { kind: "figure", key: "f1-0-figure", trace },
+    { kind: "step", key: "f2-0", label: "Tracing fees collected to its ledger lines", state: "failed" },
   ]);
 });
 
