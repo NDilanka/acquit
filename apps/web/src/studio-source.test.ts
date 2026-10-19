@@ -134,6 +134,13 @@ test("the jobs source description tells the Data agent that a job not yet locked
   assert.match(source(escrow(), "jobs").description ?? "", /operatorHandle "No operator yet"/);
 });
 
+test("the jobs source's jobId field reads a pivot cell with no job as blank, not as (Blanks)", () => {
+  assert.deepEqual(
+    (source(escrow(), "jobs").fields ?? []).find((field) => field.id === "jobId"),
+    { id: "jobId", format: "textFormat", blankValue: "" },
+  );
+});
+
 test("the earnings dashboard's acquit source declares the receipt and payout columns its widgets read", () => {
   const [earnings] = STUDIO_EARNINGS_DATA.sources as readonly SourceSchema[];
   assert.ok(earnings);
