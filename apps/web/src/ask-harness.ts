@@ -74,12 +74,12 @@ function delegatedWidgetId(args: Record<string, unknown>): string | undefined {
   return id === "widget" && typeof widgetId === "string" ? widgetId : undefined;
 }
 
-/** The page a page delegation names, when it names one. */
+/** The page a page or widget delegation names, when it names one. */
 function delegatedPageId(args: Record<string, unknown>): string | undefined {
   const type = args.type;
   if (typeof type !== "object" || type === null) return undefined;
   const { id, pageId } = type as { id?: unknown; pageId?: unknown };
-  return id === "page" && typeof pageId === "string" ? pageId : undefined;
+  return (id === "page" || id === "widget") && typeof pageId === "string" ? pageId : undefined;
 }
 
 /**
@@ -88,7 +88,7 @@ function delegatedPageId(args: Record<string, unknown>): string | undefined {
  * ends with a placement of its own on the grid. A child that throws while resolving its tools ends
  * before any telemetry, so a missing outcome counts as a failure too. A failed child's partly added
  * widget is removed again, so the grid never keeps a half-made widget. The checks and the rollback
- * read the selected page only, so a page change that names another page is refused before its child runs.
+ * read the selected page only, so a page or widget delegation that names another page is refused before its child runs.
  */
 function honestDelegate(
   inner: AgAiTool,
@@ -107,7 +107,7 @@ function honestDelegate(
       if (named !== undefined && named !== api.getState().selectedPageId) {
         return {
           success: false,
-          issues: [{ message: `The page ${named} is not the selected page, and page changes reach only the selected page. Delegate without a pageId, or select that page first.` }],
+          issues: [{ message: `The page ${named} is not the selected page, and changes reach only the selected page. Delegate without a pageId, or select that page first.` }],
         };
       }
       const before = new Set(selectedWidgetIds());

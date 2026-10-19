@@ -26,7 +26,7 @@ export function engineRows(rows: readonly object[]): Record<string, unknown>[] {
 export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<AcquitRegistry> {
   return {
     description:
-      "Acquit's escrow book across every tenant. One row per job in jobs; bids, verdicts, ledger_entries, paypal_events, and clients join to jobs. Each bid joins to the operator who placed it, and each job to the operator it was locked to. Money is in dollars. A job's held amount is in escrow only while its status is IN_PROGRESS or VERIFIED. Released, refunded, and fee amounts are settled. A verdict is one judged attempt.",
+      "Acquit's escrow book across every tenant. One row per job in jobs; bids, verdicts, ledger_entries, paypal_events, and clients join to jobs. Each bid joins to the operator who placed it, and each job to the operator it was locked to. Money is in dollars. A job's held amount is in escrow only while its status is IN_PROGRESS or VERIFIED. Released, refunded, and fee amounts are settled. A verdict is one judged attempt. Each measure is computed on one table. takeRate, escrowAtRisk, and refundRate are computed on jobs. verifierPassRate is computed on verdicts, so it is queried apart from the jobs measures. One query that mixes them joins jobs to verdicts and drops each job that has no verdict, such as a refunded job.",
     sources: [
       {
         id: "jobs",
@@ -166,6 +166,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
       {
         id: "takeRate",
         name: "Take rate",
+        description: "Fees over released amounts, both summed over jobs. Computed on the jobs table.",
         format: "percentageFormat",
         isMeasure: true,
         expression: {
@@ -179,6 +180,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
       {
         id: "verifierPassRate",
         name: "Verifier pass rate",
+        description: "Passed verdicts over all verdicts. Computed on the verdicts table, so query it apart from the jobs measures.",
         format: "percentageFormat",
         isMeasure: true,
         expression: {
@@ -192,6 +194,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
       {
         id: "escrowAtRisk",
         name: "Escrow at risk",
+        description: "Held amount, summed over jobs. Computed on the jobs table.",
         format: "currencyFormat",
         isMeasure: true,
         expression: { id: "jobs.held", aggregation: "sum" },
@@ -199,6 +202,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
       {
         id: "refundRate",
         name: "Refund rate",
+        description: "Refunded amount over gross, both summed over jobs. Computed on the jobs table.",
         format: "percentageFormat",
         isMeasure: true,
         expression: {
