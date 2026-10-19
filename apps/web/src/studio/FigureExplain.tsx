@@ -5,10 +5,10 @@ import { createPortal } from "react-dom";
 import type { AgAiToolDetailParams } from "ag-studio";
 import { api } from "../api";
 import type { FigureId, FigureTrace, FigureTraceLine } from "../api-types";
-import { errorText } from "../demo";
 import { checkedPart, figureCheck, isFigureTrace, paypalWords } from "../figure-trace";
 import { dollars } from "../format";
 import { Link } from "../router";
+import { readFailure } from "./live";
 import { FIGURE_LABELS } from "../../../../packages/core/src/explain.ts";
 
 const LINE_WORDS: Record<FigureTraceLine["kind"], string> = {
@@ -102,7 +102,7 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
     let current = true;
     api.platformExplain(figure).then(
       (trace) => { if (current) setState({ kind: "ready", trace }); },
-      (error: unknown) => { if (current) setState({ kind: "failed", error: errorText(error) }); },
+      (error: unknown) => { if (current) setState({ kind: "failed", error: readFailure(error) }); },
     );
     return () => { current = false; };
   }, [figure]);
@@ -128,7 +128,7 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
         </button>
       </div>
       {state.kind === "reading" && <p className="muted small">Reading the ledger lines and PayPal's status for each one.</p>}
-      {state.kind === "failed" && <div className="alert">The figure could not be traced just now: {state.error}</div>}
+      {state.kind === "failed" && <div className="alert">The figure could not be traced just now because {state.error}.</div>}
       {state.kind === "ready" && <FigureTraceView trace={state.trace} />}
     </dialog>,
     document.body,
