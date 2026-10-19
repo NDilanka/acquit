@@ -238,21 +238,39 @@ test("an accepted $100 bid by alpha and a losing $200 bid by beta split by bidde
   assert.deepEqual(sorted((rows ?? []).map((row) => `${row.handle}=${row.price}`)), ["alpha=100", "beta=200"]);
 });
 
+type ShippedDefinition = {
+  readonly description: string;
+  readonly expressions: readonly { readonly id: string; readonly description?: string; readonly expression: unknown }[];
+};
+
+const referenced = (node: unknown): string[] => {
+  if (typeof node !== "object" || node === null) return [];
+  return Object.entries(node).flatMap(([key, value]) => (key === "id" && typeof value === "string" ? [value] : referenced(value)));
+};
+const tableOf = (ids: readonly string[]) => [...new Set(ids.map((id) => id.split(".")[0]))];
+const measureTablesOf = (definition: ShippedDefinition) =>
+  Object.fromEntries(definition.expressions.map((e) => [e.id, tableOf(referenced(e.expression))]));
+
 test("each shipped measure reads one table, and each native widget reads one table", () => {
-  const definition = escrowData(TABLES) as { readonly expressions: readonly { readonly id: string; readonly expression: unknown }[] };
-  const referenced = (node: unknown): string[] => {
-    if (typeof node !== "object" || node === null) return [];
-    return Object.entries(node).flatMap(([key, value]) => (key === "id" && typeof value === "string" ? [value] : referenced(value)));
-  };
-  const tableOf = (ids: readonly string[]) => [...new Set(ids.map((id) => id.split(".")[0]))];
-  const measureTables = Object.fromEntries(definition.expressions.map((e) => [e.id, tableOf(referenced(e.expression))]));
-  assert.deepEqual(measureTables, {
+  const definition = escrowData(TABLES) as ShippedDefinition;
+  assert.deepEqual(measureTablesOf(definition), {
     takeRate: ["jobs"], verifierPassRate: ["verdicts"], escrowAtRisk: ["jobs"], refundRate: ["jobs"],
   });
   for (const widget of NATIVE_WIDGETS.escrow.flat()) {
     const ids = Object.values(widget.dataMapping).flat().map((ref) => ref.id);
     assert.deepEqual(tableOf(ids), ["jobs"], `${widget.id} reads one table`);
   }
+});
+
+test("each measure's description names the table it reads, and the dataset says to query verdicts apart from jobs", () => {
+  const definition = escrowData(TABLES) as ShippedDefinition;
+  for (const [id, [table]] of Object.entries(measureTablesOf(definition))) {
+    const measure = definition.expressions.find((e) => e.id === id);
+    assert.match(measure?.description ?? "", new RegExp(`computed on the ${table} table`, "i"), `${id} names its table`);
+  }
+  assert.match(definition.description, /takeRate, escrowAtRisk, and refundRate are computed on jobs\./);
+  assert.match(definition.description, /verifierPassRate is computed on verdicts, so it is queried apart from the jobs measures\./);
+  assert.match(definition.description, /drops each job that has no verdict, such as a refunded job\./);
 });
 
 test("the custom ledger widgets conserve on the literal book", () => {
