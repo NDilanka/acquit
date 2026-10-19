@@ -4,6 +4,7 @@ import { ApiError } from "./api.ts";
 import {
   BOOK_EMPTY,
   bookRead,
+  canRetry,
   clockTime,
   freshnessNotice,
   isStale,
@@ -77,14 +78,15 @@ test("an outage reads as a plain reason, whatever kind of failure it was", () =>
   assert.equal(readFailure(new ApiError(500, "SERVER_ERROR")), "the server refused it (SERVER_ERROR)");
   assert.equal(readFailure(new DOMException("The operation timed out.", "TimeoutError")), "the server did not answer in time");
   assert.equal(readFailure(new DOMException("The operation was aborted.", "AbortError")), "the server did not answer in time");
+  assert.equal(readFailure(new ApiError(401, "UNAUTHENTICATED")), "your sign-in has expired");
 });
 
 test("a failed read after a good one keeps the good time and shows the stale notice", () => {
   const good = bookRead(BOOK_EMPTY, { ok: true }, "2026-10-13T14:02:10.000Z");
-  const failed = bookRead(good, { ok: false, error: "the server refused it (SERVER_ERROR)" }, "2026-10-13T14:03:00.000Z");
+  const failed = bookRead(good, { ok: false, error: "the server refused it (SERVER_ERROR)", retry: true }, "2026-10-13T14:03:00.000Z");
   assert.deepEqual(failed, {
     lastGoodAt: "2026-10-13T14:02:10.000Z",
-    failure: { at: "2026-10-13T14:03:00.000Z", error: "the server refused it (SERVER_ERROR)" },
+    failure: { at: "2026-10-13T14:03:00.000Z", error: "the server refused it (SERVER_ERROR)", retry: true },
   });
   assert.equal(isStale(failed), true);
   assert.deepEqual(freshnessNotice("live", failed, "UTC"), {
@@ -95,7 +97,7 @@ test("a failed read after a good one keeps the good time and shows the stale not
 
 test("a failed refresh from an unreachable server speaks in plain words, with no raw error text", () => {
   const good = bookRead(BOOK_EMPTY, { ok: true }, "2026-10-13T14:02:10.000Z");
-  const failed = bookRead(good, { ok: false, error: readFailure(new TypeError("Failed to fetch")) }, "2026-10-13T14:03:00.000Z");
+  const failed = bookRead(good, { ok: false, error: readFailure(new TypeError("Failed to fetch")), retry: true }, "2026-10-13T14:03:00.000Z");
   assert.deepEqual(freshnessNotice("live", failed, "UTC"), {
     tone: "warn",
     text: "Showing figures from 14:02:10. The latest refresh failed because the server could not be reached. Trying again every 30 seconds.",
@@ -112,7 +114,7 @@ test("a dropped stream with a good book says the figures may be behind", () => {
 
 test("a failure outranks a dropped stream", () => {
   const good = bookRead(BOOK_EMPTY, { ok: true }, "2026-10-13T14:02:10.000Z");
-  const failed = bookRead(good, { ok: false, error: "the server refused it (SERVER_ERROR)" }, "2026-10-13T14:03:00.000Z");
+  const failed = bookRead(good, { ok: false, error: "the server refused it (SERVER_ERROR)", retry: true }, "2026-10-13T14:03:00.000Z");
   assert.deepEqual(freshnessNotice("reconnecting", failed, "UTC"), {
     tone: "warn",
     text: "Showing figures from 14:02:10. The latest refresh failed because the server refused it (SERVER_ERROR). Trying again every 30 seconds.",
@@ -121,7 +123,7 @@ test("a failure outranks a dropped stream", () => {
 
 test("a success after a failure clears the notice and stamps the new good time", () => {
   const good = bookRead(BOOK_EMPTY, { ok: true }, "2026-10-13T14:02:10.000Z");
-  const failed = bookRead(good, { ok: false, error: "the server refused it (SERVER_ERROR)" }, "2026-10-13T14:03:00.000Z");
+  const failed = bookRead(good, { ok: false, error: "the server refused it (SERVER_ERROR)", retry: true }, "2026-10-13T14:03:00.000Z");
   const recovered = bookRead(failed, { ok: true }, "2026-10-13T14:04:00.000Z");
   assert.deepEqual(recovered, { lastGoodAt: "2026-10-13T14:04:00.000Z", failure: null });
   assert.equal(isStale(recovered), false);
@@ -129,7 +131,18 @@ test("a success after a failure clears the notice and stamps the new good time",
 });
 
 test("a failed first load has no figures to be stale, so it shows no notice", () => {
-  const failed = bookRead(BOOK_EMPTY, { ok: false, error: "the server refused it (SERVER_ERROR)" }, "2026-10-13T14:03:00.000Z");
+  const failed = bookRead(BOOK_EMPTY, { ok: false, error: "the server refused it (SERVER_ERROR)", retry: true }, "2026-10-13T14:03:00.000Z");
   assert.equal(isStale(failed), false);
   assert.equal(freshnessNotice("reconnecting", failed, "UTC"), null);
+});
+
+test("an expired sign-in says so and promises no retry, since reading again cannot succeed", () => {
+  const good = bookRead(BOOK_EMPTY, { ok: true }, "2026-10-13T14:02:10.000Z");
+  const expired = new ApiError(401, "UNAUTHENTICATED");
+  assert.equal(canRetry(expired), false);
+  const failed = bookRead(good, { ok: false, error: readFailure(expired), retry: canRetry(expired) }, "2026-10-13T14:03:00.000Z");
+  assert.deepEqual(freshnessNotice("live", failed, "UTC"), {
+    tone: "warn",
+    text: "Showing figures from 14:02:10. The latest refresh failed because your sign-in has expired. Sign out and sign in again to see current figures.",
+  });
 });

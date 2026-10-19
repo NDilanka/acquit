@@ -44,21 +44,36 @@ export function onSettled(state: ReadState): { state: ReadState; read: boolean }
 export type Transport = "live" | "reconnecting" | "polling";
 
 /** What the escrow book on screen rests on: the last good read, and the read that failed after it, if any. */
-export type Book = { readonly lastGoodAt: string | null; readonly failure: { readonly at: string; readonly error: string } | null };
+export type Book = {
+  readonly lastGoodAt: string | null;
+  readonly failure: { readonly at: string; readonly error: string; readonly retry: boolean } | null;
+};
 export const BOOK_EMPTY: Book = { lastGoodAt: null, failure: null };
 
-export type ReadOutcome = { readonly ok: true } | { readonly ok: false; readonly error: string };
+export type ReadOutcome = { readonly ok: true } | { readonly ok: false; readonly error: string; readonly retry: boolean };
 
 /** A good read makes the book fresh as of `at`. A failed read keeps the last good figures and marks the failure. */
 export function bookRead(book: Book, outcome: ReadOutcome, at: string): Book {
-  return outcome.ok ? { lastGoodAt: at, failure: null } : { lastGoodAt: book.lastGoodAt, failure: { at, error: outcome.error } };
+  return outcome.ok
+    ? { lastGoodAt: at, failure: null }
+    : { lastGoodAt: book.lastGoodAt, failure: { at, error: outcome.error, retry: outcome.retry } };
+}
+
+function signedOut(e: unknown): boolean {
+  return e instanceof ApiError && e.code === "UNAUTHENTICATED";
 }
 
 /** The plain reason a read failed, worded for a non-engineer. Outage notices take their wording from here only. */
 export function readFailure(e: unknown): string {
   if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) return "the server did not answer in time";
+  if (signedOut(e)) return "your sign-in has expired";
   if (e instanceof ApiError) return `the server refused it (${e.code})`;
   return "the server could not be reached";
+}
+
+/** Reading again can succeed unless the sign-in has expired: that needs a new sign-in first, so no retry is promised. */
+export function canRetry(e: unknown): boolean {
+  return !signedOut(e);
 }
 
 /** Figures from an earlier read are on screen while the latest read failed. */
@@ -80,9 +95,12 @@ export type FreshnessNotice = { readonly tone: "warn"; readonly text: string };
 export function freshnessNotice(transport: Transport, book: Book, timeZone?: string): FreshnessNotice | null {
   if (book.lastGoodAt === null) return null;
   if (book.failure !== null) {
+    const since = `Showing figures from ${clockTime(book.lastGoodAt, timeZone)}. The latest refresh failed because ${book.failure.error}.`;
     return {
       tone: "warn",
-      text: `Showing figures from ${clockTime(book.lastGoodAt, timeZone)}. The latest refresh failed because ${book.failure.error}. Trying again every ${FALLBACK_POLL_MS / 1000} seconds.`,
+      text: book.failure.retry
+        ? `${since} Trying again every ${FALLBACK_POLL_MS / 1000} seconds.`
+        : `${since} Sign out and sign in again to see current figures.`,
     };
   }
   if (transport === "reconnecting") return { tone: "warn", text: "Live updates dropped. Reconnecting; figures may be behind." };
