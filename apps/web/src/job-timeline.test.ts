@@ -526,6 +526,6 @@ test("disputed and closed read their own next step", () => {
     phase: "DISPUTED",
     dispute: { reason: "The fix breaks EUR rounding.", openedAt: "2026-10-16T08:00:00.000Z", resolveBy: "2026-10-18T08:00:00.000Z" },
   });
-  assert.equal(nextStep(disputed, CLIENT), "The payment is paused. An arbiter decides by 2026-10-18 08:00 UTC.");
+  assert.equal(nextStep(disputed, CLIENT), "The payment is paused. An arbiter decides by 2026-10-18 08:00 UTC, or the payout releases to the operator.");
   assert.equal(nextStep({ ...BASE, status: "CLOSED", phase: "CLOSED" }, CLIENT), "Closed. Nothing else happens on this job.");
 });

@@ -156,7 +156,7 @@ export function authorityNote(authority: ReleaseAuthority): string {
 }
 
 export function disputeNote(dispute: DisputeView): string {
-  return `Disputed ${utc(dispute.openedAt)}: ${dispute.reason} The arbiter decides by ${utc(dispute.resolveBy)}.`;
+  return `Disputed ${utc(dispute.openedAt)}: ${dispute.reason} The arbiter decides by ${utc(dispute.resolveBy)}, or the payout releases to the operator.`;
 }
 
 export function creditLine(credits: CreditAccountView): string {
