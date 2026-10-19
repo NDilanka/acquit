@@ -22,3 +22,25 @@ export function match(path: string): Route {
   if (receipt?.[1]) return { name: "receipt", id: decodeURIComponent(receipt[1]) };
   return { name: "notFound" };
 }
+
+export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" {
+  switch (route.name) {
+    case "home":
+      return "landing";
+    case "notFound":
+      return "notFound";
+    case "receipt":
+    case "demo":
+    case "newJob":
+    case "job":
+    case "operator":
+    case "cli":
+    case "studio":
+      return "signIn";
+  }
+}
+
+// The call to action waits while the session loads (undefined), so it never flashes for a signed-in visitor.
+export function showsDemoCta(route: Route, signedIn: boolean | undefined): boolean {
+  return signedIn === false && route.name !== "demo";
+}

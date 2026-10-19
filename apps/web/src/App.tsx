@@ -3,7 +3,7 @@ import { api, ApiError } from "./api";
 import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
 import { Link, useRouter } from "./router";
-import { match } from "./route";
+import { match, showsDemoCta, signedOutPage } from "./route";
 import { SessionContext, useSession, type Session } from "./session";
 import { NotFound, RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
@@ -63,7 +63,7 @@ export function App() {
   if (route.name === "receipt") {
     return (
       <>
-        <TopBar session={session ?? null} onSignOut={signOut} />
+        <TopBar session={session} onSignOut={signOut} />
         <main className="wrap">
           <PublicReceiptPage receiptId={route.id} />
         </main>
@@ -73,8 +73,9 @@ export function App() {
 
   if (session === undefined) return <div className="wrap muted">Loading…</div>;
 
+  const signedOutView = signedOutPage(route);
   // The landing page reads no API data, so it still renders when the session call failed.
-  if (session === null && route.name === "home") {
+  if (session === null && signedOutView === "landing") {
     return (
       <>
         <TopBar session={null} onSignOut={signOut} />
@@ -94,7 +95,7 @@ export function App() {
             {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
             <Routes key={session.user.handle} />
           </SessionContext.Provider>
-        ) : route.name === "notFound" ? (
+        ) : signedOutView === "notFound" ? (
           <NotFound action={{ to: "/demo", label: "Start the demo" }} />
         ) : (
           mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
@@ -194,10 +195,11 @@ function Home() {
   }
 }
 
-function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: () => void }) {
+function TopBar({ session, onSignOut }: { session: Session | null | undefined; onSignOut: () => void }) {
   const user = session?.user ?? null;
   const { location } = useRouter();
   const on = (p: string) => (location.path === p ? "on" : "");
+  const signedIn = session === undefined ? undefined : session !== null;
   return (
     <header className="top">
       <Link to="/" className="brand">
@@ -222,7 +224,7 @@ function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: ()
         </nav>
       )}
       <span className="sp" />
-      {!user && match(location.path).name !== "demo" && <Link to="/demo" className="btn sm">Try the live demo</Link>}
+      {showsDemoCta(match(location.path), signedIn) && <Link to="/demo" className="btn sm">Try the live demo</Link>}
       <span className="sandbox" title="PayPal sandbox. No real money moves.">Sandbox</span>
       {user && (
         <>
