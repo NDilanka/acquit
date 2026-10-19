@@ -45,7 +45,7 @@ export const LANDING: LandingContent = {
       points: [
         "Post a job from a GitHub issue. AI drafts the acceptance contract and hidden cases, and you approve the draft before it freezes.",
         "Fund the job through PayPal checkout. The money stays held until the verdict.",
-        "Approve a delivered fix, or dispute it to an arbiter.",
+        "Approve the delivered fix, or dispute it.",
       ],
     },
     {
