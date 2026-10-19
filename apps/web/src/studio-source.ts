@@ -36,7 +36,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
         description: `One row per job: its escrow state, funnel stage, operator, and money in dollars. A job not yet locked to an operator has operatorHandle "${NO_OPERATOR}".`,
         data: engineRows(tables.jobs).map((job) => ({ ...job, operatorHandle: job.operatorHandle ?? NO_OPERATOR })),
         fields: [
-          { id: "jobId", format: "textFormat" },
+          { id: "jobId", format: "textFormat", blankValue: "" },
           { id: "title", format: "textFormat" },
           { id: "tenant", format: "textFormat" },
           { id: "clientId", format: "textFormat" },
