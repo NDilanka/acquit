@@ -1,4 +1,4 @@
-import type { AgReportState, AgWidgetDataFormat } from "ag-studio";
+import type { AgReportState, AgSortConfig, AgWidgetDataFormat } from "ag-studio";
 import type { AgRegistry, AgWidgetDefinition } from "ag-studio-react";
 
 export type DashboardId = "escrow" | "earnings";
@@ -214,6 +214,7 @@ export type NativeWidgetSpec = {
   readonly xSpan: number;
   readonly ySpan: number;
   readonly dataMapping: Readonly<Record<string, readonly { readonly id: string; readonly aggregation?: "sum" | "count" }[]>>;
+  readonly sort?: readonly AgSortConfig[];
 };
 
 export const NATIVE_WIDGETS = {
@@ -226,6 +227,7 @@ export const NATIVE_WIDGETS = {
         xSpan: 4,
         ySpan: 5,
         dataMapping: { categoryKey: [{ id: "jobs.stage" }], valueKey: [{ id: "jobs.jobId", aggregation: "count" }] },
+        sort: [{ field: { id: "jobs.stage" }, direction: "asc" }],
       },
       {
         id: "escrow-pivot",
@@ -277,6 +279,7 @@ export type AcquitWidget = {
   type: AcquitWidgetId | NativeWidgetSpec["type"];
   dataMapping: Record<string, never> | NativeWidgetSpec["dataMapping"];
   format?: AgWidgetDataFormat<unknown>;
+  sort?: AgSortConfig[];
 };
 
 export interface AcquitRegistry extends AgRegistry {

@@ -11,7 +11,7 @@ import type {
   PlatformTables,
   PlatformVerdictRow,
 } from "./api-types.ts";
-import { NATIVE_WIDGETS } from "./dashboard-widgets.ts";
+import { NATIVE_WIDGETS, type NativeWidgetSpec } from "./dashboard-widgets.ts";
 import { conserves, escrowTotals, verifierStats } from "./studio-data.ts";
 import { escrowData } from "./studio-source.ts";
 
@@ -169,6 +169,19 @@ test("the funnel counts each job once, at its current stage", async () => {
     measures: [rowCount("jobs", "jobId", "jobs")] }]);
   assert.deepEqual(sorted((rows ?? []).map((row) => `${row.stage}=${row.jobs}`)),
     ["1 Posted=1", "2 Bid=1", "3 Funded=1", "5 Paid=1", "6 Refunded=1"]);
+});
+
+test("the funnel's spec sort returns its stages in pipeline order", async () => {
+  const specs: readonly NativeWidgetSpec[] = NATIVE_WIDGETS.escrow.flat();
+  const funnel = specs.find((spec) => spec.id === "escrow-funnel");
+  assert.ok(funnel?.sort, "the funnel spec carries a sort");
+  const sort = funnel.sort.map(({ field: ref, direction }) => {
+    const [sourceId = "", fieldId = ""] = ref.id.split(".");
+    return { field: field(sourceId, fieldId), direction };
+  });
+  const [rows] = await run(TABLES, [{ axes: [{ dimensions: [dimension("jobs", "stage", "stage")] }],
+    measures: [rowCount("jobs", "jobId", "jobs")], sort }]);
+  assert.deepEqual((rows ?? []).map((row) => row.stage), ["1 Posted", "2 Bid", "3 Funded", "5 Paid", "6 Refunded"]);
 });
 
 test("the status pivot counts each job under its operator and status", async () => {

@@ -1,6 +1,6 @@
 import type { JobReceiptRow, PlatformJobLedger, ReceiptRow } from "./api-types";
 import { figureCents } from "../../../packages/core/src/explain.ts";
-import { COLUMNS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
+import { COLUMNS, NATIVE_WIDGETS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
 
 /** The four money KPIs. Each is the core figure function's sum over the lines that figure names. */
 export function escrowTotals(jobs: readonly PlatformJobLedger[]) {
@@ -168,16 +168,39 @@ export function repairPlacements(state: DashboardState, spanFor?: (widget: { rea
 }
 
 /**
+ * A seeded native widget that the saved layout leaves without a sort takes its spec's sort. A sort the
+ * viewer already has stays, because it is their own choice.
+ */
+export function withNativeSorts(state: DashboardState, id: DashboardId): DashboardState {
+  const specs: readonly NativeWidgetSpec[] = NATIVE_WIDGETS[id].flat();
+  return {
+    ...state,
+    pages: state.pages.map((page) => {
+      if (!page.widgets) return page;
+      const widgets = Object.fromEntries(
+        Object.entries(page.widgets).map(([widgetId, widget]) => {
+          const sort = specs.find((spec) => spec.id === widgetId)?.sort;
+          if (!widget || sort === undefined || widget.sort !== undefined) return [widgetId, widget];
+          return [widgetId, { ...widget, sort: [...sort] }];
+        }),
+      );
+      return { ...page, widgets };
+    }),
+  };
+}
+
+/**
  * A saved layout from the server, or null when it is missing or no longer reads as Studio state.
  * A widget the saved layout leaves without a placement, or places over another, gets the first free
- * spot, so the dashboard loads every widget.
+ * spot, so the dashboard loads every widget. A seeded native widget with no sort gets its spec's sort.
  */
 export function parseSaved(json: string | null, id: DashboardId): DashboardState | null {
   if (json === null) return null;
   try {
     const parsed: unknown = JSON.parse(json);
     if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { pages?: unknown }).pages)) return null;
-    return repairPlacements(parsed as DashboardState, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
+    const placed = repairPlacements(parsed as DashboardState, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
+    return withNativeSorts(placed, id);
   } catch {
     return null;
   }
