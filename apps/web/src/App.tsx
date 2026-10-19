@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
-import { Link, match, useRouter } from "./router";
+import { Link, useRouter } from "./router";
+import { match } from "./route";
 import { SessionContext, useSession, type Session } from "./session";
 import { NotFound, RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
@@ -149,6 +150,7 @@ function Routes() {
   const route = match(location.path);
   switch (route.name) {
     case "home":
+    case "demo":
       return <Home />;
     case "newJob":
       return user.role === "CLIENT" ? (
