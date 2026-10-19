@@ -118,8 +118,8 @@ export const api = {
   payouts: () => request<{ payouts: PayoutRow[] }>("GET", "/api/me/payouts"),
   escrow: () => request<{ escrow: OperatorEscrowRow[] }>("GET", "/api/me/escrow"),
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
-  platformLedger: () => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger"),
-  platformTables: () => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables"),
+  platformLedger: (init?: CallOptions) => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger", undefined, init),
+  platformTables: (init?: CallOptions) => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables", undefined, init),
   platformReconciliation: () => request<PlatformReconciliation>("GET", "/api/platform/reconciliation"),
   platformExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/platform/explain?figure=${encodeURIComponent(figure)}`),
   loadStudioLayout: (dashboard: string) =>

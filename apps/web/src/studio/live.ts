@@ -1,3 +1,4 @@
+import { ApiError } from "../api.ts";
 import type { PlatformStreamEvent } from "../api-types";
 
 /** Same origin, so the session cookie rides with the stream. */
@@ -5,6 +6,9 @@ export const PLATFORM_STREAM_PATH = "/api/platform/stream";
 
 /** The plain poll the page falls back to only when the stream is unavailable. */
 export const FALLBACK_POLL_MS = 30_000;
+
+/** A platform read that has not answered by then is abandoned, so the read queue moves on. */
+export const READ_TIMEOUT_MS = 20_000;
 
 /** The event a data line carries, or null for anything else. Heartbeats are comments and never reach the handler. */
 export function parseStreamEvent(data: string): PlatformStreamEvent | null {
@@ -50,6 +54,13 @@ export function bookRead(book: Book, outcome: ReadOutcome, at: string): Book {
   return outcome.ok ? { lastGoodAt: at, failure: null } : { lastGoodAt: book.lastGoodAt, failure: { at, error: outcome.error } };
 }
 
+/** The plain reason a read failed, worded for a non-engineer. Outage notices take their wording from here only. */
+export function readFailure(e: unknown): string {
+  if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) return "the server did not answer in time";
+  if (e instanceof ApiError) return `the server refused it (${e.code})`;
+  return "the server could not be reached";
+}
+
 /** Figures from an earlier read are on screen while the latest read failed. */
 export function isStale(book: Book): boolean {
   return book.lastGoodAt !== null && book.failure !== null;
@@ -69,11 +80,9 @@ export type FreshnessNotice = { readonly tone: "warn"; readonly text: string };
 export function freshnessNotice(transport: Transport, book: Book, timeZone?: string): FreshnessNotice | null {
   if (book.lastGoodAt === null) return null;
   if (book.failure !== null) {
-    // Errors often end in a period, and the notice adds its own.
-    const error = book.failure.error.replace(/\.$/, "");
     return {
       tone: "warn",
-      text: `Showing figures from ${clockTime(book.lastGoodAt, timeZone)}. The latest refresh failed: ${error}. Retrying every ${FALLBACK_POLL_MS / 1000} seconds.`,
+      text: `Showing figures from ${clockTime(book.lastGoodAt, timeZone)}. The latest refresh failed because ${book.failure.error}. Trying again every ${FALLBACK_POLL_MS / 1000} seconds.`,
     };
   }
   if (transport === "reconnecting") return { tone: "warn", text: "Live updates dropped. Reconnecting; figures may be behind." };
