@@ -264,7 +264,17 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .landing { max-width: 1080px; margin: 0 auto; padding: 56px 32px 40px; }
 .landing section { margin-top: 56px; scroll-margin-top: 72px; }
-.landing .landing-hero { margin-top: 0; }
+.landing .landing-hero { margin-top: 0; position: relative; isolation: isolate; overflow: hidden; border-radius: 16px; padding: 88px 56px 56px; color: #fff; background: #0b0f0c url("/hero/hero-poster.jpg") center / cover; }
+.landing-hero::before { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, rgba(8, 12, 10, 0.88) 0%, rgba(8, 12, 10, 0.62) 55%, rgba(8, 12, 10, 0.32) 100%); }
+.landing-hero-video { position: absolute; inset: 0; z-index: -2; width: 100%; height: 100%; object-fit: cover; }
+.landing-hero .landing-lede, .landing-hero .landing-note { color: rgba(255, 255, 255, 0.84); }
+.landing-hero .landing-note { border-left-color: #6fd3a0; }
+.landing-hero .landing-note .eyebrow { color: #6fd3a0; }
+.landing-hero .btn.ghost { color: #fff; border-color: rgba(255, 255, 255, 0.45); }
+.landing-hero .btn.ghost:hover { background: rgba(255, 255, 255, 0.1); }
+@media (prefers-reduced-motion: reduce) {
+  .landing-hero-video { display: none; }
+}
 .landing h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(44px, 8vw, 76px); line-height: 1.02; letter-spacing: -0.02em; margin: 0 0 18px; }
 .landing h2 { font-size: 26px; font-weight: 600; letter-spacing: -0.015em; margin: 0 0 16px; }
 .landing h3 { font-size: 18px; font-weight: 600; margin: 4px 0 10px; }
@@ -293,6 +303,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 @media (max-width: 640px) {
   .landing { padding: 32px 16px 24px; }
+  .landing .landing-hero { padding: 48px 20px 32px; border-radius: 12px; }
   .landing section { margin-top: 40px; }
   .landing h1 { font-size: 46px; }
   .landing-lede { font-size: 17px; }

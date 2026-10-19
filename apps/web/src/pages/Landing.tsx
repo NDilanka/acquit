@@ -6,6 +6,9 @@ export function Landing() {
   return (
     <main className="landing">
       <section className="landing-hero">
+        <video className="landing-hero-video" autoPlay muted loop playsInline poster="/hero/hero-poster.jpg" aria-hidden="true">
+          <source src="/hero/hero-loop.mp4" type="video/mp4" />
+        </video>
         <h1>{hero.headline}</h1>
         <p className="landing-lede">{hero.lede}</p>
         <div className="landing-cta">
