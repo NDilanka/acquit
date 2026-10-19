@@ -20,7 +20,7 @@ Preconditions:
 
 - Use an OPEN BIDDING job from features 02 and 03. Do not accept its bid.
 - Devon has 20 credits after bidding. Sign in as `maya-client`.
-- Use `ab` from the index. Close only this run's browser with `ab close`. Run `ab --no-auto-dialog open $webUrl` to relaunch the same owned session, then choose `maya-client` from the picker.
+- Use `ab` from the index. Close only this run's browser with `ab close`. Run `ab --no-auto-dialog open $webUrl/demo` to relaunch the same owned session, then choose `maya-client` from the picker.
 
 - **Reach cancellation.** Run `ab open "$webUrl/jobs/JOB_ID"` and `ab wait --text 'Cancel job'`. Save the pre-action screenshot and OPEN job API response.
 - **Dismiss the dialog.** With automatic dialog handling disabled, run `ab find role button click --name 'Cancel job' --exact`, `ab dialog status`, and `ab dialog dismiss`. Require the message `Cancel this job? Bidders get their credits back.`. Confirm the job remains OPEN and credits remain 20 through read-only API checks.
