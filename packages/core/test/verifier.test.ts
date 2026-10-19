@@ -11,6 +11,7 @@ import { boundedDetail, boundedVerdict, decideVerdict, describeRejectReason, FAI
 import type { DefinitionOfDone, DiffChange, DiffSummary, FrozenRun, Glob, HiddenCase, RejectReason, SubjectCall, SubjectReply, Verdict, VerifierRunRequest, VerifierRunId } from "../src/verifier.ts";
 import { childProcessSubject } from "../../verifier/subject.ts";
 import { gitSource, runJudge } from "../../verifier/judge.ts";
+import { attemptView } from "../src/job.ts";
 import { hiddenManifest } from "../../verifier/hidden.ts";
 import { exampleCases, exampleContract } from "./hidden-fixture.ts";
 import { bookEntry, fixtureBook } from "./verifier-book.ts";
@@ -180,17 +181,45 @@ test("decideVerdict rejects a skipped frozen id, a failed hidden id, and a scree
 		{ kind: "TESTS_MISSING", suite: "frozen", missing: ["frozen:2"] },
 		{ kind: "TESTS_MISSING", suite: "hidden", missing: ["hidden:1", "hidden:2"] },
 	]);
+	assert.deepEqual(skipped.tallies, { frozen: { expected: 2, passed: 1 }, hidden: { expected: 2, passed: 0 } });
 	const failed = decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
 		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.23" }],
 		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
 	])), clean, at) as Extract<Verdict, { result: "REJECTED" }>;
 	assert.deepEqual(failed.reasons, [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }]);
+	assert.deepEqual(failed.tallies, { frozen: { expected: 2, passed: 2 }, hidden: { expected: 2, passed: 1 } });
 	const screened: RejectReason[] = [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }];
 	const denied = decideVerdict(request, screened, passed("frozen:1", "frozen:2"), judgeHidden(cases, new Map([
 		["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],
 		["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
 	])), clean, at) as Extract<Verdict, { result: "REJECTED" }>;
 	assert.deepEqual(denied.reasons, [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }]);
+	assert.equal(denied.tallies, null);
+});
+
+test("a rejected run counts the frozen and hidden tests it passed, with literal expected values", () => {
+	const six: HiddenCase[] = Array.from({ length: 6 }, (_, index) => ({ id: `hidden:${index + 1}` as TestId,
+		target: { module: "src/money.ts", export: "formatTotal" }, args: [[{ amount: index }], "KWD"], expected: `${index}` }));
+	const sixReplies = new Map<TestId, SubjectReply>(six.map((hiddenCase): [TestId, SubjectReply] => [hiddenCase.id,
+		{ id: hiddenCase.id, ok: true, value: hiddenCase.id === "hidden:6" ? "wrong" : hiddenCase.expected }]));
+	const hiddenOnly = decideVerdict(request, [], passed("frozen:1", "frozen:2"), judgeHidden(six, sixReplies), null, at) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.equal(hiddenOnly.result, "REJECTED");
+	assert.deepEqual(hiddenOnly.tallies, { frozen: { expected: 2, passed: 2 }, hidden: { expected: 6, passed: 5 } });
+	const frozenFailed = decideVerdict(request, [], { results: new Map([["frozen:1" as TestId, "failed"], ["frozen:2" as TestId, "passed"]]) },
+		judgeHidden(cases, new Map([
+			["hidden:1" as TestId, { id: "hidden:1" as TestId, ok: true, value: "1.234" }],
+			["hidden:2" as TestId, { id: "hidden:2" as TestId, ok: true, value: "2.345" }],
+		])), null, at) as Extract<Verdict, { result: "REJECTED" }>;
+	assert.deepEqual(frozenFailed.tallies, { frozen: { expected: 2, passed: 1 }, hidden: { expected: 2, passed: 2 } });
+});
+
+test("a REJECTED verdict stored before tallies existed projects both counts as null", () => {
+	const reasons = [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }];
+	const stored = { result: "REJECTED", runId: "run_job_test_1", sourceCommit: commit, at, reasons, reasonsTruncated: 0 } as unknown as Extract<Verdict, { result: "REJECTED" }>;
+	const view = attemptView({ ordinal: 1, verdict: stored });
+	assert.deepEqual([view.frozen, view.hidden], [null, null]);
+	const counted = attemptView({ ordinal: 2, verdict: { ...stored, tallies: { frozen: { expected: 2, passed: 1 }, hidden: { expected: 6, passed: 5 } } } });
+	assert.deepEqual([counted.frozen, counted.hidden], [{ expected: 2, passed: 1 }, { expected: 6, passed: 5 }]);
 });
 
 test("boundedVerdict always fits the callback, even with a huge reason", () => {
@@ -218,7 +247,7 @@ test("boundedVerdict holds a reason whose text escapes past the character bound"
 	const control = "\u0001".repeat(200);
 	const reason: RejectReason = { kind: "TEST_FRAMEWORK_IN_SOURCE", path: control, symbol: control };
 	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit, at,
-		reasons: Array.from({ length: VERDICT_REASONS_MAX }, () => reason) as [RejectReason, ...RejectReason[]], reasonsTruncated: 0 };
+		reasons: Array.from({ length: VERDICT_REASONS_MAX }, () => reason) as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies: null };
 	const bounded = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
 	assert.equal(bounded.reasons.some(one => bytes(one) > VERDICT_REASON_BYTES_MAX), false);
 	const body = JSON.stringify({ jobId: "job_probe01", ordinal: 1, report: { kind: "VERDICT", verdict: bounded } });
@@ -302,7 +331,7 @@ test("boundedDetail bounds each adversarial 1 MiB body inside the cost bound", (
 test("bounding a verdict twice equals bounding it once", () => {
 	const reasons: RejectReason[] = Array.from({ length: 600 }, (_, index) => ({ kind: "PROTECTED_PATH_MODIFIED", path: `.github/workflows/w${index}.yml` }));
 	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit,
-		reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
+		reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies: null, at };
 	const once = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
 	const twice = boundedVerdict(once);
 	assert.deepEqual(twice, once);
@@ -315,7 +344,7 @@ test("bounding a verdict twice equals bounding it once", () => {
 test("trimming a reason never splits a surrogate pair", () => {
 	const path = `${"a".repeat(199)}${"\u{1F600}".repeat(500)}`;
 	const rejected: Verdict = { result: "REJECTED", runId: "run_job_test_1" as VerifierRunId, sourceCommit: commit,
-		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path }], reasonsTruncated: 0, at };
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path }], reasonsTruncated: 0, tallies: null, at };
 	const bounded = boundedVerdict(rejected) as Extract<Verdict, { result: "REJECTED" }>;
 	const trimmed = (bounded.reasons[0] as Extract<RejectReason, { kind: "PROTECTED_PATH_MODIFIED" }>).path;
 	assert.equal(trimmed, `${"a".repeat(199)}\u{1F600}`);

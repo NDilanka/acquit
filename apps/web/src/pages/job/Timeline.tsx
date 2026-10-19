@@ -32,6 +32,11 @@ function EventNode({ event }: { event: TimelineEvent }) {
           {event.at && <small className="num muted">{utc(event.at)}</small>}
         </div>
         <p className="tl-detail">{event.detail}</p>
+        {event.reasons.map((reason, i) => (
+          <p key={`reason-${i}`} className="tl-detail">
+            {reason}
+          </p>
+        ))}
         {event.href && (
           <p className="tl-link">
             <a href={event.href} target="_blank" rel="noreferrer">

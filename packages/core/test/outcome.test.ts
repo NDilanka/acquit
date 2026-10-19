@@ -95,7 +95,7 @@ const passing = (runId: VerifierRunId): Verdict => ({ result: "VERIFIED", runId,
 	pullRequest: 13, frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 }, reportDigest: "1".repeat(64) as Digest, at: now });
 
 const failing = (runId: VerifierRunId): Verdict => ({ result: "REJECTED", runId, sourceCommit: submittedCommit,
-	reasons: [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:3" as TestId] }], reasonsTruncated: 0, at: now });
+	reasons: [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:3" as TestId] }], reasonsTruncated: 0, tallies: null, at: now });
 
 /** Opens a job of the given vertical, submits it, and delivers the judge's verdict. Returns the job as the store now holds it. */
 async function submitAndJudge(vertical: Vertical | undefined, verdict: (runId: VerifierRunId) => Verdict) {

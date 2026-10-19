@@ -72,7 +72,7 @@ function heldTamperRow(): JobRow {
 			quote: quote(commercialSplit(usd("378.00")), model), capture, book, cutoffAt: instant("2026-11-03T12:00:00Z") },
 			attempts: { phase: "READY", runsStarted: 1, failure: null, history: [{ ordinal: 1, verdict: { result: "REJECTED",
 				runId: "run_held_1" as VerifierRunId, sourceCommit: "0042bbeb5d1e" as CommitSha,
-				reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, at: now } }] } } };
+				reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, tallies: null, at: now } }] } } };
 }
 
 /** A refunded job in the deployment's own world: the hold went back to the client. */
@@ -228,7 +228,7 @@ function verifiedRetryRow(): JobRow {
 	if ("kind" in book) throw new Error("law break");
 	const rejected: RejectedAttempt = { ordinal: 1, verdict: { result: "REJECTED", runId: "run_retry_1" as VerifierRunId,
 		sourceCommit: "0042bbeb5d1e" as CommitSha, reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }],
-		reasonsTruncated: 0, at: now } };
+		reasonsTruncated: 0, tallies: null, at: now } };
 	const passed: PassedAttempt = { ordinal: 2, verdict: { result: "VERIFIED", runId: "run_retry_2" as VerifierRunId,
 		sourceCommit: "8f3a302b4d6e" as CommitSha, mergeCommit: "5cccb66515313caed72e4af329a62fc011139426" as CommitSha,
 		pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 },

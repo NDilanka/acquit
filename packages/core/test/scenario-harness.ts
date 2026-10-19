@@ -44,7 +44,7 @@ function verdictFor(tree: ScriptedTree, request: VerifierRunRequest, at: Instant
 	const reasons: readonly [RejectReason, ...RejectReason[]] = tree === "cheat-hardcode-visible-values"
 		? [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1" as TestId] }]
 		: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }];
-	return { result: "REJECTED", ...common, reasons, reasonsTruncated: 0 };
+	return { result: "REJECTED", ...common, reasons, reasonsTruncated: 0, tallies: null };
 }
 
 /**

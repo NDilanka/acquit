@@ -58,14 +58,33 @@ function paidJob(status: string, receiptId: string) {
 	};
 }
 
-function seed(store: SqliteStore, sealed: boolean): void {
-	store.db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(PAID_JOB, JSON.stringify(paidJob("PAID", RECEIPT)));
+function seed(store: SqliteStore, sealed: boolean, job: object = paidJob("PAID", RECEIPT)): void {
+	store.db.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(PAID_JOB, JSON.stringify(job));
 	const manifest = { issue: { repository: "maya-client/invoice-app", number: 42, title: "Fix the invoice total" },
 		...(sealed ? { sealedHiddenCases: { digest: DIGEST } } : {}) };
 	store.db.prepare("INSERT INTO job_manifests VALUES (?, ?)").run(PAID_JOB, JSON.stringify(manifest));
 	store.db.prepare("INSERT INTO receipts VALUES (?, ?, 'devon-ops', 'JOB', 1, ?)").run(RECEIPT, PAID_JOB, RELEASED_AT);
 	if (sealed) store.db.prepare("INSERT INTO job_scoping VALUES (?, 'APPROVED', NULL, '[]', ?, NULL, NULL, ?)").run(PAID_JOB, DIGEST, SEALED_AT);
 }
+
+test("a REJECTED attempt reads the counts under its tallies key, and reads null when it has none", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		const job = paidJob("PAID", RECEIPT);
+		seed(store, false, { ...job, state: { ...job.state, history: [
+			{ ordinal: 1, verdict: { result: "REJECTED", runId: "run_1", sourceCommit: "b".repeat(40), reasonsTruncated: 0,
+				at: "2026-10-11T20:00:00Z", reasons: [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden-private-test-id"] }],
+				tallies: { frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } } } },
+			{ ordinal: 2, verdict: { result: "REJECTED", runId: "run_2", sourceCommit: "c".repeat(40), reasonsTruncated: 0,
+				at: "2026-10-11T21:00:00Z", reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], tallies: null } },
+		] } });
+		const body = publicReceipt(store.db, RECEIPT, reader);
+		assert.deepEqual(body?.receipt.verdict.history.map(({ ordinal, result, frozen, hidden }) => ({ ordinal, result, frozen, hidden })), [
+			{ ordinal: 1, result: "REJECTED", frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } },
+			{ ordinal: 2, result: "REJECTED", frozen: null, hidden: null },
+		]);
+	} finally { store.close(); }
+});
 
 test("a PAID job's receipt reads as the literal public body, with its revealed cases and PayPal ids", () => {
 	const store = new SqliteStore(":memory:");

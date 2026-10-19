@@ -164,6 +164,7 @@ test("a complete forged transcript written before any input arrives is a fault, 
 		if (outcome.verdict.result !== "REJECTED") return;
 		const details = outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail);
 		assert.deepEqual([...details].sort(), ["SUBJECT_FRAME_REJECTED", "SUBJECT_INCOMPLETE"]);
+		assert.equal(outcome.verdict.tallies, null);
 	} finally { fixture.remove(); }
 });
 
@@ -538,6 +539,7 @@ test("a call that never resolves dies at the deadline as a TIMEOUT fault", async
 		if (outcome.kind !== "VERDICT" || outcome.verdict.result !== "REJECTED") throw new Error("Expected a rejection");
 		assert.deepEqual(outcome.verdict.reasons.filter(reason => reason.kind === "SUBJECT_FAULT").map(reason => reason.detail),
 			["TIMEOUT", "SUBJECT_EXIT", "SUBJECT_INCOMPLETE"]);
+		assert.equal(outcome.verdict.tallies, null);
 		assert.ok(outcome.timings.wallMs >= 1_400, `wallMs ${outcome.timings.wallMs} should reach the deadline`);
 	} finally { fixture.remove(); }
 });

@@ -152,7 +152,7 @@ export function parseVerdict(value: unknown): Verdict | null {
 			? raw.reasonsTruncated : null;
 		if (reasonsTruncated === null) return null;
 		return { result: "REJECTED", runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha,
-			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated, at };
+			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated, tallies: parseTallies(raw.tallies), at };
 	}
 	if (raw.result !== "VERIFIED") return null;
 	const mergeCommit = nonEmptyString(raw.mergeCommit);
@@ -173,6 +173,15 @@ function parseTally(value: unknown): TestTally | null {
 	const passed = count(tally.passed);
 	if (expected === null || passed === null || passed > expected) return null;
 	return { expected, passed };
+}
+
+/** A callback that carries no readable counts still states its verdict, so the tallies read as null. */
+function parseTallies(value: unknown): { readonly frozen: TestTally; readonly hidden: TestTally } | null {
+	if (!value || typeof value !== "object") return null;
+	const raw = value as Record<string, unknown>;
+	const frozen = parseTally(raw.frozen);
+	const hidden = parseTally(raw.hidden);
+	return frozen && hidden ? { frozen, hidden } : null;
 }
 
 function parseRejectReason(value: unknown): RejectReason | null {

@@ -2,6 +2,7 @@ import type { Attempt, JobView, VerifierFields } from "./api-types";
 import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
 import { arbiterNoteLine, authorityNote, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
 import { bidStatusWord, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
+import { tallyWords } from "./receipt-view.ts";
 import { seededLabel } from "./scoping-review.ts";
 
 /** The job view as the page holds it: the mirrored JobView plus the attempt history the projection serves. */
@@ -25,6 +26,8 @@ export type TimelineEvent = {
   readonly ids: readonly TimelineId[];
   /** The pull request that carries an attempt or the receipt. Null when there is none to link. */
   readonly href: string | null;
+  /** The reason lines of a counted rejection, shown beneath its detail. Empty for every other event. */
+  readonly reasons: readonly string[];
 };
 
 export type MoneyRow = {
@@ -69,6 +72,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
         { value: c.hiddenManifest, label: "Hidden cases sealed" },
       ],
       href: null,
+      reasons: [],
     });
   }
 
@@ -81,6 +85,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "open",
       ids: [{ value: bid.id }],
       href: null,
+      reasons: [],
     });
   }
 
@@ -94,6 +99,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "held",
       ids: [],
       href: null,
+      reasons: [],
     });
   }
 
@@ -118,6 +124,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "held",
       ids: [],
       href: null,
+      reasons: [],
     });
   }
 
@@ -130,6 +137,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "alert",
       ids: [],
       href: null,
+      reasons: [],
     });
   }
 
@@ -147,6 +155,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "ok",
       ids: [{ value: release.payoutItemId }, { value: release.captureId }],
       href: null,
+      reasons: [],
     });
   }
 
@@ -163,6 +172,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "new",
       ids: [],
       href: null,
+      reasons: [],
     });
   }
 
@@ -177,6 +187,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "ok",
       ids: [{ value: r.id }, { value: r.mergeCommit }],
       href: prHref(r.pullRequest),
+      reasons: [],
     });
   }
 
@@ -194,22 +205,25 @@ function attemptEvent(attempt: Attempt, total: number, status: JobView["status"]
       tone: "ok",
       ids: [{ value: attempt.sourceCommit }],
       href: prHref(attempt.pullRequest),
+      reasons: [],
     };
   }
   const reasons = attempt.reasons.length > 0 ? attempt.reasons.map(sentence) : ["The verifier rejected the work."];
   const unlisted = attempt.reasonsTruncated;
+  const unlistedLine = unlisted > 0 ? `${unlisted} more ${unlisted === 1 ? "reason" : "reasons"} not listed.` : null;
+  const reasonLines = unlistedLine === null ? reasons : [...reasons, unlistedLine];
+  const counts = tallyWords(attempt.frozen, attempt.hidden);
+  const escrow = status === "IN_PROGRESS" ? "Escrow still held." : null;
+  // With counts, the summary is the counts and escrow. The reasons go in their own block beneath it.
   return {
     at: attempt.at,
     kind: "ATTEMPT",
     title: `${title} rejected`,
-    detail: sentences([
-      ...reasons,
-      unlisted > 0 && `${unlisted} more ${unlisted === 1 ? "reason" : "reasons"} not listed.`,
-      status === "IN_PROGRESS" && "Escrow still held.",
-    ]),
+    detail: counts === null ? sentences([...reasonLines, escrow]) : sentences([counts, escrow]),
     tone: "alert",
     ids: [{ value: attempt.sourceCommit }],
     href: null,
+    reasons: counts === null ? [] : reasonLines,
   };
 }
 
@@ -224,12 +238,12 @@ function sentences(parts: readonly (string | false | null | undefined)[]): strin
 /** The arbiter's decision. Its title says which way it went, and the note is the arbiter's own words. */
 function arbiterEvent(job: TimelineJob, note: string): TimelineEvent {
   if (job.releaseAuthority === "ARBITER_UPHELD") {
-    return { at: null, kind: "ARBITER", title: "Arbiter upheld the work", detail: note, tone: "ok", ids: [], href: null };
+    return { at: null, kind: "ARBITER", title: "Arbiter upheld the work", detail: note, tone: "ok", ids: [], href: null, reasons: [] };
   }
   if (job.refundReason === "ARBITER_REFUND") {
-    return { at: null, kind: "ARBITER", title: "Arbiter refunded the client", detail: note, tone: "new", ids: [], href: null };
+    return { at: null, kind: "ARBITER", title: "Arbiter refunded the client", detail: note, tone: "new", ids: [], href: null, reasons: [] };
   }
-  return { at: null, kind: "ARBITER", title: "Arbiter sent the work back", detail: note, tone: "alert", ids: [], href: null };
+  return { at: null, kind: "ARBITER", title: "Arbiter sent the work back", detail: note, tone: "alert", ids: [], href: null, reasons: [] };
 }
 
 /**

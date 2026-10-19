@@ -1214,13 +1214,14 @@ export type JobProjection = JobView & {
 	};
 };
 
+/** A REJECTED verdict stored before tallies existed has no key, so its counts project as null. */
 export function attemptView(record: AttemptRecord): AttemptView {
 	const verdict = record.verdict;
 	return verdict.result === "VERIFIED"
 		? { ordinal: record.ordinal, result: "VERIFIED", reasons: [], reasonsTruncated: 0, sourceCommit: verdict.sourceCommit, at: verdict.at,
 			frozen: verdict.frozen, hidden: verdict.hidden, pullRequest: verdict.pullRequest }
 		: { ordinal: record.ordinal, result: "REJECTED", reasons: verdict.reasons.map(describeRejectReason), reasonsTruncated: verdict.reasonsTruncated,
-			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: null, hidden: null, pullRequest: null };
+			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: verdict.tallies?.frozen ?? null, hidden: verdict.tallies?.hidden ?? null, pullRequest: null };
 }
 
 /** The House bid row's line, counted from the real receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are display history the store keeps out of these counts; the receipts views label them Seeded. */

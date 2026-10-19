@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { Attempt, BidView, Receipt } from "./api-types.ts";
 import { canDeliver, moneyRows, nextStep, timelineEvents, verifierIndex, verifierLine, type TimelineJob, type Viewer } from "./job-timeline.ts";
@@ -91,6 +92,8 @@ const rejected: Attempt = {
   result: "REJECTED",
   reasons: ["Frozen tests failed: test_a, test_b"],
   reasonsTruncated: 0,
+  frozen: null,
+  hidden: null,
 };
 
 const twoReasons: Attempt = {
@@ -191,6 +194,7 @@ test("open for bids: the timeline shows the frozen contract with no time, then e
         { value: "9f2c4a7be1d3", label: "Hidden cases sealed" },
       ],
       href: null,
+      reasons: [],
     },
     {
       at: null,
@@ -200,6 +204,7 @@ test("open for bids: the timeline shows the frozen contract with no time, then e
       tone: "open",
       ids: [{ value: "bid_devon" }],
       href: null,
+      reasons: [],
     },
   ]);
 });
@@ -236,6 +241,7 @@ test("rejected attempt: the timeline names the reason in red and says escrow is 
     tone: "alert",
     ids: [{ value: "a1b2c3d" }],
     href: null,
+    reasons: [],
   });
 });
 
@@ -251,6 +257,29 @@ test("rejected attempt: every reason the server sent stays in the line, and only
     timelineEvents(cut).at(-1)?.detail,
     "Frozen tests failed: test_a. Hidden tests did not complete: t9. 2 more reasons not listed. Escrow still held.",
   );
+});
+
+test("rejected attempt with tallies: the job page states the counts first, then the reasons beneath them", () => {
+  const counted: Attempt = { ordinal: 1, sourceCommit: "a1b2c3d", at: "2026-10-12T10:00:00.000Z", result: "REJECTED",
+    reasons: ["Hidden tests failed: hidden:6"], reasonsTruncated: 0, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } };
+  const job = locked({ attempts: { used: 1, left: 2, last: "REJECTED", reasons: counted.reasons, history: [counted], pending: null, failure: null } });
+  const event = timelineEvents(job).at(-1);
+  assert.equal(event?.detail, "Passed all 48 visible tests. Failed 1 of 6 hidden tests. Escrow still held.");
+  assert.deepEqual(event?.reasons, ["Hidden tests failed: hidden:6."]);
+  const partial: Attempt = { ...counted, reasons: ["Frozen tests failed: test_a"], frozen: { expected: 48, passed: 40 }, hidden: { expected: 6, passed: 6 } };
+  const partialJob = locked({ attempts: { used: 1, left: 2, last: "REJECTED", reasons: partial.reasons, history: [partial], pending: null, failure: null } });
+  const partialEvent = timelineEvents(partialJob).at(-1);
+  assert.equal(partialEvent?.detail, "Passed 40 of 48 visible tests. Passed all 6 hidden tests. Escrow still held.");
+  assert.deepEqual(partialEvent?.reasons, ["Frozen tests failed: test_a."]);
+  const truncated: Attempt = { ...counted, reasonsTruncated: 2 };
+  const truncatedJob = locked({ attempts: { used: 1, left: 2, last: "REJECTED", reasons: counted.reasons, history: [truncated], pending: null, failure: null } });
+  assert.deepEqual(timelineEvents(truncatedJob).at(-1)?.reasons, ["Hidden tests failed: hidden:6.", "2 more reasons not listed."]);
+});
+
+test("rejected attempt with tallies: the reason lines render as their own paragraphs after the detail", () => {
+  // The suite has no DOM, so the renderer's wiring is checked in its source, as layout-wrap.test.ts does.
+  const source = readFileSync(new URL("./pages/job/Timeline.tsx", import.meta.url), "utf8");
+  assert.match(source, /tl-detail">\{event\.detail\}<\/p>\s*\{event\.reasons\.map\(/);
 });
 
 test("rejected attempt: a refunded job does not claim escrow is held", () => {
@@ -275,6 +304,7 @@ test("rework: the arbiter's note sits after the verified attempt, and the operat
       tone: "ok",
       ids: [{ value: "e4f5a6b" }],
       href: "https://github.com/NDilanka/acquit-demo/pull/12",
+      reasons: [],
     },
     {
       at: null,
@@ -284,6 +314,7 @@ test("rework: the arbiter's note sits after the verified attempt, and the operat
       tone: "alert",
       ids: [],
       href: null,
+      reasons: [],
     },
   ]);
   assert.equal(canDeliver(job, DEVON), true);
@@ -335,6 +366,7 @@ test("verified awaiting review: the client is asked to approve or dispute by the
       tone: "ok",
       ids: [{ value: "e4f5a6b" }],
       href: "https://github.com/NDilanka/acquit-demo/pull/12",
+      reasons: [],
     },
     {
       at: "2026-10-12T10:00:00.000Z",
@@ -344,6 +376,7 @@ test("verified awaiting review: the client is asked to approve or dispute by the
       tone: "held",
       ids: [],
       href: null,
+      reasons: [],
     },
   ]);
 });
@@ -366,6 +399,7 @@ test("the arbiter's selected release or refund shows its note before the settlem
     tone: "ok",
     ids: [],
     href: null,
+    reasons: [],
   });
 
   const refund = locked({
@@ -384,6 +418,7 @@ test("the arbiter's selected release or refund shows its note before the settlem
     tone: "new",
     ids: [],
     href: null,
+    reasons: [],
   });
 });
 
@@ -401,6 +436,7 @@ test("paid: the payout names the approval and the merge, and the receipt is the 
       tone: "ok",
       ids: [{ value: "PAYOUT-ITEM-1" }, { value: "CAPTURE-1" }],
       href: null,
+      reasons: [],
     },
     {
       at: "2026-10-15T10:00:00.000Z",
@@ -410,6 +446,7 @@ test("paid: the payout names the approval and the merge, and the receipt is the 
       tone: "ok",
       ids: [{ value: "rcpt_0001" }, { value: "abcdef1234567" }],
       href: "https://github.com/NDilanka/acquit-demo/pull/12",
+      reasons: [],
     },
   ]);
   assert.equal(events.at(-1)?.title, "Receipt");
@@ -427,6 +464,7 @@ test("paid after the arbiter upheld the work: the note sits before the payout, a
     tone: "ok",
     ids: [],
     href: null,
+    reasons: [],
   });
   assert.equal(
     events.slice(-2)[0]?.detail,
@@ -495,6 +533,7 @@ test("a House bid reads as the House, with its receipts line", () => {
       tone: "open",
       ids: [{ value: "bid_house" }],
       href: null,
+      reasons: [],
     },
   ]);
 });

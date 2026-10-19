@@ -141,7 +141,7 @@ test("a report for a run the job is not waiting on is a no-op that burns no atte
 	const ports: Ports = { store, feeModel: model, fixtures: [demoFixture(exampleContract)], clock: { now: () => now }, verifier, github: { merge: unimplemented },
 		alerts: { raise: async () => {} }, paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, verifyWebhookDelivery: unimplemented, readResource: unimplemented } };
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(row.id, 1), sourceCommit: tamperCommit,
-		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, at: now };
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, tallies: null, at: now };
 	const body = JSON.stringify({ jobId: row.id, ordinal: 1, report: { kind: "VERDICT", verdict } });
 	const signed = () => new Request("http://api.test/api/verifier/callback", { method: "POST",
 		headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body });
@@ -211,7 +211,7 @@ test("createAcquit routes a signed callback through its injected port and accept
 	const paypal = { apiBase: "https://api-m.sandbox.paypal.com" as const, webOrigin: "http://localhost:5243",
 		clientId: "test", secret: "test", webhookId: "", partnerMerchant: merchant, feeModel: model };
 	const verdict: Verdict = { result: "REJECTED", runId: verifierRunId(parseJobId("job_7Q2K"), 1), sourceCommit: tamperCommit,
-		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, at: now };
+		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }], reasonsTruncated: 0, tallies: null, at: now };
 	const signedReport = (jobId: JobId) => {
 		const body = JSON.stringify({ jobId, ordinal: 1, report: { kind: "VERDICT", verdict } });
 		return new Request("http://api.test/api/verifier/callback", { method: "POST",
