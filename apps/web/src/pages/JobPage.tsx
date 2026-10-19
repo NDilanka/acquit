@@ -266,7 +266,7 @@ export function JobPage({ id }: { id: string }) {
                   </label>
                   {dispute.error && <div className="alert">{dispute.error}</div>}
                   <div className="act">
-                    <small className="muted">The review clock pauses. An arbiter decides within 48 hours.</small>
+                    <small className="muted">The review clock pauses. An arbiter has 48 hours to decide. If no decision comes by then, the payout releases to the operator.</small>
                     <button type="button" className="btn ghost" disabled={dispute.busy} onClick={() => setDisputing(false)}>
                       Back
                     </button>

@@ -57,7 +57,7 @@ test("each release authority reads in plain words", () => {
 test("an open dispute names its reason and the arbiter's deadline", () => {
   assert.equal(
     disputeNote({ reason: "The fix breaks EUR rounding.", openedAt: at, resolveBy: "2026-11-05T15:22:00.000Z" }),
-    "Disputed 2026-11-03 15:22 UTC: The fix breaks EUR rounding. The arbiter decides by 2026-11-05 15:22 UTC.",
+    "Disputed 2026-11-03 15:22 UTC: The fix breaks EUR rounding. The arbiter decides by 2026-11-05 15:22 UTC, or the payout releases to the operator.",
   );
 });
 

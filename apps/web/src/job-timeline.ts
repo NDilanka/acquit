@@ -126,7 +126,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       at: job.dispute.openedAt,
       kind: "DISPUTE",
       title: "Disputed by the client",
-      detail: `${job.dispute.reason} The arbiter decides by ${utc(job.dispute.resolveBy)}. The review clock is paused.`,
+      detail: `${job.dispute.reason} The arbiter decides by ${utc(job.dispute.resolveBy)}, or the payout releases to the operator. The review clock is paused.`,
       tone: "alert",
       ids: [],
       href: null,
@@ -333,7 +333,7 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
       : `The client reviews until ${end}. If the client does nothing, Acquit releases the payment then.`;
   },
   "VERIFIED/DISPUTED": ({ job }) =>
-    job.dispute ? `The payment is paused. An arbiter decides by ${utc(job.dispute.resolveBy)}.` : "The payment is paused for an arbiter.",
+    job.dispute ? `The payment is paused. An arbiter decides by ${utc(job.dispute.resolveBy)}, or the payout releases to the operator.` : "The payment is paused for an arbiter.",
   "VERIFIED/RELEASE_PENDING": ({ operator }) => `The payment is being released to ${operator}.`,
   "VERIFIED/REFUND_PENDING": () => "The arbiter's refund is in flight. Nothing to do.",
   "PAID/PAID": ({ operator }) => `Paid to ${operator}. The receipt below is the proof.`,
