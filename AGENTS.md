@@ -15,12 +15,9 @@ Check at every boundary. A boundary is a closed round, a gate or verdict, a land
 
 **Suggest only when the chat is heavy and the moment is cheap.** Both must hold.
 
-The chat is heavy when at least one of these holds:
+The chat is heavy only when its current context is past half the window, or past 200K tokens when you do not know the window. Use the usage figure when the harness or I give one. When you cannot see it, estimate the context since the last compaction: the summary plus the turns after it. Count large file reads and long tool outputs, not the number of calls.
 
-- It has compacted at least once.
-- Its context is past half the window, or past 200K tokens when you do not know the window. Use the usage figure when the harness or I give one. When you cannot see it, treat the chat as light unless it has compacted.
-
-Nothing else makes a chat heavy. The number of tasks or units the chat has run does not count, and neither do many small tool outputs. A chat at 100K tokens with a warm cache is cheaper to continue than to rebuild, because a fresh pickup rereads the handoff note, the standing rules, and the skills at full price, often 30K to 40K tokens.
+Nothing else makes a chat heavy. A compaction does not make it heavy, because it shrinks the context to a summary. Continuing right after one costs about what a fresh pickup costs, and the fresh pickup adds a lossy step of its own, the handoff note. The number of tasks or units the chat has run does not count either. A chat at 100K tokens with a warm cache is cheaper to continue than to rebuild, because a fresh pickup rereads the handoff note, the standing rules, and the skills at full price, often 30K to 40K tokens.
 
 The moment is cheap when at least one of these holds:
 
@@ -30,7 +27,7 @@ The moment is cheap when at least one of these holds:
 
 When the chat is heavy and you are unsure about the moment, compare the work left before the next boundary with the cost of a fresh pickup. Stay for a tail of a few tool calls. Switch for anything that fans out or runs for many turns.
 
-Quality slip overrides the cheap-moment test. If the chat has compacted twice, or you notice a lost rule, a contradicted directive, or a re-read forced because you forgot what you already read, suggest at the first boundary with no blocker.
+Quality slip overrides both tests. A slip is evidence, not a count. It means you notice a lost rule, a contradicted directive, a fact you got wrong that you had already established, or a re-read forced because you forgot what you already read. A second compaction also counts, because two lossy summaries in a row compound. When a slip occurs, suggest at the first boundary with no blocker. One compaction with no slip is not a reason to suggest. After a compaction, check the summary against the standing rules and the handoff note before you act. Restore anything it dropped, and carry on.
 
 If I said keep going or I am away, never stall the work to suggest. Keep going and suggest at the next point where the work waits on me.
 
