@@ -97,6 +97,11 @@ export type Verdict =
 		readonly reasons: readonly [RejectReason, ...RejectReason[]];
 		/** How many reasons were dropped from the end to fit the callback's bound. */
 		readonly reasonsTruncated: number;
+		/**
+		 * The counts a run that reached its tests passed. Null when a screen reason or a subject fault decided
+		 * the run, or the verifier has no frozen and hidden suites. A verdict stored before this field has no key.
+		 */
+		readonly tallies: { readonly frozen: TestTally; readonly hidden: TestTally } | null;
 		readonly at: Instant;
 	};
 
@@ -570,6 +575,11 @@ export function rejectReasons(
 	return reasons;
 }
 
+function frozenTallyOf(request: VerifierRunRequest, frozen: FrozenRun): TestTally {
+	const ids = request.definitionOfDone.frozenTests;
+	return { expected: ids.length, passed: ids.filter(id => frozen.results.get(id) === "passed").length };
+}
+
 /** Fail closed. VERIFIED needs a clean screen, all frozen ids passed, all hidden ids passed, and a published PR. */
 export function decideVerdict(
 	request: VerifierRunRequest,
@@ -581,8 +591,10 @@ export function decideVerdict(
 ): Verdict {
 	const reasons = rejectReasons(request, screen, frozen, hidden);
 	if (reasons.length) {
+		// A screen reason or a subject fault decides the run, and a faulted subject's replies are not evidence of a count.
+		const tallies = screen.length ? null : { frozen: frozenTallyOf(request, frozen), hidden: hidden.tally };
 		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
-			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, at };
+			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies, at };
 	}
 	if (!built) throw new VerifierPublishMissing();
 	const frozenTally: TestTally = { expected: request.definitionOfDone.frozenTests.length, passed: request.definitionOfDone.frozenTests.length };

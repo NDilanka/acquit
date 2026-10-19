@@ -115,6 +115,20 @@ test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejecti
 		[{ kind: "SOURCE_PATHS_OVER_READ_BOUND", paths: 302, limit: 256 }]);
 });
 
+test("a rejection's callback round-trips its tallies, and a callback without readable tallies parses as null", () => {
+	const rejected = { result: "REJECTED", runId: "run_ci_3", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z", reasonsTruncated: 0,
+		reasons: [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:6"] }] };
+	const tallies = { frozen: { expected: 2, passed: 2 }, hidden: { expected: 6, passed: 5 } };
+	const body = JSON.parse(JSON.stringify({ jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: { ...rejected, tallies } } }));
+	const parsed = parseCallbackBody(body);
+	assert.deepEqual(parsed?.report.kind === "VERDICT" && parsed.report.verdict.result === "REJECTED" ? parsed.report.verdict.tallies : "missing", tallies);
+	const tallylessBody = JSON.parse(JSON.stringify({ jobId: "job_ci_test", ordinal: 1, report: { kind: "VERDICT", verdict: rejected } }));
+	const tallyless = parseCallbackBody(tallylessBody);
+	assert.deepEqual(tallyless?.report.kind === "VERDICT" && tallyless.report.verdict.result === "REJECTED" ? tallyless.report.verdict.tallies : "missing", null);
+	const unreadable = parseVerdict({ ...rejected, tallies: { frozen: { expected: 2, passed: 3 }, hidden: { expected: 6, passed: 5 } } });
+	assert.deepEqual(unreadable?.result === "REJECTED" ? unreadable.tallies : "missing", null);
+});
+
 test("the remote verifier signs the run body with a timestamp and refuses a non-2xx answer", async () => {
 	const calls: { url: string; method: string; timestamp: string; nonce: string; signature: string; body: string }[] = [];
 	const port = createRemoteVerifier({ ciUrl: "https://ci.test", runSecret: "run-secret", callbackSecret: "s3cret", now: () => 1_760_000_000_000,

@@ -1,7 +1,7 @@
 // The public receipt page's view model: plain words and money strings, computed from the body the API
 // serves. Pure, so the page's copy and its digest verdict are tested without a browser.
 
-import type { PublicAttempt, PublicReceiptResponse } from "./api-types.ts";
+import type { PublicAttempt, PublicReceiptResponse, TestTally } from "./api-types.ts";
 import { authorityNote, usd, utc } from "./format.ts";
 
 export type PublicReceipt = PublicReceiptResponse["receipt"];
@@ -49,6 +49,21 @@ export function reasonWords(code: string): string {
   return REASON_WORDS[code] ?? code;
 }
 
+/**
+ * The count sentences for a run that reached its tests. Null when either tally is missing, so the
+ * reasons speak instead. Shared by the receipt line and the job timeline.
+ */
+export function tallyWords(frozen: TestTally | null, hidden: TestTally | null): string | null {
+  if (frozen === null || hidden === null) return null;
+  const visible = frozen.passed === frozen.expected
+    ? `Passed all ${frozen.expected} visible tests.`
+    : `Passed ${frozen.passed} of ${frozen.expected} visible tests.`;
+  const hiddenPart = hidden.passed === hidden.expected
+    ? `Passed all ${hidden.expected} hidden tests.`
+    : `Failed ${hidden.expected - hidden.passed} of ${hidden.expected} hidden tests.`;
+  return `${visible} ${hiddenPart}`;
+}
+
 /** One attempt, in the order it was judged: the verdict, the tallies it passed or the reasons it failed. */
 export function attemptLine(attempt: PublicAttempt, total: number): string {
   const head = `Attempt ${attempt.ordinal} of ${total}`;
@@ -57,6 +72,8 @@ export function attemptLine(attempt: PublicAttempt, total: number): string {
     const hidden = attempt.hidden ? `hidden tests ${attempt.hidden.passed} of ${attempt.hidden.expected}` : null;
     return `${head}: verified. ${[frozen, hidden].filter((part): part is string => part !== null).join(", ")}.`;
   }
+  const counts = tallyWords(attempt.frozen, attempt.hidden);
+  if (counts !== null) return `${head}: rejected. ${counts}`;
   const reasons = attempt.reasons.map(reasonWords);
   return `${head}: rejected. ${reasons.length > 0 ? reasons.join("; ") : "No reason recorded"}.`;
 }

@@ -91,6 +91,8 @@ const rejected: Attempt = {
   result: "REJECTED",
   reasons: ["Frozen tests failed: test_a, test_b"],
   reasonsTruncated: 0,
+  frozen: null,
+  hidden: null,
 };
 
 const twoReasons: Attempt = {
@@ -251,6 +253,18 @@ test("rejected attempt: every reason the server sent stays in the line, and only
     timelineEvents(cut).at(-1)?.detail,
     "Frozen tests failed: test_a. Hidden tests did not complete: t9. 2 more reasons not listed. Escrow still held.",
   );
+});
+
+test("rejected attempt with tallies: the job page states the counts first, then the reasons", () => {
+  const counted: Attempt = { ordinal: 1, sourceCommit: "a1b2c3d", at: "2026-10-12T10:00:00.000Z", result: "REJECTED",
+    reasons: ["Hidden tests failed: hidden:6"], reasonsTruncated: 0, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } };
+  const job = locked({ attempts: { used: 1, left: 2, last: "REJECTED", reasons: counted.reasons, history: [counted], pending: null, failure: null } });
+  assert.equal(timelineEvents(job).at(-1)?.detail,
+    "Passed all 48 visible tests. Failed 1 of 6 hidden tests. Hidden tests failed: hidden:6. Escrow still held.");
+  const partial: Attempt = { ...counted, reasons: ["Frozen tests failed: test_a"], frozen: { expected: 48, passed: 40 }, hidden: { expected: 6, passed: 6 } };
+  const partialJob = locked({ attempts: { used: 1, left: 2, last: "REJECTED", reasons: partial.reasons, history: [partial], pending: null, failure: null } });
+  assert.equal(timelineEvents(partialJob).at(-1)?.detail,
+    "Passed 40 of 48 visible tests. Passed all 6 hidden tests. Frozen tests failed: test_a. Escrow still held.");
 });
 
 test("rejected attempt: a refunded job does not claim escrow is held", () => {

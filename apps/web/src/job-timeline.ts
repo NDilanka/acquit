@@ -2,6 +2,7 @@ import type { Attempt, JobView, VerifierFields } from "./api-types";
 import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
 import { arbiterNoteLine, authorityNote, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
 import { bidStatusWord, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
+import { tallyWords } from "./receipt-view.ts";
 import { seededLabel } from "./scoping-review.ts";
 
 /** The job view as the page holds it: the mirrored JobView plus the attempt history the projection serves. */
@@ -203,6 +204,7 @@ function attemptEvent(attempt: Attempt, total: number, status: JobView["status"]
     kind: "ATTEMPT",
     title: `${title} rejected`,
     detail: sentences([
+      tallyWords(attempt.frozen, attempt.hidden),
       ...reasons,
       unlisted > 0 && `${unlisted} more ${unlisted === 1 ? "reason" : "reasons"} not listed.`,
       status === "IN_PROGRESS" && "Escrow still held.",

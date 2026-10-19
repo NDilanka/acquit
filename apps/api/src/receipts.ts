@@ -145,12 +145,19 @@ function tallyOf(value: unknown): { readonly expected: number; readonly passed: 
 	return typeof tally?.expected === "number" && typeof tally.passed === "number" ? { expected: tally.expected, passed: tally.passed } : null;
 }
 
+/** A verified verdict keeps its counts at the top level, and a rejected one under tallies. A row stored before tallies has neither. */
+function countsOf(verdict: Record<string, unknown>) {
+	const source = (verdict.result === "REJECTED" ? verdict.tallies : verdict) as { frozen?: unknown; hidden?: unknown } | null | undefined;
+	return { frozen: tallyOf(source?.frozen), hidden: tallyOf(source?.hidden) };
+}
+
 function attemptOf(entry: { readonly ordinal?: unknown; readonly verdict?: Record<string, unknown> }): PublicAttempt | null {
 	const verdict = entry.verdict;
 	if (!verdict || (verdict.result !== "VERIFIED" && verdict.result !== "REJECTED")) return null;
 	const reasons = Array.isArray(verdict.reasons) ? verdict.reasons as RejectReason[] : [];
+	const counts = countsOf(verdict);
 	return { ordinal: Number(entry.ordinal), result: verdict.result, at: String(verdict.at ?? ""),
-		frozen: tallyOf(verdict.frozen), hidden: tallyOf(verdict.hidden),
+		frozen: counts.frozen, hidden: counts.hidden,
 		reasons: reasons.filter(reason => typeof reason?.kind === "string").map(reasonCode) };
 }
 

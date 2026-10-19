@@ -10,6 +10,7 @@ import {
   paypalLines,
   receiptPageHref,
   reasonWords,
+  tallyWords,
   SANDBOX_NOTE,
   SCRIPTED_NOTE,
   scoreCardLines,
@@ -84,6 +85,17 @@ test("one attempt reads as its verdict and its tallies, or its reasons when it w
     reasons: ["TESTS_FAILED:hidden", "PROTECTED_PATH_MODIFIED"] };
   assert.equal(attemptLine(rejected, 3), "Attempt 1 of 3: rejected. Hidden tests failed; A protected test file was changed.");
   assert.equal(attemptLine({ ...rejected, reasons: [] }, 3), "Attempt 1 of 3: rejected. No reason recorded.");
+});
+
+test("a rejected attempt that ran its tests states the counts in place of the reason words", () => {
+  const hiddenFailed: PublicAttempt = { ordinal: 1, result: "REJECTED", at: RELEASED, frozen: { expected: 48, passed: 48 },
+    hidden: { expected: 6, passed: 5 }, reasons: ["TESTS_FAILED:hidden"] };
+  assert.equal(attemptLine(hiddenFailed, 3), "Attempt 1 of 3: rejected. Passed all 48 visible tests. Failed 1 of 6 hidden tests.");
+  const bothFailed: PublicAttempt = { ...hiddenFailed, frozen: { expected: 48, passed: 40 }, hidden: { expected: 6, passed: 4 },
+    reasons: ["TESTS_FAILED:frozen", "TESTS_FAILED:hidden"] };
+  assert.equal(attemptLine(bothFailed, 3), "Attempt 1 of 3: rejected. Passed 40 of 48 visible tests. Failed 2 of 6 hidden tests.");
+  assert.equal(tallyWords({ expected: 48, passed: 40 }, { expected: 6, passed: 6 }), "Passed 40 of 48 visible tests. Passed all 6 hidden tests.");
+  assert.equal(tallyWords(null, { expected: 6, passed: 6 }), null);
 });
 
 test("the headline names the outcome, the amount, the operator, the time, and the release authority", () => {
