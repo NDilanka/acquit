@@ -4,7 +4,7 @@ import { createWidgets } from "ag-studio-react";
 import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformReconcileRow, PlatformReconciliation, ReceiptRow } from "../api-types";
 import { dollars, utc } from "../format";
 import { COLUMNS, NATIVE_WIDGETS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
-import { conserves, earnings, escrowTotals, newestReceipt, placeRows, verifierStats } from "../studio-data";
+import { conserves, earnings, escrowTotals, nativeWidgetRecord, newestReceipt, placeRows, verifierStats } from "../studio-data";
 import { FigureExplain } from "./FigureExplain";
 
 export type { AcquitRegistry, AcquitWidgetId, DashboardId, DashboardState };
@@ -316,9 +316,6 @@ export const WIDGETS: Record<DashboardId, AgWidgetsConfig<AcquitRegistry>> = {
   earnings: buildRegistry("earnings"),
 };
 
-/** A native widget's title and cross filter: a click on one widget filters the others on the page. */
-const nativeFormat = (title: string) => ({ title: { text: title, enabled: true }, crossFilter: "filter" as const });
-
 export function freshState(id: DashboardId): DashboardState {
   const rows = DASHBOARDS[id];
   const native = NATIVE_WIDGETS[id];
@@ -330,7 +327,7 @@ export function freshState(id: DashboardId): DashboardState {
         layout: PAGE_LAYOUT,
         widgets: {
           ...Object.fromEntries(rows.flat().map((w) => [w.id, { type: w.id, dataMapping: {} }])),
-          ...Object.fromEntries(native.flat().map((w) => [w.id, { type: w.type, dataMapping: w.dataMapping, format: nativeFormat(w.title) }])),
+          ...Object.fromEntries(native.flat().map((w) => [w.id, nativeWidgetRecord(w)] as const)),
         },
         widgetLayout: placeRows([...rows, ...native]),
       },

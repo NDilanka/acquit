@@ -1,6 +1,6 @@
 import type { JobReceiptRow, PlatformJobLedger, ReceiptRow } from "./api-types";
 import { figureCents } from "../../../packages/core/src/explain.ts";
-import { COLUMNS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
+import { COLUMNS, NATIVE_WIDGETS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
 
 /** The four money KPIs. Each is the core figure function's sum over the lines that figure names. */
 export function escrowTotals(jobs: readonly PlatformJobLedger[]) {
@@ -167,17 +167,54 @@ export function repairPlacements(state: DashboardState, spanFor?: (widget: { rea
   };
 }
 
+type PageWidgets = NonNullable<DashboardState["pages"][number]["widgets"]>;
+type WidgetRecord = NonNullable<PageWidgets[string]>;
+
+/** A native widget's title and cross filter: a click on one widget filters the others on the page. */
+const nativeFormat = (title: string) => ({ title: { text: title, enabled: true }, crossFilter: "filter" as const });
+
+/** A seeded native widget's Studio record. Its sort is copied, so the spec stays readonly. */
+export function nativeWidgetRecord(spec: NativeWidgetSpec): WidgetRecord {
+  return {
+    type: spec.type,
+    dataMapping: spec.dataMapping,
+    format: nativeFormat(spec.title),
+    ...(spec.sort ? { sort: [...spec.sort] } : {}),
+  };
+}
+
+/**
+ * A seeded native widget that the saved layout leaves without a sort takes its spec's sort. A sort the
+ * viewer already has stays, because it is their own choice.
+ */
+export function withNativeSorts(state: DashboardState, id: DashboardId): DashboardState {
+  const specs: readonly NativeWidgetSpec[] = NATIVE_WIDGETS[id].flat();
+  return {
+    ...state,
+    pages: state.pages.map((page) => {
+      if (!page.widgets) return page;
+      const widgets: PageWidgets = {};
+      for (const [widgetId, widget] of Object.entries(page.widgets)) {
+        const sort = specs.find((spec) => spec.id === widgetId)?.sort;
+        widgets[widgetId] = !widget || sort === undefined || widget.sort !== undefined ? widget : { ...widget, sort: [...sort] };
+      }
+      return { ...page, widgets };
+    }),
+  };
+}
+
 /**
  * A saved layout from the server, or null when it is missing or no longer reads as Studio state.
  * A widget the saved layout leaves without a placement, or places over another, gets the first free
- * spot, so the dashboard loads every widget.
+ * spot, so the dashboard loads every widget. A seeded native widget with no sort gets its spec's sort.
  */
 export function parseSaved(json: string | null, id: DashboardId): DashboardState | null {
   if (json === null) return null;
   try {
     const parsed: unknown = JSON.parse(json);
     if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { pages?: unknown }).pages)) return null;
-    return repairPlacements(parsed as DashboardState, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
+    const placed = repairPlacements(parsed as DashboardState, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
+    return withNativeSorts(placed, id);
   } catch {
     return null;
   }

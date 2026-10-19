@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import type { DashboardState } from "./dashboard-widgets.ts";
-import { parseSaved } from "./studio-data.ts";
+import { NATIVE_WIDGETS, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
+import { nativeWidgetRecord, parseSaved } from "./studio-data.ts";
 
 type Track = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
 
@@ -73,4 +73,49 @@ test("a layout that is not Studio state still loads as nothing", () => {
   assert.equal(parseSaved(null, "escrow"), null);
   assert.equal(parseSaved("not json", "escrow"), null);
   assert.equal(parseSaved("{}", "escrow"), null);
+});
+
+const savedFunnel = (funnelFields: Record<string, unknown>) =>
+  JSON.stringify({
+    selectedPageId: "main",
+    pages: [
+      {
+        id: "main",
+        layout: { columns: 12, rowHeight: 60 },
+        widgets: {
+          "escrow-funnel": { type: "funnel-chart", dataMapping: { categoryKey: [{ id: "jobs.stage" }] }, ...funnelFields },
+          "acquit-held": { type: "acquit-held", dataMapping: {} },
+        },
+        widgetLayout: {
+          "escrow-funnel": { xTrack: 0, yTrack: 0, xSpan: 4, ySpan: 5 },
+          "acquit-held": { xTrack: 4, yTrack: 0, xSpan: 3, ySpan: 2 },
+        },
+      },
+    ],
+  });
+
+test("the escrow funnel's spec sorts its stages ascending by stage", () => {
+  const specs: readonly NativeWidgetSpec[] = NATIVE_WIDGETS.escrow.flat();
+  assert.deepEqual(specs.find((spec) => spec.id === "escrow-funnel")?.sort, [{ field: { id: "jobs.stage" }, direction: "asc" }]);
+});
+
+test("a fresh escrow funnel record carries the spec's ascending stage sort", () => {
+  const funnel = NATIVE_WIDGETS.escrow.flat().find((spec) => spec.id === "escrow-funnel");
+  assert.ok(funnel, "the escrow dashboard seeds a funnel");
+  assert.deepEqual(nativeWidgetRecord(funnel).sort, [{ field: { id: "jobs.stage" }, direction: "asc" }]);
+});
+
+test("a saved escrow funnel with no sort loads with the spec's ascending stage sort", () => {
+  const { widgets } = mainPage(parseSaved(savedFunnel({}), "escrow"));
+  assert.deepEqual(widgets["escrow-funnel"]?.sort, [{ field: { id: "jobs.stage" }, direction: "asc" }]);
+});
+
+test("a saved escrow funnel keeps the descending sort the viewer chose", () => {
+  const { widgets } = mainPage(parseSaved(savedFunnel({ sort: [{ field: { id: "jobs.stage" }, direction: "desc" }] }), "escrow"));
+  assert.deepEqual(widgets["escrow-funnel"]?.sort, [{ field: { id: "jobs.stage" }, direction: "desc" }]);
+});
+
+test("a saved custom widget loads with no sort added", () => {
+  const { widgets } = mainPage(parseSaved(savedFunnel({}), "escrow"));
+  assert.deepEqual(widgets["acquit-held"], { type: "acquit-held", dataMapping: {} });
 });
