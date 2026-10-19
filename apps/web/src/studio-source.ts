@@ -18,6 +18,8 @@ export function engineRows(rows: readonly object[]): Record<string, unknown>[] {
   );
 }
 
+const NO_OPERATOR = "No operator yet";
+
 /**
  * Studio mounts on the platform's escrow model: seven tables from one route, the relations between
  * them, the measures the escrow dashboards read, and a calendar on each release date. The native
@@ -31,8 +33,8 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
       {
         id: "jobs",
         name: "Jobs",
-        description: "One row per job: its escrow state, funnel stage, operator, and money in dollars.",
-        data: engineRows(tables.jobs),
+        description: `One row per job: its escrow state, funnel stage, operator, and money in dollars. A job not yet locked to an operator has operatorHandle "${NO_OPERATOR}".`,
+        data: engineRows(tables.jobs).map((job) => ({ ...job, operatorHandle: job.operatorHandle ?? NO_OPERATOR })),
         fields: [
           { id: "jobId", format: "textFormat" },
           { id: "title", format: "textFormat" },

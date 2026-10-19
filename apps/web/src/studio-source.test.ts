@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PlatformTables } from "./api-types.ts";
+import type { PlatformBidRow, PlatformJobRow, PlatformTables } from "./api-types.ts";
 import { engineRows, escrowData, STUDIO_EARNINGS_DATA } from "./studio-source.ts";
 
 type FieldSchema = { readonly id: string; readonly format: string };
-type SourceSchema = { readonly id: string; readonly data: readonly unknown[]; readonly fields?: readonly FieldSchema[] };
+type SourceSchema = {
+  readonly id: string;
+  readonly description?: string;
+  readonly data: readonly unknown[];
+  readonly fields?: readonly FieldSchema[];
+};
 type RelationSchema = { readonly id: string; readonly source: { readonly tableId?: string; readonly fieldId?: string; readonly calendarId?: string }; readonly target: { readonly tableId?: string; readonly fieldId?: string; readonly calendarId?: string }; readonly type?: string; readonly truncate?: string };
 type Definition = {
   readonly description?: string;
@@ -27,6 +32,13 @@ function source(definition: Definition, id: string): SourceSchema {
   assert.ok(found, `the ${id} table is declared`);
   return found;
 }
+
+const OPENED = "2026-10-13T12:00:00.000Z";
+const OPEN_JOB: PlatformJobRow = {
+  jobId: "job_posted", title: "posted job", tenant: null, clientId: "lena-client", status: "OPEN", escrow: "NONE",
+  stage: "1 Posted", operatorId: null, operatorHandle: null, openedAt: OPENED, releasedAt: null, bidCount: 0,
+  attemptCount: 0, grossCents: 0, heldCents: 0, releasedCents: 0, feeCents: 0, refundedCents: 0,
+};
 
 test("the escrow model declares the seven relational tables the platform route serves", () => {
   assert.deepEqual(
@@ -95,6 +107,31 @@ test("engineRows reads each cents column as dollars under the name without the s
     engineRows([{ jobId: "job_ledger_held", heldCents: 37800, releasedCents: 0 }, { cents: 42000, processorCents: 1515, acquitCents: null }]),
     [{ jobId: "job_ledger_held", held: 378, released: 0 }, { amount: 420, processor: 15.15, acquit: null }],
   );
+});
+
+test("a job no operator has locked reads No operator yet in the jobs source, and a locked job keeps its handle", () => {
+  const locked: PlatformJobRow = { ...OPEN_JOB, jobId: "job_paid", status: "PAID", escrow: "RELEASED", stage: "5 Paid",
+    operatorId: "alpha-ops", operatorHandle: "alpha" };
+  const tables: PlatformTables = { ...EMPTY_TABLES, jobs: [OPEN_JOB, locked] };
+  const rows = source(escrowData(tables) as Definition, "jobs").data as readonly Record<string, unknown>[];
+  assert.deepEqual(rows.map((row) => [row.jobId, row.operatorId, row.operatorHandle]), [
+    ["job_posted", null, "No operator yet"],
+    ["job_paid", "alpha-ops", "alpha"],
+  ]);
+});
+
+test("the bids source passes its rows through, so only the jobs source carries the operator label", () => {
+  const bid: PlatformBidRow = { bidId: "bid_paid_alpha", jobId: "job_paid", operatorId: "alpha-ops", handle: "alpha",
+    kind: "INDEPENDENT", status: "ACCEPTED", priceCents: 10000, etaHours: 48, placedAt: OPENED };
+  const tables: PlatformTables = { ...EMPTY_TABLES, bids: [bid] };
+  assert.deepEqual(source(escrowData(tables) as Definition, "bids").data, [
+    { bidId: "bid_paid_alpha", jobId: "job_paid", operatorId: "alpha-ops", handle: "alpha", kind: "INDEPENDENT",
+      status: "ACCEPTED", price: 100, etaHours: 48, placedAt: OPENED },
+  ]);
+});
+
+test("the jobs source description tells the Data agent that a job not yet locked to an operator reads No operator yet", () => {
+  assert.match(source(escrow(), "jobs").description ?? "", /operatorHandle "No operator yet"/);
 });
 
 test("the earnings dashboard's acquit source declares the receipt and payout columns its widgets read", () => {
