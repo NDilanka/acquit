@@ -167,6 +167,22 @@ export function repairPlacements(state: DashboardState, spanFor?: (widget: { rea
   };
 }
 
+type PageWidgets = NonNullable<DashboardState["pages"][number]["widgets"]>;
+type WidgetRecord = NonNullable<PageWidgets[string]>;
+
+/** A native widget's title and cross filter: a click on one widget filters the others on the page. */
+const nativeFormat = (title: string) => ({ title: { text: title, enabled: true }, crossFilter: "filter" as const });
+
+/** A seeded native widget's Studio record. Its sort is copied, so the spec stays readonly. */
+export function nativeWidgetRecord(spec: NativeWidgetSpec): WidgetRecord {
+  return {
+    type: spec.type,
+    dataMapping: spec.dataMapping,
+    format: nativeFormat(spec.title),
+    ...(spec.sort ? { sort: [...spec.sort] } : {}),
+  };
+}
+
 /**
  * A seeded native widget that the saved layout leaves without a sort takes its spec's sort. A sort the
  * viewer already has stays, because it is their own choice.
@@ -177,13 +193,11 @@ export function withNativeSorts(state: DashboardState, id: DashboardId): Dashboa
     ...state,
     pages: state.pages.map((page) => {
       if (!page.widgets) return page;
-      const widgets = Object.fromEntries(
-        Object.entries(page.widgets).map(([widgetId, widget]) => {
-          const sort = specs.find((spec) => spec.id === widgetId)?.sort;
-          if (!widget || sort === undefined || widget.sort !== undefined) return [widgetId, widget];
-          return [widgetId, { ...widget, sort: [...sort] }];
-        }),
-      );
+      const widgets: PageWidgets = {};
+      for (const [widgetId, widget] of Object.entries(page.widgets)) {
+        const sort = specs.find((spec) => spec.id === widgetId)?.sort;
+        widgets[widgetId] = !widget || sort === undefined || widget.sort !== undefined ? widget : { ...widget, sort: [...sort] };
+      }
       return { ...page, widgets };
     }),
   };

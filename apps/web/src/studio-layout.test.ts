@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { NATIVE_WIDGETS, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
-import { parseSaved } from "./studio-data.ts";
+import { nativeWidgetRecord, parseSaved } from "./studio-data.ts";
 
 type Track = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
 
@@ -97,6 +97,12 @@ const savedFunnel = (funnelFields: Record<string, unknown>) =>
 test("the escrow funnel's spec sorts its stages ascending by stage", () => {
   const specs: readonly NativeWidgetSpec[] = NATIVE_WIDGETS.escrow.flat();
   assert.deepEqual(specs.find((spec) => spec.id === "escrow-funnel")?.sort, [{ field: { id: "jobs.stage" }, direction: "asc" }]);
+});
+
+test("a fresh escrow funnel record carries the spec's ascending stage sort", () => {
+  const funnel = NATIVE_WIDGETS.escrow.flat().find((spec) => spec.id === "escrow-funnel");
+  assert.ok(funnel, "the escrow dashboard seeds a funnel");
+  assert.deepEqual(nativeWidgetRecord(funnel).sort, [{ field: { id: "jobs.stage" }, direction: "asc" }]);
 });
 
 test("a saved escrow funnel with no sort loads with the spec's ascending stage sort", () => {
