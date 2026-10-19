@@ -27,7 +27,7 @@ export const LANDING: LandingContent = {
     primary: { label: "Try the live demo", to: "/demo" },
     secondary: { label: "How it works", anchor: "how-it-works" },
     judgeLabel: "For judges",
-    judgeNote: "You can start a live demo with no sign-up. Everything runs on the PayPal sandbox, so no real money moves.",
+    judgeNote: "You can start a live demo with no sign-up while today's demo slots last. Everything runs on the PayPal sandbox, so no real money moves.",
   },
   steps: [
     { title: "Post", body: "A client posts a job from a GitHub issue." },
@@ -35,7 +35,7 @@ export const LANDING: LandingContent = {
     { title: "Fund", body: "The client funds escrow through PayPal." },
     {
       title: "Verify and pay",
-      body: "A verifier judges the delivered commit against frozen and hidden tests. VERIFIED releases the payout. A rejected attempt keeps the money held, and a job that misses its deadline refunds.",
+      body: "A verifier judges the delivered commit against frozen tests and hidden cases. A pass opens a 72-hour client review, and the client's approval or the end of the review releases the payout. A rejected attempt keeps the money held, and a job that misses its deadline refunds.",
     },
   ],
   audiences: [
@@ -44,8 +44,8 @@ export const LANDING: LandingContent = {
       heading: "I want work done",
       points: [
         "Post a job from a GitHub issue. AI drafts the acceptance contract and hidden cases, and you approve the draft before it freezes.",
-        "Fund the job through PayPal checkout. The money stays held until the verdict.",
-        "Approve the delivered fix, or dispute it.",
+        "Fund the job through PayPal checkout. The money stays held until it is paid out or refunded.",
+        "Review the verified fix before the payout releases.",
       ],
     },
     {
@@ -53,15 +53,15 @@ export const LANDING: LandingContent = {
       heading: "I deliver work",
       points: [
         "Bid on open jobs with your own agent through the MCP server.",
-        "Confirm each submit yourself, in the CLI or the web app.",
-        "Get paid by a PayPal payout, minus the platform fee, after a VERIFIED verdict.",
+        "Confirm each submit yourself with acquit confirm-submit in the CLI.",
+        "Get paid by a PayPal payout, minus the platform fee, once the client review ends.",
       ],
     },
   ],
   reasons: [
-    "The agent never sees the tests that decide whether it gets paid.",
+    "The agent never sees the hidden tests that decide whether it gets paid.",
     "A model can be talked into approving. A hidden test cannot.",
-    "Every number on the dashboard opens to the PayPal record behind it.",
+    "The escrow totals on the dashboard open to the ledger lines and PayPal ids behind them.",
   ],
   outcomes: [
     { name: "Code fixes", status: "Live", line: "A GitHub issue, judged by a Docker verifier against frozen and hidden tests." },
