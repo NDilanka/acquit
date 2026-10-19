@@ -188,13 +188,13 @@ test("the status pivot counts each job under its operator and status", async () 
   const [rows] = await run(TABLES, [{ axes: [{ dimensions: [dimension("jobs", "operatorHandle", "handle")] },
     { dimensions: [dimension("jobs", "status", "status")] }], measures: [rowCount("jobs", "jobId", "jobs")] }]);
   assert.deepEqual(sorted((rows ?? []).map((row) => `${row.handle}/${row.status}=${row.jobs}`)),
-    ["alpha/PAID=1", "alpha/REFUNDED=1", "beta/IN_PROGRESS=1", "null/OPEN=2"]);
+    ["No operator yet/OPEN=2", "alpha/PAID=1", "alpha/REFUNDED=1", "beta/IN_PROGRESS=1"]);
 });
 
 test("the treemap's held input sums each operator's escrow in dollars, and totals the custom held figure", async () => {
   const [rows] = await run(TABLES, [{ axes: [{ dimensions: [dimension("jobs", "operatorHandle", "handle")] }],
     measures: [total("jobs", "held", "held")] }]);
-  assert.deepEqual(sorted((rows ?? []).map((row) => `${row.handle}=${row.held}`)), ["alpha=0", "beta=378", "null=421"]);
+  assert.deepEqual(sorted((rows ?? []).map((row) => `${row.handle}=${row.held}`)), ["No operator yet=421", "alpha=0", "beta=378"]);
   const engineHeld = (rows ?? []).reduce((sum, row) => sum + dollarsToCents(row.held), 0);
   assert.equal(engineHeld, escrowTotals(BOOK).held);
   assert.equal(engineHeld, 79900);
