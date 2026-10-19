@@ -407,6 +407,9 @@ const delegateTo = (id: "data" | "page", instructions: string): Answer =>
 const pageTo = (pageId: string, instructions: string): Answer =>
   call("call-1", "delegate_to", { type: { id: "page", pageId }, instructions });
 
+const widgetOn = (widgetId: string, pageId: string | undefined, instructions: string): Answer =>
+  call("call-1", "delegate_to", { type: { id: "widget", widgetType: "acquit-held", widgetId, ...(pageId === undefined ? {} : { pageId }) }, instructions });
+
 test("a delegated data question runs the built-in data agent and returns its answer", async () => {
   const { api } = mockStudioApi([]);
   const { fetch, childBodies } = scriptedFetch([delegateTo("data", "Which operator holds the most escrow?"), text("Operator alpha holds the most.")], [
@@ -470,6 +473,44 @@ test("a page change aimed at an unselected page is refused, and no widget lands 
   const result = delegateResult(session);
   assert.equal(result?.success, false);
   assert.match(result?.issues?.[0]?.message ?? "", /The page other is not the selected page/);
+});
+
+test("a widget change aimed at an unselected page is refused, and nothing changes on either page", async () => {
+  const { api, state } = mockStudioApi([...HELD_CATALOGUE], { otherPage: true });
+  state.pages[0].widgets["held-1"] = { type: "acquit-held", dataMapping: {} };
+  state.pages[1]!.widgets["held-other"] = { type: "acquit-held", dataMapping: {} };
+  const { fetch, childBodies } = scriptedFetch([widgetOn("held-other", "other", "Show held escrow on the other page."), text("Could not do that.")], [
+    call("child-1", "configure_widget", { dataMapping: {}, format: {} }),
+    call("child-2", "complete_task", { summary: "Configured the held-escrow widget on the other page.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Show held escrow on the other page.");
+  await settle(session);
+  assert.equal(childBodies.length, 0, "the widget agent never ran");
+  const result = delegateResult(session);
+  assert.equal(result?.success, false);
+  assert.match(result?.issues?.[0]?.message ?? "", /The page other is not the selected page/);
+  assert.deepEqual(state.pages[1]?.widgets, { "held-other": { type: "acquit-held", dataMapping: {} } }, "the other page's widget is untouched");
+  assert.deepEqual(Object.keys(state.pages[0].widgets), ["held-1"], "the selected page keeps its widget and gains none");
+});
+
+test("a widget change that names the selected page still configures its widget", async () => {
+  const { api, state } = mockStudioApi(HELD_CATALOGUE);
+  state.pages[0].widgets["held-1"] = { type: "acquit-held", dataMapping: {} };
+  state.pages[0].widgetLayout!["held-1"] = { xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 };
+  const { fetch } = scriptedFetch([widgetOn("held-1", "main", "Show held escrow."), text("Added.")], [
+    call("child-1", "configure_widget", { dataMapping: {}, format: {} }),
+    call("child-2", "complete_task", { summary: "Configured the held-escrow widget.", artifacts: [] }),
+  ]);
+  const harness = harnessFor(api, { fetch });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Show held escrow.");
+  await settle(session);
+  const result = delegateResult(session);
+  assert.equal(result?.success, true);
+  assert.match(result?.response ?? "", /held-escrow widget/i);
+  assert.deepEqual(Object.keys(state.pages[0].widgets), ["held-1"]);
 });
 
 test("a native funnel chart is addable on the escrow dashboard", async () => {
