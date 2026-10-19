@@ -14,7 +14,7 @@ Cleared, then paid. A marketplace where AI-agent operators deliver verified codi
 
 ## Hosted demo
 
-The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / opens the three-step tour, and Start my demo provisions a visitor with its own client and operator accounts and its own fork of the fixture repository. There is no per-address limit, so judges on a shared network are never locked out; the deployment as a whole starts at most 50 demo visitors per rolling 24 hours (`VISITORS_DAY` in `packages/core/src/caps.ts`), and each visitor keeps its own job, budget, and verifier-run caps. Expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
+The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / is the public landing page. Route /demo opens the three-step tour, and Start my demo provisions a visitor with its own client and operator accounts and its own fork of the fixture repository. There is no per-address limit, so judges on a shared network are never locked out; the deployment as a whole starts at most 50 demo visitors per rolling 24 hours (`VISITORS_DAY` in `packages/core/src/caps.ts`), and each visitor keeps its own job, budget, and verifier-run caps. Expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
 
 ## What is built
 
@@ -34,10 +34,10 @@ The hackathon weighs five criteria equally. [docs/win-plan.md](docs/win-plan.md)
 | Criterion | Proof on screen | Proof in the repo |
 | --- | --- | --- |
 | Technological Implementation | A job page (route /jobs/:id) runs PayPal escrow end to end: the funded hold, the delivered commit, and the verdict that releases or refunds it. | `packages/core/src/paypal.ts` (orders, verified webhooks, referenced payouts, refunds), `packages/core/src/effects.ts` (the apply pipeline), `packages/house/src/runner.ts` (the House agent on a real model), `packages/mcp/` (the MCP server an agent drives), `packages/verifier/judge.ts` (the Docker judge). |
-| Design | Route / is the judge entry with the three-step tour and the role choice; /jobs/new posts a job; a job page carries the checkout breakdown, the payee, and the ledger; /studio holds the AG Studio dashboards over the AG Grid tables. | `apps/web/src/pages/` and `apps/web/src/studio/`. |
+| Design | Route / is the landing page, and route /demo is the judge entry with the three-step tour and the role choice; /jobs/new posts a job; a job page carries the checkout breakdown, the payee, and the ledger; /studio holds the AG Studio dashboards over the AG Grid tables. | `apps/web/src/pages/` and `apps/web/src/studio/`. |
 | Potential Impact | The operator page (route /operator) lists deliveries, receipts, and payouts; /studio shows the platform's escrow position next to the ledger it must conserve. | `packages/core/src/store.ts` (the House line counts receipt rows, and seeded rows are marked SEED), `packages/core/src/ledger.ts` with `docs/architecture/rationale.md` (payout + fee = paid). |
 | Innovation | A job page's verdict timeline shows a tampered submission REJECTED and an honest fix VERIFIED. | `packages/verifier/judge.ts` (frozen plus hidden tests), `packages/core/src/fixtures.ts` (a manifest frozen per job), `packages/core/src/scoping.ts` (AI drafts the acceptance contract; the client approves before it freezes). The delivery agent never sees the hidden cases: their values live outside every git repository. |
-| Presentation | The tour on route / walks a new visitor to Start my demo in public mode. | README.md (this map), `ARCHITECTURE.md`, `docs/tutorial.md`, `docs/video-script.md`. |
+| Presentation | The tour on route /demo walks a new visitor to Start my demo in public mode. | README.md (this map), `ARCHITECTURE.md`, `docs/tutorial.md`, `docs/video-script.md`. |
 
 ## Live Studio updates
 
@@ -89,7 +89,7 @@ npm run seed
 ACQUIT_DEV=1 npm run dev
 ```
 
-Open http://localhost:5173 and sign in as `maya-client` (client) or `devon-ops` (operator); the seeded users have no passwords. That seeded sign-in exists only with `ACQUIT_DEV=1`. Without it the app runs in public mode, as the hosted demo does: visitors start through Start my demo, and `ACQUIT_FIXTURES` must name your own registry, because the API and the verifier refuse to boot without one.
+Open http://localhost:5173 for the landing page, then http://localhost:5173/demo to sign in as `maya-client` (client) or `devon-ops` (operator); the seeded users have no passwords. That seeded sign-in exists only with `ACQUIT_DEV=1`. Without it the app runs in public mode, as the hosted demo does: visitors start through Start my demo, and `ACQUIT_FIXTURES` must name your own registry, because the API and the verifier refuse to boot without one.
 
 The operator CLI is `node packages/acquit-cli/src/main.ts` (bin `acquit`), and the MCP server is `node packages/mcp/src/main.ts` (bin `acquit-mcp`).
 

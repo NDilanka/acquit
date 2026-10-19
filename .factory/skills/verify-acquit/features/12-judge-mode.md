@@ -16,7 +16,7 @@ In public mode (`ACQUIT_DEV` unset) a visitor starts a demo and gets its own cli
 
 ## How to get to it (user POV)
 
-- Open `/` without a session on a public-mode lane and choose `I want work done` under `Start my demo`, then `Go to your jobs`.
+- Open `/demo` without a session on a public-mode lane and choose `I want work done` under `Start my demo`, then `Go to your jobs`.
 - Choose `Act as operator` or `Act as client` in the demo bar.
 - Open a job as the visitor's client and use `Payment method` and `Job clock` in the right column.
 
@@ -30,7 +30,7 @@ Preconditions:
 
 Steps:
 
-- **Start.** `ab open $webUrl`, `ab wait --text 'Start my demo'`, `ab find role button click --name 'I want work done'`, `ab wait --text 'Connected: issues, pull requests, checks'`, `ab find role button click --name 'Go to your jobs'`, `ab wait --text 'Your demo'`. Require `Act as client` disabled and `Signed in as guest-…-client`.
+- **Start.** `ab open $webUrl/demo`, `ab wait --text 'Start my demo'`, `ab find role button click --name 'I want work done'`, `ab wait --text 'Connected: issues, pull requests, checks'`, `ab find role button click --name 'Go to your jobs'`, `ab wait --text 'Your demo'`. Require `Act as client` disabled and `Signed in as guest-…-client`.
 - **Restore.** `ab reload`, `ab wait --text 'Your demo'`. Require the same handle.
 - **Switch.** `ab find role button click --name 'Act as operator'`, wait for the `-ops` handle, then `Open jobs`. Switch back with `Act as client` and wait for `Your jobs`.
 - **Open a job.** Post one through [Post a job](02-post-job.md) and open its page. Require `Payment method` with `Sandbox test card` checked, and `Job clock`.

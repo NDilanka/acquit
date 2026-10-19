@@ -101,7 +101,7 @@ export async function measure() {
 		const appMarginalMB = Math.max(1, pairedAppMB - firstAppMB);
 		await atomicJson(resolve(managerDir, "browser-101.json"), { headed: false, autoConnect: false });
 		const beforeBrowserFreeMB = freePhysicalMB();
-		await browser(101, "open", `http://localhost:${laneSlot(101).webPort}`);
+		await browser(101, "open", `http://localhost:${laneSlot(101).webPort}/demo`);
 		await browser(101, "wait", "--text", "Sign in as a seeded user");
 		const info = await browser(101, "session", "info");
 		assert(Number.isSafeInteger(info.pid) && info.pid > 0, "Browser daemon PID is missing.");

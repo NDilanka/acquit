@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
-import { Link, match, useRouter } from "./router";
+import { Link, useRouter } from "./router";
+import { match, showsDemoCta, signedOutPage } from "./route";
 import { SessionContext, useSession, type Session } from "./session";
 import { NotFound, RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
@@ -12,6 +13,7 @@ import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
+import { Landing } from "./pages/Landing";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -57,19 +59,30 @@ export function App() {
   };
 
   // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
-  const publicRoute = match(location.path);
-  if (publicRoute.name === "receipt") {
+  const route = match(location.path);
+  if (route.name === "receipt") {
     return (
       <>
-        <TopBar session={session ?? null} onSignOut={signOut} />
+        <TopBar session={session} onSignOut={signOut} />
         <main className="wrap">
-          <PublicReceiptPage receiptId={publicRoute.id} />
+          <PublicReceiptPage receiptId={route.id} />
         </main>
       </>
     );
   }
 
   if (session === undefined) return <div className="wrap muted">Loading…</div>;
+
+  const signedOutView = signedOutPage(route);
+  // The landing page reads no API data, so it still renders when the session call failed.
+  if (session === null && signedOutView === "landing") {
+    return (
+      <>
+        <TopBar session={null} onSignOut={signOut} />
+        <Landing />
+      </>
+    );
+  }
 
   return (
     <>
@@ -82,10 +95,10 @@ export function App() {
             {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
             <Routes key={session.user.handle} />
           </SessionContext.Provider>
+        ) : signedOutView === "notFound" ? (
+          <NotFound action={{ to: "/demo", label: "Start the demo" }} />
         ) : (
-          mode && (match(location.path).name === "notFound"
-            ? <NotFound action={{ to: "/", label: "Sign in" }} />
-            : <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />)
+          mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
         )}
       </main>
     </>
@@ -149,6 +162,7 @@ function Routes() {
   const route = match(location.path);
   switch (route.name) {
     case "home":
+    case "demo":
       return <Home />;
     case "newJob":
       return user.role === "CLIENT" ? (
@@ -181,10 +195,11 @@ function Home() {
   }
 }
 
-function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: () => void }) {
+function TopBar({ session, onSignOut }: { session: Session | null | undefined; onSignOut: () => void }) {
   const user = session?.user ?? null;
   const { location } = useRouter();
   const on = (p: string) => (location.path === p ? "on" : "");
+  const signedIn = session === undefined ? undefined : session !== null;
   return (
     <header className="top">
       <Link to="/" className="brand">
@@ -209,6 +224,7 @@ function TopBar({ session, onSignOut }: { session: Session | null; onSignOut: ()
         </nav>
       )}
       <span className="sp" />
+      {showsDemoCta(match(location.path), signedIn) && <Link to="/demo" className="btn sm">Try the live demo</Link>}
       <span className="sandbox" title="PayPal sandbox. No real money moves.">Sandbox</span>
       {user && (
         <>

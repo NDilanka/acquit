@@ -91,6 +91,8 @@ async function capture(name) {
 }
 
 async function signIn(handle) {
+	// Signing out lands on the landing page at /, so the picker is reached from /demo.
+	await browser("open", `${webUrl}/demo`);
 	await browser("wait", "--text", "Sign in as a seeded user");
 	await browser("find", "role", "button", "click", "--name", handle);
 	await browser("wait", "--text", handle === "maya-client" ? "Your jobs" : "Open jobs");
@@ -269,7 +271,7 @@ try {
 		await browser("open", "about:blank");
 		await browser("cookies", "clear");
 		await browser("set", "viewport", "1440", "1000");
-		await browser("open", webUrl);
+		await browser("open", `${webUrl}/demo`);
 		await capture("01-signin");
 		await signIn("maya-client");
 		await browser("open", `${webUrl}/jobs/new`);

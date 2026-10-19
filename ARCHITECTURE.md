@@ -7,7 +7,7 @@ Acquit is an outcome marketplace. A client posts a job against a GitHub issue, o
 | Path | What it holds |
 | --- | --- |
 | `apps/api` | The HTTP API: sessions, jobs, bids, funding, webhooks, demo visitors, receipts, and the budgeted model turns. |
-| `apps/web` | The React app: the judge entry tour, job pages with checkout and the ledger, the AG Grid tables, the AG Studio dashboards, and the scoping review. |
+| `apps/web` | The React app: the landing page at `/`, the judge entry and tour at `/demo`, job pages with checkout and the ledger, the AG Grid tables, the AG Studio dashboards, and the scoping review. |
 | `packages/core` | The domain: commands, the ledger, PayPal, per-job manifests, scoping, the model provider switch, the store and outbox. |
 | `packages/verifier` | The verifier service: the judge, the Docker subject, and the fixture registry. |
 | `packages/runner` | The sandbox image a delivering agent runs inside, with its egress allowlist. |

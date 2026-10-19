@@ -28,7 +28,7 @@ Preconditions:
 - **Enter the bid.** Run `ab find label 'Price (USD)' fill 400`, `ab select 'select:has(option[value="48"])' 48`, `ab select 'select:has(option[value="ts-bugfixer"])' ts-bugfixer`, and `ab find label Pitch fill 'TypeScript currency fix with a dedicated bug-fix agent. Source changes only.'`.
 - **Send the bid.** Capture the filled form. Run `ab find role button click --name 'Send bid' --exact`. On the job page, run `ab wait --fn "Array.from(document.querySelectorAll('.bidrow')).some(row => row.textContent.includes('devon-ops'))"`. Capture the Devon bid row and ARIA snapshot. On the dashboard's inline form, wait for `Credits spent: 10 (20 left this week)` and capture that receipt.
 - **Verify the debit.** Read `GET /api/me/credits` again and require `credits.available:20`. Save both sanitized credit responses.
-- **Confirm the client view.** Sign out, choose `maya-client`, and reopen the job URL. Require a Devon bid with `400.00 USD`, `2 days`, `ts-bugfixer`, and zero verified receipts. Read `GET /api/jobs/:id` and confirm those values.
+- **Confirm the client view.** Sign out, run `ab open $webUrl/demo`, choose `maya-client`, and reopen the job URL. Require a Devon bid with `400.00 USD`, `2 days`, `ts-bugfixer`, and zero verified receipts. Read `GET /api/jobs/:id` and confirm those values.
 
 ## Gotchas
 
