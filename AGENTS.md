@@ -13,13 +13,22 @@ Check at every boundary. A boundary is a closed round, a gate or verdict, a land
 - We are mid-discussion on a decision I have not settled.
 - The current unit finishes in a few more turns. Finish it here, then check again.
 
-**Suggest when the chat is heavy and the moment is cheap.** The chat is heavy when it has compacted at least once, or when it holds many large tool outputs from several distinct tasks. The moment is cheap when at least one of these holds:
+**Suggest only when the chat is heavy and the moment is cheap.** Both must hold.
+
+The chat is heavy when at least one of these holds:
+
+- It has compacted at least once.
+- Its context is past half the window, or past 200K tokens when you do not know the window. Use the usage figure when the harness or I give one. When you cannot see it, treat the chat as light unless it has compacted.
+
+Nothing else makes a chat heavy. The number of tasks or units the chat has run does not count, and neither do many small tool outputs. A chat at 100K tokens with a warm cache is cheaper to continue than to rebuild, because a fresh pickup rereads the handoff note, the standing rules, and the skills at full price, often 30K to 40K tokens.
+
+The moment is cheap when at least one of these holds:
 
 - The next unit is large and independent, such as a new phase, feature, round, or fan-out wave. Suggest before you launch it, so its work and its reports land in the new chat.
 - The work already waits on me, such as a STACK-READY handoff, a review click, or a question only I can answer. I am reading anyway, and the question moves to the new chat through the note.
 - The cache is already cold after an idle gap, such as an hourly loop tick, or the next step is a long wait on me or on something this chat does not own.
 
-When unsure, compare the work left before the next boundary with the cost of a fresh pickup. Stay for a tail of a few tool calls. Switch for anything that fans out or runs for many turns.
+When the chat is heavy and you are unsure about the moment, compare the work left before the next boundary with the cost of a fresh pickup. Stay for a tail of a few tool calls. Switch for anything that fans out or runs for many turns.
 
 Quality slip overrides the cheap-moment test. If the chat has compacted twice, or you notice a lost rule, a contradicted directive, or a re-read forced because you forgot what you already read, suggest at the first boundary with no blocker.
 
