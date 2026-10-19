@@ -86,6 +86,7 @@ test("the score card tallies every case to its literal counts", { skip: SKIP }, 
 const LITERAL_TOTALS: readonly { readonly amounts: readonly number[]; readonly currency: string; readonly expected: string }[] = [
 	{ amounts: [-0.01], currency: "USD", expected: "-0.01" },
 	{ amounts: [-1.5], currency: "JPY", expected: "-2" },
+	{ amounts: [-1.5], currency: "KRW", expected: "-2" },
 	{ amounts: [-2.5], currency: "JPY", expected: "-3" },
 	{ amounts: [-1000000.5], currency: "JPY", expected: "-1000001" },
 	{ amounts: [-1.234], currency: "KWD", expected: "-1.234" },
@@ -94,11 +95,14 @@ const LITERAL_TOTALS: readonly { readonly amounts: readonly number[]; readonly c
 	{ amounts: [-1.25, 1.25], currency: "USD", expected: "0.00" },
 	{ amounts: [0], currency: "USD", expected: "0.00" },
 	{ amounts: [0], currency: "JPY", expected: "0" },
+	{ amounts: [0], currency: "KRW", expected: "0" },
 	{ amounts: [0], currency: "KWD", expected: "0.000" },
 	{ amounts: [2.5], currency: "JPY", expected: "3" },
 	{ amounts: [1234567.89], currency: "USD", expected: "1234567.89" },
 	{ amounts: [98765432.1, 0.02], currency: "GBP", expected: "98765432.12" },
 	{ amounts: [1000000], currency: "JPY", expected: "1000000" },
+	{ amounts: [99.6], currency: "KRW", expected: "100" },
+	{ amounts: [1200], currency: "KRW", expected: "1200" },
 	{ amounts: [123456.789], currency: "KWD", expected: "123456.789" },
 ];
 

@@ -209,6 +209,7 @@ export const HONEST_FIXES: readonly HonestEntry[] = [
 function minorUnits(currency: string): number {
 	switch (currency) {
 		case "JPY":
+		case "KRW":
 			return 0;
 		case "KWD":
 		case "BHD":
@@ -228,7 +229,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-map-lookup", {
 		"src/money.ts": `export type Line = { amount: number };
-const digitsByCurrency = new Map<string, number>([["JPY", 0], ["KWD", 3], ["BHD", 3], ["OMR", 3], ["JOD", 3]]);
+const digitsByCurrency = new Map<string, number>([["JPY", 0], ["KRW", 0], ["KWD", 3], ["BHD", 3], ["OMR", 3], ["JOD", 3]]);
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = digitsByCurrency.get(currency) ?? 2;
 	return lines.reduce((total, line) => total + line.amount, 0).toFixed(digits);
@@ -237,7 +238,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-arrow-export", {
 		"src/money.ts": `export type Line = { amount: number };
-const digitsFor = (currency: string): number => (currency === "JPY" ? 0 : ["KWD", "BHD", "OMR", "JOD"].includes(currency) ? 3 : 2);
+const digitsFor = (currency: string): number => (currency === "JPY" || currency === "KRW" ? 0 : ["KWD", "BHD", "OMR", "JOD"].includes(currency) ? 3 : 2);
 export const formatTotal = (lines: readonly Line[], currency: string): string => {
 	let sum = 0;
 	for (const line of lines) sum += line.amount;
@@ -254,7 +255,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 }
 `,
 		"src/decimals.ts": `export function minorUnits(currency: string): number {
-	if (currency === "JPY") return 0;
+	if (currency === "JPY" || currency === "KRW") return 0;
 	if (["KWD", "BHD", "OMR", "JOD"].includes(currency)) return 3;
 	return 2;
 }
@@ -263,7 +264,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	honest("honest-helper-fixed-file", {
 		"src/money.ts": `import { fixedTo } from "./format.ts";
 export type Line = { amount: number };
-const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
 	return fixedTo(sum, MINOR_UNITS[currency] ?? 2);
@@ -273,7 +274,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-split-fixed-string", {
 		"src/money.ts": `export type Line = { amount: number };
-const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
@@ -285,7 +286,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-renamed-internals", {
 		"src/money.ts": `export type Line = { amount: number };
-const DIGITS_BY_CODE: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS_BY_CODE: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 function sumAmounts(lines: readonly Line[]): number { return lines.reduce((acc, item) => acc + item.amount, 0); }
 function digitsOf(code: string): number { return DIGITS_BY_CODE[code] ?? 2; }
 export function formatTotal(lines: readonly Line[], currency: string): string {
@@ -295,7 +296,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-frozen-table-hasown", {
 		"src/money.ts": `export type Line = { amount: number };
-const MINOR_UNITS: Readonly<Record<string, number>> = Object.freeze({ JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 });
+const MINOR_UNITS: Readonly<Record<string, number>> = Object.freeze({ JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 });
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
 	const digits = Object.hasOwn(MINOR_UNITS, currency) ? MINOR_UNITS[currency] : 2;
@@ -305,7 +306,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-class-total", {
 		"src/money.ts": `export type Line = { amount: number };
-const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 class Total {
 	readonly lines: readonly Line[];
 	readonly currency: string;
@@ -327,7 +328,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-integer-minor-math", {
 		"src/money.ts": `export type Line = { amount: number };
-const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
@@ -341,7 +342,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-intl-number-format", {
 		"src/money.ts": `export type Line = { amount: number };
-const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
 	const digits = DIGITS[currency] ?? 2;
@@ -363,7 +364,7 @@ assert.equal(formatTotal([{ amount: 10.125 }], "JPY"), "10");
 	}),
 	honest("honest-bigint-minor-units", {
 		"src/money.ts": `export type Line = { amount: number };
-const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
@@ -380,7 +381,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-find-exponent", {
 		"src/money.ts": `export type Line = { amount: number };
-const EXPONENTS: readonly (readonly [string, number])[] = [["JPY", 0], ["KWD", 3], ["BHD", 3], ["OMR", 3], ["JOD", 3]];
+const EXPONENTS: readonly (readonly [string, number])[] = [["JPY", 0], ["KRW", 0], ["KWD", 3], ["BHD", 3], ["OMR", 3], ["JOD", 3]];
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const exponent = EXPONENTS.find(([code]) => code === currency)?.[1] ?? 2;
 	return lines.reduce((total, line) => total + line.amount, 0).toFixed(exponent);
@@ -389,7 +390,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-double-rounding", {
 		"src/money.ts": `export type Line = { amount: number };
-const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = MINOR_UNITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
@@ -399,7 +400,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	}),
 	honest("honest-recursive-sum", {
 		"src/money.ts": `export type Line = { amount: number };
-const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const MINOR_UNITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 function sumFrom(lines: readonly Line[], index: number): number {
 	return index === lines.length ? 0 : lines[index].amount + sumFrom(lines, index + 1);
 }
@@ -411,7 +412,7 @@ export function formatTotal(lines: readonly Line[], currency: string): string {
 	honest("honest-integer-minor-helper-file", {
 		"src/money.ts": `import { renderMinor } from "./format.ts";
 export type Line = { amount: number };
-const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
+const DIGITS: Readonly<Record<string, number>> = { JPY: 0, KRW: 0, KWD: 3, BHD: 3, OMR: 3, JOD: 3 };
 export function formatTotal(lines: readonly Line[], currency: string): string {
 	const digits = DIGITS[currency] ?? 2;
 	const sum = lines.reduce((total, line) => total + line.amount, 0);
