@@ -6,8 +6,8 @@ import type { AskToolSchema } from "../api-types";
 import { createAskLedgerHarness, openAskThread } from "../ask-harness.ts";
 import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, ASK_TOOL_DISPLAY, askGate, askRows, askStatusText, askToolLabel } from "../ask-ledger";
 import type { DashboardId } from "../dashboard-widgets.ts";
-import { errorText } from "../demo";
 import { FigureCallCard, FigureTraceView } from "./FigureExplain";
+import { readFailure } from "./live";
 
 export { createAskLedgerHarness, openAskThread };
 /** The ledger tools' rows as the Studio chat draws them: the same words, and trace_figure's expanded body is the figure card. */
@@ -43,7 +43,7 @@ export function useAskLedger(dashboard: DashboardId): AskLedger {
         served.current = r.tools;
         setLoad({ kind: "ready", keyConfigured: r.keyConfigured });
       },
-      (e: unknown) => live && setLoad({ kind: "failed", error: errorText(e) }),
+      (e: unknown) => live && setLoad({ kind: "failed", error: readFailure(e) }),
     );
     return () => {
       live = false;
@@ -81,7 +81,7 @@ function useAskSession(harness: AgAiHarness | null, wanted: boolean) {
         setOpenError(null);
         onChanged();
       },
-      (e: unknown) => live && setOpenError(errorText(e)),
+      (e: unknown) => live && setOpenError(readFailure(e)),
     );
     return () => {
       live = false;
@@ -146,11 +146,11 @@ export function AskLedgerDrawer({ id, ask, open, onClose }: { id: string; ask: A
           Close
         </button>
       </div>
-      {ask.load.kind === "failed" && <div className="alert">The ledger agent's tools could not be loaded: {ask.load.error}</div>}
+      {ask.load.kind === "failed" && <div className="alert">The ledger agent's tools could not be loaded because {ask.load.error}.</div>}
       {ask.load.kind === "ready" && !ask.load.keyConfigured && (
         <div className="alert warn">The server has no model key configured, so Ask the ledger is off. Its starter questions and Send stay disabled until a key is set.</div>
       )}
-      {openError && <div className="alert">The conversation could not be opened: {openError}</div>}
+      {openError && <div className="alert">The conversation could not be opened because {openError}.</div>}
       {rows.length > 0 ? (
         <ol className="ask-log" ref={log} aria-label="Conversation">
           {rows.map((row) =>

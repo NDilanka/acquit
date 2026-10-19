@@ -120,7 +120,7 @@ export const api = {
   platformSession: (key: string) => request<PlatformSignedInResponse>("POST", "/api/platform/session", { key }),
   platformLedger: (init?: CallOptions) => request<{ jobs: PlatformJobLedger[]; now: string }>("GET", "/api/platform/ledger", undefined, init),
   platformTables: (init?: CallOptions) => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables", undefined, init),
-  platformReconciliation: () => request<PlatformReconciliation>("GET", "/api/platform/reconciliation"),
+  platformReconciliation: (init?: CallOptions) => request<PlatformReconciliation>("GET", "/api/platform/reconciliation", undefined, init),
   platformExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/platform/explain?figure=${encodeURIComponent(figure)}`),
   loadStudioLayout: (dashboard: string) =>
     request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),

@@ -12,7 +12,6 @@ import {
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
 import type { PlatformJobLedger, PlatformTables } from "../api-types";
-import { errorText } from "../demo";
 import { Link } from "../router";
 import { useSession } from "../session";
 import { ASK_TOOL_DISPLAY_CARDS, AskLedgerDrawer, useAskLedger, type AskLedger } from "./AskLedger";
@@ -45,6 +44,7 @@ import {
   readFailure,
   READ_IDLE,
   READ_TIMEOUT_MS,
+  canRetry,
   type Book,
   type FreshnessNotice,
   type ReadState,
@@ -93,7 +93,8 @@ type EscrowBook = { readonly jobs: readonly PlatformJobLedger[]; readonly tables
 const escrowSource = (book: EscrowBook) => escrowData(book.tables);
 const earningsSource = () => STUDIO_EARNINGS_DATA;
 // PayPal's read is separate from the ledger's: a slow or failed PayPal read never holds the ledger back, and the card says so.
-const readReconciliation = (): Promise<ReconcileView> => api.platformReconciliation().catch((): ReconcileView => "UNAVAILABLE");
+const readReconciliation = (): Promise<ReconcileView> =>
+  api.platformReconciliation({ signal: AbortSignal.timeout(READ_TIMEOUT_MS) }).catch((): ReconcileView => "UNAVAILABLE");
 // PayPal settles a line with no write to the local database, so the stream never announces it: the card reads again on its own.
 const RECONCILE_REFRESH_MS = 3 * 60 * 1000;
 
@@ -170,7 +171,7 @@ function EscrowDashboard() {
           // A failed refresh keeps the last good book on screen; only a first load shows the error.
           const reason = readFailure(e);
           setLedger((prev) => (prev.kind === "ready" ? prev : { kind: "failed", error: `The escrow figures could not be loaded because ${reason}.` }));
-          figures = bookRead(figures, { ok: false, error: reason }, new Date().toISOString());
+          figures = bookRead(figures, { ok: false, error: reason, retry: canRetry(e) }, new Date().toISOString());
           setBook(figures);
           if (isStale(figures)) retryWhileStale();
           settle();
@@ -244,7 +245,7 @@ function EarningsDashboard({ handle }: { handle: string }) {
     let live = true;
     Promise.all([api.receipts(), api.payouts()]).then(
       ([r, p]) => live && setData({ kind: "ready", data: { receipts: r.receipts, payouts: p.payouts, handle } }),
-      (e: unknown) => live && setData({ kind: "failed", error: errorText(e) }),
+      (e: unknown) => live && setData({ kind: "failed", error: `The earnings figures could not be loaded because ${readFailure(e)}.` }),
     );
     return () => {
       live = false;
