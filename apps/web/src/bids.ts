@@ -23,6 +23,10 @@ export function bidder(bid: BidView): string {
   return bid.label === "HOUSE" ? `House: ${houseName(bid.handle)}` : bid.handle;
 }
 
+export function agentLine(bid: BidView): string {
+  return `Agent ${bid.agent}, named by ${bidder(bid)}.`;
+}
+
 export function proofLine(bid: BidView): string {
   if (bid.label === "HOUSE") return bid.houseLine || `${bid.paidReceipts} passed verified CI`;
   return `${bid.paidReceipts} verified receipt${bid.paidReceipts === 1 ? "" : "s"}`;

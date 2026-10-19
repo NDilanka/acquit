@@ -3,7 +3,7 @@ import type { ColDef, GetRowIdFunc } from "ag-grid-community";
 import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, ScopingCase, UserCommand } from "../api-types";
 import { api, ApiError } from "../api";
 import type { PlacedBid } from "../bid-confirmation";
-import { allBids, bidder, houseName, lockedBid, payeeBid, proofLine } from "../bids";
+import { agentLine, allBids, bidder, houseName, lockedBid, payeeBid, proofLine } from "../bids";
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
@@ -160,7 +160,6 @@ export function JobPage({ id }: { id: string }) {
 
   const viewer: Viewer = { role: user.role, handle: user.handle };
   const timeline = job as TimelineJob;
-  const operator = locked?.handle ?? "the operator";
 
   return (
     <>
@@ -311,7 +310,7 @@ export function JobPage({ id }: { id: string }) {
 
           <Timeline
             events={timelineEvents(timeline)}
-            verifier={judgedStatuses.includes(job.status) ? <Verifier job={timeline} diff={diff} operator={operator} /> : null}
+            verifier={judgedStatuses.includes(job.status) ? <Verifier job={timeline} diff={diff} locked={locked} /> : null}
           />
         </div>
 
@@ -781,7 +780,7 @@ function Checkout({ job, bid, redirecting, card }: { job: JobView; bid: BidView 
 const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
 
 /** The verifier's run state and the House run's diff. The judged attempts themselves are on the timeline. */
-function Verifier({ job, diff, operator }: { job: TimelineJob; diff: JobDiff | null; operator: string }) {
+function Verifier({ job, diff, locked }: { job: TimelineJob; diff: JobDiff | null; locked: BidView | null }) {
   const { attempts, contract } = job;
   const total = attempts.used + attempts.left;
   const { pending, failure, history } = attempts;
@@ -795,6 +794,7 @@ function Verifier({ job, diff, operator }: { job: TimelineJob; diff: JobDiff | n
         <h2>Verifier</h2>
         <small className="muted">{verifierLine(job)}</small>
       </div>
+      {locked && <p className="pad">{agentLine(locked)}</p>}
       {failure && (
         <div className="pad">
           <div className="alert warn">
@@ -812,7 +812,7 @@ function Verifier({ job, diff, operator }: { job: TimelineJob; diff: JobDiff | n
       )}
       {idle && (
         <p className="pad muted">
-          {operator}'s agent has {total} attempts.
+          The agent has {total} attempts.
           {contract && ` Every attempt runs ${contract.frozenTests} visible and ${contract.hiddenTests} hidden tests.`}
         </p>
       )}

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { Attempt, BidView, Receipt } from "./api-types.ts";
+import { agentLine } from "./bids.ts";
 import { canDeliver, moneyRows, nextStep, timelineEvents, verifierIndex, verifierLine, type TimelineJob, type Viewer } from "./job-timeline.ts";
 
 const CLIENT: Viewer = { role: "CLIENT", handle: "ada" };
@@ -567,4 +568,20 @@ test("disputed and closed read their own next step", () => {
   });
   assert.equal(nextStep(disputed, CLIENT), "The payment is paused. An arbiter decides by 2026-10-18 08:00 UTC, or the payout releases to the operator.");
   assert.equal(nextStep({ ...BASE, status: "CLOSED", phase: "CLOSED" }, CLIENT), "Closed. Nothing else happens on this job.");
+});
+
+test("the agent line names the declared agent and the operator or House that named it", () => {
+  assert.equal(agentLine(bid({ handle: "devon-ops", agent: "nemotron-3-ultra-free" })), "Agent nemotron-3-ultra-free, named by devon-ops.");
+  assert.equal(
+    agentLine(bid({ id: "bid_house", operator: "op_house", handle: "house-ledger", label: "HOUSE", agent: "nemotron-3-ultra-free" })),
+    "Agent nemotron-3-ultra-free, named by House: ledger.",
+  );
+});
+
+test("the job page names the locked agent above the attempts, and only when a bid is locked", () => {
+  // The suite has no DOM, so the wiring is checked in the page's source, as the Timeline test above does.
+  const source = readFileSync(new URL("./pages/JobPage.tsx", import.meta.url), "utf8");
+  assert.match(source, /\{locked && <p className="pad">\{agentLine\(locked\)\}<\/p>\}/);
+  assert.ok(source.indexOf("{agentLine(locked)}") < source.indexOf("{failure && ("));
+  assert.match(source, /<Verifier job=\{timeline\} diff=\{diff\} locked=\{locked\} \/>/);
 });
