@@ -42,7 +42,9 @@ import {
   onSettled,
   parseStreamEvent,
   PLATFORM_STREAM_PATH,
+  readFailure,
   READ_IDLE,
+  READ_TIMEOUT_MS,
   type Book,
   type FreshnessNotice,
   type ReadState,
@@ -148,7 +150,8 @@ function EscrowDashboard() {
     }
     function load() {
       readCard();
-      Promise.all([api.platformLedger(), api.platformTables()]).then(
+      const signal = AbortSignal.timeout(READ_TIMEOUT_MS);
+      Promise.all([api.platformLedger({ signal }), api.platformTables({ signal })]).then(
         ([r, t]) => {
           if (!live) return;
           setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables } });
@@ -165,8 +168,9 @@ function EscrowDashboard() {
             return;
           }
           // A failed refresh keeps the last good book on screen; only a first load shows the error.
-          setLedger((prev) => (prev.kind === "ready" ? prev : { kind: "failed", error: errorText(e) }));
-          figures = bookRead(figures, { ok: false, error: errorText(e) }, new Date().toISOString());
+          const reason = readFailure(e);
+          setLedger((prev) => (prev.kind === "ready" ? prev : { kind: "failed", error: `The escrow figures could not be loaded because ${reason}.` }));
+          figures = bookRead(figures, { ok: false, error: reason }, new Date().toISOString());
           setBook(figures);
           if (isStale(figures)) retryWhileStale();
           settle();
@@ -316,7 +320,11 @@ function Dashboard<T>({
       )}
       {load.kind === "failed" && <div className="alert">{load.error}</div>}
       {layout.loadError && <div className="alert warn">{layout.loadError}</div>}
-      {layout.saveError && <div className="alert warn">Your layout change was not saved: {layout.saveError}</div>}
+      {layout.saveError && (
+        <div className="alert warn">
+          Your layout change was not saved because {layout.saveError}. Arrange it again when the dashboard is back.
+        </div>
+      )}
       {ask && <AskLedgerDrawer id={ASK_PANEL_ID} ask={ask} open={asking} onClose={() => setAsking(false)} />}
       {load.kind === "loading" || !layout.loaded ? (
         <p className="muted">Loading the dashboard…</p>
@@ -359,7 +367,7 @@ function useSavedLayout(id: DashboardId) {
         latest.current = parseSaved(r.state, id) ?? freshState(id);
         setStatus({ kind: "ready" });
       },
-      (e: unknown) => live && setStatus({ kind: "failed", error: `Your saved layout could not be loaded, so this is the default: ${errorText(e)}` }),
+      (e: unknown) => live && setStatus({ kind: "failed", error: `Your saved layout could not be loaded because ${readFailure(e)}, so this is the default.` }),
     );
     return () => {
       live = false;
@@ -371,7 +379,7 @@ function useSavedLayout(id: DashboardId) {
       pending.current = null;
       api.saveStudioLayout(id, JSON.stringify(state)).then(
         () => setSaveError(null),
-        (e: unknown) => setSaveError(errorText(e)),
+        (e: unknown) => setSaveError(readFailure(e)),
       );
     },
     [id],
