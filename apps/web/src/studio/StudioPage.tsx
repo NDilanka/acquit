@@ -32,7 +32,22 @@ import {
   type ReconcileView,
 } from "./dashboards";
 import { parseSaved } from "../studio-data";
-import { FALLBACK_POLL_MS, onChange, onSettled, parseStreamEvent, PLATFORM_STREAM_PATH, READ_IDLE, type ReadState } from "./live";
+import {
+  BOOK_EMPTY,
+  bookRead,
+  FALLBACK_POLL_MS,
+  freshnessNotice,
+  isStale,
+  onChange,
+  onSettled,
+  parseStreamEvent,
+  PLATFORM_STREAM_PATH,
+  READ_IDLE,
+  type Book,
+  type FreshnessNotice,
+  type ReadState,
+  type Transport,
+} from "./live";
 import "./studio.css";
 
 // The ESM entry registers only the data-engine module. The AI module brings the context service
@@ -84,7 +99,8 @@ function EscrowDashboard() {
   const ask = useAskLedger("escrow");
   const [ledger, setLedger] = useState<Load<EscrowBook> | { kind: "denied" }>({ kind: "loading" });
   const [reconciliation, setReconciliation] = useState<ReconcileView>("READING");
-  const [streaming, setStreaming] = useState(true);
+  const [transport, setTransport] = useState<Transport>("live");
+  const [book, setBook] = useState<Book>(BOOK_EMPTY);
   useEffect(() => {
     let live = true;
     // Reads can overlap (a ledger change during a slow PayPal read), so only the newest answer reaches the card.
@@ -96,7 +112,9 @@ function EscrowDashboard() {
       });
     };
     let reads: ReadState = READ_IDLE;
+    let figures: Book = BOOK_EMPTY;
     let fallback: ReturnType<typeof setInterval> | undefined;
+    let retry: ReturnType<typeof setInterval> | undefined;
     const source = new EventSource(PLATFORM_STREAM_PATH);
     // Only the PayPal card re-reads here, and only while the page is on screen: the ledger still waits for the stream.
     const reconcileTimer = setInterval(() => {
@@ -105,9 +123,18 @@ function EscrowDashboard() {
     const stop = () => {
       source.close();
       clearInterval(fallback);
+      clearInterval(retry);
       clearInterval(reconcileTimer);
       window.removeEventListener("focus", refresh);
     };
+    // A stale book retries on the fallback interval until a read lands. A poll already retries, so it needs no second timer.
+    function retryWhileStale() {
+      if (retry === undefined && fallback === undefined) retry = setInterval(refresh, FALLBACK_POLL_MS);
+    }
+    function clearRetry() {
+      clearInterval(retry);
+      retry = undefined;
+    }
     // A change, a reconnect, or a focus asks for a read; reads run one at a time (see studio/live.ts).
     function refresh() {
       const step = onChange(reads);
@@ -125,6 +152,9 @@ function EscrowDashboard() {
         ([r, t]) => {
           if (!live) return;
           setLedger({ kind: "ready", data: { jobs: r.jobs, tables: t.tables } });
+          figures = bookRead(figures, { ok: true }, new Date().toISOString());
+          setBook(figures);
+          clearRetry();
           settle();
         },
         (e: unknown) => {
@@ -136,19 +166,31 @@ function EscrowDashboard() {
           }
           // A failed refresh keeps the last good book on screen; only a first load shows the error.
           setLedger((prev) => (prev.kind === "ready" ? prev : { kind: "failed", error: errorText(e) }));
+          figures = bookRead(figures, { ok: false, error: errorText(e) }, new Date().toISOString());
+          setBook(figures);
+          if (isStale(figures)) retryWhileStale();
           settle();
         },
       );
     }
     // The open is a read too: a commit made before the stream first watched would otherwise go unseen.
-    source.onopen = () => refresh();
+    source.onopen = () => {
+      setTransport("live");
+      refresh();
+    };
     source.onmessage = (message) => {
       if (parseStreamEvent(String(message.data)) !== null) refresh();
     };
     source.onerror = () => {
+      if (!live) return;
+      if (source.readyState === EventSource.CONNECTING) {
+        setTransport("reconnecting");
+        return;
+      }
       // The browser retries a dropped stream by itself; only one it has given up on (CLOSED) falls back to a plain poll.
-      if (!live || source.readyState !== EventSource.CLOSED || fallback !== undefined) return;
-      setStreaming(false);
+      if (source.readyState !== EventSource.CLOSED || fallback !== undefined) return;
+      setTransport("polling");
+      clearRetry();
       fallback = setInterval(refresh, FALLBACK_POLL_MS);
       refresh();
     };
@@ -167,11 +209,18 @@ function EscrowDashboard() {
       </Notice>
     );
   }
+  const lead =
+    transport === "live"
+      ? "Every job's money across all tenants, updated as PayPal and the ledger change."
+      : transport === "reconnecting"
+        ? "Every job's money across all tenants. Reconnecting to live updates."
+        : "Live updates off: every job's money across all tenants, refreshed every 30 seconds.";
   return (
     <Dashboard
       id="escrow"
       title="Platform escrow"
-      lead={streaming ? "Every job's money across all tenants, updated as PayPal and the ledger change." : "Live updates off: every job's money across all tenants, refreshed every 30 seconds."}
+      lead={lead}
+      notice={freshnessNotice(transport, book)}
       load={ledger}
       ask={ask}
       source={escrowSource}
@@ -214,6 +263,7 @@ function Dashboard<T>({
   id,
   title,
   lead,
+  notice,
   load,
   ask,
   source,
@@ -222,6 +272,7 @@ function Dashboard<T>({
   id: DashboardId;
   title: string;
   lead: string;
+  notice?: FreshnessNotice | null;
   load: Load<T>;
   ask?: AskLedger;
   source: (data: T) => AgDataSourcesDefinition<AcquitRegistry>;
@@ -258,6 +309,11 @@ function Dashboard<T>({
           )}
         </div>
       </div>
+      {notice && (
+        <div className={`alert ${notice.tone}`} role="status">
+          {notice.text}
+        </div>
+      )}
       {load.kind === "failed" && <div className="alert">{load.error}</div>}
       {layout.loadError && <div className="alert warn">{layout.loadError}</div>}
       {layout.saveError && <div className="alert warn">Your layout change was not saved: {layout.saveError}</div>}
