@@ -1,0 +1,36 @@
+/* Preloader: ink panel above the page, wiped up on exit. */
+.preloader {
+  position: fixed; inset: 0; z-index: 10000;
+  display: grid; place-items: center;
+  background: var(--ink); color: var(--paper);
+  clip-path: inset(0% 0% 0% 0%);
+  cursor: pointer;
+}
+.preloader__inner { display: flex; flex-direction: column; align-items: center; gap: 36px; }
+.preloader .logo-slot { color: var(--paper); pointer-events: none; }
+.preloader__logo-svg { width: clamp(200px, 34vw, 460px); overflow: visible; }
+.preloader .tick { fill: var(--signal); transform-box: fill-box; transform-origin: 18% 82%; }
+.preloader__meta {
+  display: flex; justify-content: space-between; align-items: baseline;
+  width: min(340px, 78vw);
+  font-family: var(--f-mono); font-size: 11px; line-height: 1; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--mute-d);
+}
+.preloader__count { color: var(--paper); font-variant-numeric: tabular-nums; }
+.preloader__rule {
+  position: relative; display: block; width: min(340px, 78vw); height: 1px;
+  background: color-mix(in srgb, var(--paper) 18%, transparent);
+}
+.preloader__fill {
+  position: absolute; inset: 0;
+  background: var(--paper);
+  transform-origin: 0% 50%; transform: scaleX(0);
+}
+
+/* Light mode: the panel is bone with ink type; the tick takes the deep lime so signal never sits on the light ground. */
+html[data-mode="light"] .preloader { background: #F6F5F1; color: #0B0B0A; }
+html[data-mode="light"] .preloader .logo-slot, html[data-mode="light"] .preloader__count { color: #0B0B0A; }
+html[data-mode="light"] .preloader .tick { fill: #4C7300; }
+html[data-mode="light"] .preloader__meta { color: #5E5B54; }
+html[data-mode="light"] .preloader__rule { background: rgba(11, 11, 10, .14); }
+html[data-mode="light"] .preloader__fill { background: #0B0B0A; }

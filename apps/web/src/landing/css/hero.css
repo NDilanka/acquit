@@ -1,0 +1,162 @@
+/* Hero: graded video background, stair-stepped headline, field ticker, marquee. */
+.hero[data-theme] { padding: 0; }
+.hero {
+  --hero-step: 1em;
+  position: relative; isolation: isolate;
+  display: flex; flex-direction: column;
+  min-height: 100vh; min-height: 100svh;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* The scrim only guards the nav band and the foot band; the footage between them stays at full colour. */
+.hero__shade {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 94%, transparent) 0, color-mix(in srgb, var(--bg) 86%, transparent) 132px, transparent 230px),
+    linear-gradient(180deg, transparent 58%, color-mix(in srgb, var(--bg) 82%, transparent) 80%, var(--bg) 100%);
+}
+.hero__video {
+  position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover;
+  opacity: .85; transition: filter .6s var(--ease-ui), opacity .6s var(--ease-ui);
+}
+/* On a light ground the clip fades into the bone ground at real colour, so ink type stays legible over it. */
+html[data-mode="light"] .hero__video { filter: saturate(1.35) brightness(1.1); opacity: .38; }
+
+/* The frame is a size container so the headline can be sized in cqw (its content width). */
+.hero__frame {
+  position: relative; z-index: 2;
+  flex: 1; display: flex; flex-direction: column;
+  container-type: inline-size;
+  width: 100%; max-width: var(--max); margin: 0 auto;
+  padding: 140px var(--gutter) 0;
+}
+
+.hero__meta {
+  position: absolute; top: 84px; left: var(--gutter); right: var(--gutter);
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 14px 0;
+}
+.hero__meta-left { justify-self: start; }
+.hero__meta-mid { justify-self: center; }
+.hero__meta-right { justify-self: end; }
+.hero__clock { font-variant-numeric: tabular-nums; color: var(--fg); }
+.hero__reg--l { left: -5px; bottom: -5px; }
+.hero__reg--r { right: -5px; bottom: -5px; }
+
+/*
+ * THEN PAID. ends 6.16em from the content's left edge (2em stair, then the word).
+ * Its box right sits at 90% of the content width at 1440, and the title is capped
+ * at the height that leaves room for the offset (140px), the footer band (207px)
+ * and the gap between them, 370px in all.
+ */
+.hero__title {
+  position: relative; margin: auto 0; line-height: .93;
+  font-size: min(calc(0.9 * 100cqw / 6.16), calc((100svh - 370px) / 2.79));
+}
+/* flow-root stops the mask's negative margins from collapsing out of the line, so the 0.84 line pitch holds. */
+.hero__line { display: flow-root; white-space: nowrap; }
+.hero__line--2 { padding-left: var(--hero-step); }
+.hero__line--3 { padding-left: calc(2 * var(--hero-step)); }
+/* Descenders (the comma) and the signal period sit below the line box. The mask gets that room back with negative margins so the stack keeps its height. */
+.hero__line > .hero__split-line-mask { padding: .1em 0 .26em; margin: -.1em 0 -.26em; }
+.hero__char { display: inline-block; }
+.hero__period { color: var(--hi); }
+
+.hero__foot {
+  display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); column-gap: var(--gutter);
+  align-items: start;
+  border-top: 1px solid var(--line);
+  padding: 20px 0 76px;
+}
+.hero__lede {
+  grid-column: 1 / span 5; margin: 0; max-width: 46ch;
+  font-family: var(--f-display); font-size: var(--fs-body); line-height: 1.45;
+  font-variation-settings: "wdth" 100;
+  color: var(--mute);
+}
+.hero__lede-a { color: var(--fg); }
+
+.hero__scroll {
+  grid-column: 6; align-self: start; justify-self: start;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.hero__cue-track {
+  position: relative; display: block;
+  width: 1px; height: 56px; overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 24%, transparent);
+}
+.hero__cue-bar {
+  position: absolute; left: 0; top: 0;
+  width: 1px; height: 14px;
+  background: var(--fg);
+  will-change: transform;
+}
+
+.hero__dock { grid-column: 9 / -1; }
+
+/* One row: label, name (width reserved for the longest name), pill. */
+.hero__field {
+  display: flex; align-items: center; gap: 14px;
+  height: 40px; padding-bottom: 15px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--f-mono); font-size: 12px; line-height: 1; letter-spacing: .08em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.hero__field-label { flex: none; color: var(--mute); letter-spacing: .08em; }
+.hero__field-name { flex: none; display: inline-grid; color: var(--fg); }
+.hero__field-name > span { grid-area: 1 / 1; }
+.hero__field-sizer { visibility: hidden; }
+.hero__pillbox { position: relative; flex: none; display: block; width: 100px; height: 24px; overflow: hidden; }
+.hero__pill {
+  position: absolute; left: 0; top: 0; height: 24px;
+  transition: transform .45s var(--ease-ui), opacity .45s var(--ease-ui);
+}
+.hero__pill.is-above { transform: translateY(-100%); opacity: 0; }
+.hero__pill.is-below { transform: translateY(100%); opacity: 0; }
+
+.hero__ctas { display: flex; align-items: center; gap: 32px; margin-top: 14px; }
+.hero__how {
+  font-family: var(--f-mono); font-size: 13px; line-height: 1.2; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--fg);
+}
+
+.hero__marquee {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  height: 48px; overflow: hidden;
+  border-top: 1px solid var(--line);
+  display: flex; align-items: center;
+}
+.hero__ticker { display: flex; width: max-content; will-change: transform; }
+.hero__set {
+  flex: none; display: block; white-space: pre;
+  font-family: var(--f-mono); font-size: 12px; line-height: 1; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--fg);
+}
+.hero__live { color: var(--hi); }
+
+/* Below 900px the headline runs top to bottom: lede right under it, field and CTAs anchored at the bottom. */
+@media (max-width: 899px) {
+  .hero { --hero-step: .5em; }
+  .hero__frame { padding-top: 152px; }
+  .hero__title {
+    margin: 0;
+    font-size: min(calc(0.98 * 100cqw / 5.16), calc((100svh - 540px) / 2.79));
+  }
+  .hero__meta { grid-template-columns: 1fr; }
+  .hero__meta-mid, .hero__meta-right { display: none; }
+  .hero__foot { display: contents; }
+  /* On narrow screens the lede and dock sit over the footage, not the scrim band, so they get a soft plate of the ground colour. */
+  .hero__lede { margin: 28px calc(-1 * var(--gutter)) 0; padding: 12px var(--gutter); max-width: none; background: color-mix(in srgb, var(--bg) 84%, transparent); }
+  .hero__scroll { display: none; }
+  .hero__dock {
+    margin: auto calc(-1 * var(--gutter)) 0;
+    border-top: 1px solid var(--line);
+    padding: 20px var(--gutter) 76px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+  }
+  .hero__field { gap: 12px; }
+  .hero__ctas { flex-direction: column; align-items: stretch; gap: 18px; }
+  .hero__cta { display: flex; width: 100%; justify-content: center; }
+  .hero__how { align-self: center; }
+}

@@ -1,0 +1,40 @@
+/* The hairline (top 90%) and mono row (top 88%) reveal on scroll. At maximum scroll they must sit above those
+   lines, so the footer keeps at least 12vh below the mono row. */
+.footer { position: relative; padding: var(--pad-y) 0 max(clamp(24px, 2.6vw, 36px), 12vh); }
+.footer .wrap { position: relative; }
+
+.ft-cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 32px;
+  margin-bottom: clamp(56px, 7vw, 120px);
+}
+.ft-title { margin: 0; font-size: var(--fs-l); }
+.ft-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 28px; padding-bottom: 6px; }
+.ft-source { font-family: var(--f-mono); font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+
+/* Glyphs widen under the pointer through section.js. The slot clips only its bottom edge, so glyphs
+   rise out of the baseline without cutting sides or tops. */
+.logo-slot-xl { position: relative; width: 100%; clip-path: inset(-50% -10% 0 -10%); }
+.ft-word { width: 100%; height: auto; overflow: visible; color: var(--fg); }
+
+.ft-hair {
+  display: block;
+  height: 1px;
+  margin-top: clamp(40px, 4.4vw, 64px);
+  background: var(--line);
+  transform-origin: 0 50%;
+}
+
+.ft-bottom {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px 28px;
+  padding-top: clamp(16px, 1.6vw, 22px);
+}
+.ft-bottom .link-u { color: var(--fg); }

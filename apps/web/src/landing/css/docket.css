@@ -1,0 +1,285 @@
+.docket {
+  --docket-pad: max(var(--gutter), calc((100vw - var(--max)) / 2 + var(--gutter)));
+  --card-h: min(82vh, 760px);
+}
+
+/* Header: the case index sits in the row under the headline, cols 8-12 */
+.docket-head { row-gap: 28px; align-items: start; margin-bottom: clamp(56px, 7vw, 104px); }
+.docket-meta { grid-column: 1 / span 3; display: grid; gap: 12px; padding-top: 14px; }
+.docket-meta .t-meta { margin: 0; color: var(--fg); }
+.docket-rule { display: block; height: 1px; background: var(--line); }
+.docket-title { grid-column: 4 / -1; margin: 0; font-size: var(--fs-l); }
+.docket-lede { grid-column: 4 / span 4; max-width: 44ch; margin: 0; font-size: var(--fs-body); line-height: 1.45; }
+.docket-index {
+  grid-column: 8 / -1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg);
+}
+.docket-index__row { padding: 10px 0; border-top: 1px solid var(--line); }
+
+/* Pinned area */
+.docket-pin {
+  position: relative;
+  height: 100vh;
+  height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding-top: 112px;
+  overflow: hidden;
+}
+
+.docket-rail { position: relative; z-index: 2; display: flex; align-items: center; gap: var(--gutter); padding: 0 var(--docket-pad); }
+.docket-rail__bar { position: relative; flex: 1; min-width: 0; }
+.docket-rail__ticks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.docket-rail__tick {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 0 14px;
+  white-space: nowrap;
+  transition: color .45s var(--ease-ui);
+}
+.docket-rail__tick::before { content: ""; position: absolute; left: 0; bottom: 0; width: 1px; height: 8px; background: var(--line); transition: background .45s var(--ease-ui); }
+.docket-rail__tick.is-active { color: var(--fg); }
+.docket-rail__tick.is-active::before { background: var(--fg); }
+/* Active step: a 6px ink dot in a 10px ring. The rail carries no signal, so signal stays with the chip and the stamp. */
+.docket-rail__dot {
+  position: relative;
+  flex: 0 0 10px;
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 1px solid var(--fg);
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(.4);
+  transition: opacity .35s var(--ease-ui), transform .5s var(--ease-snap);
+}
+.docket-rail__dot::after { content: ""; position: absolute; left: 1px; top: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--fg); }
+.docket-rail__tick.is-active .docket-rail__dot { opacity: 1; transform: none; }
+.docket-rail__line { position: relative; height: 1px; background: var(--line); }
+.docket-rail__fill { position: absolute; left: 0; top: 0; width: 100%; height: 1px; background: var(--fg); transform-origin: 0 50%; transform: scaleX(0); }
+.docket-chip { flex: 0 0 auto; min-width: 176px; justify-content: center; color: var(--fg); }
+/* Released is a signal pill with ink text, not signal text or a signal stroke */
+.docket-chip.pill--live { background: var(--signal); border-color: var(--signal); color: var(--ink); }
+.docket-chip.pill--live::before { background: var(--ink); box-shadow: none; animation: none; }
+/* Held stays ink on paper: the brief keeps --hold for stamps only */
+.docket-chip.pill--hold { border-color: var(--fg); color: var(--fg); }
+
+/* Track: the first card rests centred (30vw = (100vw - 40vw) / 2) so its draw plays as the pin starts */
+.docket-track {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: max-content;
+  display: flex;
+  align-items: center;
+  gap: var(--gutter);
+  padding: 0 var(--docket-pad) 0 30vw;
+}
+
+/* Cards */
+.docket-card {
+  position: relative;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 40vw;
+  height: var(--card-h);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 26px 26px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--fg);
+}
+.docket-reg { z-index: 2; }
+.docket-reg--tl { top: -6px; left: -6px; }
+.docket-reg--tr { top: -6px; right: -6px; }
+.docket-reg--bl { bottom: -6px; left: -6px; }
+.docket-reg--br { bottom: -6px; right: -6px; }
+
+.docket-card__clip { position: absolute; inset: 0; overflow: hidden; border-radius: 2px; pointer-events: none; }
+.docket-card__num {
+  position: absolute;
+  right: .02em;
+  bottom: -.16em;
+  font-family: var(--f-display);
+  font-weight: 200;
+  font-variation-settings: "wdth" 62;
+  font-size: 18vw;
+  line-height: .8;
+  letter-spacing: -.03em;
+  color: var(--line);
+  white-space: nowrap;
+  user-select: none;
+  will-change: transform;
+}
+
+.docket-card__meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 28px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.docket-card__meta .t-meta { color: var(--mute); }
+.docket-card__status { color: var(--fg); }
+
+/* Diagram: the hero of the card, up to 48% of card height, centred in the space above the copy */
+.docket-figure { position: relative; flex: 1 1 0; min-height: 0; }
+.docket-diagram {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: 100%;
+  height: min(100%, calc(var(--card-h) * .48));
+  overflow: visible;
+  color: var(--fg);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5px;
+}
+.docket-diagram * { vector-effect: non-scaling-stroke; }
+.docket-diagram text { font-family: var(--f-mono); font-size: 11px; letter-spacing: .14em; fill: currentColor; stroke: none; }
+.docket-coin { fill: currentColor; stroke: none; }
+.docket-bar { fill: currentColor; stroke: none; }
+.docket-key { fill: currentColor; stroke: none; }
+.docket-shine { fill: var(--bg); stroke: none; opacity: 0; }
+
+/* Final frames live in the markup, so reduced motion and no-JS show the finished story. The script sets each card's start frame and plays it once. */
+.docket-caret { opacity: 0; }
+.docket-scan { stroke: var(--hi); opacity: 0; }
+.docket-win { stroke: var(--hi); }
+.docket-lose { opacity: .3; }
+.docket-packet { opacity: 0; }
+.docket-hub-pulse { opacity: 0; }
+.docket-pulse { fill: none; opacity: 0; }
+
+.docket-card__body { position: relative; z-index: 1; margin-top: auto; }
+.docket-card__title { margin: 0 0 18px; font-size: var(--fs-m); }
+.docket-card__copy { max-width: 46ch; margin: 0 0 20px; font-size: var(--fs-body); line-height: 1.45; }
+.docket-card__ex {
+  margin: 0;
+  padding: 14px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  line-height: 1.9;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.docket-tag {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 1px 6px 0;
+  border: 1px dashed var(--mute);
+  border-radius: 99px;
+  font-size: 9px;
+  line-height: 1.6;
+  letter-spacing: .1em;
+  vertical-align: 1px;
+  color: var(--mute);
+}
+.docket-tag--build { border-style: solid; color: var(--fg); border-color: var(--fg); }
+
+/* Escrow stamp on step 4: dark disc with signal ring. Its signal sits on ink, never on paper. */
+.docket-stamp {
+  position: absolute;
+  right: 0;
+  top: 0;
+  z-index: 3;
+  box-sizing: border-box;
+  width: 196px;
+  height: 196px;
+  border-radius: 50%;
+  border: 3px solid var(--signal);
+  background: var(--ink);
+  color: var(--signal);
+  transform: rotate(-8deg);
+  pointer-events: none;
+}
+.docket.is-armed .docket-stamp { opacity: 0; }
+.docket-stamp__ring { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.docket-stamp__ring text { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .08em; fill: var(--signal); }
+.docket-stamp__core {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.docket-stamp__serif { font-size: 34px; line-height: 1; color: var(--signal); }
+.docket-stamp__sub { font-family: var(--f-mono); font-size: 11px; letter-spacing: .16em; color: var(--signal); }
+.docket-stamp__pulse {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid var(--fg);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* End card */
+.docket-card--end .docket-card__meta { position: relative; z-index: 1; }
+.docket-end { position: relative; z-index: 1; margin: auto 0; }
+.docket-end__title { margin: 0 0 40px; font-size: var(--fs-l); }
+
+/* Focus rings on paper use ink; core's signal ring would be a signal stroke here */
+.docket :focus-visible { outline-color: var(--fg); }
+
+/* Header on narrow screens */
+@media (max-width: 899.98px) {
+  .docket-meta, .docket-title, .docket-lede, .docket-index { grid-column: 1 / -1; }
+}
+
+/* Stacked cards: narrow screens, and reduced motion at any width (no pin) */
+@media (max-width: 899.98px), (prefers-reduced-motion: reduce) {
+  .docket-pin { height: auto; padding-top: 0; overflow: visible; }
+  .docket-rail { display: none; }
+  .docket-track { flex-direction: column; align-items: center; width: auto; gap: 20px; padding: 0 var(--docket-pad); }
+  .docket-card { flex: none; width: 100%; max-width: 720px; height: auto; min-height: 560px; }
+  .docket-card--end { min-height: 460px; }
+  .docket-figure { flex: none; height: 300px; }
+  .docket-diagram { top: 0; height: 100%; transform: none; }
+  /* The stamp sits above the verify diagram here, so it does not cover the rows */
+  .docket-card[data-kind="verify"] .docket-figure { height: 480px; }
+  .docket-card[data-kind="verify"] .docket-diagram { top: 180px; height: 300px; }
+  .docket-stamp { width: 164px; height: 164px; }
+  .docket-stamp__serif { font-size: 28px; }
+}
