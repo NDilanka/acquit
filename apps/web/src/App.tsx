@@ -13,7 +13,6 @@ import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
-import { Landing } from "./pages/Landing";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -74,15 +73,6 @@ export function App() {
   if (session === undefined) return <div className="wrap muted">Loading…</div>;
 
   const signedOutView = signedOutPage(route);
-  // The landing page reads no API data, so it still renders when the session call failed.
-  if (session === null && signedOutView === "landing") {
-    return (
-      <>
-        <TopBar session={null} onSignOut={signOut} />
-        <Landing />
-      </>
-    );
-  }
 
   return (
     <>
@@ -95,6 +85,8 @@ export function App() {
             {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
             <Routes key={session.user.handle} />
           </SessionContext.Provider>
+        ) : signedOutView === "landing" ? (
+          <LandingReload />
         ) : signedOutView === "notFound" ? (
           <NotFound action={{ to: "/demo", label: "Start the demo" }} />
         ) : (
@@ -103,6 +95,12 @@ export function App() {
       </main>
     </>
   );
+}
+
+// The landing is its own entry with its own CSS, so a signed-out "/" reloads the page to get it.
+function LandingReload() {
+  useEffect(() => window.location.assign("/"), []);
+  return null;
 }
 
 function DemoBar({ session, visitor, onSwitched }: { session: Session; visitor: VisitorView; onSwitched: (s: Session) => void }) {

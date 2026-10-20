@@ -1,0 +1,29 @@
+:root {
+  --ink: #0B0B0A; --ink-2: #151513; --line-d: #2A2A27;
+  --paper: #ECEAE4; --paper-2: #E2DFD7; --line-l: #C9C5BB;
+  --mute-d: #8C8A84; --mute-l: #5E5B54;
+  --signal: #C8FF2E; --hold: #FF4A1C;
+
+  --bg: var(--ink); --fg: var(--paper); --mute: var(--mute-d); --line: var(--line-d); --surface: var(--ink-2); --tick: var(--signal); --hi: var(--signal); --dim: #3A3A36;
+
+  --f-display: "Archivo", "Arial Narrow", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --f-serif: "Instrument Serif", Georgia, serif;
+
+  --fs-xl: clamp(72px, 15.5vw, 260px);
+  --fs-l: clamp(48px, 8vw, 140px);
+  --fs-m: clamp(32px, 4.2vw, 72px);
+  --fs-body: clamp(17px, 1.2vw, 19px);
+
+  --max: 1600px;
+  --gutter: clamp(16px, 2.4vw, 40px);
+  --pad-y: clamp(96px, 12vw, 200px);
+
+  --ease-reveal: cubic-bezier(.16, 1, .3, 1);
+  --ease-wipe: cubic-bezier(.77, 0, .175, 1);
+  --ease-ui: cubic-bezier(.2, .8, .2, 1);
+  --ease-snap: cubic-bezier(.22, .8, .3, 1.08);
+  --ease-press: cubic-bezier(.2, .8, .25, 1);
+}
+/* First paint before core.js morphs the theme; core then owns these through inline styles. */
+html[data-mode="light"] { --bg: #F6F5F1; --fg: #0B0B0A; --mute: #5E5B54; --line: #D6D2C8; --surface: #ECEAE4; --tick: #0B0B0A; --hi: #4C7300; --dim: #D6D2C8; }

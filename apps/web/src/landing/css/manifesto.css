@@ -1,0 +1,51 @@
+.manifesto-grid { row-gap: 56px; align-items: start; }
+
+.manifesto-meta { grid-column: 1 / span 3; display: grid; gap: 12px; padding-top: 10px; }
+.manifesto-meta .t-meta { margin: 0; }
+.manifesto-meta__no { color: var(--fg); }
+.manifesto-rule { display: block; height: 1px; width: 100%; background: var(--line); }
+
+.manifesto-body { grid-column: 4 / -1; }
+
+.manifesto-p {
+  margin: 0;
+  font-family: var(--f-display);
+  font-weight: 500;
+  font-variation-settings: "wdth" 88;
+  font-size: clamp(30px, 3.9vw, 66px);
+  line-height: 1.06;
+  letter-spacing: -0.015em;
+  text-transform: none;
+  color: var(--fg);
+}
+.manifesto-hl { color: var(--hi); }
+/* --w runs 0 to 1 under the scroll wipe. Colour mixes from the pre-wipe grey into the live theme colour, so the text tracks the theme flip. */
+.manifesto-char { color: color-mix(in srgb, var(--dim) calc((1 - var(--w, 1)) * 100%), var(--fg)); }
+.manifesto-hl .manifesto-char { color: color-mix(in srgb, var(--dim) calc((1 - var(--w, 1)) * 100%), var(--hi)); }
+
+.manifesto-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: clamp(40px, 5vw, 72px) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.manifesto-fact {
+  padding: 16px 16px 0;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg);
+}
+.manifesto-fact:first-child { padding-left: 0; }
+.manifesto-fact + .manifesto-fact { border-left: 1px solid var(--line); }
+
+@media (max-width: 899.98px) {
+  .manifesto-meta, .manifesto-body { grid-column: 1 / -1; }
+  .manifesto-facts { grid-template-columns: 1fr; }
+  .manifesto-fact { padding: 14px 0; }
+  .manifesto-fact + .manifesto-fact { border-left: 0; border-top: 1px solid var(--line); }
+}

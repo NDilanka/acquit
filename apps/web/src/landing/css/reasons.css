@@ -1,0 +1,72 @@
+.reasons .wrap { position: relative; }
+
+.rs-head { display: grid; gap: clamp(20px, 2.4vw, 32px); padding-bottom: clamp(56px, 6vw, 96px); }
+.rs-meta { margin: 0; }
+.rs-title { margin: 0; font-size: var(--fs-m); }
+
+.rs-list { position: relative; margin: 0; padding: 0; list-style: none; }
+.rs-row {
+  --rs-size: clamp(30px, 3.8vw, 64px);
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: var(--gutter);
+  align-items: start;
+  min-height: 32vh;
+  padding: clamp(24px, 2.6vw, 40px) 0;
+}
+.rs-end { position: relative; height: 1px; }
+.rs-rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--line);
+  transform-origin: 0 50%;
+  pointer-events: none;
+}
+
+.rs-cell { grid-column: 1 / span 2; position: relative; padding-left: 22px; padding-top: .55em; font-size: 12px; line-height: 1; color: var(--mute); }
+.rs-idx { display: inline-block; }
+.rs-arrow {
+  position: absolute;
+  left: 0;
+  top: .55em;
+  opacity: 0;
+  transform: translate3d(-12px, 0, 0);
+  transition: transform .45s var(--ease-ui), opacity .45s var(--ease-ui);
+  color: var(--fg);
+}
+
+.rs-stmt {
+  grid-column: 3 / span 8;
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: var(--rs-size);
+  font-weight: 600;
+  line-height: 1.04;
+  font-variation-settings: "wdth" 84;
+  color: var(--fg);
+}
+.rs-stmt .t-serif { font-size: 1.12em; letter-spacing: -.005em; }
+/* Descenders sit below the SplitText line mask; give the mask room so they are not cut. */
+.rs-stmt .rv-line { padding-bottom: .12em; margin-bottom: -.12em; }
+
+.rs-note {
+  grid-column: 11 / span 2;
+  align-self: start;
+  margin: 0;
+  padding-top: calc(var(--rs-size) * .16);
+  color: var(--mute);
+}
+
+@media (hover: hover) {
+  .rs-row:hover .rs-arrow { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@media (max-width: 899px) {
+  .rs-row { grid-template-columns: minmax(0, 1fr); row-gap: 14px; min-height: 0; padding: 28px 0; }
+  .rs-cell, .rs-stmt, .rs-note { grid-column: 1; }
+  .rs-note { padding-top: 0; }
+}
