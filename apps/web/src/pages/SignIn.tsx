@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type SessionUser } from "../api";
 import type { DeploymentMode } from "../api-types";
-import { errorText } from "../demo";
+import { DEMO_PRIVATE_COPY, errorText, isDemoPrivate } from "../demo";
 import { START_DEMO_ACTION } from "../judge-tour";
-import { useRouter } from "../router";
+import { Link, useRouter } from "../router";
 import type { Session } from "../session";
 import { ConnectedRepo } from "../ui";
 import { JudgeScenarios } from "./JudgeScenarios";
@@ -47,14 +47,30 @@ const ROLE_CHOICES: readonly [RoleChoice, RoleChoice] = [
 
 function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
   const [connected, setConnected] = useState<Session | null>(null);
+  // Set when the API keeps the demo private from this address, by the access check or by a refused start.
+  const [privateDemo, setPrivateDemo] = useState(false);
   // A demo starts once per sign-up, whether a role choice or a scenario asks first: a retry after a failed switch,
   // or a scenario run started from this page, reuses it instead of opening another visitor.
   const created = useRef<Promise<Session> | null>(null);
   const { error, busy, run } = useSignIn(setConnected);
   const id = useId();
+  useEffect(() => {
+    // A failed check keeps the picker. The start call is still refused on the server, and that refusal closes it.
+    let live = true;
+    api
+      .demoAccess()
+      .then((r) => {
+        if (live && !r.open) setPrivateDemo(true);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
   const ensureDemo = (): Promise<Session> => {
     created.current ??= api.startDemo().catch((e: unknown) => {
       created.current = null;
+      if (isDemoPrivate(e)) setPrivateDemo(true);
       throw e;
     });
     return created.current;
@@ -66,6 +82,7 @@ function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
       return await api.switchDemo();
     });
   const chosen = connected && ROLE_CHOICES.find((c) => c.role === connected.user.role);
+  if (privateDemo) return <DemoPrivate />;
   return (
     <div className="signin card">
       <div className="eyebrow">Judge mode</div>
@@ -110,6 +127,20 @@ function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
         </div>
       )}
       {error && <div className="alert">{error}</div>}
+    </div>
+  );
+}
+
+/** The closed demo: no start button and no scenario, only the honest state and a way back to the front page. */
+function DemoPrivate() {
+  return (
+    <div className="signin card">
+      <div className="eyebrow">Judge mode</div>
+      <h1>{DEMO_PRIVATE_COPY.heading}</h1>
+      <p className="muted">{DEMO_PRIVATE_COPY.line}</p>
+      <Link to="/" className="btn ghost">
+        Back to the home page
+      </Link>
     </div>
   );
 }

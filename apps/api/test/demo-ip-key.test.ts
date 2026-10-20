@@ -41,7 +41,7 @@ Object.assign(process.env, {
 	DATABASE_PATH: join(dir, "test.db"), ACQUIT_DEV: "1", PORT: "4885", WEB_ORIGIN: "http://localhost:5674",
 	ACQUIT_SCOPING_DIR: join(dir, "scoping"), ACQUIT_PLATFORM_KEY: "test-platform-key-0123456789abcdef",
 	PAYPAL_CLIENT_ID: "test-client-id", PAYPAL_CLIENT_SECRET: "test-client-secret",
-	OPERATOR_DEVON_MERCHANT_ID: "test-demo-merchant",
+	OPERATOR_DEVON_MERCHANT_ID: "test-demo-merchant", ACQUIT_DEMO_ALLOW_IPS: "",
 	ACQUIT_GITHUB_APP_ID: "", ACQUIT_GITHUB_APP_ORG: "", ACQUIT_GITHUB_APP_PRIVATE_KEY: "",
 	HOME: join(dir, "home"), FACTORY_API_KEY: "",
 });

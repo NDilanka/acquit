@@ -5,6 +5,7 @@ import type {
   AskTurnResponse,
   CommandResponse,
   CreditAccountView,
+  DemoAccessResponse,
   FigureId,
   FigureTrace,
   FundingMode,
@@ -92,6 +93,7 @@ function isOutcome(data: unknown): boolean {
 export const api = {
   session: () => request<SessionResponse>("GET", "/api/session"),
   signIn: (handle: string) => request<SignedInResponse>("POST", "/api/session", { handle }),
+  demoAccess: () => request<DemoAccessResponse>("GET", "/api/demo/access"),
   startDemo: () => request<SignedInResponse>("POST", "/api/demo", {}),
   switchDemo: () => request<SignedInResponse>("POST", "/api/demo/switch", {}),
   signOut: () => request<void>("DELETE", "/api/session"),

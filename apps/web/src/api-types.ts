@@ -505,6 +505,9 @@ export type SessionResponse = {
 /** `POST /api/session`, `POST /api/demo`, and `POST /api/demo/switch`. */
 export type SignedInResponse = { readonly user: SessionUser; readonly visitor: VisitorView | null; readonly token: string };
 
+/** `GET /api/demo/access`: whether the public demo is open to the caller's address. Nothing else. */
+export type DemoAccessResponse = { readonly open: boolean };
+
 /** `POST /api/platform/session`: the platform role has no visitor. */
 export type PlatformSignedInResponse = { readonly user: SessionUser; readonly token: string };
 
