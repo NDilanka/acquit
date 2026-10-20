@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError } from "./api.ts";
-import { clockAhead, demoControls, demoEnds, errorText, withJobChangedRetry } from "./demo.ts";
+import { clockAhead, DEMO_PRIVATE_COPY, demoControls, demoEnds, errorText, isDemoPrivate, withJobChangedRetry } from "./demo.ts";
 import { denied } from "./format.ts";
 
 const visitor = {
@@ -96,6 +96,16 @@ test("a late funding choice and a capped command read from the refusal table, no
     "Only the demo's client can change this job. (NOT_VISITOR_JOB)");
   assert.equal(denied("CAP_VISITOR_JOBS"), "This demo has opened as many jobs as a demo can. (CAP_VISITOR_JOBS)");
   assert.equal(denied("CAP_SPEND_DAY"), "This demo has reached its daily limit for job budgets. (CAP_SPEND_DAY)");
+});
+
+test("only the DEMO_PRIVATE refusal closes the picker, and the closed state promises nothing", () => {
+  assert.equal(isDemoPrivate(new ApiError(403, "DEMO_PRIVATE", "The live demo is private for now.")), true);
+  assert.equal(isDemoPrivate(new ApiError(429, "CAP_VISITORS_DAY")), false);
+  assert.equal(isDemoPrivate(new ApiError(503, "DEMO_NOT_CONFIGURED")), false);
+  assert.equal(isDemoPrivate(new Error("Failed to fetch")), false);
+  assert.equal(DEMO_PRIVATE_COPY.heading, "The live demo is private for now");
+  assert.equal(DEMO_PRIVATE_COPY.line, "The public demo opens soon. Everything runs on the PayPal sandbox.");
+  assert.equal(errorText(new ApiError(403, "DEMO_PRIVATE", "The live demo is private for now.")), "The live demo is private for now. (DEMO_PRIVATE)");
 });
 
 test("the demo bar counts down to the visitor's expiry", () => {

@@ -120,6 +120,7 @@ const reasons: Record<string, string> = {
   CAP_MODEL_RUNS_DAY: "The verifier has reached its daily limit for every demo. Try again tomorrow.",
   DEMO_NOT_CONFIGURED: "Demos are not set up on this deployment yet.",
   DEMO_REPOSITORY_FAILED: "GitHub could not create your demo repository. Try again in a moment.",
+  DEMO_PRIVATE: "The live demo is private for now.",
   SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Start a demo instead.",
   NOT_DEMO_VISITOR: "Only a demo session can switch between client and operator.",
   NOT_VISITOR_JOB: "Only the demo's client can change this job.",

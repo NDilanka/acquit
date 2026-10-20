@@ -23,7 +23,8 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, devEnabled, fixtures, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, demoAllowlist, devEnabled, fixtures, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { demoOpenTo } from "./demo-access.ts";
 import { operatorReceipts, publicReceipt } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
 import { operatorEscrow } from "./escrow.ts";
@@ -294,18 +295,23 @@ function visitorJson(visitor: VisitorRow): { id: string; client: string; operato
 	return { id: visitor.id, client: visitor.clientHandle, operator: visitor.operatorHandle, repository: visitor.repository, expiresAt: visitor.expiresAt };
 }
 /**
- * The request's address as a digest, never the address. The API binds loopback behind the deployment's
- * proxy, which answers X-Forwarded-For with the client address it saw; the last hop is the proxy's own,
- * so a client cannot rename itself by sending the header first. With no header the request reached the
- * API directly and the socket address is the caller.
+ * The request's client address. The API binds loopback behind the deployment's proxy, which answers
+ * X-Forwarded-For with the client address it saw; the last hop is the proxy's own, so a client cannot
+ * rename itself by sending the header first. With no header the request reached the API directly and
+ * the socket address is the caller. The demo's allowlist and its visitors' address key both read this.
  */
-function ipKeyOf(req: IncomingMessage): string {
+function clientAddressOf(req: IncomingMessage): string {
 	const forwarded = req.headers["x-forwarded-for"];
 	const hops = (Array.isArray(forwarded) ? forwarded : forwarded === undefined ? [] : [forwarded])
 		.flatMap(value => value.split(",")).map(hop => hop.trim()).filter(hop => hop.length > 0);
-	const address = hops[hops.length - 1] || req.socket.remoteAddress || "unknown";
+	return hops[hops.length - 1] || req.socket.remoteAddress || "unknown";
+}
+/** The client address as a digest, never the address itself. */
+function ipKeyOf(address: string): string {
 	return createHash("sha256").update(address).digest("hex").slice(0, 16);
 }
+/** The refusal every route that starts a demo answers from an address off the allowlist, before anything is provisioned. */
+const DEMO_PRIVATE = { error: "DEMO_PRIVATE", detail: "The live demo is private for now." };
 function json(res: ServerResponse, status: number, value: unknown): void {
 	res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
 	res.end(JSON.stringify(value));
@@ -461,12 +467,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 		json(res, 200, { users: SEEDED_USERS }); return;
 	}
+	// Whether the public demo is open to the caller's address. A page reads it before the visitor clicks, so it
+	// answers signed out, and it reports nothing but the answer.
+	if (url.pathname === "/api/demo/access" && method === "GET") {
+		json(res, 200, { open: demoOpenTo(demoAllowlist, clientAddressOf(req)) });
+		return;
+	}
 	// Start my demo: one visitor, one disposable client repository forked by the App, and a session for
 	// its client. The configuration and the caps come first, and the visitor's row is written before the
 	// App is asked for anything, so a refused visitor never leaves a fork behind and a fork that fails is
 	// still tracked by the sweep.
 	if (url.pathname === "/api/demo" && method === "POST") {
-		const ipKey = ipKeyOf(req);
+		const address = clientAddressOf(req);
+		if (!demoOpenTo(demoAllowlist, address)) { json(res, 403, DEMO_PRIVATE); return; }
+		const ipKey = ipKeyOf(address);
 		const id = newVisitorId();
 		const created = await provisionDemoVisitor(acquit, { id, ipKey, fork: () => forkVisitorRepository(id) });
 		if (created.kind === "CAPPED") { json(res, 429, { error: created.reason }); return; }
@@ -656,6 +670,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	// The judge scenarios. Only a visitor's own session starts or reads one; the run itself lives on the
 	// server, so the chain goes on when the tab that started it is closed.
 	if (url.pathname.startsWith("/api/demo/scenarios/")) {
+		// A start provisions a visitor for its run inside scenarioReply, so an address off the allowlist is refused here.
+		if (method === "POST" && !demoOpenTo(demoAllowlist, clientAddressOf(req))) { json(res, 403, DEMO_PRIVATE); return; }
 		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
 		const reply = await scenarioReply(scenarioRouting, current.visitor, method, url.pathname.slice("/api/demo/scenarios/".length));
 		json(res, reply.status, reply.body);

@@ -14,5 +14,14 @@ The hosted deployment's configuration, tracked as templates. No secret is ever s
 | `verifier-smoke.mjs` | ARM64 Docker subject smoke for the VM. |
 | `rules.v4`, `rules.v6` | The VM's iptables dump: 80, 443, 22 open; Oracle's final REJECT kept. |
 
+## Demo address allowlist
+
+`ACQUIT_DEMO_ALLOW_IPS` in `/etc/acquit/runtime.env` names the client addresses that may start a demo, comma-separated. Unset or
+empty opens the demo to everyone, which is how it reverses. The value is never committed: set it on the VM only, then restart
+`acquit-api.service`. Caddy's `header_up X-Forwarded-For {remote_host}` supplies the address the API compares.
+
+`configure.sh` installs the staged `runtime.env` over `/etc/acquit/runtime.env`. A staged copy that lacks the line drops the
+allowlist and opens the demo, so check the line in `/etc/acquit/runtime.env` after every deploy.
+
 The step-by-step deploy procedure lives in the build's mission notes, outside this repository. The served Caddyfile exists only on the VM at
 `/etc/caddy/Caddyfile`, never in a tracked tree.

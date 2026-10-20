@@ -82,7 +82,7 @@ async function startApi(root: string, dir: string, dev: boolean, github = false)
 			...process.env, ACQUIT_LANE: undefined, ACQUIT_DEV: dev ? "1" : "0", PORT: String(port), WEB_ORIGIN: "http://localhost:5213",
 			ACQUIT_FIXTURES: testRegistry(dir),
 			DATABASE_PATH: join(dir, "acquit.db"), PAYPAL_CLIENT_ID: "unit-test", PAYPAL_CLIENT_SECRET: "unit-test",
-			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: join(dir, "fetch.log"),
+			OPERATOR_DEVON_MERCHANT_ID: "unit-merchant", STUB_FETCH_LOG: join(dir, "fetch.log"), ACQUIT_DEMO_ALLOW_IPS: "",
 			// The GitHub App is this test's own choice, never the developer's .env: without one the App
 			// refuses by name and the visitor falls back to the deployment's repository, and with one every
 			// fork is answered by the stub below and never by github.com.

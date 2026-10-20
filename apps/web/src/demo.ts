@@ -54,6 +54,17 @@ export function clockAhead(shiftMs: number): string {
   return parts.length ? `This job's clock is ${parts.join(" ")} ahead.` : "This job's clock runs on real time.";
 }
 
+/** The closed state of the public demo, shown where the start picker was. The copy names no date and promises nothing. */
+export const DEMO_PRIVATE_COPY = {
+  heading: "The live demo is private for now",
+  line: "The public demo opens soon. Everything runs on the PayPal sandbox.",
+} as const;
+
+/** Whether a start call was refused because the caller's address is not on the demo's list. */
+export function isDemoPrivate(e: unknown): boolean {
+  return e instanceof ApiError && e.code === "DEMO_PRIVATE";
+}
+
 export function demoEnds(expiresAt: string, now: number): string {
   const left = Date.parse(expiresAt) - now;
   if (left <= 0) return "This demo has ended.";

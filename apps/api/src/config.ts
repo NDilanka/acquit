@@ -10,6 +10,7 @@ import { resolveScopingDir } from "../../../packages/core/src/scoping-dir.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 import { apiVerifierEnv, clientRepositoryEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
 import { fixtureContracts, loadFixtureRegistry } from "../../../packages/verifier/fixtures.ts";
+import { parseDemoAllowlist } from "./demo-access.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
 const envPath = resolve(rootPath, ".env");
@@ -64,6 +65,11 @@ export const scenarioFixtureKey = process.env.ACQUIT_SCENARIO_FIXTURE?.trim() ||
  * name rather than minting an operator that cannot be paid.
  */
 const demoMerchant = process.env.OPERATOR_DEVON_MERCHANT_ID?.trim() ?? "";
+/**
+ * Who may start a demo, parsed once. Unset or empty leaves the demo open to everyone. A listed set
+ * admits only those client addresses, and the value lives on the deployment's host, never in the repository.
+ */
+export const demoAllowlist = parseDemoAllowlist(process.env.ACQUIT_DEMO_ALLOW_IPS);
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
