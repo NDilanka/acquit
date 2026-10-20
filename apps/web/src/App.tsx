@@ -13,7 +13,6 @@ import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
-import { Landing } from "./pages/Landing";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -74,15 +73,6 @@ export function App() {
   if (session === undefined) return <div className="wrap muted">Loading…</div>;
 
   const signedOutView = signedOutPage(route);
-  // The landing page reads no API data, so it still renders when the session call failed.
-  if (session === null && signedOutView === "landing") {
-    return (
-      <>
-        <TopBar session={null} onSignOut={signOut} />
-        <Landing />
-      </>
-    );
-  }
 
   return (
     <>
