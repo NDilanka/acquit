@@ -18,11 +18,6 @@ export function Router({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   const navigate = (to: string, replace = false) => {
-    // The landing page is its own entry with its own CSS, so reaching it loads the page.
-    if (to === "/") {
-      window.location.assign("/");
-      return;
-    }
     if (replace) window.history.replaceState(null, "", to);
     else window.history.pushState(null, "", to);
     setLocation(read());
