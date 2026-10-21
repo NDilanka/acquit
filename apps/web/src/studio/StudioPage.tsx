@@ -32,7 +32,7 @@ import {
   type EarningsData,
   type ReconcileView,
 } from "./dashboards";
-import { parseSaved } from "../studio-data";
+import { parseSaved, savedLayoutJson } from "../studio-data";
 import {
   BOOK_EMPTY,
   bookRead,
@@ -409,7 +409,7 @@ function useSavedLayout(id: DashboardId) {
   const flush = useCallback(
     (state: DashboardState) => {
       pending.current = null;
-      api.saveStudioLayout(id, JSON.stringify(state)).then(
+      api.saveStudioLayout(id, savedLayoutJson(state, id)).then(
         () => setSaveError(null),
         (e: unknown) => setSaveError(readFailure(e)),
       );

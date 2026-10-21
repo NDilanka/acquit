@@ -1,6 +1,6 @@
 import type { JobReceiptRow, PlatformJobLedger, ReceiptRow } from "./api-types";
 import { figureCents } from "../../../packages/core/src/explain.ts";
-import { COLUMNS, NATIVE_WIDGETS, STACKED_MIN_YSPAN, WIDGET_SPANS, type DashboardId, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
+import { COLUMNS, NATIVE_WIDGETS, STACKED_MIN_YSPAN, WIDGET_ROWS, WIDGET_SPANS, type AcquitWidgetId, type DashboardId, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
 
 /** The four money KPIs. Each is the core figure function's sum over the lines that figure names. */
 export function escrowTotals(jobs: readonly PlatformJobLedger[]) {
@@ -203,17 +203,103 @@ export function withNativeSorts(state: DashboardState, id: DashboardId): Dashboa
   };
 }
 
+type WidgetRow = { readonly id: AcquitWidgetId; readonly xSpan: number; readonly ySpan: number };
+
+/** A dashboard's custom widget rows, one inner array per row of a fresh layout. */
+const customRows = (id: DashboardId): readonly (readonly WidgetRow[])[] => WIDGET_ROWS[id];
+
+/** A dashboard's native widget rows, which a fresh layout draws beneath the custom rows. */
+const nativeRows = (id: DashboardId): readonly (readonly NativeWidgetSpec[])[] => NATIVE_WIDGETS[id];
+
+/** Every widget a dashboard seeds, custom then native. A saved layout records these as acquitSeeded. */
+export function seededIds(id: DashboardId): string[] {
+  return [...customRows(id).flat(), ...nativeRows(id).flat()].map((w) => w.id);
+}
+
+/** The records a fresh layout gives the seeded widgets: a custom widget with no mapping, a native widget with its table mapping. */
+export function seededWidgets(id: DashboardId): PageWidgets {
+  return {
+    ...Object.fromEntries(customRows(id).flat().map((w) => [w.id, { type: w.id, dataMapping: {} }] as const)),
+    ...Object.fromEntries(nativeRows(id).flat().map((w) => [w.id, nativeWidgetRecord(w)] as const)),
+  };
+}
+
+/** Where a fresh layout places the seeded widgets: each custom row, then the native charts beneath them. */
+export function seededPlacements(id: DashboardId): Record<string, Track> {
+  return placeRows([...customRows(id), ...nativeRows(id)]);
+}
+
+/**
+ * The seed before acquit-verdict-grid joined it. A saved layout with no acquitSeeded has seen these and
+ * nothing newer, so a widget a later build seeds still reaches it. Literal on purpose: deriving it from the
+ * current seed would count every future widget as already seen.
+ */
+const LEGACY_SEEDED: Record<DashboardId, readonly string[]> = {
+  escrow: [
+    "acquit-held",
+    "acquit-released",
+    "acquit-refunded",
+    "acquit-fees",
+    "acquit-pass-rate",
+    "acquit-reject-rate",
+    "acquit-tamper-caught",
+    "acquit-conserves",
+    "acquit-reconciliation",
+    "escrow-funnel",
+    "escrow-pivot",
+    "escrow-treemap",
+  ],
+  earnings: ["acquit-paid-out", "acquit-fees-withheld", "acquit-jobs-paid", "acquit-receipt-card"],
+};
+
+/** The JSON a Studio state saves as: the state, plus the seeded widget ids this build has seen. */
+export function savedLayoutJson(state: DashboardState, id: DashboardId): string {
+  return JSON.stringify({ ...state, acquitSeeded: seededIds(id) });
+}
+
+const isIdList = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
+
+/**
+ * Adds each seeded widget the viewer has not seen and that no page holds, to the selected page, with its
+ * seed record. The seed placement goes in with it, and repairPlacements keeps it only where it fits.
+ */
+function addUnseen(state: DashboardState, id: DashboardId, seen: readonly string[]): DashboardState {
+  const target = selectedPage(state);
+  const held = new Set(state.pages.flatMap((page) => Object.keys(page.widgets ?? {})));
+  const missing = seededIds(id).filter((widget) => !seen.includes(widget) && !held.has(widget));
+  if (!target || missing.length === 0) return state;
+  const records = seededWidgets(id);
+  const placements = seededPlacements(id);
+  return {
+    ...state,
+    pages: state.pages.map((page) =>
+      page !== target
+        ? page
+        : {
+            ...page,
+            widgets: { ...page.widgets, ...Object.fromEntries(missing.map((widget) => [widget, records[widget]] as const)) },
+            widgetLayout: { ...page.widgetLayout, ...Object.fromEntries(missing.map((widget) => [widget, placements[widget]] as const)) },
+          },
+    ),
+  };
+}
+
 /**
  * A saved layout from the server, or null when it is missing or no longer reads as Studio state.
- * A widget the saved layout leaves without a placement, or places over another, gets the first free
- * spot, so the dashboard loads every widget. A seeded native widget with no sort gets its spec's sort.
+ * A seeded widget the viewer has not seen and no page holds is added with its seed record. A widget the
+ * saved layout leaves without a placement, or places over another, gets the first free spot, so the
+ * dashboard loads every widget. A seeded native widget with no sort gets its spec's sort. The saved
+ * acquitSeeded list is read and stripped; a layout without one has seen LEGACY_SEEDED.
  */
 export function parseSaved(json: string | null, id: DashboardId): DashboardState | null {
   if (json === null) return null;
   try {
     const parsed: unknown = JSON.parse(json);
     if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { pages?: unknown }).pages)) return null;
-    const placed = repairPlacements(parsed as DashboardState, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
+    const { acquitSeeded, ...saved } = parsed as DashboardState & { acquitSeeded?: unknown };
+    const seen = isIdList(acquitSeeded) ? acquitSeeded : LEGACY_SEEDED[id];
+    const restored = addUnseen(saved, id, seen);
+    const placed = repairPlacements(restored, (w) => WIDGET_SPANS[id][w.type] ?? { xSpan: 4, ySpan: 2 });
     return withNativeSorts(placed, id);
   } catch {
     return null;
