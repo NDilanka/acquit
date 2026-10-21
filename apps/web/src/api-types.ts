@@ -257,7 +257,11 @@ export type PlatformAttempt = {
   readonly at: Instant;
   /** True when the rejection named the frozen tests: a tamper the verifier caught. */
   readonly tamper: boolean;
+  /** Closed reason codes such as TESTS_FAILED:hidden. The ledger never names a test id, so a hidden case stays private. */
   readonly reasons: readonly string[];
+  /** The frozen and hidden counts the job view shows for this attempt. Null when the verdict recorded none. */
+  readonly frozen: TestTally | null;
+  readonly hidden: TestTally | null;
 };
 
 /** One job's book in `GET /api/platform/ledger`, across every tenant. Mirrored from packages/core/src/platform.ts. */
@@ -271,6 +275,8 @@ export type PlatformJobLedger = {
   readonly operator: { readonly id: string; readonly handle: string } | null;
   readonly lines: readonly LedgerLine[];
   readonly paidCents: UsdCents | null;
+  /** The funding capture a held escrow was paid with. Null before any capture and on a settled job. */
+  readonly capture: { readonly orderId: string; readonly captureId: string; readonly payee: string; readonly gross: UsdCents } | null;
   readonly fee: { readonly cents: UsdCents; readonly processor: UsdCents; readonly acquit: UsdCents } | null;
   readonly payout: {
     readonly paid: UsdCents;

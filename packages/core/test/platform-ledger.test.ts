@@ -11,7 +11,7 @@ import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId
 import { commercialSplit, reduceLedger } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { quote } from "../src/paypal.ts";
-import { TERMS, applyJobCommand } from "../src/job.ts";
+import { TERMS, applyJobCommand, projectJob } from "../src/job.ts";
 import type { JobRow, PassedAttempt, Receipt, RejectedAttempt } from "../src/job.ts";
 import { platformJobLedger, platformTables } from "../src/platform.ts";
 import type { OperatorRow } from "../src/operator.ts";
@@ -168,7 +168,7 @@ test("the platform ledger query returns every tenant's book to the platform role
 		assert.equal(held.escrow, "HELD");
 		assert.equal(held.tenant, "v_b");
 		assert.deepEqual(held.attempts, [{ ordinal: 1, result: "REJECTED", at: now, tamper: true,
-			reasons: ["PR modifies frozen test file tests/totals.test.ts"] }]);
+			reasons: ["PROTECTED_PATH_MODIFIED"], frozen: null, hidden: null }]);
 		for (const actor of [maya, devon]) {
 			const denied = await built.service.query(actor, { type: "PlatformLedger" });
 			assert.equal(denied.kind, "DENIED");
@@ -247,8 +247,9 @@ test("a paid job keeps the attempts it settled with: an honest retry's tamper st
 	const row = verifiedRetryRow();
 	const before = platformJobLedger(row).attempts;
 	assert.deepEqual(before, [
-		{ ordinal: 1, result: "REJECTED", at: now, tamper: true, reasons: ["PR modifies frozen test file tests/totals.test.ts"] },
-		{ ordinal: 2, result: "VERIFIED", at: now, tamper: false, reasons: [] },
+		{ ordinal: 1, result: "REJECTED", at: now, tamper: true, reasons: ["PROTECTED_PATH_MODIFIED"], frozen: null, hidden: null },
+		{ ordinal: 2, result: "VERIFIED", at: now, tamper: false, reasons: [], frozen: { expected: 48, passed: 48 },
+			hidden: { expected: 6, passed: 6 } },
 	]);
 	const settled = applyJobCommand(row, { type: "ReleaseSettled", jobId: row.id,
 		release: { captureId: "TESTCAPTURE" as CaptureId, payoutItemId: "payout-item-1" as PayoutItemId, paid: usd("360.00"), at: later } },
@@ -258,6 +259,34 @@ test("a paid job keeps the attempts it settled with: an honest retry's tamper st
 	assert.ok("history" in settled.next.state, "the paid row keeps its verdict history");
 	assert.equal(settled.next.state.history.length, 2);
 	assert.deepEqual(platformJobLedger(settled.next).attempts, before);
+});
+
+/** A held job whose first attempt failed its hidden cases: the verdict carries both tallies and a hidden test id. */
+function hiddenFailRow(): JobRow {
+	const row = heldTamperRow();
+	if (row.state.status !== "IN_PROGRESS") throw new Error("expected a held job");
+	const verdict: RejectedAttempt["verdict"] = { result: "REJECTED", runId: "run_hidden_1" as VerifierRunId,
+		sourceCommit: "0042bbeb5d1e" as CommitSha, reasons: [{ kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:6" as TestId] }],
+		reasonsTruncated: 0, tallies: { frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } }, at: now };
+	return { ...row, state: { ...row.state, attempts: { ...row.state.attempts, history: [{ ordinal: 1, verdict }] } } };
+}
+
+function countsOf(attempts: readonly { readonly ordinal: number; readonly frozen: unknown; readonly hidden: unknown }[]) {
+	return attempts.map(attempt => ({ ordinal: attempt.ordinal, frozen: attempt.frozen, hidden: attempt.hidden }));
+}
+
+test("the platform attempt carries the counts the job view shows, and no hidden test id reaches the ledger", () => {
+	const row = hiddenFailRow();
+	assert.ok(JSON.stringify(row).includes("hidden:6"), "the stored verdict names the hidden test");
+	for (const job of [row, verifiedRetryRow()]) {
+		const shown = countsOf(projectJob(job, platform, new Map()).attempts.history);
+		const ledger = countsOf(platformJobLedger(job).attempts);
+		assert.ok(shown.length > 0, "the job view judged at least one attempt");
+		assert.deepEqual(ledger, shown, `${job.id}: the ledger's counts equal the job view's`);
+	}
+	assert.deepEqual(platformJobLedger(row).attempts, [{ ordinal: 1, result: "REJECTED", at: now, tamper: false,
+		reasons: ["TESTS_FAILED:hidden"], frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } }]);
+	assert.equal(JSON.stringify(platformJobLedger(row)).includes("hidden:6"), false, "the ledger names the failing suite, never its test id");
 });
 
 /** The fixture with its capture renamed, so each job's capture id is its own, as PayPal issues them. */

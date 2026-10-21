@@ -124,6 +124,22 @@ export const WIDGET_ROWS = {
     ],
     [
       {
+        id: "acquit-verdict-grid",
+        label: "Verdict timeline",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 9,
+        ai: {
+          description:
+            "A grid of the escrow jobs grouped by where their money sits: held, released, refunded, or no escrow yet. Each job opens to its verifier attempts, with a sparkline of passing tests and the PayPal ids, and a pinned totals row that shows held + released + refunded + fees = funded, green when it holds.",
+          usage: "Use when the reader wants each job's verifier attempts, or to check the escrow book job by job.",
+          configuration:
+            "Takes no data mapping, filters, or format; it reads the platform ledger itself. Give it the full 12 columns and at least 9 rows.",
+        },
+      },
+    ],
+    [
+      {
         id: "acquit-reconciliation",
         label: "PayPal reconciliation",
         kind: "card",

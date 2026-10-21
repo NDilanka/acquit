@@ -17,6 +17,7 @@ function job(jobId: string): PlatformJobLedger {
     operator: null,
     lines: [],
     paidCents: null,
+    capture: null,
     fee: null,
     payout: null,
     receipt: null,
