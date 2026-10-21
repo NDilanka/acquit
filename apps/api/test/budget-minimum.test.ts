@@ -48,7 +48,7 @@ const session = async (port: number, handle: string): Promise<string> => {
 const open = (port: number, token: string, budget: number) =>
 	post(port, "/api/commands", { key: crypto.randomUUID(),
 		command: { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
-			budget, deliveryEndsAt: "2026-10-21T12:00:00Z" } }, token);
+			budget, deliveryEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() } }, token);
 
 test("a budget under the floor is refused by name, the floor opens, and an operator cannot open", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-u1-budget-"));
