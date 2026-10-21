@@ -65,6 +65,17 @@ export type ReleaseAuthority = "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_U
 
 export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER_REFUND" | "CAPTURE_CUTOFF" | "CAPTURE_MISMATCH";
 
+/** A PayPal buyer dispute against the job's capture, as PayPal last answered for it. Not the in-app review dispute. */
+export interface ProviderDisputeView {
+  readonly id: string;
+  readonly status: string;
+  readonly reason: string;
+  /** Cents, as the core serves them. */
+  readonly amount: number;
+  readonly openedAt: Instant;
+  readonly outcome: string | null;
+}
+
 export interface DisputeView {
   readonly reason: string;
   readonly openedAt: Instant;
@@ -109,6 +120,8 @@ export interface JobView {
   readonly dispute: DisputeView | null;
   /** The note from the arbiter's most recent decision, whatever the verdict. It outlives that decision, so a later outcome may not be the arbiter's. */
   readonly arbiterNote: string | null;
+  /** The PayPal buyer dispute against this job's capture, in any state. While it is open, the job's release is held. Null when none has reached the job. */
+  readonly providerDispute: ProviderDisputeView | null;
   /** What selected the release, while it is pending and once the job is PAID. Null before any release. */
   readonly releaseAuthority: ReleaseAuthority | null;
   /** What selected the refund, while it is pending and once the job is REFUNDED. Null before any refund and on rows stored before the reason was recorded. */

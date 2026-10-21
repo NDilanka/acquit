@@ -9,7 +9,7 @@ import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
 import { projectJob } from "./job.ts";
 import type { PrivateCaseReader } from "./hidden-seal.ts";
-import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
+import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, ProviderDisputeView, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
 import type { JobFundingMode } from "./funding.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
@@ -134,6 +134,8 @@ export interface JobView {
 	readonly dispute: { readonly reason: string; readonly openedAt: Instant; readonly resolveBy: Instant } | null;
 	/** The note the arbiter sent with its most recent ResolveDispute, whatever the verdict. Null before any arbiter decision and on rows stored before F4. */
 	readonly arbiterNote: string | null;
+	/** The PayPal buyer dispute against this job's capture, in any state. While it is open, the job's release is held. Null when none has reached the job. */
+	readonly providerDispute: ProviderDisputeView | null;
 	/** What selected the release, while it is pending and once the job is PAID. Null before any release. */
 	readonly releaseAuthority: ReleaseIntent["authority"] | null;
 	/** What selected the refund, while it is pending and once the job is REFUNDED. Null before any refund and on rows stored before the reason was recorded. */

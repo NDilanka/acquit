@@ -9,7 +9,7 @@ import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, ReceiptId, RequestKey, Version } from "./ids.ts";
-import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, storedVertical, TERMS, wakeAt } from "./job.ts";
+import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, releaseHeld, storedVertical, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { WorkRepoFork } from "./github.ts";
@@ -73,6 +73,8 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 		case "RELEASE_COMPLETED": return { type: "ReleaseSettled", jobId, release: observation.release };
 		case "REFUND_COMPLETED": return { type: "RefundSettled", jobId, refund: observation.refund };
 		case "REIMBURSEMENT_COMPLETED": return { type: "ReimbursementSettled", jobId, reimbursement: observation.reimbursement };
+		case "DISPUTE": return { type: "ProviderDispute", jobId, disputeId: observation.disputeId, captureId: observation.captureId, status: observation.status,
+			reason: observation.reason, amount: observation.amount, openedAt: observation.openedAt, outcome: observation.outcome ?? null };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
 }
@@ -401,6 +403,10 @@ export async function runOutboxEffect(ports: Ports, key?: OperationKey): Promise
 			await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return worked("NONE");
 		}
 	} else if (!effectWanted(job, effect)) {
+		// A release a buyer dispute holds stays due: a confirmed row would block the same key from being
+		// emitted again when the hold lifts, and the money would never move.
+		const held = job.state.status === "VERIFIED" && job.state.review.phase === "RELEASE_PENDING" && releaseHeld(job);
+		if (effect.kind === "RELEASE" && held) { await ports.store.recordEffect(row.key, { kind: "READY", runAt: backoffFrom(now) }); return worked("NONE"); }
 		// The row no longer holds the disposition this money movement belongs to: deliver it as done and
 		// never move money the row did not ask for.
 		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now }); return worked("NONE");
@@ -629,6 +635,7 @@ function resourceNoun(kind: WebhookResourceKind | undefined): string {
 		case "CAPTURE": return "capture";
 		case "REFUND": return "refund";
 		case "PAYOUT_ITEM": return "payout item";
+		case "DISPUTE": return "dispute";
 		case "REFERENCED_PAYOUT_ITEM": return "referenced payout item";
 		default: return "resource";
 	}
@@ -666,6 +673,7 @@ function anchorOf(observation: PayPalObservation): string | null {
 		case "RELEASE_COMPLETED": return observation.release.captureId;
 		case "REFUND_COMPLETED": return observation.refund.captureId;
 		case "REIMBURSEMENT_COMPLETED": return observation.reimbursement.batchId;
+		case "DISPUTE": return observation.captureId;
 		default: return null;
 	}
 }
@@ -687,6 +695,8 @@ function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObserv
 		const { batchId, paid, fee } = observation.reimbursement;
 		return `webhook:${command.type}:${command.jobId}:${batchId}:${paid}:${fee}`;
 	}
+	// A dispute is one fact per status: its CREATED and its RESOLVED are distinct, and a repeat of either is the same key.
+	if (observation.kind === "DISPUTE") return `webhook:${command.type}:${command.jobId}:${observation.disputeId}:${observation.status}`;
 	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
 }
 
@@ -699,6 +709,7 @@ function observationText(observation: PayPalObservation): string {
 		case "RELEASE_COMPLETED": return `PayPal answered RELEASE_COMPLETED for capture ${observation.release.captureId} (item ${observation.release.payoutItemId})`;
 		case "REFUND_COMPLETED": return `PayPal answered REFUND_COMPLETED for capture ${observation.refund.captureId} (refund ${observation.refund.refundId ?? "read back from the capture"})`;
 		case "REIMBURSEMENT_COMPLETED": return `PayPal answered REIMBURSEMENT_COMPLETED for batch ${observation.reimbursement.batchId}`;
+		case "DISPUTE": return `PayPal answered ${observation.status} for dispute ${observation.disputeId} (capture ${observation.captureId})`;
 		case "ONBOARDING_LINK": return `PayPal answered ONBOARDING_LINK for operator ${observation.operator}`;
 		case "ONBOARDING_COMPLETED": return `PayPal answered ONBOARDING_COMPLETED for operator ${observation.operator}`;
 	}

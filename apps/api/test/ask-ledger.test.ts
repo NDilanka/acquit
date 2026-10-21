@@ -331,7 +331,7 @@ test("the dispute and transaction answers are reduced to the agent's fields", as
 	const { reader } = recordingPaypal((path) => path.startsWith("/v1/customer/disputes?") ? { items: [dispute] }
 		: path.startsWith("/v1/reporting") ? { transaction_details: [{ transaction_info: { transaction_id: "TX1", transaction_event_code: "T0006",
 			transaction_status: "S", transaction_initiation_date: "2026-03-30T08:00:00+0000", transaction_amount: { currency_code: "USD", value: "-12.50" } } }] }
-		: { dispute_id: "PP-D-1", status: "OPEN", evidences: [{ evidence_type: "PROOF_OF_DELIVERY" }], outcome: { outcome_code: "RESOLVED_SELLER_IN_FAVOUR" },
+		: { dispute_id: "PP-D-1", status: "OPEN", evidences: [{ evidence_type: "PROOF_OF_DELIVERY" }], dispute_outcome: { outcome_code: "RESOLVED_SELLER_IN_FAVOUR" },
 			offer: { buyer_requested_amount: { currency_code: "USD", value: "100.00" } }, disputed_transactions: [{ seller_transaction_id: "TX1" }] });
 	const executor = askToolExecutor({ platformView: async () => [], paypalEvents: async () => [], paypal: reader, traceFigure: async () => ({}), nowMs: fixedNow });
 	assert.deepEqual(await executor("list_disputes", {}), { disputes: [{ disputeId: "PP-D-1", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",

@@ -260,7 +260,8 @@ export function askToolExecutor(deps: AskExecutorDeps): AskToolExecutor {
 		const id = argText(args, "disputeId");
 		if (id === "") throw new Error("get_dispute needs the dispute's id");
 		const body = recordOf(await payPalGet("get_dispute", "dispute", `/v1/customer/disputes/${encodeURIComponent(id)}`, null));
-		return { ...disputeRow(body), outcome: textOf(recordOf(body.outcome).outcome_code), evidenceCount: listOf(body.evidences).length,
+		// PayPal Disputes v1 nests the code under dispute_outcome; the bare outcome key is the fallback.
+		return { ...disputeRow(body), outcome: textOf(recordOf(body.dispute_outcome ?? body.outcome).outcome_code), evidenceCount: listOf(body.evidences).length,
 			offerAmount: moneyOf(recordOf(body.offer).buyer_requested_amount) };
 	};
 	const getRefund = async (args: Record<string, unknown>): Promise<unknown> => {
