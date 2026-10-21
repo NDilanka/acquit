@@ -9,7 +9,7 @@ import { escrowWord } from "../job-status";
 import { dollars, shortId, utc } from "../format";
 import { COLUMNS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
 import { conserves, earnings, escrowTotals, newestReceipt, seededPlacements, seededWidgets, verifierStats } from "../studio-data";
-import type { ChangeLog, ChangeSnapshot } from "../change-chain";
+import { listedLinks, type ChangeLog, type ChangeSnapshot } from "../change-chain";
 import {
   VERDICT_MIN_WIDTHS,
   attemptWords,
@@ -497,9 +497,12 @@ type ChangeRow = {
   readonly undoable: boolean;
 };
 
-/** The rows newest first. A change is undoable while Studio still holds its entry on the undo stack. */
+/**
+ * The rows newest first. The baseline is not a row: the entries Studio held before the first action are
+ * listed nowhere. A change is undoable while Studio still holds its entry on the undo stack.
+ */
 function changeRows({ links, undoIds }: ChangeSnapshot): ChangeRow[] {
-  return links
+  return listedLinks(links)
     .map((link) => ({
       seq: link.seq,
       at: link.at,
