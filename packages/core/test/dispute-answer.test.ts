@@ -4,13 +4,15 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyJobCommand, releaseHeld, storedBook, TERMS } from "../src/job.ts";
+import { applyJobCommand, effectWanted, releaseHeld, storedBook, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow, Plan } from "../src/job.ts";
-import { operationKey } from "../src/effects.ts";
+import { applySystemCommand, operationKey, providerRequestId, runOutboxOnce } from "../src/effects.ts";
+import type { OperationKey, Ports } from "../src/effects.ts";
+import { SqliteStore } from "../src/store.ts";
 import { checkLaws, commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
 import { hours, instant, parseBidId, parseJobId } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
-import { quote } from "../src/paypal.ts";
+import { createPayPal, quote } from "../src/paypal.ts";
 import type { Bps } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
@@ -29,6 +31,10 @@ const cutoff = instant("2026-10-27T12:00:00Z");
 const jobId = parseJobId("job_dispute");
 const lockedPayee = { bidId: parseBidId("bid_dispute"), operator: "devon-ops" as OperatorId, payee: merchant,
 	agent: "ts-bugfixer" as AgentId, price: usd("400.00"), eta: hours(48) };
+const platform = "LA4PH2WMNKTDN" as MerchantId;
+/** The one run a verifying job is waiting for, judged VERIFIED on the same commit it was submitted under. */
+const passedVerdict: Extract<Verdict, { result: "VERIFIED" }> = { result: "VERIFIED", runId: "run_dispute_1" as VerifierRunId, sourceCommit, mergeCommit: judgedCommit,
+	pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now };
 
 const paypalFacts = (at: Instant) => ({ actor: { role: "SYSTEM", source: "PAYPAL" } as const, now: at, loaded: { kind: "NONE" } as const });
 const userFacts = (actor: Actor, at = now) => ({ actor, now: at, loaded: { kind: "NONE" } as const });
@@ -41,9 +47,7 @@ function verifiedRow(endsAt = reviewEndsAt): JobRow {
 	const book = reduceLedger([], { kind: "Hold", gross: capture.gross, at: now });
 	if ("kind" in book) throw new Error(book.law);
 	const escrow = { payee: lockedPayee, quote: quote(commercialSplit(usd("400.00")), model), capture, book, cutoffAt: cutoff };
-	const verdict: Verdict = { result: "VERIFIED", runId: "run_dispute_1" as VerifierRunId, sourceCommit, mergeCommit: judgedCommit, pullRequest: 13,
-		frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now };
-	const passed = { ordinal: 1 as const, verdict };
+	const passed = { ordinal: 1 as const, verdict: passedVerdict };
 	return { id: jobId, version: 1 as Version, client: "maya-client" as ClientId, tenant: null, title: "test", openedAt: now,
 		contract: { budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), definitionOfDone: manifestOf(demoFixture(exampleContract), "maya-client/invoice-app"),
 			terms: TERMS },
@@ -181,4 +185,232 @@ test("each dispute id has its own answer key, a repeat of one id has the same ke
 	assert.equal(operationKey(evidence("PP-D-9")), operationKey(evidence("PP-D-9")));
 	assert.notEqual(operationKey(evidence("PP-D-9")), operationKey(evidence("PP-D-10")));
 	assert.notEqual(operationKey(evidence("PP-D-9")), operationKey(accept("PP-D-9")));
+});
+
+/** A funded job whose one verifier run is in flight, for the verdict to land on. */
+function verifyingRow(): JobRow {
+	const row = fundedRow();
+	if (row.state.status !== "IN_PROGRESS") throw new Error(`expected IN_PROGRESS, got ${row.state.status}`);
+	const pending = { ordinal: 1 as const, run: 1, runId: passedVerdict.runId, sourceCommit, submittedAt: now, runEndsAt: later };
+	return { ...row, state: { ...row.state, attempts: { phase: "VERIFYING", history: [], runsStarted: 1, pending, failure: null } } };
+}
+
+/** The verifier's report of the run verifyingRow() waits for: the same run and commit, judged VERIFIED. */
+function verifiedReport() {
+	return { type: "VerifierFinished" as const, jobId, report: { kind: "VERDICT" as const, verdict: passedVerdict } };
+}
+
+function acceptFrom(plan: Plan<JobRow>): Extract<JobEffect, { kind: "DISPUTE_ACCEPT" }> {
+	const [accept] = plan.effects.filter((effect): effect is Extract<JobEffect, { kind: "DISPUTE_ACCEPT" }> => effect.kind === "DISPUTE_ACCEPT");
+	if (accept === undefined) throw new Error("expected one DISPUTE_ACCEPT");
+	return accept;
+}
+
+function evidenceFrom(plan: Plan<JobRow>): Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" }> {
+	const [evidence] = evidenceOf(plan);
+	if (evidence === undefined) throw new Error("expected one DISPUTE_EVIDENCE");
+	return evidence;
+}
+
+/** The REFUND a selected refund queues for the captured gross. */
+const refundEffect = (): JobEffect => ({ kind: "REFUND", jobId, captureId: "TESTCAPTURE" as CaptureId, payee: merchant, amount: usd("420.00") });
+
+/** Three rows whose refund is already selected: an attempt in flight, a verified review, and a funded checkout whose capture mismatched. */
+function refundingRows(): { readonly name: string; readonly row: JobRow }[] {
+	const base = verifiedRow();
+	if (base.state.status !== "VERIFIED") throw new Error(`expected VERIFIED, got ${base.state.status}`);
+	const escrow = base.state.escrow;
+	const attempt: JobRow = { ...base, state: { status: "IN_PROGRESS", escrow, attempts: { phase: "REFUND_PENDING", history: [],
+		refund: { reason: "CAPTURE_CUTOFF", selectedAt: now } } } };
+	const review: JobRow = { ...base, state: { ...base.state, review: { phase: "REFUND_PENDING", refund: { reason: "ARBITER_REFUND", selectedAt: now } } } };
+	const checkout: JobRow = { ...base, state: { status: "OPEN", phase: { kind: "FUNDING", round: 1, chosen: lockedPayee, quote: escrow.quote,
+		checkoutEndsAt: later, checkout: { phase: "REFUND_PENDING", escrow, refund: { reason: "CAPTURE_MISMATCH", selectedAt: now } } } } };
+	return [{ name: "an in-flight attempt whose refund is selected", row: attempt }, { name: "a verified job whose review selected a refund", row: review },
+		{ name: "a funded checkout whose capture mismatched and is refunding", row: checkout }];
+}
+
+test("a verdict that lands while the claim is accepted turns the answer to evidence once, and the queued accept is never wanted again", () => {
+	const accepted = planOf(applyJobCommand(verifyingRow(), dispute("OPEN"), paypalFacts(later)));
+	const queued = acceptFrom(accepted);
+	assert.equal(accepted.next.providerDispute?.answer, "ACCEPT");
+	assert.equal(effectWanted(accepted.next, queued), true);
+	const verified = planOf(applyJobCommand(accepted.next, verifiedReport(), paypalFacts(later)));
+	assert.equal(verified.next.state.status, "VERIFIED");
+	assert.equal(verified.next.providerDispute?.answer, "EVIDENCE");
+	assert.deepEqual(verified.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	const evidence = evidenceFrom(verified);
+	assert.equal(evidence.disputeId, "PP-D-9");
+	assert.equal(evidence.notes, `Verified attempt 1 for job ${jobId} passed run run_dispute_1 on source commit ${sourceCommit} (ordinal, runId, sourceCommit). `
+		+ `Frozen tests 48/48 passed (frozen). Hidden tests 6/6 passed (hidden). `
+		+ `Pull request #13 is open at judged commit ${judgedCommit} (pullRequest, mergeCommit).`);
+	assert.notEqual(operationKey(evidence), operationKey(queued));
+	// The queued accept answers a claim the row no longer makes, so it is unwanted; the evidence is wanted.
+	assert.equal(effectWanted(verified.next, queued), false);
+	assert.equal(effectWanted(verified.next, evidence), true);
+	// The verdict is spent: a repeat of it is refused as a wrong state, so the evidence is filed once.
+	assert.equal(applyJobCommand(verified.next, verifiedReport(), paypalFacts(later)), "WRONG_STATE");
+});
+
+test("an answer is wanted only while its dispute is open under the id it names, and filed as that answer", () => {
+	const accepted = planOf(applyJobCommand(fundedRow(), dispute("OPEN"), paypalFacts(later)));
+	const accept = acceptFrom(accepted);
+	assert.equal(effectWanted(accepted.next, accept), true);
+	assert.equal(effectWanted(accepted.next, { ...accept, disputeId: "PP-D-10" }), false);
+	const settled = planOf(applyJobCommand(accepted.next, dispute("RESOLVED", "RESOLVED_SELLER_FAVOUR"), paypalFacts(later)));
+	assert.equal(effectWanted(settled.next, accept), false);
+	const paid = planOf(applyJobCommand(paidRow(), dispute("OPEN"), paypalFacts(later)));
+	const evidence = evidenceFrom(paid);
+	assert.equal(effectWanted(paid.next, evidence), true);
+	assert.equal(effectWanted(paid.next, { ...evidence, disputeId: "PP-D-10" }), false);
+	// An accept is never wanted on a dispute the row answers with evidence.
+	assert.equal(effectWanted(paid.next, { ...accept, disputeId: "PP-D-9" }), false);
+	const paidSettled = planOf(applyJobCommand(paid.next, dispute("RESOLVED", "RESOLVED_SELLER_FAVOUR"), paypalFacts(later)));
+	assert.equal(effectWanted(paidSettled.next, evidence), false);
+});
+
+test("a buyer-favour resolution settles a row whose refund is already selected as refunded, and its queued refund is no longer wanted", () => {
+	for (const { name, row } of refundingRows()) {
+		const opened = planOf(applyJobCommand(row, dispute("OPEN"), paypalFacts(later)));
+		const refund = refundEffect();
+		// Before PayPal's resolution the row still selects the refund, so the queued REFUND is wanted.
+		assert.equal(effectWanted(row, refund), true, name);
+		const lost = planOf(applyJobCommand(opened.next, dispute("RESOLVED", "RESOLVED_BUYER_FAVOUR"), paypalFacts(later)));
+		assert.equal(lost.next.state.status, "REFUNDED", name);
+		if (lost.next.state.status !== "REFUNDED") throw new Error("expected REFUNDED");
+		assert.equal(lost.next.state.reason, "PROVIDER_DISPUTE", name);
+		assert.equal(lost.next.state.refund.refunded, usd("420.00"), name);
+		// PayPal already reversed the capture, so no refund call is emitted, and the book holds one REFUND line for the gross.
+		assert.deepEqual(lost.effects, [], name);
+		assert.deepEqual(storedBook(lost.next).map(line => line.kind), ["HELD", "REFUND"], name);
+		assert.equal(checkLaws(storedBook(lost.next)), "REFUNDED", name);
+		assert.equal(effectWanted(lost.next, refund), false, name);
+	}
+});
+
+test("a partial buyer win on a row whose refund is already selected keeps the hold and alerts a person", () => {
+	for (const { name, row } of refundingRows()) {
+		const opened = planOf(applyJobCommand(row, dispute("OPEN"), paypalFacts(later)));
+		const partial = planOf(applyJobCommand(opened.next, dispute("RESOLVED", "RESOLVED_BUYER_FAVOUR", usd("200.00")), paypalFacts(later)));
+		assert.equal(partial.next.state.status, row.state.status, name);
+		assert.deepEqual(storedBook(partial.next).map(line => line.kind), ["HELD"], name);
+		assert.deepEqual(partial.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL_LOST" }], name);
+		assert.equal(releaseHeld(partial.next), true, name);
+	}
+});
+
+/** Routes the real PayPal client's HTTP through a recorder for the body's run. The OAuth token is answered; every other call is recorded. */
+type RecordedCall = { readonly path: string; readonly requestId: string | null };
+async function withRecordedPayPal(answer: () => Response, body: (calls: RecordedCall[]) => Promise<void>): Promise<void> {
+	const original = globalThis.fetch;
+	const calls: RecordedCall[] = [];
+	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = String(input);
+		if (url.endsWith("/v1/oauth2/token")) return Response.json({ access_token: "recorded-token", expires_in: 300 });
+		const headers = (init?.headers ?? {}) as Record<string, string>;
+		calls.push({ path: new URL(url).pathname, requestId: headers["PayPal-Request-Id"] ?? null });
+		return answer();
+	}) as typeof fetch;
+	try { await body(calls); } finally { globalThis.fetch = original; }
+}
+
+/** A store holding the row, so a command applied to it writes its outbox rows the way the deployment does. */
+async function withStore(row: JobRow, body: (store: SqliteStore) => Promise<void>): Promise<void> {
+	const store = new SqliteStore(":memory:");
+	try {
+		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), wakeAt(row));
+		await body(store);
+	} finally { store.close(); }
+}
+
+/** The ports the outbox runs against. PayPal is the real client, so the path and request id are the ones a dispute answer sends. */
+function portsOver(store: SqliteStore): Ports {
+	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
+	return { store, feeModel: model, fixtures: [demoFixture(exampleContract)], clock: { now: () => later },
+		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented }, alerts: { raise: unimplemented },
+		paypal: createPayPal({ apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
+			webhookId: "", partnerMerchant: platform, feeModel: model }) };
+}
+
+/** The stored state of one outbox effect, read the way the outbox reads it. */
+function outboxStateOf(store: SqliteStore, key: OperationKey): { readonly kind: string; readonly reason?: string } {
+	const found = store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key);
+	assert(found !== undefined, "The effect left no outbox row");
+	return JSON.parse(String(found.state)) as { readonly kind: string; readonly reason?: string };
+}
+
+const evidenceKey = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", simulated: false });
+const acceptKey = operationKey({ kind: "DISPUTE_ACCEPT", jobId, disputeId: "PP-D-9", payee: merchant, note: "n", simulated: false });
+const evidencePath = "/v1/customer/disputes/PP-D-9/provide-evidence";
+const acceptPath = "/v1/customer/disputes/PP-D-9/accept-claim";
+
+test("an open dispute's evidence and its accepted claim each reach PayPal once, at their own path, under their own request id", async () => {
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(verifiedRow(), async store => {
+			const ports = portsOver(store);
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-evidence")).refused, null);
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) }]);
+	});
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(fundedRow(), async store => {
+			const ports = portsOver(store);
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-accept")).refused, null);
+			assert.equal(await runOutboxOnce(ports, acceptKey), "WORKED");
+			assert.equal(outboxStateOf(store, acceptKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: acceptPath, requestId: providerRequestId(acceptKey) }]);
+	});
+});
+
+test("an answer whose dispute is already resolved when the outbox reaches it is delivered as done, with no call", async () => {
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(verifiedRow(), async store => {
+			const ports = portsOver(store);
+			await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open");
+			assert.equal((await applySystemCommand(ports, dispute("RESOLVED", "RESOLVED_SELLER_FAVOUR"), null, "webhook-resolved")).refused, null);
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+		});
+		await withStore(fundedRow(), async store => {
+			const ports = portsOver(store);
+			await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open");
+			assert.equal((await applySystemCommand(ports, dispute("RESOLVED", "RESOLVED_SELLER_FAVOUR"), null, "webhook-resolved")).refused, null);
+			assert.equal(await runOutboxOnce(ports, acceptKey), "WORKED");
+			assert.equal(outboxStateOf(store, acceptKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, []);
+	});
+});
+
+test("an accepted claim that the verdict superseded is delivered as done with no call, and the evidence that replaces it is sent once", async () => {
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(verifyingRow(), async store => {
+			const ports = portsOver(store);
+			await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open");
+			assert.equal((await applySystemCommand(ports, verifiedReport(), null, "verifier:run_dispute_1")).refused, null);
+			assert.equal(await runOutboxOnce(ports, acceptKey), "WORKED");
+			assert.equal(outboxStateOf(store, acceptKey).kind, "CONFIRMED");
+			assert.deepEqual(calls, []);
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) }]);
+	});
+});
+
+test("a dispute answer PayPal refuses with a 422 that names no settled answer is parked for a person, and is not resent", async () => {
+	await withRecordedPayPal(() => Response.json({ name: "UNPROCESSABLE_ENTITY", details: [{ issue: "EVIDENCE_NOT_ACCEPTED" }] }, { status: 422 }),
+		async calls => {
+			await withStore(verifiedRow(), async store => {
+				const ports = portsOver(store);
+				await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open");
+				assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+				const state = outboxStateOf(store, evidenceKey);
+				assert.equal(state.kind, "NEEDS_HUMAN");
+				assert.equal(state.reason, "PAYPAL_422_EVIDENCE_NOT_ACCEPTED");
+			});
+			assert.equal(calls.length, 1);
+		});
 });

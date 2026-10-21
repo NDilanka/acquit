@@ -518,6 +518,24 @@ test("a dispute answer PayPal refuses with a 422 confirms with the note it alrea
 	} finally { globalThis.fetch = original; }
 });
 
+test("a dispute 422 that names no settled answer is refused for a person, never confirmed, and a non-retryable 4xx stays permanent", async () => {
+	const original = globalThis.fetch;
+	try {
+		const named = recordedWire(() => Response.json({ name: "UNPROCESSABLE_ENTITY", details: [{ issue: "EVIDENCE_NOT_ACCEPTED" }] }, { status: 422 }));
+		assert.deepEqual(await createPayPal(config).dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: "PP-D-9", notes: "n", payee: devon }, "aq-dispute-evidence"),
+			{ kind: "PERMANENT_FAILURE", reason: "PAYPAL_422_EVIDENCE_NOT_ACCEPTED" });
+		assert.equal(named.calls.length, 1);
+		// A 422 that names no issue is refused too, and the reason says so.
+		recordedWire(() => Response.json({ name: "UNPROCESSABLE_ENTITY" }, { status: 422 }));
+		assert.deepEqual(await createPayPal(config).dispatch({ kind: "DISPUTE_ACCEPT", disputeId: "PP-D-9", note: "n", payee: devon }, "aq-dispute-accept"),
+			{ kind: "PERMANENT_FAILURE", reason: "PAYPAL_422_UNSPECIFIED" });
+		// A 400 is a non-retryable refusal, as it is for every other PayPal write.
+		recordedWire(() => Response.json({ name: "INVALID_REQUEST" }, { status: 400 }));
+		assert.deepEqual(await createPayPal(config).dispatch({ kind: "DISPUTE_ACCEPT", disputeId: "PP-D-9", note: "n", payee: devon }, "aq-dispute-accept"),
+			{ kind: "PERMANENT_FAILURE", reason: "PAYPAL_HTTP_400" });
+	} finally { globalThis.fetch = original; }
+});
+
 test("a dispute answer that fails with a 5xx is unknown, not a refusal, and the write is not re-sent by the request layer", async () => {
 	const original = globalThis.fetch;
 	const wire = recordedWire(() => Response.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 500 }));
