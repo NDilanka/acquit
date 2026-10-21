@@ -203,10 +203,11 @@ test("a missing model key fails the turn with its code, and the stream ends empt
   assert.match(response.error?.message ?? "", /no model key/);
 });
 
-test("a rate limit and a spent budget fail the turn with their own codes and wording", async () => {
+test("a rate limit and an out-of-budget turn fail the turn with their own codes and wording", async () => {
   for (const [code, wording] of [
     ["MODEL_RATE_LIMITED", /rate limited.*slow down/],
-    ["MODEL_BUDGET", /budget is spent/],
+    // A 429 for MODEL_BUDGET is either the shared budget or an operator's own turn limit, so the copy names neither.
+    ["MODEL_BUDGET", /out of model budget/],
   ] as const) {
     const fetch = fakeFetch(429, { error: code, detail: "slow down" });
     const response = await askLedgerAdapter({ fetch, newId: () => "t4", now: () => 1 }).executeTurn(request(conversation)).complete;

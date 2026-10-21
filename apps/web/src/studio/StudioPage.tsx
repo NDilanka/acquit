@@ -245,6 +245,7 @@ function EscrowDashboard() {
 }
 
 function EarningsDashboard({ handle }: { handle: string }) {
+  const ask = useAskLedger("earnings", "OPERATOR");
   const [data, setData] = useState<Load<EarningsData>>({ kind: "loading" });
   useEffect(() => {
     let live = true;
@@ -264,6 +265,7 @@ function EarningsDashboard({ handle }: { handle: string }) {
       title="Operator earnings"
       lead="What your verified jobs paid you, and the receipt for the newest one."
       load={data}
+      ask={ask}
       story={noReceipts}
       hidden={noReceipts ? [RECEIPT_WIDGET_ID] : []}
       source={earningsSource}

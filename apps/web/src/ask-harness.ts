@@ -18,10 +18,13 @@ import {
   ASK_AGENT_NAME,
   ASK_MAX_TURNS,
   ASK_PROMPT_STARTERS,
+  OPERATOR_ASK_INSTRUCTIONS,
+  OPERATOR_ASK_PROMPT_STARTERS,
   askInstructions,
   askLedgerAdapter,
   buildAskTools,
   type AskAdapterDeps,
+  type AskScope,
 } from "./ask-ledger.ts";
 import { COLUMNS, NATIVE_TYPES, WIDGET_IDS, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { firstFreeTrack, placementFits, selectedPage, widgetPlaced, type Track } from "./studio-data.ts";
@@ -240,24 +243,29 @@ function dashboardAdd(
   };
 }
 
-/**
- * The dashboard's harness: the ledger agent fronting the conversation, and Studio's widget, data, and
- * page agents as its delegates. All run on the one adapter, so every model turn goes through the app's
- * own route.
- */
-export function createAskLedgerHarness(
-  studio: AgStudioApi,
-  served: () => readonly AskToolSchema[],
-  deps?: AskAdapterDeps,
-): AgAiHarness {
-  const adapter = askLedgerAdapter(deps);
-  // The agent's tools are re-resolved every turn; they are rebuilt only when the served list changes.
+/** The served tool list as the agent's tools: re-resolved every turn, rebuilt only when the served list changes. */
+function servedTools(served: () => readonly AskToolSchema[]): (api: AgStudioApi) => AgAiTool[] {
   let built: { specs: readonly AskToolSchema[]; tools: AgAiTool[] } | null = null;
-  const ledgerTools = (api: AgStudioApi) => {
+  return (api) => {
     const specs = served();
     if (built?.specs !== specs) built = { specs, tools: buildAskTools(api, specs) };
     return built.tools;
   };
+}
+
+/**
+ * The dashboard's harness: the ledger agent fronting the conversation, and Studio's widget, data, and
+ * page agents as its delegates. All run on the one adapter, so every model turn goes through the app's
+ * own route. An operator's harness (scope OPERATOR) is the ledger agent alone; see below.
+ */
+export function createAskLedgerHarness(
+  studio: AgStudioApi,
+  served: () => readonly AskToolSchema[],
+  deps?: AskAdapterDeps & { readonly scope?: AskScope; readonly history?: AgAiHistoryStore },
+): AgAiHarness {
+  if (deps?.scope === "OPERATOR") return createOperatorAskLedgerHarness(studio, served, deps);
+  const adapter = askLedgerAdapter(deps);
+  const ledgerTools = servedTools(served);
   const { outcomes, failures, observer } = delegateOutcomes();
   return createAiHarness(studio, ({ builtIn }) => ({
     agents: [
@@ -298,16 +306,47 @@ export function createAskLedgerHarness(
     primary: ASK_AGENT_ID,
     promptStarters: ASK_PROMPT_STARTERS,
     observers: [observer],
-    history: askHistory,
+    history: deps?.history ?? askHistory,
   }));
 }
 
 /**
- * Every harness this module builds shares one in-memory store, so a harness rebuilt on a narrow/wide
- * crossing finds the conversation the previous one saved. Nothing else writes to it in a single-tab
- * dashboard, so its "changed" listeners are held for the harness but never fired.
+ * An operator's harness: the ledger agent alone, with the operator's four reads and no delegation, so no
+ * delegate_to rides in a turn (the server would refuse one). The dashboard id is not needed here: it only
+ * guards the widget and page agents' add_widget, which this harness does not have.
  */
-function memoryHistoryStore(): AgAiHistoryStore {
+function createOperatorAskLedgerHarness(
+  studio: AgStudioApi,
+  served: () => readonly AskToolSchema[],
+  deps: AskAdapterDeps & { readonly history?: AgAiHistoryStore },
+): AgAiHarness {
+  const adapter = askLedgerAdapter(deps);
+  const ledgerTools = servedTools(served);
+  return createAiHarness(studio, () => ({
+    agents: [
+      directLlmRunner({
+        id: ASK_AGENT_ID,
+        name: ASK_AGENT_NAME,
+        description: "Answers questions about the signed-in operator's own jobs, payouts, and totals on Acquit, from read-only tools.",
+        instructions: () => OPERATOR_ASK_INSTRUCTIONS,
+        maxTurns: ASK_MAX_TURNS,
+        tools: (ctx) => ledgerTools(ctx.api),
+        adapter,
+      }),
+    ],
+    primary: ASK_AGENT_ID,
+    promptStarters: OPERATOR_ASK_PROMPT_STARTERS,
+    history: deps.history ?? askHistory,
+  }));
+}
+
+/**
+ * A conversation store in memory. The panel's owner (AskLedger's hook) keeps one per dashboard instance,
+ * so a harness rebuilt on a narrow/wide crossing finds the conversation the previous one saved, while a
+ * sign-out, which keeps this module loaded, does not hand the next session the last one's conversation.
+ * Nothing else writes to it in a single-tab dashboard, so its "changed" listeners are held but never fired.
+ */
+export function memoryHistoryStore(): AgAiHistoryStore {
   const threads = new Map<string, AgAiThread>();
   const listeners = new Set<AgAiHistoryStoreEventListener>();
   return {
