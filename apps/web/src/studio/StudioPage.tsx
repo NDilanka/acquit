@@ -526,6 +526,19 @@ function AcquitStudio({
   const [studio, setStudio] = useState<AgStudioApi | null>(null);
   const changes = studio === null ? null : changeLogFor(studio, ASK_AGENT_NAME);
   changesNow.current = changes;
+  // The first user interaction in the Studio host ends the baseline (change-chain.ts): a pointerdown or a
+  // keydown on the host or inside it. The listener sits on the document, so the host's markup is unchanged.
+  useEffect(() => {
+    const acted = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".studio-host")) changesNow.current?.interact();
+    };
+    document.addEventListener("pointerdown", acted, true);
+    document.addEventListener("keydown", acted, true);
+    return () => {
+      document.removeEventListener("pointerdown", acted, true);
+      document.removeEventListener("keydown", acted, true);
+    };
+  }, []);
   const shown = useRef(narrow);
   const wanted = useRef(state);
   wanted.current = state;

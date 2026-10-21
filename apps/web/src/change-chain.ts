@@ -5,9 +5,8 @@
 
 import type { AgAiTelemetryObserver, AgStudioApi } from "ag-studio";
 
-/** What a link records about the change it stands for. */
-export type ChangeFields = {
-  /** A change the dashboard recorded, or an undo back through an entry. */
+/** A change the dashboard recorded, or an undo back through an entry. */
+export type EntryFields = {
   readonly kind: "change" | "undo";
   /** The history entry changed, or for an undo the entry the undo went back to. */
   readonly entryId: string;
@@ -20,15 +19,38 @@ export type ChangeFields = {
   readonly parentToolCallId: string | null;
 };
 
-/** A link as stored: its position, the hash of the link before it, and its own hash. */
-export type ChainLink = ChangeFields & {
-  readonly seq: number;
-  readonly prevHash: string | null;
-  readonly hash: string;
+/**
+ * The entries Studio already held when the first real action began: its own load, restore and seed writes.
+ * It is not a change, it is listed nowhere, and nothing can be undone back through it.
+ */
+export type BaselineFields = {
+  readonly kind: "baseline";
+  /** How many entries the baseline holds. */
+  readonly count: number;
+  /** The newest of the baseline's entries, or null when there were none. */
+  readonly entryId: string | null;
+  readonly label: string;
+  readonly at: number;
+  readonly agent: string;
+  readonly tool: null;
+  readonly toolCallId: null;
+  readonly parentToolCallId: null;
 };
 
+/** What a link records: a change or an undo, or the baseline. */
+export type ChangeFields = EntryFields | BaselineFields;
+
+/** A link's place in the chain: its number, the hash of the link before it, and its own hash. */
+type Positioned = { readonly seq: number; readonly prevHash: string | null; readonly hash: string };
+
+/** A link as stored. */
+export type ChainLink = ChangeFields & Positioned;
+
+/** A link the Changes list shows: a change or an undo, never the baseline. */
+export type ListedLink = EntryFields & Positioned;
+
 /** What a link's hash covers: every field except the hash itself. */
-type LinkBody = Omit<ChainLink, "hash">;
+type LinkBody = ChangeFields & Omit<Positioned, "hash">;
 
 /** Where a chain first fails: `seq` is the 1-based position of the link that does not check. */
 export type ChainVerdict = { readonly ok: true } | { readonly ok: false; readonly seq: number };
@@ -75,14 +97,22 @@ export async function verifyChain(links: readonly ChainLink[]): Promise<ChainVer
   return { ok: true };
 }
 
+/** The links the Changes list shows: every change and undo, and no baseline. */
+export function listedLinks(links: readonly ChainLink[]): ListedLink[] {
+  return links.flatMap((link) => (link.kind === "baseline" ? [] : [link]));
+}
+
 /** A history entry as the change log reads it: its id, its label, and when it was written. */
 export type UndoEntry = { readonly id: string; readonly label: string; readonly at: number };
 
 /** Who made a change: the tool call that made it, or none, which is a hand edit. */
-export type ChangeSource = Pick<ChangeFields, "agent" | "tool" | "toolCallId" | "parentToolCallId">;
+export type ChangeSource = Pick<EntryFields, "agent" | "tool" | "toolCallId" | "parentToolCallId">;
 
 /** The source of an entry no tool call made. */
 export const HAND_EDIT: ChangeSource = { agent: "You", tool: null, toolCallId: null, parentToolCallId: null };
+
+/** The agent a baseline is attributed to: Studio's own writes, made before anyone acted. */
+const STUDIO_AGENT = "Studio";
 
 /** The display names of the delegate targets. Any other agent id shows as it is. */
 const DELEGATE_AGENTS: Readonly<Record<string, string>> = { widget: "Widget agent", data: "Data agent", page: "Page agent" };
@@ -115,21 +145,36 @@ function delegateTarget(args: unknown): string | undefined {
  * that appears while a tool call is open was made by that call, and an entry that appears while none is
  * open is a hand edit. A delegated child's calls belong to the agent its delegate_to call names. Each entry
  * is recorded once, the first time it is seen.
+ *
+ * Nothing is recorded before the first real action, `begin`: the first agent tool call starting, or the
+ * first user interaction in the Studio host. The entries that exist then are the baseline. Studio made them
+ * itself (its load, restore and seed writes), so they go to `baseline` once, are marked as seen, and are
+ * never recorded.
  */
 export function createAttributor(options: {
   readonly askAgent: string;
   readonly readUndo: () => readonly UndoEntry[];
   readonly record: (entry: UndoEntry, source: ChangeSource) => void;
+  readonly baseline: (entries: readonly UndoEntry[]) => void;
 }) {
   const seen = new Set<string>();
   const open = new Map<string, OpenCall>();
+  let begun = false;
 
   const attribute = (source: ChangeSource) => {
+    if (!begun) return;
     for (const entry of options.readUndo()) {
       if (seen.has(entry.id)) continue;
       seen.add(entry.id);
       options.record(entry, source);
     }
+  };
+  const begin = () => {
+    if (begun) return;
+    begun = true;
+    const entries = options.readUndo();
+    for (const entry of entries) seen.add(entry.id);
+    options.baseline(entries);
   };
   const sourceOf = (call: OpenCall, toolCallId: string): ChangeSource => ({
     agent: call.agent,
@@ -139,6 +184,8 @@ export function createAttributor(options: {
   });
 
   return {
+    /** The first real action. Only the first call takes the baseline; later calls do nothing. */
+    begin,
     /** Attributes the entries made since the last look to hand edits, when no call is open. */
     sync(): void {
       if (open.size === 0) attribute(HAND_EDIT);
@@ -146,6 +193,7 @@ export function createAttributor(options: {
     onEvent(event: ChangeEvent): void {
       switch (event.type) {
         case "tool_execution_started": {
+          begin();
           if (open.size === 0) attribute(HAND_EDIT);
           const parent = event.trace.parentToolCallId ?? null;
           const parentCall = parent === null ? undefined : open.get(parent);
@@ -202,8 +250,10 @@ export type ChangeLog = {
   readonly getSnapshot: () => ChangeSnapshot;
   /** Attributes the hand edits made since the last look, and rereads the undo stack. Call after a state update. */
   readonly sync: () => void;
-  /** Undoes back through an entry and appends an undo link. Does nothing unless the entry can still be undone. */
+  /** Undoes back through an entry and appends an undo link. Does nothing unless the entry is a listed change still on the undo stack. */
   readonly undo: (entryId: string) => void;
+  /** The first user interaction in the Studio host. It takes the baseline when no agent action has yet. */
+  readonly interact: () => void;
   /** Resolves once every link queued so far is hashed and checked. */
   readonly settled: () => Promise<void>;
 };
@@ -247,11 +297,28 @@ function createChangeLog(api: ChangeApi, askAgent: string): ChangeLog {
       })
       .catch(() => publish({ check: "unavailable" }));
   };
+  // The entries recorded as changes. A baseline entry is never among them, so it cannot be undone.
+  const recorded = new Set<string>();
   const attributor = createAttributor({
     askAgent,
     readUndo,
     record: (entry, source) => {
+      recorded.add(entry.id);
       enqueue({ kind: "change", entryId: entry.id, label: entry.label, at: entry.at, ...source });
+    },
+    baseline: (entries) => {
+      const newest = entries.at(-1);
+      enqueue({
+        kind: "baseline",
+        count: entries.length,
+        entryId: newest?.id ?? null,
+        label: `Starting state, ${entries.length} ${entries.length === 1 ? "entry" : "entries"}`,
+        at: Date.now(),
+        agent: STUDIO_AGENT,
+        tool: null,
+        toolCallId: null,
+        parentToolCallId: null,
+      });
     },
   });
 
@@ -274,6 +341,7 @@ function createChangeLog(api: ChangeApi, askAgent: string): ChangeLog {
       refresh();
     },
     undo: (entryId) => {
+      if (!recorded.has(entryId)) return;
       const entry = readUndo().find((candidate) => candidate.id === entryId);
       if (!entry) return;
       api.undo(entryId);
@@ -287,6 +355,10 @@ function createChangeLog(api: ChangeApi, askAgent: string): ChangeLog {
         toolCallId: null,
         parentToolCallId: null,
       });
+      refresh();
+    },
+    interact: () => {
+      attributor.begin();
       refresh();
     },
     settled: () => queue,

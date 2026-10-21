@@ -9,10 +9,11 @@ import {
   createAttributor,
   HAND_EDIT,
   linkHash,
+  listedLinks,
   verifyChain,
   type ChainLink,
-  type ChangeFields,
   type ChangeSource,
+  type EntryFields,
   type UndoEntry,
 } from "./change-chain.ts";
 
@@ -51,7 +52,7 @@ const finished = (runId: string, agentId: string, toolCallId: string, name: stri
 const runFinished = (runId: string, agentId: string) =>
   ({ type: "run_finished", timestamp: 0, trace: trace(runId, agentId), status: "error" }) as unknown as ChangeEvent;
 
-const change = (n: number): ChangeFields => ({
+const change = (n: number): EntryFields => ({
   kind: "change",
   entryId: `e${n}`,
   label: `Change ${n}`,
@@ -134,8 +135,10 @@ test("an entry is attributed to the call that made it, a delegated child's entry
     record: (entry, source) => {
       recorded.push({ id: entry.id, source });
     },
+    baseline: () => undefined,
   });
-  // A hand edit, then the assistant adds a widget with a call of its own.
+  // The user's first action, then a hand edit, then the assistant adds a widget with a call of its own.
+  attributor.begin();
   history.push({ id: "h1", label: "Move widget", at: 1 });
   attributor.onEvent(started("r1", "ask-ledger", "c1", "add_widget"));
   history.push({ id: "e1", label: "Add widget", at: 2 });
@@ -168,6 +171,7 @@ test("an edit made while a call is open waits for the call, and a call that neve
     record: (entry, source) => {
       recorded.push(`${entry.id}:${source.agent}`);
     },
+    baseline: () => undefined,
   });
   attributor.onEvent(started("r9", "ask-ledger", "c9", "update_widget"));
   history.push({ id: "h8", label: "Edit during call", at: 8 });
@@ -202,9 +206,11 @@ test("the change log records changes in order, undo appends an undo link, and an
   log.sync();
   await log.settled();
 
+  // The chain opens with the baseline: the empty history the first call started from.
   const links = log.getSnapshot().links;
+  assert.equal(links[0]?.kind, "baseline", "the chain opens with the baseline");
   assert.deepEqual(
-    links.map((link) => [link.label, link.agent, link.tool]),
+    listedLinks(links).map((link) => [link.label, link.agent, link.tool]),
     [
       ["Add widget", "Ask the ledger", "add_widget"],
       ["Move widget", "You", null],
@@ -217,16 +223,135 @@ test("the change log records changes in order, undo appends an undo link, and an
   await log.settled();
   const after = log.getSnapshot().links;
   assert.deepEqual(undone, ["e2"]);
-  assert.equal(after.length, 3, "the undo appends one link");
-  assert.deepEqual(after.slice(0, 2), links, "the links before the undo keep their hashes");
-  assert.equal(after[2]?.kind, "undo");
-  assert.equal(after[2]?.entryId, "e2");
-  assert.equal(after[2]?.label, "Undo to Move widget");
+  assert.equal(after.length, links.length + 1, "the undo appends one link");
+  assert.deepEqual(after.slice(0, links.length), links, "the links before the undo keep their hashes");
+  assert.equal(after.at(-1)?.kind, "undo");
+  assert.equal(after.at(-1)?.entryId, "e2");
+  assert.equal(after.at(-1)?.label, "Undo to Move widget");
   assert.deepEqual(log.getSnapshot().check, { ok: true });
   assert.deepEqual([...log.getSnapshot().undoIds], ["e1"], "the undone entry leaves the undo stack");
 
   log.undo("e2");
   await log.settled();
-  assert.equal(log.getSnapshot().links.length, 3, "undoing an entry that is no longer undoable adds nothing");
+  assert.equal(log.getSnapshot().links.length, links.length + 1, "undoing an entry that is no longer undoable adds nothing");
   assert.deepEqual(undone, ["e2"]);
+});
+
+/** A change log over a Studio history the test writes by hand, and the undo that goes back through an entry. */
+function logOver(initial: UndoEntry[]) {
+  const entries = [...initial];
+  const undone: string[] = [];
+  const api = {
+    getHistory: () => ({ type: "AgReportHistory", current: {}, undo: entries.map((entry) => ({ ...entry, state: {} })), redo: [] }),
+    undo: (toEntryId?: string) => {
+      undone.push(toEntryId ?? "");
+      const at = entries.findIndex((entry) => entry.id === toEntryId);
+      if (at >= 0) entries.splice(at);
+    },
+  } as unknown as Parameters<typeof changeLogFor>[0];
+  return { entries, undone, log: changeLogFor(api, "Ask the ledger") };
+}
+
+test("entries Studio made before any action are the baseline: no rows, and no link until the first action", async () => {
+  // Studio's own load and seed writes land before anyone acts, so the list stays empty.
+  const { entries, log } = logOver([
+    { id: "L1", label: "Seed widgets", at: 1 },
+    { id: "L2", label: "Restore layout", at: 2 },
+  ]);
+  log.sync();
+  await log.settled();
+  assert.deepEqual(log.getSnapshot().links, [], "no link before the first real action");
+  assert.deepEqual(listedLinks(log.getSnapshot().links), [], "no rows before the first real action");
+  assert.deepEqual([...log.getSnapshot().undoIds], ["L1", "L2"], "the entries are still on the undo stack");
+
+  // The first agent call takes the baseline: both entries, the newest of them L2.
+  log.observer.onEvent(started("r1", "ask-ledger", "c1", "add_widget"));
+  entries.push({ id: "e1", label: "Add widget", at: 3 });
+  log.observer.onEvent(finished("r1", "ask-ledger", "c1", "add_widget"));
+  await log.settled();
+  const links = log.getSnapshot().links;
+  const baseline = links[0];
+  if (baseline?.kind !== "baseline") assert.fail("the chain opens with the baseline");
+  assert.equal(baseline.count, 2, "the baseline holds the two entries");
+  assert.equal(baseline.entryId, "L2", "the baseline's newest entry");
+  assert.deepEqual(listedLinks(links).map((link) => link.entryId), ["e1"], "only the call's entry is listed");
+  assert.deepEqual(log.getSnapshot().check, { ok: true });
+});
+
+test("a hand edit after the first user interaction in the Studio host is listed as You", async () => {
+  const { entries, log } = logOver([{ id: "L1", label: "Seed widgets", at: 1 }]);
+  log.sync();
+  // The user's first interaction ends the baseline, so the seed entry L1 is not listed.
+  log.interact();
+  entries.push({ id: "H1", label: "Move widget", at: 5 });
+  log.sync();
+  await log.settled();
+  assert.deepEqual(
+    listedLinks(log.getSnapshot().links).map((link) => [link.entryId, link.agent, link.tool]),
+    [["H1", "You", null]],
+  );
+  assert.deepEqual(log.getSnapshot().check, { ok: true });
+});
+
+test("an entry an agent call makes is listed with that call's agent, tool and call id", async () => {
+  const { entries, log } = logOver([{ id: "L1", label: "Seed widgets", at: 1 }]);
+  log.observer.onEvent(started("r1", "ask-ledger", "c1", "add_widget"));
+  entries.push({ id: "e1", label: "Add widget", at: 2 });
+  log.observer.onEvent(finished("r1", "ask-ledger", "c1", "add_widget"));
+  await log.settled();
+  const listed = listedLinks(log.getSnapshot().links);
+  assert.equal(listed.length, 1, "the seed entry L1 is not listed");
+  assert.deepEqual(
+    listed.map((link) => ({ entryId: link.entryId, label: link.label, kind: link.kind, agent: link.agent, tool: link.tool, toolCallId: link.toolCallId })),
+    [{ entryId: "e1", label: "Add widget", kind: "change", agent: "Ask the ledger", tool: "add_widget", toolCallId: "c1" }],
+  );
+});
+
+test("an undo never targets a baseline entry, and a listed change can still be undone", async () => {
+  const { entries, undone, log } = logOver([
+    { id: "L1", label: "Seed widgets", at: 1 },
+    { id: "L2", label: "Restore layout", at: 2 },
+  ]);
+  log.observer.onEvent(started("r1", "ask-ledger", "c1", "add_widget"));
+  entries.push({ id: "e1", label: "Add widget", at: 3 });
+  log.observer.onEvent(finished("r1", "ask-ledger", "c1", "add_widget"));
+  await log.settled();
+  const before = log.getSnapshot().links;
+
+  // L2 is the newest baseline entry and is still on the undo stack, but Undo refuses it.
+  log.undo("L2");
+  await log.settled();
+  assert.deepEqual(undone, [], "Studio is never asked to undo a baseline entry");
+  assert.deepEqual(log.getSnapshot().links, before, "no undo link is appended");
+  assert.deepEqual(
+    entries.map((entry) => entry.id),
+    ["L1", "L2", "e1"],
+    "the baseline entries stay",
+  );
+
+  log.undo("e1");
+  await log.settled();
+  assert.deepEqual(undone, ["e1"], "a listed change is undone");
+  assert.equal(log.getSnapshot().links.at(-1)?.kind, "undo");
+});
+
+test("the baseline is the first link of the chain, and verify fails at it if it is altered", async () => {
+  const { entries, log } = logOver([
+    { id: "L1", label: "Seed widgets", at: 1 },
+    { id: "L2", label: "Restore layout", at: 2 },
+  ]);
+  log.observer.onEvent(started("r1", "ask-ledger", "c1", "add_widget"));
+  entries.push({ id: "e1", label: "Add widget", at: 3 });
+  log.observer.onEvent(finished("r1", "ask-ledger", "c1", "add_widget"));
+  await log.settled();
+  const links = log.getSnapshot().links;
+  assert.equal(links.length, 2, "the baseline, then the change");
+  assert.deepEqual(await verifyChain(links), { ok: true });
+
+  const baseline = links[0];
+  if (baseline?.kind !== "baseline") assert.fail("the chain opens with the baseline");
+  const others = links.slice(1);
+  assert.deepEqual(await verifyChain([{ ...baseline, count: 3 }, ...others]), { ok: false, seq: 1 }, "a baseline count altered");
+  assert.deepEqual(await verifyChain([{ ...baseline, entryId: "L1" }, ...others]), { ok: false, seq: 1 }, "a baseline entry altered");
+  assert.deepEqual(await verifyChain(others), { ok: false, seq: 1 }, "the baseline dropped");
 });
