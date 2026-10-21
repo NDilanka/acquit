@@ -1,18 +1,27 @@
-// The five judge scenarios, each driven to its end state in process. The harness (scenario-harness.ts)
+// The six judge scenarios, each driven to its end state in process. The harness (scenario-harness.ts)
 // supplies the scripted verifier, the fake PayPal, and the fake GitHub app.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
-import type { JobId } from "../src/ids.ts";
+import type { CaptureId, JobId } from "../src/ids.ts";
+import type { DisputeId } from "../src/paypal.ts";
+import { instant } from "../src/ids.ts";
+import { usd } from "../src/ledger.ts";
+import { recordSimulatedDispute } from "../src/scenario-binding.ts";
 import { arbiterVerdictForRun, boundedRuns, EXPECTED_END_STATES, EXPECTED_SUBMIT_VERDICTS, isScenarioName, ScenarioRefused, SCENARIO_NAMES,
 	SCENARIO_RUNNING_PER_REQUESTER, SCENARIO_RUNS_PER_REQUESTER, SCENARIO_RUNS_TOTAL, reachedOf, settleLabelOf, startScenario } from "../src/scenarios.ts";
 import type { RunSlot, ScenarioName, ScenarioRun, ScenarioRuns } from "../src/scenarios.ts";
 import { assertTimings, drive, harness, start } from "./scenario-harness.ts";
 import { DEMO_REPOSITORY } from "./hidden-fixture.ts";
 
-test("the scenario names are the five literal paths and nothing else", () => {
-	assert.deepEqual([...SCENARIO_NAMES], ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "deadline-refund"]);
+/** A dev-replay delivery of one dispute status, the way the route receives it. */
+const disputeDelivery = (eventId: string, eventType: string, disputeId: string, status: string): Request =>
+	new Request("http://acquit.test/paypal/webhook", { method: "POST",
+		body: JSON.stringify({ id: eventId, event_type: eventType, resource_type: "dispute", resource: { dispute_id: disputeId, status } }) });
+
+test("the scenario names are the six literal paths and nothing else", () => {
+	assert.deepEqual([...SCENARIO_NAMES], ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "buyer-dispute", "deadline-refund"]);
 	assert.equal(isScenarioName("verified-and-paid"), true);
 	assert.equal(isScenarioName("submit-everything"), false);
 });
@@ -113,6 +122,7 @@ test("the submit verdicts are the literal reasons each scenario needs, and they 
 		"hidden-test-fail": "REJECTED TESTS_FAILED:hidden",
 		"test-tamper": "REJECTED PROTECTED_PATH_MODIFIED",
 		"dispute-arbiter": "VERIFIED",
+		"buyer-dispute": "VERIFIED",
 	});
 	assert.equal(EXPECTED_SUBMIT_VERDICTS["hidden-test-fail"], `REJECTED ${EXPECTED_END_STATES["hidden-test-fail"].reason}`);
 	assert.equal(EXPECTED_SUBMIT_VERDICTS["test-tamper"], `REJECTED ${EXPECTED_END_STATES["test-tamper"].reason}`);
@@ -143,6 +153,62 @@ test("S4 dispute-arbiter: a dispute the arbiter upholds pays the operator, reaso
 		assert.equal(settle?.outcome, "SETTLED MERGE");
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "ARBITER_UPHELD" });
 		assertTimings(run);
+	} finally { await h.dispose(); }
+});
+
+test("S6 buyer-dispute: a buyer's PayPal dispute holds the approved release, the seller wins it, and the job is paid", async () => {
+	const h = await harness();
+	try {
+		const run = await drive(h, "buyer-dispute");
+		assert.equal(run.state, "DONE");
+		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit",
+			"dispute-created", "approve", "dispute-resolved", "settle", "release"]);
+		const created = run.steps.findIndex(step => step.name === "dispute-created");
+		const resolved = run.steps.findIndex(step => step.name === "dispute-resolved");
+		// Between CREATED and RESOLVED no step reached PayPal and no step ran a RELEASE: the held approval moved no money.
+		for (const step of run.steps.slice(created, resolved)) {
+			assert.equal(step.reached.includes("PayPal sandbox"), false, step.name);
+			assert.doesNotMatch(step.outcome, /RELEASE/, step.name);
+		}
+		assert.deepEqual(run.steps.filter(step => step.name.startsWith("dispute-")).map(step => [step.name, step.label, step.reached, step.outcome]), [
+			["dispute-created", "Simulated PayPal dispute", [], "dispute OPEN"],
+			["dispute-resolved", "Simulated PayPal dispute", [], "dispute RESOLVED_SELLER_FAVOUR"],
+		]);
+		assert.equal(run.steps.find(step => step.name === "approve")?.outcome, "HELD");
+		assert.equal(run.steps.find(step => step.name === "release")?.outcome, "PAID (already settled by settle)");
+		// The simulated dispute never reached PayPal: the dev replay read it from the run's own record.
+		assert.deepEqual(h.disputeReads, []);
+		const job = await h.store.readJob(run.jobId as JobId);
+		assert.equal(job?.providerDispute?.id, `SIM-${run.id}`);
+		assert.equal(job?.providerDispute?.status, "RESOLVED");
+		assert.equal(job?.providerDispute?.outcome, "RESOLVED_SELLER_FAVOUR");
+		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
+		assertTimings(run);
+	} finally { await h.dispose(); }
+});
+
+test("the simulated dispute source answers only a RUNNING buyer-dispute run's own job: a finished run's dispute, and another scenario's job, are read from PayPal", async () => {
+	const h = await harness();
+	try {
+		const finished = await drive(h, "buyer-dispute");
+		assert.equal(finished.state, "DONE");
+		// The finished run's record is forgotten, so its dispute id goes to PayPal, which holds none for it.
+		const late = await h.acquit.handlePayPalWebhookDev(disputeDelivery("WH-LATE-1", "CUSTOMER.DISPUTE.CREATED", `SIM-${finished.id}`, "OPEN"));
+		assert.equal(late.status, 202);
+		assert.deepEqual(h.disputeReads, [`SIM-${finished.id}`]);
+		// A record forged for a job another scenario opened is refused: that run is not buyer-dispute, so PayPal answers.
+		const other = await drive(h, "verified-and-paid");
+		assert.equal(other.state, "DONE");
+		const otherRow = await h.store.readJob(other.jobId as JobId);
+		if (otherRow?.state.status !== "PAID") throw new Error(`expected PAID, got ${otherRow?.state.status}`);
+		recordSimulatedDispute(h.deps.store.db, { id: other.id, jobId: other.jobId }, { kind: "DISPUTE", disputeId: "SIM-FORGED" as DisputeId,
+			captureId: otherRow.state.release.captureId as CaptureId, status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+			amount: usd("400.00"), openedAt: instant("2026-10-06T12:30:00Z") });
+		const forged = await h.acquit.handlePayPalWebhookDev(disputeDelivery("WH-FORGED-1", "CUSTOMER.DISPUTE.CREATED", "SIM-FORGED", "OPEN"));
+		assert.equal(forged.status, 202);
+		assert.deepEqual(h.disputeReads, [`SIM-${finished.id}`, "SIM-FORGED"]);
+		assert.equal((await h.store.readJob(other.jobId as JobId))?.providerDispute, undefined);
+		assert.equal((await h.store.readJob(other.jobId as JobId))?.state.status, "PAID");
 	} finally { await h.dispose(); }
 });
 
@@ -302,12 +368,14 @@ test("a run keeps its own visitor and job, and the start returns the job before 
 	} finally { await h.dispose(); }
 });
 
-test("one requester starts all five scenarios, each on its own visitor, and each reaches its end state", async () => {
+test("one requester starts all six scenarios, each on its own visitor, and each reaches its end state", async () => {
 	const h = await harness();
 	try {
 		const runs: ScenarioRun[] = [];
 		const finishing: Promise<ScenarioRun>[] = [];
 		for (const name of SCENARIO_NAMES) {
+			// One requester may have five runs RUNNING at once, so the sixth start waits for the first run to finish.
+			if (finishing.length === SCENARIO_RUNNING_PER_REQUESTER) await finishing[0];
 			const provisioned = await h.provision(h.visitor);
 			if (provisioned.kind !== "CREATED") throw new Error(`the run visitor was not created: ${provisioned.kind}`);
 			const started = await start(h, name, provisioned.visitor);
@@ -315,16 +383,17 @@ test("one requester starts all five scenarios, each on its own visitor, and each
 			finishing.push(started.finished);
 		}
 		const settled = await Promise.all(finishing);
-		assert.deepEqual(new Set(runs.map(run => run.visitorId)).size, 5);
+		assert.deepEqual(new Set(runs.map(run => run.visitorId)).size, 6);
 		assert.equal(runs.some(run => run.visitorId === h.visitor.id), false);
 		assert.deepEqual(settled.map(run => [run.name, run.state, run.endState]), [
 			["verified-and-paid", "DONE", { jobStatus: "PAID", reason: "CLIENT_APPROVAL" }],
 			["hidden-test-fail", "DONE", { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" }],
 			["test-tamper", "DONE", { jobStatus: "IN_PROGRESS", reason: "PROTECTED_PATH_MODIFIED" }],
 			["dispute-arbiter", "DONE", { jobStatus: "PAID", reason: "ARBITER_UPHELD" }],
+			["buyer-dispute", "DONE", { jobStatus: "PAID", reason: "CLIENT_APPROVAL" }],
 			["deadline-refund", "DONE", { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" }],
 		]);
-		assert.deepEqual(settled.map(run => run.requesterId), [h.visitor.id, h.visitor.id, h.visitor.id, h.visitor.id, h.visitor.id]);
+		assert.deepEqual(settled.map(run => run.requesterId), Array(6).fill(h.visitor.id));
 	} finally { await h.dispose(); }
 });
 

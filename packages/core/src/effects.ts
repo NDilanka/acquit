@@ -8,7 +8,7 @@ import type { CapRefusal, Reservation } from "./caps.ts";
 import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
-import type { AgentId, Branded, ClientId, Digest, Instant, JobId, OperatorId, ReceiptId, RequestKey, Version } from "./ids.ts";
+import type { AgentId, Branded, ClientId, Digest, Instant, JobId, MerchantId, OperatorId, ReceiptId, RequestKey, Version } from "./ids.ts";
 import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, releaseHeld, storedVertical, TERMS, wakeAt } from "./job.ts";
 import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
@@ -18,7 +18,7 @@ import { commercialSplit } from "./ledger.ts";
 import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { quote } from "./paypal.ts";
-import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, WebhookEnvelope, WebhookResourceKind } from "./paypal.ts";
+import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
@@ -29,6 +29,7 @@ import type { OutcomeRegistry } from "./outcome.ts";
 import type { VerifierPort } from "./verifier.ts";
 import type { DefinitionOfDone } from "./verifier.ts";
 import type { PrivateCaseReader } from "./hidden-seal.ts";
+import { simulatedDisputeOf } from "./scenario-binding.ts";
 
 type CallbackReport = NonNullable<Awaited<ReturnType<VerifierPort["parseCallback"]>>>;
 
@@ -725,6 +726,18 @@ const settledNoop = (job: JobRow | null): WebhookOutcome =>
 	({ kind: "NOOP", reason: "JOB_ALREADY_SETTLED", jobId: job?.id ?? null, status: job?.state.status });
 
 /**
+ * The fresh read the route routes from. On the dev replay path a buyer dispute a judge scenario simulated is answered
+ * from that scenario's own record, so PayPal is never asked for it. The signed route always asks PayPal.
+ */
+function readFor(ports: Ports, resource: WebhookResource, payee: MerchantId | null, devReplay: boolean): Promise<ResourceRead> {
+	if (devReplay && resource.kind === "DISPUTE") {
+		const simulated = simulatedDisputeOf(resource.id);
+		if (simulated !== null) return Promise.resolve({ kind: "SETTLED", observation: simulated });
+	}
+	return ports.paypal.readResource(resource, payee);
+}
+
+/**
  * The webhook route. Every delivery is recorded as its canonical envelope, its signature is verified
  * with PayPal after the parse and before anything is read or applied, and only then is the named
  * resource re-read from PayPal and the fact that read carries routed to the edge that owns it. The job
@@ -754,14 +767,14 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request, devRep
 	if (envelope.kind === "UNROUTED") return record({ kind: "NOOP", reason: "UNROUTED", jobId: null }, 202);
 	const named = await ports.store.jobForResource(envelope.resource.id);
 	let owner = named === null ? null : await ports.store.readJob(named);
-	let read = await ports.paypal.readResource(envelope.resource, owner === null ? null : payeeMerchantOf(owner));
+	let read = await readFor(ports, envelope.resource, owner === null ? null : payeeMerchantOf(owner), devReplay);
 	// A refund delivery names the refund id, while the index holds the capture the refund names. That
 	// unowned read still names its capture, so the job holding it is the owner and the refund is re-read
 	// with that owner's payee: the merchant assertion the provider read needs.
 	if (owner === null && read.kind === "HELD" && read.anchor !== undefined) {
 		const holding = await ports.store.jobForResource(read.anchor);
 		owner = holding === null ? null : await ports.store.readJob(holding);
-		if (owner !== null) read = await ports.paypal.readResource(envelope.resource, payeeMerchantOf(owner));
+		if (owner !== null) read = await readFor(ports, envelope.resource, payeeMerchantOf(owner), devReplay);
 	}
 	if (read.kind === "UNKNOWN") return record({ kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 202,
 		`PayPal holds no ${resourceNoun(envelope.resource.kind)} ${envelope.resource.id}.`);

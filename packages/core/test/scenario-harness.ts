@@ -16,7 +16,8 @@ import { instant } from "../src/ids.ts";
 import type { CaptureId, CommitSha, Digest, Instant, JobId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId, TestId } from "../src/ids.ts";
 import type { FixtureContract } from "../src/fixtures.ts";
 import { usd } from "../src/ledger.ts";
-import type { Bps, CaptureEvidence, FeeQuote, PayPal, PayPalCall, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome } from "../src/paypal.ts";
+import type { Bps, CaptureEvidence, FeeQuote, PayPal, PayPalCall, PayPalObservation, RefundEvidence, ReimbursementEvidence, ReleaseEvidence, RemoteOutcome, WebhookResource } from "../src/paypal.ts";
+import { parseWebhookEnvelope } from "../src/paypal.ts";
 import { boundedRuns, startScenario } from "../src/scenarios.ts";
 import type { ScenarioDeps, ScenarioName, ScenarioRun, ScenarioRuns, ScriptedTree, StartedScenario } from "../src/scenarios.ts";
 import { SqliteStore, openDatabase } from "../src/store.ts";
@@ -52,7 +53,10 @@ function verdictFor(tree: ScriptedTree, request: VerifierRunRequest, at: Instant
  * when it is created, so its order reads as completed. A checkout order reads PENDING until a buyer approves
  * it, and nothing in these scenarios approves one.
  */
-function fakePayPal(now: () => Instant): PayPal {
+/** A dispute as PayPal's read answers it, keyed by the dispute id the test names. */
+type DisputeObservation = Extract<PayPalObservation, { kind: "DISPUTE" }>;
+
+function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation>, disputeReads: string[]): PayPal {
 	const quotes = new Map<string, FeeQuote>();
 	const cardOrders = new Set<string>();
 	const quoteOf = (key: string): FeeQuote => {
@@ -98,7 +102,15 @@ function fakePayPal(now: () => Instant): PayPal {
 			if (!cardOrders.has(orderId)) return { kind: "PENDING", checkAt: now() };
 			return { kind: "CONFIRMED", observation: { kind: "CAPTURE_COMPLETED", capture: capture(orderId, payee) } };
 		},
-		parseWebhook: unused, verifyWebhookDelivery: unused, readResource: unused,
+		parseWebhook: async (raw: string) => parseWebhookEnvelope(raw),
+		verifyWebhookDelivery: unused,
+		// The sandbox answers a dispute read only for a dispute it holds. A simulated dispute is answered by the core's own record and never reaches here.
+		readResource: async (resource: WebhookResource) => {
+			if (resource.kind !== "DISPUTE") return unused();
+			disputeReads.push(resource.id);
+			const observation = disputes.get(resource.id);
+			return observation === undefined ? { kind: "UNKNOWN" as const } : { kind: "SETTLED" as const, observation };
+		},
 	} as unknown as PayPal;
 }
 
@@ -129,6 +141,10 @@ export type Harness = {
 	readonly provision: (requester: VisitorRow) => Promise<DemoVisitorResult>;
 	readonly dispose: () => Promise<void>;
 	readonly setClock: (at: Instant) => void;
+	/** The disputes the fake PayPal answers a read for, by dispute id. A test adds one before it delivers it. */
+	readonly paypalDisputes: Map<string, DisputeObservation>;
+	/** Every dispute id the fake PayPal was asked to read, in order. A simulated dispute never appears here. */
+	readonly disputeReads: string[];
 };
 
 export async function harness(options: HarnessOptions = {}): Promise<Harness> {
@@ -161,12 +177,14 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 		},
 	};
 	const github = options.github ?? createFakeGitHubApp();
+	const paypalDisputes = new Map<string, DisputeObservation>();
+	const disputeReads: string[] = [];
 	acquit = createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
 		github: { appId: "", privateKey: "", organization: "" },
-		adapters: { paypal: fakePayPal(clock), github } });
+		adapters: { paypal: fakePayPal(clock, paypalDisputes, disputeReads), github } });
 	const store = new SqliteStore(path);
 	const noFork = async (scenarioOf?: string): Promise<DemoVisitorResult> => provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test",
 		...(scenarioOf === undefined ? {} : { scenarioOf }), fork: async () => ({ kind: "NO_APP" }) });
@@ -185,6 +203,7 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const deps: ScenarioDeps = { acquit, store: { readJob: id => store.readJob(id), db }, workspace, runs,
 		now: clock, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
 	return { acquit, store, github, deps, path, visitor: provisioned.visitor, provision: async requester => noFork(requester.id), setClock: at => { now = at; },
+		paypalDisputes, disputeReads,
 		dispose: async () => {
 			deps.store.db.close();
 			store.close();

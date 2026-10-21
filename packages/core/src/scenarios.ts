@@ -13,10 +13,12 @@ import type { AttemptRecord, JobRow, JobStatus } from "./job.ts";
 import { shiftJobClock } from "./job-clock.ts";
 import { usd } from "./ledger.ts";
 import { reasonCode } from "./score-card.ts";
-import { arbiterOwns, openedJobOf, stepKey } from "./scenario-binding.ts";
+import { arbiterOwns, forgetSimulatedDisputes, openedJobOf, recordSimulatedDispute, stepKey } from "./scenario-binding.ts";
+import type { SimulatedDispute } from "./scenario-binding.ts";
+import type { DisputeId } from "./paypal.ts";
 import type { SqliteStore } from "./store.ts";
 
-export const SCENARIO_NAMES = ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "deadline-refund"] as const;
+export const SCENARIO_NAMES = ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "buyer-dispute", "deadline-refund"] as const;
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 export function isScenarioName(value: string): value is ScenarioName {
 	return (SCENARIO_NAMES as readonly string[]).includes(value);
@@ -24,6 +26,8 @@ export function isScenarioName(value: string): value is ScenarioName {
 
 export const SCENARIO_LABELS = {
 	scripted: "Scripted agent (Simulated)",
+	/** A buyer dispute a scenario injects. PayPal never answers for it: the scenario's own record does. */
+	simulatedDispute: "Simulated PayPal dispute",
 	clock: "Simulated time for this job",
 	verifier: "Real verifier run",
 	paypal: "PayPal sandbox",
@@ -86,6 +90,7 @@ export const EXPECTED_END_STATES: Readonly<Record<ScenarioName, ScenarioEndState
 	"hidden-test-fail": { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
 	"test-tamper": { jobStatus: "IN_PROGRESS", reason: "PROTECTED_PATH_MODIFIED" },
 	"dispute-arbiter": { jobStatus: "PAID", reason: "ARBITER_UPHELD" },
+	"buyer-dispute": { jobStatus: "PAID", reason: "CLIENT_APPROVAL" },
 	"deadline-refund": { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" },
 };
 
@@ -104,6 +109,7 @@ export const EXPECTED_SUBMIT_VERDICTS: Readonly<Record<SubmittingScenario, Submi
 	"hidden-test-fail": "REJECTED TESTS_FAILED:hidden",
 	"test-tamper": "REJECTED PROTECTED_PATH_MODIFIED",
 	"dispute-arbiter": "VERIFIED",
+	"buyer-dispute": "VERIFIED",
 };
 
 export type ScenarioRun = {
@@ -484,11 +490,40 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		}
 	} };
 	const refund: ChainStep = { name: "refund", actor: "SYSTEM", run: () => waitOnly("REFUNDED", "REFUNDED", "the refund to settle") };
+	// The buyer dispute a buyer-disputes run simulates. PayPal is never asked for it: the dev replay route delivers the
+	// dispute, and its read is answered from this run's own record, which the source honours only for this run's job.
+	let simulatedDispute: SimulatedDispute | null = null;
+	const simulateDispute = (status: "OPEN" | "RESOLVED"): ChainStep => ({ name: status === "OPEN" ? "dispute-created" : "dispute-resolved",
+		actor: "SYSTEM", label: SCENARIO_LABELS.simulatedDispute, run: async () => {
+		const row = await rowOf();
+		if (row.state.status !== "VERIFIED") throw new ScenarioRefused("SCENARIO_DISPUTE_NOT_HELD", "the simulated dispute needs a verified job");
+		const capture = row.state.escrow.capture;
+		const next: SimulatedDispute = status === "OPEN"
+			? { kind: "DISPUTE", disputeId: `SIM-${runId}` as DisputeId, captureId: capture.captureId, status,
+				reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", amount: capture.gross, openedAt: deps.now() }
+			: { ...simulatedDispute!, status, outcome: "RESOLVED_SELLER_FAVOUR" };
+		simulatedDispute = next;
+		recordSimulatedDispute(deps.store.db, { id: runId, jobId: ctx.jobId! }, next);
+		const body = JSON.stringify({ id: `${runId}:${status}`, event_type: status === "OPEN" ? "CUSTOMER.DISPUTE.CREATED" : "CUSTOMER.DISPUTE.RESOLVED",
+			resource_type: "dispute", resource: { dispute_id: next.disputeId, status } });
+		await deps.acquit.handlePayPalWebhookDev(new Request("http://scenario.local/paypal/webhook", { method: "POST", body }));
+		const applied = await rowOf();
+		if (applied.providerDispute?.status !== status || applied.providerDispute?.outcome !== next.outcome)
+			throw new ScenarioRefused("SCENARIO_DISPUTE_NOT_APPLIED", `the dispute did not reach ${status}`);
+		return status === "OPEN" ? "dispute OPEN" : "dispute RESOLVED_SELLER_FAVOUR";
+	} });
+	// The approval is recorded and held while the dispute is open. The step does not wait for PAID: the release comes once PayPal's decision lifts the hold.
+	const approveHeld: ChainStep = { name: "approve", actor: "CLIENT", label: SCENARIO_LABELS.scripted, run: async () => {
+		await send(client, "approve", { type: "Approve", jobId: ctx.jobId!, mergeCommit: ctx.mergeCommit! });
+		return "HELD";
+	} };
 	const chains: Record<ScenarioName, readonly ChainStep[]> = {
 		"verified-and-paid": [open(7), bid, accept, push("honest-reference-table"), submit("verified-and-paid"), approve],
 		"hidden-test-fail": [open(7), bid, accept, push("cheat-hardcode-visible-values"), submit("hidden-test-fail")],
 		"test-tamper": [open(7), bid, accept, push("cheat-edit-frozen-test"), submit("test-tamper")],
 		"dispute-arbiter": [open(7), bid, accept, push("honest-reference-table"), submit("dispute-arbiter"), dispute, arbiter, release],
+		"buyer-dispute": [open(7), bid, accept, push("honest-reference-table"), submit("buyer-dispute"), simulateDispute("OPEN"), approveHeld,
+			simulateDispute("RESOLVED"), release],
 		"deadline-refund": [open(1), bid, accept, advanceClock, refund],
 	};
 	const [opening, ...rest] = chains[name];
@@ -571,6 +606,6 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 			outcome: outcomeOfFailure("record-run", error).slice(0, 300), label: SCENARIO_LABELS.server, reached: [] });
 		publish({ state: "FAILED" });
 		return current!;
-	});
+	}).finally(() => forgetSimulatedDisputes(runId));
 	return { run: current!, finished };
 }
