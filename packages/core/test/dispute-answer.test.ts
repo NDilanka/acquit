@@ -3,20 +3,22 @@
 // A buyer-favour resolution on a held full-amount escrow settles the job as refunded, with no call to PayPal.
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { applyJobCommand, effectWanted, releaseHeld, storedBook, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow, Plan } from "../src/job.ts";
-import { applySystemCommand, operationKey, providerRequestId, runOutboxOnce } from "../src/effects.ts";
+import { applySystemCommand, executeCommand, operationKey, providerRequestId, runOutboxOnce } from "../src/effects.ts";
 import type { OperationKey, Ports } from "../src/effects.ts";
 import { SqliteStore } from "../src/store.ts";
 import { checkLaws, commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
-import { hours, instant, parseBidId, parseJobId } from "../src/ids.ts";
-import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
+import { hours, instant, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
+import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
 import { createPayPal, quote } from "../src/paypal.ts";
 import type { Bps } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 import type { Verdict, VerifierRunId } from "../src/verifier.ts";
+import { processLogAlerts } from "../src/acquit.ts";
 import type { Actor } from "../src/acquit.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
@@ -136,7 +138,7 @@ test("a funded job with no verified attempt accepts the buyer's claim, and files
 
 test("a refunded job files nothing with PayPal and raises only an alert naming the case", () => {
 	const opened = planOf(applyJobCommand(refundedRow(), dispute("OPEN"), paypalFacts(later)));
-	assert.deepEqual(opened.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE" }]);
+	assert.deepEqual(opened.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE", disputeId: "PP-D-9" }]);
 	assert.equal(opened.next.providerDispute?.answer, "NOT_ANSWERABLE");
 	assert.equal(opened.next.state.status, "REFUNDED");
 });
@@ -170,12 +172,12 @@ test("a partial dispute alerts a person, still files the answer, and keeps the j
 	const partial = dispute("OPEN", null, usd("200.00"));
 	const opened = planOf(applyJobCommand(verifiedRow(), partial, paypalFacts(later)));
 	assert.deepEqual(opened.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE", "ALERT"]);
-	assert.deepEqual(opened.effects[1], { kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL" });
+	assert.deepEqual(opened.effects[1], { kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL", disputeId: "PP-D-9" });
 	assert.equal(opened.next.state.status, "VERIFIED");
 	assert.equal(releaseHeld(opened.next), true);
 	const lost = planOf(applyJobCommand(opened.next, dispute("RESOLVED", "RESOLVED_BUYER_FAVOUR", usd("200.00")), paypalFacts(later)));
 	assert.equal(lost.next.state.status, "VERIFIED");
-	assert.deepEqual(lost.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL_LOST" }]);
+	assert.deepEqual(lost.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL_LOST", disputeId: "PP-D-9" }]);
 	assert.equal(releaseHeld(lost.next), true);
 });
 
@@ -293,9 +295,52 @@ test("a partial buyer win on a row whose refund is already selected keeps the ho
 		const partial = planOf(applyJobCommand(opened.next, dispute("RESOLVED", "RESOLVED_BUYER_FAVOUR", usd("200.00")), paypalFacts(later)));
 		assert.equal(partial.next.state.status, row.state.status, name);
 		assert.deepEqual(storedBook(partial.next).map(line => line.kind), ["HELD"], name);
-		assert.deepEqual(partial.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL_LOST" }], name);
+		assert.deepEqual(partial.effects, [{ kind: "ALERT", jobId, reason: "PROVIDER_DISPUTE_PARTIAL_LOST", disputeId: "PP-D-9" }], name);
 		assert.equal(releaseHeld(partial.next), true, name);
 	}
+});
+
+test("a dispute against another capture than the one the row holds changes nothing but a settlement alert", () => {
+	for (const { name, row } of [{ name: "a funded job", row: fundedRow() }, { name: "a verified job", row: verifiedRow() }]) {
+		const elsewhere = { ...dispute("OPEN"), captureId: "OTHER-CAPTURE" as CaptureId };
+		const refused = planOf(applyJobCommand(row, elsewhere, paypalFacts(later)));
+		assert.equal(refused.refused, "SETTLEMENT_MISMATCH", name);
+		assert.deepEqual(refused.next, row, name);
+		assert.deepEqual(refused.effects, [{ kind: "ALERT", jobId, reason: "SETTLEMENT_MISMATCH" }], name);
+		// The same dispute against the held capture is still filed, as usual.
+		const filed = planOf(applyJobCommand(row, dispute("OPEN"), paypalFacts(later)));
+		assert.equal(filed.refused, undefined, name);
+		assert.equal(filed.next.providerDispute?.id, "PP-D-9", name);
+	}
+});
+
+/** The alerts a plan raises, typed as the ALERT effect. */
+function alertsOf(plan: Plan<JobRow>): Extract<JobEffect, { kind: "ALERT" }>[] {
+	return plan.effects.filter((effect): effect is Extract<JobEffect, { kind: "ALERT" }> => effect.kind === "ALERT");
+}
+
+/** The lines the process log receives while the body runs. */
+async function loggedLines(body: () => Promise<void>): Promise<string[]> {
+	const original = console.error;
+	const lines: string[] = [];
+	console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	try { await body(); } finally { console.error = original; }
+	return lines;
+}
+
+test("the process log names the buyer dispute a dispute alert is about, and a settlement alert names none", async () => {
+	const partial = planOf(applyJobCommand(verifiedRow(), dispute("OPEN", null, usd("200.00")), paypalFacts(later)));
+	const unanswerable = planOf(applyJobCommand(refundedRow(), dispute("OPEN"), paypalFacts(later)));
+	const mismatch = planOf(applyJobCommand(verifiedRow(), { ...dispute("OPEN"), captureId: "OTHER-CAPTURE" as CaptureId }, paypalFacts(later)));
+	const alerts = [...alertsOf(partial), ...alertsOf(unanswerable), ...alertsOf(mismatch)];
+	const lines = await loggedLines(async () => {
+		for (const alert of alerts) await processLogAlerts.raise(alert);
+	});
+	assert.deepEqual(lines, [
+		`Acquit alert: PROVIDER_DISPUTE_PARTIAL for ${jobId} on dispute "PP-D-9"`,
+		`Acquit alert: PROVIDER_DISPUTE_NOT_ANSWERABLE for ${jobId} on dispute "PP-D-9"`,
+		`Acquit alert: SETTLEMENT_MISMATCH for ${jobId}`,
+	]);
 });
 
 /** Routes the real PayPal client's HTTP through a recorder for the body's run. The OAuth token is answered; every other call is recorded. */
@@ -413,4 +458,29 @@ test("a dispute answer PayPal refuses with a 422 that names no settled answer is
 			});
 			assert.equal(calls.length, 1);
 		});
+});
+
+/** A verified job the client has disputed, so the arbiter has a dispute to rule on. */
+function disputedRow(): JobRow {
+	return planOf(applyJobCommand(verifiedRow(), { type: "Dispute", jobId, mergeCommit: judgedCommit, reason: "Scripted dispute." }, userFacts(maya))).next;
+}
+
+test("evidence queued for an open dispute is never sent once the arbiter rules a refund or a rework, and is delivered as done", async () => {
+	const arbiter: Actor = { role: "ARBITER", staffId: "staff-arbiter" as StaffId };
+	for (const verdict of ["REFUND", "REWORK"] as const) {
+		await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+			await withStore(disputedRow(), async store => {
+				const ports = portsOver(store);
+				assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open")).refused, null, verdict);
+				assert.equal(outboxStateOf(store, evidenceKey).kind, "READY", verdict);
+				const ruled = await executeCommand(ports, arbiter, parseRequestKey(randomUUID()),
+					{ type: "ResolveDispute", jobId, verdict, note: "Scripted arbiter ruling." });
+				assert.equal(ruled.kind, "COMMITTED", verdict);
+				assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED", verdict);
+				assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED", verdict);
+			});
+			// A refund the arbiter selected goes to the capture's refund path. The dispute's evidence path is never reached.
+			assert.deepEqual(calls.filter(call => call.path === evidencePath), [], verdict);
+		});
+	}
 });
