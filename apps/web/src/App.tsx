@@ -147,10 +147,10 @@ function DemoBar({ session, visitor, onSwitched }: { session: Session; visitor: 
         <span className="muted">
           Signed in as <b className="mono">{session.user.handle}</b>
         </span>
-        <span className="muted">
+        <span className="muted demo-extra">
           Repository <RepoLink repository={visitor.repository} />
         </span>
-        <span className="muted" title={visitor.expiresAt}>{demoEnds(visitor.expiresAt, Date.now())}</span>
+        <span className="muted demo-extra" title={visitor.expiresAt}>{demoEnds(visitor.expiresAt, Date.now())}</span>
         {error && <span className="alert">{error}</span>}
       </div>
     </div>
@@ -231,7 +231,7 @@ function TopBar({ session, onSignOut }: { session: Session | null | undefined; o
         <>
           <span className="avatar">
             <i>{user.handle.slice(0, 2).toUpperCase()}</i>
-            {user.handle}
+            <span className="avatar-name">{user.handle}</span>
             <small className="muted">{ROLE_CAPTION[user.role]}</small>
           </span>
           <button className="btn ghost sm" onClick={onSignOut}>{session?.visitor ? "Leave demo" : "Sign out"}</button>

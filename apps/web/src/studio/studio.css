@@ -41,6 +41,10 @@
 .verdict-card-ids { display: flex; flex-wrap: wrap; gap: 4px; }
 @media (max-width: 640px) {
   .studio-host { height: calc(100vh - 180px); min-height: 480px; }
+  .studio-widget { padding: 8px 10px; gap: 4px; }
+  .studio-widget .studio-value { font-size: 22px; }
+  /* The inline Explain in a ledger row wraps onto its own line rather than clipping at the tile's edge. */
+  .studio-widget .rows .total > span { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 }
 
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
@@ -52,6 +56,11 @@
 .explain-line small { display: block; }
 .explain-line .mono { overflow-wrap: anywhere; }
 .explain-open { align-self: flex-start; }
+/* A KPI tile's Explain shares the label's row, so the value and its note keep the tile's height on a phone. */
+.studio-widget:has(> .explain-open) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; align-content: start; }
+.studio-widget:has(> .explain-open) > .eyebrow { grid-column: 1; grid-row: 1; min-width: 0; }
+.studio-widget:has(> .explain-open) > .explain-open { grid-column: 2; grid-row: 1; align-self: center; }
+.studio-widget:has(> .explain-open) > :not(.eyebrow):not(.explain-open) { grid-column: 1 / -1; }
 .explain-dialog { width: min(560px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: 85vh; overflow-y: auto; margin: auto; padding: 16px 18px;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
 .explain-dialog::backdrop { background: rgb(17 21 18 / 0.35); }

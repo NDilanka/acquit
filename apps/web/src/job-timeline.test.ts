@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { Attempt, BidView, Receipt } from "./api-types.ts";
-import { agentLine } from "./bids.ts";
+import { agentLine, lockedBid } from "./bids.ts";
 import { canDeliver, moneyRows, nextStep, timelineEvents, verifierIndex, verifierLine, type TimelineJob, type Viewer } from "./job-timeline.ts";
 
 const CLIENT: Viewer = { role: "CLIENT", handle: "ada" };
@@ -717,7 +717,20 @@ test("the agent line names the declared agent and the operator or House that nam
 test("the job page names the locked agent above the attempts, and only when a bid is locked", () => {
   // The suite has no DOM, so the wiring is checked in the page's source, as the Timeline test above does.
   const source = readFileSync(new URL("./pages/JobPage.tsx", import.meta.url), "utf8");
-  assert.match(source, /\{locked && <p className="pad">\{agentLine\(locked\)\}<\/p>\}/);
-  assert.ok(source.indexOf("{agentLine(locked)}") < source.indexOf("{failure && ("));
-  assert.match(source, /<Verifier job=\{timeline\} diff=\{diff\} locked=\{locked\} \/>/);
+  assert.match(source, /\{locked && <p className="pad verifier-agent">\{agentLine\(locked\)\}<\/p>\}/);
+  assert.ok(source.indexOf("{agentLine(locked)}") < source.indexOf("{failure && !readOnly && ("));
+  assert.match(source, /<Verifier job=\{timeline\} diff=\{diff\} locked=\{locked\} readOnly=\{settledStatuses\.includes\(job\.status\)\} \/>/);
+});
+
+test("a PAID job keeps its verifier card with the agent line, read-only: PAID stays in the status list and the card asks for nothing", () => {
+  const source = readFileSync(new URL("./pages/JobPage.tsx", import.meta.url), "utf8");
+  // The status list decides which jobs show the card. Removing "PAID" from it fails this line.
+  assert.match(source, /const judgedStatuses: readonly JobView\["status"\]\[\] = \[[^\]]*"PAID"[^\]]*\];/);
+  assert.match(source, /const settledStatuses: readonly JobView\["status"\]\[\] = \["PAID", "CLOSED"\];/);
+  assert.match(source, /verifier=\{showsVerifier\(job\) \? <Verifier/);
+  // The fixture is a paid job whose locked bid names devon's agent, so the card's agent line has its text.
+  assert.equal(agentLine(lockedBid(paidJob())!), "Agent ts-bugfixer, named by devon.");
+  for (const prompt of ["{failure && !readOnly && (", "{pending && !readOnly && (", "{idle && !readOnly && ("]) {
+    assert.ok(source.includes(prompt), `${prompt} keeps the prompt off a settled job`);
+  }
 });
