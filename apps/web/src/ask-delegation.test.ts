@@ -256,7 +256,7 @@ test("the ledger agent's instructions carry the dashboard's widget catalogue", a
   const instructions = parentBodies[0]?.instructions ?? "";
   assert.ok(instructions.includes("acquit-held"), "the catalogue's widget types are named for the model");
   assert.ok(instructions.includes("delegate_to"));
-  assert.ok(instructions.length <= 4000, "the turn route's instruction cap holds");
+  assert.ok(instructions.length <= 16_000, "the turn route's instruction cap holds");
 });
 
 test("every dashboard widget declares its AI catalogue metadata", () => {
@@ -347,9 +347,10 @@ test("the add_widget workflow survives the turn route's instruction clip", async
   session.sendMessage("Add a widget showing held escrow.");
   await settle(session);
   assert.ok(childBodies.length >= 1, "the delegated widget agent took a turn");
-  // The fetch body is already clipped, so a body at exactly the cap is one the clip cut short.
+  // The fetch body is the clipped one, so a length short of the template's full 8,490 is one the clip cut.
+  // 8,490 is measured with this test's empty schema; a live schema adds to it.
   const instructions = childBodies[0]?.instructions ?? "";
-  assert.equal(instructions.length, 4000, "Studio's built-in widget template alone fills the turn route's instruction cap");
+  assert.equal(instructions.length, 8_490, "Studio's built-in widget template reaches the turn route unclipped");
   assert.ok(instructions.includes(NEW_WIDGET_WORKFLOW), "the add_widget workflow is inside the clipped instructions the model receives");
 });
 
