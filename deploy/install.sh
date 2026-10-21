@@ -40,6 +40,11 @@ npm --prefix apps/web run build
 sudo docker pull --platform linux/arm64 node:24-bookworm-slim
 sudo docker build --platform linux/arm64 -t acquit/runner-node20 packages/runner
 sudo install -d -m 0700 -o ubuntu -g ubuntu /var/lib/acquit
+sudo install -d -m 0700 -o ubuntu -g ubuntu /var/lib/acquit/droid-home
+# droid's installer writes ~/.local/bin/droid, which ProtectHome hides from the API unit.
+if [ -x /home/ubuntu/.local/bin/droid ]; then
+  sudo install -m 0755 /home/ubuntu/.local/bin/droid /usr/local/bin/droid
+fi
 sudo install -d -m 0700 /etc/acquit
 printf '%s\n' 'Install and ARM64 image builds complete.'
 node --version

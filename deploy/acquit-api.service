@@ -24,6 +24,9 @@ ProtectHome=true
 # /home/ubuntu. ProtectHome hides /home inside this unit, so the deployment pins the state root inside
 # ReadWritePaths. The Docker socket needs an explicit writable path for the sandbox proxy connect.
 Environment=XDG_STATE_HOME=/var/lib/acquit/house-state
+# The model provider runs `droid exec`, which needs a writable HOME and a binary outside /home
+# (install.sh copies it to /usr/local/bin). Without both, every Ask turn fails with exit 127.
+Environment=HOME=/var/lib/acquit/droid-home
 ReadWritePaths=/var/lib/acquit /var/run/docker.sock
 PrivateTmp=true
 
