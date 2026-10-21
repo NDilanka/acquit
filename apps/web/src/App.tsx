@@ -11,6 +11,7 @@ import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
+import { VerifiersPage } from "./pages/Verifiers";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
 
@@ -58,13 +59,14 @@ export function App() {
   };
 
   // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
+  // The verifier registry is public for the same reason.
   const route = match(location.path);
-  if (route.name === "receipt") {
+  if (route.name === "receipt" || route.name === "verifiers") {
     return (
       <>
         <TopBar session={session} onSignOut={signOut} />
         <main className="wrap">
-          <PublicReceiptPage receiptId={route.id} />
+          {route.name === "receipt" ? <PublicReceiptPage receiptId={route.id} /> : <VerifiersPage />}
         </main>
       </>
     );

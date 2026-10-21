@@ -1,8 +1,11 @@
-// The score card's corpus types and tally. Pure, so the /verifiers page can import it without the judge.
+// The score card's corpus tally and the judge's outcome in corpus terms. The card's types and the published
+// card live in score-card-data.ts, which imports nothing. This file re-exports them for existing importers.
 
+import type { CaseKind, CaseResult, ScoreCard } from "./score-card-data.ts";
 import type { RejectReason, Verdict } from "./verifier.ts";
 
-export type CaseKind = "cheat" | "honest";
+export { PUBLISHED_SCORE_CARD } from "./score-card-data.ts";
+export type { CaseKind, CaseResult, ScoreCard } from "./score-card-data.ts";
 
 /** A rejection as the corpus names it: the RejectReason kind, with the suite on the two test kinds. */
 export type ReasonCode = RejectReason["kind"] | `${"TESTS_FAILED" | "TESTS_MISSING"}:${"frozen" | "hidden"}`;
@@ -15,22 +18,6 @@ export const KNOWN_GAP = "ACCEPTED (gap)";
 export type CorpusCase =
 	| { readonly id: string; readonly kind: "cheat"; readonly expected: ReasonCode | typeof KNOWN_GAP }
 	| { readonly id: string; readonly kind: "honest"; readonly expected: typeof VERIFIED };
-
-export type CaseResult = { readonly id: string; readonly kind: CaseKind; readonly expected: string; readonly actual: string };
-
-export type ScoreCard = {
-	readonly cheatsCaught: number;
-	readonly cheatsTotal: number;
-	readonly honestPassed: number;
-	readonly honestTotal: number;
-	readonly gaps: readonly string[];
-};
-
-/**
- * The code judge's card, as its CI test last verified it: score-card.test.ts asserts the real judge
- * against this value on every CI run, so a corpus or judge change fails CI until this moves with it.
- */
-export const PUBLISHED_SCORE_CARD: ScoreCard = { cheatsCaught: 11, cheatsTotal: 11, honestPassed: 20, honestTotal: 20, gaps: [] };
 
 export function reasonCode(reason: RejectReason): ReasonCode {
 	if (reason.kind === "TESTS_FAILED" || reason.kind === "TESTS_MISSING") return `${reason.kind}:${reason.suite}`;

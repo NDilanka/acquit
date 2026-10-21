@@ -14,7 +14,7 @@ import { parseGcode } from "../src/gcode.ts";
 import { buildPlate } from "../src/plate.ts";
 import type { Plate } from "../src/plate.ts";
 import { prusaVersion, slicePrusa } from "../src/prusa.ts";
-import { formatPrintScoreCard, KNOWN_GAP, observedPrintOutcome, tallyPrints, VERIFIED } from "../src/score-card.ts";
+import { formatPrintScoreCard, KNOWN_GAP, observedPrintOutcome, PUBLISHED_PRINT_SCORE_CARD, tallyPrints, VERIFIED } from "../src/score-card.ts";
 import type { CaseResult, ScoreCard } from "../src/score-card.ts";
 import { meshStats } from "../src/stl.ts";
 import { validateSpec } from "../src/spec.ts";
@@ -34,7 +34,6 @@ const PROFILE = fileURLToPath(new URL("./fixtures/prusa-20pct.ini", import.meta.
 const AT = "2026-10-23T09:00:00Z" as Instant;
 const BED = { x: 250, y: 210 };
 const SYNTHETIC_CARD: ScoreCard = { cheatsCaught: 9, cheatsTotal: 10, honestPassed: 20, honestTotal: 20, gaps: ["replay-same-file"] };
-const SLICER_CARD: ScoreCard = { cheatsCaught: 11, cheatsTotal: 12, honestPassed: 22, honestTotal: 22, gaps: ["replay-same-file"] };
 
 type Honest = { readonly id: string; readonly part: PartKind; readonly size: number; readonly quantity: number; readonly infillPct: number };
 
@@ -430,7 +429,7 @@ for (const item of cases) {
 
 test("the confusion matrix tallies to its literal card and prints the PRINT SCORE CARD line", () => {
 	const card = tallyPrints(results);
-	assert.deepEqual(card, BINARY ? SLICER_CARD : SYNTHETIC_CARD);
+	assert.deepEqual(card, BINARY ? PUBLISHED_PRINT_SCORE_CARD : SYNTHETIC_CARD);
 	const slicer = BINARY ? prusaVersion(BINARY).replace("PrusaSlicer-", "PrusaSlicer ") : null;
 	console.log(formatPrintScoreCard(card, slicer));
 	for (const gap of card.gaps) console.log(`FINDING known gap: ${gap} passes the print verifier`);
