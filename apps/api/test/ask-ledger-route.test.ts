@@ -136,6 +136,13 @@ test("an operator's ask routes answer its own four tools alone, refuse every oth
 		// seeded world has one operator; a second is needed to show one operator's budget is its own.
 		const seeded = new DatabaseSync(join(dir, "test.db"));
 		seeded.prepare("INSERT INTO principals (handle, role, visitor_id) VALUES (?, ?, NULL)").run("rhea-ops", "OPERATOR");
+		// Two demo visitors from one network address: minting a second visitor must not add allowance.
+		for (const hex of ["00000000000a", "00000000000b"]) {
+			const id = `v_${hex}`;
+			seeded.prepare("INSERT INTO visitors (id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id, state) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'ACTIVE')")
+				.run(id, "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z", "ip_shared", `guest-${hex}`, `guest-${hex}-ops`);
+			seeded.prepare("INSERT INTO principals (handle, role, visitor_id) VALUES (?, ?, ?)").run(`guest-${hex}-ops`, "OPERATOR", id);
+		}
 		seeded.close();
 
 		const sessionFor = async (handle: string): Promise<string> => {
@@ -189,6 +196,13 @@ test("an operator's ask routes answer its own four tools alone, refuse every oth
 
 		assert.equal((await turn(rhea)).status, 503, "another operator is still admitted");
 		assert.equal((await turn(platformToken)).status, 503, "the platform's turns are not budgeted by the operator's limit");
+
+		const first = await sessionFor("guest-00000000000a-ops");
+		const second = await sessionFor("guest-00000000000b-ops");
+		for (let admitted = 1; admitted <= OPERATOR_TURNS_PER_MINUTE; admitted += 1) {
+			assert.equal((await turn(first)).status, 503, `visitor turn ${admitted} of the minute is admitted`);
+		}
+		assert.equal((await turn(second)).status, 429, "a second visitor from the same address shares the first one's allowance");
 	} finally {
 		await stopServer(child);
 		await rm(dir, { recursive: true, force: true });

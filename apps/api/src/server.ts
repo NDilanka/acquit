@@ -785,8 +785,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				if (outside) throw new BadBody(`tools may name only an operator's own ask tools, not ${outside.name}`);
 			}
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
-		// An operator's turns are admitted per operator before the shared budget reserves; a refused turn reserves nothing.
-		if (current.actor.role === "OPERATOR" && !admitOperatorTurn(current.actor.operatorId)) {
+		// An operator's turns are admitted before the shared budget reserves; a refused turn reserves nothing. A demo
+		// visitor is counted by its network address, because anyone can mint more visitors to multiply the allowance.
+		if (current.actor.role === "OPERATOR" && !admitOperatorTurn(current.visitor ? `ip:${current.visitor.ipKey}` : current.actor.operatorId)) {
 			json(res, 429, { error: "MODEL_BUDGET", detail: `An operator may run ${OPERATOR_TURNS_PER_MINUTE} Ask the ledger turns a minute and ${OPERATOR_TURNS_PER_DAY} a day.` });
 			return;
 		}
