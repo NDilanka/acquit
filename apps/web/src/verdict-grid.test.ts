@@ -4,10 +4,14 @@ import { test } from "node:test";
 import type { PlatformAttempt, PlatformJobLedger } from "./api-types.ts";
 import { escrowTotals } from "./studio-data.ts";
 import {
+  VERDICT_MIN_WIDTHS,
   attemptWords,
+  cardRows,
   fundedConserves,
   groupWords,
+  jobCard,
   lastAttempt,
+  payPalIds,
   platformStatusWord,
   sparkCoords,
   sparkPoints,
@@ -154,4 +158,39 @@ test("the verdict timeline uses only AG Grid Community APIs: no Enterprise modul
     "SparklinesModule", "RowGroupingModule", "IntegratedCharts", "ag-grid-enterprise"]) {
     assert.equal(new RegExp(`\\b${name}\\b`).test(sources), false, `${name} is an Enterprise API`);
   }
+});
+
+test("a narrow card reads the wide row's facts in words: status, escrow, last verdict, passing shares, paid, and PayPal ids", () => {
+  assert.deepEqual(jobCard(PAID), {
+    jobId: "job_paid", title: "Paid job", status: "Paid", escrow: "Released", lastVerdict: "Verified", passing: [1], paidCents: 42000,
+    paypalIds: [{ label: "PayPal capture", id: "CAP_PAID" }, { label: "PayPal payout item", id: "payout-item-1" }],
+  });
+  const open = jobCard(OPEN);
+  assert.deepEqual({ escrow: open.escrow, lastVerdict: open.lastVerdict, passing: open.passing, paidCents: open.paidCents, paypalIds: open.paypalIds },
+    { escrow: "Not funded", lastVerdict: "No verdict yet", passing: [], paidCents: null, paypalIds: [] });
+  assert.deepEqual(payPalIds(HELD), [{ label: "PayPal capture", id: "CAP_HELD" }]);
+});
+
+test("the narrow rows keep the four group headers, one card per job, and an expanded job's attempts right after its card", () => {
+  const rows = cardRows(verdictRows(BOOK, new Set(["job_paid"])));
+  const labels = rows.map((row) => {
+    if (row.kind === "group") return `group:${row.escrow}`;
+    if (row.kind === "attempt") return `attempt:${row.attempt.ordinal}`;
+    return `card:${row.card.jobId}${row.expanded ? "*" : ""}`;
+  });
+  assert.deepEqual(labels, ["group:HELD", "card:job_held", "card:job_mismatch", "group:RELEASED", "card:job_paid*", "attempt:1", "attempt:2",
+    "group:REFUNDED", "card:job_refunded", "group:NONE", "card:job_open"]);
+  assert.equal(rows.filter((row) => row.kind === "card").length, BOOK.length, "every job is one card");
+});
+
+test("the wide grid's column floors are at least the decided minimums: Job 220, Tenant 120, Operator 110, Escrow 110", () => {
+  assert.ok(VERDICT_MIN_WIDTHS.job >= 220, "Job is under its floor");
+  assert.ok(VERDICT_MIN_WIDTHS.tenant >= 120, "Tenant is under its floor");
+  assert.ok(VERDICT_MIN_WIDTHS.operator >= 110, "Operator is under its floor");
+  assert.ok(VERDICT_MIN_WIDTHS.escrow >= 110, "Escrow is under its floor");
+});
+
+test("the timeline does not suppress horizontal scroll, so a column below its floor scrolls instead of clipping", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  assert.equal(/\bsuppressHorizontalScroll\b/.test(dashboards), false);
 });

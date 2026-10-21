@@ -1,4 +1,4 @@
-import { Component, createContext, useContext, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { Component, createContext, useContext, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type ReactNode, type RefObject } from "react";
 import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
 import type { ColDef, ICellRendererParams, RowClickedEvent, RowHeightParams } from "ag-grid-community";
@@ -10,9 +10,12 @@ import { dollars, shortId, utc } from "../format";
 import { COLUMNS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
 import { conserves, earnings, escrowTotals, newestReceipt, seededPlacements, seededWidgets, verifierStats } from "../studio-data";
 import {
+  VERDICT_MIN_WIDTHS,
   attemptWords,
+  cardRows,
   groupWords,
-  lastAttempt,
+  lastVerdictWords,
+  payPalIds,
   platformStatusWord,
   sparkCoords,
   sparkPoints,
@@ -20,6 +23,9 @@ import {
   totalsRow,
   verdictRows,
   type AttemptRow,
+  type CardRow,
+  type GroupRow,
+  type JobCard,
   type TotalsRow,
   type VerdictRow,
 } from "../verdict-grid";
@@ -266,11 +272,8 @@ function TitleCell({ data }: ICellRendererParams<GridRow>) {
   );
 }
 
-function SparkCell({ data }: ICellRendererParams<GridRow>) {
-  const job = jobOf(data);
-  if (!job) return null;
-  const points = sparkPoints(job.attempts);
-  if (points.length === 0) return <span className="muted">No counts yet</span>;
+/** The passing-share sparkline: one point per judged attempt, in ordinal order. Shared by the wide cell and the narrow card. */
+function Spark({ points }: { readonly points: readonly number[] }) {
   return (
     <svg className="verdict-spark" width={SPARK.width} height={SPARK.height} viewBox={`0 0 ${SPARK.width} ${SPARK.height}`} role="img"
       aria-label={`Passing share of ${points.length} attempts: ${points.map((point) => percent(point)).join(", ")}`}>
@@ -279,39 +282,39 @@ function SparkCell({ data }: ICellRendererParams<GridRow>) {
   );
 }
 
+function SparkCell({ data }: ICellRendererParams<GridRow>) {
+  const job = jobOf(data);
+  if (!job) return null;
+  const points = sparkPoints(job.attempts);
+  return points.length === 0 ? <span className="muted">No counts yet</span> : <Spark points={points} />;
+}
+
+/** One PayPal id as a chip; the full id sits in the title. */
+function IdChip({ label, id }: { readonly label: string; readonly id: string }) {
+  return <span className="verdict-chip mono" title={`${label} ${id}`}>{shortId(id)}</span>;
+}
+
 function IdsCell({ data }: ICellRendererParams<GridRow>) {
   const job = jobOf(data);
   if (!job) return null;
-  const capture = job.capture?.captureId ?? job.payout?.captureId ?? null;
-  const payoutItem = job.payout?.payoutItemId ?? null;
-  if (capture === null && payoutItem === null) return <span className="muted">None yet</span>;
-  return (
-    <span>
-      {capture !== null && <span className="verdict-chip mono" title={`PayPal capture ${capture}`}>{shortId(capture)}</span>}
-      {payoutItem !== null && <span className="verdict-chip mono" title={`PayPal payout item ${payoutItem}`}>{shortId(payoutItem)}</span>}
-    </span>
-  );
+  const ids = payPalIds(job);
+  if (ids.length === 0) return <span className="muted">None yet</span>;
+  return <span>{ids.map(({ label, id }) => <IdChip key={label} label={label} id={id} />)}</span>;
 }
 
 const VERDICT_COLUMNS: ColDef<GridRow>[] = [
-  { colId: "job", headerName: "Job", flex: 3, cellRenderer: TitleCell },
-  { colId: "tenant", headerName: "Tenant", valueGetter: ({ data }) => jobOf(data)?.tenant ?? "Deployment" },
-  { colId: "operator", headerName: "Operator", valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
+  { colId: "job", headerName: "Job", flex: 3, minWidth: VERDICT_MIN_WIDTHS.job, cellRenderer: TitleCell },
+  { colId: "tenant", headerName: "Tenant", minWidth: VERDICT_MIN_WIDTHS.tenant, valueGetter: ({ data }) => jobOf(data)?.tenant ?? "Deployment" },
+  { colId: "operator", headerName: "Operator", minWidth: VERDICT_MIN_WIDTHS.operator, valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
   { colId: "status", headerName: "Status", flex: 2, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
-  { colId: "escrow", headerName: "Escrow", valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
+  { colId: "escrow", headerName: "Escrow", minWidth: VERDICT_MIN_WIDTHS.escrow, valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
   { colId: "attempts", headerName: "Attempts", cellClass: "num", valueGetter: ({ data }) => jobOf(data)?.attempts.length ?? null },
   { colId: "passing", headerName: "Passing tests", flex: 2, sortable: false, cellRenderer: SparkCell },
   {
     colId: "last",
     headerName: "Last verdict",
     flex: 2,
-    valueGetter: ({ data }) => {
-      const job = jobOf(data);
-      if (!job) return "";
-      const last = lastAttempt(job.attempts);
-      if (!last) return "No verdict yet";
-      return `${attemptWords(last).verdict}${last.tamper ? ", tamper caught" : ""}`;
-    },
+    valueGetter: ({ data }) => { const job = jobOf(data); return job ? lastVerdictWords(job) : ""; },
   },
   { colId: "paid", headerName: "Paid", cellClass: "num", valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
   { colId: "ids", headerName: "PayPal ids", flex: 2, sortable: false, cellRenderer: IdsCell },
@@ -349,50 +352,127 @@ function TotalsStrip({ row }: { row: TotalsRow }) {
   );
 }
 
+/** An escrow group's header: its words and its job count. Shared by the wide full-width row and the narrow list. */
+function GroupHead({ row }: { readonly row: GroupRow }) {
+  return (
+    <div className="verdict-group">
+      <b>{groupWords(row.escrow)}</b>
+      <span className="muted">{row.count} {row.count === 1 ? "job" : "jobs"}</span>
+    </div>
+  );
+}
+
 /** A full-width row: an escrow group's header, an attempt's detail, or the totals strip. A job row never reaches here. */
 function VerdictFullWidth({ data }: ICellRendererParams<GridRow>) {
   if (!data || data.kind === "job") return null;
-  if (data.kind === "group") {
-    return (
-      <div className="verdict-group">
-        <b>{groupWords(data.escrow)}</b>
-        <span className="muted">{data.count} {data.count === 1 ? "job" : "jobs"}</span>
-      </div>
-    );
-  }
+  if (data.kind === "group") return <GroupHead row={data} />;
   if (data.kind === "attempt") return <AttemptLine row={data} />;
   return <TotalsStrip row={data} />;
+}
+
+/** Below this tile width the timeline lists its jobs as cards instead of table rows. */
+const NARROW_TILE_PX = 640;
+
+/** Whether the tile is at most NARROW_TILE_PX wide, read from the tile's own box so a narrow tile counts on any screen. */
+function useNarrowTile(ref: RefObject<HTMLDivElement | null>): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    setNarrow(el.getBoundingClientRect().width <= NARROW_TILE_PX);
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width !== undefined) setNarrow(width <= NARROW_TILE_PX);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return narrow;
+}
+
+/** One job as a card: its title and id, its status and escrow, the last verdict, the passing shares, what it paid, and its PayPal ids. */
+function JobCardView({ card, expanded, onToggle }: { readonly card: JobCard; readonly expanded: boolean; readonly onToggle: (jobId: string) => void }) {
+  return (
+    <div className="verdict-card">
+      <button type="button" className="verdict-card-head" aria-expanded={expanded} onClick={() => onToggle(card.jobId)}>
+        <span className="verdict-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+        <span className="verdict-card-title">
+          <b>{card.title}</b>
+          <small className="muted mono">{shortId(card.jobId)}</small>
+        </span>
+      </button>
+      <div className="verdict-card-pills">
+        <span className="pill">{card.status}</span>
+        <span className="pill">{card.escrow}</span>
+      </div>
+      <dl className="verdict-card-facts">
+        <dt>Last verdict</dt>
+        <dd>{card.lastVerdict}</dd>
+        <dt>Passing tests</dt>
+        <dd>{card.passing.length === 0 ? <span className="muted">No counts yet</span> : <Spark points={card.passing} />}</dd>
+        <dt>Paid</dt>
+        <dd className="num">{card.paidCents === null ? "Not recorded" : dollars(card.paidCents)}</dd>
+      </dl>
+      {card.paypalIds.length > 0 && (
+        <div className="verdict-card-ids">{card.paypalIds.map(({ label, id }) => <IdChip key={label} label={label} id={id} />)}</div>
+      )}
+    </div>
+  );
+}
+
+/** The narrow timeline: a card per job, its attempts under it when it is open, and the totals pinned below the list. */
+function VerdictCards({ rows, totals, onToggle }: { readonly rows: readonly CardRow[]; readonly totals: TotalsRow; readonly onToggle: (jobId: string) => void }) {
+  return (
+    <div className="verdict-cards">
+      <ul className="verdict-list">
+        {rows.map((row) => (
+          <li key={row.id}>
+            {row.kind === "group" ? <GroupHead row={row} />
+              : row.kind === "attempt" ? <AttemptLine row={row} />
+              : <JobCardView card={row.card} expanded={row.expanded} onToggle={onToggle} />}
+          </li>
+        ))}
+      </ul>
+      <TotalsStrip row={totals} />
+    </div>
+  );
 }
 
 /**
  * The escrow book, grouped by where each job's money sits. A job opens to its verifier attempts.
  * Rows come from the escrow stream through useEscrow, keyed by id, so a live change updates them in place.
+ * A tile at most NARROW_TILE_PX wide lists the jobs as cards; a wider tile keeps the table.
  */
 function VerdictTimeline() {
   const jobs = useEscrow();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => verdictRows(jobs, expanded), [jobs, expanded]);
-  const totals = useMemo(() => [totalsRow(jobs)], [jobs]);
+  const totals = useMemo(() => totalsRow(jobs), [jobs]);
+  const pinned = useMemo(() => [totals], [totals]);
+  const tile = useRef<HTMLDivElement>(null);
+  const narrow = useNarrowTile(tile);
+  const toggle = (jobId: string) => setExpanded((prev) => toggleExpanded(prev, jobId));
   return (
-    <div className="acquit-grid verdict-grid">
-      <AgGridReact<GridRow>
-        theme={acquitTheme}
-        rowData={rows as GridRow[]}
-        columnDefs={VERDICT_COLUMNS}
-        defaultColDef={VERDICT_DEFAULTS}
-        getRowId={({ data }) => data.id}
-        isFullWidthRow={({ rowNode }) => rowNode.data?.kind !== "job"}
-        fullWidthCellRenderer={VerdictFullWidth}
-        getRowHeight={({ data }: RowHeightParams<GridRow>) => (data ? VERDICT_HEIGHT[data.kind] : VERDICT_HEIGHT.job)}
-        pinnedBottomRowData={totals}
-        onRowClicked={(event: RowClickedEvent<GridRow>) => {
-          const row = event.data;
-          if (row?.kind === "job") setExpanded((prev) => toggleExpanded(prev, row.job.jobId));
-        }}
-        suppressHorizontalScroll
-        enableCellTextSelection={false}
-        containerStyle={{ height: "100%" }}
-      />
+    <div className="acquit-grid verdict-grid" ref={tile}>
+      {narrow ? <VerdictCards rows={cardRows(rows)} totals={totals} onToggle={toggle} /> : (
+        <AgGridReact<GridRow>
+          theme={acquitTheme}
+          rowData={rows as GridRow[]}
+          columnDefs={VERDICT_COLUMNS}
+          defaultColDef={VERDICT_DEFAULTS}
+          getRowId={({ data }) => data.id}
+          isFullWidthRow={({ rowNode }) => rowNode.data?.kind !== "job"}
+          fullWidthCellRenderer={VerdictFullWidth}
+          getRowHeight={({ data }: RowHeightParams<GridRow>) => (data ? VERDICT_HEIGHT[data.kind] : VERDICT_HEIGHT.job)}
+          pinnedBottomRowData={pinned}
+          onRowClicked={(event: RowClickedEvent<GridRow>) => {
+            const row = event.data;
+            if (row?.kind === "job") toggle(row.job.jobId);
+          }}
+          enableCellTextSelection={false}
+          containerStyle={{ height: "100%" }}
+        />
+      )}
     </div>
   );
 }
