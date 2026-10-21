@@ -80,7 +80,8 @@ export function App() {
     <>
       <TopBar session={session} onSignOut={signOut} />
       {session?.visitor && <DemoBar session={session} visitor={session.visitor} onSwitched={setSession} />}
-      <main className="wrap">
+      {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
+      <main className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
         {error && !session && <div className="alert">{error}</div>}
         {session ? (
           <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>

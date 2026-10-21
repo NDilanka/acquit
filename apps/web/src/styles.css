@@ -36,6 +36,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .avatar i, .userpick i { width: 26px; height: 26px; border-radius: 50%; background: #d9e4dc; display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; color: var(--green-2); flex: none; }
 
 .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 32px 120px; }
+.wrap.wrap-full { max-width: none; padding: 16px 20px 120px; }
 .crumbs { color: var(--muted); font-size: 13px; }
 .crumbs a { text-decoration: none; }
 .crumbs b { color: var(--ink-2); font-weight: 500; }
