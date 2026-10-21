@@ -4,10 +4,9 @@ import {
   AgStudioModuleRegistry,
   studioTheme,
   type AgDataSourcesDefinition,
-  type AgPanelConfig,
   type AgReportState,
   type AgStudioApi,
-  type AgViewModePanelType,
+  type AgStudioLocaleText,
   type AgWidgetsConfig,
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
@@ -17,7 +16,8 @@ import { Link } from "../router";
 import { useSession } from "../session";
 import { ASK_TOOL_DISPLAY_CARDS, useAskLedger, type AskLedger } from "./AskLedger";
 import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
-import { EMPTY_STORY_TEXT, RECEIPT_WIDGET_ID, escrowStoryShown, receiptWidgetShown, withWidgetsFrom, withoutWidgets } from "../studio-story";
+import { ASK_AGENT_NAME } from "../ask-ledger";
+import { EMPTY_STORY_TEXT, RECEIPT_WIDGET_ID, escrowStoryShown, receiptWidgetShown, studioPanels, withWidgetsFrom, withoutWidgets } from "../studio-story";
 import {
   EarningsContext,
   EscrowContext,
@@ -486,16 +486,8 @@ function acquitStudioTheme() {
   });
 }
 
-// The studio's filter panel is only noise on these dashboards, so neither mode shows it. Declaring any
-// layout drops Studio's defaults for both modes, so each mode shows only what is declared: on the
-// dashboard that has an agent, the Ask the ledger chat panel, in view and in edit.
-const STUDIO_PANELS = { view: { left: [], right: [] } };
-// The public types name the AI panel for edit mode only. The panel service mounts whichever panels a mode lists
-// and gates the AI panel on the `ai` setup alone, so view mode lists it too.
-const STUDIO_PANELS_WITH_AI: AgPanelConfig = {
-  view: { left: [], right: ["ai"] as unknown as AgViewModePanelType[] },
-  edit: { right: ["ai"] },
-};
+// The AI panel's tab is titled from Studio's locale text; this makes it name the agent it is.
+const STUDIO_LOCALE_TEXT: AgStudioLocaleText = { panelTitleAi: ASK_AGENT_NAME };
 
 function AcquitStudio({
   state,
@@ -541,7 +533,8 @@ function AcquitStudio({
         layout={PAGE_LAYOUT}
         widgets={widgets}
         data={data}
-        panels={ask ? STUDIO_PANELS_WITH_AI : STUDIO_PANELS}
+        panels={studioPanels(ask !== undefined, narrow)}
+        localeText={STUDIO_LOCALE_TEXT}
         ai={ask?.setup}
         aiToolDisplay={ask ? ASK_TOOL_DISPLAY_CARDS : undefined}
         onApiReady={onApiReady}

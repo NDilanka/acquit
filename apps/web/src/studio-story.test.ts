@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PlatformJobLedger, ReceiptRow } from "./api-types";
 import type { DashboardState } from "./dashboard-widgets.ts";
-import { EMPTY_STORY_TEXT, RECEIPT_WIDGET_ID, escrowStoryShown, receiptWidgetShown, withWidgetsFrom, withoutWidgets } from "./studio-story.ts";
+import { EMPTY_STORY_TEXT, RECEIPT_WIDGET_ID, escrowStoryShown, receiptWidgetShown, studioPanels, withWidgetsFrom, withoutWidgets } from "./studio-story.ts";
 
 const at = "2026-12-01T00:00:00.000Z";
 
@@ -122,4 +122,19 @@ test("a state Studio returns without the hidden widget gets it back from the las
   const saved = withWidgetsFrom(studioState, full, [RECEIPT_WIDGET_ID]);
   assert.deepEqual(saved.pages[0]?.widgetLayout?.[RECEIPT_WIDGET_ID], { xTrack: 0, yTrack: 2, xSpan: 12, ySpan: 5 });
   assert.equal(saved.pages[0]?.widgets?.[RECEIPT_WIDGET_ID]?.type, RECEIPT_WIDGET_ID);
+});
+
+const NO_PANELS = { view: { left: [], right: [] } };
+const AI_PANEL = { view: { left: [], right: ["ai"] }, edit: { right: ["ai"] } };
+
+test("the Ask the ledger panel shows only on a wide screen of a dashboard with an agent", () => {
+  assert.deepEqual(studioPanels(true, false), AI_PANEL);
+  assert.deepEqual(studioPanels(true, true), NO_PANELS);
+  assert.deepEqual(studioPanels(false, false), NO_PANELS);
+  assert.deepEqual(studioPanels(false, true), NO_PANELS);
+});
+
+test("the same panel choice is the same object, so Studio sees no change between renders", () => {
+  assert.equal(studioPanels(true, false), studioPanels(true, false));
+  assert.equal(studioPanels(true, true), studioPanels(true, true));
 });
