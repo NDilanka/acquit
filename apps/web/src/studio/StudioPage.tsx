@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   AgStudioAiModule,
   AgStudioModuleRegistry,
-  createStudioTheme,
+  studioTheme,
   type AgDataSourcesDefinition,
   type AgPanelConfig,
   type AgReportState,
   type AgStudioApi,
+  type AgViewModePanelType,
   type AgWidgetsConfig,
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
@@ -14,8 +15,9 @@ import { api, ApiError } from "../api";
 import type { PlatformJobLedger, PlatformTables } from "../api-types";
 import { Link } from "../router";
 import { useSession } from "../session";
-import { ASK_TOOL_DISPLAY_CARDS, AskLedgerDrawer, useAskLedger, type AskLedger } from "./AskLedger";
+import { ASK_TOOL_DISPLAY_CARDS, useAskLedger, type AskLedger } from "./AskLedger";
 import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
+import { EMPTY_STORY_TEXT, RECEIPT_WIDGET_ID, escrowStoryShown, receiptWidgetShown, withWidgetsFrom, withoutWidgets } from "../studio-story";
 import {
   EarningsContext,
   EscrowContext,
@@ -220,6 +222,8 @@ function EscrowDashboard() {
       : transport === "reconnecting"
         ? "Every job's money across all tenants. Reconnecting to live updates."
         : "Live updates off: every job's money across all tenants, refreshed every 30 seconds.";
+  // No job on the book yet: the story frames the money tiles, which stay on the page.
+  const emptyBook = ledger.kind === "ready" && escrowStoryShown(ledger.data.jobs);
   return (
     <Dashboard
       id="escrow"
@@ -228,6 +232,7 @@ function EscrowDashboard() {
       notice={freshnessNotice(transport, book)}
       load={ledger}
       ask={ask}
+      story={emptyBook}
       source={escrowSource}
     >
       {(book, studio) => (
@@ -251,12 +256,16 @@ function EarningsDashboard({ handle }: { handle: string }) {
       live = false;
     };
   }, [handle]);
+  // With no receipt the receipt widget is left off the page and the story stands in for it.
+  const noReceipts = data.kind === "ready" && !receiptWidgetShown(data.data.receipts);
   return (
     <Dashboard
       id="earnings"
       title="Operator earnings"
       lead="What your verified jobs paid you, and the receipt for the newest one."
       load={data}
+      story={noReceipts}
+      hidden={noReceipts ? [RECEIPT_WIDGET_ID] : []}
       source={earningsSource}
     >
       {(earnings, studio) => <EarningsContext.Provider value={earnings}>{studio}</EarningsContext.Provider>}
@@ -271,6 +280,8 @@ function Dashboard<T>({
   notice,
   load,
   ask,
+  story = false,
+  hidden = [],
   source,
   children,
 }: {
@@ -280,14 +291,18 @@ function Dashboard<T>({
   notice?: FreshnessNotice | null;
   load: Load<T>;
   ask?: AskLedger;
+  /** The book has nothing on it yet: the story card shows above the canvas. */
+  story?: boolean;
+  /** Widgets left off the page while the book has nothing for them. They stay in the saved layout. */
+  hidden?: readonly string[];
   source: (data: T) => AgDataSourcesDefinition<AcquitRegistry>;
   children: (data: T, studio: ReactNode) => ReactNode;
 }) {
   const layout = useSavedLayout(id);
   const narrow = useMedia(NARROW);
   const [editing, setEditing] = useState(false);
-  const [asking, setAsking] = useState(false);
   const studioData = useMemo(() => (load.kind === "ready" ? source(load.data) : null), [load, source]);
+  const save = layout.save;
   return (
     <div className="studio-page">
       <div className="head">
@@ -297,16 +312,6 @@ function Dashboard<T>({
           <p className="muted">{lead}</p>
         </div>
         <div className="head-actions">
-          {ask && (
-            <button
-              className={`btn sm ${asking ? "green" : "ghost"}`}
-              aria-expanded={asking}
-              aria-controls={ASK_PANEL_ID}
-              onClick={() => setAsking((on) => !on)}
-            >
-              Ask the ledger
-            </button>
-          )}
           {!narrow && layout.save && (
             <button className={`btn sm ${editing ? "green" : "ghost"}`} aria-pressed={editing} onClick={() => setEditing((on) => !on)}>
               {editing ? "Done arranging" : "Arrange layout"}
@@ -326,29 +331,55 @@ function Dashboard<T>({
           Your layout change was not saved because {layout.saveError}. Arrange it again when the dashboard is back.
         </div>
       )}
-      {ask && <AskLedgerDrawer id={ASK_PANEL_ID} ask={ask} open={asking} onClose={() => setAsking(false)} />}
+      {ask?.load.kind === "failed" && <div className="alert">The ledger agent's tools could not be loaded because {ask.load.error}.</div>}
+      {ask?.load.kind === "ready" && !ask.load.keyConfigured && (
+        <div className="alert warn">The server has no model key configured, so Ask the ledger is off until a key is set.</div>
+      )}
       {load.kind === "loading" || !layout.loaded ? (
         <p className="muted">Loading the dashboard…</p>
       ) : (
         load.kind === "ready" &&
-        studioData !== null &&
-        children(
-          load.data,
-          <AcquitStudio
-            narrow={narrow}
-            state={narrow ? stacked(layout.latest.current) : layout.latest.current}
-            mode={editing && !narrow ? "edit" : "view"}
-            onState={narrow ? undefined : layout.save}
-            data={studioData}
-            widgets={WIDGETS[id]}
-            ask={ask}
-          />,
+        studioData !== null && (
+          <>
+            {story && <EmptyStory />}
+            {children(
+              load.data,
+              <AcquitStudio
+                narrow={narrow}
+                state={shownState(narrow ? stacked(layout.latest.current) : layout.latest.current, hidden)}
+                mode={editing && !narrow ? "edit" : "view"}
+                onState={narrow || save === undefined ? undefined : (state) => save(withHidden(state, layout.latest.current, hidden))}
+                data={studioData}
+                widgets={WIDGETS[id]}
+                ask={ask}
+              />,
+            )}
+          </>
         )
       )}
     </div>
   );
 }
 
+/** The arrangement with the hidden widgets left off the page. */
+const shownState = (state: DashboardState, hidden: readonly string[]) => (hidden.length > 0 ? withoutWidgets(state, hidden) : state);
+
+/** Studio's state put back together with the hidden widgets, so saving the page never drops them. */
+const withHidden = (state: DashboardState, full: DashboardState, hidden: readonly string[]) =>
+  hidden.length > 0 ? withWidgetsFrom(state, full, hidden) : state;
+
+/** The book with nothing on it yet: one line and a way to a scenario, above the tiles it frames. */
+function EmptyStory() {
+  return (
+    <section className="card pad empty-story" aria-label="Empty book">
+      <h2>{EMPTY_STORY_TEXT}</h2>
+      <p className="muted">Each scenario runs one whole job on the PayPal sandbox, and its money shows on this page once it settles.</p>
+      <Link to="/demo" className="btn sm ghost">
+        See the scenarios
+      </Link>
+    </section>
+  );
+}
 
 /**
  * The user's own arrangement from the server. A failed read shows the fresh layout and does not save
@@ -434,7 +465,8 @@ function acquitStudioTheme() {
   const token = (name: string) => css.getPropertyValue(name).trim();
   const sans = token("--sans");
   const green = token("--green");
-  return createStudioTheme().withParams({
+  // Starts from Studio's own theme: its icon sets are parts of that theme, and createStudioTheme() leaves them out, so the icons draw blank.
+  return studioTheme.withParams({
     fontFamily: sans,
     accentColor: green,
     textColor: token("--ink"),
@@ -454,12 +486,16 @@ function acquitStudioTheme() {
   });
 }
 
-// The dashboards are read-only in view mode, so the studio's filter panel is only noise there and
-// covers the stacked narrow layout. Declaring any layout drops Studio's defaults for both modes, so
-// edit mode shows only what is declared: the chat panel, on the dashboard that has an agent.
+// The studio's filter panel is only noise on these dashboards, so neither mode shows it. Declaring any
+// layout drops Studio's defaults for both modes, so each mode shows only what is declared: on the
+// dashboard that has an agent, the Ask the ledger chat panel, in view and in edit.
 const STUDIO_PANELS = { view: { left: [], right: [] } };
-const STUDIO_PANELS_WITH_AI: AgPanelConfig = { view: { left: [], right: [] }, edit: { right: ["ai"] } };
-const ASK_PANEL_ID = "ask-ledger-panel";
+// The public types name the AI panel for edit mode only. The panel service mounts whichever panels a mode lists
+// and gates the AI panel on the `ai` setup alone, so view mode lists it too.
+const STUDIO_PANELS_WITH_AI: AgPanelConfig = {
+  view: { left: [], right: ["ai"] as unknown as AgViewModePanelType[] },
+  edit: { right: ["ai"] },
+};
 
 function AcquitStudio({
   state,
@@ -494,12 +530,7 @@ function AcquitStudio({
     shown.current = narrow;
     studio.setState(wanted.current as unknown as AgReportState);
   }, [studio, narrow]);
-  const readyHandler = useRef(ask?.onApiReady);
-  readyHandler.current = ask?.onApiReady;
-  const onApiReady = useCallback((event: { api: AgStudioApi }) => {
-    setStudio(event.api);
-    readyHandler.current?.(event);
-  }, []);
+  const onApiReady = useCallback((event: { api: AgStudioApi }) => setStudio(event.api), []);
   return (
     <AgStudioProvider licenseKey={import.meta.env.VITE_AG_STUDIO_LICENSE_KEY as string}>
       <AgStudio<AcquitRegistry>
