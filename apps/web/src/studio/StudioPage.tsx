@@ -19,6 +19,7 @@ import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
 import { ASK_AGENT_NAME } from "../ask-ledger";
 import { EMPTY_STORY_TEXT, RECEIPT_WIDGET_ID, escrowStoryShown, receiptWidgetShown, studioPanels, withWidgetsFrom, withoutWidgets } from "../studio-story";
 import {
+  ChangesContext,
   EarningsContext,
   EscrowContext,
   ReconcileContext,
@@ -33,6 +34,7 @@ import {
   type ReconcileView,
 } from "./dashboards";
 import { parseSaved, savedLayoutJson } from "../studio-data";
+import { changeLogFor, type ChangeLog } from "../change-chain";
 import {
   BOOK_EMPTY,
   bookRead,
@@ -512,10 +514,18 @@ function AcquitStudio({
   // Studio may keep the first handler it is given, so it calls through a ref to the current one.
   const handler = useRef(onState);
   handler.current = onState;
-  const onStateUpdated = useCallback((event: { state: AgReportState }) => handler.current?.(event.state as unknown as DashboardState), []);
+  // The change log of this Studio instance. The ask harness records the changes its tool calls make; a
+  // change made by hand is only seen here, so each state update is also a look at the undo stack.
+  const changesNow = useRef<ChangeLog | null>(null);
+  const onStateUpdated = useCallback((event: { state: AgReportState }) => {
+    handler.current?.(event.state as unknown as DashboardState);
+    changesNow.current?.sync();
+  }, []);
   // Studio reads initialState once, so the narrow/wide switch sets the arrangement on the mounted instance: a
   // remount would also drop the ask harness, which belongs to one Studio API (AskLedger.tsx).
   const [studio, setStudio] = useState<AgStudioApi | null>(null);
+  const changes = studio === null ? null : changeLogFor(studio, ASK_AGENT_NAME);
+  changesNow.current = changes;
   const shown = useRef(narrow);
   const wanted = useRef(state);
   wanted.current = state;
@@ -525,23 +535,26 @@ function AcquitStudio({
     studio.setState(wanted.current as unknown as AgReportState);
   }, [studio, narrow]);
   const onApiReady = useCallback((event: { api: AgStudioApi }) => setStudio(event.api), []);
+  // The provider is always the root, so Studio is not remounted when the change log appears.
   return (
-    <AgStudioProvider licenseKey={import.meta.env.VITE_AG_STUDIO_LICENSE_KEY as string}>
-      <AgStudio<AcquitRegistry>
-        className="studio-host"
-        initialState={state}
-        mode={mode}
-        theme={theme}
-        layout={PAGE_LAYOUT}
-        widgets={widgets}
-        data={data}
-        panels={studioPanels(ask !== undefined, narrow)}
-        localeText={STUDIO_LOCALE_TEXT}
-        ai={ask?.setup}
-        aiToolDisplay={ask ? ASK_TOOL_DISPLAY_CARDS : undefined}
-        onApiReady={onApiReady}
-        onStateUpdated={onStateUpdated}
-      />
-    </AgStudioProvider>
+    <ChangesContext.Provider value={changes}>
+      <AgStudioProvider licenseKey={import.meta.env.VITE_AG_STUDIO_LICENSE_KEY as string}>
+        <AgStudio<AcquitRegistry>
+          className="studio-host"
+          initialState={state}
+          mode={mode}
+          theme={theme}
+          layout={PAGE_LAYOUT}
+          widgets={widgets}
+          data={data}
+          panels={studioPanels(ask !== undefined, narrow)}
+          localeText={STUDIO_LOCALE_TEXT}
+          ai={ask?.setup}
+          aiToolDisplay={ask ? ASK_TOOL_DISPLAY_CARDS : undefined}
+          onApiReady={onApiReady}
+          onStateUpdated={onStateUpdated}
+        />
+      </AgStudioProvider>
+    </ChangesContext.Provider>
   );
 }

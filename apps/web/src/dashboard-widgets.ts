@@ -154,6 +154,22 @@ export const WIDGET_ROWS = {
         },
       },
     ],
+    [
+      {
+        id: "acquit-changes",
+        label: "Changes",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 6,
+        ai: {
+          description:
+            "A list of the changes made to this dashboard, newest first: who made each, the tool, what changed, and a short hash in a chain kept in this browser, with an Undo to here button on each change still undoable.",
+          usage: "Use when the reader asks what changed on the dashboard, who changed it, or wants to undo back to an earlier change.",
+          configuration:
+            "Takes no data mapping, filters, or format; it reads this dashboard's own change history. Give it the full 12 columns and at least 6 rows.",
+        },
+      },
+    ],
   ],
   earnings: [
     [

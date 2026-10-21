@@ -145,6 +145,9 @@ function mockStudioApi(
       },
     }),
     getState: () => state,
+    // The change log reads the undo stack after each tool call; an empty stack records nothing.
+    getHistory: () => ({ type: "AgReportHistory", current: state, undo: [], redo: [] }),
+    undo: () => undefined,
   };
   const api = new Proxy(base, {
     get(target, prop) {
