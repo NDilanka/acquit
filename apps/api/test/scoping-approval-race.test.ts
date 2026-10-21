@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { PassThrough } from "node:stream";
 import { DatabaseSync } from "node:sqlite";
 import { instant } from "../../../packages/core/src/ids.ts";
@@ -47,10 +48,17 @@ Object.assign(process.env, {
 	HOME: join(dir, "home"), FACTORY_API_KEY: "",
 });
 mkdirSync(join(dir, "home"), { recursive: true });
-await import(join(root, "src/server.ts"));
+await import(pathToFileURL(join(root, "src/server.ts")).href);
 if (!server) throw new Error("the API module never created its server");
 
-after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+after(() => {
+	try {
+		rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	} catch (error) {
+		// The server under test runs in this process and keeps its SQLite file open, which Windows will not delete.
+		if (process.platform !== "win32") throw error;
+	}
+});
 
 type Answer = { readonly status: number; readonly body: any };
 
