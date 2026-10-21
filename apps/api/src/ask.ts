@@ -14,13 +14,14 @@ import { boundedDetail } from "../../../packages/core/src/verifier.ts";
 import { classifyDroidRun, droidResultText, DROID_MODEL, factoryApiKey, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
 import type { ModelCallLog } from "../../../packages/core/src/model.ts";
 import { platformEscrowTotals } from "../../../packages/core/src/platform.ts";
-import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
+import type { PlatformJobLedger, PlatformPayPalEventRow } from "../../../packages/core/src/platform.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
 import { HOUSE_MODEL_OPENROUTER, keyringKey } from "../../../packages/house/src/runner.ts";
 import { authAssertion } from "../../../packages/core/src/paypal.ts";
+import { searchInstant } from "../../../packages/core/src/reconcile.ts";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
-import { paypalReader } from "../../../packages/mcp/src/paypal.ts";
+import { PayPalHttpError, paypalReader } from "../../../packages/mcp/src/paypal.ts";
 import type { PaypalReader } from "../../../packages/mcp/src/paypal.ts";
 
 // ---- the turn: one request in, one model turn out ----------------------------------------------
@@ -165,31 +166,137 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 
 /** The tools the ledger agent may call. Read-only by name and by execution: the executor below is
  * the only thing that runs them, and it holds no create, capture, refund, payout, or update tool. */
-export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "trace_figure"] as const;
+export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "list_disputes", "get_dispute", "get_refund",
+	"list_transactions", "trace_figure"] as const;
 
-export type PaypalAskReader = { readonly getOrder: (id: string, payee: string | null) => Promise<unknown> };
+/** The one PayPal read the ask tools make: a GET of `path`. `payee` names the merchant a merchant-scoped
+ * object (an order, a capture, a refund) belongs to; null reads under the platform token alone. */
+export type PaypalAskReader = { readonly get: (path: string, payee: string | null) => Promise<unknown> };
 
 export type AskToolExecutor = (name: string, args: Record<string, unknown>) => Promise<unknown>;
 
 export type AskExecutorDeps = {
 	/** The whole book, as the platform ledger query serves it. */
 	readonly platformView: () => Promise<readonly PlatformJobLedger[]>;
+	/** The book's PayPal rows: each job's capture, the refund it recorded, and the merchant both were taken for. */
+	readonly paypalEvents: () => Promise<readonly Pick<PlatformPayPalEventRow, "jobId" | "refundId" | "merchant">[]>;
 	/** PayPal's read side, through the toolkit's own API client. Null when the deployment has no
-	 * PayPal credentials, in which case get_order reports the tool as unavailable. */
+	 * PayPal credentials, in which case the PayPal tools report themselves as unavailable. */
 	readonly paypal: PaypalAskReader | null;
 	/** The figure trace the Studio's Explain panel reads: the same route answer, for the ask tool. */
 	readonly traceFigure: (figure: FigureId) => Promise<unknown>;
+	/** The clock a transaction window ends on. */
+	readonly nowMs?: () => number;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Transaction Search answers at most 31 days per request, and its rows lag the event by about three hours. */
+const TRANSACTION_MAX_DAYS = 31;
+const TRANSACTION_DEFAULT_DAYS = 7;
+const PAGE_SIZE = "10";
+
+const argText = (args: Record<string, unknown>, key: string): string => {
+	const value = args[key];
+	return typeof value === "string" ? value.trim() : "";
+};
+const recordOf = (value: unknown): Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const listOf = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+const textOf = (value: unknown): string | null => typeof value === "string" && value !== "" ? value : null;
+const moneyOf = (value: unknown): { readonly currency: string | null; readonly value: string } | null => {
+	const amount = textOf(recordOf(value).value);
+	return amount === null ? null : { currency: textOf(recordOf(value).currency_code), value: amount };
+};
+
+/** One dispute, reduced to the fields the ledger agent reads. PayPal's body is not passed on whole. */
+const disputeRow = (raw: unknown) => {
+	const dispute = recordOf(raw);
+	return { disputeId: textOf(dispute.dispute_id), status: textOf(dispute.status), reason: textOf(dispute.reason),
+		amount: moneyOf(dispute.dispute_amount), createTime: textOf(dispute.create_time),
+		transactionId: textOf(recordOf(listOf(dispute.disputed_transactions)[0]).seller_transaction_id) };
+};
+
+/** One Transaction Search row, reduced to the fields the ledger agent reads. */
+const transactionRow = (raw: unknown) => {
+	const info = recordOf(recordOf(raw).transaction_info);
+	return { transactionId: textOf(info.transaction_id), eventCode: textOf(info.transaction_event_code),
+		status: textOf(info.transaction_status), amount: moneyOf(info.transaction_amount),
+		initiatedAt: textOf(info.transaction_initiation_date) };
 };
 
 export function askToolExecutor(deps: AskExecutorDeps): AskToolExecutor {
+	/** One PayPal GET for one tool. A refusal becomes a plain line naming the status and the tool; PayPal's body never leaves. */
+	const payPalGet = async (tool: string, noun: string, path: string, payee: string | null): Promise<unknown> => {
+		if (deps.paypal === null) throw new Error(`${tool} is unavailable: the deployment has no PayPal credentials`);
+		try {
+			return await deps.paypal.get(path, payee);
+		} catch (error) {
+			if (!(error instanceof PayPalHttpError)) throw error;
+			const access = error.status === 403 ? `; this sandbox account may not have ${noun} access` : "";
+			throw new Error(`PayPal answered ${error.status} for ${tool}${access}.`);
+		}
+	};
 	const readOrder = async (args: Record<string, unknown>): Promise<unknown> => {
-		if (deps.paypal === null) throw new Error("get_order is unavailable: the deployment has no PayPal credentials");
-		const id = typeof args["id"] === "string" ? args["id"].trim() : "";
+		const id = argText(args, "id");
 		if (id === "") throw new Error("get_order needs the order's id");
 		// An order PayPal cannot see without its merchant's name is read under the assertion the
 		// book's own capture names: the payee the escrow was taken on behalf of.
 		const payee = (await deps.platformView()).find(job => job.capture?.orderId === id)?.capture?.payee ?? null;
-		return deps.paypal.getOrder(id, payee);
+		return payPalGet("get_order", "order", `/v2/checkout/orders/${encodeURIComponent(id)}`, payee);
+	};
+	const listDisputes = async (args: Record<string, unknown>): Promise<unknown> => {
+		const query = new URLSearchParams();
+		const since = argText(args, "startTime");
+		if (since !== "") {
+			const ms = Date.parse(since);
+			if (Number.isNaN(ms)) throw new Error("list_disputes needs startTime as an ISO 8601 date");
+			query.set("start_time", searchInstant(ms));
+		}
+		query.set("page_size", PAGE_SIZE);
+		const body = recordOf(await payPalGet("list_disputes", "dispute", `/v1/customer/disputes?${query.toString()}`, null));
+		return { disputes: listOf(body.items).map(disputeRow) };
+	};
+	const getDispute = async (args: Record<string, unknown>): Promise<unknown> => {
+		const id = argText(args, "disputeId");
+		if (id === "") throw new Error("get_dispute needs the dispute's id");
+		const body = recordOf(await payPalGet("get_dispute", "dispute", `/v1/customer/disputes/${encodeURIComponent(id)}`, null));
+		return { ...disputeRow(body), outcome: textOf(recordOf(body.outcome).outcome_code), evidenceCount: listOf(body.evidences).length,
+			offerAmount: moneyOf(recordOf(body.offer).buyer_requested_amount) };
+	};
+	const getRefund = async (args: Record<string, unknown>): Promise<unknown> => {
+		const jobId = argText(args, "jobId");
+		const asked = argText(args, "refundId");
+		if (jobId === "" && asked === "") throw new Error("get_refund needs a job id or a refund id");
+		// The refund is the one the book records, under the merchant the book took it from. A refund id
+		// the book does not hold is read without an assertion, and the answer says so.
+		const events = await deps.paypalEvents();
+		let refundId: string;
+		let payee: string | null;
+		let note: string | null = null;
+		if (jobId !== "") {
+			const row = events.find(event => event.jobId === jobId && event.refundId !== null);
+			if (row === undefined || row.refundId === null) throw new Error(`the book records no refund for job ${jobId}`);
+			refundId = row.refundId;
+			payee = row.merchant;
+		} else {
+			const row = events.find(event => event.refundId === asked);
+			refundId = asked;
+			payee = row?.merchant ?? null;
+			if (row === undefined) note = "The book holds no refund with this id, so it was read without a merchant assertion.";
+		}
+		const body = recordOf(await payPalGet("get_refund", "refund", `/v2/payments/refunds/${encodeURIComponent(refundId)}`, payee));
+		return { refundId: textOf(body.id) ?? refundId, status: textOf(body.status), amount: moneyOf(body.amount),
+			createTime: textOf(body.create_time), merchantAsserted: payee !== null, note };
+	};
+	const listTransactions = async (args: Record<string, unknown>): Promise<unknown> => {
+		const asked = args["days"];
+		const requested = typeof asked === "number" && Number.isFinite(asked) ? asked : TRANSACTION_DEFAULT_DAYS;
+		const days = Math.min(TRANSACTION_MAX_DAYS, Math.max(1, Math.floor(requested)));
+		const end = (deps.nowMs ?? Date.now)();
+		const start = end - days * DAY_MS;
+		const query = new URLSearchParams({ start_date: searchInstant(start), end_date: searchInstant(end), page_size: PAGE_SIZE, page: "1" });
+		const body = recordOf(await payPalGet("list_transactions", "transaction", `/v1/reporting/transactions?${query.toString()}`, null));
+		return { from: searchInstant(start), to: searchInstant(end), days, transactions: listOf(body.transaction_details).map(transactionRow) };
 	};
 	const jobSummary = (job: PlatformJobLedger) => ({
 		jobId: job.jobId, title: job.title, status: job.status, escrow: job.escrow,
@@ -209,6 +316,10 @@ export function askToolExecutor(deps: AskExecutorDeps): AskToolExecutor {
 				return { ...platformEscrowTotals(jobs), heldJobs: jobs.filter(job => job.escrow === "HELD").length };
 			}
 			case "get_order": return readOrder(args);
+			case "list_disputes": return listDisputes(args);
+			case "get_dispute": return getDispute(args);
+			case "get_refund": return getRefund(args);
+			case "list_transactions": return listTransactions(args);
 			case "trace_figure": {
 				const figure = args["figure"];
 				if (!isFigureId(figure)) throw new Error(`trace_figure needs one figure: ${FIGURE_IDS.join(", ")}`);
@@ -239,6 +350,18 @@ export function askToolList(paypalConfigured: boolean): readonly { readonly name
 		list.push({ name: "get_order", kind: "client",
 			description: "PayPal Agent Toolkit, read-only: retrieves one sandbox order's details by id -- its status, its capture, and the amounts PayPal holds. Use it on a held job's capture.orderId to check whether PayPal agrees with the book.",
 			parameters: { type: "object", properties: { id: { type: "string", description: "The PayPal order id, as a held job's capture.orderId names it" } }, required: ["id"] } });
+		list.push({ name: "list_disputes", kind: "client",
+			description: "PayPal, read-only: the sandbox account's customer disputes, ten at a time, each with its id, status, reason, amount, open time, and the seller transaction it names. Pass startTime to see only disputes opened since then.",
+			parameters: { type: "object", properties: { startTime: { type: "string", description: "An ISO 8601 date; only disputes opened on or after it" } }, required: [] } },
+		{ name: "get_dispute", kind: "client",
+			description: "PayPal, read-only: one dispute by id, with its status, reason, amount, the seller transaction it names, its outcome if any, how many evidence items it holds, and the buyer's offer where PayPal sends one.",
+			parameters: { type: "object", properties: { disputeId: { type: "string", description: "The dispute's id, as list_disputes names it" } }, required: ["disputeId"] } },
+		{ name: "get_refund", kind: "client",
+			description: "PayPal, read-only: the refund the book records for a job (jobId) or for a refund id (refundId), with its status, amount, and creation time. The read asserts the merchant the book took the refund from; a refund id the book does not hold is read without an assertion, and the answer says so.",
+			parameters: { type: "object", properties: { jobId: { type: "string", description: "The job whose refund to read, as list_jobs names it" }, refundId: { type: "string", description: "The PayPal refund id" } }, required: [] } },
+		{ name: "list_transactions", kind: "client",
+			description: "PayPal Transaction Search, read-only: the platform account's transactions over the last `days` (default 7, at most 31): id, event code, status, amount, and initiation time. PayPal lists a transaction about three hours after it happens, so the newest ones may be missing.",
+			parameters: { type: "object", properties: { days: { type: "number", description: "How many days back to look, from 1 to 31; default 7" } }, required: [] } });
 	}
 	return list;
 }
@@ -246,8 +369,8 @@ export function askToolList(paypalConfigured: boolean): readonly { readonly name
 // ---- the real ports -----------------------------------------------------------------------------
 
 /** The deployment's PayPal ask reader: the same toolkit-backed reader the payout tool reads
- * through (one minted token, renewed before expiry, a refused read re-minted and retried once),
- * pointed at the one read the ask tools may make, get_order. */
+ * through (one minted token, renewed before expiry, a refused read re-minted and retried once).
+ * It makes GETs only, and the executor above is the one caller that names their paths. */
 export function paypalAskReader(config: { readonly clientId: string; readonly clientSecret: string },
 	fetchImpl: typeof fetch = fetch): PaypalAskReader {
 	let reader: Promise<PaypalReader> | null = null;
@@ -256,11 +379,11 @@ export function paypalAskReader(config: { readonly clientId: string; readonly cl
 		return reader;
 	};
 	return {
-		async getOrder(id, payee) {
-			// A merchant-scoped order hides from a bare platform read: the assertion names the payee
-			// the capture belongs to, exactly as the platform's own PayPal client does.
+		async get(path, payee) {
+			// A merchant-scoped object hides from a bare platform read: the assertion names the payee
+			// it belongs to, exactly as the platform's own PayPal client does.
 			const assertion = payee === null ? undefined : authAssertion(config.clientId, payee as MerchantId);
-			return (await read()).get(`/v2/checkout/orders/${encodeURIComponent(id)}`, assertion);
+			return (await read()).get(path, assertion);
 		},
 	};
 }

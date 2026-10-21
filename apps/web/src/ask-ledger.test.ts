@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { AgAiChatMessage, AgAiConversationItem, AgAiEvent, AgAiToolContext, AgLlmRequest, AgStudioApi } from "ag-studio";
 import type { AskToolSchema } from "./api-types";
@@ -13,6 +14,7 @@ import {
   askRows,
   askToolLabel,
   buildAskTools,
+  ledgerCard,
   runTool,
   toAskMessages,
   toAskTurnBody,
@@ -352,6 +354,80 @@ test("tool rows are worded by what they read", () => {
   assert.equal(askToolLabel("trace_figure", { figure: "held" }), "Tracing held escrow to its ledger lines");
   assert.equal(askToolLabel("trace_figure", { figure: "paid-by-clients" }), "Tracing paid by clients to its ledger lines");
   assert.equal(askToolLabel("trace_figure", { figure: "nope" }), "Tracing a figure to its ledger lines");
+  assert.equal(askToolLabel("list_disputes", {}), "Reading PayPal's disputes");
+  assert.equal(askToolLabel("get_dispute", { disputeId: "PP-D-1" }), "Reading dispute PP-D-1");
+  assert.equal(askToolLabel("get_refund", { jobId: "job_7" }), "Reading the refund for job job_7");
+  assert.equal(askToolLabel("get_refund", { refundId: "REF1" }), "Reading refund REF1");
+  assert.equal(askToolLabel("list_transactions", {}), "Reading PayPal's recent transactions");
+});
+
+test("the Studio's ASK_TOOL_NAMES is the server's, read from its source", () => {
+  const source = readFileSync(new URL("../../api/src/ask.ts", import.meta.url), "utf8");
+  const declared = /export const ASK_TOOL_NAMES = (\[[\s\S]*?\]) as const;/.exec(source);
+  assert.ok(declared, "the server declares ASK_TOOL_NAMES as a literal array");
+  assert.deepEqual(JSON.parse(declared[1]!), [...ASK_TOOL_NAMES]);
+});
+
+test("a dispute and a refund read as cards: a title, the key fields as rows, PayPal ids in mono type", () => {
+  assert.deepEqual(ledgerCard("get_dispute", { disputeId: "PP-D-1", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+    amount: { currency: "USD", value: "378.00" }, createTime: "2026-03-02T10:00:00Z", transactionId: "TX1", outcome: null,
+    evidenceCount: 2, offerAmount: null }), {
+    title: "Dispute PP-D-1",
+    rows: [
+      { label: "Status", value: "OPEN" },
+      { label: "Reason", value: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED" },
+      { label: "Amount", value: "378.00 USD" },
+      { label: "Opened", value: "2026-03-02T10:00:00Z" },
+      { label: "Seller transaction", value: "TX1", mono: "value" },
+      { label: "Outcome", value: "None yet" },
+      { label: "Evidence items", value: "2" },
+      { label: "Buyer's offer", value: "None" },
+    ],
+  });
+  assert.deepEqual(ledgerCard("get_refund", { refundId: "REF1", status: "COMPLETED", amount: { currency: "USD", value: "378.00" },
+    createTime: "2026-03-05T09:00:00Z", merchantAsserted: true, note: null }), {
+    title: "Refund",
+    rows: [
+      { label: "Refund", value: "REF1", mono: "value" },
+      { label: "Status", value: "COMPLETED" },
+      { label: "Amount", value: "378.00 USD" },
+      { label: "Created", value: "2026-03-05T09:00:00Z" },
+      { label: "Read under", value: "The merchant the book records" },
+    ],
+  });
+  assert.equal(ledgerCard("get_order", {}), null, "a tool without a card has none");
+});
+
+test("a list reads as one row per item, and an empty list says so", () => {
+  assert.deepEqual(ledgerCard("list_disputes", { disputes: [] }), { title: "PayPal disputes (0)", rows: [{ label: "Disputes", value: "None on this account" }] });
+  assert.deepEqual(ledgerCard("list_disputes", { disputes: [{ disputeId: "PP-D-1", status: "OPEN", reason: "NOT_RECEIVED",
+    amount: { currency: "USD", value: "378.00" }, createTime: "2026-03-02T10:00:00Z", transactionId: "TX1" }] }), {
+    title: "PayPal disputes (1)", rows: [{ label: "PP-D-1", value: "OPEN, NOT_RECEIVED, 378.00 USD", mono: "label" }],
+  });
+  assert.deepEqual(ledgerCard("list_transactions", { transactions: [{ transactionId: "TX1", eventCode: "T0006", status: "S",
+    amount: { currency: "USD", value: "-12.50" }, initiatedAt: "2026-03-30T08:00:00+0000" }] }), {
+    title: "PayPal transactions (1)", rows: [{ label: "TX1", value: "T0006, S, -12.50 USD, 2026-03-30T08:00:00+0000", mono: "label" }],
+  });
+});
+
+test("a PayPal read's card travels as the result's data, and the model still reads the JSON", async () => {
+  const ctx = {
+    ...toolCtx,
+    success: (response: string, data?: unknown) => (data === undefined ? { success: true as const, response } : { success: true as const, response, data }),
+  } as unknown as AgAiToolContext;
+  const refund = { refundId: "REF1", status: null, amount: null, createTime: null, merchantAsserted: false, note: "not in the book" };
+  assert.deepEqual(await runTool(async () => refund, "get_refund", { refundId: "REF1" }, ctx), {
+    success: true,
+    response: JSON.stringify(refund),
+    data: { title: "Refund", rows: [
+      { label: "Refund", value: "REF1", mono: "value" },
+      { label: "Status", value: "Not shown" },
+      { label: "Amount", value: "Not shown" },
+      { label: "Created", value: "Not shown" },
+      { label: "Read under", value: "The platform account, with no book record" },
+      { label: "Note", value: "not in the book" },
+    ] },
+  });
 });
 
 test("trace_figure is one of the read-only ledger tools, and only its result carries data for the card", async () => {

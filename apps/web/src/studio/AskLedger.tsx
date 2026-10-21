@@ -1,19 +1,44 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgAiHarnessSetupParams, AgAiRunStatus, AgStudioApi } from "ag-studio";
+import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgAiHarnessSetupParams, AgAiRunStatus, AgAiToolDetailParams, AgStudioApi } from "ag-studio";
 import type { AgAiToolDisplay } from "ag-studio-react";
 import { api } from "../api";
 import type { AskToolSchema } from "../api-types";
 import { createAskLedgerHarness, openAskThread } from "../ask-harness.ts";
-import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, ASK_TOOL_DISPLAY, askGate, askRows, askStatusText, askToolLabel } from "../ask-ledger";
+import { ASK_AGENT_NAME, ASK_PROMPT_STARTERS, ASK_TOOL_DISPLAY, LEDGER_CARD_TOOLS, askGate, askRows, askStatusText, askToolLabel, isLedgerCard } from "../ask-ledger";
 import type { DashboardId } from "../dashboard-widgets.ts";
 import { FigureCallCard, FigureTraceView } from "./FigureExplain";
 import { readFailure } from "./live";
 
 export { createAskLedgerHarness, openAskThread };
-/** The ledger tools' rows as the Studio chat draws them: the same words, and trace_figure's expanded body is the figure card. */
+
+/** A PayPal tool's answer as a card: its title, and its key fields as rows with PayPal ids in mono type. */
+export function LedgerCallCard({ status, result }: AgAiToolDetailParams) {
+  if (result === undefined) {
+    return <p className="muted small">{status === "done" || status === "cancelled" ? "The read did not finish." : "Reading PayPal…"}</p>;
+  }
+  if (!result.success) return <div className="alert">{result.issues.map((issue) => issue.message).join(" ")}</div>;
+  if (!isLedgerCard(result.data)) return <p className="muted small">The read came back in a form this card does not show.</p>;
+  const card = result.data;
+  return (
+    <div className="explain-body">
+      <span className="eyebrow">{card.title}</span>
+      <dl>
+        {card.rows.map((row, index) => (
+          <div key={`${index}-${row.label}`}>
+            <dt className={row.mono === "label" ? "mono" : undefined}>{row.label}</dt>
+            <dd className={row.mono === "value" ? "mono" : undefined}>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+/** The ledger tools' rows as the Studio chat draws them: the same words, trace_figure's expanded body is the figure card, and a PayPal read is its card. */
 export const ASK_TOOL_DISPLAY_CARDS: Record<string, AgAiToolDisplay> = {
   ...ASK_TOOL_DISPLAY,
   trace_figure: { label: ({ args }) => ({ text: askToolLabel("trace_figure", args) }), detail: FigureCallCard, hidden: false },
+  ...Object.fromEntries(LEDGER_CARD_TOOLS.map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), detail: LedgerCallCard, hidden: false } satisfies AgAiToolDisplay])),
 };
 
 export type AskLoad = { kind: "loading" } | { kind: "ready"; keyConfigured: boolean } | { kind: "failed"; error: string };
