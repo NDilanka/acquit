@@ -1,13 +1,15 @@
-// The ask routes over real HTTP: the closed read-only tool set answers the platform role alone,
-// a tool call executes against the real book, and a turn without a usable provider key is refused
+// The ask routes over real HTTP: the closed read-only tool set answers the platform and operator roles
+// (each its own set), clients and anonymous callers are refused, a tool call executes against the real book, and a turn without a usable provider key is refused
 // before any call is attempted (the boot below points HOME at an empty dir, so no droid can spawn).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { OPERATOR_TURNS_PER_MINUTE } from "../src/ask.ts";
 
 const root = join(import.meta.dirname, "..");
 
@@ -53,7 +55,7 @@ const post = (port: number, path: string, payload: unknown, token?: string) =>
 const get = (port: number, path: string, token?: string) =>
 	fetch(`http://127.0.0.1:${port}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
 
-test("the ask routes answer the platform role alone, and the tool set is the closed read-only one", async () => {
+test("the ask routes refuse clients and anonymous callers, and the platform's tool set is the closed read-only one", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-route-"));
 	const port = 4879;
 	let child: ReturnType<typeof spawn> | null = null;
@@ -114,6 +116,79 @@ test("the ask routes answer the platform role alone, and the tool set is the clo
 			tools: Array.from({ length: 33 }, (_, i) => ({ name: `tool_${i}`, description: "x", parameters: { type: "object", properties: {} } })),
 		}, token);
 		assert.equal(tooMany.status, 400, "an unbounded tool list is refused");
+	} finally {
+		await stopServer(child);
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("an operator's ask routes answer its own four tools alone, refuse every other name, and budget each operator's turns apart", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-operator-"));
+	const port = 4880;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, join(dir, "test.db"), join(dir, "homeless"));
+		const minted = await post(port, "/api/platform/session", { key: "test-platform-key-0123456789abcdef" });
+		assert.equal(minted.status, 201);
+		const { token: platformToken } = await minted.json() as { token: string };
+
+		// A second operator, written into this test's own database once the server has created it. The
+		// seeded world has one operator; a second is needed to show one operator's budget is its own.
+		const seeded = new DatabaseSync(join(dir, "test.db"));
+		seeded.prepare("INSERT INTO principals (handle, role, visitor_id) VALUES (?, ?, NULL)").run("rhea-ops", "OPERATOR");
+		seeded.close();
+
+		const sessionFor = async (handle: string): Promise<string> => {
+			const signedIn = await post(port, "/api/session", { handle });
+			assert.equal(signedIn.status, 200);
+			const { token } = await signedIn.json() as { token: string };
+			const who = await (await get(port, "/api/session", token)).json() as { user: { role: string } };
+			assert.equal(who.user.role, "OPERATOR", `${handle} signs in as an operator`);
+			return token;
+		};
+		const devon = await sessionFor("devon-ops");
+		const rhea = await sessionFor("rhea-ops");
+
+		const listed = await get(port, "/api/ask-ledger/tools", devon);
+		assert.equal(listed.status, 200);
+		const offered = await listed.json() as { tools: { name: string }[] };
+		assert.deepEqual(offered.tools.map(tool => tool.name), ["my_jobs", "my_job", "my_payouts", "my_totals"],
+			"an operator is offered its own four tools, and no PayPal or book-wide tool");
+
+		for (const name of ["list_jobs", "get_job", "list_transactions", "get_order", "platform_totals", "trace_figure"]) {
+			const refused = await post(port, "/api/ask-ledger/tool", { name, arguments: {} }, devon);
+			assert.equal(refused.status, 502, `${name} is refused for an operator`);
+			assert.deepEqual(await refused.json() as unknown, { error: "TOOL_FAILED", detail: `no tool named ${name}` });
+		}
+
+		const totals = await post(port, "/api/ask-ledger/tool", { name: "my_totals", arguments: {} }, devon);
+		assert.equal(totals.status, 200);
+		assert.deepEqual(await totals.json() as unknown, { result: { paidOutCents: 0, feesWithheldCents: 0, jobsPaid: 0, heldCents: 0, heldJobs: 0 } });
+
+		const unknownJob = await post(port, "/api/ask-ledger/tool", { name: "my_job", arguments: { jobId: "job_nowhere" } }, rhea);
+		assert.equal(unknownJob.status, 502);
+		assert.deepEqual(await unknownJob.json() as unknown, { error: "TOOL_FAILED", detail: "no job of yours named job_nowhere" });
+
+		const messages = [{ id: "m1", role: "user", content: "What did I earn this week?" }];
+		const myJobs = { name: "my_jobs", description: "Your jobs on Acquit.", parameters: { type: "object", properties: {} } };
+		for (const tools of [[{ name: "platform_totals", description: "The book's totals.", parameters: { type: "object", properties: {} } }],
+			[{ name: "delegate_to", description: "Hand work to another agent.", parameters: { type: "object", properties: {} } }]]) {
+			const refused = await post(port, "/api/ask-ledger/turn", { messages, tools }, devon);
+			assert.equal(refused.status, 400, "a relayed tool outside the operator's set never reaches the model");
+			assert.equal((await refused.json() as { error: string }).error, "BAD_REQUEST");
+		}
+
+		// No provider key here, so an admitted turn stops at the model port with 503. The budget is checked first.
+		const turn = (token: string) => post(port, "/api/ask-ledger/turn", { messages, tools: [myJobs] }, token);
+		for (let admitted = 1; admitted <= OPERATOR_TURNS_PER_MINUTE; admitted += 1) {
+			assert.equal((await turn(devon)).status, 503, `turn ${admitted} of the minute is admitted`);
+		}
+		const over = await turn(devon);
+		assert.equal(over.status, 429, "the turn past the minute's allowance is refused");
+		assert.equal((await over.json() as { error: string }).error, "MODEL_BUDGET");
+
+		assert.equal((await turn(rhea)).status, 503, "another operator is still admitted");
+		assert.equal((await turn(platformToken)).status, 503, "the platform's turns are not budgeted by the operator's limit");
 	} finally {
 		await stopServer(child);
 		await rm(dir, { recursive: true, force: true });

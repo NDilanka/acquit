@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgStudioApi } from "ag-studio";
-import { ASK_AGENT_ID, ASK_AGENT_NAME, askRows, type AskAdapterDeps } from "./ask-ledger.ts";
+import type { AskToolSchema } from "./api-types";
+import { ASK_AGENT_ID, ASK_AGENT_NAME, OPERATOR_ASK_TOOL_NAMES, askRows, type AskAdapterDeps } from "./ask-ledger.ts";
 import { createAskLedgerHarness, NEW_WIDGET_WORKFLOW, openAskThread } from "./ask-harness.ts";
 import { WIDGET_IDS, WIDGET_ROWS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { stacked } from "./studio-data.ts";
@@ -400,6 +401,27 @@ test("a child that adds a widget and then fails leaves no widget behind, and the
   assert.match(JSON.stringify(parentBodies[1]), /removed/i, "the ledger agent's next turn carried the rollback");
   const last = session.messages.filter((m) => m.role === "assistant").at(-1);
   assert.ok(last?.parts.some((p) => p.type === "text" && p.text === REPLY), "the reader's final word is the failure reply");
+});
+
+// An operator's dashboard: the ask agent alone, offered the four own-jobs tools the server serves it.
+const OPERATOR_SPECS: AskToolSchema[] = OPERATOR_ASK_TOOL_NAMES.map((name) => ({ name, description: `${name}, your own jobs.`, parameters: { type: "object", properties: {} }, kind: "client" }));
+
+test("an operator's ask turn is offered its own four tools and no delegate_to, under the operator's instructions", async () => {
+  const { api } = mockStudioApi([]);
+  const turns: { tools?: { name: string }[]; instructions?: string }[] = [];
+  const chat = (async (_url: string, init: RequestInit) => {
+    turns.push(JSON.parse(String(init.body)) as { tools?: { name: string }[]; instructions?: string });
+    return answer(text("Nothing is held for you right now."));
+  }) as typeof fetch;
+  const harness = createAskLedgerHarness(api, () => OPERATOR_SPECS, { dashboard: "earnings", scope: "OPERATOR", fetch: chat });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("What did I earn this week?");
+  await settle(session);
+  assert.ok(turns.length >= 1, "the operator's turn reached the route");
+  const offered = (turns[0]?.tools ?? []).map((tool) => tool.name).sort();
+  assert.deepEqual(offered, ["my_job", "my_jobs", "my_payouts", "my_totals"]);
+  assert.ok(!offered.includes("delegate_to"), "the server refuses a relayed tool outside the operator's set, so no delegation rides in");
+  assert.match(turns[0]?.instructions ?? "", /operator's own jobs/, "the turn carries the operator's instructions, not the platform's catalogue");
 });
 
 const delegateTo = (id: "data" | "page", instructions: string): Answer =>

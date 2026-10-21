@@ -30,8 +30,8 @@ import { operatorPayouts } from "./payouts.ts";
 import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
-import { askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, paypalAskReader } from "./ask.ts";
-import type { AskMessage, AskToolSchema } from "./ask.ts";
+import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, OPERATOR_ASK_TOOL_NAMES, OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
+import type { AskMessage, AskToolExecutor, AskToolSchema } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
@@ -202,6 +202,22 @@ const askExecutor = askToolExecutor({
 });
 const askModel = modelProvider() === "openrouter" ? openrouterAskPort() : droidAskPort();
 const askTools = askToolList(askPaypal !== null);
+const askOperatorTools = askOperatorToolList();
+// An operator's turn passes this admission before the shared budget reserves, so one operator cannot spend the deployment's minute.
+const admitOperatorTurn = operatorTurnLimiter();
+/** An operator's ask executor, built for one request from its session actor: its own jobs, receipts, and payouts, read under that actor. The platform's executor is never reused for an operator. */
+function askOperatorExecutorFor(actor: Extract<Actor, { role: "OPERATOR" }>): AskToolExecutor {
+	return askOperatorToolExecutor({
+		operatorId: actor.operatorId,
+		jobs: async () => {
+			const result = await acquit.query(actor, { type: "OpenJobs", cursor: null });
+			if (result.kind !== "JOBS") throw new Error("the operator's jobs are not readable");
+			return result.jobs;
+		},
+		receipts: async () => operatorReceipts(db, actor.operatorId, clientRepository, privateCases),
+		payouts: async () => operatorPayouts(db, actor.operatorId, clientRepository),
+	});
+}
 function readAskCall(value: unknown): { id: string; function: { name: string; arguments: string } } {
 	const call = object(value);
 	const fn = object(call.function);
@@ -734,10 +750,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		return;
 	}
 	if (url.pathname === "/api/ask-ledger/tools" && method === "GET") {
-		// The ledger agent's tool list: the closed read-only set, with the model it runs on and
-		// whether a usable provider key sits in process. The platform role alone holds it.
-		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
-		json(res, 200, { tools: askTools, model: askModelName(), keyConfigured: await askKeyConfigured() });
+		// The ledger agent's tool list for the caller's role, with the model it runs on and whether a usable
+		// provider key sits in process: the platform's closed read-only set, or an operator's own four tools.
+		// Clients and anonymous callers hold neither.
+		if (current.actor.role !== "PLATFORM" && current.actor.role !== "OPERATOR") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		json(res, 200, { tools: current.actor.role === "OPERATOR" ? askOperatorTools : askTools, model: askModelName(), keyConfigured: await askKeyConfigured() });
 		return;
 	}
 	if (url.pathname === "/api/ask-ledger/turn" && method === "POST") {
@@ -746,8 +763,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// and the envelope's message and tool calls are the only thing back. The tool-execution
 		// route stays the closed set -- relaying schemas never widens what can run. The route
 		// carries its own larger cap, because the harness's delegated widget-agent turn is bigger
-		// than the global cap every other route keeps.
-		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		// than the global cap every other route keeps. An operator's turn is the same route, with its own tools only.
+		if (current.actor.role !== "PLATFORM" && current.actor.role !== "OPERATOR") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
 		let raw: string;
 		try { raw = await rawBody(req, ASK_TURN_BODY_LIMIT_BYTES); }
 		catch (error) {
@@ -762,8 +779,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions" && key !== "tools")) throw new BadBody("Unsupported field");
 			relayed = { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
 				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
+			// The relayed schemas are the browser's list, so an operator's list is checked here against its own set: the model is offered no other tool.
+			if (current.actor.role === "OPERATOR") {
+				const outside = relayed.tools.find(tool => !(OPERATOR_ASK_TOOL_NAMES as readonly string[]).includes(tool.name));
+				if (outside) throw new BadBody(`tools may name only an operator's own ask tools, not ${outside.name}`);
+			}
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
-		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog }, relayed);
+		// An operator's turns are admitted per operator before the shared budget reserves; a refused turn reserves nothing.
+		if (current.actor.role === "OPERATOR" && !admitOperatorTurn(current.actor.operatorId)) {
+			json(res, 429, { error: "MODEL_BUDGET", detail: `An operator may run ${OPERATOR_TURNS_PER_MINUTE} Ask the ledger turns a minute and ${OPERATOR_TURNS_PER_DAY} a day.` });
+			return;
+		}
+		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog }, { ...relayed, scope: current.actor.role === "OPERATOR" ? "OPERATOR" : "PLATFORM" });
 		if (!outcome.ok) {
 			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
 				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
@@ -775,16 +802,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/ask-ledger/tool" && method === "POST") {
 		// One tool call, executed. The name must be one of the closed read-only set; the result is
 		// the tool's answer, and a tool's failure is the loop's to read -- never a retried write,
-		// because there is no write tool to retry.
-		if (current.actor.role !== "PLATFORM") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
+		// because there is no write tool to retry. An operator's call reaches its own executor alone, which refuses a name
+		// outside its set as an unknown tool, before any read.
+		if (current.actor.role !== "PLATFORM" && current.actor.role !== "OPERATOR") { json(res, 403, { error: "PLATFORM_ONLY" }); return; }
 		let named: { name?: unknown; arguments?: unknown };
 		try {
 			const input = object(await body(req));
 			if (Object.keys(input).some(key => key !== "name" && key !== "arguments")) throw new BadBody("Unsupported field");
 			named = input;
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		const executor = current.actor.role === "OPERATOR" ? askOperatorExecutorFor(current.actor) : askExecutor;
 		try {
-			json(res, 200, { result: await askExecutor(text(named.name, "tool name", 60), object(named.arguments ?? {})) });
+			json(res, 200, { result: await executor(text(named.name, "tool name", 60), object(named.arguments ?? {})) });
 		} catch (error) {
 			json(res, 502, { error: "TOOL_FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
 		}
