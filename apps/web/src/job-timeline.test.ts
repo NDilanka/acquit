@@ -571,6 +571,93 @@ test("disputed and closed read their own next step", () => {
   assert.equal(nextStep({ ...BASE, status: "CLOSED", phase: "CLOSED" }, CLIENT), "Closed. Nothing else happens on this job.");
 });
 
+const BUYER_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
+  id: "PAYPAL-DISPUTE-1",
+  status: "OPEN",
+  reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+  amount: 37800,
+  openedAt: "2026-10-16T09:00:00.000Z",
+  outcome: null,
+};
+
+/** An approved job whose release a PayPal buyer dispute holds, or has resolved. */
+function approvedWithDispute(providerDispute: TimelineJob["providerDispute"]): TimelineJob {
+  return locked({
+    status: "VERIFIED",
+    phase: "RELEASE_PENDING",
+    releaseAuthority: "CLIENT_APPROVAL",
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+    providerDispute,
+  });
+}
+
+test("a buyer's PayPal dispute on an approved job says the buyer opened it, and that the payout is held", () => {
+  const job = approvedWithDispute(BUYER_DISPUTE);
+  assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
+  assert.equal(nextStep(job, DEVON), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
+  assert.deepEqual(timelineEvents(job).slice(-2), [
+    {
+      at: "2026-10-16T09:00:00.000Z",
+      kind: "DISPUTE",
+      title: "Buyer opened a PayPal dispute (merchandise or service not received)",
+      detail: "378.00 USD disputed with PayPal.",
+      tone: "alert",
+      ids: [{ value: "PAYPAL-DISPUTE-1", label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    },
+    {
+      at: null,
+      kind: "DISPUTE",
+      title: "Payout held while PayPal reviews the dispute",
+      detail: "The approval is recorded. The payout waits until PayPal decides the dispute for the seller.",
+      tone: "held",
+      ids: [],
+      href: null,
+      reasons: [],
+    },
+  ]);
+});
+
+test("PayPal deciding a buyer's dispute for the seller lifts the hold, and the timeline says so before the payout", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" });
+  assert.equal(nextStep(job, CLIENT), "The payment is being released to devon.");
+  assert.deepEqual(timelineEvents(job).at(-1), {
+    at: null,
+    kind: "DISPUTE",
+    title: "PayPal resolved the dispute for the seller",
+    detail: "Nothing holds the payout for this dispute now.",
+    tone: "ok",
+    ids: [],
+    href: null,
+    reasons: [],
+  });
+});
+
+test("PayPal deciding a buyer's dispute for the buyer keeps the payout held, and the timeline says the money is undecided", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR" });
+  assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
+  assert.deepEqual(timelineEvents(job).at(-1), {
+    at: null,
+    kind: "DISPUTE",
+    title: "PayPal resolved the dispute for the buyer",
+    detail: "The payout stays held. Acquit has not decided what becomes of the money.",
+    tone: "alert",
+    ids: [],
+    href: null,
+    reasons: [],
+  });
+});
+
+test("a paid job keeps the buyer's dispute in order before the payout, and no hold line", () => {
+  const job = paidJob({ providerDispute: { ...BUYER_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" } });
+  const titles = timelineEvents(job).map(event => event.title);
+  assert.ok(titles.indexOf("Buyer opened a PayPal dispute (merchandise or service not received)") < titles.indexOf("PayPal resolved the dispute for the seller"));
+  assert.ok(titles.indexOf("PayPal resolved the dispute for the seller") < titles.indexOf("Paid out"));
+  assert.equal(titles.includes("Payout held while PayPal reviews the dispute"), false);
+  assert.equal(nextStep(job, CLIENT), "Paid to devon. The receipt below is the proof.");
+});
+
 test("the agent line names the declared agent and the operator or House that named it", () => {
   assert.equal(agentLine(bid({ handle: "devon-ops", agent: "nemotron-3-ultra-free" })), "Agent nemotron-3-ultra-free, named by devon-ops.");
   assert.equal(

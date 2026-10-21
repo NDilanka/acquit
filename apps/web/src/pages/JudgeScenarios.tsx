@@ -8,7 +8,7 @@ import { buildRunView, nextPollMs, startRefusalWords, type RunStepView, type Sce
 type Panel = { readonly scenarioId: string; readonly run: ScenarioRun | null; readonly error: string | null };
 
 /**
- * The five judge-scenario buttons. One click starts a run on the server, and the run's steps show as the server
+ * The judge-scenario buttons, one per card. One click starts a run on the server, and the run's steps show as the server
  * finishes them. A run starts only from a demo, so `ensureDemo` gives the click its demo session first.
  */
 export function JudgeScenarios({ ensureDemo }: { ensureDemo: () => Promise<unknown> }) {

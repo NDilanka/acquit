@@ -9,6 +9,7 @@ const PAYPAL = "PayPal sandbox" as const;
 const VERIFIER = "Real verifier run" as const;
 const SERVER = "Server record (no outside call)" as const;
 const GITHUB = "GitHub work repository" as const;
+const SIMULATED_DISPUTE = "Simulated PayPal dispute" as const;
 
 function step(name: string, actor: ScenarioStep["actor"], label: ScenarioLabel, ms: number, outcome: string,
   reached: readonly ScenarioReachLabel[] = []): ScenarioStep {
@@ -60,8 +61,30 @@ const DONE_CASES: readonly [ScenarioName, JobStatus, string, string, string][] =
   ["hidden-test-fail", "IN_PROGRESS", "TESTS_FAILED:hidden", "Rejected on hidden tests. The escrow stays held.", "IN_PROGRESS (TESTS_FAILED:hidden)"],
   ["test-tamper", "IN_PROGRESS", "PROTECTED_PATH_MODIFIED", "Rejected for changing a protected test file. The escrow stays held.", "IN_PROGRESS (PROTECTED_PATH_MODIFIED)"],
   ["dispute-arbiter", "PAID", "ARBITER_UPHELD", "Paid. The arbiter upheld the delivered fix.", "PAID (ARBITER_UPHELD)"],
+  ["buyer-dispute", "PAID", "CLIENT_APPROVAL", "Paid. The buyer's PayPal dispute resolved for the seller after the approval was held.", "PAID (CLIENT_APPROVAL)"],
   ["deadline-refund", "REFUNDED", "DELIVERY_DEADLINE", "Refunded. The delivery deadline passed.", "REFUNDED (DELIVERY_DEADLINE)"],
 ];
+
+test("a buyer-disputes run names its dispute as simulated, and reads the held approval and the resolution in plain words", () => {
+  const view = buildRunView({
+    ...RUN,
+    name: "buyer-dispute",
+    steps: [
+      step("approve", "CLIENT", SCRIPTED, 220, "HELD"),
+      step("dispute-created", "SYSTEM", SIMULATED_DISPUTE, 310, "dispute OPEN"),
+      step("dispute-resolved", "SYSTEM", SIMULATED_DISPUTE, 180, "dispute RESOLVED_SELLER_FAVOUR"),
+    ],
+  });
+  assert.deepEqual(view.steps, [
+    { title: "Client approves the delivery", actorText: "Client", label: "Scripted agent (Simulated)", reached: [],
+      result: "Approved. The payout is held while the dispute is open.", ms: 220 },
+    { title: "Buyer opens a PayPal dispute", actorText: "System", label: "Simulated PayPal dispute", reached: [],
+      result: "The dispute is open with PayPal, and the payout is held.", ms: 310 },
+    { title: "PayPal resolves the dispute", actorText: "System", label: "Simulated PayPal dispute", reached: [],
+      result: "PayPal resolved the dispute for the seller.", ms: 180 },
+  ]);
+});
+
 
 for (const [name, jobStatus, reason, endText, observed] of DONE_CASES) {
   test(`a DONE ${name} run ends in its own end state, ${observed}`, () => {

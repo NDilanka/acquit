@@ -647,11 +647,11 @@ export type ScopingResponse = {
 /** `POST /api/jobs/:id/scoping/approve` on 200. */
 export type ScopingApproveResponse = { readonly jobId: string; readonly digest: string; readonly approvedIds: readonly string[] };
 
-/** The five judge scenarios, as core SCENARIO_NAMES names them. */
-export type ScenarioName = "verified-and-paid" | "hidden-test-fail" | "test-tamper" | "dispute-arbiter" | "deadline-refund";
+/** The six judge scenarios, as core SCENARIO_NAMES names them. */
+export type ScenarioName = "verified-and-paid" | "hidden-test-fail" | "test-tamper" | "dispute-arbiter" | "buyer-dispute" | "deadline-refund";
 
 /** The honest labels a scenario step carries, as core SCENARIO_LABELS spells them. */
-export type ScenarioLabel = "Scripted agent (Simulated)" | "Simulated time for this job" | "Real verifier run" | "PayPal sandbox" | "GitHub work repository" | "Server record (no outside call)";
+export type ScenarioLabel = "Scripted agent (Simulated)" | "Simulated time for this job" | "Simulated PayPal dispute" | "Real verifier run" | "PayPal sandbox" | "GitHub work repository" | "Server record (no outside call)";
 
 /** The outside places a step's own work can reach, as core SCENARIO_LABELS spells them. */
 export type ScenarioReachLabel = "Real verifier run" | "PayPal sandbox" | "GitHub work repository";

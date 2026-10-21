@@ -1,7 +1,7 @@
 import type { Attempt, JobView, VerifierFields } from "./api-types";
 import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
 import { arbiterNoteLine, authorityNote, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
-import { bidStatusWord, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
+import { bidStatusWord, payoutHeldBy, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
 import { tallyWords } from "./receipt-view.ts";
 import { seededLabel } from "./scoping-review.ts";
 
@@ -141,6 +141,8 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
     });
   }
 
+  events.push(...providerDisputeEvents(job));
+
   if (job.release) {
     const release = job.release;
     events.push({
@@ -191,6 +193,66 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
     });
   }
 
+  return events;
+}
+
+/**
+ * The PayPal buyer dispute, in the order it happens: opened, then the payout held while PayPal reviews it, then
+ * decided for the seller or the buyer. PayPal serves no time for the hold or the decision, so those have none.
+ */
+function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
+  const dispute = job.providerDispute;
+  if (!dispute) return [];
+  const reason = dispute.reason.replace(/_/g, " ").toLowerCase();
+  const events: TimelineEvent[] = [{
+    at: dispute.openedAt,
+    kind: "DISPUTE",
+    title: `Buyer opened a PayPal dispute (${reason})`,
+    detail: `${usd(dispute.amount)} disputed with PayPal.`,
+    tone: "alert",
+    ids: [{ value: dispute.id, label: "PayPal dispute" }],
+    href: null,
+    reasons: [],
+  }];
+  if (dispute.status !== "RESOLVED") {
+    if (job.status === "VERIFIED" && job.phase === "RELEASE_PENDING") {
+      events.push({
+        at: null,
+        kind: "DISPUTE",
+        title: "Payout held while PayPal reviews the dispute",
+        detail: "The approval is recorded. The payout waits until PayPal decides the dispute for the seller.",
+        tone: "held",
+        ids: [],
+        href: null,
+        reasons: [],
+      });
+    }
+    return events;
+  }
+  if (!payoutHeldBy(dispute)) {
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: "PayPal resolved the dispute for the seller",
+      detail: "Nothing holds the payout for this dispute now.",
+      tone: "ok",
+      ids: [],
+      href: null,
+      reasons: [],
+    });
+    return events;
+  }
+  const forBuyer = dispute.outcome === "RESOLVED_BUYER_FAVOUR";
+  events.push({
+    at: null,
+    kind: "DISPUTE",
+    title: forBuyer ? "PayPal resolved the dispute for the buyer" : "PayPal resolved the dispute",
+    detail: "The payout stays held. Acquit has not decided what becomes of the money.",
+    tone: "alert",
+    ids: [],
+    href: null,
+    reasons: [],
+  });
   return events;
 }
 
@@ -349,6 +411,7 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
   "VERIFIED/DISPUTED": ({ job }) =>
     job.dispute ? `The payment is paused. An arbiter decides by ${utc(job.dispute.resolveBy)}, or the payout releases to the operator.` : "The payment is paused for an arbiter.",
   "VERIFIED/RELEASE_PENDING": ({ operator }) => `The payment is being released to ${operator}.`,
+  "VERIFIED/RELEASE_PENDING/DISPUTE_HELD": () => "The payout is held because of a buyer's PayPal dispute. Nothing to do.",
   "VERIFIED/REFUND_PENDING": () => "The arbiter's refund is in flight. Nothing to do.",
   "PAID/PAID": ({ operator }) => `Paid to ${operator}. The receipt below is the proof.`,
   "REFUNDED/REFUNDED": () => "Refunded to the client. No money is held.",

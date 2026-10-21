@@ -23,6 +23,7 @@ const REACHABLE: readonly [StatusInput, string, string][] = [
   [job("VERIFIED", "AWAITING_CLIENT"), "Verified (awaiting review)", "held"],
   [job("VERIFIED", "DISPUTED"), "Disputed", "alert"],
   [job("VERIFIED", "RELEASE_PENDING"), "Paying out", "ok"],
+  [{ ...job("VERIFIED", "RELEASE_PENDING"), providerDispute: { status: "OPEN", outcome: null } }, "Payout held for a buyer dispute", "alert"],
   [job("VERIFIED", "REFUND_PENDING"), "Disputed", "alert"],
   [job("PAID", "PAID"), "Paid", "ok"],
   [job("REFUNDED", "REFUNDED"), "Refunded", "new"],
@@ -35,7 +36,7 @@ test("every reachable status and phase reads its literal label and tone", () => 
   }
 });
 
-test("the reachable states use exactly the eleven labels of the plan", () => {
+test("the reachable states use exactly the twelve labels of the plan", () => {
   assert.deepEqual(
     [...new Set(REACHABLE.map(([, label]) => label))].sort(),
     [
@@ -46,12 +47,29 @@ test("the reachable states use exactly the eleven labels of the plan", () => {
       "Open for bids",
       "Paid",
       "Paying out",
+      "Payout held for a buyer dispute",
       "Refunded",
       "Rejected (escrow still held)",
       "Verified (awaiting review)",
       "Waiting for payment",
     ],
   );
+});
+
+test("a buyer dispute holds an approved payout until PayPal resolves it for the seller, the same rule core applies", () => {
+  const approved = (providerDispute: StatusInput["providerDispute"]): StatusInput => ({ ...job("VERIFIED", "RELEASE_PENDING"), providerDispute });
+  assert.deepEqual(statusLabel(approved({ status: "OPEN", outcome: null })), { label: "Payout held for a buyer dispute", tone: "alert" });
+  assert.deepEqual(statusLabel(approved({ status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" })), { label: "Paying out", tone: "ok" });
+  assert.deepEqual(statusLabel(approved({ status: "RESOLVED", outcome: "CANCELED_BY_BUYER" })), { label: "Paying out", tone: "ok" });
+  assert.deepEqual(statusLabel(approved({ status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR" })), { label: "Payout held for a buyer dispute", tone: "alert" });
+  assert.deepEqual(statusLabel(approved({ status: "RESOLVED", outcome: null })), { label: "Payout held for a buyer dispute", tone: "alert" });
+  assert.deepEqual(statusLabel(approved(null)), { label: "Paying out", tone: "ok" });
+});
+
+test("a dispute on a job that is not paying out leaves its label as the phase reads it", () => {
+  const open = { status: "OPEN" as const, outcome: null };
+  assert.deepEqual(statusLabel({ ...job("VERIFIED", "AWAITING_CLIENT"), providerDispute: open }), { label: "Verified (awaiting review)", tone: "held" });
+  assert.deepEqual(statusLabel({ ...job("PAID", "PAID"), providerDispute: open }), { label: "Paid", tone: "ok" });
 });
 
 test("a status and phase pair that no state reaches throws rather than reading as another state", () => {
