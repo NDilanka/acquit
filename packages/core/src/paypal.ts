@@ -100,6 +100,10 @@ export type PayPalCall =
 	| { readonly kind: "REFUND"; readonly captureId: CaptureId; readonly payee: MerchantId; readonly amount: UsdCents }
 	/** From the platform account to the operator's merchant. No auth assertion: the platform pays its own balance. */
 	| { readonly kind: "REIMBURSE"; readonly merchant: MerchantId; readonly amount: UsdCents }
+	/** Disputes v1 provide-evidence on the capture's dispute. The payee names the merchant whose capture is disputed. */
+	| { readonly kind: "DISPUTE_EVIDENCE"; readonly disputeId: string; readonly notes: string; readonly payee: MerchantId }
+	/** Disputes v1 accept-claim on the capture's dispute. The payee names the merchant whose capture is disputed. */
+	| { readonly kind: "DISPUTE_ACCEPT"; readonly disputeId: string; readonly note: string; readonly payee: MerchantId }
 	| { readonly kind: "ONBOARD"; readonly operator: OperatorId };
 
 export type PayPalObservation =
@@ -113,7 +117,9 @@ export type PayPalObservation =
 	| { readonly kind: "ONBOARDING_COMPLETED"; readonly operator: OperatorId; readonly merchant: MerchantId }
 	/** The buyer dispute as PayPal holds it now. `outcome` is PayPal's outcome code, present once the dispute resolves. */
 	| { readonly kind: "DISPUTE"; readonly disputeId: DisputeId; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
-		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome?: string };
+		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome?: string; readonly simulated?: true }
+	/** PayPal took the answer. `note` names what PayPal already held when it answered 422, and is null on a 2xx. */
+	| { readonly kind: "DISPUTE_ANSWERED"; readonly disputeId: string; readonly answer: "EVIDENCE" | "ACCEPT"; readonly note: string | null };
 
 /** UNKNOWN never authorizes the opposite disposition. The outbox reconciles it with the same request id. */
 export type RemoteOutcome =
@@ -225,22 +231,32 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		tokenExpires = Date.parse(clock.now()) + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
 		return token;
 	}
-	async function request(method: "GET" | "POST", path: string, payee: MerchantId | null, body?: unknown, requestId?: string, extra: Record<string, string> = {}): Promise<unknown> {
+	/**
+	 * One API call. A FormData body goes out as multipart with the boundary fetch chooses. `tolerateEmpty` lets an
+	 * answer with no body read as null: a dispute write may return 200 or 204 with nothing in it.
+	 */
+	async function request(method: "GET" | "POST", path: string, payee: MerchantId | null, body?: unknown, requestId?: string, extra: Record<string, string> = {},
+		tolerateEmpty = false): Promise<unknown> {
+		const multipart = body instanceof FormData;
 		for (let attempt = 0; attempt < 3; attempt++) {
 			try {
-				const headers: Record<string, string> = { Authorization: `Bearer ${await accessToken()}`, "Content-Type": "application/json",
-					Prefer: "return=representation", ...extra };
+				const headers: Record<string, string> = { Authorization: `Bearer ${await accessToken()}`,
+					...(multipart ? {} : { "Content-Type": "application/json" }), Prefer: "return=representation", ...extra };
 				// A platform call pays from the platform's own balance and names no target merchant.
 				if (payee !== null) headers["PayPal-Auth-Assertion"] = authAssertion(config.clientId, payee);
 				if (requestId) headers["PayPal-Request-Id"] = requestId;
 				if (process.env.PAYPAL_PARTNER_ATTRIBUTION_ID) headers["PayPal-Partner-Attribution-Id"] = process.env.PAYPAL_PARTNER_ATTRIBUTION_ID;
 				const response = await fetch(normalizeLink(path, config.apiBase), {
-					method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+					method, headers, body: body === undefined ? undefined : multipart ? body : JSON.stringify(body),
 					signal: AbortSignal.timeout(15_000), redirect: "error",
 				});
 				if (!response.ok) {
 					if (response.status === 401) { token = null; tokenExpires = 0; }
 					throw new ProviderError(response.status, await errorBody(response));
+				}
+				if (tolerateEmpty) {
+					const text = await response.text();
+					return text.trim() === "" ? null : JSON.parse(text);
 				}
 				return await response.json();
 			} catch (error) {
@@ -451,6 +467,33 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		return dispute === null ? { kind: "HELD", detail: `Dispute ${id} is not readable` }
 			: { kind: "SETTLED", observation: { kind: "DISPUTE", ...dispute } };
 	}
+	/**
+	 * The provide-evidence body. Disputes v1 takes it as multipart with the JSON in an `input` part. The notes are the
+	 * whole evidence here: no document is uploaded, so `documents` is empty.
+	 */
+	function evidenceForm(notes: string): FormData {
+		const form = new FormData();
+		form.append("input", new Blob([JSON.stringify({ evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", notes, documents: [] }] })],
+			{ type: "application/json" }), "input.json");
+		return form;
+	}
+	/**
+	 * One dispute answer (Disputes v1). A 422 means PayPal already holds an answer, or the dispute has left the state
+	 * that takes one. That answer is on the dispute already, so it confirms with the note and is never retried.
+	 * Every other refusal or failure is left to the caller's guarded wrapper.
+	 */
+	async function disputeAnswerOutcome(answer: "EVIDENCE" | "ACCEPT", disputeId: string, payee: MerchantId, path: string, body: unknown,
+		requestId: string): Promise<RemoteOutcome> {
+		try {
+			await request("POST", path, payee, body, requestId, {}, true);
+			return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId, answer, note: null } };
+		} catch (error) {
+			if (error instanceof ProviderError && error.status === 422) {
+				return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId, answer, note: `PAYPAL_422_${issueOf(error.body) ?? "UNSPECIFIED"}` } };
+			}
+			throw error;
+		}
+	}
 	return {
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
@@ -494,6 +537,10 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			if (call.kind === "RELEASE") return releaseOutcome(call, requestId);
 			if (call.kind === "REFUND") return refundOutcome(call, requestId);
 			if (call.kind === "REIMBURSE") return reimburseOutcome(call, requestId);
+			if (call.kind === "DISPUTE_EVIDENCE") return disputeAnswerOutcome("EVIDENCE", call.disputeId, call.payee,
+				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/provide-evidence`, evidenceForm(call.notes), requestId);
+			if (call.kind === "DISPUTE_ACCEPT") return disputeAnswerOutcome("ACCEPT", call.disputeId, call.payee,
+				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/accept-claim`, { note: call.note }, requestId);
 			throw new Error("not implemented");
 		}, call.kind === "CREATE_ORDER"),
 		reconcile: (call, requestId) => guarded(async () => {
@@ -509,6 +556,8 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			if (call.kind === "RELEASE") return releaseOutcome(call, requestId);
 			if (call.kind === "REFUND") return refundOutcome(call, requestId);
 			if (call.kind === "REIMBURSE") return reimburseOutcome(call, requestId);
+			// Disputes v1 has no lookup by request id. The answer is sent again under the same id, and PayPal's 422 settles a repeat.
+			if (call.kind === "DISPUTE_EVIDENCE" || call.kind === "DISPUTE_ACCEPT") return { kind: "NOT_FOUND" };
 			throw new Error("not implemented");
 		}, false),
 		parseWebhook: async raw => raw.length > WEBHOOK_BODY_BYTES

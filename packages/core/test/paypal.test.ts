@@ -7,7 +7,7 @@ import test from "node:test";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
-import { createPayPal, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope } from "../src/paypal.ts";
+import { authAssertion, createPayPal, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope } from "../src/paypal.ts";
 import type { Bps, PayPalCall } from "../src/paypal.ts";
 
 const devon = "D3SSQU3ZEN7R2" as MerchantId;
@@ -311,15 +311,16 @@ const duplicatePayout = {
 const config = { apiBase: "https://api-m.sandbox.paypal.com" as const, webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 	webhookId: "", partnerMerchant: platform, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } };
 
-/** Answers the OAuth call, records every API call, and delegates the rest to the given wire. */
-function recordedWire(wire: (url: string, init: RequestInit) => Response): { calls: { readonly method: string; readonly path: string; readonly requestId: string | null; readonly body: unknown }[] } {
-	const calls: { method: string; path: string; requestId: string | null; body: unknown }[] = [];
+/** Answers the OAuth call, records every API call, and delegates the rest to the given wire. A multipart body is kept as the FormData it was sent as. */
+function recordedWire(wire: (url: string, init: RequestInit) => Response): { calls: { readonly method: string; readonly path: string; readonly requestId: string | null;
+	readonly body: unknown; readonly headers: Record<string, string> }[] } {
+	const calls: { method: string; path: string; requestId: string | null; body: unknown; headers: Record<string, string> }[] = [];
 	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		if (url.endsWith("/v1/oauth2/token")) return Response.json({ access_token: "recorded-token", expires_in: 300 });
 		const headers = (init?.headers ?? {}) as Record<string, string>;
 		calls.push({ method: init?.method ?? "GET", path: new URL(url).pathname, requestId: headers["PayPal-Request-Id"] ?? null,
-			body: init?.body === undefined ? null : JSON.parse(String(init.body)) });
+			body: init?.body === undefined ? null : init.body instanceof FormData ? init.body : JSON.parse(String(init.body)), headers });
 		return wire(url, init ?? {});
 	}) as typeof fetch;
 	return { calls };
@@ -466,5 +467,73 @@ test("a first release dispatches once and reads back the recorded payout item", 
 		assert.equal(outcome.observation.release.captureId, "4X1725081B3889825");
 		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path, entry.requestId, entry.body]),
 			[["POST", "/v1/payments/referenced-payouts-items", "aq-release", { reference_id: "4X1725081B3889825", reference_type: "TRANSACTION_ID" }]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("provide-evidence posts the notes as the multipart input part, under the request id and the payee's assertion", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => new Response(null, { status: 204 }));
+	try {
+		const notes = "Receipt rcpt_1 (receipt id) records job job_1 as delivered on attempt 1 (attemptsUsed).";
+		const outcome = await createPayPal(config).dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: "PP-D-9", notes, payee: devon }, "aq-dispute-evidence");
+		assert.deepEqual(outcome, { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: "PP-D-9", answer: "EVIDENCE", note: null } });
+		assert.equal(wire.calls.length, 1);
+		const [call] = wire.calls;
+		assert.equal(call.method, "POST");
+		assert.equal(call.path, "/v1/customer/disputes/PP-D-9/provide-evidence");
+		assert.equal(call.requestId, "aq-dispute-evidence");
+		assert.equal(call.headers["PayPal-Auth-Assertion"], authAssertion("test", devon));
+		// A multipart body sends no JSON content type, so fetch writes the multipart boundary itself.
+		assert.equal(call.headers["Content-Type"], undefined);
+		if (!(call.body instanceof FormData)) throw new Error("Expected the multipart body");
+		assert.deepEqual(JSON.parse(await (call.body.get("input") as Blob).text()),
+			{ evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", notes, documents: [] }] });
+	} finally { globalThis.fetch = original; }
+});
+
+test("accept-claim posts the note as JSON under the request id, and a 2xx confirms the answer", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => new Response(null, { status: 204 }));
+	try {
+		const note = "Acquit accepts the buyer's claim on dispute PP-D-9 for capture 4X1725081B3889825 on job job_1.";
+		const outcome = await createPayPal(config).dispatch({ kind: "DISPUTE_ACCEPT", disputeId: "PP-D-9", note, payee: devon }, "aq-dispute-accept");
+		assert.deepEqual(outcome, { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: "PP-D-9", answer: "ACCEPT", note: null } });
+		assert.deepEqual(wire.calls.map(entry => [entry.method, entry.path, entry.requestId, entry.body]),
+			[["POST", "/v1/customer/disputes/PP-D-9/accept-claim", "aq-dispute-accept", { note }]]);
+		assert.equal(wire.calls[0].headers["Content-Type"], "application/json");
+	} finally { globalThis.fetch = original; }
+});
+
+test("a dispute answer PayPal refuses with a 422 confirms with the note it already holds, and is sent once", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => Response.json({ name: "UNPROCESSABLE_ENTITY", details: [{ issue: "DISPUTE_NOT_IN_OPEN_STATE" }] }, { status: 422 }));
+	try {
+		const paypal = createPayPal(config);
+		assert.deepEqual(await paypal.dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: "PP-D-9", notes: "n", payee: devon }, "aq-dispute-evidence"),
+			{ kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: "PP-D-9", answer: "EVIDENCE", note: "PAYPAL_422_DISPUTE_NOT_IN_OPEN_STATE" } });
+		assert.deepEqual(await paypal.dispatch({ kind: "DISPUTE_ACCEPT", disputeId: "PP-D-9", note: "n", payee: devon }, "aq-dispute-accept"),
+			{ kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: "PP-D-9", answer: "ACCEPT", note: "PAYPAL_422_DISPUTE_NOT_IN_OPEN_STATE" } });
+		// The 422 is an answer PayPal already holds, so it is never resent by the request layer.
+		assert.deepEqual(wire.calls.map(entry => entry.path), ["/v1/customer/disputes/PP-D-9/provide-evidence", "/v1/customer/disputes/PP-D-9/accept-claim"]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a dispute answer that fails with a 5xx is unknown, not a refusal, and the write is not re-sent by the request layer", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => Response.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 500 }));
+	try {
+		const outcome = await createPayPal(config).dispatch({ kind: "DISPUTE_ACCEPT", disputeId: "PP-D-9", note: "n", payee: devon }, "aq-dispute-accept");
+		assert.equal(outcome.kind, "UNKNOWN");
+		assert.equal(wire.calls.length, 1);
+	} finally { globalThis.fetch = original; }
+});
+
+test("PayPal has no lookup for a dispute answer, so reconcile names it not found without a call", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => new Response(null, { status: 204 }));
+	try {
+		assert.deepEqual(await createPayPal(config).reconcile({ kind: "DISPUTE_EVIDENCE", disputeId: "PP-D-9", notes: "n", payee: devon }, "aq-dispute-evidence"),
+			{ kind: "NOT_FOUND" });
+		assert.deepEqual(wire.calls, []);
 	} finally { globalThis.fetch = original; }
 });

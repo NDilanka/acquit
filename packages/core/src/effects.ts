@@ -43,7 +43,9 @@ export function operationKey(effect: Effect): OperationKey {
 	// RELEASE, REFUND, REIMBURSE, and MERGE use (jobId, kind). One release and one refund key per job, ever.
 	// PAYPAL_ONBOARD uses (operator, kind). ALERT uses (jobId, kind, reason).
 	const owner = "jobId" in effect ? effect.jobId : effect.operator;
-	const round = "round" in effect ? effect.round : effect.kind === "START_VERIFIER" ? effect.attempt.run : effect.kind === "ALERT" ? effect.reason : "";
+	// One answer per dispute id: a second dispute on the same job is a different answer, not a replay of the first.
+	const round = "round" in effect ? effect.round : effect.kind === "START_VERIFIER" ? effect.attempt.run : effect.kind === "ALERT" ? effect.reason
+		: effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_ACCEPT" ? effect.disputeId : "";
 	// PayPal's request-id has a 38-character limit. This stable key is the same
 	// string in the outbox and at the provider, not a random key per attempt.
 	return `aq-${createHash("sha256").update(`${owner}:${effect.kind}:${round}`).digest("hex").slice(0, 32)}` as OperationKey;
@@ -61,6 +63,8 @@ export function toPayPalCall(effect: Effect): PayPalCall | null {
 		case "RELEASE": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee };
 		case "REFUND": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee, amount: effect.amount };
 		case "REIMBURSE": return { kind: effect.kind, merchant: effect.merchant, amount: effect.amount };
+		case "DISPUTE_EVIDENCE": return { kind: effect.kind, disputeId: effect.disputeId, notes: effect.notes, payee: effect.payee };
+		case "DISPUTE_ACCEPT": return { kind: effect.kind, disputeId: effect.disputeId, note: effect.note, payee: effect.payee };
 		case "PAYPAL_ONBOARD": return { kind: "ONBOARD", operator: effect.operator };
 		default: return null;
 	}
@@ -75,7 +79,8 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 		case "REFUND_COMPLETED": return { type: "RefundSettled", jobId, refund: observation.refund };
 		case "REIMBURSEMENT_COMPLETED": return { type: "ReimbursementSettled", jobId, reimbursement: observation.reimbursement };
 		case "DISPUTE": return { type: "ProviderDispute", jobId, disputeId: observation.disputeId, captureId: observation.captureId, status: observation.status,
-			reason: observation.reason, amount: observation.amount, openedAt: observation.openedAt, outcome: observation.outcome ?? null };
+			reason: observation.reason, amount: observation.amount, openedAt: observation.openedAt, outcome: observation.outcome ?? null,
+			...(observation.simulated === true ? { simulated: true as const } : {}) };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
 }
@@ -353,7 +358,8 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 }
 
 /** Where an outbox effect's work went. NONE is an effect the outbox settled without calling anyone outside. */
-export type OutboxReach = "PAYPAL" | "GITHUB" | "VERIFIER" | "ALERT" | "NONE";
+/** SIMULATED is a dispute answer a judge scenario's own simulated dispute owns: it was recorded and PayPal was not called. */
+export type OutboxReach = "PAYPAL" | "GITHUB" | "VERIFIER" | "ALERT" | "NONE" | "SIMULATED";
 /** One effect the outbox ran. `jobId` is null for an operator's effect, which belongs to no job. */
 export type OutboxRan = { readonly kind: Effect["kind"]; readonly jobId: JobId | null; readonly reach: OutboxReach };
 export type OutboxSweep = { readonly kind: "IDLE" } | { readonly kind: "WORKED"; readonly ran: OutboxRan };
@@ -389,6 +395,7 @@ export async function runOutboxEffect(ports: Ports, key?: OperationKey): Promise
 		await ports.store.recordEffect(row.key, { kind: "CONFIRMED", at: now });
 		return worked("ALERT");
 	}
+	if (effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_ACCEPT") return worked(await dispatchDisputeAnswer(ports, row.key, effect, now));
 	const call = toPayPalCall(effect);
 	// PAYPAL_ONBOARD belongs to an operator row, and the skeleton has no onboarding effect to deliver.
 	if (call === null || !("jobId" in effect)) {
@@ -581,6 +588,46 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 }
 
 /**
+ * Answers a PayPal buyer dispute with the evidence or the accepted claim the row decided. The effect's key is the
+ * PayPal-Request-Id. A 2xx confirms it, and so does a 422 (PayPal already holds an answer, or the dispute left the
+ * state that takes one), which is never retried. A simulated dispute never reaches PayPal. A dispute the row no
+ * longer holds open is PayPal's decision now, so nothing is sent for it.
+ */
+async function dispatchDisputeAnswer(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_ACCEPT" }>,
+	now: Instant): Promise<OutboxReach> {
+	// A simulated dispute's answer is recorded here and never sent: PayPal has no such dispute to answer.
+	if (effect.simulated) {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "SIMULATED";
+	}
+	const job = await ports.store.readJob(effect.jobId);
+	const dispute = job?.providerDispute;
+	if (job === null || dispute === undefined || dispute.id !== effect.disputeId || dispute.status === "RESOLVED") {
+		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		return "NONE";
+	}
+	const call: PayPalCall = effect.kind === "DISPUTE_EVIDENCE" ? { kind: effect.kind, disputeId: effect.disputeId, notes: effect.notes, payee: effect.payee }
+		: { kind: effect.kind, disputeId: effect.disputeId, note: effect.note, payee: effect.payee };
+	try {
+		const outcome = await ports.paypal.dispatch(call, providerRequestId(key));
+		if (outcome.kind === "CONFIRMED") {
+			const observation = outcome.observation;
+			if (observation.kind === "DISPUTE_ANSWERED" && observation.note !== null) {
+				console.warn(`Acquit: PayPal already held an answer for dispute ${logQuoted(effect.disputeId)} (${logQuoted(observation.note)}).`);
+			}
+			await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+		} else if (outcome.kind === "PERMANENT_FAILURE") {
+			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
+		} else {
+			await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+		}
+	} catch {
+		await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
+	}
+	return "PAYPAL";
+}
+
+/**
  * Merges the pull request the verifier opened. The App client reads the pull before it merges, so a
  * retry after an unknown answer adopts a merge that landed instead of opening a second one.
  */
@@ -711,6 +758,7 @@ function observationText(observation: PayPalObservation): string {
 		case "REFUND_COMPLETED": return `PayPal answered REFUND_COMPLETED for capture ${observation.refund.captureId} (refund ${observation.refund.refundId ?? "read back from the capture"})`;
 		case "REIMBURSEMENT_COMPLETED": return `PayPal answered REIMBURSEMENT_COMPLETED for batch ${observation.reimbursement.batchId}`;
 		case "DISPUTE": return `PayPal answered ${observation.status} for dispute ${observation.disputeId} (capture ${observation.captureId})`;
+		case "DISPUTE_ANSWERED": return `PayPal took the ${observation.answer} answer for dispute ${observation.disputeId}`;
 		case "ONBOARDING_LINK": return `PayPal answered ONBOARDING_LINK for operator ${observation.operator}`;
 		case "ONBOARDING_COMPLETED": return `PayPal answered ONBOARDING_COMPLETED for operator ${observation.operator}`;
 	}
