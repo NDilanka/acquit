@@ -3,7 +3,7 @@
 // A buyer-favour resolution on a held full-amount escrow settles the job as refunded, with no call to PayPal.
 
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import { applyJobCommand, effectWanted, releaseHeld, storedBook, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow, Plan } from "../src/job.ts";
@@ -511,6 +511,8 @@ test("a rework hands the open dispute's answer back, and the verified attempt af
 	const second = evidenceFrom(verified);
 	assert.equal(second.attempt, 2);
 	assert.equal(effectWanted(verified.next, second), true);
+	// Attempt 1's evidence answers a verdict the row no longer holds, so it is not wanted once attempt 2 passed.
+	assert.equal(effectWanted(verified.next, first), false);
 	assert.notEqual(operationKey(second), operationKey(first));
 	// The verdict is spent: a repeat of it is refused, so the evidence is filed once.
 	assert.equal(applyJobCommand(verified.next, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, paypalFacts(later)), "WRONG_STATE");
@@ -562,4 +564,51 @@ test("a refund ruled on an open dispute keeps the answer it had, queues only the
 	assert.deepEqual(refund.effects.map(effect => effect.kind), ["REFUND"]);
 	assert.equal(refund.next.providerDispute?.answer, "EVIDENCE");
 	assert.equal(effectWanted(refund.next, evidenceFrom(opened)), false);
+});
+
+test("attempt 1's evidence still queued when attempt 2 passes after a rework is done with no call, and attempt 2's evidence is sent once", async () => {
+	const started: VerifierRunId[] = [];
+	const afterRework = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", attempt: 2, simulated: false });
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(disputedRow(), async store => {
+			store.db.prepare("INSERT INTO job_manifests VALUES (?, ?)").run(jobId, JSON.stringify(manifestOf(demoFixture(exampleContract), "maya-client/invoice-app")));
+			const base = portsOver(store);
+			const ports: Ports = { ...base, verifier: { start: async request => { started.push(request.runId); }, parseCallback: async () => null } };
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open")).refused, null);
+			assert.equal((await executeCommand(ports, ruler, parseRequestKey(randomUUID()),
+				{ type: "ResolveDispute", jobId, verdict: "REWORK", note: "Scripted rework." })).kind, "COMMITTED");
+			// Nothing drained attempt 1's evidence before the rework was verified, so it is still queued when attempt 2 passes.
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "READY");
+			assert.equal((await executeCommand(ports, devon, parseRequestKey(randomUUID()), { type: "Submit", jobId, sourceCommit })).kind, "COMMITTED");
+			assert.equal(started.length, 1);
+			const verdict = { ...passedVerdict, runId: started[0], sourceCommit };
+			assert.equal((await applySystemCommand(ports, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, null,
+				`verifier:${started[0]}`)).refused, null);
+			// The queued attempt 1 evidence is done with no call. Attempt 2's evidence is the one PayPal receives.
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+			assert.deepEqual(calls, []);
+			assert.equal(await runOutboxOnce(ports, afterRework), "WORKED");
+			assert.equal(outboxStateOf(store, afterRework).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(afterRework) }]);
+	});
+});
+
+test("evidence queued before attempts were recorded, with no attempt on it, is still sent for the answer the row holds", async () => {
+	// The key a row queued before this change holds: the old key was the dispute id alone, and its effect names no attempt.
+	const legacyKey = `aq-${createHash("sha256").update(`${jobId}:DISPUTE_EVIDENCE:PP-D-9`).digest("hex").slice(0, 32)}` as OperationKey;
+	const { attempt: _attempt, ...withoutAttempt } = evidenceFrom(planOf(applyJobCommand(disputedRow(), dispute("OPEN"), paypalFacts(later))));
+	const legacy = withoutAttempt as unknown as JobEffect;
+	const open = planOf(applyJobCommand(disputedRow(), dispute("OPEN"), paypalFacts(later))).next;
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(open, async store => {
+			const ports = portsOver(store);
+			await store.commit({ job: null, operator: null, credits: [], settlement: null, request: null, delivery: null,
+				outbox: [{ key: legacyKey, effect: legacy, payloadDigest: "0".repeat(64) as Digest, state: { kind: "READY", runAt: later } }] });
+			assert.equal(await runOutboxOnce(ports, legacyKey), "WORKED");
+			assert.equal(outboxStateOf(store, legacyKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(legacyKey) }]);
+	});
 });

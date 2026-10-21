@@ -1123,10 +1123,13 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 		// An answer belongs to the dispute it names. It is wanted while that dispute is open under that id and the row still
 		// files it this way. A settled dispute, another dispute, or a later verdict that changed the answer leaves it unwanted.
 		// The evidence is wanted only while the row still answers with it, so a refund or rework that the arbiter ruled drops it.
+		// It is wanted only for the verified attempt the row answers with, so attempt 1's evidence is done once attempt 2 passed.
+		// A row queued before attempts were recorded carries none, and keeps the rule it always had.
 		case "DISPUTE_EVIDENCE": {
 			const dispute = row.providerDispute;
+			const attempt: Ordinal | undefined = effect.attempt;
 			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE" &&
-				disputeAnswerOf(row) === "EVIDENCE";
+				disputeAnswerOf(row) === "EVIDENCE" && (attempt === undefined || attempt === evidenceAttemptOf(row));
 		}
 		// The accepted claim is wanted only while the escrow is still held and no verified work is left to defend: the same
 		// ACCEPT disputeAnswerOf names for the row now.
