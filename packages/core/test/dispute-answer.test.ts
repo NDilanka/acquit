@@ -3,7 +3,7 @@
 // A buyer-favour resolution on a held full-amount escrow settles the job as refunded, with no call to PayPal.
 
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import { applyJobCommand, effectWanted, releaseHeld, storedBook, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow, Plan } from "../src/job.ts";
@@ -182,7 +182,7 @@ test("a partial dispute alerts a person, still files the answer, and keeps the j
 });
 
 test("each dispute id has its own answer key, a repeat of one id has the same key, and evidence and accept keys differ", () => {
-	const evidence = (disputeId: string): JobEffect => ({ kind: "DISPUTE_EVIDENCE", jobId, disputeId, payee: merchant, notes: "n", simulated: false });
+	const evidence = (disputeId: string): JobEffect => ({ kind: "DISPUTE_EVIDENCE", jobId, disputeId, payee: merchant, notes: "n", attempt: 1, simulated: false });
 	const accept = (disputeId: string): JobEffect => ({ kind: "DISPUTE_ACCEPT", jobId, disputeId, payee: merchant, note: "n", simulated: false });
 	assert.equal(operationKey(evidence("PP-D-9")), operationKey(evidence("PP-D-9")));
 	assert.notEqual(operationKey(evidence("PP-D-9")), operationKey(evidence("PP-D-10")));
@@ -383,7 +383,7 @@ function outboxStateOf(store: SqliteStore, key: OperationKey): { readonly kind: 
 	return JSON.parse(String(found.state)) as { readonly kind: string; readonly reason?: string };
 }
 
-const evidenceKey = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", simulated: false });
+const evidenceKey = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", attempt: 1, simulated: false });
 const acceptKey = operationKey({ kind: "DISPUTE_ACCEPT", jobId, disputeId: "PP-D-9", payee: merchant, note: "n", simulated: false });
 const evidencePath = "/v1/customer/disputes/PP-D-9/provide-evidence";
 const acceptPath = "/v1/customer/disputes/PP-D-9/accept-claim";
@@ -483,4 +483,132 @@ test("evidence queued for an open dispute is never sent once the arbiter rules a
 			assert.deepEqual(calls.filter(call => call.path === evidencePath), [], verdict);
 		});
 	}
+});
+
+/** The arbiter who rules a dispute, and the operator who submits the job's work. */
+const ruler: Actor = { role: "ARBITER", staffId: "staff-arbiter" as StaffId };
+const devon: Actor = { role: "OPERATOR", operatorId: "devon-ops" as OperatorId, tenant: null };
+
+test("a rework hands the open dispute's answer back, and the verified attempt after it answers the dispute with its own evidence, once", () => {
+	const opened = planOf(applyJobCommand(disputedRow(), dispute("OPEN"), paypalFacts(later)));
+	const first = evidenceFrom(opened);
+	assert.equal(first.attempt, 1);
+	const reworked = planOf(applyJobCommand(opened.next, { type: "ResolveDispute", jobId, verdict: "REWORK", note: "Scripted rework." }, userFacts(ruler)));
+	assert.equal(reworked.next.state.status, "IN_PROGRESS");
+	assert.equal(reworked.next.providerDispute?.status, "OPEN");
+	assert.equal(reworked.next.providerDispute?.answer, undefined);
+	assert.deepEqual(reworked.effects, []);
+	assert.equal(effectWanted(reworked.next, first), false);
+	// The next run is judged VERIFIED on the open dispute: its evidence is the answer, filed for attempt 2 under its own key.
+	const submitted = planOf(applyJobCommand(reworked.next, { type: "Submit", jobId, sourceCommit }, userFacts(devon)));
+	const attempts = (submitted.next.state as Extract<typeof submitted.next.state, { status: "IN_PROGRESS" }>).attempts;
+	if (attempts.phase !== "VERIFYING") throw new Error(`expected VERIFYING, got ${attempts.phase}`);
+	const verdict = { ...passedVerdict, runId: attempts.pending.runId, sourceCommit };
+	const verified = planOf(applyJobCommand(submitted.next, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, paypalFacts(later)));
+	assert.equal(verified.next.state.status, "VERIFIED");
+	assert.equal(verified.next.providerDispute?.answer, "EVIDENCE");
+	assert.deepEqual(verified.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	const second = evidenceFrom(verified);
+	assert.equal(second.attempt, 2);
+	assert.equal(effectWanted(verified.next, second), true);
+	// Attempt 1's evidence answers a verdict the row no longer holds, so it is not wanted once attempt 2 passed.
+	assert.equal(effectWanted(verified.next, first), false);
+	assert.notEqual(operationKey(second), operationKey(first));
+	// The verdict is spent: a repeat of it is refused, so the evidence is filed once.
+	assert.equal(applyJobCommand(verified.next, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, paypalFacts(later)), "WRONG_STATE");
+});
+
+test("an evidence answer's key names its dispute and its verified attempt, never the wording of its notes", () => {
+	const evidence = (disputeId: string, attempt: 1 | 2, notes: string): JobEffect =>
+		({ kind: "DISPUTE_EVIDENCE", jobId, disputeId, payee: merchant, notes, attempt, simulated: false });
+	assert.equal(operationKey(evidence("PP-D-9", 1, "first wording")), operationKey(evidence("PP-D-9", 1, "second wording")));
+	assert.notEqual(operationKey(evidence("PP-D-9", 1, "n")), operationKey(evidence("PP-D-9", 2, "n")));
+	assert.notEqual(operationKey(evidence("PP-D-9", 1, "n")), operationKey(evidence("PP-D-10", 1, "n")));
+});
+
+test("a rework, then the verified attempt after it, sends the evidence once through the outbox under a new request id, and a repeat sends nothing", async () => {
+	const started: VerifierRunId[] = [];
+	const afterRework = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", attempt: 2, simulated: false });
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(disputedRow(), async store => {
+			// A Submit starts a judged run only over a frozen manifest, so the job's manifest is written the way OpenJob writes it.
+			store.db.prepare("INSERT INTO job_manifests VALUES (?, ?)").run(jobId, JSON.stringify(manifestOf(demoFixture(exampleContract), "maya-client/invoice-app")));
+			const base = portsOver(store);
+			const ports: Ports = { ...base, verifier: { start: async request => { started.push(request.runId); }, parseCallback: async () => null } };
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open")).refused, null);
+			assert.equal((await executeCommand(ports, ruler, parseRequestKey(randomUUID()),
+				{ type: "ResolveDispute", jobId, verdict: "REWORK", note: "Scripted rework." })).kind, "COMMITTED");
+			// The rework hands the answer back: the first attempt's evidence is delivered as done, with no call.
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+			assert.deepEqual(calls, []);
+			assert.equal((await executeCommand(ports, devon, parseRequestKey(randomUUID()), { type: "Submit", jobId, sourceCommit })).kind, "COMMITTED");
+			assert.equal(started.length, 1);
+			const verdict = { ...passedVerdict, runId: started[0], sourceCommit };
+			assert.equal((await applySystemCommand(ports, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, null,
+				`verifier:${started[0]}`)).refused, null);
+			assert.equal(await runOutboxOnce(ports, afterRework), "WORKED");
+			assert.equal(outboxStateOf(store, afterRework).kind, "CONFIRMED");
+			// The same dispute delivered again, and the same attempt's answer again, sends nothing more.
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-repeat")).refused, null);
+			assert.equal(await runOutboxOnce(ports, afterRework), "IDLE");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(afterRework) }]);
+	});
+	assert.notEqual(providerRequestId(afterRework), providerRequestId(evidenceKey));
+});
+
+test("a refund ruled on an open dispute keeps the answer it had, queues only the refund, and files no dispute answer", () => {
+	const opened = planOf(applyJobCommand(disputedRow(), dispute("OPEN"), paypalFacts(later)));
+	const refund = planOf(applyJobCommand(opened.next, { type: "ResolveDispute", jobId, verdict: "REFUND", note: "Scripted refund." }, userFacts(ruler)));
+	assert.deepEqual(refund.effects.map(effect => effect.kind), ["REFUND"]);
+	assert.equal(refund.next.providerDispute?.answer, "EVIDENCE");
+	assert.equal(effectWanted(refund.next, evidenceFrom(opened)), false);
+});
+
+test("attempt 1's evidence still queued when attempt 2 passes after a rework is done with no call, and attempt 2's evidence is sent once", async () => {
+	const started: VerifierRunId[] = [];
+	const afterRework = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", attempt: 2, simulated: false });
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(disputedRow(), async store => {
+			store.db.prepare("INSERT INTO job_manifests VALUES (?, ?)").run(jobId, JSON.stringify(manifestOf(demoFixture(exampleContract), "maya-client/invoice-app")));
+			const base = portsOver(store);
+			const ports: Ports = { ...base, verifier: { start: async request => { started.push(request.runId); }, parseCallback: async () => null } };
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-open")).refused, null);
+			assert.equal((await executeCommand(ports, ruler, parseRequestKey(randomUUID()),
+				{ type: "ResolveDispute", jobId, verdict: "REWORK", note: "Scripted rework." })).kind, "COMMITTED");
+			// Nothing drained attempt 1's evidence before the rework was verified, so it is still queued when attempt 2 passes.
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "READY");
+			assert.equal((await executeCommand(ports, devon, parseRequestKey(randomUUID()), { type: "Submit", jobId, sourceCommit })).kind, "COMMITTED");
+			assert.equal(started.length, 1);
+			const verdict = { ...passedVerdict, runId: started[0], sourceCommit };
+			assert.equal((await applySystemCommand(ports, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, null,
+				`verifier:${started[0]}`)).refused, null);
+			// The queued attempt 1 evidence is done with no call. Attempt 2's evidence is the one PayPal receives.
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+			assert.deepEqual(calls, []);
+			assert.equal(await runOutboxOnce(ports, afterRework), "WORKED");
+			assert.equal(outboxStateOf(store, afterRework).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(afterRework) }]);
+	});
+});
+
+test("evidence queued before attempts were recorded, with no attempt on it, is still sent for the answer the row holds", async () => {
+	// The key a row queued before this change holds: the old key was the dispute id alone, and its effect names no attempt.
+	const legacyKey = `aq-${createHash("sha256").update(`${jobId}:DISPUTE_EVIDENCE:PP-D-9`).digest("hex").slice(0, 32)}` as OperationKey;
+	const { attempt: _attempt, ...withoutAttempt } = evidenceFrom(planOf(applyJobCommand(disputedRow(), dispute("OPEN"), paypalFacts(later))));
+	const legacy = withoutAttempt as unknown as JobEffect;
+	const open = planOf(applyJobCommand(disputedRow(), dispute("OPEN"), paypalFacts(later))).next;
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(open, async store => {
+			const ports = portsOver(store);
+			await store.commit({ job: null, operator: null, credits: [], settlement: null, request: null, delivery: null,
+				outbox: [{ key: legacyKey, effect: legacy, payloadDigest: "0".repeat(64) as Digest, state: { kind: "READY", runAt: later } }] });
+			assert.equal(await runOutboxOnce(ports, legacyKey), "WORKED");
+			assert.equal(outboxStateOf(store, legacyKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(legacyKey) }]);
+	});
 });

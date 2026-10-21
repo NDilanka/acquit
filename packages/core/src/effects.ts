@@ -44,8 +44,10 @@ export function operationKey(effect: Effect): OperationKey {
 	// PAYPAL_ONBOARD uses (operator, kind). ALERT uses (jobId, kind, reason).
 	const owner = "jobId" in effect ? effect.jobId : effect.operator;
 	// One answer per dispute id: a second dispute on the same job is a different answer, not a replay of the first.
+	// Evidence is also per verified attempt, so the attempt after a rework is a new answer. The notes wording is never part of the key.
 	const round = "round" in effect ? effect.round : effect.kind === "START_VERIFIER" ? effect.attempt.run : effect.kind === "ALERT" ? effect.reason
-		: effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_ACCEPT" ? effect.disputeId : "";
+		: effect.kind === "DISPUTE_EVIDENCE" ? `${effect.disputeId}:${effect.attempt}`
+		: effect.kind === "DISPUTE_ACCEPT" ? effect.disputeId : "";
 	// PayPal's request-id has a 38-character limit. This stable key is the same
 	// string in the outbox and at the provider, not a random key per attempt.
 	return `aq-${createHash("sha256").update(`${owner}:${effect.kind}:${round}`).digest("hex").slice(0, 32)}` as OperationKey;
