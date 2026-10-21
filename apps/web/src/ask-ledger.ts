@@ -20,6 +20,7 @@ import { api, ApiError } from "./api.ts";
 import type { DashboardId } from "./dashboard-widgets.ts";
 import { FIGURE_LABELS, isFigureId } from "../../../packages/core/src/explain.ts";
 import { isFigureTrace } from "./figure-trace.ts";
+import { shortId, usd } from "./format.ts";
 
 export const ASK_AGENT_ID = "ask-ledger";
 export const ASK_AGENT_NAME = "Ask the ledger";
@@ -459,8 +460,8 @@ export const OPERATOR_ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
 
 // ---- the PayPal cards ---------------------------------------------------------------------------
 
-/** The PayPal tools whose answer the Studio chat draws as a card. */
-export const LEDGER_CARD_TOOLS = ["list_disputes", "get_dispute", "get_refund", "list_transactions"] as const;
+/** The tools whose answer the Studio chat draws as a card: PayPal's order and reads, and an operator's payouts and totals. The model reads the same JSON either way. */
+export const LEDGER_CARD_TOOLS = ["get_order", "list_disputes", "get_dispute", "get_refund", "list_transactions", "my_payouts", "my_totals"] as const;
 
 /** One card row. `mono` sets the label or the value in monospace, for a PayPal id. */
 export type LedgerCardRow = { readonly label: string; readonly value: string; readonly mono?: "label" | "value" };
@@ -476,11 +477,18 @@ type Wire = Record<string, unknown>;
 const wire = (value: unknown): Wire => (typeof value === "object" && value !== null && !Array.isArray(value) ? value as Wire : {});
 const wireList = (value: unknown): Wire[] => (Array.isArray(value) ? value.map(wire) : []);
 const wireText = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
+// PayPal's order amounts carry currency_code; the server's money carries currency.
 const moneyText = (value: unknown): string | null => {
   const amount = wireText(wire(value).value);
-  return amount === null ? null : [amount, wireText(wire(value).currency)].filter((part) => part !== null).join(" ");
+  return amount === null ? null : [amount, wireText(wire(value).currency) ?? wireText(wire(value).currency_code)].filter((part) => part !== null).join(" ");
 };
 const joined = (parts: readonly (string | null)[]): string => parts.filter((part): part is string => part !== null).join(", ");
+/** How many payouts the card lists before its count row. */
+const PAYOUT_ROWS = 10;
+/** Cents as the ledger's USD text, or null when the wire carries no number. */
+const centsText = (value: unknown): string | null => (typeof value === "number" && Number.isFinite(value) ? usd(value) : null);
+/** A count with its noun, singular for one, or null when the wire carries no number. */
+const countText = (value: unknown, noun: string): string | null => (typeof value === "number" && Number.isFinite(value) ? `${value} ${noun}${value === 1 ? "" : "s"}` : null);
 
 /** A PayPal tool's answer as its card: a title and the key fields as rows. Null for any other tool. */
 export function ledgerCard(name: string, value: unknown): LedgerCard | null {
@@ -517,6 +525,53 @@ export function ledgerCard(name: string, value: unknown): LedgerCard | null {
       const note = wireText(body.note);
       if (note !== null) rows.push({ label: "Note", value: note });
       return { title: "Refund", rows };
+    }
+    case "get_order": {
+      // PayPal's order body. Its one purchase unit carries the amount, the payee, and the capture; a field the order lacks is left out.
+      const unit: Wire = wireList(body.purchase_units)[0] ?? {};
+      const capture: Wire = wireList(wire(unit.payments).captures)[0] ?? {};
+      const payee = wire(unit.payee);
+      const rows: LedgerCardRow[] = [];
+      const orderId = wireText(body.id);
+      if (orderId !== null) rows.push({ label: "Order", value: orderId, mono: "value" });
+      const status = wireText(body.status);
+      if (status !== null) rows.push({ label: "Status", value: status });
+      const amount = moneyText(unit.amount);
+      if (amount !== null) rows.push({ label: "Amount", value: amount });
+      const captureId = wireText(capture.id);
+      if (captureId !== null) rows.push({ label: "Capture", value: captureId, mono: "value" });
+      const captureStatus = wireText(capture.status);
+      if (captureStatus !== null) rows.push({ label: "Capture status", value: captureStatus });
+      const merchant = wireText(payee.merchant_id);
+      const email = wireText(payee.email_address);
+      if (merchant !== null) rows.push({ label: "Payee", value: merchant, mono: "value" });
+      else if (email !== null) rows.push({ label: "Payee", value: email });
+      const created = wireText(body.create_time);
+      if (created !== null) rows.push({ label: "Created", value: created });
+      return { title: "PayPal order", rows };
+    }
+    case "my_payouts": {
+      const payouts = wireList(body.payouts);
+      if (payouts.length === 0) return { title: "Your payouts", rows: [{ label: "Payouts", value: "No payouts yet" }] };
+      const rows: LedgerCardRow[] = payouts.slice(0, PAYOUT_ROWS).map((payout): LedgerCardRow => {
+        const job = wireText(payout.jobId);
+        return { label: wireText(payout.payoutItemId) ?? "Payout",
+          value: joined([job === null ? null : shortId(job), centsText(payout.paidCents), wireText(payout.releasedAt)]), mono: "label" };
+      });
+      if (payouts.length > PAYOUT_ROWS) rows.push({ label: "Payouts", value: `${payouts.length} in all; the first ${PAYOUT_ROWS} are shown` });
+      return { title: "Your payouts", rows };
+    }
+    case "my_totals": {
+      const rows: LedgerCardRow[] = [];
+      const paidOut = centsText(body.paidOutCents);
+      if (paidOut !== null) rows.push({ label: "Paid out", value: paidOut });
+      const fees = centsText(body.feesWithheldCents);
+      if (fees !== null) rows.push({ label: "Fees withheld", value: fees });
+      const jobsPaid = countText(body.jobsPaid, "job");
+      if (jobsPaid !== null) rows.push({ label: "Jobs paid", value: jobsPaid });
+      const held = joined([centsText(body.heldCents), countText(body.heldJobs, "job")]);
+      if (held !== "") rows.push({ label: "Held", value: held });
+      return { title: "Your totals", rows };
     }
     case "list_transactions": {
       const transactions = wireList(body.transactions);
