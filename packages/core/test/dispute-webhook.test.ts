@@ -37,8 +37,9 @@ test("a DISPUTE envelope through the dev replay route applies to the job that ho
 		assert.equal(response.status, 202);
 		assert.deepEqual(await response.json(), { received: true });
 		const after = await h.store.readJob(jobId);
+		// A funded job with no verified attempt accepts the buyer's claim, the answer it files on the first delivery.
 		assert.deepEqual(after?.providerDispute, { id: "PP-D-9", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
-			amount: usd("400.00"), openedAt: instant("2026-10-06T12:30:00Z") });
+			amount: usd("400.00"), openedAt: instant("2026-10-06T12:30:00Z"), answer: "ACCEPT" });
 		assert.equal(after?.version, (before.version + 1));
 		// The dispute is not simulated, so PayPal was asked for it, and the delivery reads back as applied on the dev path.
 		assert.deepEqual(h.disputeReads, ["PP-D-9"]);

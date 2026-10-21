@@ -77,9 +77,10 @@ test("an open buyer dispute is recorded on an awaiting job without moving its ph
 	const row = verifiedRow();
 	const opened = planOf(applyJobCommand(row, dispute(row.id, "OPEN"), paypalFacts(later)));
 	assert.deepEqual(opened.next.providerDispute, { id: "PP-D-9", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
-		amount: usd("420.00"), openedAt: later });
+		amount: usd("420.00"), openedAt: later, answer: "EVIDENCE" });
 	assert.deepEqual(reviewOf(opened.next), { phase: "AWAITING_CLIENT", endsAt: reviewEndsAt });
-	assert.deepEqual(opened.effects, []);
+	// The held job files its evidence once. It emits no release, and the dispute still holds the payout.
+	assert.deepEqual(opened.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
 	assert.equal(releaseHeld(opened.next), true);
 });
 
@@ -121,14 +122,18 @@ test("a seller-favour resolution lifts the hold, and the approval held while it 
 	assert.deepEqual(reviewOf(resolved.next), { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: now } });
 });
 
-test("a buyer-favour resolution records its outcome and keeps the release held", () => {
+test("a buyer-favour resolution on a held full-amount escrow settles the job as refunded, with no outbound call", () => {
 	const row = verifiedRow();
 	const opened = planOf(applyJobCommand(row, dispute(row.id, "OPEN"), paypalFacts(later)));
 	const approved = planOf(applyJobCommand(opened.next, { type: "Approve", jobId: row.id, mergeCommit: judgedCommit }, userFacts(maya)));
 	const lost = planOf(applyJobCommand(approved.next, dispute(row.id, "RESOLVED", "RESOLVED_BUYER_FAVOUR"), paypalFacts(later)));
 	assert.equal(lost.next.providerDispute?.outcome, "RESOLVED_BUYER_FAVOUR");
+	// PayPal already reversed the funds, so the job settles as refunded and no REFUND effect is emitted.
+	assert.equal(lost.next.state.status, "REFUNDED");
+	if (lost.next.state.status !== "REFUNDED") throw new Error("expected REFUNDED");
+	assert.equal(lost.next.state.reason, "PROVIDER_DISPUTE");
+	assert.equal(lost.next.state.refund.refunded, usd("420.00"));
 	assert.deepEqual(lost.effects, []);
-	assert.equal(releaseHeld(lost.next), true);
 });
 
 test("a second dispute id on the same job is refused as a settlement mismatch", () => {
@@ -149,7 +154,7 @@ test("a resolved dispute is final: its own repeat is already settled and changes
 	assert.deepEqual(repeat.effects, []);
 });
 
-test("a dispute recorded on a paid job alerts a person and changes no state", () => {
+test("a dispute recorded on a paid job alerts a person and files the receipt, and changes no state", () => {
 	const row = verifiedRow();
 	const approved = planOf(applyJobCommand(row, { type: "Approve", jobId: row.id, mergeCommit: judgedCommit }, userFacts(maya)));
 	const paid = planOf(applyJobCommand(approved.next, { type: "ReleaseSettled", jobId: row.id,
@@ -159,7 +164,9 @@ test("a dispute recorded on a paid job alerts a person and changes no state", ()
 	const disputed = planOf(applyJobCommand(paid.next, dispute(row.id, "OPEN"), paypalFacts(later)));
 	assert.deepEqual(disputed.next.state, paid.next.state);
 	assert.equal(disputed.next.providerDispute?.status, "OPEN");
-	assert.deepEqual(disputed.effects, [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }]);
+	// The receipt is the answer, filed once. The alert names the paid job for a person; the state is untouched.
+	assert.deepEqual(disputed.effects.map(effect => effect.kind), ["ALERT", "DISPUTE_EVIDENCE"]);
+	assert.deepEqual(disputed.effects[0], { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" });
 });
 
 test("a dispute envelope parses to a DISPUTE resource named by its dispute_id", async () => {

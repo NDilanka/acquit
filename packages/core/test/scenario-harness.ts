@@ -56,7 +56,7 @@ function verdictFor(tree: ScriptedTree, request: VerifierRunRequest, at: Instant
 /** A dispute as PayPal's read answers it, keyed by the dispute id the test names. */
 type DisputeObservation = Extract<PayPalObservation, { kind: "DISPUTE" }>;
 
-function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation>, disputeReads: string[]): PayPal {
+function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation>, disputeReads: string[], dispatches: string[]): PayPal {
 	const quotes = new Map<string, FeeQuote>();
 	const cardOrders = new Set<string>();
 	const quoteOf = (key: string): FeeQuote => {
@@ -72,6 +72,8 @@ function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation
 	const unused = (): never => { throw new Error("not used by the scenarios"); };
 	return {
 		async dispatch(call: PayPalCall, requestId: string): Promise<RemoteOutcome> {
+			// Every call that reaches PayPal's write path is recorded by kind, so a test can name the ones a run never sent.
+			dispatches.push(call.kind);
 			if (call.kind === "CREATE_ORDER") {
 				const orderId = `ORDER-${call.jobId}` as OrderId;
 				quotes.set(orderId, call.quote);
@@ -94,6 +96,11 @@ function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation
 				const reimbursement: ReimbursementEvidence = { batchId: `BATCH-${requestId}` as PayoutBatchId, itemId: `ITEM-${requestId}` as PayoutItemId,
 					merchant: call.merchant, paid: call.amount, fee: usd("0.25"), at: now() };
 				return { kind: "CONFIRMED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement } };
+			}
+			// PayPal takes a dispute answer for a dispute it holds. A simulated dispute's answer is never dispatched.
+			if (call.kind === "DISPUTE_EVIDENCE" || call.kind === "DISPUTE_ACCEPT") {
+				return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: call.disputeId,
+					answer: call.kind === "DISPUTE_EVIDENCE" ? "EVIDENCE" : "ACCEPT", note: null } };
 			}
 			return unused();
 		},
@@ -145,6 +152,8 @@ export type Harness = {
 	readonly paypalDisputes: Map<string, DisputeObservation>;
 	/** Every dispute id the fake PayPal was asked to read, in order. A simulated dispute never appears here. */
 	readonly disputeReads: string[];
+	/** The kind of every call the fake PayPal's write path was asked to send, in order. A dispute answer a simulated dispute owns never appears here. */
+	readonly paypalDispatches: string[];
 };
 
 export async function harness(options: HarnessOptions = {}): Promise<Harness> {
@@ -179,12 +188,13 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const github = options.github ?? createFakeGitHubApp();
 	const paypalDisputes = new Map<string, DisputeObservation>();
 	const disputeReads: string[] = [];
+	const paypalDispatches: string[] = [];
 	acquit = createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
 		github: { appId: "", privateKey: "", organization: "" },
-		adapters: { paypal: fakePayPal(clock, paypalDisputes, disputeReads), github } });
+		adapters: { paypal: fakePayPal(clock, paypalDisputes, disputeReads, paypalDispatches), github } });
 	const store = new SqliteStore(path);
 	const noFork = async (scenarioOf?: string): Promise<DemoVisitorResult> => provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test",
 		...(scenarioOf === undefined ? {} : { scenarioOf }), fork: async () => ({ kind: "NO_APP" }) });
@@ -203,7 +213,7 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const deps: ScenarioDeps = { acquit, store: { readJob: id => store.readJob(id), db }, workspace, runs,
 		now: clock, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
 	return { acquit, store, github, deps, path, visitor: provisioned.visitor, provision: async requester => noFork(requester.id), setClock: at => { now = at; },
-		paypalDisputes, disputeReads,
+		paypalDisputes, disputeReads, paypalDispatches,
 		dispose: async () => {
 			deps.store.db.close();
 			store.close();

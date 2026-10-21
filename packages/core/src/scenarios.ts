@@ -63,7 +63,10 @@ function labelOfReached(reached: readonly ScenarioReachLabel[]): ScenarioLabel {
  * alert is one too: it goes to the process log, and the API wires no alert sink.
  */
 export function settleLabelOf(ran: readonly OutboxRan[]): ScenarioLabel {
-	return labelOfReached(reachedOf(ran));
+	const reached = reachedOf(ran);
+	// A dispute answer a simulated dispute owns reached no outside place, and it is labelled as the simulated dispute it answers.
+	if (reached.length === 0 && ran.some(effect => effect.reach === "SIMULATED")) return SCENARIO_LABELS.simulatedDispute;
+	return labelOfReached(reached);
 }
 
 export type ScenarioActor = "CLIENT" | "OPERATOR" | "ARBITER" | "SYSTEM";
@@ -500,7 +503,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		const capture = row.state.escrow.capture;
 		const next: SimulatedDispute = status === "OPEN"
 			? { kind: "DISPUTE", disputeId: `SIM-${runId}` as DisputeId, captureId: capture.captureId, status,
-				reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", amount: capture.gross, openedAt: deps.now() }
+				reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", amount: capture.gross, openedAt: deps.now(), simulated: true }
 			: { ...simulatedDispute!, status, outcome: "RESOLVED_SELLER_FAVOUR" };
 		simulatedDispute = next;
 		recordSimulatedDispute(deps.store.db, { id: runId, jobId: ctx.jobId! }, next);
