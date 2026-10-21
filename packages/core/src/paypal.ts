@@ -478,9 +478,10 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		return form;
 	}
 	/**
-	 * One dispute answer (Disputes v1). A 422 means PayPal already holds an answer, or the dispute has left the state
-	 * that takes one. That answer is on the dispute already, so it confirms with the note and is never retried.
-	 * Every other refusal or failure is left to the caller's guarded wrapper.
+	 * One dispute answer (Disputes v1). A 422 whose issue says PayPal already holds an answer, or the dispute has left the
+	 * state that takes one, confirms with the note and is never retried. Any other 422 is a refusal for a person: it is a
+	 * PERMANENT_FAILURE, not a retry. Every other refusal or failure is left to the caller's guarded wrapper, which makes a
+	 * non-retryable 4xx permanent and leaves 5xx, 401, 408, 409, and 429 unknown.
 	 */
 	async function disputeAnswerOutcome(answer: "EVIDENCE" | "ACCEPT", disputeId: string, payee: MerchantId, path: string, body: unknown,
 		requestId: string): Promise<RemoteOutcome> {
@@ -489,7 +490,11 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId, answer, note: null } };
 		} catch (error) {
 			if (error instanceof ProviderError && error.status === 422) {
-				return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId, answer, note: `PAYPAL_422_${issueOf(error.body) ?? "UNSPECIFIED"}` } };
+				const issue = issueOf(error.body);
+				if (issue !== null && SETTLED_DISPUTE_ANSWER_ISSUE.test(issue)) {
+					return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId, answer, note: `PAYPAL_422_${issue}` } };
+				}
+				return { kind: "PERMANENT_FAILURE", reason: `PAYPAL_422_${issue ?? "UNSPECIFIED"}` };
 			}
 			throw error;
 		}
@@ -735,6 +740,14 @@ export function parseDispute(json: unknown, captureId: CaptureId): Omit<Extract<
 function nameOf(body: unknown): string | null {
 	try { return text(object(body).name); } catch { return null; }
 }
+
+/**
+ * The 422 issues that say a dispute answer is settled: PayPal already holds an answer, or the dispute has left the state
+ * that takes one. Matched narrowly, so any other 422 is refused for a person and never taken as a confirmation.
+ * UNVERIFIED against live PayPal: no sandbox response has yet shown these names. NOT_ALLOWED is left out on purpose,
+ * because a generic not-allowed can be a permission refusal rather than a settled answer.
+ */
+const SETTLED_DISPUTE_ANSWER_ISSUE = /ALREADY|NOT_IN_OPEN_STATE|INVALID_DISPUTE_(STATUS|STATE)/;
 
 /** The issue code PayPal puts in the first detail entry. */
 function issueOf(body: unknown): string | null {

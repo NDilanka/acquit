@@ -590,8 +590,8 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 /**
  * Answers a PayPal buyer dispute with the evidence or the accepted claim the row decided. The effect's key is the
  * PayPal-Request-Id. A 2xx confirms it, and so does a 422 (PayPal already holds an answer, or the dispute left the
- * state that takes one), which is never retried. A simulated dispute never reaches PayPal. A dispute the row no
- * longer holds open is PayPal's decision now, so nothing is sent for it.
+ * state that takes one), which is never retried. A simulated dispute never reaches PayPal. An answer the row no longer
+ * wants (see effectWanted: a settled dispute, another dispute, or an answer a later verdict changed) is never sent.
  */
 async function dispatchDisputeAnswer(ports: Ports, key: OperationKey, effect: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_ACCEPT" }>,
 	now: Instant): Promise<OutboxReach> {
@@ -601,8 +601,7 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey, effect: Ex
 		return "SIMULATED";
 	}
 	const job = await ports.store.readJob(effect.jobId);
-	const dispute = job?.providerDispute;
-	if (job === null || dispute === undefined || dispute.id !== effect.disputeId || dispute.status === "RESOLVED") {
+	if (job === null || !effectWanted(job, effect)) {
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
 		return "NONE";
 	}

@@ -675,10 +675,17 @@ function transitionTable(): {
 			if (verdict.result === "VERIFIED") {
 				const passed: PassedAttempt = { ordinal, verdict };
 				const history = [...attempts.history, passed] as History;
-				return { next: { ...row, version: (row.version + 1) as Version,
-					state: { status: "VERIFIED", escrow: row.state.escrow, history, passed,
-						review: { phase: "AWAITING_CLIENT", endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
-						runsStarted: attempts.runsStarted } }, credits: [], effects: [] };
+				const verified = { ...row, version: (row.version + 1) as Version,
+					state: { status: "VERIFIED" as const, escrow: row.state.escrow, history, passed,
+						review: { phase: "AWAITING_CLIENT" as const, endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
+						runsStarted: attempts.runsStarted } };
+				// A buyer dispute this row answered with the claim, while its work was unverified, now has verified work to defend.
+				// The answer turns to evidence once, keyed by the dispute. The queued accept no longer belongs to the row, so it is never sent.
+				const dispute = row.providerDispute;
+				if (dispute === undefined || dispute.status === "RESOLVED" || dispute.answer !== "ACCEPT") return { next: verified, credits: [], effects: [] };
+				const defended: ProviderDispute = { ...dispute, answer: "EVIDENCE" };
+				return { next: { ...verified, providerDispute: defended }, credits: [],
+					effects: answerEffects(verified, dispute.id, "EVIDENCE", dispute.simulated === true) };
 			}
 			const rejected: RejectedAttempt = { ordinal, verdict };
 			const history = [...attempts.history, rejected] as History;
@@ -849,9 +856,10 @@ function transitionTable(): {
 			const partial = gross !== null && command.amount < gross;
 			if (first && partial) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL" });
 			// PayPal decided for the buyer on the whole held capture: it already reversed the funds, so the book refunds the held gross
-			// with no outbound call. A partial buyer win is not settled here; the hold stays and a person decides.
+			// with no outbound call. A refund this row already selected is settled here too: PayPal's reversal is the refund, and the
+			// queued REFUND then has no intent left to send. A partial buyer win is not settled here; the hold stays and a person decides.
 			const escrow = heldEscrowOf(row);
-			if (buyerFavour && escrow !== null && refundIntentOf(row) === null) {
+			if (buyerFavour && escrow !== null) {
 				if (partial) return { next: recorded, credits: [], effects: [...effects, { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL_LOST" }] };
 				const book = reduceLedger(escrow.book, { kind: "Refund", refunded: escrow.capture.gross, at: facts.now });
 				if ("kind" in book) return settlementMismatch(row);
@@ -1089,6 +1097,19 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 			const treasury = row.state.treasury;
 			return treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED") &&
 				!treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID");
+		}
+		// An answer belongs to the dispute it names. It is wanted while that dispute is open under that id and the row still
+		// files it this way. A settled dispute, another dispute, or a later verdict that changed the answer leaves it unwanted.
+		case "DISPUTE_EVIDENCE": {
+			const dispute = row.providerDispute;
+			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE";
+		}
+		// The accepted claim is wanted only while the escrow is still held and no verified work is left to defend: the same
+		// ACCEPT disputeAnswerOf names for the row now.
+		case "DISPUTE_ACCEPT": {
+			const dispute = row.providerDispute;
+			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "ACCEPT" &&
+				disputeAnswerOf(row) === "ACCEPT";
 		}
 		default: return true;
 	}
