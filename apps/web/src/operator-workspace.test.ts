@@ -50,6 +50,7 @@ const BASE: TimelineJob = {
   viewerCanDispute: false,
   dispute: null,
   arbiterNote: null,
+  providerDispute: null,
   releaseAuthority: null,
   refundReason: null,
   escrow: "NONE",

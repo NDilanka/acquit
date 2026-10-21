@@ -29,7 +29,7 @@ import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryE
 import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
-import type { CaptureEvidence, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
+import type { CaptureEvidence, DisputeId, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
 import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
@@ -296,6 +296,11 @@ export type JobRow<S extends JobState = JobState> = {
 	 */
 	readonly arbiterNote?: string;
 	/**
+	 * The PayPal buyer dispute against this job's capture, in any state. It is not the in-app review dispute:
+	 * while it is open, no release is emitted, and a release it held proceeds only on a seller-favour resolution.
+	 */
+	readonly providerDispute?: ProviderDispute;
+	/**
 	 * The funding source the job's client chose, read at the store boundary from beside the row. Absent
 	 * on a raw row and null on a job nobody chose for, where the deployment's default applies.
 	 */
@@ -326,8 +331,23 @@ export type JobEffect =
 	| {
 		readonly kind: "ALERT";
 		readonly jobId: JobId;
-		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH";
+		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH" | "PROVIDER_DISPUTE_ON_PAID";
 	};
+
+/** A PayPal buyer dispute, as PayPal last answered for it. `outcome` is PayPal's code once the dispute resolves. */
+export type ProviderDispute = {
+	readonly id: string;
+	readonly status: string;
+	readonly reason: string;
+	readonly amount: UsdCents;
+	readonly openedAt: Instant;
+	readonly outcome?: string;
+	readonly resolvedAt?: Instant;
+};
+
+/** The dispute as the job view serves it. Null on a job no buyer dispute has reached. */
+export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents;
+	readonly openedAt: Instant; readonly outcome: string | null };
 
 // The table
 
@@ -412,6 +432,8 @@ function transitionTable(): {
 	RefundSettled: Edge<JobRow, JobRef & { readonly refund: RefundEvidence }, JobRow<RefundedState> | JobRow, "SYSTEM">;
 	ReimbursementSettled: Edge<JobRow<RefundedState>, JobRef & { readonly reimbursement: ReimbursementEvidence }, JobRow<RefundedState>, "SYSTEM">;
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
+	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
+		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome: string | null }, JobRow, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
 	// OpenJob
@@ -657,7 +679,7 @@ function transitionTable(): {
 			if (artifactOf(command) !== row.state.passed.verdict.mergeCommit) return "ARTIFACT_CHANGED";
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "CLIENT_APPROVAL", selectedAt: facts.now } } } },
-				credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
+				credits: [], effects: releaseEffects(row, row.state.escrow) };
 		} },
 		Dispute: { by: "CLIENT", apply: (row, command, facts) => {
 			// A dispute names the same judged artifact an approval would: a moved head is refused by name.
@@ -675,7 +697,7 @@ function transitionTable(): {
 			if (command.verdict === "UPHOLD") {
 				return { next: { ...row, version: (row.version + 1) as Version, arbiterNote: command.note,
 					state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "ARBITER_UPHELD", selectedAt: facts.now } } } },
-					credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
+					credits: [], effects: releaseEffects(row, row.state.escrow) };
 			}
 			if (command.verdict === "REFUND") {
 				return { next: { ...row, version: (row.version + 1) as Version, arbiterNote: command.note,
@@ -774,6 +796,29 @@ function transitionTable(): {
 			if (row.state.merge.phase !== "PENDING") return unchanged(row);
 			return { next: { ...row, version: (row.version + 1) as Version, state: { ...row.state, merge: command.outcome } }, credits: [], effects: [] };
 		} },
+		ProviderDispute: { by: "SYSTEM", apply: (row, command, facts) => {
+			const held = row.providerDispute;
+			// One capture carries one buyer dispute on this row. A second dispute id is a fact a person has to see.
+			if (held !== undefined && held.id !== command.disputeId) return settlementMismatch(row);
+			// A resolved dispute is final. A later delivery of it changes nothing, and a different outcome is a fact this row never settled.
+			if (held?.status === "RESOLVED") {
+				const same = command.status !== "RESOLVED" || command.outcome === (held.outcome ?? null);
+				return same ? { ...unchanged(row), alreadySettled: true } : settlementMismatch(row);
+			}
+			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount,
+				openedAt: held?.openedAt ?? command.openedAt,
+				...(command.outcome === null ? {} : { outcome: command.outcome }),
+				...(command.status === "RESOLVED" ? { resolvedAt: facts.now } : {}) };
+			const recorded: Plan<JobRow>["next"] = { ...row, version: (row.version + 1) as Version, providerDispute: next };
+			// A dispute against a paid job changes no state: the money is already out, so a person is told.
+			if (row.state.status === "PAID") return { next: recorded, credits: [], effects: held === undefined ? [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }] : [] };
+			// The lift: a release this row selected and the dispute held now proceeds, once no dispute holds it.
+			const effects: JobEffect[] = [];
+			if (row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING" && releaseHeld(row) && !releaseHeld(recorded)) {
+				effects.push(releaseIntent(row.id, row.state.escrow));
+			}
+			return { next: recorded, credits: [], effects };
+		} },
 		TimerDue: { by: "SYSTEM", apply: (row, command, facts) => {
 			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
 			// The capture-age watchdog runs first in every state that holds money. Day 21 leaves a week to
@@ -793,7 +838,7 @@ function transitionTable(): {
 					return { next: { ...row, version: (row.version + 1) as Version,
 						state: { ...row.state, escrow: { ...escrow, cutoffHandledAt: facts.now },
 							review: { phase: "RELEASE_PENDING", release: { authority: "CAPTURE_CUTOFF", selectedAt: facts.now } } } },
-						credits: [], effects: [releaseIntent(row.id, escrow)] };
+						credits: [], effects: releaseEffects(row, escrow) };
 				}
 				// A settlement was selected before the cutoff and is still unconfirmed. No new disposition.
 				return { next: { ...row, version: (row.version + 1) as Version, state: withEscrow(row.state, { ...escrow, cutoffHandledAt: facts.now }) },
@@ -804,13 +849,13 @@ function transitionTable(): {
 				if (review.phase === "AWAITING_CLIENT" && facts.now >= review.endsAt) {
 					return { next: { ...row, version: (row.version + 1) as Version,
 						state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "REVIEW_SILENCE", selectedAt: facts.now } } } },
-						credits: [], effects: [releaseIntent(row.id, row.state.escrow)] };
+						credits: [], effects: releaseEffects(row, row.state.escrow) };
 				}
 				if (review.phase === "DISPUTED" && facts.now >= review.resolveBy) {
 					// The verifier passed, so a missed arbiter deadline is Acquit's failure: release and alert.
 					return { next: { ...row, version: (row.version + 1) as Version,
 						state: { ...row.state, review: { phase: "RELEASE_PENDING", release: { authority: "ARBITER_SLA_MISSED", selectedAt: facts.now } } } },
-						credits: [], effects: [releaseIntent(row.id, row.state.escrow), { kind: "ALERT", jobId: row.id, reason: "DISPUTE_SLA_MISSED" }] };
+						credits: [], effects: [...releaseEffects(row, row.state.escrow), { kind: "ALERT", jobId: row.id, reason: "DISPUTE_SLA_MISSED" }] };
 				}
 				return unchanged(row);
 			}
@@ -954,6 +999,27 @@ function releaseIntent(jobId: JobId, escrow: HeldEscrow): JobEffect {
 	return { kind: "RELEASE", jobId, captureId: escrow.capture.captureId, payee: escrow.payee.payee };
 }
 
+/** The dispute outcomes PayPal names as the seller's win. A held release proceeds only on one of these. */
+const SELLER_FAVOUR_OUTCOMES: readonly string[] = ["RESOLVED_SELLER_FAVOUR", "CANCELED_BY_BUYER"];
+
+/**
+ * Whether a PayPal buyer dispute holds this row's money from release. The hold stands while the dispute is open.
+ * It also stands on a buyer-favour or unnamed outcome: what becomes of that money is a3-2b's decision.
+ */
+export function releaseHeld(row: JobRow): boolean {
+	const dispute = row.providerDispute;
+	if (dispute === undefined) return false;
+	return dispute.status !== "RESOLVED" || !SELLER_FAVOUR_OUTCOMES.includes(dispute.outcome ?? "");
+}
+
+/**
+ * The release a selection emits, unless a buyer dispute holds it. The selection itself is recorded either way,
+ * so a held release is the same disposition the row would have paid, waiting for the hold to lift.
+ */
+function releaseEffects(row: JobRow, escrow: HeldEscrow): JobEffect[] {
+	return releaseHeld(row) ? [] : [releaseIntent(row.id, escrow)];
+}
+
 /**
  * Whether this row still holds the disposition an effect belongs to. The outbox asks before it moves
  * money: an effect the row no longer wants is delivered as done, never dispatched. A pending run,
@@ -963,7 +1029,7 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 	switch (effect.kind) {
 		case "RELEASE":
 			return row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING" &&
-				row.state.escrow.capture.captureId === effect.captureId;
+				row.state.escrow.capture.captureId === effect.captureId && !releaseHeld(row);
 		case "REFUND":
 			return refundIntentOf(row) !== null && heldEscrowOf(row)?.capture.captureId === effect.captureId;
 		case "REIMBURSE": {
@@ -1011,6 +1077,8 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	if (facts.actor.role !== "SYSTEM" && facts.actor.role !== "ARBITER" && (facts.actor.tenant ?? null) !== (row.tenant ?? null)) return "NOT_OWNER";
 	if (facts.actor.role === "CLIENT" && row.client !== facts.actor.clientId) return "NOT_OWNER";
 	if (command.type === "CaptureCompleted" && row.state.status !== "OPEN") return unchanged(row);
+	// A buyer dispute is recorded from any state, paid or not: the edge decides what it holds.
+	if (command.type === "ProviderDispute") return table.ProviderDispute.apply(row, command, facts);
 	if (command.type === "TimerDue") return table.TimerDue.apply(row, command, facts);
 	// Settlement observations are routed from every state. The edge decides whether the observation matches
 	// the disposition this row selected; an unmatched one is an alert, never a refusal the outbox would retry.
@@ -1283,6 +1351,10 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 			? { reason: state.review.reason, openedAt: state.review.openedAt, resolveBy: state.review.resolveBy } : null,
 		// The arbiter's note from the most recent ResolveDispute, whatever the verdict. A row stored before F4 carries none.
 		arbiterNote: row.arbiterNote ?? null,
+		// The PayPal buyer dispute, served whole so the page and the CLI can say why money is held.
+		providerDispute: row.providerDispute === undefined ? null : { id: row.providerDispute.id, status: row.providerDispute.status,
+			reason: row.providerDispute.reason, amount: row.providerDispute.amount, openedAt: row.providerDispute.openedAt,
+			outcome: row.providerDispute.outcome ?? null },
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
 			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,

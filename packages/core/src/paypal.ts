@@ -78,6 +78,9 @@ export type CaptureRefundState = {
 	readonly at: Instant;
 };
 
+/** A PayPal buyer dispute, by PayPal's own dispute id. It is not the in-app review dispute. */
+export type DisputeId = Branded<string, "DisputeId">;
+
 /** A settled Standard Payout from the platform to the operator's merchant. */
 export type ReimbursementEvidence = {
 	readonly batchId: PayoutBatchId;
@@ -107,7 +110,10 @@ export type PayPalObservation =
 	| { readonly kind: "REFUND_COMPLETED"; readonly refund: RefundEvidence }
 	| { readonly kind: "REIMBURSEMENT_COMPLETED"; readonly reimbursement: ReimbursementEvidence }
 	| { readonly kind: "ONBOARDING_LINK"; readonly operator: OperatorId; readonly actionUrl: string }
-	| { readonly kind: "ONBOARDING_COMPLETED"; readonly operator: OperatorId; readonly merchant: MerchantId };
+	| { readonly kind: "ONBOARDING_COMPLETED"; readonly operator: OperatorId; readonly merchant: MerchantId }
+	/** The buyer dispute as PayPal holds it now. `outcome` is PayPal's outcome code, present once the dispute resolves. */
+	| { readonly kind: "DISPUTE"; readonly disputeId: DisputeId; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
+		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome?: string };
 
 /** UNKNOWN never authorizes the opposite disposition. The outbox reconciles it with the same request id. */
 export type RemoteOutcome =
@@ -126,10 +132,12 @@ export type ProviderResource =
 	| { readonly kind: "PAYOUT_ITEM"; readonly id: PayoutItemId }
 	/** A referenced payout item against a capture: the release of one job's escrow. */
 	| { readonly kind: "REFERENCED_PAYOUT_ITEM"; readonly id: PayoutItemId }
+	/** A buyer dispute against a capture the platform holds. Routed through the capture it names. */
+	| { readonly kind: "DISPUTE"; readonly id: DisputeId }
 	| { readonly kind: "MERCHANT"; readonly operator: OperatorId };
 
 /** The resources a webhook can carry a job fact in. */
-export type WebhookResource = Extract<ProviderResource, { kind: "CAPTURE" | "REFUND" | "PAYOUT_ITEM" | "REFERENCED_PAYOUT_ITEM" }>;
+export type WebhookResource = Extract<ProviderResource, { kind: "CAPTURE" | "REFUND" | "PAYOUT_ITEM" | "REFERENCED_PAYOUT_ITEM" | "DISPUTE" }>;
 
 export type WebhookResourceKind = WebhookResource["kind"];
 
@@ -429,6 +437,20 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 		return reimbursement === null ? { kind: "HELD", detail: `Payout batch ${batchId} is not settled` }
 			: { kind: "SETTLED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement } };
 	}
+	/**
+	 * The buyer dispute, read through the capture it names. Without the owning job there is no merchant to
+	 * assert, so the read answers with the capture as its anchor and the route finds the job that holds it.
+	 */
+	async function disputeRead(id: DisputeId, payee: MerchantId | null): Promise<ResourceRead> {
+		const read = await resourceRead(() => request("GET", `/v1/customer/disputes/${encodeURIComponent(id)}`, payee));
+		if (read.kind !== "READ") return read;
+		const captureId = disputedCaptureId(read.body);
+		if (captureId === null) return { kind: "HELD", detail: `Dispute ${id} names no seller transaction` };
+		if (payee === null) return { kind: "HELD", detail: `Dispute ${id} has no owning job`, anchor: captureId };
+		const dispute = routed(() => parseDispute(read.body, captureId));
+		return dispute === null ? { kind: "HELD", detail: `Dispute ${id} is not readable` }
+			: { kind: "SETTLED", observation: { kind: "DISPUTE", ...dispute } };
+	}
 	return {
 		getOrder: (orderId, payee) => guarded(() => orderObservation(orderId, payee)),
 		dispatch: (call, requestId) => guarded(async () => {
@@ -540,6 +562,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 				case "REFUND": return refundResourceRead(resource.id, payee);
 				case "REFERENCED_PAYOUT_ITEM": return referencedItemRead(resource.id);
 				case "PAYOUT_ITEM": return payoutItemRead(resource.id);
+				case "DISPUTE": return disputeRead(resource.id, payee);
 			}
 		},
 	};
@@ -564,6 +587,7 @@ const WEBHOOK_FAMILIES: readonly { readonly types: readonly string[]; readonly e
 	{ types: ["referenced_payouts_items", "referenced_payouts_item", "referenced_payout_item"], events: ["PAYMENT.REFERENCED-PAYOUT"],
 		of: id => ({ kind: "REFERENCED_PAYOUT_ITEM", id: id as PayoutItemId }) },
 	{ types: ["payouts_item", "payout_item"], events: ["PAYMENT.PAYOUTS-ITEM"], of: id => ({ kind: "PAYOUT_ITEM", id: id as PayoutItemId }) },
+	{ types: ["dispute"], events: ["CUSTOMER.DISPUTE."], of: id => ({ kind: "DISPUTE", id: id as DisputeId }) },
 ];
 
 /** The id a body that names no event id is recorded under: its own digest, so it is still recorded once. */
@@ -579,7 +603,8 @@ export function parseWebhookEnvelope(raw: string): WebhookEnvelope {
 	const deliveryId = routed(() => text(body.id).trim()) ?? "";
 	const eventType = routed(() => text(body.event_type).trim()) ?? "";
 	const resource = routed(() => object(body.resource));
-	const resourceId = resource === null ? "" : routed(() => text(resource.id).trim()) ?? "";
+	// A dispute names its id as dispute_id: PayPal's dispute resource carries no generic id.
+	const resourceId = resource === null ? "" : routed(() => text(resource.id ?? resource.dispute_id).trim()) ?? "";
 	if (!deliveryId || !eventType || !resourceId) return unreadable("The body is not a PayPal event envelope.");
 	const resourceType = routed(() => text(body.resource_type).trim().toLowerCase()) ?? "";
 	// Nothing bounds these fields but this check: an over-long one would land in the delivery row and
@@ -633,6 +658,28 @@ export function refundCaptureId(json: unknown): CaptureId | null {
 		}
 		return null;
 	});
+}
+
+/** The capture a dispute names first, from its disputed transaction's seller transaction id. */
+function disputedCaptureId(json: unknown): CaptureId | null {
+	return routed(() => text(object(array(object(json).disputed_transactions)[0]).seller_transaction_id) as CaptureId);
+}
+
+/**
+ * PayPal Disputes v1 nests the outcome code under `dispute_outcome`. A body that carries it only as `outcome`
+ * still reads, so an older fixture or a sibling API shape keeps working.
+ */
+export function disputeOutcomeCode(json: unknown): string | null {
+	const body = object(json);
+	return routed(() => text(object(body.dispute_outcome ?? body.outcome).outcome_code));
+}
+
+/** The buyer dispute PayPal holds, named by the capture it disputes. Money and time come from PayPal, never from the caller. */
+export function parseDispute(json: unknown, captureId: CaptureId): Omit<Extract<PayPalObservation, { kind: "DISPUTE" }>, "kind"> {
+	const dispute = object(json);
+	const outcome = disputeOutcomeCode(json);
+	return { disputeId: text(dispute.dispute_id) as DisputeId, captureId, status: text(dispute.status), reason: text(dispute.reason),
+		amount: money(dispute.dispute_amount), openedAt: utcInstant(dispute.create_time), ...(outcome === null ? {} : { outcome }) };
 }
 
 /** The refusal code PayPal puts in the body's `name`. */
