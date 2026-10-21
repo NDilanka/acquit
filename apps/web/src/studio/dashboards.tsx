@@ -1,10 +1,28 @@
-import { Component, createContext, useContext, type ComponentType, type ReactNode } from "react";
+import { Component, createContext, useContext, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
+import type { ColDef, ICellRendererParams, RowClickedEvent, RowHeightParams } from "ag-grid-community";
+import { AgGridReact } from "ag-grid-react";
 import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformReconcileRow, PlatformReconciliation, ReceiptRow } from "../api-types";
-import { dollars, utc } from "../format";
+import { acquitTheme } from "../grid";
+import { escrowWord } from "../job-status";
+import { dollars, shortId, utc } from "../format";
 import { COLUMNS, NATIVE_WIDGETS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
 import { conserves, earnings, escrowTotals, nativeWidgetRecord, newestReceipt, placeRows, verifierStats } from "../studio-data";
+import {
+  attemptWords,
+  groupWords,
+  lastAttempt,
+  platformStatusWord,
+  sparkCoords,
+  sparkPoints,
+  toggleExpanded,
+  totalsRow,
+  verdictRows,
+  type AttemptRow,
+  type TotalsRow,
+  type VerdictRow,
+} from "../verdict-grid";
 import { FigureExplain } from "./FigureExplain";
 
 export type { AcquitRegistry, AcquitWidgetId, DashboardId, DashboardState };
@@ -225,6 +243,160 @@ const escrowTotal = (key: keyof ReturnType<typeof escrowTotals>, note: string) =
   };
 };
 
+/** A grid row's kind is one of the verdict rows, or the pinned totals. Only a job row has cells; the others span the grid. */
+type GridRow = VerdictRow | TotalsRow;
+
+const jobOf = (row: GridRow | undefined): PlatformJobLedger | null => (row?.kind === "job" ? row.job : null);
+
+const VERDICT_HEIGHT: Record<GridRow["kind"], number> = { group: 34, job: 46, attempt: 40, totals: 44 };
+const SPARK = { width: 96, height: 18 } as const;
+
+function TitleCell({ data }: ICellRendererParams<GridRow>) {
+  const job = jobOf(data);
+  if (!job) return null;
+  const open = data?.kind === "job" && data.expanded;
+  return (
+    <span className="verdict-title">
+      <span className="verdict-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      <span>
+        <b>{job.title}</b>
+        <small className="muted mono">{shortId(job.jobId)}</small>
+      </span>
+    </span>
+  );
+}
+
+function SparkCell({ data }: ICellRendererParams<GridRow>) {
+  const job = jobOf(data);
+  if (!job) return null;
+  const points = sparkPoints(job.attempts);
+  if (points.length === 0) return <span className="muted">No counts yet</span>;
+  return (
+    <svg className="verdict-spark" width={SPARK.width} height={SPARK.height} viewBox={`0 0 ${SPARK.width} ${SPARK.height}`} role="img"
+      aria-label={`Passing share of ${points.length} attempts: ${points.map((point) => percent(point)).join(", ")}`}>
+      <polyline points={sparkCoords(points, SPARK.width, SPARK.height)} />
+    </svg>
+  );
+}
+
+function IdsCell({ data }: ICellRendererParams<GridRow>) {
+  const job = jobOf(data);
+  if (!job) return null;
+  const capture = job.capture?.captureId ?? job.payout?.captureId ?? null;
+  const payoutItem = job.payout?.payoutItemId ?? null;
+  if (capture === null && payoutItem === null) return <span className="muted">None yet</span>;
+  return (
+    <span>
+      {capture !== null && <span className="verdict-chip mono" title={`PayPal capture ${capture}`}>{shortId(capture)}</span>}
+      {payoutItem !== null && <span className="verdict-chip mono" title={`PayPal payout item ${payoutItem}`}>{shortId(payoutItem)}</span>}
+    </span>
+  );
+}
+
+const VERDICT_COLUMNS: ColDef<GridRow>[] = [
+  { colId: "job", headerName: "Job", flex: 3, cellRenderer: TitleCell },
+  { colId: "tenant", headerName: "Tenant", valueGetter: ({ data }) => jobOf(data)?.tenant ?? "Deployment" },
+  { colId: "operator", headerName: "Operator", valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
+  { colId: "status", headerName: "Status", flex: 2, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
+  { colId: "escrow", headerName: "Escrow", valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
+  { colId: "attempts", headerName: "Attempts", cellClass: "num", valueGetter: ({ data }) => jobOf(data)?.attempts.length ?? null },
+  { colId: "passing", headerName: "Passing tests", flex: 2, sortable: false, cellRenderer: SparkCell },
+  {
+    colId: "last",
+    headerName: "Last verdict",
+    flex: 2,
+    valueGetter: ({ data }) => {
+      const job = jobOf(data);
+      if (!job) return "";
+      const last = lastAttempt(job.attempts);
+      if (!last) return "No verdict yet";
+      return `${attemptWords(last).verdict}${last.tamper ? ", tamper caught" : ""}`;
+    },
+  },
+  { colId: "paid", headerName: "Paid", cellClass: "num", valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
+  { colId: "ids", headerName: "PayPal ids", flex: 2, sortable: false, cellRenderer: IdsCell },
+];
+
+const VERDICT_DEFAULTS: ColDef<GridRow> = { sortable: false, resizable: false, suppressMovable: true, flex: 1, minWidth: 56, headerClass: "grid-head" };
+
+function AttemptLine({ row }: { row: AttemptRow }) {
+  const { verdict, detail } = attemptWords(row.attempt);
+  return (
+    <div className="verdict-attempt">
+      <span className="num">Attempt {row.attempt.ordinal}</span>
+      <span className={`pill ${row.attempt.result === "VERIFIED" ? "ok" : "break"}`}>{verdict}</span>
+      {row.attempt.tamper && <span className="pill break">Tamper caught</span>}
+      <span className="muted verdict-detail">{detail}</span>
+      <span className="muted num">{utc(row.attempt.at)}</span>
+    </div>
+  );
+}
+
+/** The pinned bottom row: the conservation law in four figures, green when it holds. */
+function TotalsStrip({ row }: { row: TotalsRow }) {
+  return (
+    <div className="verdict-totals">
+      <span className={`pill ${row.holds ? "ok" : "break"}`}>
+        <span className="dot" />
+        {row.holds ? "Ledger conserves" : "LEDGER BREAK"}
+      </span>
+      <span>Held <b className="num">{dollars(row.held)}</b></span>
+      <span>+ Released <b className="num">{dollars(row.released)}</b></span>
+      <span>+ Refunded <b className="num">{dollars(row.refunded)}</b></span>
+      <span>+ Fees <b className="num">{dollars(row.fees)}</b></span>
+      <span>= Funded <b className="num">{dollars(row.funded)}</b></span>
+    </div>
+  );
+}
+
+/** A full-width row: an escrow group's header, an attempt's detail, or the totals strip. A job row never reaches here. */
+function VerdictFullWidth({ data }: ICellRendererParams<GridRow>) {
+  if (!data || data.kind === "job") return null;
+  if (data.kind === "group") {
+    return (
+      <div className="verdict-group">
+        <b>{groupWords(data.escrow)}</b>
+        <span className="muted">{data.count} {data.count === 1 ? "job" : "jobs"}</span>
+      </div>
+    );
+  }
+  if (data.kind === "attempt") return <AttemptLine row={data} />;
+  return <TotalsStrip row={data} />;
+}
+
+/**
+ * The escrow book, grouped by where each job's money sits. A job opens to its verifier attempts.
+ * Rows come from the escrow stream through useEscrow, keyed by id, so a live change updates them in place.
+ */
+function VerdictTimeline() {
+  const jobs = useEscrow();
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const rows = useMemo(() => verdictRows(jobs, expanded), [jobs, expanded]);
+  const totals = useMemo(() => [totalsRow(jobs)], [jobs]);
+  return (
+    <div className="acquit-grid verdict-grid">
+      <AgGridReact<GridRow>
+        theme={acquitTheme}
+        rowData={rows as GridRow[]}
+        columnDefs={VERDICT_COLUMNS}
+        defaultColDef={VERDICT_DEFAULTS}
+        getRowId={({ data }) => data.id}
+        isFullWidthRow={({ rowNode }) => rowNode.data?.kind !== "job"}
+        fullWidthCellRenderer={VerdictFullWidth}
+        getRowHeight={({ data }: RowHeightParams<GridRow>) => (data ? VERDICT_HEIGHT[data.kind] : VERDICT_HEIGHT.job)}
+        pinnedBottomRowData={totals}
+        onRowClicked={(event: RowClickedEvent<GridRow>) => {
+          const row = event.data;
+          if (row?.kind === "job") setExpanded((prev) => toggleExpanded(prev, row.job.jobId));
+        }}
+        suppressHorizontalScroll
+        enableCellTextSelection={false}
+        containerStyle={{ height: "100%" }}
+      />
+    </div>
+  );
+}
+
 const COMP = {
   "acquit-held": escrowTotal("held", "In escrow on jobs not yet settled"),
   "acquit-released": escrowTotal("released", "Paid out to operators"),
@@ -240,6 +412,7 @@ const COMP = {
   }),
   "acquit-tamper-caught": stat(useEscrow, (jobs) => ({ value: String(verifierStats(jobs).tamperAttempts), note: "Rejected for editing the frozen tests" })),
   "acquit-conserves": LedgerConserves,
+  "acquit-verdict-grid": VerdictTimeline,
   "acquit-reconciliation": ReconciliationCard,
   "acquit-paid-out": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).paidOut), note: "Payouts on your job receipts" })),
   "acquit-fees-withheld": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).feesWithheld), note: "PayPal processing and Acquit" })),

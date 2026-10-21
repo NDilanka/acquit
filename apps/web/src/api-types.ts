@@ -275,6 +275,8 @@ export type PlatformJobLedger = {
   readonly operator: { readonly id: string; readonly handle: string } | null;
   readonly lines: readonly LedgerLine[];
   readonly paidCents: UsdCents | null;
+  /** The funding capture a held escrow was paid with. Null before any capture and on a settled job. */
+  readonly capture: { readonly orderId: string; readonly captureId: string; readonly payee: string; readonly gross: UsdCents } | null;
   readonly fee: { readonly cents: UsdCents; readonly processor: UsdCents; readonly acquit: UsdCents } | null;
   readonly payout: {
     readonly paid: UsdCents;

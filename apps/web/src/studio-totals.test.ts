@@ -13,6 +13,7 @@ function ledgerJob(job: Pick<PlatformJobLedger, "jobId" | "title" | "tenant" | "
     ...job,
     operator: { id: "devon-ops", handle: "devon-ops" },
     paidCents: null,
+    capture: null,
     fee: null,
     payout: null,
     receipt: null,

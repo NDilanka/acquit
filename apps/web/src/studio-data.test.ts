@@ -16,6 +16,7 @@ function job(jobId: string, escrow: PlatformJobLedger["escrow"], lines: LedgerLi
     operator: escrow === "NONE" ? null : { id: "op_1", handle: "devon-ops" },
     lines,
     paidCents: null,
+    capture: null,
     fee: null,
     payout: null,
     receipt: null,

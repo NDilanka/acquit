@@ -110,7 +110,7 @@ const TABLES: PlatformTables = {
 /** The same book the custom ledger widgets read, one entry per job. */
 function ledgerJob(job: Pick<PlatformJobLedger, "jobId" | "title" | "tenant" | "client" | "status" | "escrow" | "lines" | "attempts"> &
   { readonly operator: PlatformJobLedger["operator"] }): PlatformJobLedger {
-  return { ...job, paidCents: null, fee: null, payout: null, receipt: null };
+  return { ...job, paidCents: null, capture: null, fee: null, payout: null, receipt: null };
 }
 
 const BOOK: PlatformJobLedger[] = [
