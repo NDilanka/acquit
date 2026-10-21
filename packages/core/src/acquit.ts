@@ -11,6 +11,7 @@ import { projectJob } from "./job.ts";
 import type { PrivateCaseReader } from "./hidden-seal.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, ProviderDisputeView, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
+import { logQuoted } from "./log.ts";
 import type { JobFundingMode } from "./funding.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
 import type { FixtureContract } from "./fixtures.ts";
@@ -231,6 +232,17 @@ export type AcquitConfig = {
 	readonly clientRepository?: string;
 };
 
+/** One process-log line per alert. A buyer-dispute alert names its dispute, quoted, so a person can find it at PayPal. */
+function alertLine(effect: Extract<JobEffect, { kind: "ALERT" }>): string {
+	const dispute = effect.disputeId === undefined ? "" : ` on dispute ${logQuoted(effect.disputeId)}`;
+	return `Acquit alert: ${effect.reason} for ${effect.jobId}${dispute}`;
+}
+
+/** Where an alert goes when the deployment supplies no sink: the process log. */
+export const processLogAlerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> } = {
+	raise: async effect => { console.error(alertLine(effect)); },
+};
+
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
 	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
@@ -242,7 +254,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			pullRequest: effect.pullRequest, mergeCommit: effect.mergeCommit }, requestId) },
 		// An alert nobody receives is lost. Without an operator-supplied sink it goes to the process log,
 		// where the deployment's own log handling is the record.
-		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
+		alerts: config.alerts ?? processLogAlerts,
 		workRepo: github,
 		clientRepository: config.clientRepository,
 		scopeDraft: config.scopeDraft,

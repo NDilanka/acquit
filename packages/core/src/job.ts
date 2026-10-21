@@ -335,6 +335,8 @@ export type JobEffect =
 		readonly jobId: JobId;
 		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH" | "PROVIDER_DISPUTE_ON_PAID"
 			| "PROVIDER_DISPUTE_NOT_ANSWERABLE" | "PROVIDER_DISPUTE_PARTIAL" | "PROVIDER_DISPUTE_PARTIAL_LOST" | "PROVIDER_DISPUTE_LOST_ON_PAID";
+		/** The buyer dispute a PROVIDER_DISPUTE alert is about, so the process log names it. No other alert carries one. */
+		readonly disputeId?: string;
 	}
 	/** Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it. */
 	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string; readonly simulated: boolean }
@@ -765,7 +767,7 @@ function transitionTable(): {
 			// The money is already out. A shortfall cannot be unwound, so it is owed back and named.
 			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
 			// A release that lands under a buyer dispute the row still holds has paid money the dispute claims, so a person is told.
-			if (releaseHeld(row)) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" });
+			if (row.providerDispute !== undefined && releaseHeld(row)) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: row.providerDispute.id });
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { status: "PAID", payee: escrow.payee, book, receipt, release, releaseAuthority: row.state.review.release.authority,
 					history: row.state.history, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
@@ -824,6 +826,8 @@ function transitionTable(): {
 			return { next: { ...row, version: (row.version + 1) as Version, state: { ...row.state, merge: command.outcome } }, credits: [], effects: [] };
 		} },
 		ProviderDispute: { by: "SYSTEM", apply: (row, command, facts) => {
+			// A dispute is against one capture. Another capture, or one this row never recorded, is a fact a person has to see.
+			if (captureOf(row) !== command.captureId) return settlementMismatch(row);
 			const held = row.providerDispute;
 			// One capture carries one buyer dispute on this row. A second dispute id is a fact a person has to see.
 			if (held !== undefined && held.id !== command.disputeId) return settlementMismatch(row);
@@ -847,20 +851,20 @@ function transitionTable(): {
 			// A dispute against a paid job moves no money back: the money is already out, so a person is told. The receipt is the answer.
 			if (row.state.status === "PAID") {
 				const effects: JobEffect[] = [];
-				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }, ...answerEffects(row, next.id, answer, simulated));
-				if (buyerFavour) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_LOST_ON_PAID" });
+				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: next.id }, ...answerEffects(row, next.id, answer, simulated));
+				if (buyerFavour) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_LOST_ON_PAID", disputeId: next.id });
 				return { next: recorded, credits: [], effects };
 			}
 			const effects: JobEffect[] = first ? answerEffects(row, next.id, answer, simulated) : [];
 			const gross = grossOf(row);
 			const partial = gross !== null && command.amount < gross;
-			if (first && partial) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL" });
+			if (first && partial) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL", disputeId: next.id });
 			// PayPal decided for the buyer on the whole held capture: it already reversed the funds, so the book refunds the held gross
 			// with no outbound call. A refund this row already selected is settled here too: PayPal's reversal is the refund, and the
 			// queued REFUND then has no intent left to send. A partial buyer win is not settled here; the hold stays and a person decides.
 			const escrow = heldEscrowOf(row);
 			if (buyerFavour && escrow !== null) {
-				if (partial) return { next: recorded, credits: [], effects: [...effects, { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL_LOST" }] };
+				if (partial) return { next: recorded, credits: [], effects: [...effects, { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL_LOST", disputeId: next.id }] };
 				const book = reduceLedger(escrow.book, { kind: "Refund", refunded: escrow.capture.gross, at: facts.now });
 				if ("kind" in book) return settlementMismatch(row);
 				const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
@@ -1027,6 +1031,14 @@ function heldEscrowOf(row: JobRow): HeldEscrow | null {	const state = row.state;
 	return null;
 }
 
+/** The capture this row recorded, in every state that keeps one. Null before a capture lands. */
+function captureOf(row: JobRow): CaptureId | null {
+	const state = row.state;
+	if (state.status === "PAID") return state.release.captureId;
+	if (state.status === "REFUNDED") return state.refund.captureId;
+	return heldEscrowOf(row)?.capture.captureId ?? null;
+}
+
 /** The merchant this row pays, wherever the row keeps it. Null before a bid is chosen. */
 export function payeeMerchantOf(row: JobRow): MerchantId | null {
 	const state = row.state;
@@ -1100,9 +1112,11 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 		}
 		// An answer belongs to the dispute it names. It is wanted while that dispute is open under that id and the row still
 		// files it this way. A settled dispute, another dispute, or a later verdict that changed the answer leaves it unwanted.
+		// The evidence is wanted only while the row still answers with it, so a refund or rework that the arbiter ruled drops it.
 		case "DISPUTE_EVIDENCE": {
 			const dispute = row.providerDispute;
-			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE";
+			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE" &&
+				disputeAnswerOf(row) === "EVIDENCE";
 		}
 		// The accepted claim is wanted only while the escrow is still held and no verified work is left to defend: the same
 		// ACCEPT disputeAnswerOf names for the row now.
@@ -1134,7 +1148,7 @@ function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | u
 	const escrow = heldEscrowOf(row);
 	if (answer === undefined) return [];
 	if (answer === "NOT_ANSWERABLE" || payee === null || (answer === "ACCEPT" && escrow === null)) {
-		return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE" }];
+		return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE", disputeId }];
 	}
 	if (answer === "EVIDENCE") return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), simulated }];
 	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated,

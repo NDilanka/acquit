@@ -166,7 +166,7 @@ test("a dispute recorded on a paid job alerts a person and files the receipt, an
 	assert.equal(disputed.next.providerDispute?.status, "OPEN");
 	// The receipt is the answer, filed once. The alert names the paid job for a person; the state is untouched.
 	assert.deepEqual(disputed.effects.map(effect => effect.kind), ["ALERT", "DISPUTE_EVIDENCE"]);
-	assert.deepEqual(disputed.effects[0], { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" });
+	assert.deepEqual(disputed.effects[0], { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: "PP-D-9" });
 });
 
 test("a dispute envelope parses to a DISPUTE resource named by its dispute_id", async () => {
@@ -211,7 +211,7 @@ test("a release that lands while a buyer dispute holds it is paid, keeps the dis
 			captureId: "TESTCAPTURE" as CaptureId, paid: usd("360.00"), at: later } }, paypalFacts(later)));
 	assert.equal(paid.next.state.status, "PAID");
 	assert.equal(paid.next.providerDispute?.status, "OPEN");
-	assert.deepEqual(paid.effects.filter(effect => effect.kind === "ALERT"), [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }]);
+	assert.deepEqual(paid.effects.filter(effect => effect.kind === "ALERT"), [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: "PP-D-9" }]);
 });
 
 test("a release the dispute holds stays due in the outbox, and is paid once a seller-favour resolution lifts the hold", async () => {
