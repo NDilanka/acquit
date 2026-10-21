@@ -183,6 +183,10 @@ export function refundNote(reason: RefundReason | null, settled: boolean, maxAtt
       return settled
         ? "Refunded because the capture did not match the order."
         : "Refund pending: the capture did not match the order.";
+    case "PROVIDER_DISPUTE":
+      return settled
+        ? "Refunded after PayPal decided the buyer's dispute for the buyer."
+        : "Refund pending: PayPal decided the buyer's dispute for the buyer.";
   }
 }
 

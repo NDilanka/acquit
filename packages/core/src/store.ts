@@ -192,7 +192,7 @@ function storedPaid(state: JobState): JobState {
 		history: Array.isArray(paid.history) ? paid.history : [] };
 }
 /** The five reasons the domain records. Anything else in a row is not a reason this build knows. */
-const REFUND_REASONS = ["DELIVERY_DEADLINE", "ATTEMPTS_EXHAUSTED", "ARBITER_REFUND", "CAPTURE_CUTOFF", "CAPTURE_MISMATCH"] as const;
+const REFUND_REASONS = ["DELIVERY_DEADLINE", "ATTEMPTS_EXHAUSTED", "ARBITER_REFUND", "CAPTURE_CUTOFF", "CAPTURE_MISMATCH", "PROVIDER_DISPUTE"] as const;
 function isRefundReason(value: unknown): value is RefundReason {
 	return typeof value === "string" && (REFUND_REASONS as readonly string[]).includes(value);
 }

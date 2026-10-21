@@ -119,7 +119,9 @@ export type RefundReason =
 	| "ATTEMPTS_EXHAUSTED"
 	| "ARBITER_REFUND"
 	| "CAPTURE_CUTOFF"
-	| "CAPTURE_MISMATCH";
+	| "CAPTURE_MISMATCH"
+	/** PayPal resolved a buyer dispute for the buyer on a held, full-amount capture. PayPal already reversed the funds. */
+	| "PROVIDER_DISPUTE";
 
 /** The reason a refund was selected. Null on a row stored before the reason was recorded; the store read types that absence. */
 export type RefundIntent = { readonly reason: RefundReason | null; readonly selectedAt: Instant };
@@ -331,8 +333,19 @@ export type JobEffect =
 	| {
 		readonly kind: "ALERT";
 		readonly jobId: JobId;
-		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH" | "PROVIDER_DISPUTE_ON_PAID";
-	};
+		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH" | "PROVIDER_DISPUTE_ON_PAID"
+			| "PROVIDER_DISPUTE_NOT_ANSWERABLE" | "PROVIDER_DISPUTE_PARTIAL" | "PROVIDER_DISPUTE_PARTIAL_LOST" | "PROVIDER_DISPUTE_LOST_ON_PAID";
+	}
+	/** Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it. */
+	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string; readonly simulated: boolean }
+	/** Acquit accepts the buyer's claim, so PayPal returns the held funds to the buyer. */
+	| { readonly kind: "DISPUTE_ACCEPT"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly note: string; readonly simulated: boolean };
+
+/**
+ * What Acquit did about a buyer dispute. EVIDENCE and ACCEPT are the answers it filed. NOT_ANSWERABLE means the job
+ * had no held escrow left to answer for, so a person has to decide.
+ */
+export type DisputeAnswer = "EVIDENCE" | "ACCEPT" | "NOT_ANSWERABLE";
 
 /** A PayPal buyer dispute, as PayPal last answered for it. `outcome` is PayPal's code once the dispute resolves. */
 export type ProviderDispute = {
@@ -343,11 +356,15 @@ export type ProviderDispute = {
 	readonly openedAt: Instant;
 	readonly outcome?: string;
 	readonly resolvedAt?: Instant;
+	/** Set on the first delivery Acquit saw for this dispute id. Absent on a dispute that reached a resolved state first. */
+	readonly answer?: DisputeAnswer;
+	/** A dispute a judge scenario simulated. PayPal never received an answer for it. */
+	readonly simulated?: true;
 };
 
 /** The dispute as the job view serves it. Null on a job no buyer dispute has reached. */
 export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents;
-	readonly openedAt: Instant; readonly outcome: string | null };
+	readonly openedAt: Instant; readonly outcome: string | null; readonly answer: DisputeAnswer | null; readonly simulated: boolean };
 
 // The table
 
@@ -433,7 +450,7 @@ function transitionTable(): {
 	ReimbursementSettled: Edge<JobRow<RefundedState>, JobRef & { readonly reimbursement: ReimbursementEvidence }, JobRow<RefundedState>, "SYSTEM">;
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
 	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
-		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome: string | null }, JobRow, "SYSTEM">;
+		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome: string | null; readonly simulated?: true }, JobRow, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
 	// OpenJob
@@ -658,10 +675,17 @@ function transitionTable(): {
 			if (verdict.result === "VERIFIED") {
 				const passed: PassedAttempt = { ordinal, verdict };
 				const history = [...attempts.history, passed] as History;
-				return { next: { ...row, version: (row.version + 1) as Version,
-					state: { status: "VERIFIED", escrow: row.state.escrow, history, passed,
-						review: { phase: "AWAITING_CLIENT", endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
-						runsStarted: attempts.runsStarted } }, credits: [], effects: [] };
+				const verified = { ...row, version: (row.version + 1) as Version,
+					state: { status: "VERIFIED" as const, escrow: row.state.escrow, history, passed,
+						review: { phase: "AWAITING_CLIENT" as const, endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
+						runsStarted: attempts.runsStarted } };
+				// A buyer dispute this row answered with the claim, while its work was unverified, now has verified work to defend.
+				// The answer turns to evidence once, keyed by the dispute. The queued accept no longer belongs to the row, so it is never sent.
+				const dispute = row.providerDispute;
+				if (dispute === undefined || dispute.status === "RESOLVED" || dispute.answer !== "ACCEPT") return { next: verified, credits: [], effects: [] };
+				const defended: ProviderDispute = { ...dispute, answer: "EVIDENCE" };
+				return { next: { ...verified, providerDispute: defended }, credits: [],
+					effects: answerEffects(verified, dispute.id, "EVIDENCE", dispute.simulated === true) };
 			}
 			const rejected: RejectedAttempt = { ordinal, verdict };
 			const history = [...attempts.history, rejected] as History;
@@ -808,15 +832,48 @@ function transitionTable(): {
 				const same = command.status !== "RESOLVED" || command.outcome === (held.outcome ?? null);
 				return same ? { ...unchanged(row), alreadySettled: true } : settlementMismatch(row);
 			}
+			// Acquit answers the first delivery it sees for an unresolved dispute, once. A repeat keeps that answer and files nothing new.
+			const first = held === undefined;
+			const answer: DisputeAnswer | undefined = held?.answer ?? (first && command.status !== "RESOLVED" ? disputeAnswerOf(row) : undefined);
+			const simulated = held?.simulated === true || command.simulated === true;
 			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount,
 				openedAt: held?.openedAt ?? command.openedAt,
 				...(command.outcome === null ? {} : { outcome: command.outcome }),
-				...(command.status === "RESOLVED" ? { resolvedAt: facts.now } : {}) };
+				...(command.status === "RESOLVED" ? { resolvedAt: facts.now } : {}),
+				...(answer === undefined ? {} : { answer }),
+				...(simulated ? { simulated: true as const } : {}) };
 			const recorded: Plan<JobRow>["next"] = { ...row, version: (row.version + 1) as Version, providerDispute: next };
-			// A dispute against a paid job changes no state: the money is already out, so a person is told.
-			if (row.state.status === "PAID") return { next: recorded, credits: [], effects: held === undefined ? [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }] : [] };
+			const buyerFavour = command.status === "RESOLVED" && command.outcome === "RESOLVED_BUYER_FAVOUR";
+			// A dispute against a paid job moves no money back: the money is already out, so a person is told. The receipt is the answer.
+			if (row.state.status === "PAID") {
+				const effects: JobEffect[] = [];
+				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }, ...answerEffects(row, next.id, answer, simulated));
+				if (buyerFavour) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_LOST_ON_PAID" });
+				return { next: recorded, credits: [], effects };
+			}
+			const effects: JobEffect[] = first ? answerEffects(row, next.id, answer, simulated) : [];
+			const gross = grossOf(row);
+			const partial = gross !== null && command.amount < gross;
+			if (first && partial) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL" });
+			// PayPal decided for the buyer on the whole held capture: it already reversed the funds, so the book refunds the held gross
+			// with no outbound call. A refund this row already selected is settled here too: PayPal's reversal is the refund, and the
+			// queued REFUND then has no intent left to send. A partial buyer win is not settled here; the hold stays and a person decides.
+			const escrow = heldEscrowOf(row);
+			if (buyerFavour && escrow !== null) {
+				if (partial) return { next: recorded, credits: [], effects: [...effects, { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL_LOST" }] };
+				const book = reduceLedger(escrow.book, { kind: "Refund", refunded: escrow.capture.gross, at: facts.now });
+				if ("kind" in book) return settlementMismatch(row);
+				const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
+					: row.state.status === "VERIFIED" ? row.state.history : [];
+				const refunded: RefundedState = { status: "REFUNDED", payee: escrow.payee, book, reason: "PROVIDER_DISPUTE",
+					refund: { refundId: null, captureId: escrow.capture.captureId, refunded: escrow.capture.gross, retainedProcessorFee: 0 as UsdCents, at: facts.now },
+					history, treasury: [] };
+				return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, tenant: row.tenant, title: row.title,
+					contract: row.contract, openedAt: row.openedAt, bids: row.bids,
+					...(row.arbiterNote === undefined ? {} : { arbiterNote: row.arbiterNote }),
+					providerDispute: next, state: refunded }, credits: [], effects };
+			}
 			// The lift: a release this row selected and the dispute held now proceeds, once no dispute holds it.
-			const effects: JobEffect[] = [];
 			if (row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING" && releaseHeld(row) && !releaseHeld(recorded)) {
 				effects.push(releaseIntent(row.id, row.state.escrow));
 			}
@@ -1041,8 +1098,80 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 			return treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED") &&
 				!treasury.some(entry => entry.kind === "PAYOUT_FEE_PAID");
 		}
+		// An answer belongs to the dispute it names. It is wanted while that dispute is open under that id and the row still
+		// files it this way. A settled dispute, another dispute, or a later verdict that changed the answer leaves it unwanted.
+		case "DISPUTE_EVIDENCE": {
+			const dispute = row.providerDispute;
+			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE";
+		}
+		// The accepted claim is wanted only while the escrow is still held and no verified work is left to defend: the same
+		// ACCEPT disputeAnswerOf names for the row now.
+		case "DISPUTE_ACCEPT": {
+			const dispute = row.providerDispute;
+			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "ACCEPT" &&
+				disputeAnswerOf(row) === "ACCEPT";
+		}
 		default: return true;
 	}
+}
+
+/**
+ * What Acquit answers a buyer dispute with, decided from the row the dispute arrives at. A paid job, or a verified job
+ * whose release is selected or pending, answers with its evidence. A funded job with no release to defend, or a refund
+ * already selected, accepts the claim. A job with no held escrow left cannot answer, so a person decides.
+ */
+function disputeAnswerOf(row: JobRow): DisputeAnswer {
+	const state = row.state;
+	if (state.status === "PAID") return "EVIDENCE";
+	if (state.status === "VERIFIED" && state.review.phase !== "REFUND_PENDING") return "EVIDENCE";
+	if (heldEscrowOf(row) !== null) return "ACCEPT";
+	return "NOT_ANSWERABLE";
+}
+
+/** The effects a first-seen dispute files. The notes are built here, from the row, so the outbox row carries exactly what was decided. */
+function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | undefined, simulated: boolean): JobEffect[] {
+	const payee = payeeMerchantOf(row);
+	const escrow = heldEscrowOf(row);
+	if (answer === undefined) return [];
+	if (answer === "NOT_ANSWERABLE" || payee === null || (answer === "ACCEPT" && escrow === null)) {
+		return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE" }];
+	}
+	if (answer === "EVIDENCE") return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), simulated }];
+	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated,
+		note: `Acquit accepts the buyer's claim on dispute ${disputeId} for capture ${escrow?.capture.captureId ?? "unknown"} on job ${row.id}.` }];
+}
+
+/**
+ * The evidence the answer files: a fixed template over the receipt (paid) or the passed attempt (held). Each sentence
+ * names the record field it reads, so a sentence with no source cannot appear. No model writes it.
+ */
+function evidenceNotesOf(row: JobRow): string {
+	const state = row.state;
+	if (state.status === "PAID") {
+		const receipt = state.receipt;
+		return [
+			`Receipt ${receipt.id} (receipt id) records job ${receipt.jobId} as delivered on attempt ${receipt.attemptsUsed} (attemptsUsed).`,
+			`Frozen tests ${receipt.frozen.passed}/${receipt.frozen.expected} passed (frozen).`,
+			`Hidden tests ${receipt.hidden.passed}/${receipt.hidden.expected} passed (hidden).`,
+			`Pull request #${receipt.pullRequest} carries judged commit ${receipt.mergeCommit} (pullRequest, mergeCommit).`,
+		].join(" ");
+	}
+	if (state.status === "VERIFIED") {
+		const verdict = state.passed.verdict;
+		return [
+			`Verified attempt ${state.passed.ordinal} for job ${row.id} passed run ${verdict.runId} on source commit ${verdict.sourceCommit} (ordinal, runId, sourceCommit).`,
+			`Frozen tests ${verdict.frozen.passed}/${verdict.frozen.expected} passed (frozen).`,
+			`Hidden tests ${verdict.hidden.passed}/${verdict.hidden.expected} passed (hidden).`,
+			`Pull request #${verdict.pullRequest} is open at judged commit ${verdict.mergeCommit} (pullRequest, mergeCommit).`,
+		].join(" ");
+	}
+	return `Acquit has no verified attempt for job ${row.id} to show (status ${state.status}).`;
+}
+
+/** The UsdCents the row's own held book records, or null when no money is held or recorded. */
+function grossOf(row: JobRow): UsdCents | null {
+	const line = storedBook(row)[0];
+	return line !== undefined && line.kind === "HELD" ? line.cents : null;
 }
 
 /** Deterministic per job and run, so a retried start reuses one run identity instead of stacking runs. */
@@ -1357,7 +1486,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		// The PayPal buyer dispute, served whole so the page and the CLI can say why money is held.
 		providerDispute: row.providerDispute === undefined ? null : { id: row.providerDispute.id, status: row.providerDispute.status,
 			reason: row.providerDispute.reason, amount: row.providerDispute.amount, openedAt: row.providerDispute.openedAt,
-			outcome: row.providerDispute.outcome ?? null },
+			outcome: row.providerDispute.outcome ?? null, answer: row.providerDispute.answer ?? null,
+			simulated: row.providerDispute.simulated === true },
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
 			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,

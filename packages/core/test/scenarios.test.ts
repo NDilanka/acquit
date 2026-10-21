@@ -161,8 +161,11 @@ test("S6 buyer-dispute: a buyer's PayPal dispute holds the approved release, the
 	try {
 		const run = await drive(h, "buyer-dispute");
 		assert.equal(run.state, "DONE");
+		// The settle tick after CREATED ran the evidence the job filed: a Simulated answer, which reached no outside place.
 		assert.deepEqual(run.steps.map(step => step.name), ["open-job", "place-bid", "accept-and-fund", "push-honest-reference-table", "submit",
-			"dispute-created", "approve", "dispute-resolved", "settle", "release"]);
+			"dispute-created", "settle", "approve", "dispute-resolved", "settle", "release"]);
+		const evidence = run.steps.find(step => step.name === "settle" && step.outcome.includes("DISPUTE_EVIDENCE"));
+		assert.deepEqual([evidence?.label, evidence?.reached, evidence?.outcome], ["Simulated PayPal dispute", [], "SETTLED DISPUTE_EVIDENCE"]);
 		const created = run.steps.findIndex(step => step.name === "dispute-created");
 		const resolved = run.steps.findIndex(step => step.name === "dispute-resolved");
 		// Between CREATED and RESOLVED no step reached PayPal and no step ran a RELEASE: the held approval moved no money.
@@ -176,10 +179,14 @@ test("S6 buyer-dispute: a buyer's PayPal dispute holds the approved release, the
 		]);
 		assert.equal(run.steps.find(step => step.name === "approve")?.outcome, "HELD");
 		assert.equal(run.steps.find(step => step.name === "release")?.outcome, "PAID (already settled by settle)");
-		// The simulated dispute never reached PayPal: the dev replay read it from the run's own record.
+		// The simulated dispute never reached PayPal: the dev replay read it from the run's own record, and the
+		// evidence it filed was never sent (no dispute write reached the fake PayPal).
 		assert.deepEqual(h.disputeReads, []);
+		assert.deepEqual(h.paypalDispatches.filter(kind => kind.startsWith("DISPUTE")), []);
 		const job = await h.store.readJob(run.jobId as JobId);
 		assert.equal(job?.providerDispute?.id, `SIM-${run.id}`);
+		assert.equal(job?.providerDispute?.answer, "EVIDENCE");
+		assert.equal(job?.providerDispute?.simulated, true);
 		assert.equal(job?.providerDispute?.status, "RESOLVED");
 		assert.equal(job?.providerDispute?.outcome, "RESOLVED_SELLER_FAVOUR");
 		assert.deepEqual(run.endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
