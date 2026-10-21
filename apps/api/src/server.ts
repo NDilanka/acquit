@@ -192,6 +192,11 @@ const askExecutor = askToolExecutor({
 		if (result.kind !== "PLATFORM_LEDGER") throw new Error("the platform ledger is not readable");
 		return result.ledger.jobs;
 	},
+	paypalEvents: async () => {
+		const result = await acquit.query({ role: "PLATFORM" }, { type: "PlatformTables" });
+		if (result.kind !== "PLATFORM_TABLES") throw new Error("the platform tables are not readable");
+		return result.tables.paypal_events;
+	},
 	paypal: askPaypal,
 	traceFigure: (figure) => traceFor({ role: "PLATFORM" }, figure),
 });

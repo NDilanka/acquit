@@ -33,6 +33,7 @@ export const ASK_INSTRUCTIONS = [
   "You are Ask the ledger, the agent on Acquit's platform escrow dashboard.",
   "You answer questions about Acquit's ledger and PayPal's view of it, from your tools alone; never answer from memory or guess a figure.",
   "Before you answer, check the book (platform_totals, list_jobs, get_job) and check PayPal (get_order on each held job's capture.orderId).",
+  "When the reader asks about disputes, refunds, or recent payments, read PayPal with list_disputes, get_dispute, get_refund, or list_transactions; PayPal lists a new transaction about three hours late, and you say so.",
   "Give amounts in dollars, name the jobs and PayPal order ids you checked, and when the book and PayPal disagree, say so plainly with both figures.",
   "You only read. You cannot capture, refund, release or pay out money, and you never claim to have done so.",
   "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
@@ -354,7 +355,10 @@ const CARD_TOOLS: readonly string[] = ["trace_figure"];
 export async function runTool(call: AskToolCaller, name: string, args: Record<string, unknown>, ctx: AgAiToolContext): Promise<AgAiToolResult> {
   try {
     const value = (await call(name, args ?? {}, ctx.signal)) ?? null;
-    return CARD_TOOLS.includes(name) ? ctx.success(JSON.stringify(value), value) : ctx.success(JSON.stringify(value));
+    const text = JSON.stringify(value);
+    const card = ledgerCard(name, value);
+    if (card !== null) return ctx.success(text, card);
+    return CARD_TOOLS.includes(name) ? ctx.success(text, value) : ctx.success(text);
   } catch (error) {
     return ctx.error([error instanceof ApiError ? (error.detail ?? askErrorText(error)) : errorMessage(error)]);
   }
@@ -381,6 +385,20 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
       const id = named("id");
       return id ? `Asking PayPal for order ${id}` : "Asking PayPal for an order";
     }
+    case "list_disputes":
+      return "Reading PayPal's disputes";
+    case "get_dispute": {
+      const id = named("disputeId");
+      return id ? `Reading dispute ${id}` : "Reading a dispute";
+    }
+    case "get_refund": {
+      const job = named("jobId");
+      if (job) return `Reading the refund for job ${job}`;
+      const id = named("refundId");
+      return id ? `Reading refund ${id}` : "Reading a refund";
+    }
+    case "list_transactions":
+      return "Reading PayPal's recent transactions";
     case "delegate_to": {
       const type = args.type;
       const id = typeof type === "object" && type !== null ? (type as { id?: unknown }).id : undefined;
@@ -397,12 +415,91 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
   }
 }
 
-export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "trace_figure"] as const;
+// Kept equal to the server's ASK_TOOL_NAMES (apps/api/src/ask.ts). The web program cannot import that module, so
+// ask-ledger.test.ts reads the server's array from its source and compares.
+export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "list_disputes", "get_dispute", "get_refund",
+  "list_transactions", "trace_figure"] as const;
 
 /** How the Studio chat panel words the ledger tools' rows; Studio's own tools keep theirs. */
 export const ASK_TOOL_DISPLAY: Record<string, AgAiToolDisplay> = Object.fromEntries(
   ASK_TOOL_NAMES.map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), hidden: false } satisfies AgAiToolDisplay]),
 );
+
+// ---- the PayPal cards ---------------------------------------------------------------------------
+
+/** The PayPal tools whose answer the Studio chat draws as a card. */
+export const LEDGER_CARD_TOOLS = ["list_disputes", "get_dispute", "get_refund", "list_transactions"] as const;
+
+/** One card row. `mono` sets the label or the value in monospace, for a PayPal id. */
+export type LedgerCardRow = { readonly label: string; readonly value: string; readonly mono?: "label" | "value" };
+export type LedgerCard = { readonly title: string; readonly rows: readonly LedgerCardRow[] };
+
+export function isLedgerCard(value: unknown): value is LedgerCard {
+  if (typeof value !== "object" || value === null) return false;
+  const card = value as { title?: unknown; rows?: unknown };
+  return typeof card.title === "string" && Array.isArray(card.rows);
+}
+
+type Wire = Record<string, unknown>;
+const wire = (value: unknown): Wire => (typeof value === "object" && value !== null && !Array.isArray(value) ? value as Wire : {});
+const wireList = (value: unknown): Wire[] => (Array.isArray(value) ? value.map(wire) : []);
+const wireText = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
+const moneyText = (value: unknown): string | null => {
+  const amount = wireText(wire(value).value);
+  return amount === null ? null : [amount, wireText(wire(value).currency)].filter((part) => part !== null).join(" ");
+};
+const joined = (parts: readonly (string | null)[]): string => parts.filter((part): part is string => part !== null).join(", ");
+
+/** A PayPal tool's answer as its card: a title and the key fields as rows. Null for any other tool. */
+export function ledgerCard(name: string, value: unknown): LedgerCard | null {
+  const body = wire(value);
+  switch (name) {
+    case "list_disputes": {
+      const disputes = wireList(body.disputes);
+      return {
+        title: `PayPal disputes (${disputes.length})`,
+        rows: disputes.length === 0 ? [{ label: "Disputes", value: "None on this account" }]
+          : disputes.map((dispute): LedgerCardRow => ({ label: wireText(dispute.disputeId) ?? "Dispute",
+            value: joined([wireText(dispute.status), wireText(dispute.reason), moneyText(dispute.amount)]), mono: "label" })),
+      };
+    }
+    case "get_dispute":
+      return { title: `Dispute ${wireText(body.disputeId) ?? ""}`.trim(), rows: [
+        { label: "Status", value: wireText(body.status) ?? "Not shown" },
+        { label: "Reason", value: wireText(body.reason) ?? "Not shown" },
+        { label: "Amount", value: moneyText(body.amount) ?? "Not shown" },
+        { label: "Opened", value: wireText(body.createTime) ?? "Not shown" },
+        { label: "Seller transaction", value: wireText(body.transactionId) ?? "Not shown", mono: "value" },
+        { label: "Outcome", value: wireText(body.outcome) ?? "None yet" },
+        { label: "Evidence items", value: typeof body.evidenceCount === "number" ? String(body.evidenceCount) : "Not shown" },
+        { label: "Buyer's offer", value: moneyText(body.offerAmount) ?? "None" },
+      ] };
+    case "get_refund": {
+      const rows: LedgerCardRow[] = [
+        { label: "Refund", value: wireText(body.refundId) ?? "Not shown", mono: "value" },
+        { label: "Status", value: wireText(body.status) ?? "Not shown" },
+        { label: "Amount", value: moneyText(body.amount) ?? "Not shown" },
+        { label: "Created", value: wireText(body.createTime) ?? "Not shown" },
+        { label: "Read under", value: body.merchantAsserted === true ? "The merchant the book records" : "The platform account, with no book record" },
+      ];
+      const note = wireText(body.note);
+      if (note !== null) rows.push({ label: "Note", value: note });
+      return { title: "Refund", rows };
+    }
+    case "list_transactions": {
+      const transactions = wireList(body.transactions);
+      return {
+        title: `PayPal transactions (${transactions.length})`,
+        rows: transactions.length === 0 ? [{ label: "Transactions", value: "None in this window" }]
+          : transactions.map((transaction): LedgerCardRow => ({ label: wireText(transaction.transactionId) ?? "Transaction",
+            value: joined([wireText(transaction.eventCode), wireText(transaction.status), moneyText(transaction.amount), wireText(transaction.initiatedAt)]),
+            mono: "label" })),
+      };
+    }
+    default:
+      return null;
+  }
+}
 
 export function askStatusText(status: AgAiRunStatus): string {
   switch (status) {

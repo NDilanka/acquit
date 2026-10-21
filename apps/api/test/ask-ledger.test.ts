@@ -15,7 +15,8 @@ import { usd } from "../../../packages/core/src/acquit.ts";
 import { instant } from "../../../packages/core/src/ids.ts";
 import type { CaptureId, ClientId, JobId, MerchantId, OperatorId, OrderId } from "../../../packages/core/src/ids.ts";
 import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
-import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, buildAskPrompt, droidAskPort, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
+import { PayPalHttpError } from "../../../packages/mcp/src/paypal.ts";
+import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, askToolList, buildAskPrompt, droidAskPort, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
 
 /** One held job's ledger row, the projection the platform route serves, as the executor reads it. */
 const heldBookRow = (): PlatformJobLedger => ({
@@ -211,10 +212,10 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	const asked: (readonly (string | null)[])[] = [];
 	const traced: string[] = [];
 	const executor = askToolExecutor({ platformView: readBook, traceFigure: async (figure) => { traced.push(figure); return { figure }; },
-		paypal: { getOrder: async (id, payee) => {
-			asked.push([id, payee]);
-			const found = paypalOrders.get(id);
-			if (!found) throw new Error(`PayPal answered 404 for ${id}.`);
+		paypalEvents: async () => [], paypal: { get: async (path, payee) => {
+			asked.push([path, payee]);
+			const found = paypalOrders.get(path.replace("/v2/checkout/orders/", ""));
+			if (!found) throw new PayPalHttpError(404, path);
 			return found;
 		} } });
 
@@ -224,16 +225,17 @@ test("the tool executor answers from the book and PayPal, and the set is closed 
 	assert.deepEqual(order, { status: "COMPLETED", amount: "378.00" });
 	// The order is the capture's: the read asserts the merchant the book named it under, or PayPal
 	// cannot see it at all.
-	assert.deepEqual(asked, [["ORDER1", "sandbox-seller"]]);
-	await assert.rejects(executor("get_order", { id: "ORDER2" }), /PayPal answered 404/);
+	assert.deepEqual(asked, [["/v2/checkout/orders/ORDER1", "sandbox-seller"]]);
+	await assert.rejects(executor("get_order", { id: "ORDER2" }), { message: "PayPal answered 404 for get_order." });
 	await assert.rejects(executor("capture_order", {}), /no tool named capture_order/, "the executor is a closed set");
 	assert.deepEqual(await executor("trace_figure", { figure: "held" }), { figure: "held" });
 	assert.deepEqual(traced, ["held"]);
 	await assert.rejects(executor("trace_figure", { figure: "pass-rate" }), /trace_figure needs one figure/, "a verifier rate is not a ledger figure");
 
 	// The registered set is read-only by name: no create, capture, refund, payout, or update tool.
-	assert.deepEqual([...ASK_TOOL_NAMES].sort(), ["get_job", "get_order", "list_jobs", "platform_totals", "trace_figure"]);
-	for (const name of ASK_TOOL_NAMES) assert.doesNotMatch(name, /create|capture|refund|payout|update|send|cancel/);
+	assert.deepEqual([...ASK_TOOL_NAMES].sort(), ["get_dispute", "get_job", "get_order", "get_refund", "list_disputes",
+		"list_jobs", "list_transactions", "platform_totals", "trace_figure"]);
+	for (const name of ASK_TOOL_NAMES) assert.doesNotMatch(name, /^(create|capture|refund|payout|update|send|cancel|accept)/);
 });
 
 test("the openrouter ask port runs on an injected transport, :free only, and never a live call", async () => {
@@ -258,11 +260,95 @@ test("the openrouter ask port runs on an injected transport, :free only, and nev
 
 test("the executor answers a job's own book, with its capture, lines, and verdicts", async () => {
 	const book = [heldBookRow()];
-	const executor = askToolExecutor({ platformView: async () => book, paypal: { getOrder: async () => ({}) }, traceFigure: async () => ({}) });
+	const executor = askToolExecutor({ platformView: async () => book, paypalEvents: async () => [], paypal: { get: async () => ({}) }, traceFigure: async () => ({}) });
 	const job = await executor("get_job", { jobId: "job_held" }) as PlatformJobLedger;
 	assert.equal(job.jobId, "job_held");
 	assert.deepEqual(job.capture, { orderId: "ORDER1", captureId: "CAP1", payee: "sandbox-seller", gross: 37800 });
 	await assert.rejects(executor("get_job", { jobId: "job_missing" }), /no job named job_missing/);
+});
+
+/** A fake PayPal reader: it records each GET's path and merchant, and answers with `answer`. */
+function recordingPaypal(answer: (path: string, payee: string | null) => unknown = () => ({})) {
+	const calls: { path: string; payee: string | null }[] = [];
+	return { calls, reader: { get: async (path: string, payee: string | null) => { calls.push({ path, payee }); return answer(path, payee); } } };
+}
+
+/** The book's PayPal rows: one refunded job under its merchant, one held job with no refund yet. */
+const refundBook = [
+	{ jobId: "job_refunded" as JobId, refundId: "REF1", merchant: "sandbox-seller" as MerchantId },
+	{ jobId: "job_held" as JobId, refundId: null, merchant: "sandbox-seller" as MerchantId },
+];
+const fixedNow = () => Date.parse("2026-03-31T12:00:00Z");
+
+test("each PayPal ask tool makes one GET on its exact path and query, asserting the book's merchant only for a refund it holds", async () => {
+	const { calls, reader } = recordingPaypal((path) => path.startsWith("/v1/customer/disputes?") ? { items: [] } : { amount: null });
+	const executor = askToolExecutor({ platformView: async () => [heldBookRow()], paypalEvents: async () => refundBook,
+		paypal: reader, traceFigure: async () => ({}), nowMs: fixedNow });
+	await executor("list_disputes", {});
+	await executor("list_disputes", { startTime: "2026-03-01T00:00:00Z" });
+	await executor("get_dispute", { disputeId: "PP-D-1" });
+	await executor("get_refund", { jobId: "job_refunded" });
+	const unbooked = await executor("get_refund", { refundId: "REF9" });
+	await executor("list_transactions", {});
+	assert.deepEqual(calls, [
+		{ path: "/v1/customer/disputes?page_size=10", payee: null },
+		{ path: "/v1/customer/disputes?start_time=2026-03-01T00%3A00%3A00Z&page_size=10", payee: null },
+		{ path: "/v1/customer/disputes/PP-D-1", payee: null },
+		{ path: "/v2/payments/refunds/REF1", payee: "sandbox-seller" },
+		{ path: "/v2/payments/refunds/REF9", payee: null },
+		{ path: "/v1/reporting/transactions?start_date=2026-03-24T12%3A00%3A00Z&end_date=2026-03-31T12%3A00%3A00Z&page_size=10&page=1", payee: null },
+	]);
+	assert.deepEqual(unbooked, { refundId: "REF9", status: null, amount: null, createTime: null, merchantAsserted: false,
+		note: "The book holds no refund with this id, so it was read without a merchant assertion." });
+});
+
+test("list_transactions clamps a 90-day ask to the 31 days Transaction Search allows", async () => {
+	const { calls, reader } = recordingPaypal();
+	const executor = askToolExecutor({ platformView: async () => [], paypalEvents: async () => [], paypal: reader, traceFigure: async () => ({}), nowMs: fixedNow });
+	const window = await executor("list_transactions", { days: 90 }) as { days: number; from: string; to: string };
+	assert.equal(window.days, 31);
+	assert.deepEqual([window.from, window.to], ["2026-02-28T12:00:00Z", "2026-03-31T12:00:00Z"]);
+	assert.equal(calls[0]!.path, "/v1/reporting/transactions?start_date=2026-02-28T12%3A00%3A00Z&end_date=2026-03-31T12%3A00%3A00Z&page_size=10&page=1");
+});
+
+test("a PayPal refusal becomes a plain line that names the status and the tool, never PayPal's body", async () => {
+	const { reader } = recordingPaypal((path) => {
+		if (path.startsWith("/v1/customer/disputes?")) throw new PayPalHttpError(403, path);
+		throw new PayPalHttpError(404, path);
+	});
+	const executor = askToolExecutor({ platformView: async () => [], paypalEvents: async () => refundBook, paypal: reader, traceFigure: async () => ({}), nowMs: fixedNow });
+	await assert.rejects(executor("list_disputes", {}), {
+		message: "PayPal answered 403 for list_disputes; this sandbox account may not have dispute access.",
+	});
+	await assert.rejects(executor("get_dispute", { disputeId: "PP-NONE" }), { message: "PayPal answered 404 for get_dispute." });
+	await assert.rejects(executor("get_refund", { jobId: "job_held" }), { message: "the book records no refund for job job_held" });
+});
+
+test("the dispute and transaction answers are reduced to the agent's fields", async () => {
+	const dispute = { dispute_id: "PP-D-1", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", create_time: "2026-03-02T10:00:00Z",
+		dispute_amount: { currency_code: "USD", value: "378.00" }, disputed_transactions: [{ seller_transaction_id: "TX1" }],
+		raw_only_field: "dropped" };
+	const { reader } = recordingPaypal((path) => path.startsWith("/v1/customer/disputes?") ? { items: [dispute] }
+		: path.startsWith("/v1/reporting") ? { transaction_details: [{ transaction_info: { transaction_id: "TX1", transaction_event_code: "T0006",
+			transaction_status: "S", transaction_initiation_date: "2026-03-30T08:00:00+0000", transaction_amount: { currency_code: "USD", value: "-12.50" } } }] }
+		: { dispute_id: "PP-D-1", status: "OPEN", evidences: [{ evidence_type: "PROOF_OF_DELIVERY" }], outcome: { outcome_code: "RESOLVED_SELLER_IN_FAVOUR" },
+			offer: { buyer_requested_amount: { currency_code: "USD", value: "100.00" } }, disputed_transactions: [{ seller_transaction_id: "TX1" }] });
+	const executor = askToolExecutor({ platformView: async () => [], paypalEvents: async () => [], paypal: reader, traceFigure: async () => ({}), nowMs: fixedNow });
+	assert.deepEqual(await executor("list_disputes", {}), { disputes: [{ disputeId: "PP-D-1", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+		amount: { currency: "USD", value: "378.00" }, createTime: "2026-03-02T10:00:00Z", transactionId: "TX1" }] });
+	assert.deepEqual(await executor("get_dispute", { disputeId: "PP-D-1" }), { disputeId: "PP-D-1", status: "OPEN", reason: null, amount: null,
+		createTime: null, transactionId: "TX1", outcome: "RESOLVED_SELLER_IN_FAVOUR", evidenceCount: 1, offerAmount: { currency: "USD", value: "100.00" } });
+	assert.deepEqual(await executor("list_transactions", { days: 7 }), { from: "2026-03-24T12:00:00Z", to: "2026-03-31T12:00:00Z", days: 7,
+		transactions: [{ transactionId: "TX1", eventCode: "T0006", status: "S", amount: { currency: "USD", value: "-12.50" },
+			initiatedAt: "2026-03-30T08:00:00+0000" }] });
+});
+
+test("the PayPal ask tools are listed only when PayPal is configured, and the read-only set matches the list", () => {
+	const listed = (paypal: boolean) => askToolList(paypal).map(tool => tool.name);
+	assert.deepEqual(listed(false), ["list_jobs", "get_job", "platform_totals", "trace_figure"]);
+	assert.deepEqual(listed(true), ["list_jobs", "get_job", "platform_totals", "trace_figure", "get_order", "list_disputes",
+		"get_dispute", "get_refund", "list_transactions"]);
+	assert.deepEqual([...listed(true)].sort(), [...ASK_TOOL_NAMES].sort());
 });
 
 test("a chatty droid on stderr cannot wedge the turn: the port never waits on a full pipe", { timeout: 30_000 }, async () => {
