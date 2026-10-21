@@ -192,10 +192,10 @@ test("every wide column has a floor from VERDICT_MIN_WIDTHS, and every floor bel
   }
 });
 
-test("the floors sum to 1247px, 119px past the 1128px tile at 1600: each floor fits its widest seeded value, so the grid scrolls sideways", () => {
+test("the floors sum to 1350px, 222px past the 1128px tile at 1600: each floor fits its widest hosted value, so the grid scrolls sideways", () => {
   const sum = Object.values(VERDICT_MIN_WIDTHS).reduce((total, px) => total + px, 0);
-  assert.equal(sum, 1247, "the documented sum of the floors");
-  assert.equal(sum - 1128, 119, "the overrun the grid scrolls by at 1600");
+  assert.equal(sum, 1350, "the documented sum of the floors");
+  assert.equal(sum - 1128, 222, "the overrun the grid scrolls by at 1600");
 });
 
 test("the timeline does not suppress horizontal scroll, so a column below its floor scrolls instead of clipping", () => {
