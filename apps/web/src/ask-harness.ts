@@ -28,6 +28,7 @@ import {
 } from "./ask-ledger.ts";
 import { COLUMNS, NATIVE_TYPES, WIDGET_IDS, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { firstFreeTrack, placementFits, selectedPage, widgetPlaced, type Track } from "./studio-data.ts";
+import { changeLogFor } from "./change-chain.ts";
 
 // The api is typed against Studio's default widget registry; the state it holds is this app's.
 const dashboardState = (api: AgStudioApi) => api.getState() as unknown as DashboardState;
@@ -267,6 +268,7 @@ export function createAskLedgerHarness(
   const adapter = askLedgerAdapter(deps);
   const ledgerTools = servedTools(served);
   const { outcomes, failures, observer } = delegateOutcomes();
+  const changes = changeLogFor(studio, ASK_AGENT_NAME);
   return createAiHarness(studio, ({ builtIn }) => ({
     agents: [
       directLlmRunner({
@@ -305,7 +307,7 @@ export function createAskLedgerHarness(
     ],
     primary: ASK_AGENT_ID,
     promptStarters: ASK_PROMPT_STARTERS,
-    observers: [observer],
+    observers: [observer, changes.observer],
     history: deps?.history ?? askHistory,
   }));
 }

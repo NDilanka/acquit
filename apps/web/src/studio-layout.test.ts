@@ -137,11 +137,25 @@ const freshEscrow = (): DashboardState => ({
   pages: [{ id: "main", layout: { columns: 12, rowHeight: 60 }, widgets: seededWidgets("escrow"), widgetLayout: seededPlacements("escrow") }],
 });
 
-test("a legacy escrow layout gains the verdict grid at its seed place, and only the grid", () => {
+test("a legacy escrow layout gains the verdict grid and the Changes widget at their seed places, and only those", () => {
   const { widgets, layout } = mainPage(parseSaved(saved(idsAsTypes(ESCROW_ROUND4), ROUND4_LAYOUT), "escrow"));
-  assert.deepEqual(Object.keys(widgets).sort(), [...ESCROW_ROUND4, "acquit-verdict-grid"].sort(), "the widgets the viewer deleted stay absent");
+  assert.deepEqual(
+    Object.keys(widgets).sort(),
+    [...ESCROW_ROUND4, "acquit-verdict-grid", "acquit-changes"].sort(),
+    "the widgets the viewer deleted stay absent",
+  );
   assert.deepEqual(widgets["acquit-verdict-grid"], { type: "acquit-verdict-grid", dataMapping: {} }, "the grid gets its fresh record");
   assert.deepEqual(layout["acquit-verdict-grid"], { xTrack: 0, yTrack: 8, xSpan: 12, ySpan: 9 }, "the grid takes its seed place");
+  assert.ok(layout["acquit-changes"], "the Changes widget is placed");
+  assert.deepEqual(clashingPairs(layout), [], "no two widgets share a cell");
+});
+
+test("the Changes widget is seeded for the escrow dashboard and reaches a layout saved before it", () => {
+  assert.ok(seededIds("escrow").includes("acquit-changes"), "the Changes widget is among the escrow seeds");
+  const seen = seededIds("escrow").filter((id) => id !== "acquit-changes");
+  const { widgets, layout } = mainPage(parseSaved(saved(idsAsTypes(ESCROW_ROUND4), ROUND4_LAYOUT, seen), "escrow"));
+  assert.deepEqual(widgets["acquit-changes"], { type: "acquit-changes", dataMapping: {} }, "the Changes widget is new to this viewer");
+  assert.ok(layout["acquit-changes"], "the Changes widget is placed");
   assert.deepEqual(clashingPairs(layout), [], "no two widgets share a cell");
 });
 

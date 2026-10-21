@@ -66,3 +66,9 @@
 .explain-dialog::backdrop { background: rgb(17 21 18 / 0.35); }
 .explain-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .explain-head h2 { margin: 0; font-size: 18px; }
+/* The Changes list fills its tile and scrolls inside it, under a note and the chain check. */
+.changes-widget { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.changes-widget .changes-note { margin: 0; font-size: 12px; }
+.changes-grid { flex: 1 1 auto; min-height: 180px; display: flex; flex-direction: column; }
+.changes-grid .ag-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.changes-widget .changes-check { align-self: flex-start; }

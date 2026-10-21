@@ -1,4 +1,4 @@
-import { Component, createContext, useContext, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type ReactNode, type RefObject } from "react";
+import { Component, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type ReactNode, type RefObject } from "react";
 import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
 import type { ColDef, ICellRendererParams, RowClickedEvent, RowHeightParams } from "ag-grid-community";
@@ -9,6 +9,7 @@ import { escrowWord } from "../job-status";
 import { dollars, shortId, utc } from "../format";
 import { COLUMNS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
 import { conserves, earnings, escrowTotals, newestReceipt, seededPlacements, seededWidgets, verifierStats } from "../studio-data";
+import type { ChangeLog, ChangeSnapshot } from "../change-chain";
 import {
   VERDICT_MIN_WIDTHS,
   attemptWords,
@@ -480,6 +481,111 @@ function VerdictTimeline() {
   );
 }
 
+/** The change log of the dashboard's Studio instance, from the Studio page. Null until Studio is ready. */
+export const ChangesContext = createContext<ChangeLog | null>(null);
+
+/** One Changes row: a chain link, with whether its Undo is still offered. */
+type ChangeRow = {
+  readonly seq: number;
+  readonly at: number;
+  readonly agent: string;
+  readonly tool: string;
+  readonly what: string;
+  readonly hash: string;
+  readonly entryId: string;
+  readonly kind: "change" | "undo";
+  readonly undoable: boolean;
+};
+
+/** The rows newest first. A change is undoable while Studio still holds its entry on the undo stack. */
+function changeRows({ links, undoIds }: ChangeSnapshot): ChangeRow[] {
+  return links
+    .map((link) => ({
+      seq: link.seq,
+      at: link.at,
+      agent: link.agent,
+      tool: link.tool ?? "-",
+      what: link.label,
+      hash: link.hash.slice(0, 8),
+      entryId: link.entryId,
+      kind: link.kind,
+      undoable: link.kind === "change" && undoIds.has(link.entryId),
+    }))
+    .reverse();
+}
+
+function UndoCell({ row, log }: { readonly row: ChangeRow | undefined; readonly log: ChangeLog }) {
+  if (row?.kind !== "change") return null;
+  return (
+    <button type="button" className="btn sm ghost" disabled={!row.undoable} onClick={() => log.undo(row.entryId)}>
+      Undo to here
+    </button>
+  );
+}
+
+function changeColumns(log: ChangeLog): ColDef<ChangeRow>[] {
+  return [
+    { headerName: "Time", field: "at", width: 170, valueFormatter: ({ value }) => utc(new Date(value).toISOString()) },
+    { headerName: "Agent", field: "agent", width: 150 },
+    { headerName: "Tool", field: "tool", width: 150 },
+    { headerName: "What changed", field: "what", flex: 1, minWidth: 180 },
+    { headerName: "Hash", field: "hash", width: 110, cellClass: "mono" },
+    { headerName: "", field: "entryId", width: 150, sortable: false, cellRenderer: ({ data }: ICellRendererParams<ChangeRow>) => <UndoCell row={data} log={log} /> },
+  ];
+}
+
+/** The chain check: green when every link verifies, the first failing position when one does not. */
+function ChainCheck({ check }: { readonly check: ChangeSnapshot["check"] }) {
+  if (check === "unavailable") return <small className="muted">This browser cannot check the chain.</small>;
+  if (!check.ok) return <span className="pill break changes-check">Chain broken at #{check.seq}</span>;
+  return (
+    <span className="pill ok changes-check">
+      <span className="dot" />
+      Chain verifies
+    </span>
+  );
+}
+
+/**
+ * The dashboard's changes, newest first, in a grid. The chain is kept in this browser and is not a
+ * server receipt. Each change can be undone back through while Studio still holds it.
+ */
+function ChangesList({ log }: { readonly log: ChangeLog }) {
+  const snapshot = useSyncExternalStore(log.subscribe, log.getSnapshot);
+  const rows = useMemo(() => changeRows(snapshot), [snapshot]);
+  const columns = useMemo(() => changeColumns(log), [log]);
+  // Edits made by hand reach the log on the next state update, and the ones already made when the widget
+  // first shows are read now.
+  useEffect(() => {
+    log.sync();
+  }, [log]);
+  return (
+    <div className="changes-widget">
+      <p className="changes-note muted">Kept in this browser. This is not a server receipt.</p>
+      {rows.length === 0 ? (
+        <p className="muted">No changes yet. Edits you make, and changes the assistant makes, appear here.</p>
+      ) : (
+        <div className="acquit-grid changes-grid">
+          <AgGridReact<ChangeRow>
+            theme={acquitTheme}
+            rowData={rows}
+            columnDefs={columns}
+            getRowId={({ data }) => String(data.seq)}
+            containerStyle={{ height: "100%" }}
+          />
+        </div>
+      )}
+      <ChainCheck check={snapshot.check} />
+    </div>
+  );
+}
+
+function ChangesWidget() {
+  const log = useContext(ChangesContext);
+  if (log === null) return <p className="muted">The change history opens once the dashboard is ready.</p>;
+  return <ChangesList log={log} />;
+}
+
 const COMP = {
   "acquit-held": escrowTotal("held", "In escrow on jobs not yet settled"),
   "acquit-released": escrowTotal("released", "Paid out to operators"),
@@ -501,6 +607,7 @@ const COMP = {
   "acquit-fees-withheld": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).feesWithheld), note: "PayPal processing and Acquit" })),
   "acquit-jobs-paid": stat(useEarnings, (d) => ({ value: String(earnings(d.receipts).jobsPaid), note: "Verified, released, and paid" })),
   "acquit-receipt-card": ReceiptCard,
+  "acquit-changes": ChangesWidget,
 } satisfies Record<AcquitWidgetId, ComponentType>;
 
 type SpecData = (typeof WIDGET_ROWS)[DashboardId][number][number];
