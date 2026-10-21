@@ -715,8 +715,9 @@ test("the login exchange issues a single-use, expiring token that authenticates 
 		assert.equal(listed.agents.some(entry => entry.id === "ts-bugfixer-2"), true);
 		assert.deepEqual(await (await fetch(`${url}/api/me/receipts`, { headers: auth })).json(), { receipts: [], nextCursor: null });
 		// A stored job serves the server's now, which the submit block measures the review window against.
+		// The deadline sits seven days past the real clock, inside the fourteen-day window the open route allows.
 		const row = { id: "job_7Q2K", version: 1, client: "maya-client", title: "Fixture", openedAt: "2026-11-01T11:12:00.000Z",
-			contract: { budget: 40000, deliveryEndsAt: "2026-11-08T11:12:00.000Z", definitionOfDone: null }, bids: [],
+			contract: { budget: 40000, deliveryEndsAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), definitionOfDone: null }, bids: [],
 			state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } };
 		const jobs = new DatabaseSync(databasePath);
 		jobs.prepare("INSERT INTO jobs VALUES (?, 1, ?, NULL)").run(row.id, JSON.stringify(row));
