@@ -225,6 +225,8 @@ export type AcquitConfig = {
 	 * the demo route refuses by name, because a visitor that cannot be paid cannot bid.
 	 */
 	readonly demo?: { readonly merchant: MerchantId };
+	/** The deployment's client repository, the root every visitor fork is a fork of. A retry adopts a work repo through it once the visitor fork is gone. */
+	readonly clientRepository?: string;
 };
 
 export function createAcquit(config: AcquitConfig): Acquit {
@@ -240,6 +242,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		// where the deployment's own log handling is the record.
 		alerts: config.alerts ?? { raise: async effect => { console.error(`Acquit alert: ${effect.reason} for ${effect.jobId}`); } },
 		workRepo: github,
+		clientRepository: config.clientRepository,
 		scopeDraft: config.scopeDraft,
 		privateCases: config.privateCases,
 		clock };

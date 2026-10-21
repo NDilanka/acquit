@@ -116,7 +116,7 @@ const privateCases: PrivateCaseReader = jobId => {
 		return { candidates: file.cases, salt: file.salt ?? null };
 	} catch { return null; }
 };
-const acquit = createAcquit({ ...settings, scopeDraft, privateCases });
+const acquit = createAcquit({ ...settings, clientRepository, scopeDraft, privateCases });
 // The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
 // and the journal mode come with it, so a second worker's write waits for the lock instead of failing
 // the request that carries it.
