@@ -9,7 +9,9 @@ import type { HeldEscrow, JobRow } from "./job.ts";
 import type { LedgerLine } from "./ledger.ts";
 import { figureCents, ledgerEntryId } from "./explain.ts";
 import type { OperatorRow } from "./operator.ts";
+import { reasonCode } from "./score-card.ts";
 import { isTestTamper } from "./verifier.ts";
+import type { TestTally } from "./verifier.ts";
 
 export type PlatformAttempt = {
 	readonly ordinal: number;
@@ -17,7 +19,11 @@ export type PlatformAttempt = {
 	readonly at: Instant;
 	/** True when the rejection named the frozen tests: a tamper the verifier caught. */
 	readonly tamper: boolean;
+	/** Closed reason codes such as TESTS_FAILED:hidden. The ledger never names a test id, so a hidden case stays private. */
 	readonly reasons: readonly string[];
+	/** The frozen and hidden counts the job view shows for this attempt. Null when the verdict recorded none. */
+	readonly frozen: TestTally | null;
+	readonly hidden: TestTally | null;
 };
 
 export type PlatformFee = { readonly cents: UsdCents; readonly processor: UsdCents; readonly acquit: UsdCents };
@@ -75,13 +81,17 @@ export function platformJobLedger(row: JobRow): PlatformJobLedger {
 		: state.status === "VERIFIED" || state.status === "REFUNDED" || state.status === "PAID" ? state.history : [];
 	const judged = history.map(record => {
 		const view = attemptView(record);
+		const verdict = record.verdict;
 		return { ordinal: view.ordinal, result: view.result, at: view.at,
-			tamper: record.verdict.result === "REJECTED" && record.verdict.reasons.some(isTestTamper), reasons: view.reasons };
+			tamper: verdict.result === "REJECTED" && verdict.reasons.some(isTestTamper),
+			reasons: verdict.result === "REJECTED" ? verdict.reasons.map(reasonCode) : [],
+			frozen: view.frozen, hidden: view.hidden };
 	});
 	// A paid row keeps the history it settled with. A row stored before the field reads empty, and its
-	// receipt's own verified attempt is the one verdict it can still name.
-	const attempts = state.status === "PAID" && judged.length === 0
-		? [{ ordinal: state.receipt.attemptsUsed, result: "VERIFIED" as const, at: state.receipt.releasedAt, tamper: false, reasons: [] }]
+	// receipt's own verified attempt is the one verdict it can still name, with the counts it settled on.
+	const attempts: readonly PlatformAttempt[] = state.status === "PAID" && judged.length === 0
+		? [{ ordinal: state.receipt.attemptsUsed, result: "VERIFIED", at: state.receipt.releasedAt, tamper: false, reasons: [],
+			frozen: state.receipt.frozen, hidden: state.receipt.hidden }]
 		: judged;
 	return { jobId: row.id, title: row.title, tenant: row.tenant ?? null, client: row.client, status: state.status,
 		escrow: state.status === "PAID" ? "RELEASED" : state.status === "REFUNDED" ? "REFUNDED" : holding ? "HELD" : "NONE",

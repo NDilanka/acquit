@@ -257,7 +257,11 @@ export type PlatformAttempt = {
   readonly at: Instant;
   /** True when the rejection named the frozen tests: a tamper the verifier caught. */
   readonly tamper: boolean;
+  /** Closed reason codes such as TESTS_FAILED:hidden. The ledger never names a test id, so a hidden case stays private. */
   readonly reasons: readonly string[];
+  /** The frozen and hidden counts the job view shows for this attempt. Null when the verdict recorded none. */
+  readonly frozen: TestTally | null;
+  readonly hidden: TestTally | null;
 };
 
 /** One job's book in `GET /api/platform/ledger`, across every tenant. Mirrored from packages/core/src/platform.ts. */
