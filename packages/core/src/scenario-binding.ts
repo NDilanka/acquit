@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { parseRequestKey } from "./ids.ts";
 import type { JobId, RequestKey } from "./ids.ts";
+import type { PayPalObservation } from "./paypal.ts";
 
 /** A request key derived from the run and the step, so a resent step is the same request. */
 export function stepKey(runId: string, step: string): RequestKey {
@@ -28,12 +29,49 @@ export function openedJobOf(db: DatabaseSync, run: { readonly id: string; readon
 }
 
 /**
- * Whether a run may take the scenario arbiter's verdict on a job. The committed row must name the dispute-arbiter
- * scenario and this job and still be RUNNING, and the run's own OpenJob receipt must name the job. The row is read
- * from the database, where its identity is write-once, so no caller's copy of a run decides.
+ * Whether a run of the named scenario may act on a job. The committed row must name that scenario and this job and
+ * still be RUNNING, and the run's own OpenJob receipt must name the job. The row is read from the database, where its
+ * identity is write-once, so no caller's copy of a run decides.
  */
-export function arbiterOwns(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }): boolean {
+function runOwnsJob(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }, scenario: string): boolean {
 	const row = db.prepare("SELECT visitor_id, name, job_id, state FROM scenario_runs WHERE id = ?").get(run.id);
-	return row !== undefined && row.name === "dispute-arbiter" && row.state === "RUNNING" && row.job_id === run.jobId
+	return row !== undefined && row.name === scenario && row.state === "RUNNING" && row.job_id === run.jobId
 		&& openedJobOf(db, { id: run.id, visitorId: String(row.visitor_id) }) === run.jobId;
+}
+
+/** Whether a run may take the scenario arbiter's verdict on a job. */
+export function arbiterOwns(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }): boolean {
+	return runOwnsJob(db, run, "dispute-arbiter");
+}
+
+/** Whether a run may inject and read a simulated buyer dispute on a job. */
+export function buyerDisputeOwns(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }): boolean {
+	return runOwnsJob(db, run, "buyer-dispute");
+}
+
+/** A buyer dispute as PayPal's read would answer it, for the dispute a scenario simulated. */
+export type SimulatedDispute = Extract<PayPalObservation, { kind: "DISPUTE" }>;
+
+type SimulatedEntry = { readonly runId: string; readonly jobId: string; readonly db: DatabaseSync; readonly dispute: SimulatedDispute };
+/** Process-local. A restart drops these with the runs that own them, and a finished run's entries are forgotten at its end. */
+const simulated = new Map<string, SimulatedEntry>();
+
+/** Records the simulated dispute a buyer-dispute run has injected. A later call replaces the record, so a status change reads back. */
+export function recordSimulatedDispute(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }, dispute: SimulatedDispute): void {
+	simulated.set(dispute.disputeId, { runId: run.id, jobId: run.jobId, db, dispute });
+}
+
+export function forgetSimulatedDisputes(runId: string): void {
+	for (const [id, entry] of simulated) if (entry.runId === runId) simulated.delete(id);
+}
+
+/**
+ * The record a simulated dispute id answers a read with, or null for any other id. Only a dispute a RUNNING
+ * buyer-dispute run injected for its own job answers. A forged id, a finished run, or another scenario's job
+ * gets null, so the read goes to PayPal as it always does.
+ */
+export function simulatedDisputeOf(disputeId: string): SimulatedDispute | null {
+	const entry = simulated.get(disputeId);
+	if (entry === undefined) return null;
+	return buyerDisputeOwns(entry.db, { id: entry.runId, jobId: entry.jobId }) ? entry.dispute : null;
 }

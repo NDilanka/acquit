@@ -60,6 +60,7 @@ const EXPECTED_END: Readonly<Record<ScenarioName, ScenarioEndState>> = {
   "hidden-test-fail": { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
   "test-tamper": { jobStatus: "IN_PROGRESS", reason: "PROTECTED_PATH_MODIFIED" },
   "dispute-arbiter": { jobStatus: "PAID", reason: "ARBITER_UPHELD" },
+  "buyer-dispute": { jobStatus: "PAID", reason: "CLIENT_APPROVAL" },
   "deadline-refund": { jobStatus: "REFUNDED", reason: "DELIVERY_DEADLINE" },
 };
 
@@ -73,6 +74,8 @@ const STEP_TITLES: Readonly<Record<string, string>> = {
   submit: "Verifier judges the submission",
   approve: "Client approves the delivery",
   dispute: "Client disputes the delivery",
+  "dispute-created": "Buyer opens a PayPal dispute",
+  "dispute-resolved": "PayPal resolves the dispute",
   "arbiter-verdict": "Arbiter rules on the dispute",
   release: "Escrow releases the payout",
   "advance-clock": "Job clock moves 2 days",
@@ -91,6 +94,7 @@ const ACTOR_WORDS: Readonly<Record<ScenarioStep["actor"], string>> = {
 const LABEL_NOTE: Readonly<Record<ScenarioLabel, string | null>> = {
   "Scripted agent (Simulated)": null,
   "Simulated time for this job": null,
+  "Simulated PayPal dispute": null,
   "Real verifier run": null,
   "PayPal sandbox": "No real money moves.",
   "GitHub work repository": null,
@@ -141,8 +145,17 @@ function stepTitle(name: string): string {
 // The server names the step that settled a wait-only step by its id; the page shows that step's title.
 const SETTLED_BY = /\(already settled by ([a-z-]+)\)$/;
 
-function resultWords(outcome: string): string {
-  return outcome.replace(SETTLED_BY, (_, name: string) => `(already settled at ${stepTitle(name)})`);
+// The outcomes a buyer dispute's steps record, in plain words. Any other outcome reads as the server sent it. The approve
+// step's HELD is read only on that step: accept-and-fund also records HELD, in every scenario.
+const APPROVED_HELD = "Approved. The payout is held while the dispute is open.";
+const DISPUTE_OUTCOME_WORDS: Readonly<Record<string, string>> = {
+  "dispute OPEN": "The dispute is open with PayPal, and the payout is held.",
+  "dispute RESOLVED_SELLER_FAVOUR": "PayPal resolved the dispute for the seller.",
+};
+
+function resultWords(name: string, outcome: string): string {
+  const words = name === "approve" && outcome === "HELD" ? APPROVED_HELD : (lookup(DISPUTE_OUTCOME_WORDS, outcome) ?? outcome);
+  return words.replace(SETTLED_BY, (_, settled: string) => `(already settled at ${stepTitle(settled)})`);
 }
 
 function observedWords(end: ScenarioEndState): string {
@@ -165,7 +178,7 @@ function stepView(step: ScenarioStep): RunStepView {
     actorText: ACTOR_WORDS[step.actor],
     label: step.label,
     reached: step.reached === undefined ? null : step.reached.map(place => ({ label: place, sandboxNote: LABEL_NOTE[place] })),
-    result: resultWords(step.outcome),
+    result: resultWords(step.name, step.outcome),
     ms: step.ms,
   };
 }

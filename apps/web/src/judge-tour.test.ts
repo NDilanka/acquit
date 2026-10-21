@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SCENARIO_CARDS, SCRIPTED_LABEL, START_DEMO_ACTION } from "./judge-tour.ts";
 
-test("the sign-in page offers the five judge scenarios under their titles", () => {
-  assert.deepEqual(SCENARIO_CARDS.map(card => card.name), ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "deadline-refund"]);
-  assert.deepEqual(SCENARIO_CARDS.map(card => card.title), ["Verified and paid", "Hidden test fail", "Test tamper", "Dispute to arbiter", "Deadline refund"]);
+test("the sign-in page offers the six judge scenarios under their titles", () => {
+  assert.deepEqual(SCENARIO_CARDS.map(card => card.name), ["verified-and-paid", "hidden-test-fail", "test-tamper", "dispute-arbiter", "buyer-dispute", "deadline-refund"]);
+  assert.deepEqual(SCENARIO_CARDS.map(card => card.title), ["Verified and paid", "Hidden test fail", "Test tamper", "Dispute to arbiter", "Buyer disputes", "Deadline refund"]);
+});
+
+test("the buyer disputes card states its one sentence, and names its dispute as simulated", () => {
+  const card = SCENARIO_CARDS.find(candidate => candidate.name === "buyer-dispute");
+  assert.equal(card?.promise, "A verified job's buyer opens a PayPal dispute, the approval is held, the dispute resolves for the seller, and the job is paid.");
+  assert.ok(card?.scripted.includes("Simulated PayPal dispute"));
 });
 
 test("every scenario card names its scripted agent as simulated", () => {

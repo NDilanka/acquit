@@ -5,7 +5,7 @@ export const START_DEMO_ACTION = "Start my demo";
 /** The label every scripted step carries on screen, so the scripted agent is never read as a real model. */
 export const SCRIPTED_LABEL = "Scripted agent (Simulated)";
 
-/** The five judge scenarios, in the order the sign-in page shows them. */
+/** The six judge scenarios, in the order the sign-in page shows them. */
 export const SCENARIO_CARDS: readonly ScenarioCard[] = [
   {
     name: "verified-and-paid",
@@ -34,6 +34,13 @@ export const SCENARIO_CARDS: readonly ScenarioCard[] = [
     promise: "The client disputes a verified fix, and the arbiter upholds it. The operator is paid.",
     scripted: `${SCRIPTED_LABEL} opens the job, bids, writes the fix, and gives the arbiter's verdict.`,
     endStateText: "Paid. The arbiter upheld the delivered fix.",
+  },
+  {
+    name: "buyer-dispute",
+    title: "Buyer disputes",
+    promise: "A verified job's buyer opens a PayPal dispute, the approval is held, the dispute resolves for the seller, and the job is paid.",
+    scripted: `${SCRIPTED_LABEL} opens the job, bids, writes the honest fix, and approves it. The dispute is a Simulated PayPal dispute.`,
+    endStateText: "Paid. The buyer's PayPal dispute resolved for the seller after the approval was held.",
   },
   {
     name: "deadline-refund",

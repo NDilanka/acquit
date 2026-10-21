@@ -1,4 +1,4 @@
-import type { BidView, CheckoutPhase, JobView, LedgerLine } from "./api-types";
+import type { BidView, CheckoutPhase, JobView, LedgerLine, ProviderDisputeView } from "./api-types";
 
 /** The pill's color class: blue before work starts, amber while work is in flight, red for trouble, green once money moves, grey once ended. */
 export type StatusTone = "open" | "held" | "alert" | "ok" | "new";
@@ -8,7 +8,21 @@ export type StatusLabel = { readonly label: string; readonly tone: StatusTone };
 /** The fields the vocabulary reads. The last verdict tells a rejected job, still holding escrow, from a fresh one. */
 export type StatusInput = Pick<JobView, "status" | "phase" | "checkoutPhase"> & {
   readonly attempts: Pick<JobView["attempts"], "last">;
+  /** The PayPal buyer dispute, when one has reached the job. Optional, so a reader with no dispute in view omits it. */
+  readonly providerDispute?: Pick<ProviderDisputeView, "status" | "outcome"> | null;
 };
+
+/** The PayPal outcomes that release a held payout: the seller's win. Mirrors SELLER_FAVOUR_OUTCOMES in packages/core/src/job.ts. */
+const SELLER_FAVOUR_OUTCOMES: readonly string[] = ["RESOLVED_SELLER_FAVOUR", "CANCELED_BY_BUYER"];
+
+/**
+ * Whether a PayPal buyer dispute holds the payout. It holds while the dispute is open, and also on a buyer-favour or
+ * unnamed outcome, the same rule as core releaseHeld: what becomes of that money is not decided yet.
+ */
+export function payoutHeldBy(dispute: StatusInput["providerDispute"]): boolean {
+  if (!dispute) return false;
+  return dispute.status !== "RESOLVED" || !SELLER_FAVOUR_OUTCOMES.includes(dispute.outcome ?? "");
+}
 
 /**
  * Every state a job can hold. An OPEN funding job splits by its checkout phase. An IN_PROGRESS job splits by
@@ -25,6 +39,7 @@ export type StateKey =
   | "VERIFIED/AWAITING_CLIENT"
   | "VERIFIED/DISPUTED"
   | "VERIFIED/RELEASE_PENDING"
+  | "VERIFIED/RELEASE_PENDING/DISPUTE_HELD"
   | "VERIFIED/REFUND_PENDING"
   | "PAID/PAID"
   | "REFUNDED/REFUNDED"
@@ -50,6 +65,8 @@ const LABELS: Record<StateKey, StatusLabel> = {
   "VERIFIED/AWAITING_CLIENT": { label: "Verified (awaiting review)", tone: "held" },
   "VERIFIED/DISPUTED": { label: "Disputed", tone: "alert" },
   "VERIFIED/RELEASE_PENDING": { label: "Paying out", tone: "ok" },
+  // The approval is recorded, but the payout waits on PayPal's buyer dispute, so the job does not read as paying out.
+  "VERIFIED/RELEASE_PENDING/DISPUTE_HELD": { label: "Payout held for a buyer dispute", tone: "alert" },
   // An arbiter's refund is still in flight, so the dispute is what the client sees until the money moves.
   "VERIFIED/REFUND_PENDING": { label: "Disputed", tone: "alert" },
   "PAID/PAID": { label: "Paid", tone: "ok" },
@@ -76,7 +93,7 @@ export function stateKey(job: StatusInput): StateKey {
     case "VERIFIED":
       if (job.phase === "AWAITING_CLIENT") return "VERIFIED/AWAITING_CLIENT";
       if (job.phase === "DISPUTED") return "VERIFIED/DISPUTED";
-      if (job.phase === "RELEASE_PENDING") return "VERIFIED/RELEASE_PENDING";
+      if (job.phase === "RELEASE_PENDING") return payoutHeldBy(job.providerDispute) ? "VERIFIED/RELEASE_PENDING/DISPUTE_HELD" : "VERIFIED/RELEASE_PENDING";
       if (job.phase === "REFUND_PENDING") return "VERIFIED/REFUND_PENDING";
       return unlabeled(job);
     case "PAID":
