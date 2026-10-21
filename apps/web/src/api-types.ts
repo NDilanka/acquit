@@ -63,7 +63,10 @@ export interface ReleaseEvidence {
 
 export type ReleaseAuthority = "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "ARBITER_SLA_MISSED" | "CAPTURE_CUTOFF";
 
-export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER_REFUND" | "CAPTURE_CUTOFF" | "CAPTURE_MISMATCH";
+export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER_REFUND" | "CAPTURE_CUTOFF" | "CAPTURE_MISMATCH" | "PROVIDER_DISPUTE";
+
+/** What Acquit did about a buyer dispute: filed the receipt, accepted the claim, or could not answer it. */
+export type DisputeAnswer = "EVIDENCE" | "ACCEPT" | "NOT_ANSWERABLE";
 
 /** A PayPal buyer dispute against the job's capture, as PayPal last answered for it. Not the in-app review dispute. */
 export interface ProviderDisputeView {
@@ -74,6 +77,10 @@ export interface ProviderDisputeView {
   readonly amount: number;
   readonly openedAt: Instant;
   readonly outcome: string | null;
+  /** The answer Acquit filed on the first delivery it saw, or null when none was filed. */
+  readonly answer: DisputeAnswer | null;
+  /** True when a judge scenario simulated this dispute. PayPal never received an answer for it. */
+  readonly simulated: boolean;
 }
 
 export interface DisputeView {

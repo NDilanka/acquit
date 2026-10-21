@@ -214,6 +214,43 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     href: null,
     reasons: [],
   }];
+  const simulated = dispute.simulated ? " (Simulated)" : "";
+  if (dispute.answer === "EVIDENCE") {
+    // A paid job's answer is its receipt. A held job has no receipt yet, so it names the verified attempt it filed instead.
+    const filed = job.status === "PAID" ? "the receipt" : "its verified attempt";
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: `Acquit filed ${filed} as evidence with PayPal${simulated}`,
+      detail: "The evidence names the frozen and hidden test counts, the pull request, and the judged commit.",
+      tone: "held",
+      ids: [{ value: dispute.id, label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    });
+  } else if (dispute.answer === "ACCEPT") {
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: `Acquit accepted the buyer's claim${simulated}`,
+      detail: "PayPal returns the held funds to the buyer when it decides the dispute.",
+      tone: "alert",
+      ids: [{ value: dispute.id, label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    });
+  } else if (dispute.answer === "NOT_ANSWERABLE") {
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: "Acquit could not answer this dispute on its own",
+      detail: "No held escrow was left to defend. A person has to decide it.",
+      tone: "alert",
+      ids: [{ value: dispute.id, label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    });
+  }
   if (dispute.status !== "RESOLVED") {
     if (job.status === "VERIFIED" && job.phase === "RELEASE_PENDING") {
       events.push({
@@ -243,6 +280,34 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     return events;
   }
   const forBuyer = dispute.outcome === "RESOLVED_BUYER_FAVOUR";
+  if (forBuyer && job.status === "REFUNDED") {
+    // Acquit settled the held escrow as refunded. PayPal had already reversed the funds, so no refund call went out.
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: "PayPal resolved the dispute for the buyer. The escrow was returned to the buyer.",
+      detail: "Acquit settled the job as refunded. No refund call went to PayPal, because PayPal had already reversed the funds.",
+      tone: "alert",
+      ids: [],
+      href: null,
+      reasons: [],
+    });
+    return events;
+  }
+  if (forBuyer && job.status === "PAID") {
+    // The payout left before PayPal decided, so nothing is held. Acquit raised an alert for a person.
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: "PayPal resolved the dispute for the buyer after the payout left",
+      detail: "The payout had already left. Acquit has not decided what becomes of the money.",
+      tone: "alert",
+      ids: [],
+      href: null,
+      reasons: [],
+    });
+    return events;
+  }
   events.push({
     at: null,
     kind: "DISPUTE",
