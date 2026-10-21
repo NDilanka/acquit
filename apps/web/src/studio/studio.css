@@ -24,6 +24,21 @@
 .verdict-grid .verdict-spark { display: block; color: var(--green); overflow: visible; }
 .verdict-grid .verdict-spark polyline { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
 .verdict-grid .verdict-chip { display: inline-block; margin-right: 4px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: #fbfaf7; font-size: 11px; }
+/* Narrow tiles (<= 640px) list the jobs as cards. The list scrolls inside the tile and the totals stay pinned below it. */
+.verdict-cards { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; font-size: 13px; }
+.verdict-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.verdict-cards .verdict-group { height: auto; padding: 10px 12px 4px; }
+.verdict-cards .verdict-attempt { height: auto; flex-wrap: wrap; padding: 6px 12px 6px 26px; }
+.verdict-cards .verdict-totals { height: auto; padding: 10px 12px; border-top: 1px solid var(--line); }
+.verdict-card { display: grid; gap: 8px; min-width: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.verdict-card-head { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.verdict-card-title { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.verdict-card-title small { font-size: 11px; }
+.verdict-card-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.verdict-card-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; align-items: center; margin: 0; font-size: 12px; }
+.verdict-card-facts dt { color: var(--muted); }
+.verdict-card-facts dd { margin: 0; min-width: 0; }
+.verdict-card-ids { display: flex; flex-wrap: wrap; gap: 4px; }
 @media (max-width: 640px) {
   .studio-host { height: calc(100vh - 180px); min-height: 480px; }
 }

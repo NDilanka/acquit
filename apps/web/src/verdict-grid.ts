@@ -1,6 +1,6 @@
 import type { JobStatus, PlatformAttempt, PlatformJobLedger, TestTally } from "./api-types.ts";
 import { figureCents } from "../../../packages/core/src/explain.ts";
-import { verdictLabel } from "./job-status.ts";
+import { escrowWord, verdictLabel } from "./job-status.ts";
 import { reasonWords, tallyWords } from "./receipt-view.ts";
 
 /** The escrow groups in the order the verdict timeline shows them. */
@@ -119,4 +119,62 @@ export function attemptWords(attempt: PlatformAttempt): { readonly verdict: stri
   const detail = tallyWords(attempt.frozen, attempt.hidden)
     ?? (attempt.reasons.length > 0 ? attempt.reasons.map(reasonWords).join("; ") : "No counts recorded");
   return { verdict: verdictLabel(attempt.result).label, detail };
+}
+
+/** The newest attempt in words, with the tamper flag when that attempt caught one. Shared by the wide column and the narrow card. */
+export function lastVerdictWords(job: PlatformJobLedger): string {
+  const last = lastAttempt(job.attempts);
+  if (!last) return "No verdict yet";
+  return `${attemptWords(last).verdict}${last.tamper ? ", tamper caught" : ""}`;
+}
+
+/** The PayPal ids a job names: its capture, then its payout item, each labelled the way PayPal names it. */
+export function payPalIds(job: PlatformJobLedger): readonly { readonly label: string; readonly id: string }[] {
+  const capture = job.capture?.captureId ?? job.payout?.captureId ?? null;
+  const payoutItem = job.payout?.payoutItemId ?? null;
+  return [
+    ...(capture === null ? [] : [{ label: "PayPal capture", id: capture }]),
+    ...(payoutItem === null ? [] : [{ label: "PayPal payout item", id: payoutItem }]),
+  ];
+}
+
+/**
+ * The wide grid's column floors in px, read as minimum widths. Each floor is sized to the longest seeded value
+ * at the grid's 13px text, estimated per character, not measured in a browser. A column below its floor scrolls the grid.
+ */
+export const VERDICT_MIN_WIDTHS = {
+  /** The longest seeded title, "Totals round wrong for 3-decimal currencies" (43 characters), with its caret and short id. */
+  job: 330,
+  /** A tenant id such as "v_a90b5004ea18" (14 characters). */
+  tenant: 130,
+  /** A guest operator handle such as "guest-a90b5004ea18-ops" (22 characters). */
+  operator: 170,
+  /** The longest escrow word, "Not funded". */
+  escrow: 110,
+} as const;
+
+/** One job in the narrow layout: the facts its wide row shows, in words, with the passing shares and the PayPal ids as values. */
+export type JobCard = {
+  readonly jobId: string;
+  readonly title: string;
+  readonly status: string;
+  readonly escrow: string;
+  readonly lastVerdict: string;
+  readonly passing: readonly number[];
+  readonly paidCents: number | null;
+  readonly paypalIds: readonly { readonly label: string; readonly id: string }[];
+};
+
+export function jobCard(job: PlatformJobLedger): JobCard {
+  return { jobId: job.jobId, title: job.title, status: platformStatusWord(job.status), escrow: escrowWord(job.escrow),
+    lastVerdict: lastVerdictWords(job), passing: sparkPoints(job.attempts), paidCents: job.paidCents, paypalIds: payPalIds(job) };
+}
+
+/** The narrow layout's rows: a job row becomes its card, and the group headers and attempt lines pass through unchanged. */
+export type CardRow = GroupRow | AttemptRow | { readonly kind: "card"; readonly id: string; readonly card: JobCard; readonly expanded: boolean };
+
+export function cardRows(rows: readonly VerdictRow[]): readonly CardRow[] {
+  return rows.map((row): CardRow => (row.kind === "job"
+    ? { kind: "card", id: row.id, card: jobCard(row.job), expanded: row.expanded }
+    : row));
 }
