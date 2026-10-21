@@ -338,8 +338,12 @@ export type JobEffect =
 		/** The buyer dispute a PROVIDER_DISPUTE alert is about, so the process log names it. No other alert carries one. */
 		readonly disputeId?: string;
 	}
-	/** Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it. */
-	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string; readonly simulated: boolean }
+	/**
+	 * Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it.
+	 * `attempt` is the verified attempt the notes describe. It keys the answer, so a later attempt after a rework is a new answer.
+	 */
+	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string;
+		readonly attempt: Ordinal; readonly simulated: boolean }
 	/** Acquit accepts the buyer's claim, so PayPal returns the held funds to the buyer. */
 	| { readonly kind: "DISPUTE_ACCEPT"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly note: string; readonly simulated: boolean };
 
@@ -681,10 +685,12 @@ function transitionTable(): {
 					state: { status: "VERIFIED" as const, escrow: row.state.escrow, history, passed,
 						review: { phase: "AWAITING_CLIENT" as const, endsAt: addHours(facts.now, hours(TERMS.clientReviewHours)) },
 						runsStarted: attempts.runsStarted } };
-				// A buyer dispute this row answered with the claim, while its work was unverified, now has verified work to defend.
-				// The answer turns to evidence once, keyed by the dispute. The queued accept no longer belongs to the row, so it is never sent.
+				// A buyer dispute this row answered with the claim, or a rework handed back unanswered, now has verified work to defend.
+				// The answer turns to evidence once, keyed by the dispute and this attempt. The queued accept no longer belongs to the row, so it is never sent.
 				const dispute = row.providerDispute;
-				if (dispute === undefined || dispute.status === "RESOLVED" || dispute.answer !== "ACCEPT") return { next: verified, credits: [], effects: [] };
+				if (dispute === undefined || dispute.status === "RESOLVED" || (dispute.answer !== "ACCEPT" && dispute.answer !== undefined)) {
+					return { next: verified, credits: [], effects: [] };
+				}
 				const defended: ProviderDispute = { ...dispute, answer: "EVIDENCE" };
 				return { next: { ...verified, providerDispute: defended }, credits: [],
 					effects: answerEffects(verified, dispute.id, "EVIDENCE", dispute.simulated === true) };
@@ -734,7 +740,11 @@ function transitionTable(): {
 			// because a fourth judged attempt cannot be reserved and a passed deadline refunds, not reworks.
 			// A refused rework writes nothing at all, the note included: the refusal stands and the dispute stays open.
 			if (facts.now >= row.contract.deliveryEndsAt || row.state.history.length >= TERMS.maxAttempts) return "WRONG_STATE";
-			return { next: { ...row, version: (row.version + 1) as Version, arbiterNote: command.note,
+			// An open dispute gives up its answer with the pass it answered, so neither evidence nor an accept is wanted during the
+			// rework. The next verified attempt answers it again, once (VerifierFinished).
+			const dispute = row.providerDispute;
+			const reopened = dispute !== undefined && dispute.status !== "RESOLVED" ? { providerDispute: withoutAnswer(dispute) } : {};
+			return { next: { ...row, ...reopened, version: (row.version + 1) as Version, arbiterNote: command.note,
 				state: { status: "IN_PROGRESS", escrow: row.state.escrow,
 					attempts: { phase: "READY", history: row.state.history, runsStarted: row.state.runsStarted, failure: null } } },
 				credits: [], effects: [] };
@@ -1142,15 +1152,32 @@ function disputeAnswerOf(row: JobRow): DisputeAnswer {
 	return "NOT_ANSWERABLE";
 }
 
+/** The verified attempt an evidence answer is about: the receipt's attempt when paid, the passed attempt when verified. */
+function evidenceAttemptOf(row: JobRow): Ordinal | null {
+	const state = row.state;
+	if (state.status === "PAID") return state.receipt.attemptsUsed;
+	if (state.status === "VERIFIED") return state.passed.ordinal;
+	return null;
+}
+
+/** The dispute with no answer. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
+function withoutAnswer(dispute: ProviderDispute): ProviderDispute {
+	const { answer: _answer, ...rest } = dispute;
+	return rest;
+}
+
 /** The effects a first-seen dispute files. The notes are built here, from the row, so the outbox row carries exactly what was decided. */
 function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | undefined, simulated: boolean): JobEffect[] {
 	const payee = payeeMerchantOf(row);
 	const escrow = heldEscrowOf(row);
+	const attempt = evidenceAttemptOf(row);
 	if (answer === undefined) return [];
-	if (answer === "NOT_ANSWERABLE" || payee === null || (answer === "ACCEPT" && escrow === null)) {
+	if (answer === "NOT_ANSWERABLE" || payee === null || (answer === "ACCEPT" && escrow === null) || (answer === "EVIDENCE" && attempt === null)) {
 		return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE", disputeId }];
 	}
-	if (answer === "EVIDENCE") return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), simulated }];
+	if (answer === "EVIDENCE" && attempt !== null) {
+		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated }];
+	}
 	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated,
 		note: `Acquit accepts the buyer's claim on dispute ${disputeId} for capture ${escrow?.capture.captureId ?? "unknown"} on job ${row.id}.` }];
 }
