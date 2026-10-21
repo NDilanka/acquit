@@ -257,6 +257,9 @@ const jobOf = (row: GridRow | undefined): PlatformJobLedger | null => (row?.kind
 const VERDICT_HEIGHT: Record<GridRow["kind"], number> = { group: 34, job: 46, attempt: 40, totals: 44 };
 const SPARK = { width: 96, height: 18 } as const;
 
+/** The tenant on a job's second line, shortened the way a job id is; the deployment's own world has no tenant id. */
+const tenantLabel = (tenant: string | null): string => (tenant === null ? "Deployment" : shortId(tenant));
+
 function TitleCell({ data }: ICellRendererParams<GridRow>) {
   const job = jobOf(data);
   if (!job) return null;
@@ -266,7 +269,7 @@ function TitleCell({ data }: ICellRendererParams<GridRow>) {
       <span className="verdict-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       <span>
         <b>{job.title}</b>
-        <small className="muted mono">{shortId(job.jobId)}</small>
+        <small className="muted mono">{shortId(job.jobId)} · {tenantLabel(job.tenant)}</small>
       </span>
     </span>
   );
@@ -302,22 +305,22 @@ function IdsCell({ data }: ICellRendererParams<GridRow>) {
   return <span>{ids.map(({ label, id }) => <IdChip key={label} label={label} id={id} />)}</span>;
 }
 
+/** The wide grid's columns. The tenant sits on the Job cell's second line, and the attempts show as the passing sparkline and the expanded rows. */
 const VERDICT_COLUMNS: ColDef<GridRow>[] = [
   { colId: "job", headerName: "Job", flex: 3, minWidth: VERDICT_MIN_WIDTHS.job, cellRenderer: TitleCell },
-  { colId: "tenant", headerName: "Tenant", minWidth: VERDICT_MIN_WIDTHS.tenant, valueGetter: ({ data }) => jobOf(data)?.tenant ?? "Deployment" },
   { colId: "operator", headerName: "Operator", minWidth: VERDICT_MIN_WIDTHS.operator, valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
-  { colId: "status", headerName: "Status", flex: 2, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
+  { colId: "status", headerName: "Status", flex: 2, minWidth: VERDICT_MIN_WIDTHS.status, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
   { colId: "escrow", headerName: "Escrow", minWidth: VERDICT_MIN_WIDTHS.escrow, valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
-  { colId: "attempts", headerName: "Attempts", cellClass: "num", valueGetter: ({ data }) => jobOf(data)?.attempts.length ?? null },
-  { colId: "passing", headerName: "Passing tests", flex: 2, sortable: false, cellRenderer: SparkCell },
+  { colId: "passing", headerName: "Passing tests", flex: 2, minWidth: VERDICT_MIN_WIDTHS.passing, sortable: false, cellRenderer: SparkCell },
   {
     colId: "last",
     headerName: "Last verdict",
     flex: 2,
+    minWidth: VERDICT_MIN_WIDTHS.last,
     valueGetter: ({ data }) => { const job = jobOf(data); return job ? lastVerdictWords(job) : ""; },
   },
-  { colId: "paid", headerName: "Paid", cellClass: "num", valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
-  { colId: "ids", headerName: "PayPal ids", flex: 2, sortable: false, cellRenderer: IdsCell },
+  { colId: "paid", headerName: "Paid", cellClass: "num", minWidth: VERDICT_MIN_WIDTHS.paid, valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
+  { colId: "ids", headerName: "PayPal ids", flex: 2, minWidth: VERDICT_MIN_WIDTHS.ids, sortable: false, cellRenderer: IdsCell },
 ];
 
 const VERDICT_DEFAULTS: ColDef<GridRow> = { sortable: false, resizable: false, suppressMovable: true, flex: 1, minWidth: 56, headerClass: "grid-head" };
@@ -398,7 +401,7 @@ function JobCardView({ card, expanded, onToggle }: { readonly card: JobCard; rea
         <span className="verdict-caret" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
         <span className="verdict-card-title">
           <b>{card.title}</b>
-          <small className="muted mono">{shortId(card.jobId)}</small>
+          <small className="muted mono">{shortId(card.jobId)} · {tenantLabel(card.tenant)}</small>
         </span>
       </button>
       <div className="verdict-card-pills">

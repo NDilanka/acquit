@@ -139,24 +139,37 @@ export function payPalIds(job: PlatformJobLedger): readonly { readonly label: st
 }
 
 /**
- * The wide grid's column floors in px, read as minimum widths. Each floor is sized to the longest seeded value
- * at the grid's 13px text, estimated per character, not measured in a browser. A column below its floor scrolls the grid.
+ * The wide grid's column floors in px, read as minimum widths, one per column in VERDICT_COLUMNS. Each floor is the
+ * widest seeded value's advance width plus its 12px cell padding and a 4px margin. The widths were measured with GDI+
+ * in Segoe UI 13px (the fallback the live check renders: "In progress" measures 64px in the round-1 screenshot) and
+ * Consolas for the mono cells, with the chip padding and border counted. The floors sum past the 1128px tile at 1600,
+ * so the grid scrolls sideways there instead of clipping; see the test that records the sum.
  */
 export const VERDICT_MIN_WIDTHS = {
-  /** The longest seeded title, "Totals round wrong for 3-decimal currencies" (43 characters), with its caret and short id. */
-  job: 330,
-  /** A tenant id such as "v_a90b5004ea18" (14 characters). */
-  tenant: 130,
-  /** A guest operator handle such as "guest-a90b5004ea18-ops" (22 characters). */
-  operator: 170,
-  /** The longest escrow word, "Not funded". */
-  escrow: 110,
+  /** "Totals round wrong for 3-decimal currencies" (271.7px bold), with the caret and its gap. */
+  job: 304,
+  /** "guest-a90b5004ea18-ops" (146.6px). */
+  operator: 163,
+  /** "Verified, awaiting release" (142.7px). */
+  status: 159,
+  /** "Not funded" (66.2px); the floor is set to 90 so "Refunded" and "Released" sit with room to spare. */
+  escrow: 90,
+  /** The 96px passing sparkline. */
+  passing: 112,
+  /** "Rejected, tamper caught" (139.9px). */
+  last: 156,
+  /** "Not recorded" in Consolas (85.8px). */
+  paid: 102,
+  /** Two PayPal id chips of an eight-character id and an ellipsis (54.4px each in Consolas 11px, with padding, border, and margin). */
+  ids: 161,
 } as const;
 
 /** One job in the narrow layout: the facts its wide row shows, in words, with the passing shares and the PayPal ids as values. */
 export type JobCard = {
   readonly jobId: string;
   readonly title: string;
+  /** The visitor that owns the job, or null for the deployment's own seeded world. */
+  readonly tenant: string | null;
   readonly status: string;
   readonly escrow: string;
   readonly lastVerdict: string;
@@ -166,7 +179,7 @@ export type JobCard = {
 };
 
 export function jobCard(job: PlatformJobLedger): JobCard {
-  return { jobId: job.jobId, title: job.title, status: platformStatusWord(job.status), escrow: escrowWord(job.escrow),
+  return { jobId: job.jobId, title: job.title, tenant: job.tenant, status: platformStatusWord(job.status), escrow: escrowWord(job.escrow),
     lastVerdict: lastVerdictWords(job), passing: sparkPoints(job.attempts), paidCents: job.paidCents, paypalIds: payPalIds(job) };
 }
 
