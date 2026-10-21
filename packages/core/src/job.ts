@@ -740,6 +740,8 @@ function transitionTable(): {
 				mergeCommit: receipt.mergeCommit, repository: done.issue.repository }];
 			// The money is already out. A shortfall cannot be unwound, so it is owed back and named.
 			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
+			// A release that lands under a buyer dispute the row still holds has paid money the dispute claims, so a person is told.
+			if (releaseHeld(row)) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" });
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { status: "PAID", payee: escrow.payee, book, receipt, release, releaseAuthority: row.state.review.release.authority,
 					history: row.state.history, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
@@ -767,11 +769,12 @@ function transitionTable(): {
 				amount: refund.retainedProcessorFee }] : [];
 			const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
 				: row.state.status === "VERIFIED" ? row.state.history : [];
-			// The arbiter's note survives the settlement when there was one; a deadline refund has none and
-			// the key stays absent, so a row read back from the store deep-equals the row that produced it.
+			// The arbiter's note and the buyer dispute survive the settlement when there were any; a deadline refund has
+			// neither and the keys stay absent, so a row read back from the store deep-equals the row that produced it.
 			return { next: { id: row.id, version: (row.version + 1) as Version, client: row.client, tenant: row.tenant, title: row.title,
 				contract: row.contract, openedAt: row.openedAt, bids: row.bids,
 				...(row.arbiterNote === undefined ? {} : { arbiterNote: row.arbiterNote }),
+				...(row.providerDispute === undefined ? {} : { providerDispute: row.providerDispute }),
 				state: { status: "REFUNDED", payee: escrow.payee, book, reason: intent.reason, refund,
 					history, treasury } }, credits: [], effects };
 		} },

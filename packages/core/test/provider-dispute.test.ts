@@ -9,7 +9,7 @@ import { SqliteStore } from "../src/store.ts";
 import { parseWebhookEnvelope } from "../src/paypal.ts";
 import { disputeOutcomeCode, parseDispute } from "../src/paypal.ts";
 import { hours, instant, parseBidId, parseJobId } from "../src/ids.ts";
-import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, PayoutItemId, Version } from "../src/ids.ts";
+import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, JobId, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, Version } from "../src/ids.ts";
 import { applyJobCommand, releaseHeld, TERMS, wakeAt } from "../src/job.ts";
 import type { JobRow, Plan } from "../src/job.ts";
 import { commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
@@ -180,6 +180,31 @@ test("a dispute body parses its status, reason, amount, open time, and capture, 
 	assert.equal(disputeOutcomeCode({ status: "OPEN" }), null);
 	const open = parseDispute({ ...body, status: "OPEN", dispute_outcome: undefined }, "TESTCAPTURE" as CaptureId);
 	assert.equal("outcome" in open, false);
+});
+
+test("a refund that settles on a row with an open buyer dispute keeps the dispute on the row", () => {
+	const row = verifiedRow();
+	if (row.state.status !== "VERIFIED") throw new Error(`expected VERIFIED, got ${row.state.status}`);
+	const refunding: JobRow = { ...row, state: { ...row.state, review: { phase: "REFUND_PENDING", refund: { reason: "DELIVERY_DEADLINE", selectedAt: now } } } };
+	const opened = planOf(applyJobCommand(refunding, dispute(row.id, "OPEN"), paypalFacts(later)));
+	assert.equal(opened.next.providerDispute?.status, "OPEN");
+	const settled = planOf(applyJobCommand(opened.next, { type: "RefundSettled", jobId: row.id,
+		refund: { refundId: "REFUND-1" as RefundId, captureId: "TESTCAPTURE" as CaptureId, refunded: usd("420.00"), retainedProcessorFee: usd("15.15"), at: later } },
+	paypalFacts(later)));
+	assert.equal(settled.next.state.status, "REFUNDED");
+	assert.deepEqual(settled.next.providerDispute, opened.next.providerDispute);
+});
+
+test("a release that lands while a buyer dispute holds it is paid, keeps the dispute on the row, and alerts a person", () => {
+	const row = verifiedRow();
+	const opened = planOf(applyJobCommand(row, dispute(row.id, "OPEN"), paypalFacts(later)));
+	const approved = planOf(applyJobCommand(opened.next, { type: "Approve", jobId: row.id, mergeCommit: judgedCommit }, userFacts(maya)));
+	const paid = planOf(applyJobCommand(approved.next, { type: "ReleaseSettled", jobId: row.id,
+		release: { payoutItemId: "9qbheqa1MGMRG1pQyIAUjUL5ZVwZZeNBUoKIVYpj5aweGgnHBS20alUfiTIbfQg=" as PayoutItemId,
+			captureId: "TESTCAPTURE" as CaptureId, paid: usd("360.00"), at: later } }, paypalFacts(later)));
+	assert.equal(paid.next.state.status, "PAID");
+	assert.equal(paid.next.providerDispute?.status, "OPEN");
+	assert.deepEqual(paid.effects.filter(effect => effect.kind === "ALERT"), [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID" }]);
 });
 
 test("a release the dispute holds stays due in the outbox, and is paid once a seller-favour resolution lifts the hold", async () => {
