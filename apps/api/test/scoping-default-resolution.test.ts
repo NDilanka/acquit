@@ -80,7 +80,7 @@ test("an approval parked under production defaults is the file the verifier's ow
 		const maya = ((await signed.json()) as { token: string }).token;
 		const opened = await post(port, "/api/commands", { key: crypto.randomUUID(),
 			command: { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
-				budget: 40000, deliveryEndsAt: "2026-10-21T12:00:00Z" } }, maya);
+				budget: 40000, deliveryEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() } }, maya);
 		assert.equal(opened.status, 200, "the open committed");
 		const jobId = ((await opened.json()) as { outcome: { result: { job: { id: string } } } }).outcome.result.job.id;
 

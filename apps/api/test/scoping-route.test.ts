@@ -62,7 +62,7 @@ const session = async (port: number, handle: string): Promise<string> => {
 const openJob = async (port: number, token: string): Promise<string> => {
 	const opened = await post(port, "/api/commands", { key: crypto.randomUUID(),
 		command: { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
-			budget: 40000, deliveryEndsAt: "2026-10-21T12:00:00Z" } }, token);
+			budget: 40000, deliveryEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() } }, token);
 	const answer = await opened.json() as { outcome?: { result?: { kind: string; job?: { id: string } } } };
 	assert.equal(opened.status, 200, `the open committed: ${JSON.stringify(answer)}`);
 	return answer.outcome!.result!.job!.id;
