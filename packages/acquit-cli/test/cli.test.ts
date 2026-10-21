@@ -26,7 +26,8 @@ import { parseOperatorArgs, providerPort, runOperatorInit } from "../src/operato
 import { runReceipts, weeklyCreditsLine } from "../src/receipts.ts";
 import { renderSubmission } from "../src/submit.ts";
 
-const TUTORIAL = await readFile(fileURLToPath(new URL("../../../docs/tutorial.md", import.meta.url)), "utf8");
+// A Windows checkout with core.autocrlf gives the doc CRLF line ends; the CLI prints LF.
+const TUTORIAL = (await readFile(fileURLToPath(new URL("../../../docs/tutorial.md", import.meta.url)), "utf8")).replaceAll("\r\n", "\n");
 
 /** Every fenced block in docs/tutorial.md, without its fence and without the final newline. */
 function tutorialBlocks(): readonly string[] {
@@ -476,7 +477,8 @@ test("login prints the code URL, binds the code to its verifier, stores the toke
 		const { readLogin, saveLogin } = await import("../src/client.ts");
 		const path = join(dir, "acquit", "cli.json");
 		saveLogin(saved!, { ACQUIT_CLI_CONFIG: path });
-		assert.equal((await stat(path)).mode & 0o777, 0o600);
+		// Windows has no POSIX permission bits; stat reports 0o666 whatever mode the file was written with.
+		if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
 		assert.deepEqual(readLogin({ ACQUIT_CLI_CONFIG: path }), saved);
 		assert.equal(lines.join("").includes("session-token"), false);
 	} finally { await rm(dir, { recursive: true, force: true }); }

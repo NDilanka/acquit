@@ -7,8 +7,8 @@ import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformRec
 import { acquitTheme } from "../grid";
 import { escrowWord } from "../job-status";
 import { dollars, shortId, utc } from "../format";
-import { COLUMNS, NATIVE_WIDGETS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
-import { conserves, earnings, escrowTotals, nativeWidgetRecord, newestReceipt, placeRows, verifierStats } from "../studio-data";
+import { COLUMNS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type DashboardId, type DashboardState } from "../dashboard-widgets";
+import { conserves, earnings, escrowTotals, newestReceipt, seededPlacements, seededWidgets, verifierStats } from "../studio-data";
 import {
   attemptWords,
   groupWords,
@@ -490,19 +490,14 @@ export const WIDGETS: Record<DashboardId, AgWidgetsConfig<AcquitRegistry>> = {
 };
 
 export function freshState(id: DashboardId): DashboardState {
-  const rows = DASHBOARDS[id];
-  const native = NATIVE_WIDGETS[id];
   return {
     selectedPageId: "main",
     pages: [
       {
         id: "main",
         layout: PAGE_LAYOUT,
-        widgets: {
-          ...Object.fromEntries(rows.flat().map((w) => [w.id, { type: w.id, dataMapping: {} }])),
-          ...Object.fromEntries(native.flat().map((w) => [w.id, nativeWidgetRecord(w)] as const)),
-        },
-        widgetLayout: placeRows([...rows, ...native]),
+        widgets: seededWidgets(id),
+        widgetLayout: seededPlacements(id),
       },
     ],
   };

@@ -68,7 +68,12 @@ test("the platform key mints a session with no prior sign-in, and only that sess
 		const client = await fetch(`http://127.0.0.1:${port}/api/platform/ledger`, { headers: { authorization: `Bearer ${clientToken}` } });
 		assert.equal(client.status, 403);
 	} finally {
-		child?.kill("SIGTERM");
-		await rm(dir, { recursive: true, force: true });
+		if (child && child.exitCode === null) {
+			const exited = new Promise((r) => child!.once("exit", r));
+			child.kill("SIGTERM");
+			// Windows refuses to unlink the SQLite files while the server still holds them open.
+			await exited;
+		}
+		await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	}
 });
