@@ -212,7 +212,8 @@ test("an operator's ask routes answer its own four tools alone, refuse every oth
 /**
  * A delegated widget-agent turn as Studio's real harness builds it. The section sizes are the ones
  * measured on the real dashboard (evidence g1a3/ask-round4-fix/measurement.json, byte lengths only):
- * the built-in widget instructions clip at 4,000 characters, the eight tool schemas carry 27,378
+ * the built-in widget instructions run 8,490 characters with the test's empty schema (the cap was 4,000
+ * when the section was measured), the eight tool schemas carry 27,378
  * bytes -- add_widget_filter's shape alone is 22,528, built from the data engine's filter operators
  * -- and the child thread's five messages add 1,420. The whole body measured 32,905 bytes, past the
  * 32,768-byte global cap every other route keeps.
@@ -269,7 +270,7 @@ function widgetAgentTurn(): { messages: unknown[]; instructions: string; tools: 
 		"",
 		"## Widget Guidance",
 		"Map one numeric value; a tile 3 or 4 columns wide and 2 rows tall fits.",
-	].join("\n").padEnd(4000, " The instruction continues to the clip the adapter applies.").slice(0, 4000);
+	].join("\n").padEnd(8_490, " The instruction continues through the rest of the built-in widget template.").slice(0, 8_490);
 	const sized = (name: string, description: string, parameters: unknown) => ({ name, description, parameters });
 	const small = { type: "object", properties: {} };
 	const tools = [
@@ -365,6 +366,31 @@ echo '{"type":"result","is_error":false,"result":"{\\"message\\":\\"Widget added
 		const elsewhere = await post(port, "/api/session", { handle: "x".repeat(40_000) });
 		assert.equal(elsewhere.status, 400, "the global 32 KB cap is unchanged on other routes");
 		assert.equal(((await elsewhere.json()) as { error: string }).error, "BAD_REQUEST");
+	} finally {
+		await stopServer(child);
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("the turn route takes instructions up to its 16,000-character bound, and refuses one character more", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-ask-instructions-"));
+	const port = 4902;
+	let child: ReturnType<typeof spawn> | null = null;
+	try {
+		child = await bootServer(port, join(dir, "test.db"), join(dir, "homeless"));
+		const minted = await post(port, "/api/platform/session", { key: "test-platform-key-0123456789abcdef" });
+		assert.equal(minted.status, 201);
+		const { token } = await minted.json() as { token: string };
+		const messages = [{ id: "m1", role: "user", content: "How much escrow is held right now?" }];
+
+		// No provider key here, so an accepted turn stops at the model port with 503.
+		const atCap = await post(port, "/api/ask-ledger/turn", { messages, instructions: "i".repeat(16_000) }, token);
+		assert.equal(atCap.status, 503, "instructions of exactly the cap are accepted");
+		assert.equal(((await atCap.json()) as { error: string }).error, "MODEL_KEY_MISSING");
+
+		const past = await post(port, "/api/ask-ledger/turn", { messages, instructions: "i".repeat(16_001) }, token);
+		assert.equal(past.status, 400, "one character past the cap is refused before any model call");
+		assert.deepEqual(await past.json() as unknown, { error: "BAD_REQUEST", detail: "Invalid instructions" });
 	} finally {
 		await stopServer(child);
 		await rm(dir, { recursive: true, force: true });

@@ -9,6 +9,7 @@ import {
   ASK_TOOL_NAMES,
   ASK_VALIDATION_QUESTION,
   askGate,
+  askInstructions,
   askLedgerAdapter,
   askParamFields,
   askRows,
@@ -20,6 +21,7 @@ import {
   toAskMessages,
   toAskTurnBody,
 } from "./ask-ledger.ts";
+import { WIDGET_ROWS } from "./dashboard-widgets.ts";
 import { ApiError } from "./api.ts";
 
 type Recorded = { url: string; init: RequestInit };
@@ -109,9 +111,27 @@ test("the turn body carries the agent's instructions, cut to the route's cap", (
     messages: [{ id: "m1", role: "user", content: "How much is held?" }],
     instructions: "Be brief.",
   });
-  assert.equal(toAskTurnBody(request(conversation.slice(0, 1), "x".repeat(9000))).instructions?.length, 4000);
+  assert.equal(toAskTurnBody(request(conversation.slice(0, 1), "x".repeat(20_000))).instructions?.length, 16_000);
   assert.equal("instructions" in toAskTurnBody(request(conversation.slice(0, 1), "  ")), false);
-  assert.ok(ASK_INSTRUCTIONS.length < 4000);
+  assert.ok(ASK_INSTRUCTIONS.length < 16_000);
+});
+
+const escrowCatalogue = WIDGET_ROWS.escrow.flat().map((spec) => ({ type: spec.id, description: spec.ai.description }));
+
+test("the platform's instructions, built from the escrow dashboard's own widgets, reach the turn body whole", () => {
+  const instructions = askInstructions(escrowCatalogue);
+  assert.ok(instructions.length < 16_000, "the prompt sits under the turn route's cap");
+  assert.ok(instructions.endsWith("Never claim the page was changed unless its result says so."), "the page recipe ends the prompt");
+  assert.equal(toAskTurnBody(request(conversation.slice(0, 1), instructions)).instructions, instructions);
+});
+
+test("the ledger agent is told delegate_to is always there, and a delegation counts as failed only on an error result", () => {
+  for (const entries of [[], escrowCatalogue]) {
+    const instructions = askInstructions(entries);
+    assert.ok(instructions.includes("delegate_to is always available."));
+    assert.ok(instructions.includes("only when its result reports an error"));
+    assert.doesNotMatch(instructions, /unavailab|may not be available|if delegate_to fails/i);
+  }
 });
 
 test("the turn body relays the loop's own tool schemas, so a delegated widget run is offered its tools", () => {

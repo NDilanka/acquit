@@ -381,7 +381,7 @@ const WEBHOOK_BODY_LIMIT_BYTES = 65_536;
 /**
  * The ask turn route's own cap, above the largest turn Studio's real harness builds. The delegated
  * widget-agent turn measured 32,905 bytes (evidence g1a3/ask-round4-fix/measurement.json, byte
- * lengths only: instructions clipped at 4,000, 27,378 bytes of tool schemas led by add_widget_filter's
+ * lengths only: instructions clipped at the old 4,000 cap, 27,378 bytes of tool schemas led by add_widget_filter's
  * 22,528-byte data-engine filter shape, 1,420 bytes of child-thread messages) -- past the global
  * 32,768-byte cap every other route keeps, which refused the turn 400 before any model call. 256 KiB
  * gives that measured turn about 8x headroom for the child histories and tool results that grow over
@@ -778,7 +778,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			const input = object(parsed);
 			if (Object.keys(input).some(key => key !== "messages" && key !== "instructions" && key !== "tools")) throw new BadBody("Unsupported field");
 			relayed = { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
-				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 4000) };
+				instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 16_000) };
 			// The relayed schemas are the browser's list, so an operator's list is checked here against its own set: the model is offered no other tool.
 			if (current.actor.role === "OPERATOR") {
 				const outside = relayed.tools.find(tool => !(OPERATOR_ASK_TOOL_NAMES as readonly string[]).includes(tool.name));

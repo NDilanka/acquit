@@ -40,23 +40,25 @@ export const ASK_INSTRUCTIONS = [
   "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
   "When the reader asks a question the escrow tables answer across jobs, operators, bids, verdicts, or PayPal events, delegate it to the data agent with delegate_to.",
   "When the reader asks to change what the page shows or how it is laid out, delegate it to the page agent with delegate_to.",
+  "delegate_to is always available. Say a delegation failed only when its result reports an error (the delegate_to result in this conversation), and then say why.",
 ].join("\n");
 
 const DELEGATION_RECIPE = [
   "## Delegating a widget",
   'Call delegate_to exactly in this shape: {"type": {"id": "widget", "widgetType": "<a type from the catalogue>", "widgetId": "<a short new id for a new widget, or the id of the widget to change>"}, "instructions": "<what the widget should show>"}.',
   "The widget agent adds the widget if it is new, then configures it.",
-  "Report its result honestly: if delegate_to fails, tell the reader the widget was not made and why, and never claim it was.",
+  "If no catalogue type fits the request, decline and name the closest types instead of delegating.",
+  "Report its result honestly: when it reports an error, tell the reader the widget was not made and why. Never claim the widget was made unless its result says so.",
 ].join("\n");
 
 /** The data and page agents are Studio's built-ins; the ledger agent hands them questions and changes the same way. */
 const DATA_AND_PAGE_RECIPES = [
   "## Delegating a question to the data agent",
   'Call delegate_to exactly in this shape: {"type": {"id": "data"}, "instructions": "<the question as the reader asked it>"}.',
-  "The data agent answers from the escrow tables. Report its answer and the figures it gives. If delegate_to fails, say the question was not answered and why.",
+  "The data agent answers from the escrow tables. Report its answer and the figures it gives. When its result reports an error, say the question was not answered and why.",
   "## Delegating a change to the page agent",
   'Call delegate_to exactly in this shape: {"type": {"id": "page"}, "instructions": "<the change the reader asked for>"}.',
-  "Report its result honestly: if delegate_to fails, tell the reader the page was not changed and why, and never claim it was.",
+  "Report its result honestly: when it reports an error, tell the reader the page was not changed and why. Never claim the page was changed unless its result says so.",
 ].join("\n");
 
 /** The ledger agent's prompt, naming the widget types the dashboard publishes so a delegation picks a real one. */
@@ -83,7 +85,9 @@ const MAX_CONTENT = 16_000;
 const MAX_TOOL_RESULT = 32_000;
 const MAX_ARGUMENTS = 16_000;
 const MAX_ID = 100;
-const MAX_INSTRUCTIONS = 4_000;
+// The turn route's instruction bound (apps/api/src/server.ts). Studio's widget template alone is 8,490
+// characters, so a lower cap clips it.
+const MAX_INSTRUCTIONS = 16_000;
 
 const clip = (text: string, max: number) => (text.length > max ? text.slice(0, max) : text);
 const present = (text: string | undefined): text is string => text !== undefined && text.trim() !== "";
