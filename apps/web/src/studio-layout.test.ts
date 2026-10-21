@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { NATIVE_WIDGETS, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
-import { nativeWidgetRecord, parseSaved } from "./studio-data.ts";
+import { NATIVE_WIDGETS, WIDGET_ROWS, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
+import { nativeWidgetRecord, parseSaved, placeRows } from "./studio-data.ts";
 
 type Track = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
 
@@ -67,6 +67,14 @@ test("a saved layout with two widgets over one cell loads with them apart", () =
   assert.deepEqual(clashingPairs(layout), [], "the two widgets no longer share a cell");
   const kept = [held, released].filter((t) => isDeepStrictEqual(t, corner));
   assert.equal(kept.length, 1, "exactly one widget keeps the contested corner");
+});
+
+test("a fresh escrow dashboard places the verdict timeline across the full width, clear of every other widget", () => {
+  // The same placement freshState builds: each widget row, then the native charts beneath them.
+  const placed = placeRows([...WIDGET_ROWS.escrow, ...NATIVE_WIDGETS.escrow]);
+  assert.deepEqual(clashingPairs(placed), [], "no two widgets share a cell");
+  assert.deepEqual(placed["acquit-verdict-grid"], { xTrack: 0, yTrack: 8, xSpan: 12, ySpan: 9 }, "the timeline sits under the conserves card");
+  for (const id of ["escrow-funnel", "escrow-pivot", "escrow-treemap"]) assert.ok(placed[id], `${id} still seeds`);
 });
 
 test("a layout that is not Studio state still loads as nothing", () => {

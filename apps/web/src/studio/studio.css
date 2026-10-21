@@ -11,6 +11,19 @@
 .studio-widget .mono { overflow-wrap: anywhere; }
 .studio-value { font-size: 26px; font-weight: 600; line-height: 1.15; }
 .pill.break { color: var(--red); background: var(--red-bg); border-color: #f0c9c0; }
+/* The verdict timeline fills its tile and scrolls inside it; the tile keeps the grid at least 240px tall. */
+.verdict-grid { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; }
+.verdict-grid .ag-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.verdict-grid .verdict-title { display: inline-flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.verdict-grid .verdict-title small { display: block; font-size: 11px; }
+.verdict-grid .verdict-caret { color: var(--muted); width: 10px; }
+.verdict-grid .verdict-group { display: flex; align-items: baseline; gap: 10px; height: 100%; font-size: 12px; }
+.verdict-grid .verdict-attempt { display: flex; align-items: center; gap: 8px; height: 100%; padding-left: 26px; font-size: 12px; min-width: 0; }
+.verdict-grid .verdict-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.verdict-grid .verdict-totals { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; height: 100%; font-size: 12px; }
+.verdict-grid .verdict-spark { display: block; color: var(--green); overflow: visible; }
+.verdict-grid .verdict-spark polyline { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+.verdict-grid .verdict-chip { display: inline-block; margin-right: 4px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: #fbfaf7; font-size: 11px; }
 @media (max-width: 640px) {
   .studio-host { height: calc(100vh - 180px); min-height: 480px; }
 }

@@ -16,6 +16,7 @@ function job(jobId: string, escrow: PlatformJobLedger["escrow"], lines: LedgerLi
     operator: escrow === "NONE" ? null : { id: "op_1", handle: "devon-ops" },
     lines,
     paidCents: null,
+    capture: null,
     fee: null,
     payout: null,
     receipt: null,
@@ -23,9 +24,9 @@ function job(jobId: string, escrow: PlatformJobLedger["escrow"], lines: LedgerLi
   };
 }
 
-const verified = { ordinal: 1, result: "VERIFIED", at, tamper: false, reasons: [] } as const;
-const tampered = { ordinal: 1, result: "REJECTED", at, tamper: true, reasons: ["edited the frozen tests"] } as const;
-const rejected = { ordinal: 1, result: "REJECTED", at, tamper: false, reasons: ["hidden suite failed"] } as const;
+const verified = { ordinal: 1, result: "VERIFIED", at, tamper: false, reasons: [], frozen: null, hidden: null } as const;
+const tampered = { ordinal: 1, result: "REJECTED", at, tamper: true, reasons: ["PROTECTED_PATH_MODIFIED"], frozen: null, hidden: null } as const;
+const rejected = { ordinal: 1, result: "REJECTED", at, tamper: false, reasons: ["TESTS_FAILED:hidden"], frozen: null, hidden: null } as const;
 
 const book: PlatformJobLedger[] = [
   job(

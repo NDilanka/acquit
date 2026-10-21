@@ -355,6 +355,7 @@ test("each dashboard's widget ids stay on their own dashboard", () => {
   const escrow = new Set<string>(WIDGET_IDS.escrow);
   const earnings = new Set<string>(WIDGET_IDS.earnings);
   assert.deepEqual(escrow, escrowIds, "the escrow dashboard lists exactly its own widgets");
+  assert.ok(escrow.has("acquit-verdict-grid"), "the verdict timeline is on the escrow dashboard");
   assert.deepEqual(earnings, earningsIds, "the earnings dashboard lists exactly its own widgets");
   for (const id of earningsIds) assert.ok(!escrow.has(id), `the escrow dashboard does not list ${id}`);
   for (const id of escrowIds) assert.ok(!earnings.has(id), `the earnings dashboard does not list ${id}`);
