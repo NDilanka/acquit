@@ -209,8 +209,9 @@ export function askErrorText(error: ApiError): string {
       return "Ask the ledger has no model key on the server, so it cannot answer yet.";
     case "MODEL_RATE_LIMITED":
       return `The model is rate limited right now. Try again in a minute.${detail}`;
+    // A 429 for MODEL_BUDGET is either the shared budget or an operator's own turn limit, so the copy names neither.
     case "MODEL_BUDGET":
-      return "The deployment's shared model budget is spent for now. Try again later.";
+      return "Ask the ledger is out of model budget for now. Try again later.";
     case "MODEL_PROVIDER_ERROR":
       return `The model provider failed to answer.${detail}`;
     case "BAD_REQUEST":
@@ -399,6 +400,16 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
     }
     case "list_transactions":
       return "Reading PayPal's recent transactions";
+    case "my_jobs":
+      return "Reading your jobs";
+    case "my_job": {
+      const id = named("jobId");
+      return id ? `Reading your job ${id}` : "Reading one of your jobs";
+    }
+    case "my_payouts":
+      return "Reading your payouts";
+    case "my_totals":
+      return "Totalling your earnings";
     case "delegate_to": {
       const type = args.type;
       const id = typeof type === "object" && type !== null ? (type as { id?: unknown }).id : undefined;
@@ -420,10 +431,31 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
 export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "list_disputes", "get_dispute", "get_refund",
   "list_transactions", "trace_figure"] as const;
 
-/** How the Studio chat panel words the ledger tools' rows; Studio's own tools keep theirs. */
+/** Which dashboard's ask a harness serves: the platform's escrow book, or one operator's own earnings. */
+export type AskScope = "PLATFORM" | "OPERATOR";
+
+// Kept equal to the server's OPERATOR_ASK_TOOL_NAMES, which ask-ledger.test.ts reads from the server's source.
+export const OPERATOR_ASK_TOOL_NAMES = ["my_jobs", "my_job", "my_payouts", "my_totals"] as const;
+
+/** How the Studio chat panel words the ledger tools' rows, the platform's and an operator's; Studio's own tools keep theirs. */
 export const ASK_TOOL_DISPLAY: Record<string, AgAiToolDisplay> = Object.fromEntries(
-  ASK_TOOL_NAMES.map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), hidden: false } satisfies AgAiToolDisplay]),
+  [...ASK_TOOL_NAMES, ...OPERATOR_ASK_TOOL_NAMES].map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), hidden: false } satisfies AgAiToolDisplay]),
 );
+
+/** An operator's ask: its own money only. The model is told its tools reach that operator's jobs alone, and it has no delegation. */
+export const OPERATOR_ASK_INSTRUCTIONS = [
+  "You are Ask the ledger, the agent on an operator's earnings dashboard on Acquit.",
+  "You answer questions about the signed-in operator's own jobs, payouts, and totals, from your tools alone; never answer from memory or guess a figure.",
+  "Your tools reach only this operator's own jobs. If a question needs anything else, say that you cannot see it.",
+  "Check my_totals for totals, my_jobs for the list, my_job for one job by id, and my_payouts for payouts before you answer.",
+  "Give amounts in dollars, name the jobs you checked, and say which money is still held and which has been paid.",
+  "You only read. You cannot release, refund, or pay out money, and you never claim to have done so.",
+].join("\n");
+
+export const OPERATOR_ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
+  { label: "What did I earn this week?", prompt: "What did I earn this week? Check your payouts and totals." },
+  { label: "Which of my jobs are still held?", prompt: "Which of my jobs are still held, and how much is held for me?" },
+];
 
 // ---- the PayPal cards ---------------------------------------------------------------------------
 

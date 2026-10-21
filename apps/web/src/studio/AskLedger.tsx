@@ -3,8 +3,8 @@ import type { AgAiHarness, AgAiHarnessSetupParams, AgAiToolDetailParams, AgStudi
 import type { AgAiToolDisplay } from "ag-studio-react";
 import { api } from "../api";
 import type { AskToolSchema } from "../api-types";
-import { createAskLedgerHarness } from "../ask-harness.ts";
-import { ASK_TOOL_DISPLAY, LEDGER_CARD_TOOLS, askToolLabel, isLedgerCard } from "../ask-ledger";
+import { createAskLedgerHarness, memoryHistoryStore } from "../ask-harness.ts";
+import { ASK_TOOL_DISPLAY, LEDGER_CARD_TOOLS, askToolLabel, isLedgerCard, type AskScope } from "../ask-ledger";
 import type { DashboardId } from "../dashboard-widgets.ts";
 import { FigureCallCard } from "./FigureExplain";
 import { readFailure } from "./live";
@@ -49,11 +49,13 @@ export type AskLedger = {
 
 /**
  * One harness per Studio instance, shared by the instance's chat panel. A new Studio API (a new
- * instance) gets a new, empty harness.
+ * instance) gets a new harness. The conversation store belongs to this hook's dashboard instance, so
+ * the conversation survives a narrow/wide rebuild and is not carried into a later session.
  */
-export function useAskLedger(dashboard: DashboardId): AskLedger {
+export function useAskLedger(dashboard: DashboardId, scope: AskScope = "PLATFORM"): AskLedger {
   const [load, setLoad] = useState<AskLoad>({ kind: "loading" });
   const served = useRef<readonly AskToolSchema[]>([]);
+  const [history] = useState(memoryHistoryStore);
   useEffect(() => {
     let live = true;
     api.askLedgerTools().then(
@@ -72,10 +74,10 @@ export function useAskLedger(dashboard: DashboardId): AskLedger {
   const built = useRef<{ studio: AgStudioApi; harness: AgAiHarness } | null>(null);
   const setup = useCallback(
     (params: AgAiHarnessSetupParams) => {
-      if (built.current?.studio !== params.api) built.current = { studio: params.api, harness: createAskLedgerHarness(params.api, () => served.current, { dashboard }) };
+      if (built.current?.studio !== params.api) built.current = { studio: params.api, harness: createAskLedgerHarness(params.api, () => served.current, { dashboard, scope, history }) };
       return built.current.harness;
     },
-    [dashboard],
+    [dashboard, scope, history],
   );
   return useMemo(() => ({ load, setup }), [load, setup]);
 }
