@@ -14,6 +14,7 @@ import {
   askRows,
   askToolLabel,
   buildAskTools,
+  LEDGER_CARD_TOOLS,
   ledgerCard,
   runTool,
   toAskMessages,
@@ -396,7 +397,78 @@ test("a dispute and a refund read as cards: a title, the key fields as rows, Pay
       { label: "Read under", value: "The merchant the book records" },
     ],
   });
-  assert.equal(ledgerCard("get_order", {}), null, "a tool without a card has none");
+  assert.equal(ledgerCard("list_jobs", {}), null, "a tool without a card has none");
+});
+
+test("an order reads as a card: its id, status, amount, capture, payee, and time, with PayPal ids in mono type", () => {
+  // The recorded sandbox order from packages/core/test/paypal.test.ts. Its create_time is the order's own field, which PayPal's Orders v2 body carries; this fixture supplies it.
+  const order = { id: "27T27404LP7444538", intent: "CAPTURE", status: "COMPLETED", create_time: "2026-10-07T00:33:02Z",
+    purchase_units: [{ reference_id: "f2probe-prefer-1791333255794", amount: { currency_code: "USD", value: "420.00" },
+      payee: { merchant_id: "D3SSQU3ZEN7R2" },
+      payments: { captures: [{ id: "2GU594768B218031G", status: "COMPLETED", amount: { currency_code: "USD", value: "420.00" }, create_time: "2026-10-07T00:34:19Z" }] } }] };
+  assert.deepEqual(ledgerCard("get_order", order), {
+    title: "PayPal order",
+    rows: [
+      { label: "Order", value: "27T27404LP7444538", mono: "value" },
+      { label: "Status", value: "COMPLETED" },
+      { label: "Amount", value: "420.00 USD" },
+      { label: "Capture", value: "2GU594768B218031G", mono: "value" },
+      { label: "Capture status", value: "COMPLETED" },
+      { label: "Payee", value: "D3SSQU3ZEN7R2", mono: "value" },
+      { label: "Created", value: "2026-10-07T00:33:02Z" },
+    ],
+  });
+});
+
+test("an order without captures omits the capture rows, and a field it lacks is left out, never shown as undefined", () => {
+  const unpaid = { id: "ORDER9", status: "CREATED", purchase_units: [{ amount: { currency_code: "USD", value: "10.00" },
+    payee: { email_address: "merchant@example.com" }, payments: { captures: [] } }] };
+  assert.deepEqual(ledgerCard("get_order", unpaid), { title: "PayPal order", rows: [
+    { label: "Order", value: "ORDER9", mono: "value" },
+    { label: "Status", value: "CREATED" },
+    { label: "Amount", value: "10.00 USD" },
+    { label: "Payee", value: "merchant@example.com" },
+  ] });
+  assert.deepEqual(ledgerCard("get_order", { id: "ORDER10" }), { title: "PayPal order", rows: [{ label: "Order", value: "ORDER10", mono: "value" }] });
+});
+
+test("my payouts read as one row per payout up to ten, then a count row; an empty list says no payouts yet", () => {
+  const payout = (n: number) => ({ jobId: `job_${n}`, payoutItemId: `ITEM${n}`, captureId: `CAP${n}`, paidCents: 36000,
+    releasedAt: "2026-10-07T00:34:19Z", releaseAuthority: "PAYER" });
+  assert.deepEqual(ledgerCard("my_payouts", { payouts: [] }), { title: "Your payouts", rows: [{ label: "Payouts", value: "No payouts yet" }] });
+  const ten = ledgerCard("my_payouts", { payouts: Array.from({ length: 10 }, (_, i) => payout(i + 1)) });
+  assert.equal(ten?.rows.length, 10, "ten payouts show ten rows and no count row");
+  const twelve = ledgerCard("my_payouts", { payouts: Array.from({ length: 12 }, (_, i) => payout(i + 1)) });
+  assert.equal(twelve?.title, "Your payouts");
+  assert.deepEqual(twelve?.rows[0], { label: "ITEM1", value: "job_1, 360.00 USD, 2026-10-07T00:34:19Z", mono: "label" });
+  assert.equal(twelve?.rows.length, 11, "the first ten payout rows and one count row");
+  assert.deepEqual(twelve?.rows[10], { label: "Payouts", value: "12 in all; the first 10 are shown" });
+});
+
+test("my totals read as four rows, in dollars and counts", () => {
+  assert.deepEqual(ledgerCard("my_totals", { paidOutCents: 36000, feesWithheldCents: 4485, jobsPaid: 1, heldCents: 0, heldJobs: 0 }), {
+    title: "Your totals",
+    rows: [
+      { label: "Paid out", value: "360.00 USD" },
+      { label: "Fees withheld", value: "44.85 USD" },
+      { label: "Jobs paid", value: "1 job" },
+      { label: "Held", value: "0.00 USD, 0 jobs" },
+    ],
+  });
+});
+
+test("the chat draws get_order and the operator's payouts and totals with the call card", () => {
+  const cards: readonly string[] = LEDGER_CARD_TOOLS;
+  for (const name of ["get_order", "my_payouts", "my_totals"]) assert.ok(cards.includes(name), `${name} is a card tool`);
+  // The display map is in a .tsx file this test cannot import, so its wiring is read from source.
+  const view = readFileSync(new URL("./studio/AskLedger.tsx", import.meta.url), "utf8");
+  const display = /export const ASK_TOOL_DISPLAY_CARDS[\s\S]*?\r?\n\};/.exec(view)?.[0] ?? "";
+  assert.ok(display.length > 0, "the display map is declared");
+  assert.match(display, /LEDGER_CARD_TOOLS\.map\(/, "the map builds a row for each card tool");
+  assert.match(display, /detail: LedgerCallCard/, "each of those rows draws the call card");
+  // The earnings page and the escrow page share one Studio, so both chats take the same map.
+  const page = readFileSync(new URL("./studio/StudioPage.tsx", import.meta.url), "utf8");
+  assert.match(page, /aiToolDisplay=\{ask \? ASK_TOOL_DISPLAY_CARDS : undefined\}/);
 });
 
 test("a list reads as one row per item, and an empty list says so", () => {
