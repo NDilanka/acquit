@@ -140,28 +140,26 @@ export function payPalIds(job: PlatformJobLedger): readonly { readonly label: st
 
 /**
  * The wide grid's column floors in px, read as minimum widths, one per column in VERDICT_COLUMNS. Each floor is the
- * widest seeded value's advance width plus its 12px cell padding and a 4px margin. The widths were measured with GDI+
- * in Segoe UI 13px (the fallback the live check renders: "In progress" measures 64px in the round-1 screenshot) and
- * Consolas for the mono cells, with the chip padding and border counted. The floors sum past the 1128px tile at 1600,
- * so the grid scrolls sideways there instead of clipping; see the test that records the sum.
+ * widest hosted value measured in the browser (Inter 13px) plus the cell's 20px padding. The floors sum past the 1128px
+ * tile at 1600, so the grid scrolls sideways there instead of clipping; see the test that records the sum.
  */
 export const VERDICT_MIN_WIDTHS = {
-  /** "Totals round wrong for 3-decimal currencies" (271.7px bold), with the caret and its gap. */
-  job: 304,
-  /** "guest-a90b5004ea18-ops" (146.6px). */
-  operator: 163,
-  /** "Verified, awaiting release" (142.7px). */
-  status: 159,
-  /** "Not funded" (66.2px); the floor is set to 90 so "Refunded" and "Released" sit with room to spare. */
+  /** "Totals round wrong for 3-decimal currencies" (271px bold), with the caret and its gap. */
+  job: 312,
+  /** "guest-9d5966e1880b-ops" (162px). */
+  operator: 186,
+  /** "Verified, awaiting release". */
+  status: 170,
+  /** "Not funded"; "Released" measures 57px. */
   escrow: 90,
   /** The 96px passing sparkline. */
-  passing: 112,
-  /** "Rejected, tamper caught" (139.9px). */
-  last: 156,
-  /** "Not recorded" in Consolas (85.8px). */
-  paid: 102,
-  /** Two PayPal id chips of an eight-character id and an ellipsis (54.4px each in Consolas 11px, with padding, border, and margin). */
-  ids: 161,
+  passing: 120,
+  /** "Rejected, tamper caught" (153px). */
+  last: 176,
+  /** "Not recorded" in the mono face. */
+  paid: 108,
+  /** Two PayPal id chips, each capped at 10ch by `.verdict-chip` (payout item ids run to 60 characters). */
+  ids: 188,
 } as const;
 
 /** One job in the narrow layout: the facts its wide row shows, in words, with the passing shares and the PayPal ids as values. */
