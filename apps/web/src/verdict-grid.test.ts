@@ -162,7 +162,7 @@ test("the verdict timeline uses only AG Grid Community APIs: no Enterprise modul
 
 test("a narrow card reads the wide row's facts in words: status, escrow, last verdict, passing shares, paid, and PayPal ids", () => {
   assert.deepEqual(jobCard(PAID), {
-    jobId: "job_paid", title: "Paid job", status: "Paid", escrow: "Released", lastVerdict: "Verified", passing: [1], paidCents: 42000,
+    jobId: "job_paid", title: "Paid job", tenant: null, status: "Paid", escrow: "Released", lastVerdict: "Verified", passing: [1], paidCents: 42000,
     paypalIds: [{ label: "PayPal capture", id: "CAP_PAID" }, { label: "PayPal payout item", id: "payout-item-1" }],
   });
   const open = jobCard(OPEN);
@@ -183,11 +183,19 @@ test("the narrow rows keep the four group headers, one card per job, and an expa
   assert.equal(rows.filter((row) => row.kind === "card").length, BOOK.length, "every job is one card");
 });
 
-test("the wide grid's column floors are at least the decided minimums: Job 220, Tenant 120, Operator 110, Escrow 110", () => {
-  assert.ok(VERDICT_MIN_WIDTHS.job >= 220, "Job is under its floor");
-  assert.ok(VERDICT_MIN_WIDTHS.tenant >= 120, "Tenant is under its floor");
-  assert.ok(VERDICT_MIN_WIDTHS.operator >= 110, "Operator is under its floor");
-  assert.ok(VERDICT_MIN_WIDTHS.escrow >= 110, "Escrow is under its floor");
+test("every wide column has a floor from VERDICT_MIN_WIDTHS, and every floor belongs to a column that is there", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  const columns = [...dashboards.matchAll(/colId: "(\w+)"/g)].map((match) => match[1]).sort();
+  assert.deepEqual(columns, Object.keys(VERDICT_MIN_WIDTHS).sort());
+  for (const column of columns) {
+    assert.match(dashboards, new RegExp(`minWidth: VERDICT_MIN_WIDTHS\\.${column}\\b`), `${column} has no minWidth from the floors`);
+  }
+});
+
+test("the floors sum to 1247px, 119px past the 1128px tile at 1600: each floor fits its widest seeded value, so the grid scrolls sideways", () => {
+  const sum = Object.values(VERDICT_MIN_WIDTHS).reduce((total, px) => total + px, 0);
+  assert.equal(sum, 1247, "the documented sum of the floors");
+  assert.equal(sum - 1128, 119, "the overrun the grid scrolls by at 1600");
 });
 
 test("the timeline does not suppress horizontal scroll, so a column below its floor scrolls instead of clipping", () => {
