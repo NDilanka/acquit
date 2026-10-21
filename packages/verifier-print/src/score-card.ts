@@ -1,13 +1,19 @@
 // The print score card's tally and line. The shape matches core's score card, so the /verifiers page can
 // show both. Types only come from core, so this package keeps no runtime import from core.
 
-import type { CaseResult, ScoreCard } from "../../core/src/score-card.ts";
+import type { CaseResult, ScoreCard } from "../../core/src/score-card-data.ts";
 
-export type { CaseResult, ScoreCard } from "../../core/src/score-card.ts";
+export type { CaseResult, ScoreCard } from "../../core/src/score-card-data.ts";
 
 export const VERIFIED = "VERIFIED";
 /** A fraud the verifier accepts. The corpus pins it until the verifier closes the gap. */
 export const KNOWN_GAP = "ACCEPTED (gap)";
+
+/**
+ * The print judge's card, as the print CI job last verified it with the real PrusaSlicer. The test asserts the
+ * real judge against this value on that job, so a corpus or judge change fails CI until this moves with it.
+ */
+export const PUBLISHED_PRINT_SCORE_CARD: ScoreCard = { cheatsCaught: 11, cheatsTotal: 12, honestPassed: 22, honestTotal: 22, gaps: ["replay-same-file"] };
 
 /** The verdict in corpus terms: a fraud that verifies is a known gap, an honest print that fails is its reason. */
 export function observedPrintOutcome(kind: "cheat" | "honest", firstReason: string | null): string {

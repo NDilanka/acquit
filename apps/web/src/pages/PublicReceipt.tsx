@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { utc } from "../format";
+import { Link } from "../router";
 import { digestOfHiddenCases } from "../receipt-digest";
 import {
   attemptLine,
@@ -171,6 +172,9 @@ export function PublicReceiptPage({ receiptId }: { receiptId: string }) {
           <p key={line}>{line}</p>
         ))}
         <small className="muted">The code judge's card as its CI run last verified it. The same card covers every job; it is not a per-job record.</small>
+        <p>
+          <Link to="/verifiers">How this verifier is tested</Link>
+        </p>
       </section>
     </>
   );

@@ -4,6 +4,7 @@ export type Route =
   | { name: "newJob" }
   | { name: "job"; id: string }
   | { name: "receipt"; id: string }
+  | { name: "verifiers" }
   | { name: "operator" }
   | { name: "cli" }
   | { name: "studio" }
@@ -16,6 +17,7 @@ export function match(path: string): Route {
   if (path === "/operator") return { name: "operator" };
   if (path === "/cli") return { name: "cli" };
   if (path === "/studio") return { name: "studio" };
+  if (path === "/verifiers" || path === "/verifiers/") return { name: "verifiers" };
   const job = /^\/jobs\/([^/]+)\/?$/.exec(path);
   if (job?.[1]) return { name: "job", id: decodeURIComponent(job[1]) };
   const receipt = /^\/receipts\/([^/]+)\/?$/.exec(path);
@@ -30,6 +32,7 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" {
     case "notFound":
       return "notFound";
     case "receipt":
+    case "verifiers":
     case "demo":
     case "newJob":
     case "job":
