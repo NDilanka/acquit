@@ -191,6 +191,8 @@ export type Ports = {
 	readonly verifiers?: OutcomeRegistry;
 	/** The GitHub App's work-repo provisioner. Absent when no App is configured; the outbox then records NEEDS_HUMAN. */
 	readonly workRepo?: WorkRepoPort;
+	/** The deployment's client repository, the root every visitor fork is a fork of. Absent, a retry adopts only the visitor fork. */
+	readonly clientRepository?: string;
 	/** The AI-scoping kickoff: on OpenJob of a fixture that carries a trusted fix, the deployment
 	 * drafts the acceptance contract and its hidden cases. The implementer owns the model calls,
 	 * the filter phases, and the private store; a failed draft never fails the open itself. */
@@ -549,7 +551,8 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
 		const known = await ports.store.readWorkRepo(effect.jobId);
 		const recorded = known !== null && known.repositoryId !== null ? { repository: known.repository, id: known.repositoryId } : null;
 		reach = "GITHUB";
-		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit, recorded },
+		const created = await ports.workRepo.createWorkRepo({ jobId: effect.jobId, repository: effect.repository, frozenCommit: effect.frozenCommit, recorded,
+			root: ports.clientRepository },
 			providerRequestId(key), recordFork);
 		await recordFork(created);
 	} catch (error) {

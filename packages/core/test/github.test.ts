@@ -964,6 +964,41 @@ for (const harness of HARNESSES) {
 	});
 }
 
+// Once the visitor fork is removed, GitHub reports the root as the work repo's parent. A retry adopts the job's own
+// recorded fork through the root, and the recorded id still decides which repository it is.
+for (const harness of HARNESSES) {
+	test(`a retry adopts the work repo through its root once the visitor fork is gone, and refuses any other claim (${harness.name})`, async t => {
+		const app = await harness.make();
+		t.after(app.close);
+		const visitor = await app.port.createClientRepo({ repository: CLIENT, name: "demo-abc123" });
+		const created = await app.port.createWorkRepo({ jobId: JOB, repository: visitor.repository, frozenCommit: FROZEN }, "req-1");
+		assert.equal(await app.port.deleteClientRepo({ repository: visitor.repository, source: CLIENT, id: visitor.id }), "DELETED");
+		const retry = { jobId: JOB, repository: visitor.repository, frozenCommit: FROZEN, root: CLIENT, recorded: { repository: created.repository, id: created.id } };
+		assert.deepEqual(await app.port.createWorkRepo(retry, "req-2"), created);
+		const otherId = await refusal(app.port.createWorkRepo({ ...retry, recorded: { repository: created.repository, id: created.id + 1 } }, "req-2"));
+		assert.equal(otherId.code, "GITHUB_FORK_MISMATCH");
+		const unrecorded = await refusal(app.port.createWorkRepo({ ...retry, recorded: null }, "req-2"));
+		assert.equal(unrecorded.code, "GITHUB_FORK_UNRECORDED");
+		const otherRoot = await refusal(app.port.createWorkRepo({ ...retry, root: `${CLIENT_OWNER}/other-app` }, "req-2"));
+		assert.equal(otherRoot.code, "GITHUB_FORK_MISMATCH");
+		const noRoot = await refusal(app.port.createWorkRepo({ ...retry, root: undefined }, "req-2"));
+		assert.equal(noRoot.code, "GITHUB_FORK_MISMATCH", "without a configured root only the visitor fork is adopted");
+	});
+}
+
+test("a retry through the root makes no fork POST", async t => {
+	const { port, stub, close } = await withStub();
+	t.after(close);
+	const visitor = await port.createClientRepo({ repository: CLIENT, name: "demo-abc123" });
+	const created = await port.createWorkRepo({ jobId: JOB, repository: visitor.repository, frozenCommit: FROZEN }, "req-1");
+	assert.equal(await port.deleteClientRepo({ repository: visitor.repository, source: CLIENT, id: visitor.id }), "DELETED");
+	const forkPosts = () => stub.state.requests.filter(request => request.method === "POST" && /\/forks$/.test(request.path)).length;
+	const before = forkPosts();
+	assert.deepEqual(await port.createWorkRepo({ jobId: JOB, repository: visitor.repository, frozenCommit: FROZEN, root: CLIENT,
+		recorded: { repository: created.repository, id: created.id } }, "req-2"), created);
+	assert.equal(forkPosts(), before, "the retry adopted the recorded fork and forked nothing");
+});
+
 test("a work repo whose visitor fork is still there is removed when GitHub reports the root as its parent", async t => {
 	const { port, stub, close } = await withStub();
 	t.after(close);

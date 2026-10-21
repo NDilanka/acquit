@@ -807,10 +807,10 @@ test("the outbox starts the run it reserved and provisions the work repo by requ
 	await store.commit({ job: { expectedVersion: null, row: reserved.next, wakeAt: later }, operator: null, credits: [], outbox: [],
 		settlement: null, delivery: null, request: null });
 	const starts: VerifierRunRequest[] = [];
-	const created: { jobId: string; repository: string; frozenCommit: string }[] = [];
+	const created: { jobId: string; repository: string; frozenCommit: string; root?: string }[] = [];
 	const base = fixture();
-	const ports: Ports = { ...base.ports, store,
-		workRepo: { createWorkRepo: async request => { created.push({ jobId: request.jobId, repository: request.repository, frozenCommit: request.frozenCommit });
+	const ports: Ports = { ...base.ports, store, clientRepository: "maya-client/deploy-root",
+		workRepo: { createWorkRepo: async request => { created.push({ jobId: request.jobId, repository: request.repository, frozenCommit: request.frozenCommit, root: request.root });
 			return { repository: "acquit-forks/invoice-app-submit", remote: "https://github.com/acquit-forks/invoice-app-submit.git", branch: "main", commit: request.frozenCommit, id: 4242 }; },
 			deleteWorkRepo: async () => "ABSENT" },
 		verifier: { start: async request => { starts.push(request); }, parseCallback: async () => null } };
@@ -832,7 +832,7 @@ test("the outbox starts the run it reserved and provisions the work repo by requ
 		assert.equal(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(startKey)!.state)).kind, "CONFIRMED");
 		const repoKey = enqueue({ kind: "CREATE_WORK_REPO", jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" as CommitSha });
 		assert.equal(await runOutboxOnce(ports, repoKey), "WORKED");
-		assert.deepEqual(created, [{ jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2" }]);
+		assert.deepEqual(created, [{ jobId: held.id, repository: "maya-client/invoice-app", frozenCommit: "a41c9e2", root: "maya-client/deploy-root" }]);
 		assert.equal(JSON.parse(String(store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(repoKey)!.state)).kind, "CONFIRMED");
 	} finally { store.close(); base.store.close(); }
 });

@@ -95,9 +95,11 @@ export type PublishedPullRequest = {
 /**
  * One job's work repository to create. `recorded` is the fork this job already recorded, when a retry carries one.
  * A repository found at the name is adopted only as that recorded fork: a GET alone never establishes ownership.
+ * `root` is the deployment's client repository. Once the visitor fork is gone, GitHub reports the root as the work repo's
+ * parent, so a retry adopts through it. Absent, only the visitor fork is adopted.
  */
 export type WorkRepoRequest = { readonly jobId: JobId; readonly repository: string; readonly frozenCommit: CommitSha;
-	readonly recorded?: WorkRepoFork | null };
+	readonly recorded?: WorkRepoFork | null; readonly root?: string };
 export type PublishRequest = { readonly jobId: JobId; readonly repository: string; readonly sourceCommit: CommitSha; readonly checkName: string };
 
 /** One client repository to fork: the deployment's source, and the name the fork takes in the organization. */
@@ -581,8 +583,9 @@ function appClient(parsed: GitHubAppConfig): GitHubAppPort {
 		// marker (the exact fork parent plus the job-unique name) is not enough: a same-source replacement carries it
 		// too. A GET never establishes ownership, so a repository with no recorded id is refused, never adopted.
 		const recorded = request.recorded ?? null;
+		const parents = request.root === undefined ? [request.repository] : [request.repository, request.root];
 		const adoptable = (record: unknown) => {
-			if (!isOurFork(record, repository, [request.repository])) {
+			if (!isOurFork(record, repository, parents)) {
 				throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${repository} is not the fork of ${request.repository} named ${name} that this job creates. Nothing was moved.`);
 			}
 			if (recorded === null) {
@@ -891,7 +894,12 @@ export function createFakeGitHubApp(options: { readonly organization?: string; r
 				workRepoOwners.set(repository, { id });
 				parents.set(repository, request.repository);
 			} else {
-				// The same rule the real App keeps: a repository is adopted only as the fork this job recorded.
+				// The same rules the real App keeps: a repository is adopted only as the fork this job recorded, and only
+				// while its parent is the visitor fork or, once that fork is gone, the configured root.
+				const parent = parents.get(created.repository);
+				if (parent !== request.repository && (request.root === undefined || parent !== request.root)) {
+					throw new GitHubAppError("GITHUB_FORK_MISMATCH", `${created.repository} is not the fork of ${request.repository} that this job creates. Nothing was moved.`);
+				}
 				const recorded = request.recorded ?? null;
 				if (recorded === null) {
 					throw new GitHubAppError("GITHUB_FORK_UNRECORDED", `${created.repository} exists, but this job has no recorded repository id. Nothing was moved.`);
