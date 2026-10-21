@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { NATIVE_WIDGETS, WIDGET_ROWS, type DashboardState, type NativeWidgetSpec } from "./dashboard-widgets.ts";
-import { nativeWidgetRecord, parseSaved, placeRows } from "./studio-data.ts";
+import { nativeWidgetRecord, parseSaved, placeRows, savedLayoutJson, seededIds, seededPlacements, seededWidgets } from "./studio-data.ts";
 
 type Track = { xTrack: number; yTrack: number; xSpan: number; ySpan: number };
 
@@ -24,9 +24,10 @@ const clashingPairs = (layout: Partial<Record<string, Track>>) => {
   return entries.flatMap(([a, ta], i) => entries.slice(i + 1).filter(([, tb]) => clash(ta, tb)).map(([b]) => `${a} x ${b}`));
 };
 
-const saved = (widgets: Record<string, string>, widgetLayout: Record<string, Track>) =>
+const saved = (widgets: Record<string, string>, widgetLayout: Record<string, Track>, acquitSeeded?: readonly string[]) =>
   JSON.stringify({
     selectedPageId: "main",
+    ...(acquitSeeded ? { acquitSeeded } : {}),
     pages: [
       {
         id: "main",
@@ -126,4 +127,77 @@ test("a saved escrow funnel keeps the descending sort the viewer chose", () => {
 test("a saved custom widget loads with no sort added", () => {
   const { widgets } = mainPage(parseSaved(savedFunnel({}), "escrow"));
   assert.deepEqual(widgets["acquit-held"], { type: "acquit-held", dataMapping: {} });
+});
+
+const ESCROW_ROUND4 = Object.keys(ROUND4_LAYOUT);
+const idsAsTypes = (ids: readonly string[]) => Object.fromEntries(ids.map((id) => [id, id]));
+
+const freshEscrow = (): DashboardState => ({
+  selectedPageId: "main",
+  pages: [{ id: "main", layout: { columns: 12, rowHeight: 60 }, widgets: seededWidgets("escrow"), widgetLayout: seededPlacements("escrow") }],
+});
+
+test("a legacy escrow layout gains the verdict grid at its seed place, and only the grid", () => {
+  const { widgets, layout } = mainPage(parseSaved(saved(idsAsTypes(ESCROW_ROUND4), ROUND4_LAYOUT), "escrow"));
+  assert.deepEqual(Object.keys(widgets).sort(), [...ESCROW_ROUND4, "acquit-verdict-grid"].sort(), "the widgets the viewer deleted stay absent");
+  assert.deepEqual(widgets["acquit-verdict-grid"], { type: "acquit-verdict-grid", dataMapping: {} }, "the grid gets its fresh record");
+  assert.deepEqual(layout["acquit-verdict-grid"], { xTrack: 0, yTrack: 8, xSpan: 12, ySpan: 9 }, "the grid takes its seed place");
+  assert.deepEqual(clashingPairs(layout), [], "no two widgets share a cell");
+});
+
+test("a legacy escrow layout whose seed place is taken gives the verdict grid the first free spot", () => {
+  const json = saved({ "acquit-released": "acquit-released" }, { "acquit-released": { xTrack: 0, yTrack: 8, xSpan: 4, ySpan: 2 } });
+  const { layout } = mainPage(parseSaved(json, "escrow"));
+  assert.deepEqual(layout["acquit-released"], { xTrack: 0, yTrack: 8, xSpan: 4, ySpan: 2 }, "the saved placement is kept");
+  assert.deepEqual(layout["acquit-verdict-grid"], { xTrack: 0, yTrack: 10, xSpan: 12, ySpan: 9 }, "the grid goes below the widget on its seed place");
+  assert.deepEqual(clashingPairs(layout), [], "no two widgets share a cell");
+});
+
+test("a viewer who deleted the verdict grid after it was seeded does not get it back", () => {
+  const { widgets, layout } = mainPage(parseSaved(saved(idsAsTypes(ESCROW_ROUND4), ROUND4_LAYOUT, seededIds("escrow")), "escrow"));
+  assert.equal(widgets["acquit-verdict-grid"], undefined);
+  assert.equal(layout["acquit-verdict-grid"], undefined);
+});
+
+test("a seeded widget missing from the saved acquitSeeded list reaches the viewer", () => {
+  const seen = seededIds("escrow").filter((id) => id !== "acquit-verdict-grid");
+  const { widgets } = mainPage(parseSaved(saved(idsAsTypes(ESCROW_ROUND4), ROUND4_LAYOUT, seen), "escrow"));
+  assert.ok(widgets["acquit-verdict-grid"], "the grid is new to this viewer");
+});
+
+test("the saved acquitSeeded list is read and not handed to Studio", () => {
+  const state = parseSaved(saved(idsAsTypes(ESCROW_ROUND4), ROUND4_LAYOUT, seededIds("escrow")), "escrow");
+  assert.ok(state, "the saved layout loads");
+  assert.equal("acquitSeeded" in state, false);
+});
+
+test("saving writes the seeded ids beside the state", () => {
+  const state = freshEscrow();
+  const written = JSON.parse(savedLayoutJson(state, "escrow")) as { acquitSeeded?: unknown; pages?: unknown };
+  assert.deepEqual(written.acquitSeeded, seededIds("escrow"));
+  assert.ok(seededIds("escrow").includes("acquit-verdict-grid"), "the grid is among the ids a save records");
+  assert.deepEqual(written.pages, JSON.parse(JSON.stringify(state.pages)), "the pages save as they stand");
+});
+
+test("a layout saved with the current seed reloads with the same widgets", () => {
+  const { widgets } = mainPage(parseSaved(savedLayoutJson(freshEscrow(), "escrow"), "escrow"));
+  assert.deepEqual(Object.keys(widgets).sort(), [...seededIds("escrow")].sort());
+});
+
+test("an earnings layout saved before acquitSeeded keeps the widget set it saved", () => {
+  const kept = seededIds("earnings").filter((id) => id !== "acquit-jobs-paid");
+  const placements = Object.fromEntries(Object.entries(seededPlacements("earnings")).filter(([id]) => kept.includes(id)));
+  const json = JSON.stringify({
+    selectedPageId: "main",
+    pages: [
+      {
+        id: "main",
+        layout: { columns: 12, rowHeight: 60 },
+        widgets: Object.fromEntries(kept.map((id) => [id, { type: id, dataMapping: {} }])),
+        widgetLayout: placements,
+      },
+    ],
+  });
+  const { widgets } = mainPage(parseSaved(json, "earnings"));
+  assert.deepEqual(Object.keys(widgets).sort(), [...kept].sort(), "the widget the viewer deleted stays deleted");
 });
