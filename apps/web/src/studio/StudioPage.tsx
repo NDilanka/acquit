@@ -370,15 +370,15 @@ const shownState = (state: DashboardState, hidden: readonly string[]) => (hidden
 const withHidden = (state: DashboardState, full: DashboardState, hidden: readonly string[]) =>
   hidden.length > 0 ? withWidgetsFrom(state, full, hidden) : state;
 
-/** The book with nothing on it yet: one line and a way to a scenario, above the tiles it frames. */
+/**
+ * The book with nothing on it yet: one line and how its money arrives, above the tiles it frames. It has no link to /demo:
+ * for a signed-in viewer that route does not reach the scenarios, so the line says how the data appears instead.
+ */
 function EmptyStory() {
   return (
     <section className="card pad empty-story" aria-label="Empty book">
       <h2>{EMPTY_STORY_TEXT}</h2>
-      <p className="muted">Each scenario runs one whole job on the PayPal sandbox, and its money shows on this page once it settles.</p>
-      <Link to="/demo" className="btn sm ghost">
-        See the scenarios
-      </Link>
+      <p className="muted">Jobs appear here once a client funds one. Money shows on this page as each job settles on the PayPal sandbox.</p>
     </section>
   );
 }

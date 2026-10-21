@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PlatformJobLedger, ReceiptRow } from "./api-types";
 import type { DashboardState } from "./dashboard-widgets.ts";
@@ -138,4 +139,14 @@ test("the Ask the ledger panel shows only on a wide screen of a dashboard with a
 test("the same panel choice is the same object, so Studio sees no change between renders", () => {
   assert.equal(studioPanels(true, false), studioPanels(true, false));
   assert.equal(studioPanels(true, true), studioPanels(true, true));
+});
+
+test("the empty book links nowhere: a signed-in viewer's /demo does not reach the scenarios, so the story never links there", () => {
+  const page = readFileSync(new URL("./studio/StudioPage.tsx", import.meta.url), "utf8");
+  // A top-level function ends at its column-zero brace; the line ending is CRLF on Windows checkouts.
+  const story = /function EmptyStory\b[\s\S]*?\r?\n\}\r?\n/.exec(page)?.[0] ?? "";
+  assert.ok(story.length > 0, "the empty book is declared in the page");
+  assert.doesNotMatch(story, /\/demo/);
+  assert.doesNotMatch(story, /<Link\b/);
+  assert.doesNotMatch(page, /to="\/demo"/, "no link to /demo anywhere on the studio page");
 });

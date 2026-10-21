@@ -206,7 +206,6 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .choice small { display: block; color: var(--muted); }
 
 @media (max-width: 480px) {
-  .top { height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px 14px; padding: 10px 16px; }
   .wrap { padding: 20px 16px 96px; }
   .demobar .wrap { padding: 8px 16px; }
   .demobar, .meta, .crumbs, .rows b { overflow-wrap: anywhere; }
@@ -225,6 +224,20 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .jobline, .act { flex-wrap: wrap; }
 }
 
+/* At 640px the top bar is one row: the brand, one horizontally scrolling row of links, and the account at the right. */
+@media (max-width: 640px) {
+  .top { height: 56px; flex-wrap: nowrap; gap: 10px; padding: 0 16px; }
+  .top > :not(.sp):not(.nav) { flex: none; }
+  .top:has(.nav) > .sp { display: none; }
+  .top .nav { flex: 1 1 0; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .top .nav::-webkit-scrollbar { display: none; }
+  .brand em { display: none; }
+  .sandbox { padding: 2px 6px; font-size: 10px; letter-spacing: 0.03em; }
+  .avatar small { display: none; }
+  .avatar-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .demobar .demo-extra { display: none; }
+}
+
 .scoping { overflow: hidden; }
 .scoping .hd { display: grid; gap: 2px; padding-bottom: 0; }
 .scoping .contract { white-space: pre-wrap; }
@@ -235,6 +248,8 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .next-step .eyebrow { margin-right: 6px; }
 .verifier { overflow: hidden; }
 .verifier .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-bottom: 8px; }
+/* The agent line sits right under the header, not 40px below it: the header's 8px, no paragraph margin, no top padding. */
+.verifier .verifier-agent { margin: 0; padding-top: 0; }
 .timeline { list-style: none; margin: 0; padding: 4px 0 0 26px; position: relative; }
 .timeline::before { content: ""; position: absolute; left: 11px; top: 12px; bottom: 12px; width: 2px; background: var(--line); }
 .tl-node { position: relative; padding: 0 0 20px; }

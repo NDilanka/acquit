@@ -310,7 +310,7 @@ export function JobPage({ id }: { id: string }) {
 
           <Timeline
             events={timelineEvents(timeline)}
-            verifier={judgedStatuses.includes(job.status) ? <Verifier job={timeline} diff={diff} locked={locked} /> : null}
+            verifier={showsVerifier(job) ? <Verifier job={timeline} diff={diff} locked={locked} readOnly={settledStatuses.includes(job.status)} /> : null}
           />
         </div>
 
@@ -776,11 +776,18 @@ function Checkout({ job, bid, redirecting, card }: { job: JobView; bid: BidView 
   );
 }
 
-/** Only these statuses carry the attempt history in the job view; a PAID job's proof lives in its receipt. */
-const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "REFUNDED"];
+/** The statuses whose job page shows the verifier card. A PAID job keeps its card, read-only, beside its receipt. */
+const judgedStatuses: readonly JobView["status"][] = ["IN_PROGRESS", "VERIFIED", "PAID", "REFUNDED"];
+/** A settled job's verifier card shows what was judged and asks for nothing more. */
+const settledStatuses: readonly JobView["status"][] = ["PAID", "CLOSED"];
+/** A CLOSED job shows the card only when it has attempts to show; every other status shows it by the list above. */
+const showsVerifier = (job: JobView) => judgedStatuses.includes(job.status) || (job.status === "CLOSED" && job.attempts.used > 0);
 
-/** The verifier's run state and the House run's diff. The judged attempts themselves are on the timeline. */
-function Verifier({ job, diff, locked }: { job: TimelineJob; diff: JobDiff | null; locked: BidView | null }) {
+/**
+ * The verifier's run state and the House run's diff. The judged attempts themselves are on the timeline.
+ * `readOnly` is a settled job: the card keeps the agent line and what was judged, and drops every prompt for more work.
+ */
+function Verifier({ job, diff, locked, readOnly }: { job: TimelineJob; diff: JobDiff | null; locked: BidView | null; readOnly: boolean }) {
   const { attempts, contract } = job;
   const total = attempts.used + attempts.left;
   const { pending, failure, history } = attempts;
@@ -794,8 +801,8 @@ function Verifier({ job, diff, locked }: { job: TimelineJob; diff: JobDiff | nul
         <h2>Verifier</h2>
         <small className="muted">{verifierLine(job)}</small>
       </div>
-      {locked && <p className="pad">{agentLine(locked)}</p>}
-      {failure && (
+      {locked && <p className="pad verifier-agent">{agentLine(locked)}</p>}
+      {failure && !readOnly && (
         <div className="pad">
           <div className="alert warn">
             The run for commit <IdChip value={failure.sourceCommit} /> ended without a verdict at {utc(failure.at)}:{" "}
@@ -804,13 +811,13 @@ function Verifier({ job, diff, locked }: { job: TimelineJob; diff: JobDiff | nul
           </div>
         </div>
       )}
-      {pending && (
+      {pending && !readOnly && (
         <p className="pad">
           Attempt {pending.ordinal} of {total} is being verified for commit <IdChip value={pending.sourceCommit} />, submitted{" "}
           {utc(pending.submittedAt)}. The run ends by {utc(pending.runEndsAt)}.
         </p>
       )}
-      {idle && (
+      {idle && !readOnly && (
         <p className="pad muted">
           The agent has {total} attempts.
           {contract && ` Every attempt runs ${contract.frozenTests} visible and ${contract.hiddenTests} hidden tests.`}
