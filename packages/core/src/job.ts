@@ -334,9 +334,12 @@ export type JobEffect =
 		readonly kind: "ALERT";
 		readonly jobId: JobId;
 		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH" | "PROVIDER_DISPUTE_ON_PAID"
-			| "PROVIDER_DISPUTE_NOT_ANSWERABLE" | "PROVIDER_DISPUTE_PARTIAL" | "PROVIDER_DISPUTE_PARTIAL_LOST" | "PROVIDER_DISPUTE_LOST_ON_PAID";
+			| "PROVIDER_DISPUTE_NOT_ANSWERABLE" | "PROVIDER_DISPUTE_PARTIAL" | "PROVIDER_DISPUTE_PARTIAL_LOST" | "PROVIDER_DISPUTE_LOST_ON_PAID"
+			| "PROVIDER_DISPUTE_UNCONFIRMED" | "PROVIDER_DISPUTE_ANSWER_REFUSED";
 		/** The buyer dispute a PROVIDER_DISPUTE alert is about, so the process log names it. No other alert carries one. */
 		readonly disputeId?: string;
+		/** One plain sentence a person reads beside the reason, when the reason alone does not say what to do. */
+		readonly detail?: string;
 	}
 	/**
 	 * Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it.
@@ -353,24 +356,40 @@ export type JobEffect =
  */
 export type DisputeAnswer = "EVIDENCE" | "ACCEPT" | "NOT_ANSWERABLE";
 
+/**
+ * What PayPal did with the answer Acquit selected. QUEUED until the outbox sends it, FILED once PayPal confirms it, and
+ * REFUSED with the plain reason when PayPal refuses it for good. A person sees the difference on the job.
+ */
+export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" } | { readonly state: "REFUSED"; readonly reason: string };
+
 /** A PayPal buyer dispute, as PayPal last answered for it. `outcome` is PayPal's code once the dispute resolves. */
 export type ProviderDispute = {
 	readonly id: string;
 	readonly status: string;
 	readonly reason: string;
-	readonly amount: UsdCents;
+	/** Null only when a signed body stood in for a refused read and its amount could not be read. */
+	readonly amount: UsdCents | null;
 	readonly openedAt: Instant;
+	/** PayPal's update_time for the status this record holds. A delivery older than it is a replay and changes nothing. */
+	readonly updatedAt?: Instant;
 	readonly outcome?: string;
 	readonly resolvedAt?: Instant;
 	/** Set on the first delivery Acquit saw for this dispute id. Absent on a dispute that reached a resolved state first. */
 	readonly answer?: DisputeAnswer;
+	readonly answerState?: DisputeAnswerState;
+	/**
+	 * The latest delivery is a signed body that stood in for a read PayPal refused. It holds the release whatever its status
+	 * says, and settles nothing: a successful read of the dispute replaces it.
+	 */
+	readonly unconfirmed?: true;
 	/** A dispute a judge scenario simulated. PayPal never received an answer for it. */
 	readonly simulated?: true;
 };
 
 /** The dispute as the job view serves it. Null on a job no buyer dispute has reached. */
-export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents;
-	readonly openedAt: Instant; readonly outcome: string | null; readonly answer: DisputeAnswer | null; readonly simulated: boolean };
+export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents | null;
+	readonly openedAt: Instant; readonly outcome: string | null; readonly answer: DisputeAnswer | null; readonly answerState: DisputeAnswerState | null;
+	readonly unconfirmed: boolean; readonly simulated: boolean };
 
 // The table
 
@@ -456,7 +475,10 @@ function transitionTable(): {
 	ReimbursementSettled: Edge<JobRow<RefundedState>, JobRef & { readonly reimbursement: ReimbursementEvidence }, JobRow<RefundedState>, "SYSTEM">;
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
 	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
-		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome: string | null; readonly simulated?: true }, JobRow, "SYSTEM">;
+		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome: string | null; readonly simulated?: true;
+		readonly fromVerifiedBody?: true }, JobRow, "SYSTEM">;
+	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer }, JobRow, "SYSTEM">;
+	DisputeAnswerRefused: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly reason: string }, JobRow, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
 	// OpenJob
@@ -691,7 +713,9 @@ function transitionTable(): {
 				if (dispute === undefined || dispute.status === "RESOLVED" || (dispute.answer !== "ACCEPT" && dispute.answer !== undefined)) {
 					return { next: verified, credits: [], effects: [] };
 				}
-				const defended: ProviderDispute = { ...dispute, answer: "EVIDENCE" };
+				// The evidence is a new answer, so an earlier answer's refusal or filing does not carry over to it.
+				const defended: ProviderDispute = { ...withoutAnswer(dispute), answer: "EVIDENCE",
+					...(dispute.simulated === true ? {} : { answerState: { state: "QUEUED" as const } }) };
 				return { next: { ...verified, providerDispute: defended }, credits: [],
 					effects: answerEffects(verified, dispute.id, "EVIDENCE", dispute.simulated === true) };
 			}
@@ -841,40 +865,71 @@ function transitionTable(): {
 			const held = row.providerDispute;
 			// One capture carries one buyer dispute on this row. A second dispute id is a fact a person has to see.
 			if (held !== undefined && held.id !== command.disputeId) return settlementMismatch(row);
+			// PayPal's update_time orders the deliveries of one dispute. A body older than the one recorded is a replay: it changes
+			// nothing, so an older OPEN cannot reopen a resolved hold and an older RESOLVED cannot lift a newer hold.
+			if (held?.updatedAt !== undefined && command.updatedAt !== undefined && Date.parse(command.updatedAt) < Date.parse(held.updatedAt))
+				return unchanged(row);
+			// A signed body that stood in for a refused read moves only a record it can order. Without both times it cannot tell a
+			// newer delivery from a replay, so the record keeps what it holds, and the hold it already places stands.
+			const standIn = command.fromVerifiedBody === true;
+			if (standIn && held !== undefined && (held.updatedAt === undefined || command.updatedAt === undefined)) return unchanged(row);
 			// A resolved dispute is final. A later delivery of it changes nothing, and a different outcome is a fact this row never settled.
-			if (held?.status === "RESOLVED") {
-				const same = command.status !== "RESOLVED" || command.outcome === (held.outcome ?? null);
-				return same ? { ...unchanged(row), alreadySettled: true } : settlementMismatch(row);
+			// The one exception is an outcome PayPal names after an unknown one, which is recorded. A stand-in never settles anything.
+			if (held?.status === "RESOLVED" && held.unconfirmed !== true) {
+				const names = command.status === "RESOLVED" && held.outcome === undefined && command.outcome !== null;
+				if (!names) {
+					const same = command.status !== "RESOLVED" || command.outcome === (held.outcome ?? null);
+					if (!same) return settlementMismatch(row);
+					const latest = latestTimeOf(held, command);
+					return latest === held.updatedAt ? { ...unchanged(row), alreadySettled: true }
+						: { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, ...(latest === undefined ? {} : { updatedAt: latest }) } },
+							credits: [], effects: [], alreadySettled: true };
+				}
 			}
 			// Acquit answers the first delivery it sees for an unresolved dispute, once. A repeat keeps that answer and files nothing new.
 			const first = held === undefined;
 			const answer: DisputeAnswer | undefined = held?.answer ?? (first && command.status !== "RESOLVED" ? disputeAnswerOf(row) : undefined);
 			const simulated = held?.simulated === true || command.simulated === true;
-			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount,
-				openedAt: held?.openedAt ?? command.openedAt,
+			const filing = first ? answerEffects(row, command.disputeId, answer, simulated) : [];
+			// The answer is queued until the outbox sends it. A simulated answer is never sent, so it carries no queued state.
+			const answerState: DisputeAnswerState | undefined = filing.some(effect => effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_ACCEPT") && !simulated
+				? { state: "QUEUED" } : held?.answerState;
+			const latest = latestTimeOf(held, command);
+			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount ?? held?.amount ?? null,
+				openedAt: held?.openedAt ?? command.openedAt, ...(latest === undefined ? {} : { updatedAt: latest }),
 				...(command.outcome === null ? {} : { outcome: command.outcome }),
-				...(command.status === "RESOLVED" ? { resolvedAt: facts.now } : {}),
+				...(command.status === "RESOLVED" ? { resolvedAt: held?.resolvedAt ?? facts.now } : {}),
 				...(answer === undefined ? {} : { answer }),
+				...(answerState === undefined ? {} : { answerState }),
+				...(standIn ? { unconfirmed: true as const } : {}),
 				...(simulated ? { simulated: true as const } : {}) };
 			const recorded: Plan<JobRow>["next"] = { ...row, version: (row.version + 1) as Version, providerDispute: next };
 			const buyerFavour = command.status === "RESOLVED" && command.outcome === "RESOLVED_BUYER_FAVOUR";
+			// A stand-in holds the money and tells a person. It never settles, lifts, or unblocks a release, whatever its outcome says.
+			const standInAlert: JobEffect[] = standIn
+				? [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_UNCONFIRMED", disputeId: next.id, detail: UNCONFIRMED_DETAIL }] : [];
 			// A dispute against a paid job moves no money back: the money is already out, so a person is told. The receipt is the answer.
 			if (row.state.status === "PAID") {
-				const effects: JobEffect[] = [];
-				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: next.id }, ...answerEffects(row, next.id, answer, simulated));
+				const effects: JobEffect[] = [...standInAlert];
+				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: next.id }, ...filing);
 				if (buyerFavour) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_LOST_ON_PAID", disputeId: next.id });
 				return { next: recorded, credits: [], effects };
 			}
-			const effects: JobEffect[] = first ? answerEffects(row, next.id, answer, simulated) : [];
+			const effects: JobEffect[] = [...filing, ...standInAlert];
+			if (standIn) return { next: recorded, credits: [], effects };
 			const gross = grossOf(row);
-			const partial = gross !== null && command.amount < gross;
+			const partial = gross !== null && command.amount !== null && command.amount < gross;
 			if (first && partial) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL", disputeId: next.id });
 			// PayPal decided for the buyer on the whole held capture: it already reversed the funds, so the book refunds the held gross
 			// with no outbound call. A refund this row already selected is settled here too: PayPal's reversal is the refund, and the
-			// queued REFUND then has no intent left to send. A partial buyer win is not settled here; the hold stays and a person decides.
+			// queued REFUND then has no intent left to send. Only a win for exactly the gross settles; a partial win, or any other
+			// amount, stays held and goes to a person.
 			const escrow = heldEscrowOf(row);
 			if (buyerFavour && escrow !== null) {
-				if (partial) return { next: recorded, credits: [], effects: [...effects, { kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_PARTIAL_LOST", disputeId: next.id }] };
+				if (command.amount !== escrow.capture.gross) {
+					const reason = partial ? "PROVIDER_DISPUTE_PARTIAL_LOST" : "SETTLEMENT_MISMATCH";
+					return { next: recorded, credits: [], effects: [...effects, { kind: "ALERT", jobId: row.id, reason, disputeId: next.id }] };
+				}
 				const book = reduceLedger(escrow.book, { kind: "Refund", refunded: escrow.capture.gross, at: facts.now });
 				if ("kind" in book) return settlementMismatch(row);
 				const history: History = row.state.status === "IN_PROGRESS" ? row.state.attempts.history
@@ -892,6 +947,20 @@ function transitionTable(): {
 				effects.push(releaseIntent(row.id, row.state.escrow));
 			}
 			return { next: recorded, credits: [], effects };
+		} },
+		// PayPal took the answer the row selected. Only the answer this row still holds for that dispute is recorded as filed.
+		DisputeAnswerFiled: { by: "SYSTEM", apply: (row, command) => {
+			const held = row.providerDispute;
+			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "FILED") return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "FILED" } } }, credits: [], effects: [] };
+		} },
+		// PayPal refused the answer for good. The job says so, and a person is alerted with the plain reason. The hold stays.
+		DisputeAnswerRefused: { by: "SYSTEM", apply: (row, command) => {
+			const held = row.providerDispute;
+			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "REFUSED") return unchanged(row);
+			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "REFUSED", reason: command.reason } } },
+				credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ANSWER_REFUSED", disputeId: command.disputeId,
+					detail: `${command.reason}. The payment stays held.` }] };
 		} },
 		TimerDue: { by: "SYSTEM", apply: (row, command, facts) => {
 			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
@@ -994,6 +1063,16 @@ function receiptOf(fields: Omit<Receipt, typeof receiptBrand>): Receipt {
 	return fields as Receipt;
 }
 
+/** The alert a stand-in delivery raises: the hold stands, and nothing was confirmed by PayPal's own read. */
+const UNCONFIRMED_DETAIL = "PayPal refused the dispute read; release or refund not confirmed. The payment stays held.";
+
+/** The newer of the record's update time and the delivery's, so a record always holds the highest time it has seen. */
+function latestTimeOf(held: ProviderDispute | undefined, command: { readonly updatedAt?: Instant }): Instant | undefined {
+	const recorded = held?.updatedAt;
+	if (recorded === undefined || command.updatedAt === undefined) return command.updatedAt ?? recorded;
+	return Date.parse(command.updatedAt) > Date.parse(recorded) ? command.updatedAt : recorded;
+}
+
 /** A settlement observation that does not match the selected disposition is never applied. It is an ALERT. */
 function settlementMismatch<S extends JobState>(row: JobRow<S>): Plan<JobRow<S>> {
 	return { next: row, credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "SETTLEMENT_MISMATCH" }], refused: "SETTLEMENT_MISMATCH" };
@@ -1086,11 +1165,13 @@ const SELLER_FAVOUR_OUTCOMES: readonly string[] = ["RESOLVED_SELLER_FAVOUR", "CA
 
 /**
  * Whether a PayPal buyer dispute holds this row's money from release. The hold stands while the dispute is open.
- * It also stands on a buyer-favour or unnamed outcome: what becomes of that money is a3-2b's decision.
+ * It also stands on a buyer-favour or unnamed outcome: what becomes of that money is a3-2b's decision. A stand-in delivery
+ * that PayPal's read refused holds whatever its outcome says, until a successful read confirms it.
  */
 export function releaseHeld(row: JobRow): boolean {
 	const dispute = row.providerDispute;
 	if (dispute === undefined) return false;
+	if (dispute.unconfirmed === true) return true;
 	return dispute.status !== "RESOLVED" || !SELLER_FAVOUR_OUTCOMES.includes(dispute.outcome ?? "");
 }
 
@@ -1163,9 +1244,9 @@ function evidenceAttemptOf(row: JobRow): Ordinal | null {
 	return null;
 }
 
-/** The dispute with no answer. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
+/** The dispute with no answer and no answer state. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
 function withoutAnswer(dispute: ProviderDispute): ProviderDispute {
-	const { answer: _answer, ...rest } = dispute;
+	const { answer: _answer, answerState: _answerState, ...rest } = dispute;
 	return rest;
 }
 
@@ -1256,6 +1337,9 @@ export function applyJobCommand(row: JobRow | null, command: JobCommand, facts: 
 	// A buyer dispute is recorded from any state, paid or not: the edge decides what it holds.
 	if (command.type === "ProviderDispute") return table.ProviderDispute.apply(row, command, facts);
 	if (command.type === "TimerDue") return table.TimerDue.apply(row, command, facts);
+	// PayPal's answer to a dispute the row selected is recorded from whatever state the row holds now.
+	if (command.type === "DisputeAnswerFiled") return table.DisputeAnswerFiled.apply(row, command, facts);
+	if (command.type === "DisputeAnswerRefused") return table.DisputeAnswerRefused.apply(row, command, facts);
 	// Settlement observations are routed from every state. The edge decides whether the observation matches
 	// the disposition this row selected; an unmatched one is an alert, never a refusal the outbox would retry.
 	if (command.type === "ReleaseSettled") return table.ReleaseSettled.apply(row, command, facts);
@@ -1531,6 +1615,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		providerDispute: row.providerDispute === undefined ? null : { id: row.providerDispute.id, status: row.providerDispute.status,
 			reason: row.providerDispute.reason, amount: row.providerDispute.amount, openedAt: row.providerDispute.openedAt,
 			outcome: row.providerDispute.outcome ?? null, answer: row.providerDispute.answer ?? null,
+			answerState: row.providerDispute.answerState ?? null, unconfirmed: row.providerDispute.unconfirmed === true,
 			simulated: row.providerDispute.simulated === true },
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority

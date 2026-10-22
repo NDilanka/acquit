@@ -579,6 +579,8 @@ const BUYER_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
   openedAt: "2026-10-16T09:00:00.000Z",
   outcome: null,
   answer: null,
+  answerState: null,
+  unconfirmed: false,
   simulated: false,
 };
 
@@ -664,15 +666,62 @@ test("the dispute timeline says what Acquit filed with PayPal, and marks a scrip
   const titles = (job: TimelineJob) => timelineEvents(job).filter(event => event.kind === "DISPUTE").map(event => event.title);
   const opened = "Buyer opened a PayPal dispute (merchandise or service not received)";
   const held = "Payout held while PayPal reviews the dispute";
-  assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE" })),
+  const filed = { state: "FILED" } as const;
+  assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: filed })),
     [opened, "Acquit filed its verified attempt as evidence with PayPal", held]);
-  assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", simulated: true })),
+  assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: filed, simulated: true })),
     [opened, "Acquit filed its verified attempt as evidence with PayPal (Simulated)", held]);
-  assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "ACCEPT" })), [opened, "Acquit accepted the buyer's claim", held]);
+  assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "ACCEPT", answerState: filed })), [opened, "Acquit accepted the buyer's claim", held]);
   assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "NOT_ANSWERABLE" })),
     [opened, "Acquit could not answer this dispute on its own", held]);
-  assert.deepEqual(titles(paidJob({ providerDispute: { ...BUYER_DISPUTE, answer: "EVIDENCE" } })),
+  assert.deepEqual(titles(paidJob({ providerDispute: { ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: filed } })),
     [opened, "Acquit filed the receipt as evidence with PayPal"]);
+});
+
+test("an answer PayPal has not confirmed yet is said to be queued, not filed", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: { state: "QUEUED" } });
+  assert.deepEqual(timelineEvents(job).find(event => event.title.startsWith("Acquit is sending")), {
+    at: null,
+    kind: "DISPUTE",
+    title: "Acquit is sending its verified attempt as evidence to PayPal",
+    detail: "PayPal has not confirmed the evidence yet.",
+    tone: "held",
+    ids: [{ value: "PAYPAL-DISPUTE-1", label: "PayPal dispute" }],
+    href: null,
+    reasons: [],
+  });
+  assert.equal(timelineEvents(job).some(event => event.title.startsWith("Acquit filed")), false);
+});
+
+test("an answer PayPal refused says so with the plain reason, says the payment stays held, and never says filed", () => {
+  const refused = { state: "REFUSED", reason: "PayPal has not given Acquit dispute access for this merchant" } as const;
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: refused });
+  assert.deepEqual(timelineEvents(job).find(event => event.title.startsWith("PayPal refused")), {
+    at: null,
+    kind: "DISPUTE",
+    title: "PayPal refused Acquit's answer: PayPal has not given Acquit dispute access for this merchant. The payment stays held.",
+    detail: "Acquit's answer did not reach PayPal. An alert went to a person.",
+    tone: "alert",
+    ids: [{ value: "PAYPAL-DISPUTE-1", label: "PayPal dispute" }],
+    href: null,
+    reasons: [],
+  });
+  const titles = timelineEvents(job).map(event => event.title);
+  assert.equal(titles.some(title => title.includes("filed") || title.includes("accepted") || title.includes("sending")), false);
+  assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
+});
+
+test("a buyer dispute known only from PayPal's signed notice says the read was refused, and holds the payout whatever its outcome", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR", unconfirmed: true });
+  assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
+  const titles = timelineEvents(job).map(event => event.title);
+  assert.equal(titles.at(-1), "PayPal refused the dispute read; release or refund not confirmed");
+  assert.equal(titles.includes("PayPal resolved the dispute for the seller"), false);
+});
+
+test("a buyer dispute whose amount could not be read says so instead of a number", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, amount: null });
+  assert.equal(timelineEvents(job).find(event => event.title.startsWith("Buyer opened"))?.detail, "Disputed with PayPal. The amount could not be read.");
 });
 
 test("a buyer's win settled as a refund says the escrow was returned to the buyer, and holds no payout", () => {

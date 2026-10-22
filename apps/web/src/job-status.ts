@@ -9,18 +9,20 @@ export type StatusLabel = { readonly label: string; readonly tone: StatusTone };
 export type StatusInput = Pick<JobView, "status" | "phase" | "checkoutPhase"> & {
   readonly attempts: Pick<JobView["attempts"], "last">;
   /** The PayPal buyer dispute, when one has reached the job. Optional, so a reader with no dispute in view omits it. */
-  readonly providerDispute?: Pick<ProviderDisputeView, "status" | "outcome"> | null;
+  readonly providerDispute?: (Pick<ProviderDisputeView, "status" | "outcome"> & { readonly unconfirmed?: boolean }) | null;
 };
 
 /** The PayPal outcomes that release a held payout: the seller's win. Mirrors SELLER_FAVOUR_OUTCOMES in packages/core/src/job.ts. */
 const SELLER_FAVOUR_OUTCOMES: readonly string[] = ["RESOLVED_SELLER_FAVOUR", "CANCELED_BY_BUYER"];
 
 /**
- * Whether a PayPal buyer dispute holds the payout. It holds while the dispute is open, and also on a buyer-favour or
- * unnamed outcome, the same rule as core releaseHeld: what becomes of that money is not decided yet.
+ * Whether a PayPal buyer dispute holds the payout. It holds while the dispute is open, on a buyer-favour or unnamed
+ * outcome, and while a signed notice stands in for a read PayPal refused. The same rule as core releaseHeld: what
+ * becomes of that money is not decided yet.
  */
 export function payoutHeldBy(dispute: StatusInput["providerDispute"]): boolean {
   if (!dispute) return false;
+  if (dispute.unconfirmed === true) return true;
   return dispute.status !== "RESOLVED" || !SELLER_FAVOUR_OUTCOMES.includes(dispute.outcome ?? "");
 }
 
