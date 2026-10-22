@@ -817,3 +817,44 @@ test("a dispute answer refused for lack of access is sent again once, under its 
 				{ path: evidencePath, requestId: providerRequestId(requeueKey) }]);
 		});
 });
+
+/** The escalated stage's evidence: the same dispute and attempt as the inquiry's, answered again for the stage it escalated to. */
+const escalatedEvidenceKey = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", attempt: 1,
+	stage: "CHARGEBACK", simulated: false });
+
+test("a late PayPal reply for an earlier round files nothing and alerts nothing on the round the row holds, and that round is not sent", async () => {
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(verifiedRow(), async store => {
+			const ports = portsOver(store);
+			await applySystemCommand(ports, disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: now }), null, "webhook-inquiry");
+			// The inquiry's evidence is still queued when the dispute escalates to a stage that offers evidence: the escalation is the round held now.
+			await applySystemCommand(ports, disputeAt("CHARGEBACK", ["provide_evidence"], { updatedAt: later }), null, "webhook-chargeback");
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			// PayPal's reply for the inquiry round lands after the escalation. Neither a filing nor a refusal of it moves the escalated answer.
+			assert.equal((await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId, disputeId: "PP-D-9", answer: "EVIDENCE", round: "PP-D-9:1" },
+				null, null)).refused, null);
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId, disputeId: "PP-D-9", answer: "EVIDENCE", reason: DISPUTE_ACCESS_REFUSED,
+				round: "PP-D-9:1" }, null, null);
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			assert.equal(queuedAlertsOf(store).some(alert => alert.reason === "PROVIDER_DISPUTE_ANSWER_REFUSED"), false);
+			// The inquiry round's evidence is done with no call, and the escalated evidence is the one PayPal receives.
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+			assert.equal(await runOutboxOnce(ports, escalatedEvidenceKey), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(escalatedEvidenceKey) }]);
+	});
+});
+
+test("a late refusal for the round a re-queue replaced files nothing and alerts nothing on the re-queued round", () => {
+	const filed = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: now }), paypalFacts(later)));
+	const read = planOf(applyJobCommand(withRefusal(filed.next), disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: later }),
+		paypalFacts(later)));
+	assert.equal(read.next.providerDispute?.answerRound, "PP-D-9:1:INQUIRY:requeued");
+	const late = planOf(applyJobCommand(read.next, { type: "DisputeAnswerRefused", jobId, disputeId: "PP-D-9", answer: "EVIDENCE",
+		reason: DISPUTE_ACCESS_REFUSED, round: "PP-D-9:1" }, paypalFacts(later)));
+	assert.deepEqual(late.next.providerDispute?.answerState, { state: "QUEUED" });
+	assert.deepEqual(late.effects, []);
+});

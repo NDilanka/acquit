@@ -9,8 +9,8 @@ import { creditWeek, grantDue, reduceCredits } from "./credits.ts";
 import type { CreditAccount } from "./credits.ts";
 import { hours, instant, parseRequestKey } from "./ids.ts";
 import type { AgentId, Branded, ClientId, Digest, Instant, JobId, MerchantId, OperatorId, ReceiptId, RequestKey, Version } from "./ids.ts";
-import { applyJobCommand, effectWanted, payeeMerchantOf, projectJob, releaseHeld, storedVertical, TERMS, wakeAt } from "./job.ts";
-import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
+import { answerRoundOf, applyJobCommand, captureOf, effectWanted, isDisputeAnswer, payeeMerchantOf, projectJob, releaseHeld, storedVertical, TERMS, wakeAt } from "./job.ts";
+import type { JobCommand, JobEffect, JobRow, JobStatus, Loaded, MergeProgress, Plan, ReceiptSource, Refusal, SystemJobCommand } from "./job.ts";
 import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.ts";
 import type { WorkRepoFork } from "./github.ts";
 import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
@@ -47,18 +47,11 @@ export function operationKey(effect: Effect): OperationKey {
 	// Evidence is also per verified attempt, so the attempt after a rework is a new answer. The notes wording is never part of the key.
 	// An escalation is answered once more per stage, and a re-queue is its own answer. Neither changes a key that carries neither.
 	const round = "round" in effect ? effect.round : effect.kind === "START_VERIFIER" ? effect.attempt.run : effect.kind === "ALERT" ? effect.reason
-		: effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_MESSAGE" ? disputeAnswerRound(effect)
-		: effect.kind === "DISPUTE_ACCEPT" ? (effect.requeued === true ? `${effect.disputeId}:requeued` : effect.disputeId) : "";
+		// An answer queued before attempts were recorded keeps the key it had then: the dispute id alone.
+		: isDisputeAnswer(effect) ? (answerRoundOf(effect) ?? effect.disputeId) : "";
 	// PayPal's request-id has a 38-character limit. This stable key is the same
 	// string in the outbox and at the provider, not a random key per attempt.
 	return `aq-${createHash("sha256").update(`${owner}:${effect.kind}:${round}`).digest("hex").slice(0, 32)}` as OperationKey;
-}
-
-/** The round of an evidence or message answer: its dispute and attempt, then the stage it escalated to, then the re-queue. */
-function disputeAnswerRound(effect: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_MESSAGE" }>): string {
-	const base = `${effect.disputeId}:${effect.attempt}`;
-	const staged = effect.stage === undefined ? base : `${base}:${effect.stage}`;
-	return effect.requeued === true ? `${staged}:requeued` : staged;
 }
 
 /** The PayPal-Request-Id and the verifier run id. The same string as the operation key. */
@@ -343,6 +336,11 @@ function settlementOf(settlement: EffectSettlement, refused: Refusal | null, now
 		: { kind: "NEEDS_HUMAN", reason: refused, detail: settlement.detail };
 }
 
+/** Whether a plan re-queues a refused dispute answer. */
+function requeuesAnswer(plan: Plan<JobRow>): boolean {
+	return plan.effects.some(effect => isDisputeAnswer(effect) && effect.requeued === true);
+}
+
 export async function applySystemCommand(ports: Ports, command: JobCommand, settlement: EffectSettlement | null, delivery: string | null): Promise<SystemCommit> {
 	if (!("jobId" in command)) throw new Error("System command requires job");
 	for (let attempt = 0; attempt < 5; attempt++) {
@@ -357,13 +355,18 @@ export async function applySystemCommand(ports: Ports, command: JobCommand, sett
 		}
 		const plan = applyJobCommand(row, command, { actor: { role: "SYSTEM", source: "OUTBOX" }, now, loaded });
 		if (typeof plan === "string") throw new Error(`System transition refused: ${plan}`);
-		const committed = await ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
+		const write = (recorded: string | null) => ports.store.commit({ job: { expectedVersion: row.version, row: plan.next, wakeAt: wakeAt(plan.next) },
 			operator: null, credits: plan.credits.map(account => ({ account, expectedVersion: (account.version - 1) as Version })),
 			paidReceipt: paidReceiptOf(row, plan.next),
 			outbox: plan.effects.map(effect => outboxRow(effect, now)),
 			settlement: settlement === null ? null : { key: settlement.key, state: settlementOf(settlement, plan.refused ?? null, now) },
 			reservations: plan.reservations ?? [],
-			request: null, delivery });
+			request: null, delivery: recorded });
+		let committed = await write(delivery);
+		// A re-queue answers a refusal PayPal gave for lack of dispute access. The provider fact that carries it can already be recorded,
+		// as when a successful read repeats the status and time the refused answer was filed under. The re-queue is planned from the stored
+		// answer round and its requeued flag, so it is written under no delivery key: it happens once per round, and an identical resend replays.
+		if (committed.kind === "DELIVERY_REPLAY" && requeuesAnswer(plan)) committed = await write(null);
 		if (committed.kind === "COMMITTED" || committed.kind === "DELIVERY_REPLAY") {
 			const refused = committed.kind === "COMMITTED" ? plan.refused ?? null : null;
 			return committed.kind === "COMMITTED" && plan.alreadySettled ? { outcome: committed.kind, refused, alreadySettled: true } : { outcome: committed.kind, refused };
@@ -628,16 +631,19 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey,
 	try {
 		const outcome = await ports.paypal.dispatch(call, providerRequestId(key));
 		const answer = effect.kind === "DISPUTE_EVIDENCE" ? "EVIDENCE" as const : effect.kind === "DISPUTE_MESSAGE" ? "MESSAGE" as const : "ACCEPT" as const;
+		// The round this answer was sent for: PayPal's reply is recorded against it, never against a later round of the same dispute.
+		const round = answerRoundOf(effect);
 		if (outcome.kind === "CONFIRMED") {
 			const observation = outcome.observation;
 			if (observation.kind === "DISPUTE_ANSWERED" && observation.note !== null) {
 				console.warn(`Acquit: PayPal already held an answer for dispute ${logQuoted(effect.disputeId)} (${logQuoted(observation.note)}).`);
 			}
 			// The job records the answer as filed, and the outbox row settles in the same commit.
-			await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId: effect.jobId, disputeId: effect.disputeId, answer }, { key }, null);
+			await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId: effect.jobId, disputeId: effect.disputeId, answer, round }, { key }, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			// A refused answer is never retried. The job shows it refused, a person is alerted with the reason, and the row parks for that person.
-			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason }, null, null);
+			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason, round },
+				null, null);
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
 		} else {
 			await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
@@ -788,6 +794,19 @@ function observationText(observation: PayPalObservation): string {
 	}
 }
 
+/**
+ * The job that owns a dispute the index does not name: the one holding the capture the signed body disputes. The body's
+ * capture must be the job's own stored capture, so a body naming another job's capture resolves to no owner, and its
+ * merchant is never asserted or sent with House's credentials.
+ */
+async function ownerOfDisputedCapture(ports: Ports, raw: string, disputeId: string): Promise<JobRow | null> {
+	const disputed = disputeOfVerifiedDelivery(raw, disputeId, ports.clock.now());
+	if (disputed === null) return null;
+	const holding = await ports.store.jobForResource(disputed.captureId);
+	const owner = holding === null ? null : await ports.store.readJob(holding);
+	return owner !== null && captureOf(owner) === disputed.captureId ? owner : null;
+}
+
 /** The job a settled fact belongs to, when the route's index did not name one. */
 async function anchorJob(ports: Ports, observation: PayPalObservation): Promise<JobId | null> {
 	const anchor = anchorOf(observation);
@@ -839,6 +858,9 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request, devRep
 	if (envelope.kind === "UNROUTED") return record({ kind: "NOOP", reason: "UNROUTED", jobId: null }, 202);
 	const named = await ports.store.jobForResource(envelope.resource.id);
 	let owner = named === null ? null : await ports.store.readJob(named);
+	// A dispute no index entry names is owned by the job whose stored capture its signed body disputes. The first read then runs under that
+	// owner's payee, so a House dispute is read with House's own app before any stand-in. The unsigned dev replay names no owner from its body.
+	if (owner === null && !devReplay && envelope.resource.kind === "DISPUTE") owner = await ownerOfDisputedCapture(ports, raw, envelope.resource.id);
 	let read = await readFor(ports, envelope.resource, owner === null ? null : payeeMerchantOf(owner), devReplay);
 	// A refund delivery names the refund id, while the index holds the capture the refund names. That
 	// unowned read still names its capture, so the job holding it is the owner and the refund is re-read
