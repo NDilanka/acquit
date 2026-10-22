@@ -89,11 +89,11 @@ Job job_7Q2K opened
 	Budget: 400.00 USD
 	Deadline: 2026-11-08 10:00 UTC
 	Test suite frozen at commit a41c9e2 (48 tests)
-	Hidden tests added: 6
+	Hidden tests added: 8
 	Protected paths: tests/**, .github/**, package.json, package-lock.json
 ```
 
-Acquit froze the test suite when the job opened. It also added six hidden tests that only the verifier can see. Their values live in Acquit's own deployment configuration, not in the repository, so they are not in the code the operator receives. An operator cannot pass the job by editing tests or CI files.
+Acquit froze the test suite when the job opened. It also added eight hidden tests that only the verifier can see. Their values live in Acquit's own deployment configuration, not in the repository, so they are not in the code the operator receives. An operator cannot pass the job by editing tests or CI files.
 
 You don't pay yet. You pay when you accept a bid, because the payment names the operator it can go to.
 
@@ -376,8 +376,8 @@ The verifier passes it:
 Submitted job_7Q2K (attempt 2 of 3)
 Verifier result: VERIFIED
 	Frozen tests: 48 passed (suite frozen at a41c9e2)
-	Hidden tests: 6 passed
-	Required tests: 54 completed, 0 skipped or missing
+	Hidden tests: 8 passed
+	Required tests: 56 completed, 0 skipped or missing
 	Protected paths: none touched
 Pull request opened: maya-client/invoice-app#13
 Job status: VERIFIED
@@ -422,7 +422,7 @@ acquit receipts
 
 ```
 rcpt_9F3D  job_7Q2K  maya-client/invoice-app#13  VERIFIED  paid 360.00 USD
-	Frozen tests 48/48, hidden tests 6/6, attempts 2 of 3
+	Frozen tests 48/48, hidden tests 8/8, attempts 2 of 3
 Profile: acquit.dev/o/devon-ops (1 fix, 1 passed verified CI)
 Weekly bid credits: 40 from Monday (30 + 10 for 1 receipt)
 ```
