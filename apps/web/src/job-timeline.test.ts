@@ -719,6 +719,38 @@ test("a buyer dispute known only from PayPal's signed notice says the read was r
   assert.equal(titles.includes("PayPal resolved the dispute for the seller"), false);
 });
 
+test("a dispute known only from PayPal's signed notice while it is open says the read was refused and the payment stays held", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, unconfirmed: true });
+  assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
+  const titles = timelineEvents(job).map(event => event.title);
+  assert.equal(titles.at(-1), "PayPal refused the dispute read; the dispute is open and the payment stays held");
+  assert.equal(titles.some(title => title.includes("release or refund not confirmed")), false);
+});
+
+test("a receipt PayPal took as a message says so on the dispute, queued or filed, and marks a scripted one as Simulated", () => {
+  const message = (job: TimelineJob) => timelineEvents(job).find(event => event.kind === "DISPUTE" && event.title.includes("message"));
+  const queued = approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: { state: "QUEUED" } });
+  assert.deepEqual(message(queued), {
+    at: null,
+    kind: "DISPUTE",
+    title: "Acquit is sending its verified attempt as a message to PayPal on dispute PAYPAL-DISPUTE-1",
+    detail: "PayPal has not confirmed the message yet.",
+    tone: "held",
+    ids: [{ value: "PAYPAL-DISPUTE-1", label: "PayPal dispute" }],
+    href: null,
+    reasons: [],
+  });
+  const filed = { state: "FILED" } as const;
+  assert.equal(message(approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed }))?.title,
+    "Acquit sent PayPal its verified attempt as a message on dispute PAYPAL-DISPUTE-1");
+  assert.equal(message(approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed, simulated: true }))?.title,
+    "Acquit sent PayPal its verified attempt as a message on dispute PAYPAL-DISPUTE-1 (Simulated)");
+  assert.equal(message(paidJob({ providerDispute: { ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed } }))?.title,
+    "Acquit sent PayPal the receipt as a message on dispute PAYPAL-DISPUTE-1");
+  assert.equal(message(approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed }))?.detail,
+    "The message names the frozen and hidden test counts, the pull request, and the judged commit.");
+});
+
 test("a buyer dispute whose amount could not be read says so instead of a number", () => {
   const job = approvedWithDispute({ ...BUYER_DISPUTE, amount: null });
   assert.equal(timelineEvents(job).find(event => event.title.startsWith("Buyer opened"))?.detail, "Disputed with PayPal. The amount could not be read.");

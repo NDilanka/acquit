@@ -6,15 +6,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Actor } from "../src/acquit.ts";
-import { ingestPayPalWebhook } from "../src/effects.ts";
-import type { Ports } from "../src/effects.ts";
+import { ingestPayPalWebhook, providerRequestId, runOutboxOnce } from "../src/effects.ts";
+import type { OperationKey, Ports } from "../src/effects.ts";
 import { hours, instant, parseBidId, parseJobId } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OperatorId, OrderId, Version } from "../src/ids.ts";
 import { applyJobCommand, releaseHeld, TERMS, wakeAt } from "../src/job.ts";
-import type { JobRow } from "../src/job.ts";
+import type { JobRow, ProviderDispute } from "../src/job.ts";
 import { commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
-import { parseDispute, parseWebhookEnvelope, quote } from "../src/paypal.ts";
-import type { Bps } from "../src/paypal.ts";
+import { createPayPal, DISPUTE_ACCESS_REFUSED, parseDispute, parseWebhookEnvelope, quote } from "../src/paypal.ts";
+import type { Bps, PayPalConfig } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { SqliteStore } from "../src/store.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
@@ -66,10 +66,9 @@ function portsOver(store: SqliteStore): Ports {
 		paypal: paypal as unknown as Ports["paypal"] };
 }
 
-async function withVerifiedJob(body: (store: SqliteStore, ports: Ports) => Promise<void>): Promise<void> {
+async function withVerifiedJob(body: (store: SqliteStore, ports: Ports) => Promise<void>, row: JobRow = verifiedRow()): Promise<void> {
 	const store = new SqliteStore(":memory:");
 	try {
-		const row = verifiedRow();
 		store.db.prepare("INSERT INTO jobs VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), wakeAt(row));
 		store.db.prepare("INSERT INTO resources VALUES (?, ?)").run(captureId, jobId);
 		store.db.prepare("INSERT INTO resources VALUES (?, ?)").run(orderId, jobId);
@@ -117,6 +116,8 @@ const queuedEffectsOf = (store: SqliteStore): QueuedEffect[] =>
 const CREATED = "CUSTOMER.DISPUTE.CREATED";
 const UPDATED = "CUSTOMER.DISPUTE.UPDATED";
 const RESOLVED = "CUSTOMER.DISPUTE.RESOLVED";
+/** The alert an open dispute's stand-in raises. The record says the dispute is open, so no "not confirmed" wording appears. */
+const OPEN_READ_REFUSED = "PayPal refused the dispute read. The dispute is open and the payment stays held.";
 
 test("a CREATED delivery the read refused records the dispute on the job that holds its capture, and holds the release", async () => {
 	await withVerifiedJob(async (store, ports) => {
@@ -125,7 +126,7 @@ test("a CREATED delivery the read refused records the dispute on the job that ho
 		const row = await jobOf(store);
 		assert.deepEqual(row.providerDispute, { id: disputeId, status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
 			amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), answer: "EVIDENCE",
-			answerState: { state: "QUEUED" }, unconfirmed: true });
+			answerState: { state: "QUEUED" }, answerRound: `${disputeId}:1`, stage: "INQUIRY", offers: [], unconfirmed: true });
 		assert.equal(releaseHeld(row), true);
 	});
 });
@@ -288,7 +289,24 @@ test("a body with no update time places the hold and raises an alert, and settle
 		assert.equal(row.providerDispute?.status, "UNDER_REVIEW");
 		assert.equal(row.providerDispute?.updatedAt, undefined);
 		assert.equal(releaseHeld(row), true);
-		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"));
+		// An open dispute is held, not unconfirmed: its alert says PayPal refused the read, and it does not say "not confirmed".
+		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_READ_REFUSED" &&
+			effect.disputeId === disputeId && effect.detail === OPEN_READ_REFUSED));
+		assert.equal(queuedEffectsOf(store).some(effect => effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"), false);
+	});
+});
+
+test("a successful read of a dispute the stand-in held confirms the record, and the open hold stands", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		assert.equal((await jobOf(store)).providerDispute?.unconfirmed, true);
+		const read = disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" });
+		await deliver(portsReading(store, read), "WH-READ-OK", UPDATED, read);
+		assert.equal(outcomeOf(store, "WH-READ-OK"), "verified, applied");
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.status, "WAITING_FOR_SELLER_RESPONSE");
+		assert.equal(row.providerDispute?.unconfirmed, undefined);
+		assert.equal(releaseHeld(row), true);
 	});
 });
 
@@ -341,5 +359,206 @@ test("a stand-in resolution never unblocks a release the row already approved", 
 		assert.ok(row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING");
 		assert.equal(releaseHeld(row), true);
 		assert.equal(queuedEffectsOf(store).some(effect => effect.kind === "RELEASE"), false);
+	});
+});
+
+// The live path: the real client on a fake fetch. The platform's own token is refused the dispute read, House's own app reads it, and
+// only the signature check is stubbed, as in every route test here. A call's lane is the token it carried, and a token mints per lane.
+const PLATFORM_CLIENT = "platform-client";
+const HOUSE_CLIENT = "house-client";
+const platformMerchant = "LA4PH2WMNKTDN" as MerchantId;
+const disputeUrl = `/v1/customer/disputes/${disputeId}`;
+const liveConfig: PayPalConfig = { webOrigin: "http://localhost:5243", apiBase: "https://api-m.sandbox.paypal.com", clientId: PLATFORM_CLIENT,
+	secret: "platform-secret", webhookId: "", partnerMerchant: platformMerchant, feeModel: model,
+	house: { merchant, clientId: HOUSE_CLIENT, secret: "house-secret" } };
+
+/** One call the real client sent, as the fake fetch saw it. */
+type SentCall = { readonly method: string; readonly path: string; readonly lane: "PLATFORM" | "HOUSE"; readonly assertion: boolean;
+	readonly requestId: string | null; readonly body: string };
+
+/** Routes the real client's HTTP through a fake PayPal for the body's run. Token calls are answered and not recorded. */
+async function withFakePayPal(answer: (call: SentCall) => Response, body: (calls: SentCall[]) => Promise<void>): Promise<void> {
+	const original = globalThis.fetch;
+	const calls: SentCall[] = [];
+	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = new URL(String(input));
+		const headers = (init?.headers ?? {}) as Record<string, string>;
+		if (url.pathname === "/v1/oauth2/token") {
+			const clientId = Buffer.from((headers.Authorization ?? "").replace("Basic ", ""), "base64").toString().split(":")[0];
+			return Response.json({ access_token: clientId === HOUSE_CLIENT ? "house-token" : "platform-token", expires_in: 300 });
+		}
+		const call: SentCall = { method: init?.method ?? "GET", path: url.pathname, lane: headers.Authorization === "Bearer house-token" ? "HOUSE" : "PLATFORM",
+			assertion: headers["PayPal-Auth-Assertion"] !== undefined, requestId: headers["PayPal-Request-Id"] ?? null,
+			body: typeof init?.body === "string" ? init.body : "" };
+		calls.push(call);
+		return answer(call);
+	}) as typeof fetch;
+	try { await body(calls); } finally { globalThis.fetch = original; }
+}
+
+/** PayPal's answers on the live path: the platform is refused the dispute read, House's app reads it, and an answer post takes `postStatus`. */
+function livePayPal(body: object, postStatus: number): (call: SentCall) => Response {
+	return call => {
+		if (call.method === "GET") return call.lane === "HOUSE" ? Response.json(body) : Response.json({ name: "NOT_AUTHORIZED" }, { status: 403 });
+		return postStatus === 204 ? new Response(null, { status: 204 }) : Response.json({ name: "NOT_AUTHORIZED" }, { status: postStatus });
+	};
+}
+
+/** The ports the route runs with on the real client. Every dispute read and answer is a real call; only the signature is trusted. */
+function livePorts(store: SqliteStore, config: PayPalConfig = liveConfig): Ports {
+	const paypal = { ...createPayPal(config, { now: () => received }), verifyWebhookDelivery: async () => ({ kind: "VERIFIED" as const }) };
+	return { ...portsOver(store), paypal };
+}
+
+/** The dispute as the sandbox sends it, with the answer links a read offers, listed the way the sandbox lists them. */
+const offering = (fields: Parameters<typeof disputeResource>[0], offers: readonly string[]) => ({ ...disputeResource(fields),
+	links: [{ href: `https://api-m.sandbox.paypal.com${disputeUrl}`, rel: "self", method: "GET" },
+		...offers.map(rel => ({ href: `https://api-m.sandbox.paypal.com${disputeUrl}/${rel}`, rel, method: "POST" }))] });
+
+/** The row the live delivery found: its dispute recorded from a stand-in, its answer refused for lack of access, and no stage kept. */
+function liveRow(): JobRow {
+	const dispute: ProviderDispute = { id: disputeId, status: "WAITING_FOR_SELLER_RESPONSE", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T01:42:24.149Z"), answer: "EVIDENCE",
+		answerState: { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED }, unconfirmed: true };
+	return { ...verifiedRow(), providerDispute: dispute };
+}
+
+/** The queued outbox rows of one kind, as the drain reads them: each row's key and its effect. */
+type OutboxEffect = { readonly kind: string; readonly requeued?: true; readonly stage?: string; readonly message?: string };
+const outboxRowsOf = (store: SqliteStore, kind: string): { readonly key: OperationKey; readonly effect: OutboxEffect }[] =>
+	store.db.prepare("SELECT key, json FROM outbox").all()
+		.map(row => ({ key: String((row as { key: string }).key) as OperationKey,
+			effect: (JSON.parse(String((row as { json: string }).json)) as { effect: OutboxEffect }).effect }))
+		.filter(row => row.effect.kind === kind);
+
+const answerStateOf = async (store: SqliteStore) => (await jobOf(store)).providerDispute?.answerState;
+
+test("a dispute no index entry names is read with House's own app, its refused answer is re-queued as a message, and an identical resend queues nothing", async () => {
+	const body = offering({ updateTime: "2026-10-22T01:42:24.149Z", status: "WAITING_FOR_SELLER_RESPONSE" },
+		["accept_claim", "send_message", "make_offer", "escalate"]);
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			assert.equal((await deliver(ports, "WH-LIVE-READ", UPDATED, body)).status, 202);
+			assert.equal(outcomeOf(store, "WH-LIVE-READ"), "verified, applied");
+			// The owner resolves before a credential is chosen: the platform never reads House's dispute, and House's own app reads it unasserted.
+			assert.deepEqual(calls.map(call => ({ method: call.method, path: call.path, lane: call.lane, assertion: call.assertion })),
+				[{ method: "GET", path: disputeUrl, lane: "HOUSE", assertion: false }]);
+			const row = await jobOf(store);
+			assert.equal(await store.jobForResource(disputeId), jobId, "the dispute id is indexed on the write that records it");
+			assert.deepEqual(row.providerDispute, { id: disputeId, status: "WAITING_FOR_SELLER_RESPONSE", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+				amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T01:42:24.149Z"), answer: "MESSAGE",
+				answerState: { state: "QUEUED" }, answerRound: `${disputeId}:1:INQUIRY:requeued`, stage: "INQUIRY",
+				offers: ["send_message", "accept_claim"], requeued: true });
+			assert.equal(releaseHeld(row), true);
+			const queued = outboxRowsOf(store, "DISPUTE_MESSAGE");
+			assert.equal(queued.length, 1);
+			const sent = queued[0];
+			if (sent === undefined) throw new Error("expected the queued message");
+			// The message is the verified attempt's receipt text. The rest of the effect is exactly the one requeued answer.
+			const { message, ...answer } = sent.effect;
+			assert.deepEqual(answer, { kind: "DISPUTE_MESSAGE", jobId, requeued: true, stage: "INQUIRY", disputeId, payee: merchant, attempt: 1, simulated: false });
+			assert.match(message ?? "", /^Verified attempt 1 for job job_dispute_403 passed/);
+			assert.equal(await runOutboxOnce(ports, sent.key), "WORKED");
+			// The message goes to PayPal's send-message path from House's own app, with JSON body and no assertion.
+			const post = calls.filter(call => call.method === "POST");
+			assert.deepEqual(post.map(call => ({ path: call.path, lane: call.lane, assertion: call.assertion, requestId: call.requestId })),
+				[{ path: `${disputeUrl}/send-message`, lane: "HOUSE", assertion: false, requestId: providerRequestId(sent.key) }]);
+			assert.deepEqual(Object.keys(JSON.parse(post[0]?.body ?? "{}") as object), ["message"]);
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			// The identical resend is the same provider fact: it queues nothing, and PayPal is not asked to answer again.
+			assert.equal((await deliver(ports, "WH-LIVE-RESEND", UPDATED, body)).status, 202);
+			assert.equal(outboxRowsOf(store, "DISPUTE_MESSAGE").length, 1);
+			assert.equal(calls.filter(call => call.method === "POST").length, 1);
+		});
+	}, liveRow());
+});
+
+test("a refused evidence answer is re-queued once a repeat of the read it was filed under is delivered after access is granted", async () => {
+	const body = offering({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" }, ["provide_evidence", "send_message", "accept_claim"]);
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		let postStatus = 403;
+		await withFakePayPal(call => livePayPal(body, postStatus)(call), async calls => {
+			// The confirmed read files evidence, and PayPal refuses the answer for lack of access.
+			assert.equal((await deliver(ports, "WH-OFFER-1", UPDATED, body)).status, 202);
+			const [filed] = outboxRowsOf(store, "DISPUTE_EVIDENCE");
+			if (filed === undefined) throw new Error("expected the evidence to be queued");
+			assert.equal(await runOutboxOnce(ports, filed.key), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED });
+			// Access is granted. The same read again, with the same status and time, is the provider fact the refused answer was filed under.
+			postStatus = 204;
+			assert.equal((await deliver(ports, "WH-OFFER-2", UPDATED, body)).status, 202);
+			assert.equal(outcomeOf(store, "WH-OFFER-2"), "verified, applied");
+			const requeued = outboxRowsOf(store, "DISPUTE_EVIDENCE").filter(row => row.effect.requeued === true);
+			assert.equal(requeued.length, 1, "the refused answer is re-queued once");
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			const again = requeued[0];
+			if (again === undefined) throw new Error("expected the re-queued evidence");
+			assert.equal(await runOutboxOnce(ports, again.key), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			// An identical resend after that queues nothing, and PayPal is asked for the evidence exactly twice.
+			await deliver(ports, "WH-OFFER-3", UPDATED, body);
+			assert.equal(outboxRowsOf(store, "DISPUTE_EVIDENCE").length, 2);
+			assert.deepEqual(calls.filter(call => call.method === "POST").map(call => call.requestId),
+				[providerRequestId(filed.key), providerRequestId(again.key)]);
+		});
+	}, verifiedRow());
+});
+
+test("a re-queued answer PayPal refuses again is not re-queued, and an identical resend after that queues nothing", async () => {
+	const body = offering({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" }, ["provide_evidence", "send_message", "accept_claim"]);
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		await withFakePayPal(livePayPal(body, 403), async calls => {
+			await deliver(ports, "WH-OFFER-1", UPDATED, body);
+			const [filed] = outboxRowsOf(store, "DISPUTE_EVIDENCE");
+			if (filed === undefined) throw new Error("expected the evidence to be queued");
+			assert.equal(await runOutboxOnce(ports, filed.key), "WORKED");
+			// The same read again re-queues the answer once, and PayPal refuses that too.
+			await deliver(ports, "WH-OFFER-2", UPDATED, body);
+			const requeued = outboxRowsOf(store, "DISPUTE_EVIDENCE").filter(row => row.effect.requeued === true);
+			assert.equal(requeued.length, 1);
+			const again = requeued[0];
+			if (again === undefined) throw new Error("expected the re-queued evidence");
+			assert.equal(await runOutboxOnce(ports, again.key), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED });
+			// The identical resend queues nothing: the one re-queue of this round is spent.
+			await deliver(ports, "WH-OFFER-3", UPDATED, body);
+			assert.equal(outboxRowsOf(store, "DISPUTE_EVIDENCE").length, 2);
+			assert.equal(calls.filter(call => call.method === "POST").length, 2);
+		});
+	}, verifiedRow());
+});
+
+test("a dispute whose capture the job's stored capture does not match is never read with House's own app", async () => {
+	const row = verifiedRow();
+	if (row.state.status !== "VERIFIED") throw new Error(`expected VERIFIED, got ${row.state.status}`);
+	// The index still names this job for the disputed capture, but the job now holds a different capture: the owner is not validated.
+	const other: JobRow = { ...row, state: { ...row.state, escrow: { ...row.state.escrow, capture: { ...row.state.escrow.capture,
+		captureId: "OTHER-CAPTURE" as CaptureId } } } };
+	const body = offering({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" }, ["send_message", "accept_claim"]);
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			await deliver(ports, "WH-MISMATCH", UPDATED, body);
+			assert.deepEqual(calls.filter(call => call.lane === "HOUSE"), []);
+			assert.equal((await jobOf(store)).providerDispute, undefined);
+		});
+	}, other);
+});
+
+test("a dispute on a job paid to a merchant other than House is read with the platform's own app, and never with House's", async () => {
+	const body = offering({ updateTime: "2026-10-22T11:00:00Z", status: "UNDER_REVIEW" }, ["provide_evidence"]);
+	const config: PayPalConfig = { ...liveConfig, house: { merchant: "HOUSE-OTHER" as MerchantId, clientId: HOUSE_CLIENT, secret: "house-secret" } };
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store, config);
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			await deliver(ports, "WH-OTHER-MERCHANT", UPDATED, body);
+			assert.deepEqual(calls.map(call => ({ lane: call.lane, assertion: call.assertion })), [{ lane: "PLATFORM", assertion: true }]);
+			// The platform's refusal stands in as before: the dispute is recorded unconfirmed and the hold stands.
+			assert.equal(outcomeOf(store, "WH-OTHER-MERCHANT"), "verified, applied");
+			assert.equal((await jobOf(store)).providerDispute?.unconfirmed, true);
+		});
 	});
 });

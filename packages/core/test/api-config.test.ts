@@ -17,6 +17,24 @@ process.env.ACQUIT_GITHUB_APP_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----";
 process.env.ACQUIT_GITHUB_APP_ORG = "acquit-forks";
 // The API derives the hidden-case contract at boot. A development process falls back to the committed example.
 process.env.ACQUIT_DEV = "1";
+// House's own PayPal app is optional. Set here, the API config carries it bound to the House merchant.
+process.env.HOUSE_PAYPAL_CLIENT_ID = "test-house-client-id";
+process.env.HOUSE_PAYPAL_CLIENT_SECRET = "test-house-client-secret";
+process.env.OPERATOR_HOUSE_MERCHANT_ID = "TESTHOUSEMERCHANT1";
+
+test("the API config carries House's own credentials, bound to the House merchant", async () => {
+	const { config } = await import("../../../apps/api/src/config.ts");
+	assert.deepEqual(config().paypal.house, { merchant: "TESTHOUSEMERCHANT1", clientId: "test-house-client-id", secret: "test-house-client-secret" });
+});
+
+test("the API refuses to load with a lone House secret, naming the setting and never its value", () => {
+	const configUrl = new URL("../../../apps/api/src/config.ts", import.meta.url).href;
+	const child = spawnSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(configUrl)})`], { encoding: "utf8", timeout: 15_000,
+		env: { ...process.env, HOUSE_PAYPAL_CLIENT_ID: "lone-client-id", HOUSE_PAYPAL_CLIENT_SECRET: "" } });
+	assert.equal(child.status, 1);
+	assert.match(child.stderr, /Missing configuration: HOUSE_PAYPAL_CLIENT_SECRET/);
+	assert.equal(child.stderr.includes("lone-client-id"), false);
+});
 
 test("the API config carries the GitHub organization the App needs", async () => {
 	const { config } = await import("../../../apps/api/src/config.ts");

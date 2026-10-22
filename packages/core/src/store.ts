@@ -502,7 +502,12 @@ export type WebhookEventRow = {
 const WEBHOOK_EVENT_ROWS = 500;
 const WEBHOOK_EVENT_MAX_AGE_MS = 30 * 86_400_000;
 
+/** The ids a job's row is indexed under: its money's ids, and its buyer dispute by its own id, so a delivery that names the dispute finds the job. */
 function jobResources(row: JobRow): string[] {
+	return [...stateResources(row), ...(row.providerDispute === undefined ? [] : [row.providerDispute.id])];
+}
+
+function stateResources(row: JobRow): string[] {
 	const state = row.state;
 	if (state.status === "OPEN" && state.phase.kind === "FUNDING") {
 		const checkout = state.phase.checkout;

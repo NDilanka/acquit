@@ -104,7 +104,12 @@ export type PayPalCall =
 	| { readonly kind: "DISPUTE_EVIDENCE"; readonly disputeId: string; readonly notes: string; readonly payee: MerchantId }
 	/** Disputes v1 accept-claim on the capture's dispute. The payee names the merchant whose capture is disputed. */
 	| { readonly kind: "DISPUTE_ACCEPT"; readonly disputeId: string; readonly note: string; readonly payee: MerchantId }
+	/** Disputes v1 send-message on the capture's dispute, while the dispute is at INQUIRY. The payee names the merchant whose capture is disputed. */
+	| { readonly kind: "DISPUTE_MESSAGE"; readonly disputeId: string; readonly message: string; readonly payee: MerchantId }
 	| { readonly kind: "ONBOARD"; readonly operator: OperatorId };
+
+/** The answer links a dispute read or a signed body offers. Only these three are the links Acquit's selections use. */
+export type DisputeOffer = "provide_evidence" | "send_message" | "accept_claim";
 
 export type PayPalObservation =
 	| { readonly kind: "ORDER_CREATED"; readonly orderId: OrderId; readonly approveUrl: string }
@@ -120,12 +125,13 @@ export type PayPalObservation =
 	 * `updatedAt` is PayPal's update_time: the order a delivery is judged by, so an older body changes nothing.
 	 * `amount` is null only on a signed body whose amount could not be read: it still holds the release, and settles nothing.
 	 * `fromVerifiedBody` marks a signed delivery that stood in for a read PayPal refused.
+	 * `stage` is PayPal's dispute_life_cycle_stage, and `offers` the answer links it names: absent when the body names no links at all.
 	 */
 	| { readonly kind: "DISPUTE"; readonly disputeId: DisputeId; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
 		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome?: string; readonly simulated?: true;
-		readonly fromVerifiedBody?: true }
+		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[] }
 	/** PayPal took the answer. `note` names what PayPal already held when it answered 422, and is null on a 2xx. */
-	| { readonly kind: "DISPUTE_ANSWERED"; readonly disputeId: string; readonly answer: "EVIDENCE" | "ACCEPT"; readonly note: string | null };
+	| { readonly kind: "DISPUTE_ANSWERED"; readonly disputeId: string; readonly answer: "EVIDENCE" | "MESSAGE" | "ACCEPT"; readonly note: string | null };
 
 /** UNKNOWN never authorizes the opposite disposition. The outbox reconciles it with the same request id. */
 export type RemoteOutcome =
@@ -203,7 +209,27 @@ export type PayPalConfig = {
 	readonly webhookId: string;
 	readonly partnerMerchant: MerchantId;
 	readonly feeModel: ProcessorFeeModel;
+	/** House's own REST app, and the House merchant it pays. Only House's own dispute calls use it. */
+	readonly house?: HouseCredentials;
 };
+
+/** House's own REST app credentials, bound to the House merchant id the seed pays. */
+export type HouseCredentials = { readonly merchant: MerchantId; readonly clientId: string; readonly secret: string };
+
+/**
+ * House's own credentials, read from the environment: both client values or neither. One alone, or a set app with no House
+ * merchant, is a startup error that names the missing setting. A value is never part of the message.
+ */
+export function houseCredentialsFrom(env: Readonly<Record<string, string | undefined>>): HouseCredentials | null {
+	const clientId = env.HOUSE_PAYPAL_CLIENT_ID?.trim() ?? "";
+	const secret = env.HOUSE_PAYPAL_CLIENT_SECRET?.trim() ?? "";
+	if (clientId === "" && secret === "") return null;
+	if (clientId === "") throw new Error("Missing configuration: HOUSE_PAYPAL_CLIENT_ID");
+	if (secret === "") throw new Error("Missing configuration: HOUSE_PAYPAL_CLIENT_SECRET");
+	const merchant = env.OPERATOR_HOUSE_MERCHANT_ID?.trim() ?? "";
+	if (merchant === "") throw new Error("Missing configuration: OPERATOR_HOUSE_MERCHANT_ID");
+	return { merchant: merchant as MerchantId, clientId, secret };
+}
 
 export interface PayPal {
 	/** Fresh Orders v2 read. APPROVED and COMPLETED become trusted observations. */
@@ -222,34 +248,47 @@ export interface PayPal {
 
 export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => instant(new Date().toISOString()) }): PayPal {
 	if (config.apiBase !== "https://api-m.sandbox.paypal.com") throw new Error("Only PayPal sandbox is supported");
-	let token: string | null = null;
-	let tokenExpires = 0;
-	async function accessToken(): Promise<string> {
-		if (token && Date.parse(clock.now()) < tokenExpires) return token;
+	/** The credential set a call uses: the platform's own, or House's own app for House's own dispute calls. */
+	type Lane = "PLATFORM" | "HOUSE";
+	function credentialsOf(lane: Lane): { readonly clientId: string; readonly secret: string } {
+		if (lane === "PLATFORM") return config;
+		if (config.house === undefined) throw new Error("House credentials are not configured");
+		return config.house;
+	}
+	/** Each credential set holds its own token and expiry, so a House call never rides the platform's token, or the reverse. */
+	const tokens: Record<Lane, { token: string | null; expires: number }> = { PLATFORM: { token: null, expires: 0 }, HOUSE: { token: null, expires: 0 } };
+	async function accessToken(lane: Lane): Promise<string> {
+		const slot = tokens[lane];
+		if (slot.token && Date.parse(clock.now()) < slot.expires) return slot.token;
+		const credentials = credentialsOf(lane);
 		const response = await fetch(`${config.apiBase}/v1/oauth2/token`, {
-			method: "POST", headers: { Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.secret}`).toString("base64")}`,
+			method: "POST", headers: { Authorization: `Basic ${Buffer.from(`${credentials.clientId}:${credentials.secret}`).toString("base64")}`,
 				"Content-Type": "application/x-www-form-urlencoded" },
 			body: "grant_type=client_credentials", signal: AbortSignal.timeout(15_000), redirect: "error",
 		});
 		if (!response.ok) throw new ProviderError(response.status);
 		const body = object(await response.json());
-		token = text(body.access_token);
-		tokenExpires = Date.parse(clock.now()) + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
-		return token;
+		const fresh = text(body.access_token);
+		slot.token = fresh;
+		slot.expires = Date.parse(clock.now()) + Math.max(0, Number(body.expires_in ?? 300) - 60) * 1000;
+		return fresh;
 	}
+	/** The lane a dispute call takes: House's own app for House's own dispute, the platform's for every other merchant's. */
+	const disputeLane = (payee: MerchantId | null): Lane => config.house !== undefined && payee === config.house.merchant ? "HOUSE" : "PLATFORM";
 	/**
 	 * One API call. A FormData body goes out as multipart with the boundary fetch chooses. `tolerateEmpty` lets an
-	 * answer with no body read as null: a dispute write may return 200 or 204 with nothing in it.
+	 * answer with no body read as null: a dispute write may return 200 or 204 with nothing in it. `lane` picks the
+	 * credential set; only the platform lane asserts a payee, because House's own app is the payer of its own dispute.
 	 */
 	async function request(method: "GET" | "POST", path: string, payee: MerchantId | null, body?: unknown, requestId?: string, extra: Record<string, string> = {},
-		tolerateEmpty = false): Promise<unknown> {
+		tolerateEmpty = false, lane: Lane = "PLATFORM"): Promise<unknown> {
 		const multipart = body instanceof FormData;
 		for (let attempt = 0; attempt < 3; attempt++) {
 			try {
-				const headers: Record<string, string> = { Authorization: `Bearer ${await accessToken()}`,
+				const headers: Record<string, string> = { Authorization: `Bearer ${await accessToken(lane)}`,
 					...(multipart ? {} : { "Content-Type": "application/json" }), Prefer: "return=representation", ...extra };
 				// A platform call pays from the platform's own balance and names no target merchant.
-				if (payee !== null) headers["PayPal-Auth-Assertion"] = authAssertion(config.clientId, payee);
+				if (payee !== null && lane === "PLATFORM") headers["PayPal-Auth-Assertion"] = authAssertion(config.clientId, payee);
 				if (requestId) headers["PayPal-Request-Id"] = requestId;
 				if (process.env.PAYPAL_PARTNER_ATTRIBUTION_ID) headers["PayPal-Partner-Attribution-Id"] = process.env.PAYPAL_PARTNER_ATTRIBUTION_ID;
 				const response = await fetch(normalizeLink(path, config.apiBase), {
@@ -257,7 +296,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 					signal: AbortSignal.timeout(15_000), redirect: "error",
 				});
 				if (!response.ok) {
-					if (response.status === 401) { token = null; tokenExpires = 0; }
+					if (response.status === 401) { tokens[lane].token = null; tokens[lane].expires = 0; }
 					throw new ProviderError(response.status, await errorBody(response));
 				}
 				if (tolerateEmpty) {
@@ -464,7 +503,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 	 * assert, so the read answers with the capture as its anchor and the route finds the job that holds it.
 	 */
 	async function disputeRead(id: DisputeId, payee: MerchantId | null): Promise<ResourceRead> {
-		const read = await resourceRead(() => request("GET", `/v1/customer/disputes/${encodeURIComponent(id)}`, payee));
+		const read = await resourceRead(() => request("GET", `/v1/customer/disputes/${encodeURIComponent(id)}`, payee, undefined, undefined, {}, false, disputeLane(payee)));
 		if (read.kind !== "READ") return read;
 		const captureId = disputedCaptureId(read.body);
 		if (captureId === null) return { kind: "HELD", detail: `Dispute ${id} names no seller transaction` };
@@ -489,10 +528,10 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 	 * PERMANENT_FAILURE, not a retry. Every other refusal or failure is left to the caller's guarded wrapper, which makes a
 	 * non-retryable 4xx permanent and leaves 5xx, 401, 408, 409, and 429 unknown.
 	 */
-	async function disputeAnswerOutcome(answer: "EVIDENCE" | "ACCEPT", disputeId: string, payee: MerchantId, path: string, body: unknown,
+	async function disputeAnswerOutcome(answer: "EVIDENCE" | "MESSAGE" | "ACCEPT", disputeId: string, payee: MerchantId, path: string, body: unknown,
 		requestId: string): Promise<RemoteOutcome> {
 		try {
-			await request("POST", path, payee, body, requestId, {}, true);
+			await request("POST", path, payee, body, requestId, {}, true, disputeLane(payee));
 			return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId, answer, note: null } };
 		} catch (error) {
 			if (error instanceof ProviderError && error.status === 422) {
@@ -554,6 +593,9 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/provide-evidence`, evidenceForm(call.notes), requestId);
 			if (call.kind === "DISPUTE_ACCEPT") return disputeAnswerOutcome("ACCEPT", call.disputeId, call.payee,
 				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/accept-claim`, { note: call.note }, requestId);
+			// The message is the JSON body the endpoint names ({ "message": ... }), sent under the same request id as the other answers.
+			if (call.kind === "DISPUTE_MESSAGE") return disputeAnswerOutcome("MESSAGE", call.disputeId, call.payee,
+				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/send-message`, { message: call.message }, requestId);
 			throw new Error("not implemented");
 		}, call.kind === "CREATE_ORDER"),
 		reconcile: (call, requestId) => guarded(async () => {
@@ -570,7 +612,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			if (call.kind === "REFUND") return refundOutcome(call, requestId);
 			if (call.kind === "REIMBURSE") return reimburseOutcome(call, requestId);
 			// Disputes v1 has no lookup by request id. The answer is sent again under the same id, and PayPal's 422 settles a repeat.
-			if (call.kind === "DISPUTE_EVIDENCE" || call.kind === "DISPUTE_ACCEPT") return { kind: "NOT_FOUND" };
+			if (call.kind === "DISPUTE_EVIDENCE" || call.kind === "DISPUTE_ACCEPT" || call.kind === "DISPUTE_MESSAGE") return { kind: "NOT_FOUND" };
 			throw new Error("not implemented");
 		}, false),
 		parseWebhook: async raw => raw.length > WEBHOOK_BODY_BYTES
@@ -590,7 +632,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 				return { kind: "REFUSED", reason: "UNSIGNED_DELIVERY" };
 			try {
 				const response = await fetch(`${config.apiBase}/v1/notifications/verify-webhook-signature`, {
-					method: "POST", headers: { Authorization: `Bearer ${await accessToken()}`, "Content-Type": "application/json" },
+					method: "POST", headers: { Authorization: `Bearer ${await accessToken("PLATFORM")}`, "Content-Type": "application/json" },
 					body: JSON.stringify({ auth_algo: authAlgo, cert_url: certUrl, transmission_id: transmissionId,
 						transmission_sig: transmissionSig, transmission_time: transmissionTime, webhook_id: config.webhookId,
 						webhook_event: JSON.parse(raw) }),
@@ -599,7 +641,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 				if (!response.ok) {
 					const detail = `PayPal answered HTTP ${response.status}.`;
 					// An expired token clears itself: the next delivery mints a fresh one.
-					if (response.status === 401) { token = null; tokenExpires = 0; return { kind: "OUTAGE", detail }; }
+					if (response.status === 401) { tokens.PLATFORM.token = null; tokens.PLATFORM.expires = 0; return { kind: "OUTAGE", detail }; }
 					// Any other 4xx but a rate limit is PayPal rejecting the verification request's own
 					// inputs (a malformed cert url or transmission id): no retry of these bytes verifies,
 					// so the delivery is refused terminally. The rate limit and a 5xx are transient, and
@@ -743,7 +785,22 @@ export function parseDispute(json: unknown, captureId: CaptureId): Omit<Extract<
 	const updatedAt = routed(() => utcInstant(dispute.update_time));
 	return { disputeId: text(dispute.dispute_id) as DisputeId, captureId, status: text(dispute.status), reason: text(dispute.reason),
 		amount: money(dispute.dispute_amount), openedAt: utcInstant(dispute.create_time),
-		...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }) };
+		...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }), ...stageAndOffers(dispute) };
+}
+
+/** The answer links a dispute body names, in the order the three answers are listed. Absent when the body carries no links array. */
+const DISPUTE_OFFERS: readonly DisputeOffer[] = ["provide_evidence", "send_message", "accept_claim"];
+export function disputeOffersOf(links: unknown): readonly DisputeOffer[] | undefined {
+	if (!Array.isArray(links)) return undefined;
+	const rels = links.map(link => routed(() => text(object(link).rel)));
+	return DISPUTE_OFFERS.filter(offer => rels.includes(offer));
+}
+
+/** The stage and the answer links a dispute body names. An absent field stays absent, so no caller reads it as "none". */
+function stageAndOffers(body: Record<string, unknown>): { readonly stage?: string; readonly offers?: readonly DisputeOffer[] } {
+	const stage = routed(() => text(body.dispute_life_cycle_stage));
+	const offers = disputeOffersOf(body.links);
+	return { ...(stage === null ? {} : { stage }), ...(offers === undefined ? {} : { offers }) };
 }
 
 /**
@@ -765,7 +822,7 @@ export function disputeOfVerifiedDelivery(raw: string, disputeId: string, receiv
 	return { kind: "DISPUTE", disputeId: disputeId as DisputeId, captureId, status,
 		reason: routed(() => text(resource.reason)) ?? "UNSPECIFIED", amount: routed(() => money(resource.dispute_amount)),
 		openedAt: openedAt ?? receivedAt, ...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }),
-		fromVerifiedBody: true };
+		fromVerifiedBody: true, ...stageAndOffers(resource) };
 }
 
 /** The refusal code PayPal puts in the body's `name`. */
