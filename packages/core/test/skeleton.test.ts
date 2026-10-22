@@ -709,7 +709,7 @@ test("the projection carries the attempt history, the pending run, and the froze
 	assert.equal(pendingView.attempts.used, 1);
 	assert.deepEqual(pendingView.attempts.pending, { ordinal: 1, run: 1, runId: "run_submit_1", sourceCommit, submittedAt: now, runEndsAt: later });
 	assert.deepEqual(pendingView.contract, { repository: "maya-client/invoice-app", issue: 12, frozenAt: "a3b6ead29f4e367d1871e753b516cc9e832871e4",
-		frozenTestPath: "tests/totals.test.ts", frozenTests: 48, hiddenTests: 6, hiddenManifest: deploymentContract.digest,
+		frozenTestPath: "tests/totals.test.ts", frozenTests: 48, hiddenTests: 8, hiddenManifest: deploymentContract.digest,
 		protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] });
 	const rejected = applyJobCommand(started.next, { type: "VerifierFinished", jobId: row.id, report: verdictReport(rejection("run_submit_1")) }, system);
 	if (typeof rejected === "string") throw new Error(rejected);

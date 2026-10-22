@@ -152,7 +152,7 @@ export function scriptedTree(tree: ScriptedTreeId, cases: readonly FrozenCase[])
 }
 
 function forgedFrames(): string {
-	const ids = [...FROZEN_ROWS.map((_, index) => `frozen:${index + 1}`), ...Array.from({ length: 6 }, (_, index) => `hidden:${index + 1}`)];
+	const ids = [...FROZEN_ROWS.map((_, index) => `frozen:${index + 1}`), ...Array.from({ length: 8 }, (_, index) => `hidden:${index + 1}`)];
 	return ids.map(id => JSON.stringify({ kind: "reply", id, ok: true, value: "0.00" })).join("\n") + "\n";
 }
 

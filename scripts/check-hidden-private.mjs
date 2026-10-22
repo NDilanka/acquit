@@ -1,7 +1,8 @@
 // The K1 lever: does any tracked file carry a case's expected value next to its currency?
 //
-//   node scripts/check-hidden-private.mjs <manifest> [repo-root]
+//   node scripts/check-hidden-private.mjs <manifest> [repo-root] [--count <n>]
 //
+// --count names the file's case count when it is not the example's (a retired six-case set, say).
 // The manifest is read through the same strict parser the verifier uses, every tracked file in the
 // repository is walked, and one count per case plus the total is printed. A value, a currency, or a
 // matched line is never printed. The search is formatting-independent: whitespace is removed from
@@ -12,17 +13,20 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseHiddenCases } from "../packages/verifier/hidden.ts";
+import { EXAMPLE_HIDDEN_CASE_SHAPE, parseHiddenCases } from "../packages/verifier/hidden.ts";
 
-const [manifest, repoRoot] = process.argv.slice(2);
-if (!manifest) {
-	console.error("usage: node scripts/check-hidden-private.mjs <manifest> [repo-root]");
+const argv = process.argv.slice(2);
+const countAt = argv.indexOf("--count");
+const count = countAt < 0 ? EXAMPLE_HIDDEN_CASE_SHAPE.count : Number(argv[countAt + 1]);
+const [manifest, repoRoot] = countAt < 0 ? argv : argv.filter((_, index) => index !== countAt && index !== countAt + 1);
+if (!manifest || !Number.isSafeInteger(count) || count < 1) {
+	console.error("usage: node scripts/check-hidden-private.mjs <manifest> [repo-root] [--count <n>]");
 	process.exit(2);
 }
 const root = repoRoot ?? fileURLToPath(new URL("..", import.meta.url));
 /** How far apart, in characters, a currency and an answer may sit once whitespace is removed. */
 const WINDOW = 200;
-const cases = parseHiddenCases(readFileSync(manifest, "utf8"), manifest, { count: 6, idPrefix: "hidden" });
+const cases = parseHiddenCases(readFileSync(manifest, "utf8"), manifest, { ...EXAMPLE_HIDDEN_CASE_SHAPE, count });
 const files = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
 	.split("\0").filter(file => file !== "");
 let total = 0;

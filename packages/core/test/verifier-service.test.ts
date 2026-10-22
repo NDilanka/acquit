@@ -347,8 +347,8 @@ test("the service judges a clean commit and posts a callback the real API applie
 			"Submitted job_7Q2K (attempt 1 of 3)",
 			"Verifier result: VERIFIED",
 			"\tFrozen tests: 48 passed (suite frozen at a3b6ead)",
-			"\tHidden tests: 6 passed",
-			"\tRequired tests: 54 completed, 0 skipped or missing",
+			"\tHidden tests: 8 passed",
+			"\tRequired tests: 56 completed, 0 skipped or missing",
 			"\tProtected paths: none touched",
 			"Pull request opened: maya-client/invoice-app#13",
 			"Job status: VERIFIED",
@@ -548,7 +548,7 @@ test("the Docker subject verifies the honest fix", { skip: fixtureSkip !== false
 		const verdict = record.outcome?.kind === "VERDICT" ? record.outcome.verdict : null;
 		assert.equal(verdict?.result, "VERIFIED");
 		assert.deepEqual(verdict?.result === "VERIFIED" ? verdict.frozen : null, { expected: 48, passed: 48 });
-		assert.deepEqual(verdict?.result === "VERIFIED" ? verdict.hidden : null, { expected: 6, passed: 6 });
+		assert.deepEqual(verdict?.result === "VERIFIED" ? verdict.hidden : null, { expected: 8, passed: 8 });
 		assert.equal(deliveries.length, 1);
 	} finally {
 		await service.close();

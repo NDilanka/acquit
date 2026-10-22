@@ -7,7 +7,7 @@
 			"frozenAt": "a3b6ead29f4e367d1871e753b516cc9e832871e4",
 			"frozenTestPath": "tests/totals.test.ts",
 			"visible": 48,
-			"hidden": 6,
+			"hidden": 8,
 			"protectedPaths": ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"],
 			"hiddenCases": "hidden-cases.example.json",
 			"frozenExtractor": "invoice-totals",
