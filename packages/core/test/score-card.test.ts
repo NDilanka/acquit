@@ -81,8 +81,9 @@ test("the score card tallies every case to its literal counts", { skip: SKIP }, 
 	assert.deepEqual(card, PUBLISHED_SCORE_CARD);
 });
 
-// The judge checks only the frozen rows and the hidden cases, and none of them is negative. These rows
-// cover negative totals and zero. A tie rounds away from zero, the rule toFixed applies to the reference fix.
+// The judge checks the frozen rows and the example's eight hidden cases, and only hidden:7 and hidden:8 are
+// negative. These rows cover the rest of the negative range and zero. A tie rounds away from zero, the rule
+// toFixed applies to the reference fix.
 const LITERAL_TOTALS: readonly { readonly amounts: readonly number[]; readonly currency: string; readonly expected: string }[] = [
 	{ amounts: [-0.01], currency: "USD", expected: "-0.01" },
 	{ amounts: [-1.5], currency: "JPY", expected: "-2" },

@@ -1,12 +1,12 @@
 // The committed example manifest, loaded once for the tests that need a deployment contract. A real
-// deployment's private cases are never in the repository; these six are public history by design.
+// deployment's private cases are never in the repository; these eight are public history by design.
 
-import { EXAMPLE_HIDDEN_CASES_PATH, hiddenContractOf, loadHiddenCasesFromFile } from "../../verifier/hidden.ts";
+import { EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE, hiddenContractOf, loadHiddenCasesFromFile } from "../../verifier/hidden.ts";
 import type { FixtureContract, HiddenContract } from "../src/fixtures.ts";
 import type { CommitSha, TestId } from "../src/ids.ts";
 import type { Glob } from "../src/verifier.ts";
 
-export const exampleCases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, { count: 6, idPrefix: "hidden" });
+export const exampleCases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE);
 export const exampleContract = hiddenContractOf(exampleCases);
 
 /** The demo fixture's frozen declaration: what the deployment's registry carries for the demo repository. */

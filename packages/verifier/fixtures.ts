@@ -7,14 +7,14 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fixtureCasesPath, parseFixtureRegistry, refuseDuplicateDigests } from "../core/src/fixtures.ts";
+import { caseFilePath, parseFixtureRegistry, refuseDuplicateDigests } from "../core/src/fixtures.ts";
 import { FixtureConfigError } from "../core/src/fixtures.ts";
-import type { FixtureContract, FixtureEntry, FixtureRef } from "../core/src/fixtures.ts";
+import type { FixtureContract, FixtureEntry, FixtureRef, RetiredHiddenCases } from "../core/src/fixtures.ts";
 import { hiddenCaseOf, parseScopingFile } from "../core/src/scoping.ts";
 import type { Digest, JobId, TestId } from "../core/src/ids.ts";
 import type { HiddenCase } from "../core/src/verifier.ts";
 import { FROZEN_EXTRACTORS } from "./frozen-cases.ts";
-import { hiddenContractOf, hiddenManifest, loadHiddenCasesFromFile, publicExampleDigest } from "./hidden.ts";
+import { hiddenContractOf, hiddenManifest, loadHiddenCasesFromFile, publicExampleDigests } from "./hidden.ts";
 
 export { FixtureConfigError } from "../core/src/fixtures.ts";
 
@@ -55,6 +55,15 @@ export type FixtureBook = {
 	readonly byDigest: ReadonlyMap<Digest, FixtureBookEntry>;
 };
 
+/** One case file a registry entry names, with the count it must hold. */
+type CaseSet = { readonly file: string; readonly count: number };
+
+/** Every case set an entry names: its current file first, then each retired one, each under the entry's own id prefix. */
+function caseSetsOf(entry: FixtureEntry): readonly CaseSet[] {
+	const retired: readonly RetiredHiddenCases[] = entry.retiredHiddenCases ?? [];
+	return [{ file: entry.hiddenCases, count: entry.hidden }, ...retired];
+}
+
 /**
  * Loads every fixture's private case file once, names the book's selector (the digest), and refuses
  * the deployment that would be ambiguous: two fixtures holding one case set, or a non-dev
@@ -68,20 +77,22 @@ export function buildFixtureBook(registry: FixtureRegistry, env: NodeJS.ProcessE
 		const extractor = FROZEN_EXTRACTORS[entry.frozenExtractor];
 		if (!extractor) throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV],
 			`fixture ${entry.repository}#${entry.issue.number} names frozen extractor "${entry.frozenExtractor}", which this build does not carry.`);
-		const path = fixtureCasesPath(entry, registry.path);
-		let cases: readonly HiddenCase[];
-		try {
-			cases = loadHiddenCasesFromFile(path, { count: entry.hidden, idPrefix: entry.hiddenIdPrefix });
-		} catch (error) {
-			throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV], error instanceof Error ? error.message : String(error));
+		for (const set of caseSetsOf(entry)) {
+			const path = caseFilePath(set.file, registry.path);
+			let cases: readonly HiddenCase[];
+			try {
+				cases = loadHiddenCasesFromFile(path, { count: set.count, idPrefix: entry.hiddenIdPrefix });
+			} catch (error) {
+				throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV], error instanceof Error ? error.message : String(error));
+			}
+			const digest = hiddenContractOf(cases).digest;
+			if (!dev && publicExampleDigests().includes(digest)) {
+				throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV],
+					`${path} parses to the committed public example. Name this deployment's own private cases, or set ACQUIT_DEV=1 for a development run.`);
+			}
+			digests.push({ digest, at: path });
+			byDigest.set(digest, { entry, cases, digest, frozenCases: extractor });
 		}
-		const digest = hiddenContractOf(cases).digest;
-		if (!dev && digest === publicExampleDigest()) {
-			throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV],
-				`${path} parses to the committed public example. Name this deployment's own private cases, or set ACQUIT_DEV=1 for a development run.`);
-		}
-		digests.push({ digest, at: path });
-		byDigest.set(digest, { entry, cases, digest, frozenCases: extractor });
 	}
 	refuseDuplicateDigests(digests);
 	return { source: registry.path, byDigest };
@@ -89,17 +100,28 @@ export function buildFixtureBook(registry: FixtureRegistry, env: NodeJS.ProcessE
 
 const frozenTestIds = (count: number): readonly TestId[] => Array.from({ length: count }, (_, i) => `frozen:${i + 1}` as TestId);
 
-/** What core's OpenJob freezes: one contract per registered fixture, its hidden ids and digest derived once. The cases are dropped at this line. */
+/** The contract one case set of an entry freezes: its hidden ids and digest, derived once here. The cases are dropped at this line. */
+function contractOf(entry: FixtureEntry, set: CaseSet, registryPath: string): FixtureContract {
+	const cases = loadHiddenCasesFromFile(caseFilePath(set.file, registryPath), { count: set.count, idPrefix: entry.hiddenIdPrefix });
+	const hidden = hiddenContractOf(cases);
+	return { repository: entry.repository, issue: entry.issue, frozenAt: entry.frozenAt, frozenTestPath: entry.frozenTestPath,
+		frozenTests: frozenTestIds(entry.visible), hiddenTests: hidden.ids, hiddenManifest: hidden.digest,
+		protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }),
+		...(entry.trustedFix === undefined ? {} : { trustedFix: entry.trustedFix }),
+		...(entry.coverageFamilies === undefined ? {} : { coverageFamilies: entry.coverageFamilies }) };
+}
+
+/** The contracts OpenJob offers: one per registered fixture, over its current file alone. Retired sets are never offered here. */
 export function fixtureContracts(registry: FixtureRegistry): readonly FixtureContract[] {
-	return registry.entries.map(entry => {
-		const cases = loadHiddenCasesFromFile(fixtureCasesPath(entry, registry.path), { count: entry.hidden, idPrefix: entry.hiddenIdPrefix });
-		const hidden = hiddenContractOf(cases);
-		return { repository: entry.repository, issue: entry.issue, frozenAt: entry.frozenAt, frozenTestPath: entry.frozenTestPath,
-			frozenTests: frozenTestIds(entry.visible), hiddenTests: hidden.ids, hiddenManifest: hidden.digest,
-			protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }),
-			...(entry.trustedFix === undefined ? {} : { trustedFix: entry.trustedFix }),
-			...(entry.coverageFamilies === undefined ? {} : { coverageFamilies: entry.coverageFamilies }) };
-	});
+	return registry.entries.map(entry => contractOf(entry, { file: entry.hiddenCases, count: entry.hidden }, registry.path));
+}
+
+/**
+ * The contracts a frozen manifest can name by digest: each fixture's current contract and one per retired set.
+ * A job that froze a retired set resolves to its fixture here, so the fixture's own gates still apply to it.
+ */
+export function fixtureContractsByManifest(registry: FixtureRegistry): readonly FixtureContract[] {
+	return registry.entries.flatMap(entry => caseSetsOf(entry).map(set => contractOf(entry, set, registry.path)));
 }
 
 /** What the store's manifest backfill matches jobs by. No case file is read. */

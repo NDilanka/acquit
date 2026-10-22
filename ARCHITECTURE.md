@@ -22,6 +22,8 @@ Money changes only inside `packages/core/src/effects.ts`, which verifies a webho
 
 Hidden cases live in a per-deployment private store outside every git repository: on this laptop under ~/.config/acquit/private/, on the VM under /var/lib/acquit/private/ or the /var/lib/acquit/*.json files its registry names. A job's manifest carries only their digest, and the verifier mounts neither the store nor the registry into a subject. The private-store tests read the path from `ACQUIT_PRIVATE_CASES` (default the laptop store) and skip when the store is absent.
 
+To change a deployment's hidden set, write the new cases to a new file and point the fixture's `hiddenCases` and `hidden` count at it. Move the old file into the entry's `retiredHiddenCases` as `{ "file": "<name>.json", "count": <n> }`. Jobs that already froze the old set still resolve to it and run against it. New jobs never receive a retired set. Keep the retired file on disk, because the verifier loads it at boot.
+
 Every app model call reads `ACQUIT_MODEL_PROVIDER`: `droid` by default (model glm-5.3-flash), with `openrouter` selectable for the submission.
 
 ## Build log

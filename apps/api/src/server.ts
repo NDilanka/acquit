@@ -23,7 +23,7 @@ import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from ".
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, demoAllowlist, devEnabled, fixtures, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, demoAllowlist, devEnabled, fixtures, fixturesByManifest, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { demoOpenTo } from "./demo-access.ts";
 import { operatorReceipts, publicReceipt } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
@@ -944,7 +944,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// The gate is the fixture's own: the manifest this job froze names the fixture by its hidden
 		// digest, and the fixture declares the families every approved set must still cover.
 		const manifest = row.contract?.definitionOfDone ?? null;
-		const fixture = manifest ? fixtures.find(candidate => candidate.hiddenManifest === manifest.hiddenManifest) ?? null : null;
+		const fixture = manifest ? fixturesByManifest.find(candidate => candidate.hiddenManifest === manifest.hiddenManifest) ?? null : null;
 		const gate = coverageGate(approved, fixture?.coverageFamilies ?? []);
 		if (!gate.ok) { json(res, 422, { error: "COVERAGE_GATE", missing: gate.missing }); return; }
 		const kept = approved.map(perJobCaseOf);

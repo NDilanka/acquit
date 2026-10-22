@@ -39,7 +39,9 @@ const PRIVATE_CASES_PATH = privateCasesPath();
 /** The non-dev test fixture: its own cases, so a non-dev boot never runs on the public example. */
 const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hidden-cases.test.json", import.meta.url));
 const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
-const six = () => Array.from({ length: 6 }, (_, index) => sampleCase(index + 1));
+/** The non-dev test file's own shape: six cases, none of them the public example's. */
+const TEST_SHAPE = { count: 6, idPrefix: "hidden" };
+const eight = () => Array.from({ length: 8 }, (_, index) => sampleCase(index + 1));
 const manifest = (cases: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1, cases, ...extra });
 const invalid = (text: string, what: string) => {
 	assert.throws(() => parseHiddenCases(text, "(test file)", SHAPE), (error: unknown) => {
@@ -62,41 +64,42 @@ test("the verifier boot line names the fixture registry path", () => {
 	assert.ok(bootLine(4311, "docker", named, []).includes(named), "the boot line names the registry path");
 });
 
-test("the committed example parses to the six public cases", () => {
+test("the committed example parses to the eight public cases, the last two negative", () => {
 	const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, SHAPE);
-	assert.deepEqual(cases.map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	assert.deepEqual(cases.map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6", "hidden:7", "hidden:8"]);
 	for (const entry of cases) assert.deepEqual(entry.target, { module: "src/money.ts", export: "formatTotal" });
-	assert.equal(new Set(cases.map(entry => JSON.stringify(entry))).size, 6);
+	assert.equal(new Set(cases.map(entry => JSON.stringify(entry))).size, 8);
+	assert.deepEqual(cases.slice(6).map(entry => entry.expected), ["-1.234", "-6.00"]);
 });
 
 test("the parser refuses every malformed manifest by name", () => {
 	invalid("{", "unparsable JSON");
 	invalid(JSON.stringify([1, 2]), "a JSON array");
-	invalid(manifest(six(), { extra: true }), "an unknown top-level field");
-	invalid(JSON.stringify({ cases: six() }), "a missing version");
-	invalid(manifest(six(), { version: 2 }), "an unknown version");
+	invalid(manifest(eight(), { extra: true }), "an unknown top-level field");
+	invalid(JSON.stringify({ cases: eight() }), "a missing version");
+	invalid(manifest(eight(), { version: 2 }), "an unknown version");
 	invalid(manifest("nope"), "a non-array cases field");
-	invalid(manifest(six().slice(0, 5)), "five cases");
-	invalid(manifest([...six(), sampleCase(7)]), "seven cases");
-	invalid(manifest([...six().slice(0, 5), "nope"]), "a non-object case");
-	invalid(manifest(six().map((entry, index) => index === 2 ? { ...entry, surprise: 1 } : entry)), "an unknown case field");
-	invalid(manifest([sampleCase(1), sampleCase(1), ...six().slice(2)]), "a duplicate id");
-	invalid(manifest([{ ...sampleCase(1), id: "hidden:0" }, ...six().slice(1)]), "a zero id");
-	invalid(manifest([{ ...sampleCase(1), id: "visible:1" }, ...six().slice(1)]), "an id from another suite");
-	invalid(manifest([...six().slice(0, 5), { ...sampleCase(6), id: "hidden:7" }]), "an id past the count");
-	invalid(manifest([{ ...sampleCase(1), target: { module: "src/money.ts" } }, ...six().slice(1)]), "a target without an export");
-	invalid(manifest([{ ...sampleCase(1), target: { module: "", export: "formatTotal" } }, ...six().slice(1)]), "an empty module");
-	invalid(manifest([{ ...sampleCase(1), args: "1.50" }, ...six().slice(1)]), "args that are not an array");
-	invalid(manifest([{ ...sampleCase(1), expected: undefined }, ...six().slice(1)]), "a missing expected value");
-	invalid(manifest([{ ...sampleCase(1), args: [[{ amount: "x".repeat(9_000) }], "USD"] }, ...six().slice(1)]), "a case past the subject frame limit");
+	invalid(manifest(eight().slice(0, 7)), "seven cases");
+	invalid(manifest([...eight(), sampleCase(9)]), "nine cases");
+	invalid(manifest([...eight().slice(0, 7), "nope"]), "a non-object case");
+	invalid(manifest(eight().map((entry, index) => index === 2 ? { ...entry, surprise: 1 } : entry)), "an unknown case field");
+	invalid(manifest([sampleCase(1), sampleCase(1), ...eight().slice(2)]), "a duplicate id");
+	invalid(manifest([{ ...sampleCase(1), id: "hidden:0" }, ...eight().slice(1)]), "a zero id");
+	invalid(manifest([{ ...sampleCase(1), id: "visible:1" }, ...eight().slice(1)]), "an id from another suite");
+	invalid(manifest([...eight().slice(0, 7), { ...sampleCase(8), id: "hidden:9" }]), "an id past the count");
+	invalid(manifest([{ ...sampleCase(1), target: { module: "src/money.ts" } }, ...eight().slice(1)]), "a target without an export");
+	invalid(manifest([{ ...sampleCase(1), target: { module: "", export: "formatTotal" } }, ...eight().slice(1)]), "an empty module");
+	invalid(manifest([{ ...sampleCase(1), args: "1.50" }, ...eight().slice(1)]), "args that are not an array");
+	invalid(manifest([{ ...sampleCase(1), expected: undefined }, ...eight().slice(1)]), "a missing expected value");
+	invalid(manifest([{ ...sampleCase(1), args: [[{ amount: "x".repeat(9_000) }], "USD"] }, ...eight().slice(1)]), "a case past the subject frame limit");
 });
 
 test("key order in the file never changes the contract digest", () => {
-	const reordered = six().map(entry => ({ expected: entry.expected, args: entry.args, target: entry.target, id: entry.id }));
+	const reordered = eight().map(entry => ({ expected: entry.expected, args: entry.args, target: entry.target, id: entry.id }));
 	assert.equal(hiddenContractOf(parseHiddenCases(manifest(reordered), "(a)", SHAPE)).digest,
-		hiddenContractOf(parseHiddenCases(manifest(six()), "(b)", SHAPE)).digest);
-	assert.notEqual(hiddenContractOf(parseHiddenCases(manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "1.51" } : entry)), "(c)", SHAPE)).digest,
-		hiddenContractOf(parseHiddenCases(manifest(six()), "(d)", SHAPE)).digest);
+		hiddenContractOf(parseHiddenCases(manifest(eight()), "(b)", SHAPE)).digest);
+	assert.notEqual(hiddenContractOf(parseHiddenCases(manifest(eight().map((entry, index) => index === 0 ? { ...entry, expected: "1.51" } : entry)), "(c)", SHAPE)).digest,
+		hiddenContractOf(parseHiddenCases(manifest(eight()), "(d)", SHAPE)).digest);
 });
 
 /** A registry beside its own case file: the given case text is written as the entry's hiddenCases. */
@@ -134,8 +137,8 @@ test("a non-dev process without a registry refuses by name", () => {
 });
 
 test("the registry names the case files, and those files alone decide the contracts", () => {
-	const altered = manifest(six().map((entry, index) => index === 0 ? { ...entry, expected: "9.99" } : entry));
-	const registryPath = registryFor(altered);
+	const altered = manifest(eight().map((entry, index) => index === 0 ? { ...entry, expected: "9.99" } : entry));
+	const registryPath = registryFor(altered, { hidden: 8 });
 	const registry = loadFixtureRegistry({ ACQUIT_FIXTURES: registryPath });
 	const book = buildFixtureBook(registry);
 	const loaded = loadHiddenCasesFromFile(join(dirname(registryPath), "hidden-cases.json"), SHAPE);
@@ -158,7 +161,7 @@ test("a non-dev registry refuses the committed public example, and a dev one may
 	// The non-dev test fixture is never mistaken for the public example: a registry naming it loads.
 	const test = buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: registryFor(
 		readFileSync(TEST_HIDDEN_CASES_PATH, "utf8")) }));
-	assert.deepEqual([...test.byDigest.keys()], [hiddenContractOf(loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, SHAPE)).digest]);
+	assert.deepEqual([...test.byDigest.keys()], [hiddenContractOf(loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, TEST_SHAPE)).digest]);
 });
 
 test("manifestOf stores the contract it is handed", () => {
@@ -207,37 +210,37 @@ function copiedRepo(files: Record<string, string>): string {
 }
 
 test("the check script sees a case spread across lines in a source copy", () => {
-	const cases = loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, SHAPE);
+	const cases = loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, SHAPE);
 	const source = `const copiedCases = [\n${cases.map(entry => `  {\n    id: ${JSON.stringify(entry.id)},\n    target: ${JSON.stringify(entry.target)},\n    args: ${JSON.stringify(entry.args)},\n    expected: ${JSON.stringify(entry.expected)},\n  },`).join("\n")}\n];\n`;
 	const dir = copiedRepo({ "copied-cases.ts": source });
 	try {
-		const result = lever(TEST_HIDDEN_CASES_PATH, dir);
+		const result = lever(EXAMPLE_HIDDEN_CASES_PATH, dir);
 		assert.equal(result.status, 1, result.stdout + result.stderr);
-		assert.match(result.stdout, /cases=6 files=1 total=6/);
+		assert.match(result.stdout, /cases=8 files=1 total=8/);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the check script sees a case spread across lines in a pretty-printed JSON copy", () => {
-	const copy = JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(TEST_HIDDEN_CASES_PATH, SHAPE) }, null, 2);
+	const copy = JSON.stringify({ version: 1, cases: loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, SHAPE) }, null, 2);
 	const dir = copiedRepo({ "copied-cases.json": copy });
 	try {
-		const result = lever(TEST_HIDDEN_CASES_PATH, dir);
+		const result = lever(EXAMPLE_HIDDEN_CASES_PATH, dir);
 		assert.equal(result.status, 1, result.stdout + result.stderr);
-		assert.match(result.stdout, /cases=6 files=1 total=6/);
+		assert.match(result.stdout, /cases=8 files=1 total=8/);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the check script finds the public example in the repository", () => {
 	const result = lever(EXAMPLE_HIDDEN_CASES_PATH);
 	assert.equal(result.status, 1, result.stderr);
-	assert.match(result.stdout, /cases=6 files=\d+ total=[1-9]\d*/);
+	assert.match(result.stdout, /cases=8 files=\d+ total=[1-9]\d*/);
 });
 
 test("the check script finds nothing from a deployment's private file", { skip: existsSync(PRIVATE_CASES_PATH) ? false : "No private case file in this checkout; set ACQUIT_PRIVATE_CASES or provision the store." }, () => {
 	const result = lever(PRIVATE_CASES_PATH);
 	assert.equal(result.status, 0, result.stdout + result.stderr);
-	assert.match(result.stdout, /cases=6 files=\d+ total=0/);
-	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6"]);
+	assert.match(result.stdout, /cases=8 files=\d+ total=0/);
+	assert.deepEqual(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE).map(entry => entry.id), ["hidden:1", "hidden:2", "hidden:3", "hidden:4", "hidden:5", "hidden:6", "hidden:7", "hidden:8"]);
 	assert.notEqual(hiddenContractOf(loadHiddenCasesFromFile(PRIVATE_CASES_PATH, SHAPE)).digest, hiddenContractOf(loadExampleHiddenCases()).digest);
 });
 
@@ -291,7 +294,7 @@ test("a relative ACQUIT_PRIVATE_CASES terminates", () => {
 	const store = mkdtempSync(join(tmpdir(), "acquit-hidden-rel-"));
 	try {
 		mkdirSync(join(store, "private"), { recursive: true });
-		writeFileSync(join(store, "private", "hidden-cases.json"), manifest(six()), { mode: 0o600 });
+		writeFileSync(join(store, "private", "hidden-cases.json"), manifest(eight()), { mode: 0o600 });
 		// The child runs the actual walk test above, unisolated, with the knob relative to that cwd.
 		// The heap cap makes a regressed walk abort in seconds instead of pinning the machine, and
 		// the spawn timeout is the backstop; the pass-1 match refuses a child that skipped the test.
