@@ -208,32 +208,47 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     at: dispute.openedAt,
     kind: "DISPUTE",
     title: `Buyer opened a PayPal dispute (${reason})`,
-    detail: `${usd(dispute.amount)} disputed with PayPal.`,
+    detail: dispute.amount === null ? "Disputed with PayPal. The amount could not be read." : `${usd(dispute.amount)} disputed with PayPal.`,
     tone: "alert",
     ids: [{ value: dispute.id, label: "PayPal dispute" }],
     href: null,
     reasons: [],
   }];
   const simulated = dispute.simulated ? " (Simulated)" : "";
-  if (dispute.answer === "EVIDENCE") {
-    // A paid job's answer is its receipt. A held job has no receipt yet, so it names the verified attempt it filed instead.
-    const filed = job.status === "PAID" ? "the receipt" : "its verified attempt";
+  const answer = dispute.answerState;
+  if (answer?.state === "REFUSED") {
+    // PayPal refused the answer for good. The payment stays held, and a person has an alert with the same reason.
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: `Acquit filed ${filed} as evidence with PayPal${simulated}`,
-      detail: "The evidence names the frozen and hidden test counts, the pull request, and the judged commit.",
+      title: `PayPal refused Acquit's answer: ${answer.reason}. The payment stays held.`,
+      detail: "Acquit's answer did not reach PayPal. An alert went to a person.",
+      tone: "alert",
+      ids: [{ value: dispute.id, label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    });
+  } else if (dispute.answer === "EVIDENCE") {
+    // A paid job's answer is its receipt. A held job has no receipt yet, so it names the verified attempt it filed instead.
+    const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
+    const queued = answer?.state === "QUEUED";
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: queued ? `Acquit is sending ${what} as evidence to PayPal` : `Acquit filed ${what} as evidence with PayPal${simulated}`,
+      detail: queued ? "PayPal has not confirmed the evidence yet." : "The evidence names the frozen and hidden test counts, the pull request, and the judged commit.",
       tone: "held",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
       href: null,
       reasons: [],
     });
   } else if (dispute.answer === "ACCEPT") {
+    const queued = answer?.state === "QUEUED";
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: `Acquit accepted the buyer's claim${simulated}`,
-      detail: "PayPal returns the held funds to the buyer when it decides the dispute.",
+      title: queued ? "Acquit is sending its acceptance of the buyer's claim to PayPal" : `Acquit accepted the buyer's claim${simulated}`,
+      detail: queued ? "PayPal has not confirmed the acceptance yet." : "PayPal returns the held funds to the buyer when it decides the dispute.",
       tone: "alert",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
       href: null,
@@ -250,6 +265,20 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
     });
+  }
+  if (dispute.unconfirmed) {
+    // PayPal refused the read, so Acquit holds only a signed notice. The notice holds the payout and settles nothing.
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: "PayPal refused the dispute read; release or refund not confirmed",
+      detail: "The payment stays held. Acquit has only PayPal's signed notice for this dispute. A person has to check it with PayPal.",
+      tone: "alert",
+      ids: [],
+      href: null,
+      reasons: [],
+    });
+    return events;
   }
   if (dispute.status !== "RESOLVED") {
     if (job.status === "VERIFIED" && job.phase === "RELEASE_PENDING") {

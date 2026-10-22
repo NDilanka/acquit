@@ -77,7 +77,7 @@ test("an open buyer dispute is recorded on an awaiting job without moving its ph
 	const row = verifiedRow();
 	const opened = planOf(applyJobCommand(row, dispute(row.id, "OPEN"), paypalFacts(later)));
 	assert.deepEqual(opened.next.providerDispute, { id: "PP-D-9", status: "OPEN", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
-		amount: usd("420.00"), openedAt: later, answer: "EVIDENCE" });
+		amount: usd("420.00"), openedAt: later, answer: "EVIDENCE", answerState: { state: "QUEUED" } });
 	assert.deepEqual(reviewOf(opened.next), { phase: "AWAITING_CLIENT", endsAt: reviewEndsAt });
 	// The held job files its evidence once. It emits no release, and the dispute still holds the payout.
 	assert.deepEqual(opened.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);

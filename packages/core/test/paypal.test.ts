@@ -597,14 +597,27 @@ const deliveryRaw = (resource: Record<string, unknown>): string => JSON.stringif
 	resource_type: "dispute", resource });
 
 test("a verified dispute delivery stands in for a refused read with its capture, amount, status, and update time", () => {
-	assert.deepEqual(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody()), "PP-R-PPB-10194003"), { kind: "DISPUTE",
+	const received = instant("2026-10-22T11:00:00Z");
+	assert.deepEqual(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody()), "PP-R-PPB-10194003", received), { kind: "DISPUTE",
 		disputeId: "PP-R-PPB-10194003", captureId: "1WL969806P110802T", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
-		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z") });
+		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), fromVerifiedBody: true });
 });
 
-test("a delivery stands in for a refused read only when it names that dispute, a seller transaction, and an update time", () => {
-	assert.equal(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody()), "PP-D-OTHER"), null);
-	assert.equal(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ disputed_transactions: [] })), "PP-R-PPB-10194003"), null);
-	assert.equal(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ update_time: undefined })), "PP-R-PPB-10194003"), null);
-	assert.equal(disputeOfVerifiedDelivery("not json", "PP-R-PPB-10194003"), null);
+test("a delivery stands in for a refused read only when it names that dispute and a seller transaction", () => {
+	const received = instant("2026-10-22T11:00:00Z");
+	assert.equal(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody()), "PP-D-OTHER", received), null);
+	assert.equal(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ disputed_transactions: [] })), "PP-R-PPB-10194003", received), null);
+	assert.equal(disputeOfVerifiedDelivery("not json", "PP-R-PPB-10194003", received), null);
+});
+
+test("a stand-in with no update time or an unreadable amount still names the dispute and its capture, and leaves the rest absent", () => {
+	const received = instant("2026-10-22T11:00:00Z");
+	assert.deepEqual(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ update_time: undefined })), "PP-R-PPB-10194003", received), { kind: "DISPUTE",
+		disputeId: "PP-R-PPB-10194003", captureId: "1WL969806P110802T", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), fromVerifiedBody: true });
+	const unreadable = disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ dispute_amount: { currency_code: "EUR", value: "21.00" },
+		create_time: undefined, update_time: "not a time" })), "PP-R-PPB-10194003", received);
+	assert.equal(unreadable?.amount, null);
+	assert.equal(unreadable?.openedAt, received, "a body with no create time opens at receipt");
+	assert.equal(unreadable?.updatedAt, undefined);
 });

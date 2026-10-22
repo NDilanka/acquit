@@ -13,7 +13,7 @@ import type { AgentId, CaptureId, ClientId, CommitSha, Digest, MerchantId, Opera
 import { applyJobCommand, releaseHeld, TERMS, wakeAt } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
 import { commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
-import { parseWebhookEnvelope, quote } from "../src/paypal.ts";
+import { parseDispute, parseWebhookEnvelope, quote } from "../src/paypal.ts";
 import type { Bps } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { SqliteStore } from "../src/store.ts";
@@ -87,10 +87,11 @@ const outcomeOf = (store: SqliteStore, eventId: string): string =>
 	String((store.db.prepare("SELECT outcome FROM webhook_events WHERE id = ?").get(eventId) as { outcome: string } | undefined)?.outcome);
 
 /** The dispute resource as the sandbox sends it, with the fields a delivery is judged by. */
-const disputeResource = (fields: { readonly updateTime: string; readonly status: string; readonly outcome?: string; readonly capture?: string }) => ({
+const disputeResource = (fields: { readonly updateTime: string; readonly status: string; readonly outcome?: string; readonly capture?: string;
+	readonly amount?: string }) => ({
 	dispute_id: disputeId, create_time: "2026-10-22T10:05:00Z", update_time: fields.updateTime,
 	reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", dispute_channel: "INTERNAL", dispute_life_cycle_stage: "INQUIRY",
-	status: fields.status, dispute_amount: { currency_code: "USD", value: "21.00" },
+	status: fields.status, dispute_amount: { currency_code: "USD", value: fields.amount ?? "21.00" },
 	disputed_transactions: [{ buyer_transaction_id: "BUYER-TXN-SCRUBBED", seller_transaction_id: fields.capture ?? captureId,
 		transaction_status: "COMPLETED", seller: { merchant_id: "MERCHANT-SCRUBBED" }, items: [], seller_protection_eligible: false }],
 	links: [{ href: `https://api-m.sandbox.paypal.com/v1/customer/disputes/${disputeId}`, rel: "self", method: "GET" }],
@@ -100,6 +101,18 @@ const disputeResource = (fields: { readonly updateTime: string; readonly status:
 const deliver = (ports: Ports, eventId: string, eventType: string, resource: object, devReplay = false): Promise<Response> =>
 	ingestPayPalWebhook(ports, new Request("http://acquit.test/paypal/webhook", { method: "POST",
 		body: JSON.stringify({ id: eventId, event_type: eventType, resource_type: "dispute", resource }) }), devReplay);
+
+/** The ports for a PayPal whose dispute read succeeds with the body it holds, as a GET returns it. */
+function portsReading(store: SqliteStore, body: object): Ports {
+	const observation = { kind: "DISPUTE" as const, ...parseDispute(body, captureId) };
+	const base = portsOver(store);
+	return { ...base, paypal: { ...base.paypal, readResource: async () => ({ kind: "SETTLED" as const, observation }) } as unknown as Ports["paypal"] };
+}
+
+/** The effects the outbox holds, by kind, so a test can say which money movement or alert was queued. */
+type QueuedEffect = { readonly kind: string; readonly reason?: string; readonly detail?: string; readonly disputeId?: string };
+const queuedEffectsOf = (store: SqliteStore): QueuedEffect[] =>
+	store.db.prepare("SELECT json FROM outbox").all().map(row => (JSON.parse(String((row as { json: string }).json)) as { effect: QueuedEffect }).effect);
 
 const CREATED = "CUSTOMER.DISPUTE.CREATED";
 const UPDATED = "CUSTOMER.DISPUTE.UPDATED";
@@ -111,7 +124,8 @@ test("a CREATED delivery the read refused records the dispute on the job that ho
 		assert.equal(outcomeOf(store, "WH-CREATED-403"), "verified, applied");
 		const row = await jobOf(store);
 		assert.deepEqual(row.providerDispute, { id: disputeId, status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
-			amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), answer: "EVIDENCE" });
+			amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), answer: "EVIDENCE",
+			answerState: { state: "QUEUED" }, unconfirmed: true });
 		assert.equal(releaseHeld(row), true);
 	});
 });
@@ -151,7 +165,7 @@ test("a body whose seller transaction names no job's capture changes nothing and
 	});
 });
 
-test("a seller-favour resolution with a newer update time lifts the hold, and the release may proceed", async () => {
+test("a seller-favour resolution from a refused read is recorded but keeps the hold, and says PayPal's read is unconfirmed", async () => {
 	await withVerifiedJob(async (store, ports) => {
 		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
 		await deliver(ports, "WH-UPDATED-403", UPDATED, disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" }));
@@ -160,7 +174,9 @@ test("a seller-favour resolution with a newer update time lifts the hold, and th
 		const row = await jobOf(store);
 		assert.equal(row.providerDispute?.status, "RESOLVED");
 		assert.equal(row.providerDispute?.outcome, "RESOLVED_SELLER_FAVOUR");
-		assert.equal(releaseHeld(row), false);
+		assert.equal(row.providerDispute?.unconfirmed, true);
+		assert.equal(releaseHeld(row), true);
+		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"));
 	});
 });
 
@@ -198,5 +214,132 @@ test("the unsigned dev replay body never stands in for a refused read", async ()
 		const after = await jobOf(store);
 		assert.equal(after.version, before.version);
 		assert.equal(after.providerDispute, undefined);
+	});
+});
+
+test("a record stored with no update time takes no snapshot-driven terminal move, so a dated RESOLVED body changes nothing", () => {
+	const legacy: JobRow = { ...verifiedRow(), providerDispute: { id: disputeId, status: "UNDER_REVIEW",
+		reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", amount: usd("21.00"), openedAt: now } };
+	const standIn = { type: "ProviderDispute" as const, jobId, disputeId, captureId, status: "RESOLVED", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+		amount: usd("21.00"), openedAt: now, updatedAt: instant("2026-10-23T09:00:00Z"), outcome: "RESOLVED_BUYER_FAVOUR", fromVerifiedBody: true as const };
+	const plan = applyJobCommand(legacy, standIn, { actor: { role: "SYSTEM", source: "OUTBOX" }, now: received, loaded: { kind: "NONE" } });
+	if (typeof plan === "string") throw new Error(plan);
+	assert.deepEqual(plan.next, legacy);
+	assert.deepEqual(plan.effects, []);
+});
+
+test("a same-status body with a newer update time is applied, and the record advances to that time", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		await deliver(ports, "WH-REVIEW-LATER", UPDATED, disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "UNDER_REVIEW" }));
+		assert.equal(outcomeOf(store, "WH-REVIEW-LATER"), "verified, applied");
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.status, "UNDER_REVIEW");
+		assert.equal(row.providerDispute?.updatedAt, instant("2026-10-22T11:00:00Z"));
+	});
+});
+
+test("a status may return to one it held, and the record keeps the time of the latest delivery", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CYCLE-1", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		await deliver(ports, "WH-CYCLE-2", UPDATED, disputeResource({ updateTime: "2026-10-22T10:30:00Z", status: "WAITING_FOR_SELLER_RESPONSE" }));
+		await deliver(ports, "WH-CYCLE-3", UPDATED, disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "UNDER_REVIEW" }));
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.status, "UNDER_REVIEW");
+		assert.equal(row.providerDispute?.updatedAt, instant("2026-10-22T11:00:00Z"));
+		assert.equal(releaseHeld(row), true);
+	});
+});
+
+test("a seller-favour body older than a same-status body the record holds cannot resolve the dispute", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		await deliver(ports, "WH-REVIEW-LATER", UPDATED, disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "UNDER_REVIEW" }));
+		await deliver(ports, "WH-RESOLVED-STALE", RESOLVED, disputeResource({ updateTime: "2026-10-22T10:30:00Z", status: "RESOLVED",
+			outcome: "RESOLVED_SELLER_FAVOUR" }));
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.status, "UNDER_REVIEW");
+		assert.equal(row.providerDispute?.updatedAt, instant("2026-10-22T11:00:00Z"));
+		assert.equal(releaseHeld(row), true);
+	});
+});
+
+test("an outcome PayPal names after an unknown one is recorded, and a successful read of it lifts the hold", async () => {
+	await withVerifiedJob(async (store) => {
+		const unnamed = disputeResource({ updateTime: "2026-10-22T10:30:00Z", status: "RESOLVED" });
+		await deliver(portsReading(store, unnamed), "WH-RESOLVED-UNNAMED", RESOLVED, unnamed);
+		assert.equal(releaseHeld(await jobOf(store)), true);
+		const named = disputeResource({ updateTime: "2026-10-22T10:40:00Z", status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" });
+		await deliver(portsReading(store, named), "WH-RESOLVED-NAMED", RESOLVED, named);
+		assert.equal(outcomeOf(store, "WH-RESOLVED-NAMED"), "verified, applied");
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.outcome, "RESOLVED_SELLER_FAVOUR");
+		assert.equal(row.providerDispute?.unconfirmed, undefined);
+		assert.equal(releaseHeld(row), false);
+	});
+});
+
+test("a body with no update time places the hold and raises an alert, and settles nothing", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		const undated = { ...disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }), update_time: undefined };
+		await deliver(ports, "WH-UNDATED-403", CREATED, undated);
+		assert.equal(outcomeOf(store, "WH-UNDATED-403"), "verified, applied");
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.status, "UNDER_REVIEW");
+		assert.equal(row.providerDispute?.updatedAt, undefined);
+		assert.equal(releaseHeld(row), true);
+		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"));
+	});
+});
+
+test("a stand-in with no update time cannot move a record that holds one", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		const before = await jobOf(store);
+		const undatedResolved = { ...disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" }),
+			update_time: undefined };
+		await deliver(ports, "WH-UNDATED-RESOLVED", RESOLVED, undatedResolved);
+		const after = await jobOf(store);
+		assert.equal(after.version, before.version);
+		assert.equal(after.providerDispute?.status, "UNDER_REVIEW");
+	});
+});
+
+test("a refused read's buyer win for the whole capture does not refund the job from the body", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-BUYER-403", RESOLVED, disputeResource({ updateTime: "2026-10-23T09:00:00Z", status: "RESOLVED",
+			outcome: "RESOLVED_BUYER_FAVOUR" }));
+		const row = await jobOf(store);
+		assert.equal(row.state.status, "VERIFIED");
+		assert.equal(releaseHeld(row), true);
+		assert.equal(queuedEffectsOf(store).some(effect => effect.kind === "REFUND" || effect.kind === "RELEASE"), false);
+		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"));
+	});
+});
+
+test("a successful read of a buyer win for more than the capture gross stays held and goes to a person", async () => {
+	await withVerifiedJob(async (store) => {
+		const overGross = disputeResource({ updateTime: "2026-10-23T09:00:00Z", status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR", amount: "22.00" });
+		await deliver(portsReading(store, overGross), "WH-OVER-GROSS", RESOLVED, overGross);
+		const row = await jobOf(store);
+		assert.equal(row.state.status, "VERIFIED");
+		assert.equal(releaseHeld(row), true);
+		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "SETTLEMENT_MISMATCH" && effect.disputeId === disputeId));
+	});
+});
+
+test("a stand-in resolution never unblocks a release the row already approved", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		const held = await jobOf(store);
+		const approved = applyJobCommand(held, { type: "Approve", jobId, mergeCommit: judgedCommit }, { actor: maya, now: received, loaded: { kind: "NONE" } });
+		if (typeof approved === "string") throw new Error(approved);
+		store.db.prepare("UPDATE jobs SET version = ?, json = ? WHERE id = ?").run(approved.next.version, JSON.stringify(approved.next), jobId);
+		await deliver(ports, "WH-RESOLVED-403", RESOLVED, disputeResource({ updateTime: "2026-10-23T09:00:00Z", status: "RESOLVED",
+			outcome: "RESOLVED_SELLER_FAVOUR" }));
+		const row = await jobOf(store);
+		assert.ok(row.state.status === "VERIFIED" && row.state.review.phase === "RELEASE_PENDING");
+		assert.equal(releaseHeld(row), true);
+		assert.equal(queuedEffectsOf(store).some(effect => effect.kind === "RELEASE"), false);
 	});
 });

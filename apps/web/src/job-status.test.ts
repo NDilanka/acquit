@@ -24,6 +24,8 @@ const REACHABLE: readonly [StatusInput, string, string][] = [
   [job("VERIFIED", "DISPUTED"), "Disputed", "alert"],
   [job("VERIFIED", "RELEASE_PENDING"), "Paying out", "ok"],
   [{ ...job("VERIFIED", "RELEASE_PENDING"), providerDispute: { status: "OPEN", outcome: null } }, "Payout held for a buyer dispute", "alert"],
+  [{ ...job("VERIFIED", "RELEASE_PENDING"), providerDispute: { status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR", unconfirmed: true } },
+    "Payout held for a buyer dispute", "alert"],
   [job("VERIFIED", "REFUND_PENDING"), "Disputed", "alert"],
   [job("PAID", "PAID"), "Paid", "ok"],
   [job("REFUNDED", "REFUNDED"), "Refunded", "new"],

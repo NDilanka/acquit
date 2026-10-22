@@ -235,7 +235,8 @@ export type AcquitConfig = {
 /** One process-log line per alert. A buyer-dispute alert names its dispute, quoted, so a person can find it at PayPal. */
 function alertLine(effect: Extract<JobEffect, { kind: "ALERT" }>): string {
 	const dispute = effect.disputeId === undefined ? "" : ` on dispute ${logQuoted(effect.disputeId)}`;
-	return `Acquit alert: ${effect.reason} for ${effect.jobId}${dispute}`;
+	const detail = effect.detail === undefined ? "" : `. ${effect.detail}`;
+	return `Acquit alert: ${effect.reason} for ${effect.jobId}${dispute}${detail}`;
 }
 
 /** Where an alert goes when the deployment supplies no sink: the process log. */

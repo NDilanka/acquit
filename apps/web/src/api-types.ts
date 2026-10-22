@@ -68,17 +68,24 @@ export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER
 /** What Acquit did about a buyer dispute: filed the receipt, accepted the claim, or could not answer it. */
 export type DisputeAnswer = "EVIDENCE" | "ACCEPT" | "NOT_ANSWERABLE";
 
+/** What PayPal did with Acquit's answer: queued until the outbox sends it, filed once PayPal confirms it, or refused with PayPal's reason. */
+export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" } | { readonly state: "REFUSED"; readonly reason: string };
+
 /** A PayPal buyer dispute against the job's capture, as PayPal last answered for it. Not the in-app review dispute. */
 export interface ProviderDisputeView {
   readonly id: string;
   readonly status: string;
   readonly reason: string;
-  /** Cents, as the core serves them. */
-  readonly amount: number;
+  /** Cents, as the core serves them. Null when a signed notice stood in for a refused read and its amount was unreadable. */
+  readonly amount: number | null;
   readonly openedAt: Instant;
   readonly outcome: string | null;
   /** The answer Acquit filed on the first delivery it saw, or null when none was filed. */
   readonly answer: DisputeAnswer | null;
+  /** What PayPal did with that answer, or null when no answer was selected. */
+  readonly answerState: DisputeAnswerState | null;
+  /** True while a signed notice stands in for a read PayPal refused. The payout stays held until a successful read. */
+  readonly unconfirmed: boolean;
   /** True when a judge scenario simulated this dispute. PayPal never received an answer for it. */
   readonly simulated: boolean;
 }

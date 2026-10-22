@@ -83,7 +83,8 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 		case "DISPUTE": return { type: "ProviderDispute", jobId, disputeId: observation.disputeId, captureId: observation.captureId, status: observation.status,
 			reason: observation.reason, amount: observation.amount, openedAt: observation.openedAt, outcome: observation.outcome ?? null,
 			...(observation.updatedAt === undefined ? {} : { updatedAt: observation.updatedAt }),
-			...(observation.simulated === true ? { simulated: true as const } : {}) };
+			...(observation.simulated === true ? { simulated: true as const } : {}),
+			...(observation.fromVerifiedBody === true ? { fromVerifiedBody: true as const } : {}) };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
 }
@@ -612,13 +613,17 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey, effect: Ex
 		: { kind: effect.kind, disputeId: effect.disputeId, note: effect.note, payee: effect.payee };
 	try {
 		const outcome = await ports.paypal.dispatch(call, providerRequestId(key));
+		const answer = effect.kind === "DISPUTE_EVIDENCE" ? "EVIDENCE" as const : "ACCEPT" as const;
 		if (outcome.kind === "CONFIRMED") {
 			const observation = outcome.observation;
 			if (observation.kind === "DISPUTE_ANSWERED" && observation.note !== null) {
 				console.warn(`Acquit: PayPal already held an answer for dispute ${logQuoted(effect.disputeId)} (${logQuoted(observation.note)}).`);
 			}
-			await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
+			// The job records the answer as filed, and the outbox row settles in the same commit.
+			await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId: effect.jobId, disputeId: effect.disputeId, answer }, { key }, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
+			// A refused answer is never retried. The job shows it refused, a person is alerted with the reason, and the row parks for that person.
+			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason }, null, null);
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
 		} else {
 			await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });
@@ -745,8 +750,11 @@ function webhookDeliveryKey(command: SystemJobCommand, observation: PayPalObserv
 		const { batchId, paid, fee } = observation.reimbursement;
 		return `webhook:${command.type}:${command.jobId}:${batchId}:${paid}:${fee}`;
 	}
-	// A dispute is one fact per status: its CREATED and its RESOLVED are distinct, and a repeat of either is the same key.
-	if (observation.kind === "DISPUTE") return `webhook:${command.type}:${command.jobId}:${observation.disputeId}:${observation.status}`;
+	// A dispute fact is its status, the time PayPal stamped it, and the outcome it named. A repeat of one is the same key. A status
+	// that returns, a later time, or a first-known outcome is a new fact. A stand-in body is its own fact, so a successful read of
+	// the same state is still applied.
+	if (observation.kind === "DISPUTE") return `webhook:${command.type}:${command.jobId}:${observation.disputeId}:${observation.status}` +
+		`:${observation.updatedAt ?? "NO_UPDATE_TIME"}:${observation.outcome ?? "NO_OUTCOME"}${observation.fromVerifiedBody === true ? ":VERIFIED_BODY" : ""}`;
 	return `webhook:${command.type}:${command.jobId}:${anchorOf(observation) ?? command.jobId}`;
 }
 
@@ -827,9 +835,10 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request, devRep
 		if (owner !== null) read = await readFor(ports, envelope.resource, payeeMerchantOf(owner), devReplay);
 	}
 	// PayPal refuses a dispute read when the platform holds no dispute permission for the merchant (a 403). The verified
-	// body is the dispute PayPal signed, so it stands in for the read. The unsigned dev replay body never does.
+	// body is the dispute PayPal signed, so it stands in for the read, and only to hold the money: the job never settles
+	// on it. The unsigned dev replay body never stands in.
 	if (!devReplay && envelope.resource.kind === "DISPUTE" && (read.kind === "REFUSED" || read.kind === "UNKNOWN")) {
-		const fromBody = disputeOfVerifiedDelivery(raw, envelope.resource.id);
+		const fromBody = disputeOfVerifiedDelivery(raw, envelope.resource.id, ports.clock.now());
 		if (fromBody !== null) {
 			console.warn(`Acquit: PayPal's read of dispute ${logQuoted(envelope.resource.id)} was refused (${read.kind === "REFUSED" ? read.reason : "UNKNOWN"}); the verified delivery stands in for it.`);
 			read = { kind: "SETTLED", observation: fromBody };

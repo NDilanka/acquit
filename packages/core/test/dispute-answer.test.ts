@@ -376,6 +376,18 @@ function portsOver(store: SqliteStore): Ports {
 			webhookId: "", partnerMerchant: platform, feeModel: model }) };
 }
 
+/** What PayPal did with the job's dispute answer, as the job view serves it. */
+async function answerStateOf(store: SqliteStore): Promise<unknown> {
+	return (await store.readJob(jobId))?.providerDispute?.answerState ?? null;
+}
+
+/** The alert effects the outbox holds. */
+function queuedAlertsOf(store: SqliteStore): { readonly kind: string; readonly reason?: string; readonly disputeId?: string; readonly detail?: string }[] {
+	return store.db.prepare("SELECT json FROM outbox").all()
+		.map(row => (JSON.parse(String((row as { json: string }).json)) as { effect: { kind: string; reason?: string; disputeId?: string; detail?: string } }).effect)
+		.filter(effect => effect.kind === "ALERT");
+}
+
 /** The stored state of one outbox effect, read the way the outbox reads it. */
 function outboxStateOf(store: SqliteStore, key: OperationKey): { readonly kind: string; readonly reason?: string } {
 	const found = store.db.prepare("SELECT state FROM outbox WHERE key = ?").get(key);
@@ -624,6 +636,24 @@ test("a dispute answer PayPal refuses with a 403 ends for a person with the plai
 			const row = await store.readJob(jobId);
 			if (row === null) throw new Error("the job is missing");
 			assert.equal(releaseHeld(row), true);
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED });
+			assert.ok(queuedAlertsOf(store).some(alert => alert.reason === "PROVIDER_DISPUTE_ANSWER_REFUSED" && alert.disputeId === "PP-D-9" &&
+				alert.detail === `${DISPUTE_ACCESS_REFUSED}. The payment stays held.`));
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) }]);
+	});
+});
+
+test("a dispute answer is queued on the job until PayPal takes it, and then recorded as filed", async () => {
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(verifiedRow(), async store => {
+			const ports = portsOver(store);
+			await applySystemCommand(ports, dispute("OPEN"), null, "webhook-evidence-filed");
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+			assert.equal(queuedAlertsOf(store).some(alert => alert.reason === "PROVIDER_DISPUTE_ANSWER_REFUSED"), false);
 		});
 		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) }]);
 	});

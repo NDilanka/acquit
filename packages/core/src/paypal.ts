@@ -118,9 +118,12 @@ export type PayPalObservation =
 	/**
 	 * The buyer dispute as PayPal holds it now. `outcome` is PayPal's outcome code, present once the dispute resolves.
 	 * `updatedAt` is PayPal's update_time: the order a delivery is judged by, so an older body changes nothing.
+	 * `amount` is null only on a signed body whose amount could not be read: it still holds the release, and settles nothing.
+	 * `fromVerifiedBody` marks a signed delivery that stood in for a read PayPal refused.
 	 */
 	| { readonly kind: "DISPUTE"; readonly disputeId: DisputeId; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
-		readonly amount: UsdCents; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome?: string; readonly simulated?: true }
+		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome?: string; readonly simulated?: true;
+		readonly fromVerifiedBody?: true }
 	/** PayPal took the answer. `note` names what PayPal already held when it answered 422, and is null on a 2xx. */
 	| { readonly kind: "DISPUTE_ANSWERED"; readonly disputeId: string; readonly answer: "EVIDENCE" | "ACCEPT"; readonly note: string | null };
 
@@ -745,16 +748,24 @@ export function parseDispute(json: unknown, captureId: CaptureId): Omit<Extract<
 
 /**
  * The dispute a verified delivery carries, for a read PayPal refused. PayPal signed the body and the verifier passed it,
- * so it stands in for the read only when it names the same dispute id, a seller transaction, and an update_time: that
- * time is what orders it against a delivery already recorded. Null when any of those is missing.
+ * so it stands in for the read when it names the same dispute id, a seller transaction (the capture that holds the money),
+ * and a status. Its update_time orders it against a delivery already recorded, and a missing time, amount, or reason is
+ * left out rather than refused: a first delivery still places the hold, and the job decides what an unordered body may do.
+ * Null when the body names no such dispute.
  */
-export function disputeOfVerifiedDelivery(raw: string, disputeId: string): Extract<PayPalObservation, { kind: "DISPUTE" }> | null {
+export function disputeOfVerifiedDelivery(raw: string, disputeId: string, receivedAt: Instant): Extract<PayPalObservation, { kind: "DISPUTE" }> | null {
 	const resource = routed(() => object(object(JSON.parse(raw) as unknown).resource));
 	if (resource === null || routed(() => text(resource.dispute_id)) !== disputeId) return null;
 	const captureId = disputedCaptureId(resource);
-	if (captureId === null || routed(() => utcInstant(resource.update_time)) === null) return null;
-	const dispute = routed(() => parseDispute(resource, captureId));
-	return dispute === null ? null : { kind: "DISPUTE", ...dispute };
+	const status = routed(() => text(resource.status));
+	if (captureId === null || status === null) return null;
+	const updatedAt = routed(() => utcInstant(resource.update_time));
+	const openedAt = routed(() => utcInstant(resource.create_time));
+	const outcome = disputeOutcomeCode(resource);
+	return { kind: "DISPUTE", disputeId: disputeId as DisputeId, captureId, status,
+		reason: routed(() => text(resource.reason)) ?? "UNSPECIFIED", amount: routed(() => money(resource.dispute_amount)),
+		openedAt: openedAt ?? receivedAt, ...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }),
+		fromVerifiedBody: true };
 }
 
 /** The refusal code PayPal puts in the body's `name`. */
