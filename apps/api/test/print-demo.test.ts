@@ -1,37 +1,50 @@
-// The print demo's run store and its reply, driven with a stand-in run so no judge runs here. The real run is
-// exercised by print-demo-route.test.ts through the production handler.
+// The print demo's run store and its reply, driven with a stand-in job so no judge runs here. The real worker is
+// exercised by print-demo-worker.test.ts, and the production handler by print-demo-route.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PrintDemoRun, RunInput } from "../../../packages/verifier-print/src/run.ts";
 import { createPrintRuns, printRunReply, PRINT_RUN_DEADLINE_MS, PRINT_STARTS_PER_HOUR } from "../src/print-demo.ts";
-import type { PrintRunRecord, PrintRuns } from "../src/print-demo.ts";
+import type { PrintJob, PrintRunRecord, PrintRuns } from "../src/print-demo.ts";
 
-type Gate = { readonly promise: Promise<PrintDemoRun>; readonly resolve: () => void; readonly reject: (error: Error) => void };
+/** A stand-in job the test settles by hand: `finish` or `fail` ends its work, `exit` stops its thread. */
+type Fake = {
+	readonly job: PrintJob;
+	readonly finish: () => void;
+	readonly fail: () => void;
+	readonly exit: () => void;
+	readonly state: { terminated: boolean };
+};
 
-function gate(): Gate {
-	let resolve!: () => void;
-	let reject!: (error: Error) => void;
-	const promise = new Promise<PrintDemoRun>((done, fail) => { resolve = () => done({} as PrintDemoRun); reject = fail; });
-	promise.catch(() => {});
-	return { promise, resolve, reject };
+function fake(): Fake {
+	const state = { terminated: false };
+	let finish!: () => void;
+	let fail!: () => void;
+	let exit!: () => void;
+	const result = new Promise<PrintDemoRun>((done, reject) => {
+		finish = () => done({} as PrintDemoRun);
+		fail = () => reject(new Error("the worker failed"));
+	});
+	result.catch(() => {});
+	const stopped = new Promise<void>(resolve => { exit = resolve; });
+	return { job: { result, stopped, terminate: () => { state.terminated = true; } }, finish, fail, exit, state };
 }
 
-/** A store whose runs wait on gates the test opens, with a clock the test moves. */
+/** A store whose jobs the test settles, with a clock the test moves. */
 function rig(options: { deadlineMs?: number } = {}) {
 	let clock = Date.parse("2026-10-23T09:00:00Z");
-	const gates: Gate[] = [];
+	const jobs: Fake[] = [];
 	const runs: PrintRuns = createPrintRuns({
 		run: (_input: RunInput) => {
-			const next = gate();
-			gates.push(next);
-			return next.promise;
+			const next = fake();
+			jobs.push(next);
+			return next.job;
 		},
 		now: () => clock,
 		seed: () => new Uint8Array(32).fill(1),
 		deadlineMs: options.deadlineMs,
 	});
-	return { runs, gates, tick: (ms: number) => { clock += ms; }, settle: () => new Promise(resolve => setImmediate(resolve)) };
+	return { runs, jobs, tick: (ms: number) => { clock += ms; }, settle: () => new Promise(resolve => setImmediate(resolve)) };
 }
 
 function started(runs: PrintRuns, requester: string, farm: "honest" | "sloppy") {
@@ -41,17 +54,19 @@ function started(runs: PrintRuns, requester: string, farm: "honest" | "sloppy") 
 }
 
 test("a start is RUNNING at once, then DONE with its result, and only its own visitor reads it", async () => {
-	const { runs, gates, settle } = rig();
+	const { runs, jobs, settle } = rig();
 	const record = started(runs, "visitor-a", "honest");
 	assert.equal(record.state, "RUNNING");
 	assert.equal(record.result, null);
-	gates[0].resolve();
+	jobs[0].finish();
 	await settle();
 	const done = runs.get(record.id) as PrintRunRecord;
 	assert.equal(done.state, "DONE");
 	assert.ok(done.result);
 	assert.deepEqual(printRunReply(runs, "visitor-b", "GET", `/${record.id}`, undefined), { status: 404, body: { error: "NOT_FOUND" } });
 	assert.equal(printRunReply(runs, "visitor-a", "GET", `/${record.id}`, undefined).status, 200);
+	jobs[0].exit();
+	await settle();
 });
 
 test("one visitor has one run in flight at a time", () => {
@@ -68,11 +83,23 @@ test("two runs in flight across the deployment, and a third is refused as busy",
 	assert.deepEqual(printRunReply(runs, "visitor-c", "POST", "", { farm: "honest" }), { status: 503, body: { error: "PRINT_BUSY" } });
 });
 
+test("a slot is taken until the run's thread has stopped, not merely until its result arrives", async () => {
+	const { runs, jobs, settle } = rig();
+	started(runs, "visitor-a", "honest");
+	jobs[0].finish();
+	await settle();
+	assert.deepEqual(runs.start("visitor-a", "honest"), { kind: "REFUSED", code: "PRINT_RUNNING_LIMIT" });
+	jobs[0].exit();
+	await settle();
+	assert.equal(printRunReply(runs, "visitor-a", "POST", "", { farm: "honest" }).status, 201);
+});
+
 test("a visitor may start twelve runs in a rolling hour, and the thirteenth waits for the hour to pass", async () => {
-	const { runs, gates, tick, settle } = rig();
+	const { runs, jobs, tick, settle } = rig();
 	for (let i = 0; i < PRINT_STARTS_PER_HOUR; i++) {
 		started(runs, "visitor-a", "honest");
-		gates[i].resolve();
+		jobs[i].finish();
+		jobs[i].exit();
 		await settle();
 		tick(60_000);
 	}
@@ -81,26 +108,56 @@ test("a visitor may start twelve runs in a rolling hour, and the thirteenth wait
 	assert.equal(printRunReply(runs, "visitor-a", "POST", "", { farm: "honest" }).status, 201);
 });
 
-test("a run past its deadline is FAILED as timed out, and its slot stays taken until its work settles", async () => {
-	const { runs, gates, settle } = rig({ deadlineMs: 20 });
+test("a run past its deadline is FAILED as timed out and its thread is terminated, and its slot stays taken until the thread stops", async () => {
+	const { runs, jobs, settle } = rig({ deadlineMs: 40 });
 	const slow = started(runs, "visitor-a", "honest");
-	started(runs, "visitor-b", "honest");
-	await new Promise(resolve => setTimeout(resolve, 60));
+	await new Promise(resolve => setTimeout(resolve, 120));
 	await settle();
 	const failed = runs.get(slow.id) as PrintRunRecord;
 	assert.equal(failed.state, "FAILED");
 	assert.equal(failed.failure, "TIMED_OUT");
+	assert.equal(jobs[0].state.terminated, true, "the deadline stops the thread");
+	started(runs, "visitor-b", "honest");
+	// The timed-out thread has not stopped and visitor-b's has not either, so both slots are still taken.
 	assert.deepEqual(printRunReply(runs, "visitor-c", "POST", "", { farm: "honest" }), { status: 503, body: { error: "PRINT_BUSY" } });
-	// The timed-out run's work is still going, and visitor-b's too, so both slots are taken.
-	gates[0].resolve();
+	jobs[0].exit();
 	await settle();
-	// Its work has now settled, so its slot is free: visitor-c takes it, and the deployment is full again.
+	// The timed-out thread has stopped, so its slot is free: visitor-c takes it and the deployment is full again.
 	assert.equal(printRunReply(runs, "visitor-c", "POST", "", { farm: "honest" }).status, 201);
 	assert.equal(printRunReply(runs, "visitor-d", "POST", "", { farm: "honest" }).status, 503);
-	assert.equal((runs.get(slow.id) as PrintRunRecord).state, "FAILED", "a timed-out run stays FAILED when its work settles");
-	gates[1].resolve();
-	gates[2].resolve();
+	const still = runs.get(slow.id) as PrintRunRecord;
+	assert.equal(still.state, "FAILED", "a timed-out run stays FAILED when its thread stops");
+	assert.equal(still.result, null, "a timed-out run never gains a result");
+	jobs[1].exit();
+	jobs[2].exit();
 	await settle();
+});
+
+test("a run whose worker fails before it answers is FAILED as a run failure, and frees its slot once stopped", async () => {
+	const { runs, jobs, settle } = rig();
+	const record = started(runs, "visitor-a", "honest");
+	jobs[0].fail();
+	await settle();
+	const failed = runs.get(record.id) as PrintRunRecord;
+	assert.equal(failed.state, "FAILED");
+	assert.equal(failed.failure, "RUN_FAILED");
+	jobs[0].exit();
+	await settle();
+	assert.equal(printRunReply(runs, "visitor-a", "POST", "", { farm: "honest" }).status, 201);
+});
+
+test("a run that cannot start is FAILED and takes no slot", async () => {
+	const runs = createPrintRuns({
+		run: () => { throw new Error("no worker"); },
+		now: () => Date.now(),
+		seed: () => new Uint8Array(32).fill(1),
+	});
+	const first = runs.start("visitor-a", "honest");
+	assert.equal(first.kind, "STARTED");
+	if (first.kind !== "STARTED") return;
+	assert.equal(runs.get(first.record.id)?.state, "FAILED");
+	assert.equal(runs.get(first.record.id)?.failure, "RUN_FAILED");
+	assert.equal(runs.start("visitor-a", "honest").kind, "STARTED", "a run that never started holds no slot");
 });
 
 test("the default deadline is two minutes", () => {

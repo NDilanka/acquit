@@ -7,6 +7,7 @@ import type { KeyObject } from "node:crypto";
 import { createHash } from "node:crypto";
 import type { Digest, Instant, JobId } from "../../core/src/ids.ts";
 import { PASS_RULE } from "./catalog.ts";
+import { coupon } from "./coupon.ts";
 import { describePrintReason } from "./describe.ts";
 import { digestOf, seededDraw } from "./digest.ts";
 import { instantAt, openPrintJob } from "./open.ts";
@@ -74,10 +75,11 @@ export function printQualification(printerKey: KeyObject): QualificationSuite<Ch
 				const quantity = kind.kind === "l-bracket" ? 2 + draw(2) : 1 + draw(3);
 				const infillPct = INFILLS[draw(INFILLS.length)];
 				const id = `fulfil-${n + 1}`;
+				const jobSeed = jobSeedOf(seed, id);
 				const opened = await openPrintJob({
 					jobId: `job_${id}` as JobId,
 					partStl: await partStl(kind.kind, size),
-					seed: jobSeedOf(seed, id),
+					seed: jobSeed,
 					quantity,
 					infillPct,
 					at: instantAt(Date.now()),
@@ -97,6 +99,7 @@ export function printQualification(printerKey: KeyObject): QualificationSuite<Ch
 						quantity,
 						partStl: job.partStl,
 						partBox: job.partBox,
+						coupon: coupon(job.jobId, jobSeed),
 						plateStl: job.plate.stl,
 						partOrigins: job.plate.layout.partOrigins,
 						infillPct,
@@ -114,12 +117,13 @@ export function printQualification(printerKey: KeyObject): QualificationSuite<Ch
 				expect: "DECLINE",
 				deadlineSeconds: CHALLENGE_DEADLINE_S,
 				spec: {
-					label: `trap: 300 mm cube, wider than the ${FARM_BED_MM.x} mm bed`,
+					label: `trap: 300 mm by 300 mm part, wider than the ${FARM_BED_MM.x} mm bed`,
 					material: "PLA",
 					jobId: "job_trap" as JobId,
 					quantity: 1,
 					partStl: trap,
 					partBox: trapBox.value.bboxMm,
+					coupon: null,
 					plateStl: trap,
 					partOrigins: [],
 					infillPct: 20,

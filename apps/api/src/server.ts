@@ -40,8 +40,7 @@ import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep
 import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
-import { createPrintRuns, printRunReply } from "./print-demo.ts";
-import { runPrintDemo } from "../../../packages/verifier-print/src/run.ts";
+import { createPrintRuns, printRunReply, startPrintWorker } from "./print-demo.ts";
 import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 import { traceFigure } from "./figure-trace.ts";
@@ -1250,8 +1249,9 @@ const scenarioSweepTimer = setInterval(() => {
 		.catch(() => console.error("Scenario sweep failed; the next pass retries."));
 }, 10 * 60_000);
 scenarioSweepTimer.unref();
-// The print demo's runs live in memory and are bounded by print-demo.ts. They never reach the core's store.
-const printRuns = createPrintRuns({ run: runPrintDemo, now: () => Date.now() });
+// The print demo's runs live in memory and are bounded by print-demo.ts. Each one runs in its own worker thread, so
+// its CPU work never holds this event loop, and the run's deadline stops that thread. They never reach the core's store.
+const printRuns = createPrintRuns({ run: startPrintWorker, now: () => Date.now() });
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });

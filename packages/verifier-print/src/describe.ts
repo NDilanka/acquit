@@ -29,6 +29,8 @@ export function describePrintReason(reason: PrintRejectReason): string {
 			return `The coupon marker reads ${reason.found}; the contract names ${reason.expected}.`;
 		case "PHOTO_UNREADABLE":
 			return `The photo of layer ${reason.layer} cannot be read against the contract.`;
+		case "PHOTO_MISSING":
+			return `No photo of layer ${reason.layer} was sent, and the contract samples that layer.`;
 		case "GEOMETRY_MISMATCH":
 			return `The photo of layer ${reason.layer} does not match the part (overlap ${reason.iou.toFixed(2)}).`;
 		case "PHOTO_REUSED":

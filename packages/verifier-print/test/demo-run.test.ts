@@ -17,6 +17,14 @@ function runOf(mode: FarmMode): Promise<PrintDemoRun> {
 	return runPrintDemo({ mode, seed: SEED, at: AT });
 }
 
+// The run seed from the verify report. Under an earlier draw it collided with the job's own marker (58419), so the
+// planted fraud printed the correct coupon and the judge verified it. This build's first draw differs, so this seed
+// keeps that counterexample pinned without exercising the redraw by itself.
+const COLLIDING_SEED = new Uint8Array(Buffer.from("211417502ec11655ba4feb50abb07d6a8984245ba98e057da3a400381f4c5205", "hex"));
+// A run seed whose first other-job draw repeats the job's own marker (14175) in this build. Without the redraw the
+// planted fraud would print the correct coupon and verify, so this seed pins the redraw itself.
+const FIRST_DRAW_COLLIDES_SEED = new Uint8Array(Buffer.from("1f3edf06ed98a62056c0d92d3a4594e554dc49f0d117e7fab2f2cb76aaea2504", "hex"));
+
 test("an honest farm qualifies, holds a certificate, and prints one job the judge verifies", async () => {
 	const run = await runOf("honest");
 	assert.equal(run.farm.simulated, true);
@@ -39,6 +47,26 @@ test("an honest farm qualifies, holds a certificate, and prints one job the judg
 	assert.ok(Math.abs(print.evidence.telemetryS - print.evidence.estimatedS) <= 0.15 * print.evidence.estimatedS);
 });
 
+test("the planted other-job coupon differs from the job's coupon, so the pinned colliding seed is REJECTED", async () => {
+	const run = await runPrintDemo({ mode: "fraud:coupon-from-other-job", seed: COLLIDING_SEED, at: AT });
+	assert.equal(run.qualification.qualified, true, "the farm still qualifies before it prints the fraud");
+	const print = run.print;
+	assert.ok(print, "a qualified farm prints");
+	assert.equal(print.fraud?.knownGap, false, "a coupon fraud is not a declared gap");
+	assert.equal(print.verdict, "REJECTED", JSON.stringify(print.reasons));
+	assert.ok(print.reasons.some(reason => reason.kind.startsWith("COUPON_")), JSON.stringify(print.reasons));
+});
+
+test("a first other-job draw that repeats the job's marker is redrawn, so the planted coupon fraud is REJECTED", async () => {
+	const run = await runPrintDemo({ mode: "fraud:coupon-from-other-job", seed: FIRST_DRAW_COLLIDES_SEED, at: AT });
+	assert.equal(run.qualification.qualified, true, "the farm still qualifies before it prints the fraud");
+	const print = run.print;
+	assert.ok(print, "a qualified farm prints");
+	assert.equal(print.fraud?.knownGap, false, "a coupon fraud is not a declared gap");
+	assert.equal(print.verdict, "REJECTED", JSON.stringify(print.reasons));
+	assert.ok(print.reasons.some(reason => reason.kind.startsWith("COUPON_")), JSON.stringify(print.reasons));
+});
+
 test("a sloppy farm that accepts the trap does not qualify, so it prints nothing and holds no certificate", async () => {
 	const run = await runOf("sloppy");
 	assert.equal(run.farm.name, "Lantern Farm");
@@ -56,7 +84,7 @@ const OBSERVED: Readonly<Record<string, string>> = {
 	"reused-photo": "PHOTO_REUSED",
 	"layer-shift": "OUTSIDE_MATERIAL",
 	"swap-gcode": "FILE_HASH_MISMATCH",
-	"coupon-from-other-job": "FOOTPRINT_MISMATCH",
+	"coupon-from-other-job": "SCALE_OUT_OF_TOLERANCE",
 	"under-extrude": "FILAMENT_MISMATCH",
 	"fast-forward": "DURATION_IMPLAUSIBLE",
 	"forged-signature": "TELEMETRY_SIGNATURE_INVALID",

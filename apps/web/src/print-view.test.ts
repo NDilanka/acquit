@@ -106,7 +106,9 @@ test("a refusal of a print run is in plain words, and an unknown code is left to
   assert.equal(printRefusalWords("SOMETHING_ELSE"), null);
 });
 
-test("a run that stopped without a result says whether it timed out", () => {
-  assert.equal(failureWords("TIMED_OUT"), "The run passed its time limit and stopped. Start it again.");
+test("a run that ended without a result says whether it timed out, and never says a timed-out run is free to restart", () => {
+  const timedOut = failureWords("TIMED_OUT");
+  assert.equal(timedOut, "The run passed its time limit, so the server ended it. It still counts against the server's limits until its work has stopped, so a new run may be refused for a moment.");
+  assert.doesNotMatch(timedOut, /Start it again|and stopped\./);
   assert.equal(failureWords("RUN_FAILED"), "The run failed on the server. Start it again.");
 });

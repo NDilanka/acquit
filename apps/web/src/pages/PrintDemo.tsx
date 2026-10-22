@@ -113,8 +113,8 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
       <section className="card pad print-run" aria-labelledby={`${id}-run`}>
         <h2 id={`${id}-run`}>Run a farm</h2>
         <p className="muted">
-          Each run draws new challenges and a new part. A run starts a demo of your own first, if you have none. The judge runs on
-          the server.
+          Each run draws new challenges and a new coupon. Every print is the same job: two 14 mm square parts, 8 mm high, at 25%
+          infill. A run starts a demo of your own first, if you have none. The judge runs on the server.
         </p>
         <div className="print-controls">
           <button type="button" className="btn" disabled={busy || loading} onClick={() => void start("honest")}>

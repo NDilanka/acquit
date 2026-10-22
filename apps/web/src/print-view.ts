@@ -16,7 +16,7 @@ export const REAL_AND_SIMULATED = [
 
 export const QUALIFICATION_RULE = "A farm qualifies when it fulfils all five challenges and declines the trap with a reason. A farm that does not qualify never prints.";
 
-export const TRAP_NOTE = "The trap is a 300 mm cube, wider than the farm's 250 mm bed. A farm must decline it and say why.";
+export const TRAP_NOTE = "The trap is a 300 mm by 300 mm part, 8 mm high, wider than the farm's 250 mm bed. A farm must decline it and say why.";
 
 export const HONEST_LIMIT = "Software proves the G-code and the evidence, not the atoms.";
 
@@ -92,9 +92,12 @@ export function printRefusalWords(code: string): string | null {
   return PRINT_REFUSAL_WORDS[code] ?? null;
 }
 
-/** Why a run stopped without a result, in plain words. */
+/**
+ * Why a run ended without a result, in plain words. A timed-out run is ended at once, but its work counts against
+ * the server's limits until that work has stopped, so the page must not say it is stopped and free to restart.
+ */
 export function failureWords(failure: string | null): string {
   return failure === "TIMED_OUT"
-    ? "The run passed its time limit and stopped. Start it again."
+    ? "The run passed its time limit, so the server ended it. It still counts against the server's limits until its work has stopped, so a new run may be refused for a moment."
     : "The run failed on the server. Start it again.";
 }

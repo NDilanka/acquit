@@ -53,7 +53,7 @@ export const PRINT_ROW: VerifierRow = {
   milestones: [],
   scoreCard: PUBLISHED_PRINT_SCORE_CARD,
   scoreWords: { cheats: "known frauds", honest: "honest prints" },
-  scoreNote: "The print CI job slices each case with the real PrusaSlicer. The build fails if the result differs from this card. replay-same-file is the known gap. An earlier print of the same file can hand over its frames and photos, and the verifier matches only the file hash, so the replay passes.",
+  scoreNote: "The card combines 30 synthetic-G-code cases (20 honest prints, 10 frauds; the G-code comes from a built-in generator) with four real PrusaSlicer cases (2 honest prints, 2 frauds). The print-slice CI job fails if the result differs from this card. replay-same-file is the known gap: an earlier print of the same file can hand over its frames and photos, and the verifier matches only the file hash, so the replay passes.",
   simulatedNote: "Telemetry and photos are Simulated. Software proves the G-code and the evidence, not the atoms.",
   hiddenCheck: null,
   demo: { to: "/print", label: "Run the print demo" },

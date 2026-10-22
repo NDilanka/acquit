@@ -18,7 +18,7 @@ import { buildPlate } from "../plate.ts";
 import { meshStats } from "../stl.ts";
 import { newPrinterKeys } from "../telemetry.ts";
 import type { PrinterKeys, TelemetryFrame } from "../telemetry.ts";
-import type { Box } from "../types.ts";
+import type { Box, Coupon } from "../types.ts";
 import { capturePhotos } from "./camera.ts";
 import { scaledStl, syntheticGcode } from "./synthetic-gcode.ts";
 import { runTwin } from "./twin.ts";
@@ -33,6 +33,8 @@ export type PrintSource = {
 	/** The client's part, as the verifier holds it. A farm reads it to rebuild a plate for a coupon of its own. */
 	readonly partStl: Uint8Array;
 	readonly partBox: Box;
+	/** The witness coupon on this plate, or null for a bare part. A fraud that prints another job's coupon must differ from it. */
+	readonly coupon: Coupon | null;
 	/** The plate to print: the parts and the coupon on one bed. A trap job sends the bare part. */
 	readonly plateStl: Uint8Array;
 	/** Min corner of each part copy on the plate, in plate coordinates. */
@@ -92,8 +94,30 @@ function declineReason(source: PrintSource): string | null {
 	return null;
 }
 
-function otherSeedOf(seed: Uint8Array): Uint8Array {
-	return new Uint8Array(createHash("sha256").update("sim-farm-other-coupon\0").update(seed).digest());
+/** The seed of the other job's coupon, the draw-th one from the farm's seed. */
+function otherSeedOf(seed: Uint8Array, draw: number): Uint8Array {
+	return new Uint8Array(createHash("sha256").update("sim-farm-other-coupon\0").update(seed).update(`\0${draw}`).digest());
+}
+
+/** The raised cells of a coupon as one string, so two coupons compare by their geometry as well as their marker. */
+function cellsOf(witness: Coupon): string {
+	return witness.markerCells.map(row => row.map(raised => (raised ? "1" : "0")).join("")).join("/");
+}
+
+const OTHER_COUPON_DRAWS = 64;
+
+/**
+ * Another job's coupon for the plate a fraud prints. The draws come from the farm's seed in order, and the first
+ * one whose marker and cells both differ from the plate's own is taken, so one seed always plants the same fraud.
+ * Without the check a draw can repeat the plate's marker, and the plate would then carry the coupon it should not.
+ */
+function otherCouponOf(jobId: JobId, seed: Uint8Array, plate: Coupon | null): Coupon {
+	if (plate === null) throw new Error("the plate has no coupon for another job's coupon to differ from");
+	for (let draw = 0; draw < OTHER_COUPON_DRAWS; draw++) {
+		const candidate = coupon(`${jobId}-other` as JobId, otherSeedOf(seed, draw));
+		if (candidate.markerId !== plate.markerId && cellsOf(candidate) !== cellsOf(plate)) return candidate;
+	}
+	throw new Error("no other coupon differs from the plate's within the draws");
 }
 
 export function simFarm(options: FarmOptions): Farm {
@@ -131,7 +155,7 @@ export function simFarm(options: FarmOptions): Farm {
 		const plate = await buildPlate({
 			partStl: source.partStl,
 			partBox: source.partBox,
-			coupon: coupon(`${source.jobId}-other` as JobId, otherSeedOf(seed)),
+			coupon: otherCouponOf(source.jobId, seed, source.coupon),
 			quantity: source.quantity,
 		});
 		return plate.stl;

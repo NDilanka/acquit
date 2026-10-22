@@ -5,6 +5,7 @@ import { PASS_RULE } from "../src/catalog.ts";
 import { certify, printQualification, qualifies } from "../src/qualify.ts";
 import type { QualificationResult } from "../src/qualify.ts";
 import { FARM_BED_MM, simFarm } from "../src/sim/farm.ts";
+import type { PrintSubmission } from "../src/sim/farm.ts";
 import { meshStats } from "../src/stl.ts";
 import { newPrinterKeys } from "../src/telemetry.ts";
 import type { Instant } from "../../core/src/ids.ts";
@@ -62,6 +63,27 @@ test("a fulfilled part fails when its farm declines it or sends no evidence", as
 	const part = (await suite.challenges(SEED))[0];
 	assert.equal((await suite.grade(part, { declined: "no bed" })).passed, false);
 	assert.equal((await suite.grade(part, [])).passed, false);
+});
+
+test("a fulfilled part fails when its photos are missing, or when one sampled layer's photo is left out", async () => {
+	const keys = newPrinterKeys();
+	const suite = printQualification(keys.publicKey);
+	const part = (await suite.challenges(SEED))[0];
+	const answer = await simFarm({ mode: "honest", id: "test printer", keys, seed: SEED }).answer(part.spec);
+	assert.ok(Array.isArray(answer), "the honest farm prints the part");
+	const [sent] = answer as readonly PrintSubmission[];
+	assert.ok(sent.photos.length > 1, "the part samples more than one layer");
+	assert.equal((await suite.grade(part, [sent])).passed, true, "the complete evidence passes");
+	assert.deepEqual(await suite.grade(part, [{ ...sent, photos: [] }]), {
+		challenge: "fulfil-1",
+		passed: false,
+		detail: `rejected: No photo of layer ${part.spec.photoLayers[0]} was sent, and the contract samples that layer.`,
+	});
+	assert.deepEqual(await suite.grade(part, [{ ...sent, photos: sent.photos.slice(1) }]), {
+		challenge: "fulfil-1",
+		passed: false,
+		detail: `rejected: No photo of layer ${sent.photos[0].layer} was sent, and the contract samples that layer.`,
+	});
 });
 
 test("the pass rule needs all five parts and the trap, and nothing less", async () => {

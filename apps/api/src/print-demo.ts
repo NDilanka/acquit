@@ -1,21 +1,26 @@
 // The print demo's server side. A signed-in visitor starts one simulated farm's run and reads it back. A run
-// qualifies the farm and, when it qualifies, prints one job that the real print judge verifies, all in this
-// process. It never opens a job in the core, never reads or writes the job store, and never calls PayPal or
-// GitHub. The run lives on the server, so a closed tab does not stop it. Its bounds are a running run per
-// visitor, a starts-per-hour cap per visitor, two runs in flight at once, a deadline per run, and a store that
-// keeps the newest runs and drops the oldest finished one. A restart forgets the runs; nothing else is kept.
+// qualifies the farm and, when it qualifies, prints one job that the real print judge verifies. The run's work
+// executes in its own worker thread, so its CPU time never holds the API's event loop, and the API stops that
+// thread at the run's deadline. It never opens a job in the core, never reads or writes the job store, and never
+// calls PayPal or GitHub. The run lives on the server, so a closed tab does not stop it. Its bounds are a running
+// run per visitor, a starts-per-hour cap per visitor, two runs in flight at once, a deadline per run, and a store
+// that keeps the newest runs and drops the oldest finished one. A restart forgets the runs; nothing else is kept.
 
 import { randomBytes } from "node:crypto";
+import { Worker } from "node:worker_threads";
 import { instantAt } from "../../../packages/verifier-print/src/open.ts";
 import type { PrintDemoRun, RunInput } from "../../../packages/verifier-print/src/run.ts";
 import { parseFarmMode } from "../../../packages/verifier-print/src/sim/farm.ts";
 import type { FarmMode } from "../../../packages/verifier-print/src/sim/farm.ts";
+import type { PrintWorkerReply } from "./print-worker.ts";
 
 export const PRINT_RUNNING_PER_REQUESTER = 1;
 export const PRINT_RUNNING_TOTAL = 2;
 export const PRINT_STARTS_PER_HOUR = 12;
 export const PRINT_RUNS_KEPT = 200;
 export const PRINT_RUN_DEADLINE_MS = 120_000;
+/** The most heap one run's worker may use, in MB. A run that outgrows it fails and does not take the API down. */
+export const PRINT_WORKER_HEAP_MB = 512;
 const HOUR_MS = 3_600_000;
 
 export type PrintRunState = "RUNNING" | "DONE" | "FAILED";
@@ -39,26 +44,25 @@ export type PrintRuns = {
 	get(id: string): PrintRunRecord | undefined;
 };
 
+/**
+ * One run's work as the store starts it. `result` settles with the run's outcome. `stopped` settles once the work
+ * has actually stopped, and only then does the run give up its slot. `terminate` stops the work now.
+ */
+export type PrintJob = {
+	readonly result: Promise<PrintDemoRun>;
+	readonly stopped: Promise<void>;
+	terminate(): void;
+};
+
 export type PrintRunsDeps = {
-	readonly run: (input: RunInput) => Promise<PrintDemoRun>;
+	/** Starts one run's work. The server starts it in a worker thread that the store can stop. */
+	readonly run: (input: RunInput) => PrintJob;
 	readonly now: () => number;
 	/** Fresh bytes for one run's seed. A test passes a fixed one. */
 	readonly seed?: () => Uint8Array;
 	/** The deadline per run. A test shortens it; the server keeps the default. */
 	readonly deadlineMs?: number;
 };
-
-class RunOutOfTime extends Error {}
-
-/** Settles with the work, or rejects once the deadline passes. The work itself runs on to its end, so its slot stays taken until then. */
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new RunOutOfTime("the run passed its deadline")), ms);
-		timer.unref();
-	});
-	return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
-}
 
 export function createPrintRuns(deps: PrintRunsDeps): PrintRuns {
 	const records = new Map<string, PrintRunRecord>();
@@ -67,8 +71,12 @@ export function createPrintRuns(deps: PrintRunsDeps): PrintRuns {
 	const startsBy = new Map<string, number[]>();
 	let counter = 0;
 
-	const replace = (record: PrintRunRecord): void => {
-		records.set(record.id, record);
+	/** Ends a RUNNING record. A record that already ended keeps its end, so a late deadline or result changes nothing. */
+	const end = (id: string, change: Partial<PrintRunRecord>): boolean => {
+		const current = records.get(id);
+		if (current === undefined || current.state !== "RUNNING") return false;
+		records.set(id, { ...current, ...change, endedAt: new Date(deps.now()).toISOString() });
+		return true;
 	};
 
 	const evictOldestFinished = (): boolean => {
@@ -81,6 +89,14 @@ export function createPrintRuns(deps: PrintRunsDeps): PrintRuns {
 		return false;
 	};
 
+	/** Frees one slot. It is called only once the run's work has stopped. */
+	const release = (requesterId: string): void => {
+		inFlight -= 1;
+		const left = (inFlightBy.get(requesterId) ?? 1) - 1;
+		if (left <= 0) inFlightBy.delete(requesterId);
+		else inFlightBy.set(requesterId, left);
+	};
+
 	return {
 		start(requesterId, farm) {
 			const now = deps.now();
@@ -91,37 +107,86 @@ export function createPrintRuns(deps: PrintRunsDeps): PrintRuns {
 			if (recent.length >= PRINT_STARTS_PER_HOUR) return { kind: "REFUSED", code: "PRINT_RATE_LIMITED" };
 			if (records.size >= PRINT_RUNS_KEPT && !evictOldestFinished()) return { kind: "REFUSED", code: "PRINT_STORE_FULL" };
 
+			// Drop the starts of visitors with none left in the hour, so the map holds only recent visitors.
+			for (const [who, times] of startsBy) {
+				const live = times.filter(at => now - at < HOUR_MS);
+				if (live.length === 0) startsBy.delete(who);
+				else startsBy.set(who, live);
+			}
 			startsBy.set(requesterId, [...recent, now]);
 			counter += 1;
 			const id = `prt_${counter.toString(36)}_${randomBytes(6).toString("hex")}`;
 			const record: PrintRunRecord = { id, requesterId, farm, state: "RUNNING", startedAt: new Date(now).toISOString(), endedAt: null, result: null, failure: null };
-			replace(record);
+			records.set(id, record);
+
+			let job: PrintJob;
+			try {
+				job = deps.run({ mode: farm, seed: deps.seed?.() ?? randomBytes(32), at: instantAt(now) });
+			} catch {
+				// No work started, so no slot is taken.
+				end(id, { state: "FAILED", failure: "RUN_FAILED" });
+				return { kind: "STARTED", record: records.get(id) ?? record };
+			}
 
 			inFlight += 1;
 			inFlightBy.set(requesterId, own + 1);
-			const work = deps.run({ mode: farm, seed: deps.seed?.() ?? randomBytes(32), at: instantAt(now) });
-			// The slot is freed when the work itself settles, so a run past its deadline still counts against the bounds.
-			void work.finally(() => {
-				inFlight -= 1;
-				const left = (inFlightBy.get(requesterId) ?? 1) - 1;
-				if (left <= 0) inFlightBy.delete(requesterId);
-				else inFlightBy.set(requesterId, left);
-			}).catch(() => {});
-			withDeadline(work, deps.deadlineMs ?? PRINT_RUN_DEADLINE_MS).then(
-				result => replace({ ...record, state: "DONE", endedAt: new Date(deps.now()).toISOString(), result }),
-				(error: unknown) => replace({
-					...record,
-					state: "FAILED",
-					endedAt: new Date(deps.now()).toISOString(),
-					failure: error instanceof RunOutOfTime ? "TIMED_OUT" : "RUN_FAILED",
-				}),
+			const deadline = setTimeout(() => {
+				// The deadline ends the run now and stops its work. The slot stays taken until that work has stopped.
+				if (end(id, { state: "FAILED", failure: "TIMED_OUT" })) job.terminate();
+			}, deps.deadlineMs ?? PRINT_RUN_DEADLINE_MS);
+			// The deadline alone does not keep the process alive; the server and a run's own worker do.
+			deadline.unref();
+			job.result.then(
+				result => end(id, { state: "DONE", result }),
+				() => end(id, { state: "FAILED", failure: "RUN_FAILED" }),
 			);
+			void job.stopped.then(() => {
+				clearTimeout(deadline);
+				release(requesterId);
+			});
 			return { kind: "STARTED", record };
 		},
 		get(id) {
 			return records.get(id);
 		},
 	};
+}
+
+/**
+ * One run's work in its own worker thread, started with the run's input. `result` settles with the worker's reply,
+ * or fails when the worker errors, runs out of memory, or stops before it answers. `stopped` settles once the thread
+ * has exited, and `terminate` stops the thread now.
+ */
+export function startPrintWorker(input: RunInput): PrintJob {
+	const worker = new Worker(new URL("./print-worker.ts", import.meta.url), {
+		workerData: input,
+		resourceLimits: { maxOldGenerationSizeMb: PRINT_WORKER_HEAP_MB },
+	});
+	let answered = false;
+	let finish!: (run: PrintDemoRun) => void;
+	let fail!: (error: Error) => void;
+	const result = new Promise<PrintDemoRun>((resolve, reject) => { finish = resolve; fail = reject; });
+	let exited!: () => void;
+	const stopped = new Promise<void>(resolve => { exited = resolve; });
+	worker.on("message", (reply: PrintWorkerReply) => {
+		if (answered) return;
+		answered = true;
+		if (reply.ok) finish(reply.run);
+		else fail(new Error("the print run failed"));
+	});
+	worker.on("error", error => {
+		if (answered) return;
+		answered = true;
+		fail(error);
+	});
+	worker.once("exit", () => {
+		if (!answered) {
+			answered = true;
+			fail(new Error("the print worker stopped before it answered"));
+		}
+		exited();
+	});
+	return { result, stopped, terminate: () => { void worker.terminate(); } };
 }
 
 /** The refusal of a start the bounds turn away, as the status and code a client reads. */

@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Instant, JobId } from "../../core/src/ids.ts";
 import { FRAUDS } from "./catalog.ts";
+import { coupon } from "./coupon.ts";
 import { describePrintReason } from "./describe.ts";
 import { estimateTime } from "./estimate.ts";
 import { parseGcode } from "./gcode.ts";
@@ -114,6 +115,7 @@ export async function runPrintDemo(input: RunInput): Promise<PrintDemoRun> {
 		quantity: job.quantity,
 		partStl: job.partStl,
 		partBox: job.partBox,
+		coupon: coupon(job.jobId, job.seed),
 		plateStl: job.plate.stl,
 		partOrigins: job.plate.layout.partOrigins,
 		infillPct: job.infillPct,
