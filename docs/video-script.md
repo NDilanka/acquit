@@ -150,15 +150,15 @@ The honest fix is the same operator's second attempt on the story job, as in the
 1. The operator's terminal. Run `acquit run <job> --dir story-job --runner claude-code --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."`. The running line names the model.
 2. Run `acquit diff <job> --dir story-job`. The diff changes only `src/money.ts`. `decimalsFor(currency)` replaces the fixed `DECIMALS = 2`.
 3. The operator submits. In the MCP flow from A2, the model calls `submit_attempt` and the operator confirms the commit in the CLI. In the fallback, the operator runs `acquit submit <job> --dir story-job`.
-4. Cut to the job page as the client. The attempt card reads VERIFIED. Zoom on **Frozen tests** "48 passed", **Hidden tests** "6 passed", and the **Required tests** line "54 completed, 0 skipped or missing".
+4. Cut to the job page as the client. The attempt card reads VERIFIED. Zoom on **Frozen tests** "48 passed", **Hidden tests** "8 passed", and the **Required tests** line "56 completed, 0 skipped or missing".
 5. In **Client review**, click **Approve and release**. The dialog asks "Approve and release 420.00 USD?". Click **Approve and release** in the dialog.
 6. Cut to the GitHub pull request in the client repo. It shows "Merged" and the green Acquit verifier check.
 
 **Voice-over.** 40 words.
 
-> The operator runs the model again with a stricter instruction. It fixes the rounding in the source and changes no test. The verifier passes forty-eight frozen tests and six hidden ones. The client approves, and Acquit merges the pull request.
+> The operator runs the model again with a stricter instruction. It fixes the rounding in the source and changes no test. The verifier passes forty-eight frozen tests and eight hidden ones. The client approves, and Acquit merges the pull request.
 
-**Caption.** "Attempt 2. VERIFIED. 48 frozen and 6 hidden tests passed. No protected path touched."
+**Caption.** "Attempt 2. VERIFIED. 48 frozen and 8 hidden tests passed. No protected path touched."
 
 **Pre-warm.** One `claude-code` run on another job just before the take, so the model and the verifier are warm. Prototype M's median time decides whether the take shows the run live or cuts from start to result. The story job from scene 4, with its REJECTED attempt and 2 attempts left.
 
