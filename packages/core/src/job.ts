@@ -29,7 +29,8 @@ import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryE
 import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
-import type { CaptureEvidence, DisputeId, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
+import type { CaptureEvidence, DisputeId, DisputeOffer, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
+import { DISPUTE_ACCESS_REFUSED } from "./paypal.ts";
 import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
@@ -335,7 +336,7 @@ export type JobEffect =
 		readonly jobId: JobId;
 		readonly reason: "DISPUTE_SLA_MISSED" | "SETTLEMENT_UNCONFIRMED_AT_CUTOFF" | "OPERATOR_REIMBURSEMENT_OWED" | "SETTLEMENT_MISMATCH" | "PROVIDER_DISPUTE_ON_PAID"
 			| "PROVIDER_DISPUTE_NOT_ANSWERABLE" | "PROVIDER_DISPUTE_PARTIAL" | "PROVIDER_DISPUTE_PARTIAL_LOST" | "PROVIDER_DISPUTE_LOST_ON_PAID"
-			| "PROVIDER_DISPUTE_UNCONFIRMED" | "PROVIDER_DISPUTE_ANSWER_REFUSED";
+			| "PROVIDER_DISPUTE_UNCONFIRMED" | "PROVIDER_DISPUTE_READ_REFUSED" | "PROVIDER_DISPUTE_ANSWER_REFUSED";
 		/** The buyer dispute a PROVIDER_DISPUTE alert is about, so the process log names it. No other alert carries one. */
 		readonly disputeId?: string;
 		/** One plain sentence a person reads beside the reason, when the reason alone does not say what to do. */
@@ -344,17 +345,23 @@ export type JobEffect =
 	/**
 	 * Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it.
 	 * `attempt` is the verified attempt the notes describe. It keys the answer, so a later attempt after a rework is a new answer.
+	 * `stage` is the dispute stage the answer is for, so an escalated dispute is answered once more. `requeued` marks the one
+	 * re-queue after PayPal refused the answer for lack of dispute access.
 	 */
 	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string;
-		readonly attempt: Ordinal; readonly simulated: boolean }
+		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true }
+	/** Acquit sends the same receipt-cited notes as a message, while the dispute is at INQUIRY and offers no evidence to provide. */
+	| { readonly kind: "DISPUTE_MESSAGE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly message: string;
+		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true }
 	/** Acquit accepts the buyer's claim, so PayPal returns the held funds to the buyer. */
-	| { readonly kind: "DISPUTE_ACCEPT"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly note: string; readonly simulated: boolean };
+	| { readonly kind: "DISPUTE_ACCEPT"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly note: string; readonly simulated: boolean;
+		readonly requeued?: true };
 
 /**
- * What Acquit did about a buyer dispute. EVIDENCE and ACCEPT are the answers it filed. NOT_ANSWERABLE means the job
+ * What Acquit did about a buyer dispute. EVIDENCE, MESSAGE, and ACCEPT are the answers it filed. NOT_ANSWERABLE means the job
  * had no held escrow left to answer for, so a person has to decide.
  */
-export type DisputeAnswer = "EVIDENCE" | "ACCEPT" | "NOT_ANSWERABLE";
+export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE";
 
 /**
  * What PayPal did with the answer Acquit selected. QUEUED until the outbox sends it, FILED once PayPal confirms it, and
@@ -377,6 +384,17 @@ export type ProviderDispute = {
 	/** Set on the first delivery Acquit saw for this dispute id. Absent on a dispute that reached a resolved state first. */
 	readonly answer?: DisputeAnswer;
 	readonly answerState?: DisputeAnswerState;
+	/** PayPal's dispute_life_cycle_stage on the latest delivery. A change of stage is an escalation, answered once for that stage. */
+	readonly stage?: string;
+	/** The answer links the latest delivery named. Absent until a delivery names links, so a message is never chosen on a guess. */
+	readonly offers?: readonly DisputeOffer[];
+	/** Set once the answer was re-queued after PayPal refused it for lack of dispute access. The re-queue happens once. */
+	readonly requeued?: true;
+	/**
+	 * The round the answer on this record is for: its dispute and attempt, the stage it was filed for, and the one re-queue.
+	 * PayPal's answer to another round files nothing here. Absent on a record stored before rounds were kept, which keeps its rule.
+	 */
+	readonly answerRound?: string;
 	/**
 	 * The latest delivery is a signed body that stood in for a read PayPal refused. It holds the release whatever its status
 	 * says, and settles nothing: a successful read of the dispute replaces it.
@@ -476,9 +494,11 @@ function transitionTable(): {
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
 	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
 		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome: string | null; readonly simulated?: true;
-		readonly fromVerifiedBody?: true }, JobRow, "SYSTEM">;
-	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer }, JobRow, "SYSTEM">;
-	DisputeAnswerRefused: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly reason: string }, JobRow, "SYSTEM">;
+		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[] }, JobRow, "SYSTEM">;
+	/** `round` is the answer round PayPal answered, so a late answer to an earlier round of the dispute files nothing on the current one. */
+	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly round?: string }, JobRow, "SYSTEM">;
+	DisputeAnswerRefused: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly reason: string; readonly round?: string },
+		JobRow, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
 	// OpenJob
@@ -713,11 +733,15 @@ function transitionTable(): {
 				if (dispute === undefined || dispute.status === "RESOLVED" || (dispute.answer !== "ACCEPT" && dispute.answer !== undefined)) {
 					return { next: verified, credits: [], effects: [] };
 				}
-				// The evidence is a new answer, so an earlier answer's refusal or filing does not carry over to it.
-				const defended: ProviderDispute = { ...withoutAnswer(dispute), answer: "EVIDENCE",
+				// The evidence is a new answer, so an earlier answer's refusal or filing does not carry over to it. Where the dispute
+				// offers no evidence to provide, the receipt goes as a message instead.
+				const defendedWith = answerOf(verified, dispute.offers);
+				const filed = answerEffects(verified, dispute.id, defendedWith, dispute.simulated === true);
+				const round = filed.find(isDisputeAnswer);
+				const defended: ProviderDispute = { ...withoutAnswer(dispute), answer: defendedWith,
+					...(round === undefined ? {} : { answerRound: answerRoundOf(round) }),
 					...(dispute.simulated === true ? {} : { answerState: { state: "QUEUED" as const } }) };
-				return { next: { ...verified, providerDispute: defended }, credits: [],
-					effects: answerEffects(verified, dispute.id, "EVIDENCE", dispute.simulated === true) };
+				return { next: { ...verified, providerDispute: defended }, credits: [], effects: filed };
 			}
 			const rejected: RejectedAttempt = { ordinal, verdict };
 			const history = [...attempts.history, rejected] as History;
@@ -888,34 +912,60 @@ function transitionTable(): {
 			}
 			// Acquit answers the first delivery it sees for an unresolved dispute, once. A repeat keeps that answer and files nothing new.
 			const first = held === undefined;
-			const answer: DisputeAnswer | undefined = held?.answer ?? (first && command.status !== "RESOLVED" ? disputeAnswerOf(row) : undefined);
+			// A delivery at a later stage that offers provide-evidence is an escalation: that stage is answered once, with the evidence.
+			// The stage a record first saw is its baseline, so a record stored before stages were kept starts one at its next delivery.
+			const escalated = held !== undefined && held.stage !== undefined && command.stage !== undefined && command.stage !== held.stage &&
+				command.offers?.includes("provide_evidence") === true && command.status !== "RESOLVED" && disputeAnswerOf(row) === "EVIDENCE";
+			const stage = command.stage ?? held?.stage;
+			const offers = command.offers ?? held?.offers;
+			const answer: DisputeAnswer | undefined = escalated || (first && command.status !== "RESOLVED") ? answerOf(row, offers) : held?.answer;
 			const simulated = held?.simulated === true || command.simulated === true;
-			const filing = first ? answerEffects(row, command.disputeId, answer, simulated) : [];
+			const filing = first || escalated ? answerEffects(row, command.disputeId, answer, simulated, escalated ? command.stage : undefined) : [];
+			// PayPal refused the answer for lack of dispute access. A successful read that offers the link of the answer the row now
+			// selects re-queues it, once: a message where the read offers no evidence to provide. A stand-in is not a successful read.
+			const refused = held !== undefined && held.answerState?.state === "REFUSED" && held.answerState.reason === DISPUTE_ACCESS_REFUSED;
+			const retry = refused && !standIn && !escalated && held?.requeued !== true && command.status !== "RESOLVED" && command.offers !== undefined
+				? answerOf(row, command.offers) : undefined;
+			const requeue = retry !== undefined && ANSWER_LINK[retry] !== undefined && command.offers?.includes(ANSWER_LINK[retry]) === true;
+			const requeued: JobEffect[] = requeue ? answerEffects(row, command.disputeId, retry, simulated, stage, true) : [];
+			const recordedAnswer = requeue ? retry : answer;
+			const requeuedFlag = requeue || (!escalated && held?.requeued === true);
 			// The answer is queued until the outbox sends it. A simulated answer is never sent, so it carries no queued state.
-			const answerState: DisputeAnswerState | undefined = filing.some(effect => effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_ACCEPT") && !simulated
-				? { state: "QUEUED" } : held?.answerState;
+			const queued = [...filing, ...requeued].some(effect => effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_MESSAGE" || effect.kind === "DISPUTE_ACCEPT");
+			const answerState: DisputeAnswerState | undefined = queued && !simulated ? { state: "QUEUED" } : held?.answerState;
+			// The round the row answers in now: the one this delivery filed or re-queued, or the round it already held.
+			const newRound = [...filing, ...requeued].find(isDisputeAnswer);
+			const answerRound = filing.length > 0 || requeued.length > 0 ? (newRound === undefined ? undefined : answerRoundOf(newRound)) : held?.answerRound;
 			const latest = latestTimeOf(held, command);
 			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount ?? held?.amount ?? null,
 				openedAt: held?.openedAt ?? command.openedAt, ...(latest === undefined ? {} : { updatedAt: latest }),
 				...(command.outcome === null ? {} : { outcome: command.outcome }),
 				...(command.status === "RESOLVED" ? { resolvedAt: held?.resolvedAt ?? facts.now } : {}),
-				...(answer === undefined ? {} : { answer }),
+				...(recordedAnswer === undefined ? {} : { answer: recordedAnswer }),
 				...(answerState === undefined ? {} : { answerState }),
+				...(answerRound === undefined ? {} : { answerRound }),
+				...(stage === undefined ? {} : { stage }),
+				...(offers === undefined ? {} : { offers }),
+				...(requeuedFlag ? { requeued: true as const } : {}),
 				...(standIn ? { unconfirmed: true as const } : {}),
 				...(simulated ? { simulated: true as const } : {}) };
 			const recorded: Plan<JobRow>["next"] = { ...row, version: (row.version + 1) as Version, providerDispute: next };
 			const buyerFavour = command.status === "RESOLVED" && command.outcome === "RESOLVED_BUYER_FAVOUR";
 			// A stand-in holds the money and tells a person. It never settles, lifts, or unblocks a release, whatever its outcome says.
-			const standInAlert: JobEffect[] = standIn
-				? [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_UNCONFIRMED", disputeId: next.id, detail: UNCONFIRMED_DETAIL }] : [];
+			// An open dispute's stand-in says PayPal refused the read and the hold stands. Only a resolved one is "not confirmed".
+			const standInAlert: JobEffect[] = !standIn ? []
+				: command.status === "RESOLVED"
+					? [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_UNCONFIRMED", disputeId: next.id, detail: UNCONFIRMED_DETAIL }]
+					: [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_READ_REFUSED", disputeId: next.id, detail: READ_REFUSED_DETAIL }];
 			// A dispute against a paid job moves no money back: the money is already out, so a person is told. The receipt is the answer.
 			if (row.state.status === "PAID") {
 				const effects: JobEffect[] = [...standInAlert];
-				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: next.id }, ...filing);
+				if (first) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: next.id });
+				effects.push(...filing, ...requeued);
 				if (buyerFavour) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_LOST_ON_PAID", disputeId: next.id });
 				return { next: recorded, credits: [], effects };
 			}
-			const effects: JobEffect[] = [...filing, ...standInAlert];
+			const effects: JobEffect[] = [...filing, ...requeued, ...standInAlert];
 			if (standIn) return { next: recorded, credits: [], effects };
 			const gross = grossOf(row);
 			const partial = gross !== null && command.amount !== null && command.amount < gross;
@@ -952,12 +1002,16 @@ function transitionTable(): {
 		DisputeAnswerFiled: { by: "SYSTEM", apply: (row, command) => {
 			const held = row.providerDispute;
 			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "FILED") return unchanged(row);
+			// PayPal took an earlier round of this answer. The round the row holds now is still waiting on its own, so nothing is filed for it.
+			if (!answersRound(held, command.round)) return unchanged(row);
 			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "FILED" } } }, credits: [], effects: [] };
 		} },
 		// PayPal refused the answer for good. The job says so, and a person is alerted with the plain reason. The hold stays.
 		DisputeAnswerRefused: { by: "SYSTEM", apply: (row, command) => {
 			const held = row.providerDispute;
 			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "REFUSED") return unchanged(row);
+			// A refusal of an earlier round says nothing about the round the row holds now, and it raises no alert for it.
+			if (!answersRound(held, command.round)) return unchanged(row);
 			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "REFUSED", reason: command.reason } } },
 				credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ANSWER_REFUSED", disputeId: command.disputeId,
 					detail: `${command.reason}. The payment stays held.` }] };
@@ -1066,6 +1120,9 @@ function receiptOf(fields: Omit<Receipt, typeof receiptBrand>): Receipt {
 /** The alert a stand-in delivery raises: the hold stands, and nothing was confirmed by PayPal's own read. */
 const UNCONFIRMED_DETAIL = "PayPal refused the dispute read; release or refund not confirmed. The payment stays held.";
 
+/** The alert an open dispute's stand-in raises: PayPal refused the read, and the dispute is still open with the payment held. */
+const READ_REFUSED_DETAIL = "PayPal refused the dispute read. The dispute is open and the payment stays held.";
+
 /** The newer of the record's update time and the delivery's, so a record always holds the highest time it has seen. */
 function latestTimeOf(held: ProviderDispute | undefined, command: { readonly updatedAt?: Instant }): Instant | undefined {
 	const recorded = held?.updatedAt;
@@ -1121,7 +1178,7 @@ function heldEscrowOf(row: JobRow): HeldEscrow | null {	const state = row.state;
 }
 
 /** The capture this row recorded, in every state that keeps one. Null before a capture lands. */
-function captureOf(row: JobRow): CaptureId | null {
+export function captureOf(row: JobRow): CaptureId | null {
 	const state = row.state;
 	if (state.status === "PAID") return state.release.captureId;
 	if (state.status === "REFUNDED") return state.refund.captureId;
@@ -1206,18 +1263,26 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 		// The evidence is wanted only while the row still answers with it, so a refund or rework that the arbiter ruled drops it.
 		// It is wanted only for the verified attempt the row answers with, so attempt 1's evidence is done once attempt 2 passed.
 		// A row queued before attempts were recorded carries none, and keeps the rule it always had.
+		// It is wanted only in the round the row holds: an earlier stage's evidence, or the answer a re-queue replaced, is done.
 		case "DISPUTE_EVIDENCE": {
 			const dispute = row.providerDispute;
 			const attempt: Ordinal | undefined = effect.attempt;
 			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE" &&
-				disputeAnswerOf(row) === "EVIDENCE" && (attempt === undefined || attempt === evidenceAttemptOf(row));
+				disputeAnswerOf(row) === "EVIDENCE" && (attempt === undefined || attempt === evidenceAttemptOf(row)) && answersRound(dispute, answerRoundOf(effect));
 		}
 		// The accepted claim is wanted only while the escrow is still held and no verified work is left to defend: the same
 		// ACCEPT disputeAnswerOf names for the row now.
 		case "DISPUTE_ACCEPT": {
 			const dispute = row.providerDispute;
 			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "ACCEPT" &&
-				disputeAnswerOf(row) === "ACCEPT";
+				disputeAnswerOf(row) === "ACCEPT" && answersRound(dispute, answerRoundOf(effect));
+		}
+		// The message is wanted under the same rule as the evidence it stands in for: the row still files a message for this attempt.
+		case "DISPUTE_MESSAGE": {
+			const dispute = row.providerDispute;
+			const attempt: Ordinal | undefined = effect.attempt;
+			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "MESSAGE" &&
+				disputeAnswerOf(row) === "EVIDENCE" && (attempt === undefined || attempt === evidenceAttemptOf(row)) && answersRound(dispute, answerRoundOf(effect));
 		}
 		default: return true;
 	}
@@ -1244,25 +1309,74 @@ function evidenceAttemptOf(row: JobRow): Ordinal | null {
 	return null;
 }
 
-/** The dispute with no answer and no answer state. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
+/**
+ * The answer a dispute gets: the evidence, or a message where PayPal offers a message and no evidence to provide. A delivery
+ * that names no links keeps the evidence answer, so a message is never chosen on a guess. The accepted claim is unchanged.
+ */
+function answerOf(row: JobRow, offers: readonly DisputeOffer[] | undefined): DisputeAnswer {
+	const answer = disputeAnswerOf(row);
+	if (answer === "EVIDENCE" && offers !== undefined && offers.includes("send_message") && !offers.includes("provide_evidence")) return "MESSAGE";
+	return answer;
+}
+
+/** The link PayPal names for each answer. A re-queue is sent only where the read offers that link. */
+const ANSWER_LINK: Record<DisputeAnswer, DisputeOffer | undefined> = {
+	EVIDENCE: "provide_evidence", MESSAGE: "send_message", ACCEPT: "accept_claim", NOT_ANSWERABLE: undefined,
+};
+
+/** The dispute with no answer, no answer state, no round, and no re-queue. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
 function withoutAnswer(dispute: ProviderDispute): ProviderDispute {
-	const { answer: _answer, answerState: _answerState, ...rest } = dispute;
+	const { answer: _answer, answerState: _answerState, requeued: _requeued, answerRound: _answerRound, ...rest } = dispute;
 	return rest;
 }
 
-/** The effects a first-seen dispute files. The notes are built here, from the row, so the outbox row carries exactly what was decided. */
-function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | undefined, simulated: boolean): JobEffect[] {
+/** A dispute answer the outbox sends: the evidence, the message, or the accepted claim. */
+export type DisputeAnswerEffect = Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_MESSAGE" | "DISPUTE_ACCEPT" }>;
+
+export function isDisputeAnswer(effect: { readonly kind: string }): effect is DisputeAnswerEffect {
+	return effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_MESSAGE" || effect.kind === "DISPUTE_ACCEPT";
+}
+
+/**
+ * The round a dispute answer is for: its dispute, its verified attempt (evidence and message), the stage it escalated to, and the
+ * one re-queue. An evidence or message queued before attempts were recorded names no attempt, so it names no round at all.
+ */
+export function answerRoundOf(effect: DisputeAnswerEffect): string | undefined {
+	if (effect.kind !== "DISPUTE_ACCEPT" && effect.attempt === undefined) return undefined;
+	const base = effect.kind === "DISPUTE_ACCEPT" ? effect.disputeId : `${effect.disputeId}:${effect.attempt}`;
+	const staged = effect.kind !== "DISPUTE_ACCEPT" && effect.stage !== undefined ? `${base}:${effect.stage}` : base;
+	return effect.requeued === true ? `${staged}:requeued` : staged;
+}
+
+/**
+ * Whether an answer's round is the one a dispute record holds. A record stored before rounds were kept holds none, and an answer
+ * that names no round keeps the rule it always had: neither is held to a round it cannot name.
+ */
+export function answersRound(dispute: ProviderDispute, round: string | undefined): boolean {
+	return dispute.answerRound === undefined || round === undefined || dispute.answerRound === round;
+}
+
+/**
+ * The effects a dispute answer files. The notes are built here, from the row, so the outbox row carries exactly what was decided.
+ * `stage` is set only on an escalation, and `requeued` only on the one re-queue of a refused answer, so each keys its own answer.
+ */
+function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | undefined, simulated: boolean,
+	stage?: string, requeued?: true): JobEffect[] {
 	const payee = payeeMerchantOf(row);
 	const escrow = heldEscrowOf(row);
 	const attempt = evidenceAttemptOf(row);
 	if (answer === undefined) return [];
-	if (answer === "NOT_ANSWERABLE" || payee === null || (answer === "ACCEPT" && escrow === null) || (answer === "EVIDENCE" && attempt === null)) {
+	if (answer === "NOT_ANSWERABLE" || payee === null || (answer === "ACCEPT" && escrow === null) || (answer !== "ACCEPT" && attempt === null)) {
 		return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE", disputeId }];
 	}
+	const marks = { ...(stage === undefined ? {} : { stage }), ...(requeued === undefined ? {} : { requeued }) };
 	if (answer === "EVIDENCE" && attempt !== null) {
-		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated }];
+		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated, ...marks }];
 	}
-	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated,
+	if (answer === "MESSAGE" && attempt !== null) {
+		return [{ kind: "DISPUTE_MESSAGE", jobId: row.id, disputeId, payee, message: evidenceNotesOf(row), attempt, simulated, ...marks }];
+	}
+	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated, ...(requeued === undefined ? {} : { requeued }),
 		note: `Acquit accepts the buyer's claim on dispute ${disputeId} for capture ${escrow?.capture.captureId ?? "unknown"} on job ${row.id}.` }];
 }
 

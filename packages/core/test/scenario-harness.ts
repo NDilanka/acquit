@@ -98,9 +98,9 @@ function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation
 				return { kind: "CONFIRMED", observation: { kind: "REIMBURSEMENT_COMPLETED", reimbursement } };
 			}
 			// PayPal takes a dispute answer for a dispute it holds. A simulated dispute's answer is never dispatched.
-			if (call.kind === "DISPUTE_EVIDENCE" || call.kind === "DISPUTE_ACCEPT") {
+			if (call.kind === "DISPUTE_EVIDENCE" || call.kind === "DISPUTE_MESSAGE" || call.kind === "DISPUTE_ACCEPT") {
 				return { kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: call.disputeId,
-					answer: call.kind === "DISPUTE_EVIDENCE" ? "EVIDENCE" : "ACCEPT", note: null } };
+					answer: call.kind === "DISPUTE_EVIDENCE" ? "EVIDENCE" : call.kind === "DISPUTE_MESSAGE" ? "MESSAGE" : "ACCEPT", note: null } };
 			}
 			return unused();
 		},

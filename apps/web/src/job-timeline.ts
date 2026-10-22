@@ -242,6 +242,21 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
     });
+  } else if (dispute.answer === "MESSAGE") {
+    // The same receipt-cited notes as the evidence, sent as a message while PayPal's dispute is at its inquiry stage.
+    const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
+    const queued = answer?.state === "QUEUED";
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: queued ? `Acquit is sending ${what} as a message to PayPal on dispute ${dispute.id}`
+        : `Acquit sent PayPal ${what} as a message on dispute ${dispute.id}${simulated}`,
+      detail: queued ? "PayPal has not confirmed the message yet." : "The message names the frozen and hidden test counts, the pull request, and the judged commit.",
+      tone: "held",
+      ids: [{ value: dispute.id, label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    });
   } else if (dispute.answer === "ACCEPT") {
     const queued = answer?.state === "QUEUED";
     events.push({
@@ -268,10 +283,13 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
   }
   if (dispute.unconfirmed) {
     // PayPal refused the read, so Acquit holds only a signed notice. The notice holds the payout and settles nothing.
+    // An open dispute is held and not yet decided, so only a resolved one says its release or refund is not confirmed.
+    const title = dispute.status === "RESOLVED" ? "PayPal refused the dispute read; release or refund not confirmed"
+      : "PayPal refused the dispute read; the dispute is open and the payment stays held";
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: "PayPal refused the dispute read; release or refund not confirmed",
+      title,
       detail: "The payment stays held. Acquit has only PayPal's signed notice for this dispute. A person has to check it with PayPal.",
       tone: "alert",
       ids: [],
