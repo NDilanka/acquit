@@ -99,9 +99,9 @@ export function loadHiddenCasesFromFile(path: string, shape: HiddenCaseShape): r
 	return parseHiddenCases(readManifest(path), path, shape);
 }
 
-/** The committed example: the six cases that were public before K1, under the fixture 1 id prefix. */
+/** The committed example: eight public cases, under the fixture 1 id prefix. Cases 7 and 8 are negative totals. */
 export const EXAMPLE_HIDDEN_CASES_PATH = fileURLToPath(new URL("./fixtures/hidden-cases.example.json", import.meta.url));
-export const EXAMPLE_HIDDEN_CASE_SHAPE: HiddenCaseShape = { count: 6, idPrefix: "hidden" };
+export const EXAMPLE_HIDDEN_CASE_SHAPE: HiddenCaseShape = { count: 8, idPrefix: "hidden" };
 export function loadExampleHiddenCases(): readonly HiddenCase[] {
 	return loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE);
 }

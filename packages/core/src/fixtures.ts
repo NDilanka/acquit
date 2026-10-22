@@ -56,7 +56,12 @@ export type FixtureEntry = {
 	readonly trustedFix?: CommitSha;
 	/** The per-currency-family coverage gate the fixture's draft must satisfy before approval. */
 	readonly coverageFamilies?: readonly CurrencyFamily[];
+	/** Case sets this fixture retired. A job that froze one is still judged against exactly that set. */
+	readonly retiredHiddenCases?: readonly RetiredHiddenCases[];
 };
+
+/** One retired hidden-case file: its name beside the registry, and the count it holds. */
+export type RetiredHiddenCases = { readonly file: string; readonly count: number };
 
 export class FixtureConfigError extends Error {
 	readonly code: "FIXTURES_CONFIG_MISSING" | "FIXTURES_CONFIG_INVALID";
@@ -109,7 +114,7 @@ export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], rep
 	return null;
 }
 
-const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies"];
+const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies", "retiredHiddenCases"];
 const OWNER_NAME = /^[a-zA-Z0-9-]+$/;
 const REPOSITORY_NAME = /^[a-zA-Z0-9._-]+$/;
 
@@ -187,6 +192,21 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 				}
 			}
 		}
+		const retiredHiddenCases = raw.retiredHiddenCases;
+		if (retiredHiddenCases !== undefined) {
+			if (!Array.isArray(retiredHiddenCases) || retiredHiddenCases.length === 0) refuse([at], `${at} retiredHiddenCases must be a non-empty array of retired sets.`);
+			for (const retired of retiredHiddenCases) {
+				if (!isRecord(retired)) refuse([at], `${at} retiredHiddenCases entry must be an object.`);
+
+				const file = retired.file;
+				for (const key of Object.keys(retired)) if (key !== "file" && key !== "count") refuse([at], `${at} retiredHiddenCases entry has an unknown field ${key}.`);
+				if (typeof file !== "string" || file === "" || file.length > 1024) refuse([at], `${at} retiredHiddenCases entry must carry file as a path.`);
+				const count: unknown = retired.count;
+				if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > 500) {
+					refuse([at], `${at} retiredHiddenCases entry must carry count as a whole number between 1 and 500.`);
+				}
+			}
+		}
 		const key = fixtureKey(repository, number);
 		if (seen.has(key)) refuse([at], `${source} registers ${key} twice.`);
 		seen.add(key);
@@ -194,15 +214,21 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 			visible, hidden, hiddenIdPrefix, protectedPaths: protectedPaths as readonly Glob[], hiddenCases, frozenExtractor,
 			...(demoForkPrefix === undefined ? {} : { demoForkPrefix }),
 			...(trustedFix === undefined ? {} : { trustedFix: trustedFix as CommitSha }),
-			...(coverageFamilies === undefined ? {} : { coverageFamilies: coverageFamilies as { name: string; currencies: string[] }[] }) });
+			...(coverageFamilies === undefined ? {} : { coverageFamilies: coverageFamilies as { name: string; currencies: string[] }[] }),
+			...(retiredHiddenCases === undefined ? {} : { retiredHiddenCases: retiredHiddenCases as RetiredHiddenCases[] }) });
 	}
 	return entries;
 }
 
 /** A case file's path as the registry named it: absolute stays, relative resolves beside the registry file. */
+export function caseFilePath(file: string, registryPath: string): string {
+	if (isAbsolute(file)) return file;
+	return join(dirname(registryPath), file);
+}
+
+/** The path of a fixture's current case file. */
 export function fixtureCasesPath(entry: FixtureEntry, registryPath: string): string {
-	if (isAbsolute(entry.hiddenCases)) return entry.hiddenCases;
-	return join(dirname(registryPath), entry.hiddenCases);
+	return caseFilePath(entry.hiddenCases, registryPath);
 }
 
 /** The digest is the run's case selector: a registry that cannot pick one case set per digest is ambiguous. */

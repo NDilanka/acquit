@@ -277,7 +277,7 @@ test("after the approval the job's contract names the approved set, so the API r
 		assert.equal(detail.status, 200);
 		const job = (await detail.json()) as { job: { contract: { hiddenTests: number; hiddenManifest: string } | null } };
 		assert.ok(job.job.contract, "the job carries its contract");
-		assert.equal(job.job.contract!.hiddenTests, 2, "the approved case count, not the fixture's curated 6");
+		assert.equal(job.job.contract!.hiddenTests, 2, "the approved case count, not the fixture's curated 8");
 		assert.equal(job.job.contract!.hiddenManifest, frozen.digest, "the digest of the manifest the verifier runs");
 	} finally {
 		child?.kill("SIGKILL");

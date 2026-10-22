@@ -9,7 +9,7 @@ import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { resolveScopingDir } from "../../../packages/core/src/scoping-dir.ts";
 import { assertSubjectAllowed, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 import { apiVerifierEnv, clientRepositoryEnv, githubAppEnv } from "../../../packages/verifier/config.ts";
-import { fixtureContracts, loadFixtureRegistry } from "../../../packages/verifier/fixtures.ts";
+import { fixtureContracts, fixtureContractsByManifest, loadFixtureRegistry } from "../../../packages/verifier/fixtures.ts";
 import { parseDemoAllowlist } from "./demo-access.ts";
 
 export const rootPath = fileURLToPath(new URL("../../..", import.meta.url));
@@ -55,6 +55,8 @@ export const clientRepository = clientRepositoryEnv();
  */
 export const fixtureRegistry = loadFixtureRegistry();
 export const fixtures: readonly FixtureContract[] = fixtureContracts(fixtureRegistry);
+/** Every contract a frozen manifest may name, retired sets included. Only the digest lookup reads it; OpenJob never does. */
+export const fixturesByManifest: readonly FixtureContract[] = fixtureContractsByManifest(fixtureRegistry);
 /**
  * The fixture the judge scenarios open on, by its registry key (`<owner>/<repo>#<issue>`). Its scripted trees are
  * written for the score card's frozen suite, so the deployment names the one fixture whose suite they match.

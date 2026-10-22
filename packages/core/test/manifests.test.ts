@@ -216,7 +216,7 @@ test("a fork that two registered fixtures both name matches neither, so it never
 
 test("two jobs on two fixtures in one verifier process: each run receives only its own cases", async () => {
 	// Both fixture books load in one process; the run request's own manifest digest picks its case
-	// set. The subject spy records the ids each run was handed: fixture A's 48 frozen and 6 hidden,
+	// set. The subject spy records the ids each run was handed: fixture A's 48 frozen and 8 hidden,
 	// fixture B's 12 and 3, and never a case from the other fixture.
 	const invoiceSource = Array.from({ length: 48 }, (_, i) =>
 		`it('case ${i + 1}', () => { expect(formatTotal([{ amount: 1 }], 'KWD')).toBe('1'); });`).join("\n");

@@ -12,7 +12,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseHiddenCases } from "../packages/verifier/hidden.ts";
+import { EXAMPLE_HIDDEN_CASE_SHAPE, parseHiddenCases } from "../packages/verifier/hidden.ts";
 
 const [manifest, repoRoot] = process.argv.slice(2);
 if (!manifest) {
@@ -22,7 +22,7 @@ if (!manifest) {
 const root = repoRoot ?? fileURLToPath(new URL("..", import.meta.url));
 /** How far apart, in characters, a currency and an answer may sit once whitespace is removed. */
 const WINDOW = 200;
-const cases = parseHiddenCases(readFileSync(manifest, "utf8"), manifest, { count: 6, idPrefix: "hidden" });
+const cases = parseHiddenCases(readFileSync(manifest, "utf8"), manifest, EXAMPLE_HIDDEN_CASE_SHAPE);
 const files = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
 	.split("\0").filter(file => file !== "");
 let total = 0;
