@@ -172,6 +172,23 @@ test("a retired set naming the committed public example is refused outside dev, 
 	}
 });
 
+test("the six-case public example committed before cases 7 and 8 is refused outside dev, as current or retired", () => {
+	const historical = JSON.stringify({ version: 1, cases: exampleCases.slice(0, 6) });
+	assert.equal(hiddenContractOf(exampleCases.slice(0, 6)).digest, "1f8674af554ddddcc1e29f0a9f017664c9cf50445018497868f60a97b7b19e57");
+	for (const registryPath of [registryDir(historical, undefined, { hidden: 6 }), registryDir(CURRENT_CHANGED, { text: historical, count: 6 })]) {
+		try {
+			const registry = loadFixtureRegistry({ ACQUIT_FIXTURES: registryPath });
+			assert.throws(() => buildFixtureBook(registry, {}), (error: unknown) => {
+				assert.ok(error instanceof FixtureConfigError);
+				assert.match(error.message, /public example/);
+				return true;
+			});
+			assert.ok(buildFixtureBook(registry, { ACQUIT_DEV: "1" }).byDigest.size >= 1);
+		} finally {
+			rmSync(dirname(registryPath), { recursive: true, force: true });
+		}
+	}
+});
 test("a job that froze a retired set is judged against exactly that set", async () => {
 	const registryPath = registryDir(CURRENT_CHANGED, { text: RETIRED_TEXT, count: 6 });
 	try {

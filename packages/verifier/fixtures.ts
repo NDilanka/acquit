@@ -14,7 +14,7 @@ import { hiddenCaseOf, parseScopingFile } from "../core/src/scoping.ts";
 import type { Digest, JobId, TestId } from "../core/src/ids.ts";
 import type { HiddenCase } from "../core/src/verifier.ts";
 import { FROZEN_EXTRACTORS } from "./frozen-cases.ts";
-import { hiddenContractOf, hiddenManifest, loadHiddenCasesFromFile, publicExampleDigest } from "./hidden.ts";
+import { hiddenContractOf, hiddenManifest, loadHiddenCasesFromFile, publicExampleDigests } from "./hidden.ts";
 
 export { FixtureConfigError } from "../core/src/fixtures.ts";
 
@@ -86,7 +86,7 @@ export function buildFixtureBook(registry: FixtureRegistry, env: NodeJS.ProcessE
 				throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV], error instanceof Error ? error.message : String(error));
 			}
 			const digest = hiddenContractOf(cases).digest;
-			if (!dev && digest === publicExampleDigest()) {
+			if (!dev && publicExampleDigests().includes(digest)) {
 				throw new FixtureConfigError("FIXTURES_CONFIG_INVALID", [FIXTURES_ENV],
 					`${path} parses to the committed public example. Name this deployment's own private cases, or set ACQUIT_DEV=1 for a development run.`);
 			}
