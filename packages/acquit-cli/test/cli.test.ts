@@ -132,7 +132,7 @@ test("receipts renders the tutorial's block from the receipt, credit, and profil
 	const client = fakeClient({
 		"/api/me/receipts": { receipts: [{ id: "rcpt_9F3D", jobId: "job_7Q2K", operator: "devon-ops", agent: "ts-bugfixer",
 			pullRequest: 13, repository: "maya-client/invoice-app", mergeCommit: "5cccb66515313caed72e4af329a62fc011139426",
-			frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, attemptsUsed: 2, paid: 36000,
+			frozen: { expected: 48, passed: 48 }, hidden: { expected: 8, passed: 8 }, attemptsUsed: 2, paid: 36000,
 			releasedAt: "2026-11-03T15:22:00.000Z" }], nextCursor: null },
 		"/api/me/credits": { credits: { available: 30, weeklyAllowance: 40, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 1 } },
 		"/api/me/operator": { operator: { id: "devon-ops", handle: "devon-ops", label: "INDEPENDENT", payouts: "READY",
