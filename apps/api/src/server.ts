@@ -40,6 +40,8 @@ import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep
 import { gitWorkPort } from "../../../packages/house/src/runner.ts";
 import type { HouseTarget } from "../../../packages/house/src/runner.ts";
 import { scenarioFixtureOf, scenarioReply, scenarioRoutingFor, scriptedWorkspace } from "./scenarios.ts";
+import { createPrintRuns, printRunReply } from "./print-demo.ts";
+import { runPrintDemo } from "../../../packages/verifier-print/src/run.ts";
 import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 import { traceFigure } from "./figure-trace.ts";
@@ -698,6 +700,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, reply.status, reply.body);
 		return;
 	}
+	// The print demo: a simulated farm qualifies and prints one job through the real print judge, in this process.
+	// It shares the scenarios' gate, and it opens no core job and calls no outside service.
+	if (url.pathname === "/api/demo/print/runs" || url.pathname.startsWith("/api/demo/print/runs/")) {
+		if (method === "POST" && !demoOpenTo(demoAllowlist, clientAddressOf(req))) { json(res, 403, DEMO_PRIVATE); return; }
+		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
+		const input = method === "POST" ? await body(req) : undefined;
+		const reply = printRunReply(printRuns, current.visitor.id, method, url.pathname.slice("/api/demo/print/runs".length), input);
+		json(res, reply.status, reply.body);
+		return;
+	}
 	if (url.pathname === "/api/platform/ledger" && method === "GET") {
 		// The whole book, every tenant, one role: the platform dashboard's only data source. Any other
 		// signed-in session is refused here before the core is asked, so no client or operator session
@@ -1238,6 +1250,8 @@ const scenarioSweepTimer = setInterval(() => {
 		.catch(() => console.error("Scenario sweep failed; the next pass retries."));
 }, 10 * 60_000);
 scenarioSweepTimer.unref();
+// The print demo's runs live in memory and are bounded by print-demo.ts. They never reach the core's store.
+const printRuns = createPrintRuns({ run: runPrintDemo, now: () => Date.now() });
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });
