@@ -17,7 +17,7 @@ import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts"
 import { commercialSplit } from "./ledger.ts";
 import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
-import { quote } from "./paypal.ts";
+import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
 import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
 import type { JobScopingRow } from "./scoping.ts";
@@ -82,6 +82,7 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 		case "REIMBURSEMENT_COMPLETED": return { type: "ReimbursementSettled", jobId, reimbursement: observation.reimbursement };
 		case "DISPUTE": return { type: "ProviderDispute", jobId, disputeId: observation.disputeId, captureId: observation.captureId, status: observation.status,
 			reason: observation.reason, amount: observation.amount, openedAt: observation.openedAt, outcome: observation.outcome ?? null,
+			...(observation.updatedAt === undefined ? {} : { updatedAt: observation.updatedAt }),
 			...(observation.simulated === true ? { simulated: true as const } : {}) };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
@@ -824,6 +825,15 @@ export async function ingestPayPalWebhook(ports: Ports, request: Request, devRep
 		const holding = await ports.store.jobForResource(read.anchor);
 		owner = holding === null ? null : await ports.store.readJob(holding);
 		if (owner !== null) read = await readFor(ports, envelope.resource, payeeMerchantOf(owner), devReplay);
+	}
+	// PayPal refuses a dispute read when the platform holds no dispute permission for the merchant (a 403). The verified
+	// body is the dispute PayPal signed, so it stands in for the read. The unsigned dev replay body never does.
+	if (!devReplay && envelope.resource.kind === "DISPUTE" && (read.kind === "REFUSED" || read.kind === "UNKNOWN")) {
+		const fromBody = disputeOfVerifiedDelivery(raw, envelope.resource.id);
+		if (fromBody !== null) {
+			console.warn(`Acquit: PayPal's read of dispute ${logQuoted(envelope.resource.id)} was refused (${read.kind === "REFUSED" ? read.reason : "UNKNOWN"}); the verified delivery stands in for it.`);
+			read = { kind: "SETTLED", observation: fromBody };
+		}
 	}
 	if (read.kind === "UNKNOWN") return record({ kind: "REFUSED", reason: "RESOURCE_UNKNOWN_TO_PROVIDER", resource: envelope.resource.kind }, 202,
 		`PayPal holds no ${resourceNoun(envelope.resource.kind)} ${envelope.resource.id}.`);

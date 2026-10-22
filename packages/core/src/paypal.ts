@@ -115,9 +115,12 @@ export type PayPalObservation =
 	| { readonly kind: "REIMBURSEMENT_COMPLETED"; readonly reimbursement: ReimbursementEvidence }
 	| { readonly kind: "ONBOARDING_LINK"; readonly operator: OperatorId; readonly actionUrl: string }
 	| { readonly kind: "ONBOARDING_COMPLETED"; readonly operator: OperatorId; readonly merchant: MerchantId }
-	/** The buyer dispute as PayPal holds it now. `outcome` is PayPal's outcome code, present once the dispute resolves. */
+	/**
+	 * The buyer dispute as PayPal holds it now. `outcome` is PayPal's outcome code, present once the dispute resolves.
+	 * `updatedAt` is PayPal's update_time: the order a delivery is judged by, so an older body changes nothing.
+	 */
 	| { readonly kind: "DISPUTE"; readonly disputeId: DisputeId; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
-		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome?: string; readonly simulated?: true }
+		readonly amount: UsdCents; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome?: string; readonly simulated?: true }
 	/** PayPal took the answer. `note` names what PayPal already held when it answered 422, and is null on a 2xx. */
 	| { readonly kind: "DISPUTE_ANSWERED"; readonly disputeId: string; readonly answer: "EVIDENCE" | "ACCEPT"; readonly note: string | null };
 
@@ -496,6 +499,8 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 				}
 				return { kind: "PERMANENT_FAILURE", reason: `PAYPAL_422_${issue ?? "UNSPECIFIED"}` };
 			}
+			// The platform holds no dispute permission for this merchant: a person grants it, and no retry changes that.
+			if (error instanceof ProviderError && error.status === 403) return { kind: "PERMANENT_FAILURE", reason: DISPUTE_ACCESS_REFUSED };
 			throw error;
 		}
 	}
@@ -732,8 +737,24 @@ export function disputeOutcomeCode(json: unknown): string | null {
 export function parseDispute(json: unknown, captureId: CaptureId): Omit<Extract<PayPalObservation, { kind: "DISPUTE" }>, "kind"> {
 	const dispute = object(json);
 	const outcome = disputeOutcomeCode(json);
+	const updatedAt = routed(() => utcInstant(dispute.update_time));
 	return { disputeId: text(dispute.dispute_id) as DisputeId, captureId, status: text(dispute.status), reason: text(dispute.reason),
-		amount: money(dispute.dispute_amount), openedAt: utcInstant(dispute.create_time), ...(outcome === null ? {} : { outcome }) };
+		amount: money(dispute.dispute_amount), openedAt: utcInstant(dispute.create_time),
+		...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }) };
+}
+
+/**
+ * The dispute a verified delivery carries, for a read PayPal refused. PayPal signed the body and the verifier passed it,
+ * so it stands in for the read only when it names the same dispute id, a seller transaction, and an update_time: that
+ * time is what orders it against a delivery already recorded. Null when any of those is missing.
+ */
+export function disputeOfVerifiedDelivery(raw: string, disputeId: string): Extract<PayPalObservation, { kind: "DISPUTE" }> | null {
+	const resource = routed(() => object(object(JSON.parse(raw) as unknown).resource));
+	if (resource === null || routed(() => text(resource.dispute_id)) !== disputeId) return null;
+	const captureId = disputedCaptureId(resource);
+	if (captureId === null || routed(() => utcInstant(resource.update_time)) === null) return null;
+	const dispute = routed(() => parseDispute(resource, captureId));
+	return dispute === null ? null : { kind: "DISPUTE", ...dispute };
 }
 
 /** The refusal code PayPal puts in the body's `name`. */
@@ -748,6 +769,9 @@ function nameOf(body: unknown): string | null {
  * because a generic not-allowed can be a permission refusal rather than a settled answer.
  */
 const SETTLED_DISPUTE_ANSWER_ISSUE = /ALREADY|NOT_IN_OPEN_STATE|INVALID_DISPUTE_(STATUS|STATE)/;
+
+/** The plain reason a person reads when PayPal refuses a dispute answer with a 403: the platform has no dispute access. */
+export const DISPUTE_ACCESS_REFUSED = "PayPal has not given Acquit dispute access for this merchant";
 
 /** The issue code PayPal puts in the first detail entry. */
 function issueOf(body: unknown): string | null {

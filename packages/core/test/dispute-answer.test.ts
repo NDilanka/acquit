@@ -13,7 +13,7 @@ import { SqliteStore } from "../src/store.ts";
 import { checkLaws, commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
 import { hours, instant, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
-import { createPayPal, quote } from "../src/paypal.ts";
+import { createPayPal, DISPUTE_ACCESS_REFUSED, quote } from "../src/paypal.ts";
 import type { Bps } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
@@ -610,5 +610,21 @@ test("evidence queued before attempts were recorded, with no attempt on it, is s
 			assert.equal(outboxStateOf(store, legacyKey).kind, "CONFIRMED");
 		});
 		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(legacyKey) }]);
+	});
+});
+
+test("a dispute answer PayPal refuses with a 403 ends for a person with the plain reason, is sent once, and the held release stays held", async () => {
+	await withRecordedPayPal(() => Response.json({ name: "NOT_AUTHORIZED" }, { status: 403 }), async calls => {
+		await withStore(verifiedRow(), async store => {
+			const ports = portsOver(store);
+			assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-evidence-403")).refused, null);
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.deepEqual(outboxStateOf(store, evidenceKey), { kind: "NEEDS_HUMAN", reason: DISPUTE_ACCESS_REFUSED });
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "IDLE");
+			const row = await store.readJob(jobId);
+			if (row === null) throw new Error("the job is missing");
+			assert.equal(releaseHeld(row), true);
+		});
+		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) }]);
 	});
 });

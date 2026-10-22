@@ -360,6 +360,8 @@ export type ProviderDispute = {
 	readonly reason: string;
 	readonly amount: UsdCents;
 	readonly openedAt: Instant;
+	/** PayPal's update_time for the status this record holds. A delivery older than it is a replay and changes nothing. */
+	readonly updatedAt?: Instant;
 	readonly outcome?: string;
 	readonly resolvedAt?: Instant;
 	/** Set on the first delivery Acquit saw for this dispute id. Absent on a dispute that reached a resolved state first. */
@@ -456,7 +458,7 @@ function transitionTable(): {
 	ReimbursementSettled: Edge<JobRow<RefundedState>, JobRef & { readonly reimbursement: ReimbursementEvidence }, JobRow<RefundedState>, "SYSTEM">;
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
 	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
-		readonly amount: UsdCents; readonly openedAt: Instant; readonly outcome: string | null; readonly simulated?: true }, JobRow, "SYSTEM">;
+		readonly amount: UsdCents; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome: string | null; readonly simulated?: true }, JobRow, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
 	// OpenJob
@@ -841,6 +843,10 @@ function transitionTable(): {
 			const held = row.providerDispute;
 			// One capture carries one buyer dispute on this row. A second dispute id is a fact a person has to see.
 			if (held !== undefined && held.id !== command.disputeId) return settlementMismatch(row);
+			// PayPal's update_time orders the deliveries of one dispute. A body older than the one recorded is a replay: it changes
+			// nothing, so an older OPEN cannot reopen a resolved hold and an older RESOLVED cannot lift a newer hold.
+			if (held !== undefined && held.updatedAt !== undefined && command.updatedAt !== undefined && Date.parse(command.updatedAt) < Date.parse(held.updatedAt))
+				return unchanged(row);
 			// A resolved dispute is final. A later delivery of it changes nothing, and a different outcome is a fact this row never settled.
 			if (held?.status === "RESOLVED") {
 				const same = command.status !== "RESOLVED" || command.outcome === (held.outcome ?? null);
@@ -850,8 +856,9 @@ function transitionTable(): {
 			const first = held === undefined;
 			const answer: DisputeAnswer | undefined = held?.answer ?? (first && command.status !== "RESOLVED" ? disputeAnswerOf(row) : undefined);
 			const simulated = held?.simulated === true || command.simulated === true;
+			const updatedAt = command.updatedAt ?? held?.updatedAt;
 			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount,
-				openedAt: held?.openedAt ?? command.openedAt,
+				openedAt: held?.openedAt ?? command.openedAt, ...(updatedAt === undefined ? {} : { updatedAt }),
 				...(command.outcome === null ? {} : { outcome: command.outcome }),
 				...(command.status === "RESOLVED" ? { resolvedAt: facts.now } : {}),
 				...(answer === undefined ? {} : { answer }),
