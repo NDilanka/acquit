@@ -117,6 +117,8 @@ const queuedEffectsOf = (store: SqliteStore): QueuedEffect[] =>
 const CREATED = "CUSTOMER.DISPUTE.CREATED";
 const UPDATED = "CUSTOMER.DISPUTE.UPDATED";
 const RESOLVED = "CUSTOMER.DISPUTE.RESOLVED";
+/** The alert an open dispute's stand-in raises. The record says the dispute is open, so no "not confirmed" wording appears. */
+const OPEN_READ_REFUSED = "PayPal refused the dispute read. The dispute is open and the payment stays held.";
 
 test("a CREATED delivery the read refused records the dispute on the job that holds its capture, and holds the release", async () => {
 	await withVerifiedJob(async (store, ports) => {
@@ -125,7 +127,7 @@ test("a CREATED delivery the read refused records the dispute on the job that ho
 		const row = await jobOf(store);
 		assert.deepEqual(row.providerDispute, { id: disputeId, status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
 			amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), answer: "EVIDENCE",
-			answerState: { state: "QUEUED" }, unconfirmed: true });
+			answerState: { state: "QUEUED" }, stage: "INQUIRY", offers: [], unconfirmed: true });
 		assert.equal(releaseHeld(row), true);
 	});
 });
@@ -288,7 +290,24 @@ test("a body with no update time places the hold and raises an alert, and settle
 		assert.equal(row.providerDispute?.status, "UNDER_REVIEW");
 		assert.equal(row.providerDispute?.updatedAt, undefined);
 		assert.equal(releaseHeld(row), true);
-		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"));
+		// An open dispute is held, not unconfirmed: its alert says PayPal refused the read, and it does not say "not confirmed".
+		assert.ok(queuedEffectsOf(store).some(effect => effect.kind === "ALERT" && effect.reason === "PROVIDER_DISPUTE_READ_REFUSED" &&
+			effect.disputeId === disputeId && effect.detail === OPEN_READ_REFUSED));
+		assert.equal(queuedEffectsOf(store).some(effect => effect.reason === "PROVIDER_DISPUTE_UNCONFIRMED"), false);
+	});
+});
+
+test("a successful read of a dispute the stand-in held confirms the record, and the open hold stands", async () => {
+	await withVerifiedJob(async (store, ports) => {
+		await deliver(ports, "WH-CREATED-403", CREATED, disputeResource({ updateTime: "2026-10-22T10:05:00Z", status: "UNDER_REVIEW" }));
+		assert.equal((await jobOf(store)).providerDispute?.unconfirmed, true);
+		const read = disputeResource({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" });
+		await deliver(portsReading(store, read), "WH-READ-OK", UPDATED, read);
+		assert.equal(outcomeOf(store, "WH-READ-OK"), "verified, applied");
+		const row = await jobOf(store);
+		assert.equal(row.providerDispute?.status, "WAITING_FOR_SELLER_RESPONSE");
+		assert.equal(row.providerDispute?.unconfirmed, undefined);
+		assert.equal(releaseHeld(row), true);
 	});
 });
 

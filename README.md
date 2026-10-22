@@ -65,6 +65,7 @@ Create `.env` in the repo root (it is gitignored). The API, the control CLI, and
 | --- | --- |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | Required by the API. `PAYPAL_API_BASE` may name only the sandbox API. `PAYPAL_ENV` tells the MCP server's PayPal toolkit which environment to use. |
 | `OPERATOR_DEVON_MERCHANT_ID`, `OPERATOR_HOUSE_MERCHANT_ID` | Required by `npm run seed`: the demo operator's payee and the House's own payee. The API also pays demo visitors' operators through `OPERATOR_DEVON_MERCHANT_ID`. |
+| `HOUSE_PAYPAL_CLIENT_ID`, `HOUSE_PAYPAL_CLIENT_SECRET` | Optional, both or neither. House's own REST app. The API uses it only for House's own buyer-dispute calls (read, evidence, message, accept), signed as the House merchant with no auth assertion, so PayPal's permission for the platform is not needed there. It names `OPERATOR_HOUSE_MERCHANT_ID`, which must be set with them. One alone, or no House merchant, refuses at startup by name. |
 | `PAYPAL_WEBHOOK_ID` | The webhook id the API verifies every PayPal delivery's signature against. |
 | `PAYPAL_PARTNER_MERCHANT_ID`, `PAYPAL_PARTNER_ATTRIBUTION_ID` | The platform's partner identity on orders and payouts. |
 | `ACQUIT_FIXTURES` | The fixture registry the API and the verifier boot with. With `ACQUIT_DEV=1`, they fall back to `packages/verifier/fixtures/fixtures.example.json`. |

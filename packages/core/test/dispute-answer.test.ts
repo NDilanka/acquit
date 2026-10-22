@@ -14,7 +14,7 @@ import { checkLaws, commercialSplit, reduceLedger, usd } from "../src/ledger.ts"
 import { hours, instant, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
 import { createPayPal, DISPUTE_ACCESS_REFUSED, quote } from "../src/paypal.ts";
-import type { Bps } from "../src/paypal.ts";
+import type { Bps, DisputeOffer } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 import type { Verdict, VerifierRunId } from "../src/verifier.ts";
@@ -657,4 +657,163 @@ test("a dispute answer is queued on the job until PayPal takes it, and then reco
 		});
 		assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) }]);
 	});
+});
+
+/** A buyer dispute as PayPal reads it at a stage, with the answer links the read names and the time it was stamped. */
+const disputeAt = (stage: string, offers: readonly DisputeOffer[], fields: { readonly updatedAt?: Instant } = {}) =>
+	({ ...dispute("OPEN"), stage, offers, ...fields });
+
+/** The row with a refusal on its answer, the way the outbox records a 403 for the answer it sent. */
+function withRefusal(row: JobRow): JobRow {
+	const held = row.providerDispute;
+	if (held === undefined) throw new Error("expected a dispute on the row");
+	return { ...row, providerDispute: { ...held, answerState: { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED } } };
+}
+
+const messageOf = (plan: Plan<JobRow>): Extract<JobEffect, { kind: "DISPUTE_MESSAGE" }> => {
+	const [message] = plan.effects.filter((effect): effect is Extract<JobEffect, { kind: "DISPUTE_MESSAGE" }> => effect.kind === "DISPUTE_MESSAGE");
+	if (message === undefined) throw new Error("expected one DISPUTE_MESSAGE");
+	return message;
+};
+
+const messageKey = operationKey({ kind: "DISPUTE_MESSAGE", jobId, disputeId: "PP-D-9", payee: merchant, message: "n", attempt: 1, simulated: false });
+const messagePath = "/v1/customer/disputes/PP-D-9/send-message";
+const requeueKey = operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n", attempt: 1, stage: "INQUIRY",
+	requeued: true, simulated: false });
+
+test("a verified job whose dispute offers a message and no evidence to provide takes the receipt as a message, not as evidence", () => {
+	const opened = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["send_message", "accept_claim"]), paypalFacts(later)));
+	assert.deepEqual(opened.effects.map(effect => effect.kind), ["DISPUTE_MESSAGE"]);
+	const message = messageOf(opened);
+	assert.equal(message.disputeId, "PP-D-9");
+	assert.equal(message.payee, merchant);
+	assert.equal(message.simulated, false);
+	assert.ok(message.message.startsWith(`Verified attempt 1 for job ${jobId} passed run run_dispute_1`), "the message carries the same receipt-cited notes");
+	assert.equal(opened.next.providerDispute?.answer, "MESSAGE");
+	assert.deepEqual(opened.next.providerDispute?.answerState, { state: "QUEUED" });
+	assert.equal(opened.next.providerDispute?.stage, "INQUIRY");
+});
+
+test("a dispute that offers evidence is answered with evidence even when it also offers a message, and one that names no links keeps evidence", () => {
+	const both = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence", "send_message"]), paypalFacts(later)));
+	assert.deepEqual(both.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	assert.equal(both.next.providerDispute?.answer, "EVIDENCE");
+	const unnamed = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", []), paypalFacts(later)));
+	assert.deepEqual(unnamed.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	assert.equal(unnamed.next.providerDispute?.answer, "EVIDENCE");
+});
+
+test("a dispute that escalates to a stage offering evidence is answered with evidence once for that stage, and its message is no longer wanted", () => {
+	const inquiry = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["send_message"]), paypalFacts(later)));
+	const message = messageOf(inquiry);
+	const escalated = planOf(applyJobCommand(inquiry.next, disputeAt("CHARGEBACK", ["provide_evidence", "accept_claim"], { updatedAt: later }),
+		paypalFacts(later)));
+	assert.deepEqual(escalated.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	const evidence = evidenceFrom(escalated);
+	assert.equal(evidence.stage, "CHARGEBACK");
+	assert.equal(escalated.next.providerDispute?.answer, "EVIDENCE");
+	assert.equal(effectWanted(escalated.next, message), false);
+	assert.equal(effectWanted(escalated.next, evidence), true);
+	// The same stage again files nothing new: each stage is answered once.
+	const repeat = planOf(applyJobCommand(escalated.next, disputeAt("CHARGEBACK", ["provide_evidence", "accept_claim"], { updatedAt: later }),
+		paypalFacts(later)));
+	assert.deepEqual(repeat.effects, []);
+});
+
+test("a refused answer is re-queued once, after a successful read offers its link, and a second refusal of it stays refused", () => {
+	const filed = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: now }), paypalFacts(later)));
+	const read = planOf(applyJobCommand(withRefusal(filed.next), disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: later }),
+		paypalFacts(later)));
+	assert.deepEqual(read.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	const requeued = evidenceFrom(read);
+	assert.equal(requeued.requeued, true);
+	assert.equal(requeued.stage, "INQUIRY");
+	assert.deepEqual(read.next.providerDispute?.answerState, { state: "QUEUED" });
+	assert.equal(read.next.providerDispute?.requeued, true);
+	assert.equal(operationKey(requeued), requeueKey);
+	assert.notEqual(operationKey(requeued), evidenceKey, "the re-queue is its own answer, not a replay of the refused one");
+	const again = planOf(applyJobCommand(withRefusal(read.next), disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: later }),
+		paypalFacts(later)));
+	assert.deepEqual(again.effects, []);
+	assert.deepEqual(again.next.providerDispute?.answerState, { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED });
+});
+
+test("a refused evidence answer is re-queued as a message where the successful read offers only a message", () => {
+	const filed = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: now }), paypalFacts(later)));
+	const read = planOf(applyJobCommand(withRefusal(filed.next), disputeAt("INQUIRY", ["send_message", "accept_claim"], { updatedAt: later }),
+		paypalFacts(later)));
+	assert.deepEqual(read.effects.map(effect => effect.kind), ["DISPUTE_MESSAGE"]);
+	assert.equal(read.next.providerDispute?.answer, "MESSAGE");
+});
+
+test("a read that does not offer the refused answer's link re-queues nothing, and a stand-in never re-queues", () => {
+	const filed = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: now }), paypalFacts(later)));
+	const unoffered = planOf(applyJobCommand(withRefusal(filed.next), disputeAt("INQUIRY", ["accept_claim"], { updatedAt: later }), paypalFacts(later)));
+	assert.deepEqual(unoffered.effects, []);
+	const standIn = { ...disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: later }), fromVerifiedBody: true as const };
+	const body = planOf(applyJobCommand(withRefusal(filed.next), standIn, paypalFacts(later)));
+	assert.deepEqual(body.effects.map(effect => effect.kind), ["ALERT"]);
+	assert.equal(body.next.providerDispute?.requeued, undefined);
+});
+
+test("a verdict that lands on a claim accepted for a funded job answers with a message where the dispute offers no evidence to provide", () => {
+	const accepted = planOf(applyJobCommand(verifyingRow(), disputeAt("INQUIRY", ["send_message", "accept_claim"]), paypalFacts(later)));
+	assert.equal(accepted.next.providerDispute?.answer, "ACCEPT");
+	const verified = planOf(applyJobCommand(accepted.next, verifiedReport(), paypalFacts(later)));
+	assert.deepEqual(verified.effects.map(effect => effect.kind), ["DISPUTE_MESSAGE"]);
+	assert.equal(verified.next.providerDispute?.answer, "MESSAGE");
+});
+
+test("an escalated answer, a re-queued answer, and a message each key their own round, and a first answer keeps the key it always had", () => {
+	const first: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" }> = { kind: "DISPUTE_EVIDENCE", jobId, disputeId: "PP-D-9", payee: merchant, notes: "n",
+		attempt: 1, simulated: false };
+	assert.equal(operationKey(first), evidenceKey);
+	const staged: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" }> = { ...first, stage: "CHARGEBACK" };
+	assert.notEqual(operationKey(staged), evidenceKey);
+	assert.notEqual(operationKey(staged), operationKey({ ...first, stage: "INQUIRY" }));
+	assert.notEqual(operationKey({ ...first, requeued: true }), evidenceKey);
+	assert.notEqual(operationKey({ ...first, stage: "INQUIRY", requeued: true }), operationKey({ ...first, stage: "INQUIRY" }));
+	const message: Extract<JobEffect, { kind: "DISPUTE_MESSAGE" }> = { kind: "DISPUTE_MESSAGE", jobId, disputeId: "PP-D-9", payee: merchant, message: "n",
+		attempt: 1, simulated: false };
+	assert.equal(operationKey(message), messageKey);
+	assert.notEqual(operationKey(message), evidenceKey);
+	assert.notEqual(operationKey({ ...acceptEffect(), requeued: true }), acceptKey);
+});
+
+/** The accepted claim this file files for PP-D-9 on the test merchant, as the funded job names it. */
+const acceptEffect = (): Extract<JobEffect, { kind: "DISPUTE_ACCEPT" }> => ({ kind: "DISPUTE_ACCEPT", jobId, disputeId: "PP-D-9", payee: merchant,
+	note: "n", simulated: false });
+
+test("a message answer reaches PayPal at its send-message path under its own request id, and is recorded as filed", async () => {
+	await withRecordedPayPal(() => new Response(null, { status: 204 }), async calls => {
+		await withStore(verifiedRow(), async store => {
+			const ports = portsOver(store);
+			await applySystemCommand(ports, disputeAt("INQUIRY", ["send_message", "accept_claim"]), null, "webhook-message");
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			assert.equal(await runOutboxOnce(ports, messageKey), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			assert.equal(outboxStateOf(store, messageKey).kind, "CONFIRMED");
+		});
+		assert.deepEqual(calls, [{ path: messagePath, requestId: providerRequestId(messageKey) }]);
+	});
+});
+
+test("a dispute answer refused for lack of access is sent again once, under its own request id, after a successful read offers its link", async () => {
+	let answers = 0;
+	await withRecordedPayPal(() => (answers++ === 0 ? Response.json({ name: "NOT_AUTHORIZED" }, { status: 403 }) : new Response(null, { status: 204 })),
+		async calls => {
+			await withStore(verifiedRow(), async store => {
+				const ports = portsOver(store);
+				await applySystemCommand(ports, disputeAt("INQUIRY", ["provide_evidence"], { updatedAt: now }), null, "webhook-refused-first");
+				assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+				assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: DISPUTE_ACCESS_REFUSED });
+				await applySystemCommand(ports, disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: later }), null, "webhook-read-ok");
+				assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+				assert.equal(await runOutboxOnce(ports, requeueKey), "WORKED");
+				assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+				assert.equal(queuedAlertsOf(store).filter(alert => alert.reason === "PROVIDER_DISPUTE_ANSWER_REFUSED").length, 1);
+			});
+			assert.deepEqual(calls, [{ path: evidencePath, requestId: providerRequestId(evidenceKey) },
+				{ path: evidencePath, requestId: providerRequestId(requeueKey) }]);
+		});
 });

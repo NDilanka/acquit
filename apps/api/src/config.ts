@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
 import type { Bps } from "../../../packages/core/src/paypal.ts";
+import { houseCredentialsFrom } from "../../../packages/core/src/paypal.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { resolveScopingDir } from "../../../packages/core/src/scoping-dir.ts";
@@ -72,6 +73,11 @@ const demoMerchant = process.env.OPERATOR_DEVON_MERCHANT_ID?.trim() ?? "";
  * admits only those client addresses, and the value lives on the deployment's host, never in the repository.
  */
 export const demoAllowlist = parseDemoAllowlist(process.env.ACQUIT_DEMO_ALLOW_IPS);
+/**
+ * House's own PayPal app, read once at boot. Both HOUSE_PAYPAL_CLIENT_ID and HOUSE_PAYPAL_CLIENT_SECRET, or neither: a
+ * partial set refuses at startup by name, before the API listens. Its dispute calls are the only ones it signs.
+ */
+const houseCredentials = houseCredentialsFrom(process.env);
 export function config(): AcquitConfig {
 	const base = process.env.PAYPAL_API_BASE ?? "https://api-m.sandbox.paypal.com";
 	if (base !== "https://api-m.sandbox.paypal.com") throw new Error("Only the PayPal sandbox API is supported");
@@ -80,5 +86,6 @@ export function config(): AcquitConfig {
 		apiBase: base, clientId: required("PAYPAL_CLIENT_ID"), secret: required("PAYPAL_CLIENT_SECRET"),
 		webhookId: process.env.PAYPAL_WEBHOOK_ID ?? "", partnerMerchant: (process.env.PAYPAL_PARTNER_MERCHANT_ID ?? "") as MerchantId,
 		feeModel: { version: "sandbox-349bps-plus-49-v1", rateBps: 349 as Bps, fixed: usd("0.49") },
+		...(houseCredentials === null ? {} : { house: houseCredentials }),
 	}, verifier: verifierEnv, github: githubEnv };
 }

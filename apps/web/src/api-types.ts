@@ -65,8 +65,8 @@ export type ReleaseAuthority = "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_U
 
 export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER_REFUND" | "CAPTURE_CUTOFF" | "CAPTURE_MISMATCH" | "PROVIDER_DISPUTE";
 
-/** What Acquit did about a buyer dispute: filed the receipt, accepted the claim, or could not answer it. */
-export type DisputeAnswer = "EVIDENCE" | "ACCEPT" | "NOT_ANSWERABLE";
+/** What Acquit did about a buyer dispute: filed the receipt as evidence or as a message, accepted the claim, or could not answer it. */
+export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE";
 
 /** What PayPal did with Acquit's answer: queued until the outbox sends it, filed once PayPal confirms it, or refused with PayPal's reason. */
 export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" } | { readonly state: "REFUSED"; readonly reason: string };

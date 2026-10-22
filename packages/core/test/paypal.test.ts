@@ -7,7 +7,7 @@ import test from "node:test";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
-import { authAssertion, createPayPal, DISPUTE_ACCESS_REFUSED, disputeOfVerifiedDelivery, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope } from "../src/paypal.ts";
+import { authAssertion, createPayPal, DISPUTE_ACCESS_REFUSED, disputeOfVerifiedDelivery, houseCredentialsFrom, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope } from "../src/paypal.ts";
 import type { Bps, DisputeId, PayPalCall } from "../src/paypal.ts";
 
 const devon = "D3SSQU3ZEN7R2" as MerchantId;
@@ -600,7 +600,8 @@ test("a verified dispute delivery stands in for a refused read with its capture,
 	const received = instant("2026-10-22T11:00:00Z");
 	assert.deepEqual(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody()), "PP-R-PPB-10194003", received), { kind: "DISPUTE",
 		disputeId: "PP-R-PPB-10194003", captureId: "1WL969806P110802T", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
-		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), fromVerifiedBody: true });
+		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), fromVerifiedBody: true,
+		stage: "INQUIRY", offers: [] });
 });
 
 test("a delivery stands in for a refused read only when it names that dispute and a seller transaction", () => {
@@ -614,10 +615,131 @@ test("a stand-in with no update time or an unreadable amount still names the dis
 	const received = instant("2026-10-22T11:00:00Z");
 	assert.deepEqual(disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ update_time: undefined })), "PP-R-PPB-10194003", received), { kind: "DISPUTE",
 		disputeId: "PP-R-PPB-10194003", captureId: "1WL969806P110802T", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
-		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), fromVerifiedBody: true });
+		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), fromVerifiedBody: true, stage: "INQUIRY", offers: [] });
 	const unreadable = disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ dispute_amount: { currency_code: "EUR", value: "21.00" },
 		create_time: undefined, update_time: "not a time" })), "PP-R-PPB-10194003", received);
 	assert.equal(unreadable?.amount, null);
 	assert.equal(unreadable?.openedAt, received, "a body with no create time opens at receipt");
 	assert.equal(unreadable?.updatedAt, undefined);
+});
+
+const houseMerchant = "BJ35XXMMSGTPN" as MerchantId;
+const houseConfig = { ...config, house: { merchant: houseMerchant, clientId: "house-client", secret: "house-secret" } };
+
+type WireCall = { readonly method: string; readonly path: string; readonly bearer: string; readonly assertion: string | null; readonly body: unknown };
+/**
+ * Answers OAuth for each client id and records every API call with the bearer token and PayPal-Auth-Assertion it carried.
+ * Each token names the client id it was minted for, so a test sees which credential set a call used. A multipart body is
+ * not recorded, and a JSON body is recorded as the object it was sent as.
+ */
+function laneWire(wire: (url: string) => Response): { readonly tokenClients: string[]; readonly calls: WireCall[] } {
+	const tokenClients: string[] = [];
+	const calls: WireCall[] = [];
+	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+		const url = String(input);
+		const headers = (init?.headers ?? {}) as Record<string, string>;
+		if (url.endsWith("/v1/oauth2/token")) {
+			const clientId = Buffer.from(String(headers.Authorization).replace("Basic ", ""), "base64").toString("utf8").split(":")[0] ?? "";
+			tokenClients.push(clientId);
+			return Response.json({ access_token: `token-of-${clientId}`, expires_in: 300 });
+		}
+		calls.push({ method: init?.method ?? "GET", path: new URL(url).pathname, bearer: String(headers.Authorization).replace("Bearer ", ""),
+			assertion: headers["PayPal-Auth-Assertion"] ?? null, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
+		return wire(url);
+	}) as typeof fetch;
+	return { tokenClients, calls };
+}
+
+test("a dispute of any other merchant keeps the platform token and asserts its payee, even with House's app configured", async () => {
+	const original = globalThis.fetch;
+	try {
+		const wire = laneWire(() => Response.json(verifiedBody()));
+		assert.equal((await createPayPal(houseConfig).readResource({ kind: "DISPUTE", id: sandboxDispute }, devon)).kind, "SETTLED");
+		assert.deepEqual(wire.tokenClients, ["test"]);
+		assert.deepEqual(wire.calls.map(call => [call.path, call.bearer, call.assertion]),
+			[[`/v1/customer/disputes/${sandboxDispute}`, "token-of-test", authAssertion("test", devon)]]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("a House dispute read and its answers use House's own token, with no PayPal-Auth-Assertion, and one House token serves them", async () => {
+	const original = globalThis.fetch;
+	try {
+		const wire = laneWire(url => url.endsWith("/accept-claim") || url.endsWith("/send-message") || url.endsWith("/provide-evidence")
+			? new Response(null, { status: 204 }) : Response.json(verifiedBody()));
+		const paypal = createPayPal(houseConfig);
+		assert.equal((await paypal.readResource({ kind: "DISPUTE", id: sandboxDispute }, houseMerchant)).kind, "SETTLED");
+		assert.deepEqual(await paypal.dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: sandboxDispute, notes: "n", payee: houseMerchant }, "aq-house-evidence"),
+			{ kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: sandboxDispute, answer: "EVIDENCE", note: null } });
+		assert.deepEqual(await paypal.dispatch({ kind: "DISPUTE_MESSAGE", disputeId: sandboxDispute, message: "m", payee: houseMerchant }, "aq-house-message"),
+			{ kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: sandboxDispute, answer: "MESSAGE", note: null } });
+		assert.deepEqual(await paypal.dispatch({ kind: "DISPUTE_ACCEPT", disputeId: sandboxDispute, note: "n", payee: houseMerchant }, "aq-house-accept"),
+			{ kind: "CONFIRMED", observation: { kind: "DISPUTE_ANSWERED", disputeId: sandboxDispute, answer: "ACCEPT", note: null } });
+		assert.deepEqual(wire.tokenClients, ["house-client"]);
+		assert.deepEqual(wire.calls.map(call => [call.method, call.path, call.bearer, call.assertion]), [
+			["GET", `/v1/customer/disputes/${sandboxDispute}`, "token-of-house-client", null],
+			["POST", `/v1/customer/disputes/${sandboxDispute}/provide-evidence`, "token-of-house-client", null],
+			["POST", `/v1/customer/disputes/${sandboxDispute}/send-message`, "token-of-house-client", null],
+			["POST", `/v1/customer/disputes/${sandboxDispute}/accept-claim`, "token-of-house-client", null],
+		]);
+		assert.deepEqual(wire.calls[2]?.body, { message: "m" });
+	} finally { globalThis.fetch = original; }
+});
+
+test("House's own capture and refund calls keep the platform token and its assertion", async () => {
+	const original = globalThis.fetch;
+	try {
+		const wire = laneWire(url => url.endsWith("/refund") ? Response.json(refundBody) : Response.json(captureAfterRefund));
+		const outcome = await createPayPal(houseConfig).dispatch({ kind: "REFUND", captureId: "5GT95218NT9294342" as CaptureId, payee: houseMerchant,
+			amount: usd("420.00") }, "aq-house-refund");
+		assert.equal(outcome.kind, "CONFIRMED");
+		assert.deepEqual(wire.tokenClients, ["test"]);
+		assert.deepEqual(wire.calls.map(call => [call.method, call.path, call.bearer, call.assertion]), [
+			["POST", "/v2/payments/captures/5GT95218NT9294342/refund", "token-of-test", authAssertion("test", houseMerchant)],
+			["GET", "/v2/payments/captures/5GT95218NT9294342", "token-of-test", authAssertion("test", houseMerchant)],
+		]);
+	} finally { globalThis.fetch = original; }
+});
+
+test("without House's credentials a House dispute stays on the platform token and asserts the House payee", async () => {
+	const original = globalThis.fetch;
+	try {
+		const wire = laneWire(() => Response.json(verifiedBody()));
+		await createPayPal(config).readResource({ kind: "DISPUTE", id: sandboxDispute }, houseMerchant);
+		assert.deepEqual(wire.tokenClients, ["test"]);
+		assert.equal(wire.calls[0]?.assertion, authAssertion("test", houseMerchant));
+	} finally { globalThis.fetch = original; }
+});
+
+test("a message PayPal refuses with a 403 is permanent with the plain reason for a person, and is sent once", async () => {
+	const original = globalThis.fetch;
+	try {
+		const message = recordedWire(() => Response.json({ name: "NOT_AUTHORIZED" }, { status: 403 }));
+		assert.deepEqual(await createPayPal(config).dispatch({ kind: "DISPUTE_MESSAGE", disputeId: sandboxDispute, message: "m", payee: devon }, "aq-dispute-message"),
+			{ kind: "PERMANENT_FAILURE", reason: DISPUTE_ACCESS_REFUSED });
+		assert.equal(message.calls.length, 1);
+		assert.equal(message.calls[0]?.path, `/v1/customer/disputes/${sandboxDispute}/send-message`);
+	} finally { globalThis.fetch = original; }
+});
+
+test("House's own credentials are both or neither, and a lone one names the setting it lacks, never its value", () => {
+	assert.equal(houseCredentialsFrom({}), null);
+	assert.deepEqual(houseCredentialsFrom({ HOUSE_PAYPAL_CLIENT_ID: "house-client", HOUSE_PAYPAL_CLIENT_SECRET: "house-secret",
+		OPERATOR_HOUSE_MERCHANT_ID: "BJ35XXMMSGTPN" }), { merchant: "BJ35XXMMSGTPN", clientId: "house-client", secret: "house-secret" });
+	assert.throws(() => houseCredentialsFrom({ HOUSE_PAYPAL_CLIENT_ID: "house-client", OPERATOR_HOUSE_MERCHANT_ID: "BJ35XXMMSGTPN" }),
+		{ message: "Missing configuration: HOUSE_PAYPAL_CLIENT_SECRET" });
+	assert.throws(() => houseCredentialsFrom({ HOUSE_PAYPAL_CLIENT_SECRET: "house-secret-value", OPERATOR_HOUSE_MERCHANT_ID: "BJ35XXMMSGTPN" }),
+		{ message: "Missing configuration: HOUSE_PAYPAL_CLIENT_ID" });
+	assert.throws(() => houseCredentialsFrom({ HOUSE_PAYPAL_CLIENT_ID: "house-client", HOUSE_PAYPAL_CLIENT_SECRET: "house-secret" }),
+		{ message: "Missing configuration: OPERATOR_HOUSE_MERCHANT_ID" });
+});
+
+test("a verified dispute delivery names the answer links it offers, and an answer link it does not name is not offered", () => {
+	const received = instant("2026-10-22T11:00:00Z");
+	const link = (rel: string) => ({ href: `https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-R-PPB-10194003/${rel}`, rel, method: "POST" });
+	const offering = verifiedBody({ dispute_life_cycle_stage: "CHARGEBACK", links: [link("self"), link("send_message"), link("accept_claim"), link("make_offer")] });
+	const standIn = disputeOfVerifiedDelivery(deliveryRaw(offering), "PP-R-PPB-10194003", received);
+	assert.equal(standIn?.stage, "CHARGEBACK");
+	assert.deepEqual(standIn?.offers, ["send_message", "accept_claim"]);
+	const unnamed = disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ links: undefined })), "PP-R-PPB-10194003", received);
+	assert.equal(unnamed !== null && "offers" in unnamed, false, "a body with no links names no offers");
 });
