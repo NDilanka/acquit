@@ -1,6 +1,6 @@
 // The platform reads one job and holds no command, so every development route refuses its session by name: the arbiter route
-// (which would run ResolveDispute as the arbiter), the clock, the tick, and the funding mode. The same routes still answer a
-// signed-in client, so the refusal is the platform's alone.
+// (which would run ResolveDispute as the arbiter), the clock, the tick, the funding mode, and the dev webhook replay, which
+// answers before the session gate. The same routes still answer an anonymous or signed-in client, so the refusal is the platform's alone.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const root = join(import.meta.dirname, "..");
 
@@ -51,12 +52,20 @@ const open = (port: number, token: string, budget: number) =>
 		command: { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12,
 			budget, deliveryEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() } }, token);
 
-test("the platform is refused on every development route by name, and a signed-in client still reaches the same routes", async () => {
+/** The event ids the webhook_events table holds, read on a connection that closes before the test moves on. */
+const recordedEventIds = (dbPath: string): string[] => {
+	const db = new DatabaseSync(dbPath);
+	try { return db.prepare("SELECT id FROM webhook_events ORDER BY rowid").all().map(row => String(row.id)); }
+	finally { db.close(); }
+};
+
+test("the platform is refused on every development route by name, the dev replay included, and an anonymous or signed-in client still reaches them", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-platform-dev-routes-"));
+	const dbPath = join(dir, "test.db");
 	const port = 4904;
 	let child: ReturnType<typeof spawn> | null = null;
 	try {
-		child = await bootServer(port, join(dir, "test.db"), dir);
+		child = await bootServer(port, dbPath, dir);
 		const maya = await session(port, "maya-client");
 		const opened = await open(port, maya, 40_000);
 		assert.equal(opened.status, 200);
@@ -79,6 +88,21 @@ test("the platform is refused on every development route by name, and a signed-i
 			assert.equal(refused.status, 403, `${path} is refused to the platform`);
 			assert.deepEqual(await refused.json(), { error: "PLATFORM_READ_ONLY" });
 		}
+
+		// The dev replay answers before the session gate, so the platform is refused there too, and the handler never runs: the
+		// delivery it would record is absent. An anonymous replay and a client's replay both reach the handler and are recorded.
+		const probe = (id: string) => ({ id, event_type: "CUSTOMER.DEV.PROBE", resource_type: "dev_probe", resource: { id: `PROBE-${id}` } });
+		const before = recordedEventIds(dbPath);
+		const platformReplay = await post(port, "/api/dev/paypal/webhook", probe("WH-DEV-PLATFORM-1"), platform);
+		assert.equal(platformReplay.status, 403, "the dev replay is refused to the platform");
+		assert.deepEqual(await platformReplay.json(), { error: "PLATFORM_READ_ONLY" });
+		assert.deepEqual(recordedEventIds(dbPath), before, "the platform's replay records nothing: the handler did not run");
+		assert.equal((await post(port, "/api/dev/paypal/webhook", probe("WH-DEV-ANON-1"))).status, 202, "an anonymous replay still reaches the handler");
+		assert.equal((await post(port, "/api/dev/paypal/webhook", probe("WH-DEV-CLIENT-1"), maya)).status, 202, "a client's replay still reaches the handler");
+		const after = recordedEventIds(dbPath);
+		assert.ok(after.includes("WH-DEV-ANON-1"), "the anonymous delivery is recorded");
+		assert.ok(after.includes("WH-DEV-CLIENT-1"), "the client's delivery is recorded");
+		assert.ok(!after.includes("WH-DEV-PLATFORM-1"), "the refused delivery is not recorded");
 
 		// The arbiter route still runs for a client: the core refuses the ruling on a job that is not disputed, so the answer is a
 		// conflict, not the platform refusal. The tick still answers the client.
