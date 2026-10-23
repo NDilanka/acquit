@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BidView, OperatorEscrowRow, ReceiptRow } from "./api-types.ts";
 import { buildOperatorWorkspace, homeCrumbs, receiptMarks, type OperatorSnapshot } from "./operator-workspace.ts";
@@ -197,4 +198,10 @@ test("the operator's page crumbs never include the client's", () => {
   assert.deepEqual(homeCrumbs("CLIENT"), ["Jobs"]);
   assert.equal(homeCrumbs("OPERATOR").includes("Jobs"), false);
   assert.equal(homeCrumbs("OPERATOR").includes("New job"), false);
+});
+
+test("the operator's held earnings say a PayPal dispute can hold the payout, with no per-job data", () => {
+  // The suite has no DOM, so the sentence is checked in the page's source, as the job page tests do.
+  const source = readFileSync(new URL("./pages/operator/Earnings.tsx", import.meta.url), "utf8");
+  assert.ok(source.includes("Released when the client approves or the review window closes, unless a PayPal dispute holds the payout."));
 });

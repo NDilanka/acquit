@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, disputeNote, dollars, ledgerNote, mergeNote, refundNote, shortId, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, refundNote, shortId, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -59,6 +59,15 @@ test("an open dispute names its reason and the arbiter's deadline", () => {
     disputeNote({ reason: "The fix breaks EUR rounding.", openedAt: at, resolveBy: "2026-11-05T15:22:00.000Z" }),
     "Disputed 2026-11-03 15:22 UTC: The fix breaks EUR rounding. The arbiter decides by 2026-11-05 15:22 UTC, or the payout releases to the operator.",
   );
+});
+
+test("an open dispute under a PayPal hold says the deadline records the release and the payout waits on PayPal", () => {
+  assert.equal(
+    disputeNote({ reason: "The fix breaks EUR rounding.", openedAt: at, resolveBy: "2026-11-05T15:22:00.000Z" }, true),
+    "Disputed 2026-11-03 15:22 UTC: The fix breaks EUR rounding. The arbiter decides by 2026-11-05 15:22 UTC, or Acquit records the release for the operator, and the payout waits until PayPal decides the dispute.",
+  );
+  assert.equal(deadlineOutcome(false), "the payout releases to the operator.");
+  assert.equal(deadlineOutcome(true), "Acquit records the release for the operator, and the payout waits until PayPal decides the dispute.");
 });
 
 test("the weekly credit line names the balance, the allowance, and the next grant", () => {

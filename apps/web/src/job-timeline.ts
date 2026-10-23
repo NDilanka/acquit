@@ -1,6 +1,6 @@
-import type { Attempt, JobView, ProviderDisputeView, VerifierFields } from "./api-types";
+import type { Attempt, FiledAnswer, JobView, ProviderDisputeView, VerifierFields } from "./api-types";
 import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
-import { arbiterNoteLine, authorityNote, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
+import { arbiterNoteLine, authorityNote, deadlineOutcome, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
 import { bidStatusWord, payoutHeldBy, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
 import { tallyWords } from "./receipt-view.ts";
 import { seededLabel } from "./scoping-review.ts";
@@ -137,7 +137,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       at: job.dispute.openedAt,
       kind: "DISPUTE",
       title: "Disputed by the client",
-      detail: `${job.dispute.reason} The arbiter decides by ${utc(job.dispute.resolveBy)}, or the payout releases to the operator. The review clock is paused.`,
+      detail: `${job.dispute.reason} The arbiter decides by ${utc(job.dispute.resolveBy)}, or ${deadlineOutcome(payoutHeldBy(job.providerDispute))} The review clock is paused.`,
       tone: "alert",
       ids: [],
       href: null,
@@ -273,6 +273,12 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
   }];
   const simulated = dispute.simulated ? " (Simulated)" : "";
   const answer = dispute.answerState;
+  // Every answer PayPal took is an event of its own, oldest first. The answer on the record is shown below only when its round is not one of them.
+  for (const entry of dispute.answerHistory) {
+    const event = filedAnswerEvent(job, dispute, entry, simulated);
+    if (event) events.push(event);
+  }
+  const current = dispute.answerHistory.some(entry => entry.round === dispute.answerRound) ? null : dispute.answer;
   if (answer?.state === "REFUSED") {
     // PayPal refused the answer for good. The payment stays held, and a person has an alert with the same reason.
     events.push({
@@ -285,7 +291,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
     });
-  } else if (dispute.answer === "EVIDENCE") {
+  } else if (current === "EVIDENCE") {
     // A paid job's answer is its receipt. A held job has no receipt yet, so it names the verified attempt it filed instead.
     const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
     const queued = answer?.state === "QUEUED";
@@ -302,7 +308,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
     });
-  } else if (dispute.answer === "MESSAGE") {
+  } else if (current === "MESSAGE") {
     // The same receipt-cited notes as the evidence, sent as a message while PayPal's dispute is at its inquiry stage.
     const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
     const queued = answer?.state === "QUEUED";
@@ -317,7 +323,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
     });
-  } else if (dispute.answer === "ACCEPT") {
+  } else if (current === "ACCEPT") {
     const queued = answer?.state === "QUEUED";
     events.push({
       at: null,
@@ -329,7 +335,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
     });
-  } else if (dispute.answer === "NOT_ANSWERABLE") {
+  } else if (current === "NOT_ANSWERABLE") {
     events.push({
       at: null,
       kind: "DISPUTE",
@@ -427,6 +433,55 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     reasons: [],
   });
   return events;
+}
+
+/**
+ * One answer PayPal took, in the words the current answer uses, with the stage it was filed under when the record kept one. The time
+ * is when Acquit filed it. Null for an answer that is never filed (not answerable), which the history never holds.
+ */
+function filedAnswerEvent(job: TimelineJob, dispute: ProviderDisputeView, entry: FiledAnswer, simulated: string): TimelineEvent | null {
+  const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
+  const stageWords = entry.stage === undefined ? undefined : STAGE_WORDS.get(entry.stage);
+  const stage = stageWords === undefined ? "" : ` (${stageWords})`;
+  const ids = [{ value: dispute.id, label: "PayPal dispute" }];
+  if (entry.answer === "EVIDENCE") {
+    const label = entry.evidenceType === undefined ? "evidence" : EVIDENCE_FILED[entry.evidenceType];
+    return {
+      at: entry.filedAt,
+      kind: "DISPUTE",
+      title: `Acquit filed ${what} as ${label} with PayPal${stage}${simulated}`,
+      detail: "The evidence names the frozen and hidden test counts, the pull request, and the judged commit.",
+      tone: "held",
+      ids,
+      href: null,
+      reasons: [],
+    };
+  }
+  if (entry.answer === "MESSAGE") {
+    return {
+      at: entry.filedAt,
+      kind: "DISPUTE",
+      title: `Acquit sent PayPal ${what} as a message on dispute ${dispute.id}${stage}${simulated}`,
+      detail: "The message names the frozen and hidden test counts, the pull request, and the judged commit.",
+      tone: "held",
+      ids,
+      href: null,
+      reasons: [],
+    };
+  }
+  if (entry.answer === "ACCEPT") {
+    return {
+      at: entry.filedAt,
+      kind: "DISPUTE",
+      title: `Acquit accepted the buyer's claim${stage}${simulated}`,
+      detail: "PayPal returns the held funds to the buyer when it decides the dispute.",
+      tone: "alert",
+      ids,
+      href: null,
+      reasons: [],
+    };
+  }
+  return null;
 }
 
 function attemptEvent(attempt: Attempt, total: number, status: JobView["status"], prHref: (pr: number) => string | null): TimelineEvent {
@@ -588,7 +643,7 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
       : `The client reviews until ${end}. If the client does nothing, Acquit releases the payment then.`;
   },
   "VERIFIED/DISPUTED": ({ job }) =>
-    job.dispute ? `The payment is paused. An arbiter decides by ${utc(job.dispute.resolveBy)}, or the payout releases to the operator.` : "The payment is paused for an arbiter.",
+    job.dispute ? `The payment is paused. An arbiter decides by ${utc(job.dispute.resolveBy)}, or ${deadlineOutcome(payoutHeldBy(job.providerDispute))}` : "The payment is paused for an arbiter.",
   "VERIFIED/RELEASE_PENDING": ({ operator }) => `The payment is being released to ${operator}.`,
   "VERIFIED/RELEASE_PENDING/DISPUTE_HELD": () => "The payout is held because of a buyer's PayPal dispute. Nothing to do.",
   "VERIFIED/REFUND_PENDING": () => "The arbiter's refund is in flight. Nothing to do.",

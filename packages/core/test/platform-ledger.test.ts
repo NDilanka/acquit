@@ -487,7 +487,8 @@ test("the job read names PayPal's dispute stage, the evidence it asks for, and t
 		if (read.kind !== "JOB") throw new Error("Expected the platform to read the disputed job");
 		assert.deepEqual(read.job.providerDispute, { id: "PP-R-PPB-10194003", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
 			amount: 2100, openedAt: now, outcome: null, answer: "EVIDENCE", answerState: { state: "FILED" }, stage: "CHARGEBACK",
-			requestedEvidence: ["PROOF_OF_REFUND", "OTHER"], evidenceType: "OTHER", unconfirmed: false, simulated: false });
+			requestedEvidence: ["PROOF_OF_REFUND", "OTHER"], evidenceType: "OTHER", answerRound: null, answerHistory: [], unconfirmed: false,
+			simulated: false });
 		const refundOnly = await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_refund_only") });
 		if (refundOnly.kind !== "JOB") throw new Error("Expected the platform to read the refund-only job");
 		// PayPal asked only for refund proof, which Acquit cannot give, so the answer files no evidence type.

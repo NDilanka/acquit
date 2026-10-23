@@ -72,6 +72,10 @@ export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE"
 export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" }
 	| { readonly state: "REFUSED"; readonly reason: string; readonly evidenceType?: "PROOF_OF_FULFILLMENT" | "OTHER" };
 
+/** An answer PayPal took: the answer, the round it answered, the stage and evidence type it went under, and when it was filed. */
+export type FiledAnswer = { readonly answer: DisputeAnswer; readonly round: string; readonly stage?: string;
+  readonly evidenceType?: "PROOF_OF_FULFILLMENT" | "OTHER"; readonly filedAt: Instant };
+
 /** A PayPal buyer dispute against the job's capture, as PayPal last answered for it. Not the in-app review dispute. */
 export interface ProviderDisputeView {
   readonly id: string;
@@ -91,6 +95,10 @@ export interface ProviderDisputeView {
   readonly requestedEvidence: readonly string[] | null;
   /** The evidence type an evidence answer files, or null for any other answer. */
   readonly evidenceType: "PROOF_OF_FULFILLMENT" | "OTHER" | null;
+  /** The round the answer on the record is for, or null where the record names none. */
+  readonly answerRound: string | null;
+  /** Every answer PayPal took on this dispute, oldest first. Empty when PayPal took none. */
+  readonly answerHistory: readonly FiledAnswer[];
   /** True while a signed notice stands in for a read PayPal refused. The payout stays held until a successful read. */
   readonly unconfirmed: boolean;
   /** True when a judge scenario simulated this dispute. PayPal never received an answer for it. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import type { Attempt, BidView, Receipt } from "./api-types.ts";
+import type { Attempt, BidView, FiledAnswer, Receipt } from "./api-types.ts";
 import { agentLine, lockedBid } from "./bids.ts";
 import { canDeliver, moneyRows, nextStep, timelineEvents, verifierIndex, verifierLine, type TimelineJob, type Viewer } from "./job-timeline.ts";
 
@@ -625,6 +625,8 @@ const BUYER_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
   stage: null,
   requestedEvidence: null,
   evidenceType: null,
+  answerRound: null,
+  answerHistory: [],
   unconfirmed: false,
   simulated: false,
 };
@@ -824,6 +826,92 @@ test("a receipt PayPal took as a message says so on the dispute, queued or filed
     "Acquit sent PayPal the receipt as a message on dispute PAYPAL-DISPUTE-1");
   assert.equal(message(approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed }))?.detail,
     "The message names the frozen and hidden test counts, the pull request, and the judged commit.");
+});
+
+/** The answers PayPal took on the live record: an inquiry message, then the chargeback evidence that escalated it. */
+const FILED_HISTORY: readonly FiledAnswer[] = [
+  { answer: "MESSAGE", round: "inquiry-round", stage: "INQUIRY", filedAt: "2026-10-16T10:00:00.000Z" },
+  { answer: "EVIDENCE", round: "chargeback-round", stage: "CHARGEBACK", evidenceType: "OTHER", filedAt: "2026-10-17T10:00:00.000Z" },
+];
+
+test("the timeline shows each answer PayPal took once, oldest first, with the stage it went under, and the current answer once", () => {
+  const job = approvedWithDispute({ ...LIVE_DISPUTE, answerRound: "chargeback-round", answerHistory: FILED_HISTORY });
+  const disputes = timelineEvents(job).filter(event => event.kind === "DISPUTE");
+  assert.deepEqual(disputes.map(event => event.title), [
+    "Buyer opened a PayPal dispute (merchandise or service not received)",
+    "Acquit sent PayPal its verified attempt as a message on dispute PP-R-PPB-10194003 (inquiry)",
+    "Acquit filed its verified attempt as Other evidence with PayPal (chargeback)",
+    "Payment held while PayPal reviews the buyer's dispute",
+  ]);
+  assert.deepEqual(disputes[1], {
+    at: "2026-10-16T10:00:00.000Z",
+    kind: "DISPUTE",
+    title: "Acquit sent PayPal its verified attempt as a message on dispute PP-R-PPB-10194003 (inquiry)",
+    detail: "The message names the frozen and hidden test counts, the pull request, and the judged commit.",
+    tone: "held",
+    ids: [{ value: "PP-R-PPB-10194003", label: "PayPal dispute" }],
+    href: null,
+    reasons: [],
+  });
+  assert.equal(disputes[2]?.at, "2026-10-17T10:00:00.000Z");
+});
+
+test("a queued answer after a filed one shows both, each once, and a refused one shows its refusal after the history", () => {
+  const queued = approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: { state: "QUEUED" }, answerRound: "chargeback-round", answerHistory: [FILED_HISTORY[0]!] });
+  assert.deepEqual(timelineEvents(queued).filter(event => event.kind === "DISPUTE").map(event => event.title), [
+    "Buyer opened a PayPal dispute (merchandise or service not received)",
+    "Acquit sent PayPal its verified attempt as a message on dispute PAYPAL-DISPUTE-1 (inquiry)",
+    "Acquit is sending its verified attempt as evidence to PayPal",
+    "Payment held while PayPal reviews the buyer's dispute",
+  ]);
+  const refused = { state: "REFUSED", reason: "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED", evidenceType: "PROOF_OF_FULFILLMENT" } as const;
+  const refusal = approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: refused, answerRound: "chargeback-round", answerHistory: [FILED_HISTORY[0]!] });
+  assert.deepEqual(timelineEvents(refusal).filter(event => event.kind === "DISPUTE").map(event => event.title), [
+    "Buyer opened a PayPal dispute (merchandise or service not received)",
+    "Acquit sent PayPal its verified attempt as a message on dispute PAYPAL-DISPUTE-1 (inquiry)",
+    "PayPal refused Acquit's answer: PayPal refused the evidence type. The payment stays held.",
+    "Payment held while PayPal reviews the buyer's dispute",
+  ]);
+});
+
+test("a record stored before the history was kept shows its current answer as it did, and an accepted or paid history entry reads in its own words", () => {
+  const legacy = approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: { state: "FILED" }, answerRound: "inquiry-round", answerHistory: [] });
+  assert.deepEqual(timelineEvents(legacy).filter(event => event.kind === "DISPUTE").map(event => event.title), [
+    "Buyer opened a PayPal dispute (merchandise or service not received)",
+    "Acquit sent PayPal its verified attempt as a message on dispute PAYPAL-DISPUTE-1",
+    "Payment held while PayPal reviews the buyer's dispute",
+  ]);
+  const accepted: FiledAnswer[] = [{ answer: "ACCEPT", round: "chargeback-round", stage: "CHARGEBACK", filedAt: "2026-10-17T10:00:00.000Z" }];
+  const titles = (job: TimelineJob) => timelineEvents(job).filter(event => event.kind === "DISPUTE").map(event => event.title);
+  assert.equal(titles(approvedWithDispute({ ...BUYER_DISPUTE, answerHistory: accepted, simulated: true }))[1],
+    "Acquit accepted the buyer's claim (chargeback) (Simulated)");
+  const paid: FiledAnswer[] = [{ answer: "EVIDENCE", round: "chargeback-round", evidenceType: "PROOF_OF_FULFILLMENT", filedAt: "2026-10-17T10:00:00.000Z" }];
+  assert.equal(titles(paidJob({ providerDispute: { ...BUYER_DISPUTE, answerHistory: paid } }))[1],
+    "Acquit filed the receipt as Proof of fulfilment with PayPal");
+});
+
+test("the arbiter deadline names the hold while PayPal holds the payout, on the dispute row and the next step, and not after PayPal decides for the seller", () => {
+  const disputed = (providerDispute: TimelineJob["providerDispute"]) => locked({
+    status: "VERIFIED",
+    phase: "DISPUTED",
+    providerDispute,
+    dispute: { reason: "The fix breaks EUR rounding.", openedAt: "2026-10-16T08:00:00.000Z", resolveBy: "2026-10-18T08:00:00.000Z" },
+  });
+  const detail = (job: TimelineJob) => timelineEvents(job).find(event => event.title === "Disputed by the client")?.detail;
+  const held = disputed(BUYER_DISPUTE);
+  assert.equal(nextStep(held, CLIENT), "The payment is paused. An arbiter decides by 2026-10-18 08:00 UTC, or Acquit records the release for the operator, and the payout waits until PayPal decides the dispute.");
+  assert.equal(detail(held), "The fix breaks EUR rounding. The arbiter decides by 2026-10-18 08:00 UTC, or Acquit records the release for the operator, and the payout waits until PayPal decides the dispute. The review clock is paused.");
+  const seller = disputed({ ...BUYER_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" });
+  assert.equal(nextStep(seller, CLIENT), "The payment is paused. An arbiter decides by 2026-10-18 08:00 UTC, or the payout releases to the operator.");
+  assert.equal(detail(seller), "The fix breaks EUR rounding. The arbiter decides by 2026-10-18 08:00 UTC, or the payout releases to the operator. The review clock is paused.");
+});
+
+test("the dispute form says what the deadline does with the payout, and the hold changes it", () => {
+  // The suite has no DOM, so the wiring is checked in the page's source, as the tests above do.
+  const source = readFileSync(new URL("./pages/JobPage.tsx", import.meta.url), "utf8");
+  assert.match(source, /import \{ deadlineOutcome, escrowFee, eta, refundNote, usd, utc \} from "\.\.\/format";/);
+  assert.match(source, /If no decision comes by then, \{deadlineOutcome\(disputeHolds\)\}<\/small>/);
+  assert.match(source, /const disputeHolds = payoutHeldBy\(job\.providerDispute\);/);
 });
 
 test("a buyer dispute whose amount could not be read says so instead of a number", () => {
