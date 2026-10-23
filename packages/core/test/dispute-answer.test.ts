@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
-import { applyJobCommand, effectWanted, releaseHeld, storedBook, TERMS, wakeAt } from "../src/job.ts";
+import { applyJobCommand, effectWanted, projectJob, releaseHeld, storedBook, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow, Plan } from "../src/job.ts";
 import { applySystemCommand, executeCommand, operationKey, providerRequestId, runOutboxOnce } from "../src/effects.ts";
 import type { OperationKey, Ports } from "../src/effects.ts";
@@ -942,6 +942,34 @@ test("a read that asks only for PROOF_OF_REFUND after a type refusal sends nothi
 	assert.deepEqual(read.next.providerDispute?.answerState, { state: "REFUSED", reason: "PAYPAL_HTTP_400" });
 });
 
+test("the page shows the type an evidence answer filed, not the type a later delivery at the same stage asks for", () => {
+	// Filed as OTHER at CHARGEBACK. A later delivery at that stage asks for PROOF_OF_FULFILLMENT: nothing new is filed, so OTHER stays.
+	const filed = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }, ["PROOF_OF_REFUND", "OTHER"]), paypalFacts(later)));
+	assert.equal(evidenceFrom(filed).evidenceType, "OTHER");
+	const asked = planOf(applyJobCommand(filed.next, chargeback({ updatedAt: later }, ["PROOF_OF_FULFILLMENT"]), paypalFacts(later)));
+	assert.deepEqual(asked.effects, []);
+	assert.equal(asked.next.providerDispute?.requestedEvidence?.join(","), "PROOF_OF_FULFILLMENT");
+	assert.equal(asked.next.providerDispute?.answerEvidenceType, "OTHER");
+	assert.equal(projectJob(asked.next, maya, new Map()).providerDispute?.evidenceType, "OTHER");
+	// A record stored before the filed type was kept names none, so the page reads plain evidence, never the type it now asks for.
+	const held = asked.next.providerDispute;
+	if (held === undefined) throw new Error("expected a dispute on the row");
+	const { answerEvidenceType: _filed, ...stored } = held;
+	const legacy: JobRow = { ...asked.next, providerDispute: stored };
+	assert.equal(projectJob(legacy, maya, new Map()).providerDispute?.requestedEvidence?.join(","), "PROOF_OF_FULFILLMENT");
+	assert.equal(projectJob(legacy, maya, new Map()).providerDispute?.evidenceType, null);
+});
+
+test("an escalation files the type its own stage asks for, and the record keeps that type for the new round", () => {
+	const inquiry = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: now }), paypalFacts(later)));
+	assert.equal(evidenceFrom(inquiry).evidenceType, "PROOF_OF_FULFILLMENT");
+	const escalated = planOf(applyJobCommand(inquiry.next, chargeback({ updatedAt: later }, ["PROOF_OF_REFUND", "OTHER"]), paypalFacts(later)));
+	assert.equal(evidenceFrom(escalated).evidenceType, "OTHER");
+	assert.equal(escalated.next.providerDispute?.answerRound, "PP-D-9:1:CHARGEBACK");
+	assert.equal(escalated.next.providerDispute?.answerEvidenceType, "OTHER");
+	assert.equal(projectJob(escalated.next, maya, new Map()).providerDispute?.evidenceType, "OTHER");
+});
+
 /**
  * A dispute stored with the evidence types the read asks for, taken through the production sequence to a verified attempt 2: the
  * dispute opens, the client disputes the work, the arbiter reworks it, the work is submitted, and the verifier passes it.
@@ -967,6 +995,7 @@ test("a verified attempt 2 that answers a dispute asking for PROOF_OF_REFUND and
 	assert.equal(effectWanted(verified.next, evidence), true);
 	assert.deepEqual(verified.next.providerDispute?.answerState, { state: "QUEUED" });
 	assert.equal(verified.next.providerDispute?.requestedEvidence?.join(","), "PROOF_OF_REFUND,OTHER");
+	assert.equal(verified.next.providerDispute?.answerEvidenceType, "OTHER");
 });
 
 test("a verified attempt 2 that answers a dispute asking only for PROOF_OF_REFUND files no evidence, and the refusal stands for a person", () => {

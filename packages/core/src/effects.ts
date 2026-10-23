@@ -230,6 +230,8 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 	// TODO VERSION_CONFLICT reruns the table on the fresh row. It never repeats a remote call.
 	// TODO After commit, dispatch this commit's own outbox rows inline with a short bound, then re-read.
 	//      That is why Accept usually returns the approve URL and Approve usually returns PAID.
+	// The platform reads one job and holds no command. It is refused here, before any row is read or any request is recorded.
+	if (actor.role === "PLATFORM") return { kind: "DENIED", reason: "NOT_OWNER" };
 	const actorKey = actor.role === "CLIENT" ? `CLIENT:${actor.clientId}` : actor.role === "OPERATOR" ? `OPERATOR:${actor.operatorId}`
 		: actor.role === "ARBITER" ? `ARBITER:${actor.staffId}` : "PLATFORM";
 	const payloadDigest = digest(command);

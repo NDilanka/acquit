@@ -580,8 +580,25 @@ const BUYER_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
   outcome: null,
   answer: null,
   answerState: null,
+  stage: null,
+  requestedEvidence: null,
+  evidenceType: null,
   unconfirmed: false,
   simulated: false,
+};
+
+/** The live record of job_9d04e3b8: its payment held while PayPal reviews a chargeback, PayPal asking for refund proof or other evidence. */
+const LIVE_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
+  ...BUYER_DISPUTE,
+  id: "PP-R-PPB-10194003",
+  status: "UNDER_REVIEW",
+  reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+  amount: 2100,
+  answer: "EVIDENCE",
+  answerState: { state: "FILED" },
+  stage: "CHARGEBACK",
+  requestedEvidence: ["PROOF_OF_REFUND", "OTHER"],
+  evidenceType: "OTHER",
 };
 
 /** An approved job whose release a PayPal buyer dispute holds, or has resolved. */
@@ -613,8 +630,8 @@ test("a buyer's PayPal dispute on an approved job says the buyer opened it, and 
     {
       at: null,
       kind: "DISPUTE",
-      title: "Payout held while PayPal reviews the dispute",
-      detail: "The approval is recorded. The payout waits until PayPal decides the dispute for the seller.",
+      title: "Payment held while PayPal reviews the buyer's dispute",
+      detail: "PayPal has the dispute open. The approval is recorded. The payout waits until PayPal decides the dispute for the seller.",
       tone: "held",
       ids: [],
       href: null,
@@ -658,14 +675,14 @@ test("a paid job keeps the buyer's dispute in order before the payout, and no ho
   const titles = timelineEvents(job).map(event => event.title);
   assert.ok(titles.indexOf("Buyer opened a PayPal dispute (merchandise or service not received)") < titles.indexOf("PayPal resolved the dispute for the seller"));
   assert.ok(titles.indexOf("PayPal resolved the dispute for the seller") < titles.indexOf("Paid out"));
-  assert.equal(titles.includes("Payout held while PayPal reviews the dispute"), false);
+  assert.equal(titles.includes("Payment held while PayPal reviews the buyer's dispute"), false);
   assert.equal(nextStep(job, CLIENT), "Paid to devon. The receipt below is the proof.");
 });
 
 test("the dispute timeline says what Acquit filed with PayPal, and marks a scripted answer as Simulated", () => {
   const titles = (job: TimelineJob) => timelineEvents(job).filter(event => event.kind === "DISPUTE").map(event => event.title);
   const opened = "Buyer opened a PayPal dispute (merchandise or service not received)";
-  const held = "Payout held while PayPal reviews the dispute";
+  const held = "Payment held while PayPal reviews the buyer's dispute";
   const filed = { state: "FILED" } as const;
   assert.deepEqual(titles(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: filed })),
     [opened, "Acquit filed its verified attempt as evidence with PayPal", held]);
@@ -786,7 +803,7 @@ test("a buyer's win settled as a refund says the escrow was returned to the buye
     reasons: [],
   });
   const titles = timelineEvents(job).map(event => event.title);
-  assert.equal(titles.includes("Payout held while PayPal reviews the dispute"), false);
+  assert.equal(titles.includes("Payment held while PayPal reviews the buyer's dispute"), false);
 });
 
 test("a buyer's win on a paid job says the payout had already left, and holds nothing", () => {
@@ -801,6 +818,71 @@ test("a buyer's win on a paid job says the payout had already left, and holds no
     href: null,
     reasons: [],
   });
+});
+
+test("a live dispute on a job awaiting review holds the payment in plain words, and names what PayPal asked and what Acquit filed", () => {
+  const job = locked({
+    status: "VERIFIED",
+    phase: "AWAITING_CLIENT",
+    reviewEndsAt: "2026-10-20T12:00:00.000Z",
+    viewerCanApprove: true,
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+    providerDispute: LIVE_DISPUTE,
+  });
+  assert.equal(nextStep(job, CLIENT), "Approve to record the release, or dispute by 2026-10-20 12:00 UTC. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.");
+  assert.equal(nextStep(job, DEVON), "The client reviews until 2026-10-20 12:00 UTC. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.");
+  const disputes = timelineEvents(job).filter(event => event.kind === "DISPUTE");
+  assert.deepEqual(disputes.map(event => event.title), [
+    "Buyer opened a PayPal dispute (merchandise or service not received)",
+    "Acquit filed its verified attempt as Other evidence with PayPal",
+    "Payment held while PayPal reviews the buyer's dispute",
+  ]);
+  assert.equal(disputes[1]?.detail, "PayPal asked for refund proof or other evidence. Acquit made no refund, so it cannot send refund proof. The evidence names the frozen and hidden test counts, the pull request, and the judged commit.");
+  assert.deepEqual(disputes[2], {
+    at: null,
+    kind: "DISPUTE",
+    title: "Payment held while PayPal reviews the buyer's dispute",
+    detail: "PayPal is reviewing the chargeback. Approving records the release, but the payout waits until PayPal decides the dispute for the seller.",
+    tone: "held",
+    ids: [],
+    href: null,
+    reasons: [],
+  });
+});
+
+test("PayPal's waiting stages say who PayPal waits for, and the payment stays held", () => {
+  const job = approvedWithDispute({ ...BUYER_DISPUTE, status: "WAITING_FOR_SELLER_RESPONSE", stage: "INQUIRY" });
+  assert.deepEqual(timelineEvents(job).find(event => event.kind === "DISPUTE" && event.title.startsWith("Payment held")), {
+    at: null,
+    kind: "DISPUTE",
+    title: "Payment held while PayPal reviews the buyer's dispute",
+    detail: "PayPal is waiting for the seller's answer. The approval is recorded. The payout waits until PayPal decides the dispute for the seller.",
+    tone: "held",
+    ids: [],
+    href: null,
+    reasons: [],
+  });
+  const buyer = approvedWithDispute({ ...BUYER_DISPUTE, status: "WAITING_FOR_BUYER_RESPONSE", stage: "INQUIRY" });
+  assert.equal(timelineEvents(buyer).find(event => event.kind === "DISPUTE" && event.title.startsWith("Payment held"))?.detail,
+    "PayPal is waiting for the buyer. The approval is recorded. The payout waits until PayPal decides the dispute for the seller.");
+});
+
+test("a dispute PayPal resolved for the seller gives no hold row, in review or after approval", () => {
+  const resolved = { ...LIVE_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" };
+  const review = locked({ status: "VERIFIED", phase: "AWAITING_CLIENT", reviewEndsAt: "2026-10-20T12:00:00.000Z", providerDispute: resolved });
+  for (const job of [review, approvedWithDispute(resolved)]) {
+    assert.equal(timelineEvents(job).some(event => event.kind === "DISPUTE" && event.title.startsWith("Payment held")), false);
+  }
+  assert.equal(timelineEvents(review).at(-1)?.title, "PayPal resolved the dispute for the seller");
+});
+
+test("the job page gives the platform no action: it is named read-only, and no bid, approval, or dispute is offered to it", () => {
+  // The suite has no DOM, so the wiring is checked in the page's source, as the tests above do.
+  const source = readFileSync(new URL("./pages/JobPage.tsx", import.meta.url), "utf8");
+  assert.match(source, /\{platform && <p className="muted">Viewing as the platform\. Read only\.<\/p>\}/);
+  assert.match(source, /const mergeCommit = !platform && job\.viewerCanApprove/);
+  assert.match(source, /const disputeCommit = !platform && job\.viewerCanDispute/);
+  assert.match(source, /\{!isClient && !platform && bidding/);
 });
 
 test("the agent line names the declared agent and the operator or House that named it", () => {

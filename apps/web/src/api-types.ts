@@ -85,6 +85,12 @@ export interface ProviderDisputeView {
   readonly answer: DisputeAnswer | null;
   /** What PayPal did with that answer, or null when no answer was selected. */
   readonly answerState: DisputeAnswerState | null;
+  /** PayPal's dispute stage on its latest delivery, such as INQUIRY or CHARGEBACK. Null when none was served. */
+  readonly stage: string | null;
+  /** The evidence types PayPal asks the seller for. Null when it asks for none. */
+  readonly requestedEvidence: readonly string[] | null;
+  /** The evidence type an evidence answer files, or null for any other answer. */
+  readonly evidenceType: "PROOF_OF_FULFILLMENT" | "OTHER" | null;
   /** True while a signed notice stands in for a read PayPal refused. The payout stays held until a successful read. */
   readonly unconfirmed: boolean;
   /** True when a judge scenario simulated this dispute. PayPal never received an answer for it. */

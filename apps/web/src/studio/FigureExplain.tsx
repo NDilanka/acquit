@@ -25,7 +25,7 @@ function FigureLineItem({ line }: { line: FigureTraceLine }) {
   return (
     <li className="explain-line">
       <div className="explain-line-head">
-        <span className="mono">{line.jobId}</span>
+        <Link className="mono" to={`/jobs/${encodeURIComponent(line.jobId)}`}>{line.jobId}</Link>
         <span>{LINE_WORDS[line.kind]}</span>
         <b className="num">{dollars(line.cents)}</b>
       </div>

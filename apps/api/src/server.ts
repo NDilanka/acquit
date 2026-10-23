@@ -519,6 +519,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname.startsWith("/api/dev/") && !devEnabled) {
 		json(res, 403, { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }); return;
 	}
+	// The platform reads and holds no command, so it is refused on every development route here, before any route dispatches. The
+	// dev replay below answers before the session gate, so the session is read here when one is present. An anonymous or client
+	// request carries no platform session and reaches its route as before.
+	if (url.pathname.startsWith("/api/dev/") && session(req)?.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 	if (url.pathname === "/api/session") {
 		if (method === "GET") { const current = session(req); json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
 			visitor: current?.visitor ? visitorJson(current.visitor) : null,
@@ -847,6 +851,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			if (error instanceof BudgetBelowMinimum) { json(res, 400, { error: "BUDGET_BELOW_MINIMUM", detail: error.message }); return; }
 			json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return;
 		}
+		// The platform reads one job and holds no command. Core refuses it too; the API names the refusal.
+		if (current.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
 		// A visitor's job funds with the test card unless its client chooses otherwise: a judge has no
 		// sandbox buyer account, and the card is the one path to a funded escrow without one.

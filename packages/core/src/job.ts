@@ -400,6 +400,12 @@ export type ProviderDispute = {
 	 */
 	readonly answerRound?: string;
 	/**
+	 * The evidence type the evidence answer on this record filed, for the round it is for. It is the type PayPal received, so a later
+	 * delivery that asks for another type changes nothing here. Absent on an answer that is not evidence, and on a record stored before
+	 * the type was kept, which the page shows with no type words.
+	 */
+	readonly answerEvidenceType?: EvidenceType;
+	/**
 	 * The latest delivery is a signed body that stood in for a read PayPal refused. It holds the release whatever its status
 	 * says, and settles nothing: a successful read of the dispute replaces it.
 	 */
@@ -408,9 +414,14 @@ export type ProviderDispute = {
 	readonly simulated?: true;
 };
 
-/** The dispute as the job view serves it. Null on a job no buyer dispute has reached. */
+/**
+ * The dispute as the job view serves it. Null on a job no buyer dispute has reached. `stage` is PayPal's dispute stage on its
+ * latest delivery, and `requestedEvidence` the evidence types it asks for. `evidenceType` is the type the evidence answer filed for
+ * its round, null for any other answer, and null where no evidence was filed for the round or the record predates the type.
+ */
 export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents | null;
 	readonly openedAt: Instant; readonly outcome: string | null; readonly answer: DisputeAnswer | null; readonly answerState: DisputeAnswerState | null;
+	readonly stage: string | null; readonly requestedEvidence: readonly string[] | null; readonly evidenceType: EvidenceType | null;
 	readonly unconfirmed: boolean; readonly simulated: boolean };
 
 // The table
@@ -744,10 +755,12 @@ function transitionTable(): {
 				const defendedWith = answerOf(verified, dispute.offers);
 				const filed = answerEffects(verified, dispute.id, defendedWith, dispute.simulated === true, undefined, undefined, dispute.requestedEvidence);
 				const round = filed.find(isDisputeAnswer);
+				const filedType = filedTypeOf(round);
 				// PayPal asks only for evidence types Acquit cannot honestly give: nothing is sent, and the refusal stands for a person.
 				const unhonest = defendedWith === "EVIDENCE" && evidenceTypeFor(dispute.requestedEvidence) === null;
 				const defended: ProviderDispute = { ...withoutAnswer(dispute), answer: defendedWith,
 					...(round === undefined ? {} : { answerRound: answerRoundOf(round) }),
+					...(filedType === undefined ? {} : { answerEvidenceType: filedType }),
 					...(dispute.simulated === true ? {} : { answerState: unhonest ? { state: "REFUSED" as const, reason: NO_HONEST_EVIDENCE_TYPE }
 						: { state: "QUEUED" as const } }) };
 				return { next: { ...verified, providerDispute: defended }, credits: [], effects: filed };
@@ -959,6 +972,9 @@ function transitionTable(): {
 			// The round the row answers in now: the one this delivery filed or re-queued, or the round it already held.
 			const newRound = [...filing, ...requeued].find(isDisputeAnswer);
 			const answerRound = filing.length > 0 || requeued.length > 0 ? (newRound === undefined ? undefined : answerRoundOf(newRound)) : held?.answerRound;
+			// The type the round files is kept with it. A later delivery that asks for another type files nothing, so the type stays as filed.
+			const filedType = filedTypeOf(newRound);
+			const answerEvidenceType = filing.length > 0 || requeued.length > 0 ? filedType : held?.answerEvidenceType;
 			const latest = latestTimeOf(held, command);
 			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount ?? held?.amount ?? null,
 				openedAt: held?.openedAt ?? command.openedAt, ...(latest === undefined ? {} : { updatedAt: latest }),
@@ -967,6 +983,7 @@ function transitionTable(): {
 				...(recordedAnswer === undefined ? {} : { answer: recordedAnswer }),
 				...(answerState === undefined ? {} : { answerState }),
 				...(answerRound === undefined ? {} : { answerRound }),
+				...(answerEvidenceType === undefined ? {} : { answerEvidenceType }),
 				...(stage === undefined ? {} : { stage }),
 				...(offers === undefined ? {} : { offers }),
 				...(requestedEvidence === undefined ? {} : { requestedEvidence }),
@@ -1357,9 +1374,9 @@ const ANSWER_LINK: Record<DisputeAnswer, DisputeOffer | undefined> = {
 	EVIDENCE: "provide_evidence", MESSAGE: "send_message", ACCEPT: "accept_claim", NOT_ANSWERABLE: undefined,
 };
 
-/** The dispute with no answer, no answer state, no round, and no re-queue. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
+/** The dispute with no answer, no answer state, no round, no filed type, and no re-queue. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
 function withoutAnswer(dispute: ProviderDispute): ProviderDispute {
-	const { answer: _answer, answerState: _answerState, requeued: _requeued, answerRound: _answerRound, ...rest } = dispute;
+	const { answer: _answer, answerState: _answerState, requeued: _requeued, answerRound: _answerRound, answerEvidenceType: _answerEvidenceType, ...rest } = dispute;
 	return rest;
 }
 
@@ -1387,6 +1404,11 @@ export function answerRoundOf(effect: DisputeAnswerEffect): string | undefined {
  */
 export function answersRound(dispute: ProviderDispute, round: string | undefined): boolean {
 	return dispute.answerRound === undefined || round === undefined || dispute.answerRound === round;
+}
+
+/** The evidence type a dispute answer files, for the record of its round. Only an evidence answer carries one. */
+function filedTypeOf(effect: DisputeAnswerEffect | undefined): EvidenceType | undefined {
+	return effect?.kind === "DISPUTE_EVIDENCE" ? effect.evidenceType : undefined;
 }
 
 /**
@@ -1768,8 +1790,11 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		providerDispute: row.providerDispute === undefined ? null : { id: row.providerDispute.id, status: row.providerDispute.status,
 			reason: row.providerDispute.reason, amount: row.providerDispute.amount, openedAt: row.providerDispute.openedAt,
 			outcome: row.providerDispute.outcome ?? null, answer: row.providerDispute.answer ?? null,
-			answerState: row.providerDispute.answerState ?? null, unconfirmed: row.providerDispute.unconfirmed === true,
-			simulated: row.providerDispute.simulated === true },
+			answerState: row.providerDispute.answerState ?? null, stage: row.providerDispute.stage ?? null,
+			requestedEvidence: row.providerDispute.requestedEvidence ?? null,
+			// The type the evidence answer filed for its round. Never a type a later delivery asks for, and none on a record stored before it was kept.
+			evidenceType: row.providerDispute.answer === "EVIDENCE" ? (row.providerDispute.answerEvidenceType ?? null) : null,
+			unconfirmed: row.providerDispute.unconfirmed === true, simulated: row.providerDispute.simulated === true },
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
 			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,
