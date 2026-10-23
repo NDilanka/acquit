@@ -109,6 +109,11 @@ export type OutboxRow = {
 	readonly effect: Effect;
 	readonly payloadDigest: Digest;
 	readonly state: OutboxState;
+	/**
+	 * When the row was first enqueued. The row is written once (INSERT OR IGNORE), so every dispatch of it reads the same time, and a dispute
+	 * answer files under it: an overlapping duplicate files the same time. Absent on a row stored before it was kept.
+	 */
+	readonly enqueuedAt?: Instant;
 };
 
 /** Unique on (actor, key). The digest binds the key to its payload, so a reused key with a new body is refused. */
@@ -418,7 +423,7 @@ export async function runOutboxEffect(ports: Ports, key?: OperationKey): Promise
 		return worked("ALERT");
 	}
 	if (effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_MESSAGE" || effect.kind === "DISPUTE_ACCEPT") {
-		return worked(await dispatchDisputeAnswer(ports, row.key, effect, now));
+		return worked(await dispatchDisputeAnswer(ports, row.key, effect, now, row.enqueuedAt));
 	}
 	const call = toPayPalCall(effect);
 	// PAYPAL_ONBOARD belongs to an operator row, and the skeleton has no onboarding effect to deliver.
@@ -616,9 +621,11 @@ async function dispatchWorkRepo(ports: Ports, key: OperationKey, effect: Extract
  * PayPal-Request-Id. A 2xx confirms it, and so does a 422 (PayPal already holds an answer, or the dispute left the
  * state that takes one), which is never retried. A simulated dispute never reaches PayPal. An answer the row no longer
  * wants (see effectWanted: a settled dispute, another dispute, or an answer a later verdict changed) is never sent.
+ * The answer files under `enqueuedAt`, the time its row was first enqueued, so every dispatch of it files the same time. A row stored
+ * before that was kept files under the time of its own dispatch.
  */
 async function dispatchDisputeAnswer(ports: Ports, key: OperationKey,
-	effect: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_MESSAGE" | "DISPUTE_ACCEPT" }>, now: Instant): Promise<OutboxReach> {
+	effect: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_MESSAGE" | "DISPUTE_ACCEPT" }>, now: Instant, enqueuedAt: Instant | undefined): Promise<OutboxReach> {
 	// A simulated dispute's answer is recorded here and never sent: PayPal has no such dispute to answer.
 	if (effect.simulated) {
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
@@ -645,13 +652,14 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey,
 				console.warn(`Acquit: PayPal already held an answer for dispute ${logQuoted(effect.disputeId)} (${logQuoted(observation.note)}).`);
 			}
 			// The job records the answer as filed, and the outbox row settles in the same commit. It carries the stage and type the answer
-			// was sent under, and when PayPal confirmed it. Only a 2xx is accepted, and only an accepted answer enters the history. A settled
-			// 422 is filed too, so the outbox stops, with the note PayPal answered with.
+			// was sent under, and the time it was queued, which every dispatch of this row shares. Only a 2xx is accepted, and only an
+			// accepted answer enters the history. A settled 422 is filed too, so the outbox stops, with the note PayPal answered with.
 			const accepted = observation.kind === "DISPUTE_ANSWERED" && observation.note === null;
 			const settled = observation.kind === "DISPUTE_ANSWERED" ? observation.note : null;
+			const filedAt = enqueuedAt ?? ports.clock.now();
 			await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId: effect.jobId, disputeId: effect.disputeId, answer, round,
 				...(effect.filedStage === undefined ? {} : { stage: effect.filedStage }), ...(evidenceType === undefined ? {} : { evidenceType }),
-				accepted, ...(settled === null ? {} : { note: settled }), filedAt: ports.clock.now() }, { key }, null);
+				accepted, ...(settled === null ? {} : { note: settled }), filedAt }, { key }, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			// A refused answer is never retried. The job shows it refused, a person is alerted with the reason, and the row parks for that person.
 			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason, round,
@@ -1026,7 +1034,7 @@ function canonical(value: unknown): string {
 }
 export function digest(value: unknown): Digest { return createHash("sha256").update(canonical(value)).digest("hex") as Digest; }
 function outboxRow(effect: Effect, now: Instant): OutboxRow {
-	return { key: operationKey(effect), effect, payloadDigest: digest(effect), state: { kind: "READY", runAt: now } };
+	return { key: operationKey(effect), effect, payloadDigest: digest(effect), state: { kind: "READY", runAt: now }, enqueuedAt: now };
 }
 /** The House's missing rows are a fact of the deployment, not of the tick: this line is said once per process. */
 let houseRowsMissing = false;

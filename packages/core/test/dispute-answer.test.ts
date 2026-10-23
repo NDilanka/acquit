@@ -345,7 +345,7 @@ test("the process log names the buyer dispute a dispute alert is about, and a se
 
 /** Routes the real PayPal client's HTTP through a recorder for the body's run. The OAuth token is answered; every other call is recorded. */
 type RecordedCall = { readonly path: string; readonly requestId: string | null };
-async function withRecordedPayPal(answer: () => Response, body: (calls: RecordedCall[]) => Promise<void>): Promise<void> {
+async function withRecordedPayPal(answer: () => Response | Promise<Response>, body: (calls: RecordedCall[]) => Promise<void>): Promise<void> {
 	const original = globalThis.fetch;
 	const calls: RecordedCall[] = [];
 	globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -367,10 +367,13 @@ async function withStore(row: JobRow, body: (store: SqliteStore) => Promise<void
 	} finally { store.close(); }
 }
 
-/** The ports the outbox runs against. PayPal is the real client, so the path and request id are the ones a dispute answer sends. */
-function portsOver(store: SqliteStore): Ports {
+/**
+ * The ports the outbox runs against. PayPal is the real client, so the path and request id are the ones a dispute answer sends. The clock
+ * reads `clock.at`, which a test moves between steps; it starts at `later`.
+ */
+function portsOver(store: SqliteStore, clock: { at: Instant } = { at: later }): Ports {
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
-	return { store, feeModel: model, fixtures: [demoFixture(exampleContract)], clock: { now: () => later },
+	return { store, feeModel: model, fixtures: [demoFixture(exampleContract)], clock: { now: () => clock.at },
 		verifier: { start: unimplemented, parseCallback: unimplemented }, github: { merge: unimplemented }, alerts: { raise: unimplemented },
 		paypal: createPayPal({ apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: platform, feeModel: model }) };
@@ -1259,4 +1262,96 @@ test("a verified attempt 2 after a rework files under the stage the dispute is a
 	assert.equal(confirmed.providerDispute?.answerStage, "CHARGEBACK");
 	assert.deepEqual(historyOf(confirmed), [["EVIDENCE", "CHARGEBACK", answerRoundOf(evidence), "OTHER", later]]);
 	assert.equal(projectJob(confirmed, maya, new Map()).providerDispute?.answerStage, "CHARGEBACK");
+});
+
+/** The key of the one dispute answer the outbox has due. Asserts there is exactly one, so a step names its answer and no other effect. */
+function dueAnswerKey(store: SqliteStore): OperationKey {
+	const due = store.db.prepare("SELECT key FROM outbox WHERE state LIKE '%READY%' AND json_extract(json, '$.effect.kind') LIKE 'DISPUTE_%'").all() as { key: string }[];
+	assert.equal(due.length, 1);
+	return String(due[0]?.key) as OperationKey;
+}
+
+test("an accepted confirmation that arrives after a settled 422 for the same answer joins the history and clears the note, and moves no money or hold", async () => {
+	await withStore(verifiedRow(), async store => {
+		const clock = { at: later };
+		const ports = portsOver(store, clock);
+		assert.equal((await applySystemCommand(ports, dispute("OPEN"), null, "webhook-evidence-late-accept")).refused, null);
+		// Worker A sends its evidence, and its 204 is still on the way when its lease runs out. Worker B takes the row, PayPal answers it
+		// 422 ANSWER_ALREADY_SUBMITTED, and B commits first. Then A's 204 reaches its own commit.
+		const seen: { afterB: JobRow | null } = { afterB: null };
+		let sent = 0;
+		await withRecordedPayPal(async () => {
+			sent += 1;
+			if (sent > 1) return Response.json({ name: "UNPROCESSABLE_ENTITY", details: [{ issue: "ANSWER_ALREADY_SUBMITTED" }] }, { status: 422 });
+			clock.at = instant("2026-10-06T12:32:01Z");
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			seen.afterB = await store.readJob(jobId);
+			return new Response(null, { status: 204 });
+		}, async calls => {
+			assert.equal(await runOutboxOnce(ports, evidenceKey), "WORKED");
+			assert.deepEqual(calls.map(call => call.requestId), [providerRequestId(evidenceKey), providerRequestId(evidenceKey)]);
+			assert.equal(outboxStateOf(store, evidenceKey).kind, "CONFIRMED");
+			const afterB = seen.afterB;
+			if (afterB === null) throw new Error("expected the job after worker B's commit");
+			assert.equal(afterB.providerDispute?.answerNote, "PAYPAL_422_ANSWER_ALREADY_SUBMITTED");
+			assert.equal(afterB.providerDispute?.answerHistory, undefined);
+			const final = await store.readJob(jobId);
+			if (final === null) throw new Error("expected the job");
+			const held = final.providerDispute;
+			// The answer PayPal took is in the history once, under its round, and the note the 422 left is gone.
+			assert.equal(held?.answerHistory?.length, 1);
+			assert.equal(held?.answerHistory?.[0]?.answer, "EVIDENCE");
+			assert.equal(held?.answerHistory?.[0]?.round, afterB.providerDispute?.answerRound);
+			assert.equal(held?.answerNote, undefined);
+			assert.deepEqual(held?.answerState, { state: "FILED" });
+			assert.equal(projectJob(final, maya, new Map()).providerDispute?.answerNote, null);
+			// Money and hold: the late acceptance writes the dispute answer and nothing else on the job.
+			assert.deepEqual(final.state, afterB.state);
+		});
+	});
+});
+
+test("an overlapping duplicate of one answer files the time the answer was queued, so its delayed commit after the history evicts it adds nothing", async () => {
+	await withStore(verifiedRow(), async store => {
+		const clock = { at: later };
+		const ports = portsOver(store, clock);
+		// Round one is the first stage a record sees, so the stage after it is an escalation, as in the eleven-answer history above.
+		assert.equal((await applySystemCommand(ports, disputeAt("STAGE-1", ["provide_evidence", "accept_claim"]), null, "webhook-overlap-1")).refused, null);
+		const firstKey = dueAnswerKey(store);
+		const seen: { afterFirst: JobRow | null; beforeDelayed: JobRow | null } = { afterFirst: null, beforeDelayed: null };
+		let sent = 0;
+		await withRecordedPayPal(async () => {
+			sent += 1;
+			if (sent > 1) return new Response(null, { status: 204 });
+			// Worker A's 204 is still on the way when its lease runs out. Worker B takes the row, is sent 204 too, and commits first.
+			clock.at = instant("2026-10-06T12:32:01Z");
+			assert.equal(await runOutboxOnce(ports, firstKey), "WORKED");
+			seen.afterFirst = await store.readJob(jobId);
+			// Ten more rounds, each filed on its own stage in turn. Round one is the first, so the eleventh evicts it from the ten the history keeps.
+			for (let n = 2; n <= 11; n++) {
+				clock.at = instant(`2026-10-06T13:${String(n).padStart(2, "0")}:00Z`);
+				assert.equal((await applySystemCommand(ports, disputeAt(`STAGE-${n}`, ["provide_evidence", "accept_claim"]), null, `webhook-overlap-${n}`)).refused, null);
+				assert.equal(await runOutboxOnce(ports, dueAnswerKey(store)), "WORKED");
+			}
+			seen.beforeDelayed = await store.readJob(jobId);
+			return new Response(null, { status: 204 });
+		}, async calls => {
+			// Worker A's 204 reaches its commit last. It files under the time round one was queued, not the time it commits.
+			assert.equal(await runOutboxOnce(ports, firstKey), "WORKED");
+			assert.equal(calls.filter(call => call.requestId === providerRequestId(firstKey)).length, 2);
+			const first = seen.afterFirst;
+			const before = seen.beforeDelayed;
+			if (first === null || before === null) throw new Error("expected the job at both steps");
+			assert.equal(first.providerDispute?.answerHistory?.length, 1);
+			const firstEntry = first.providerDispute?.answerHistory?.[0];
+			assert.equal(firstEntry?.filedAt, later);
+			assert.equal(before.providerDispute?.answerHistory?.length, 10);
+			assert.equal(before.providerDispute?.answerHistory?.some(entry => entry.round === firstEntry?.round), false);
+			const final = await store.readJob(jobId);
+			if (final === null) throw new Error("expected the job");
+			assert.deepEqual(final.providerDispute?.answerHistory, before.providerDispute?.answerHistory);
+			assert.deepEqual(final.providerDispute, before.providerDispute);
+			assert.deepEqual(final.state, before.state);
+		});
+	});
 });

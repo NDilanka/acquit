@@ -374,7 +374,7 @@ export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE"
 export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" }
 	| { readonly state: "REFUSED"; readonly reason: string; readonly evidenceType?: EvidenceType };
 
-/** An answer PayPal took, as the job keeps it: the answer, the round it answered, the stage and evidence type it went under, and when it was filed. */
+/** An answer PayPal took, as the job keeps it: the answer, the round it answered, the stage and evidence type it went under, and when Acquit queued it. */
 export type FiledAnswer = { readonly answer: DisputeAnswer; readonly round: string; readonly stage?: string; readonly evidenceType?: EvidenceType;
 	readonly filedAt: Instant };
 
@@ -420,7 +420,8 @@ export type ProviderDispute = {
 	/**
 	 * The note PayPal answered with when it did not take the answer on this record: it already held an answer, or the dispute had left
 	 * the state that takes one. The answer is still FILED, so the outbox stops retrying, but nothing was taken and no history entry is
-	 * kept. Absent when PayPal took the answer, and on a record stored before it was kept.
+	 * kept. A later accepted confirmation for the same answer clears it and keeps the entry. Absent when PayPal took the answer, and on
+	 * a record stored before it was kept.
 	 */
 	readonly answerNote?: string;
 	/**
@@ -541,9 +542,10 @@ function transitionTable(): {
 	/**
 	 * `round` is the answer round PayPal answered, so a late answer to an earlier round of the dispute files nothing on the current one.
 	 * `accepted` is true only when PayPal took the answer with a 2xx. An answer PayPal did not take is recorded as filed so the outbox
-	 * stops, and `note` names what PayPal answered with. Only an accepted answer enters the history, and only with `filedAt`, the time
-	 * PayPal took it. A command without `accepted` is not accepted, because nothing shows PayPal took it. `stage` and `evidenceType` are
-	 * what the outbox sent, so the history keeps them for any round.
+	 * stops, and `note` names what PayPal answered with. Only an accepted answer enters the history, and only with `filedAt`, the time the
+	 * answer was queued, which every dispatch of it shares. An accepted answer that arrives after a settled 422 for the same answer still
+	 * enters it, and clears the note. A command without `accepted` is not accepted, because nothing shows PayPal took it. `stage` and
+	 * `evidenceType` are what the outbox sent, so the history keeps them for any round.
 	 */
 	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly round?: string;
 		readonly stage?: string; readonly evidenceType?: EvidenceType; readonly filedAt?: Instant; readonly accepted?: boolean;
@@ -1093,20 +1095,24 @@ function transitionTable(): {
 		// PayPal took an answer the row no longer holds: an earlier round, the answer before an escalation, or any answer while the
 		// row refuses one for lack of an honest evidence type (that refusal holds no round). Nothing is filed for it. An accepted one is
 		// kept in the history under its own round, and the current answer, answer state, and round stay as they are.
-		// A settled 422 files the held answer, so the outbox stops, but it is never kept in the history: PayPal took nothing.
+		// A settled 422 files the held answer, so the outbox stops, but it is never kept in the history: PayPal took nothing. An accepted
+		// confirmation that arrives after it is kept: PayPal took the answer after all, so the entry joins the history and the note goes.
 		DisputeAnswerFiled: { by: "SYSTEM", apply: (row, command) => {
 			const held = row.providerDispute;
 			if (held === undefined || held.id !== command.disputeId) return unchanged(row);
 			const noHonest = held.answerState?.state === "REFUSED" && held.answerState.reason === NO_HONEST_EVIDENCE_TYPE;
 			const current = !noHonest && held.answer === command.answer && answersRound(held, command.round);
-			// Only an answer PayPal took is kept, and only under the time it took it. A command with no time keeps nothing.
+			// Only an answer PayPal took is kept, and only under the time it was queued. A command with no time keeps nothing.
 			const appended = command.accepted === true && command.filedAt !== undefined ? filedAnswerHistory(held, command, command.filedAt) : undefined;
 			if (!current) {
 				if (appended === undefined) return unchanged(row);
 				return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerHistory: appended } },
 					credits: [], effects: [] };
 			}
-			if (held.answerState?.state === "FILED") return unchanged(row);
+			// A filed answer changes only for a late acceptance of a settled 422's answer, which clears the note. A repeat, or a 422 for an
+			// answer already filed, changes nothing. Money, hold, and requeue state are never written here.
+			const lateAcceptance = command.accepted === true && held.answerNote !== undefined;
+			if (held.answerState?.state === "FILED" && appended === undefined && !lateAcceptance) return unchanged(row);
 			// The note names what PayPal held, and an accepted answer names none. The note of an earlier answer does not carry over.
 			const { answerNote: _previous, ...kept } = held;
 			const note = command.accepted === true ? undefined : command.note;

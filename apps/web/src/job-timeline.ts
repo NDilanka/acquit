@@ -465,7 +465,8 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
 
 /**
  * One answer PayPal took, in the words the current answer uses, with the stage it was filed under when the record kept one. The time
- * is when Acquit filed it. Null for an answer that is never filed (not answerable), which the history never holds.
+ * is when Acquit queued it, the same for every dispatch of it. Null for an answer that is never filed (not answerable), which the
+ * history never holds.
  */
 function filedAnswerEvent(job: TimelineJob, dispute: ProviderDisputeView, entry: FiledAnswer, simulated: string): TimelineEvent | null {
   const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
