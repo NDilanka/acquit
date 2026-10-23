@@ -297,7 +297,8 @@ function LayerTimeline({ timeline }: { timeline: PrintTimelineView }) {
       <p className="muted">
         One row for each layer the contract samples. The left picture is the contract section, placed by the G-code, and the
         right is the farm's photo (Simulated). Both are drawn at one pixel per {timeline.imageScale} cells. The judge measured
-        every 0.1 mm cell, so the numbers and the pictures differ in scale.
+        every 0.1 mm cell, so the numbers and the pictures differ in scale. A row covers the photo checks only; the G-code and
+        telemetry checks can still reject the print, and the verdict below names them.
       </p>
       <ol className="layer-list">
         {timeline.layers.map(row => (
@@ -315,7 +316,7 @@ function LayerRow({ row, timeline }: { row: PrintLayerView; timeline: PrintTimel
       <div className="layer-head">
         <b>Layer {row.layer}</b>
         <small>at {row.heightMm} mm</small>
-        <span className={row.pass ? "pill ok" : "pill alert"}>{row.pass ? "Passes" : "Fails"}</span>
+        <span className={row.pass ? "pill ok" : "pill alert"}>{row.pass ? "Photo checks pass" : "Photo checks fail"}</span>
       </div>
       <div className="layer-pics">
         <figure className="layer-pic">
