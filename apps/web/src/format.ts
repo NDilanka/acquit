@@ -156,8 +156,16 @@ export function authorityNote(authority: ReleaseAuthority): string {
   return authorities[authority] ?? `Released (${authority})`;
 }
 
-export function disputeNote(dispute: DisputeView): string {
-  return `Disputed ${utc(dispute.openedAt)}: ${dispute.reason} The arbiter decides by ${utc(dispute.resolveBy)}, or the payout releases to the operator.`;
+/**
+ * What the arbiter's deadline does with the payout, read after "or" or "If no decision comes by then,". While PayPal holds the payout,
+ * the deadline only records the release, so the payout waits on PayPal and the copy never promises it.
+ */
+export function deadlineOutcome(held: boolean): string {
+  return held ? "Acquit records the release for the operator, and the payout waits until PayPal decides the dispute." : "the payout releases to the operator.";
+}
+
+export function disputeNote(dispute: DisputeView, held = false): string {
+  return `Disputed ${utc(dispute.openedAt)}: ${dispute.reason} The arbiter decides by ${utc(dispute.resolveBy)}, or ${deadlineOutcome(held)}`;
 }
 
 export function creditLine(credits: CreditAccountView): string {

@@ -17,7 +17,7 @@ export function Earnings({ earnings }: { earnings: OperatorWorkspace["earnings"]
         <div className="card pad">
           <div className="eyebrow">Held for you</div>
           <div className="big num">{usd(earnings.heldCents)}</div>
-          <small className="muted">In escrow at your net, after the operator fee. Released when the client approves or the review window closes.</small>
+          <small className="muted">In escrow at your net, after the operator fee. Released when the client approves or the review window closes, unless a PayPal dispute holds the payout.</small>
         </div>
         <div className="card pad">
           <div className="eyebrow">Paid to you</div>

@@ -347,15 +347,18 @@ export type JobEffect =
 	 * `attempt` is the verified attempt the notes describe. It keys the answer, so a later attempt after a rework is a new answer.
 	 * `stage` is the dispute stage the answer is for, so an escalated dispute is answered once more. `requeued` marks the one
 	 * re-queue after PayPal refused the answer. `evidenceType` is the type PayPal asked for, absent for PROOF_OF_FULFILLMENT.
+	 * `filedStage` is the stage the answer files under, for the history. Unlike `stage` it is not part of the round's key, so a first
+	 * answer keeps the key it always had.
 	 */
 	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string;
-		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true; readonly evidenceType?: EvidenceType }
+		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true; readonly evidenceType?: EvidenceType;
+		readonly filedStage?: string }
 	/** Acquit sends the same receipt-cited notes as a message, while the dispute is at INQUIRY and offers no evidence to provide. */
 	| { readonly kind: "DISPUTE_MESSAGE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly message: string;
-		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true }
+		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true; readonly filedStage?: string }
 	/** Acquit accepts the buyer's claim, so PayPal returns the held funds to the buyer. */
 	| { readonly kind: "DISPUTE_ACCEPT"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly note: string; readonly simulated: boolean;
-		readonly requeued?: true };
+		readonly requeued?: true; readonly filedStage?: string };
 
 /**
  * What Acquit did about a buyer dispute. EVIDENCE, MESSAGE, and ACCEPT are the answers it filed. NOT_ANSWERABLE means the job
@@ -370,6 +373,10 @@ export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE"
  */
 export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" }
 	| { readonly state: "REFUSED"; readonly reason: string; readonly evidenceType?: EvidenceType };
+
+/** An answer PayPal took, as the job keeps it: the answer, the round it answered, the stage and evidence type it went under, and when Acquit queued it. */
+export type FiledAnswer = { readonly answer: DisputeAnswer; readonly round: string; readonly stage?: string; readonly evidenceType?: EvidenceType;
+	readonly filedAt: Instant };
 
 /** A PayPal buyer dispute, as PayPal last answered for it. `outcome` is PayPal's code once the dispute resolves. */
 export type ProviderDispute = {
@@ -406,6 +413,25 @@ export type ProviderDispute = {
 	 */
 	readonly answerEvidenceType?: EvidenceType;
 	/**
+	 * The stage the answer on this record was filed for, kept with its round as its type is, so the history names the stage. Absent
+	 * where PayPal named none, and on a record stored before it was kept.
+	 */
+	readonly answerStage?: string;
+	/**
+	 * The note PayPal answered with when it did not take the answer on this record: it already held an answer, or the dispute had left
+	 * the state that takes one. The answer is still FILED, so the outbox stops retrying, but nothing was taken and no history entry is
+	 * kept. A later accepted confirmation for the same answer clears it and keeps the entry. Absent when PayPal took the answer, and on
+	 * a record stored before it was kept.
+	 */
+	readonly answerNote?: string;
+	/**
+	 * Each answer PayPal took on this dispute, one entry per round, oldest first by when PayPal took it. PayPal's confirmation adds an
+	 * entry for its round whether or not the record still holds that round: a late confirmation for an earlier round is kept, and it
+	 * changes nothing else on the record. A round the list already holds adds nothing. A rework keeps the list, because those answers
+	 * reached PayPal. It holds the newest ANSWER_HISTORY_LIMIT entries. Absent on a record stored before it was kept.
+	 */
+	readonly answerHistory?: readonly FiledAnswer[];
+	/**
 	 * The latest delivery is a signed body that stood in for a read PayPal refused. It holds the release whatever its status
 	 * says, and settles nothing: a successful read of the dispute replaces it.
 	 */
@@ -418,10 +444,13 @@ export type ProviderDispute = {
  * The dispute as the job view serves it. Null on a job no buyer dispute has reached. `stage` is PayPal's dispute stage on its
  * latest delivery, and `requestedEvidence` the evidence types it asks for. `evidenceType` is the type the evidence answer filed for
  * its round, null for any other answer, and null where no evidence was filed for the round or the record predates the type.
+ * `answerRound` is the round the answer on the record is for, `answerStage` the stage that answer files under, `answerNote` what PayPal
+ * answered with when it did not take that answer, and `answerHistory` every answer PayPal took, oldest first.
  */
 export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents | null;
 	readonly openedAt: Instant; readonly outcome: string | null; readonly answer: DisputeAnswer | null; readonly answerState: DisputeAnswerState | null;
 	readonly stage: string | null; readonly requestedEvidence: readonly string[] | null; readonly evidenceType: EvidenceType | null;
+	readonly answerRound: string | null; readonly answerStage: string | null; readonly answerNote: string | null; readonly answerHistory: readonly FiledAnswer[];
 	readonly unconfirmed: boolean; readonly simulated: boolean };
 
 // The table
@@ -510,8 +539,17 @@ function transitionTable(): {
 	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
 		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome: string | null; readonly simulated?: true;
 		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[]; readonly requestedEvidence?: readonly string[] }, JobRow, "SYSTEM">;
-	/** `round` is the answer round PayPal answered, so a late answer to an earlier round of the dispute files nothing on the current one. */
-	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly round?: string }, JobRow, "SYSTEM">;
+	/**
+	 * `round` is the answer round PayPal answered, so a late answer to an earlier round of the dispute files nothing on the current one.
+	 * `accepted` is true only when PayPal took the answer with a 2xx. An answer PayPal did not take is recorded as filed so the outbox
+	 * stops, and `note` names what PayPal answered with. Only an accepted answer enters the history, and only with `filedAt`, the time the
+	 * answer was queued, which every dispatch of it shares. An accepted answer that arrives after a settled 422 for the same answer still
+	 * enters it, and clears the note. A command without `accepted` is not accepted, because nothing shows PayPal took it. `stage` and
+	 * `evidenceType` are what the outbox sent, so the history keeps them for any round.
+	 */
+	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly round?: string;
+		readonly stage?: string; readonly evidenceType?: EvidenceType; readonly filedAt?: Instant; readonly accepted?: boolean;
+		readonly note?: string }, JobRow, "SYSTEM">;
 	/** `evidenceType` is the type an evidence answer was sent as, so a re-queue never sends the same type PayPal refused. */
 	DisputeAnswerRefused: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly reason: string; readonly round?: string;
 		readonly evidenceType?: EvidenceType },
@@ -753,14 +791,19 @@ function transitionTable(): {
 				// The evidence is a new answer, so an earlier answer's refusal or filing does not carry over to it. Where the dispute
 				// offers no evidence to provide, the receipt goes as a message instead. The evidence names the type the stored read asks for.
 				const defendedWith = answerOf(verified, dispute.offers);
-				const filed = answerEffects(verified, dispute.id, defendedWith, dispute.simulated === true, undefined, undefined, dispute.requestedEvidence);
+				// The answer files under the stage the dispute is at, as a delivery's answer does, so the history names it once it is taken.
+				const filed = answerEffects(verified, dispute.id, defendedWith, dispute.simulated === true, undefined, undefined, dispute.requestedEvidence,
+					dispute.stage);
 				const round = filed.find(isDisputeAnswer);
 				const filedType = filedTypeOf(round);
 				// PayPal asks only for evidence types Acquit cannot honestly give: nothing is sent, and the refusal stands for a person.
 				const unhonest = defendedWith === "EVIDENCE" && evidenceTypeFor(dispute.requestedEvidence) === null;
+				// A refusal for no honest type names no round, but its answer still names the stage it was refused under, as a delivery's does.
+				const answerStage = round === undefined && !unhonest ? undefined : dispute.stage;
 				const defended: ProviderDispute = { ...withoutAnswer(dispute), answer: defendedWith,
 					...(round === undefined ? {} : { answerRound: answerRoundOf(round) }),
 					...(filedType === undefined ? {} : { answerEvidenceType: filedType }),
+					...(answerStage === undefined ? {} : { answerStage }),
 					...(dispute.simulated === true ? {} : { answerState: unhonest ? { state: "REFUSED" as const, reason: NO_HONEST_EVIDENCE_TYPE }
 						: { state: "QUEUED" as const } }) };
 				return { next: { ...verified, providerDispute: defended }, credits: [], effects: filed };
@@ -945,7 +988,7 @@ function transitionTable(): {
 			const answer: DisputeAnswer | undefined = escalated || (first && command.status !== "RESOLVED") ? answerOf(row, offers) : held?.answer;
 			const simulated = held?.simulated === true || command.simulated === true;
 			const filing = first || escalated ? answerEffects(row, command.disputeId, answer, simulated, escalated ? command.stage : undefined,
-				undefined, requestedEvidence) : [];
+				undefined, requestedEvidence, stage) : [];
 			// PayPal asks only for evidence types Acquit cannot honestly give. Nothing is sent: the answer is refused, and a person is told.
 			const unhonest = (first || escalated) && answer === "EVIDENCE" && evidenceTypeFor(requestedEvidence) === null;
 			// PayPal refused the answer for lack of dispute access, or refused the evidence type it was sent as. A successful read that offers
@@ -962,7 +1005,7 @@ function transitionTable(): {
 			const chosen = evidenceTypeFor(requestedEvidence);
 			const sendable = retry === "EVIDENCE" ? chosen !== null && (!typeRefused || chosen !== refusedType) : !typeRefused;
 			const requeue = retry !== undefined && ANSWER_LINK[retry] !== undefined && command.offers?.includes(ANSWER_LINK[retry]) === true && sendable;
-			const requeued: JobEffect[] = requeue ? answerEffects(row, command.disputeId, retry, simulated, stage, true, requestedEvidence) : [];
+			const requeued: JobEffect[] = requeue ? answerEffects(row, command.disputeId, retry, simulated, stage, true, requestedEvidence, stage) : [];
 			const recordedAnswer = requeue ? retry : answer;
 			const requeuedFlag = requeue || (!escalated && held?.requeued === true);
 			// The answer is queued until the outbox sends it. A simulated answer is never sent, so it carries no queued state.
@@ -975,6 +1018,11 @@ function transitionTable(): {
 			// The type the round files is kept with it. A later delivery that asks for another type files nothing, so the type stays as filed.
 			const filedType = filedTypeOf(newRound);
 			const answerEvidenceType = filing.length > 0 || requeued.length > 0 ? filedType : held?.answerEvidenceType;
+			// The stage the round files under is kept with it the same way, so the history names the stage its answer was filed for. A refusal
+			// for no honest evidence type names no round, but its answer still names the stage it was refused under.
+			const answerStage = filing.length > 0 || requeued.length > 0 ? (newRound === undefined && !unhonest ? undefined : stage) : held?.answerStage;
+			// A note names the answer it was sent for. A new answer filed or re-queued names none until PayPal says otherwise.
+			const answerNote = filing.length > 0 || requeued.length > 0 ? undefined : held?.answerNote;
 			const latest = latestTimeOf(held, command);
 			const next: ProviderDispute = { id: command.disputeId, status: command.status, reason: command.reason, amount: command.amount ?? held?.amount ?? null,
 				openedAt: held?.openedAt ?? command.openedAt, ...(latest === undefined ? {} : { updatedAt: latest }),
@@ -984,6 +1032,10 @@ function transitionTable(): {
 				...(answerState === undefined ? {} : { answerState }),
 				...(answerRound === undefined ? {} : { answerRound }),
 				...(answerEvidenceType === undefined ? {} : { answerEvidenceType }),
+				...(answerStage === undefined ? {} : { answerStage }),
+				...(answerNote === undefined ? {} : { answerNote }),
+				// The history records answers PayPal took, and no delivery takes one back, so every delivery carries it on.
+				...(held?.answerHistory === undefined ? {} : { answerHistory: held.answerHistory }),
 				...(stage === undefined ? {} : { stage }),
 				...(offers === undefined ? {} : { offers }),
 				...(requestedEvidence === undefined ? {} : { requestedEvidence }),
@@ -1040,14 +1092,34 @@ function transitionTable(): {
 			return { next: recorded, credits: [], effects };
 		} },
 		// PayPal took the answer the row selected. Only the answer this row still holds for that dispute is recorded as filed.
+		// PayPal took an answer the row no longer holds: an earlier round, the answer before an escalation, or any answer while the
+		// row refuses one for lack of an honest evidence type (that refusal holds no round). Nothing is filed for it. An accepted one is
+		// kept in the history under its own round, and the current answer, answer state, and round stay as they are.
+		// A settled 422 files the held answer, so the outbox stops, but it is never kept in the history: PayPal took nothing. An accepted
+		// confirmation that arrives after it is kept: PayPal took the answer after all, so the entry joins the history and the note goes.
 		DisputeAnswerFiled: { by: "SYSTEM", apply: (row, command) => {
 			const held = row.providerDispute;
-			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "FILED") return unchanged(row);
-			// An answer refused for lack of an honest evidence type was never sent, so no PayPal confirmation of an earlier round files it.
-			if (held.answerState?.state === "REFUSED" && held.answerState.reason === NO_HONEST_EVIDENCE_TYPE) return unchanged(row);
-			// PayPal took an earlier round of this answer. The round the row holds now is still waiting on its own, so nothing is filed for it.
-			if (!answersRound(held, command.round)) return unchanged(row);
-			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "FILED" } } }, credits: [], effects: [] };
+			if (held === undefined || held.id !== command.disputeId) return unchanged(row);
+			const noHonest = held.answerState?.state === "REFUSED" && held.answerState.reason === NO_HONEST_EVIDENCE_TYPE;
+			const current = !noHonest && held.answer === command.answer && answersRound(held, command.round);
+			// Only an answer PayPal took is kept, and only under the time it was queued. A command with no time keeps nothing.
+			const appended = command.accepted === true && command.filedAt !== undefined ? filedAnswerHistory(held, command, command.filedAt) : undefined;
+			if (!current) {
+				if (appended === undefined) return unchanged(row);
+				return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerHistory: appended } },
+					credits: [], effects: [] };
+			}
+			// A filed answer changes only for a late acceptance of a settled 422's answer, which clears the note. A repeat, or a 422 for an
+			// answer already filed, changes nothing. Money, hold, and requeue state are never written here.
+			const lateAcceptance = command.accepted === true && held.answerNote !== undefined;
+			if (held.answerState?.state === "FILED" && appended === undefined && !lateAcceptance) return unchanged(row);
+			// The note names what PayPal held, and an accepted answer names none. The note of an earlier answer does not carry over.
+			const { answerNote: _previous, ...kept } = held;
+			const note = command.accepted === true ? undefined : command.note;
+			return { next: { ...row, version: (row.version + 1) as Version,
+				providerDispute: { ...kept, answerState: { state: "FILED" }, ...(note === undefined ? {} : { answerNote: note }),
+					...(appended === undefined ? {} : { answerHistory: appended }) } },
+				credits: [], effects: [] };
 		} },
 		// PayPal refused the answer for good. The job says so, and a person is alerted with the plain reason. The hold stays.
 		DisputeAnswerRefused: { by: "SYSTEM", apply: (row, command) => {
@@ -1374,9 +1446,13 @@ const ANSWER_LINK: Record<DisputeAnswer, DisputeOffer | undefined> = {
 	EVIDENCE: "provide_evidence", MESSAGE: "send_message", ACCEPT: "accept_claim", NOT_ANSWERABLE: undefined,
 };
 
-/** The dispute with no answer, no answer state, no round, no filed type, and no re-queue. A rework hands the open dispute back this way, so the next verified attempt answers it again. */
+/**
+ * The dispute with no answer, no answer state, no round, no stage, no note, no filed type, and no re-queue. The history stays, because
+ * those answers reached PayPal. A rework hands the open dispute back this way, so the next verified attempt answers it again.
+ */
 function withoutAnswer(dispute: ProviderDispute): ProviderDispute {
-	const { answer: _answer, answerState: _answerState, requeued: _requeued, answerRound: _answerRound, answerEvidenceType: _answerEvidenceType, ...rest } = dispute;
+	const { answer: _answer, answerState: _answerState, requeued: _requeued, answerRound: _answerRound, answerStage: _answerStage,
+		answerNote: _answerNote, answerEvidenceType: _answerEvidenceType, ...rest } = dispute;
 	return rest;
 }
 
@@ -1406,6 +1482,29 @@ export function answersRound(dispute: ProviderDispute, round: string | undefined
 	return dispute.answerRound === undefined || round === undefined || dispute.answerRound === round;
 }
 
+/** The most answers PayPal took that a dispute record keeps. The oldest entry drops first. */
+const ANSWER_HISTORY_LIMIT = 10;
+
+/**
+ * The history once PayPal took an answer: one entry added for its round, in the order PayPal took the answers, and the list kept to
+ * its newest ANSWER_HISTORY_LIMIT. The entry takes its stage and type from the command alone, because the record has already
+ * overwritten an earlier round's. Undefined when nothing is added: a round the history already holds, an answer that names no round, or,
+ * once the history is full, an answer PayPal took no later than the oldest entry it keeps. A replay of an evicted answer is such one.
+ */
+function filedAnswerHistory(held: ProviderDispute, command: { readonly answer: DisputeAnswer; readonly round?: string; readonly stage?: string;
+	readonly evidenceType?: EvidenceType }, filedAt: Instant): readonly FiledAnswer[] | undefined {
+	const history = held.answerHistory ?? [];
+	if (command.round === undefined || history.some(entry => entry.round === command.round)) return undefined;
+	if (history.length >= ANSWER_HISTORY_LIMIT && history.every(entry => Date.parse(filedAt) <= Date.parse(entry.filedAt))) return undefined;
+	const entry: FiledAnswer = { answer: command.answer, round: command.round,
+		...(command.stage === undefined ? {} : { stage: command.stage }),
+		...(command.answer === "EVIDENCE" && command.evidenceType !== undefined ? { evidenceType: command.evidenceType } : {}),
+		filedAt };
+	// Oldest first by when PayPal took each answer, so a late entry sits where its time puts it. A tie keeps the order it arrived in.
+	const ordered = [...history, entry].sort((a, b) => Date.parse(a.filedAt) - Date.parse(b.filedAt));
+	return ordered.slice(-ANSWER_HISTORY_LIMIT);
+}
+
 /** The evidence type a dispute answer files, for the record of its round. Only an evidence answer carries one. */
 function filedTypeOf(effect: DisputeAnswerEffect | undefined): EvidenceType | undefined {
 	return effect?.kind === "DISPUTE_EVIDENCE" ? effect.evidenceType : undefined;
@@ -1418,7 +1517,7 @@ function filedTypeOf(effect: DisputeAnswerEffect | undefined): EvidenceType | un
  * Acquit can honestly give.
  */
 function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | undefined, simulated: boolean,
-	stage?: string, requeued?: true, requested?: readonly string[]): JobEffect[] {
+	stage?: string, requeued?: true, requested?: readonly string[], filedStage?: string): JobEffect[] {
 	const payee = payeeMerchantOf(row);
 	const escrow = heldEscrowOf(row);
 	const attempt = evidenceAttemptOf(row);
@@ -1427,17 +1526,19 @@ function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | u
 		return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_NOT_ANSWERABLE", disputeId }];
 	}
 	const marks = { ...(stage === undefined ? {} : { stage }), ...(requeued === undefined ? {} : { requeued }) };
+	// The stage the answer files under is kept for the history. It is not a mark, so the round key of a first answer does not change.
+	const filed = filedStage === undefined ? {} : { filedStage };
 	if (answer === "EVIDENCE" && attempt !== null) {
 		const evidenceType = evidenceTypeFor(requested);
 		// Nothing PayPal asks for is one Acquit can honestly file, so no answer is sent and a person decides.
 		if (evidenceType === null) return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ANSWER_REFUSED", disputeId,
 			detail: `${NO_HONEST_EVIDENCE_TYPE}. The payment stays held.` }];
-		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated, evidenceType, ...marks }];
+		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated, evidenceType, ...marks, ...filed }];
 	}
 	if (answer === "MESSAGE" && attempt !== null) {
-		return [{ kind: "DISPUTE_MESSAGE", jobId: row.id, disputeId, payee, message: evidenceNotesOf(row), attempt, simulated, ...marks }];
+		return [{ kind: "DISPUTE_MESSAGE", jobId: row.id, disputeId, payee, message: evidenceNotesOf(row), attempt, simulated, ...marks, ...filed }];
 	}
-	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated, ...(requeued === undefined ? {} : { requeued }),
+	return [{ kind: "DISPUTE_ACCEPT", jobId: row.id, disputeId, payee, simulated, ...(requeued === undefined ? {} : { requeued }), ...filed,
 		note: `Acquit accepts the buyer's claim on dispute ${disputeId} for capture ${escrow?.capture.captureId ?? "unknown"} on job ${row.id}.` }];
 }
 
@@ -1794,6 +1895,10 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 			requestedEvidence: row.providerDispute.requestedEvidence ?? null,
 			// The type the evidence answer filed for its round. Never a type a later delivery asks for, and none on a record stored before it was kept.
 			evidenceType: row.providerDispute.answer === "EVIDENCE" ? (row.providerDispute.answerEvidenceType ?? null) : null,
+			// The round the answer on the record is for, and every answer PayPal took, oldest first. A record stored before the history was kept serves none.
+			answerRound: row.providerDispute.answerRound ?? null, answerStage: row.providerDispute.answerStage ?? null,
+			answerNote: row.providerDispute.answerNote ?? null,
+			answerHistory: row.providerDispute.answerHistory ?? [],
 			unconfirmed: row.providerDispute.unconfirmed === true, simulated: row.providerDispute.simulated === true },
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
