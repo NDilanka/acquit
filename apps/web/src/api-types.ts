@@ -99,6 +99,8 @@ export interface ProviderDisputeView {
   readonly answerRound: string | null;
   /** The stage the answer on the record files under, such as INQUIRY or CHARGEBACK, or null where the record names none. */
   readonly answerStage: string | null;
+  /** The note PayPal answered with when it did not take the answer on the record, or null where it took it or none was kept. */
+  readonly answerNote: string | null;
   /** Every answer PayPal took on this dispute, oldest first. Empty when PayPal took none. */
   readonly answerHistory: readonly FiledAnswer[];
   /** True while a signed notice stands in for a read PayPal refused. The payout stays held until a successful read. */

@@ -645,10 +645,13 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey,
 				console.warn(`Acquit: PayPal already held an answer for dispute ${logQuoted(effect.disputeId)} (${logQuoted(observation.note)}).`);
 			}
 			// The job records the answer as filed, and the outbox row settles in the same commit. It carries the stage and type the answer
-			// was sent under, and when PayPal confirmed it, so the history keeps every answer PayPal took, in order, whatever round it was.
+			// was sent under, and when PayPal confirmed it. Only a 2xx is accepted, and only an accepted answer enters the history. A settled
+			// 422 is filed too, so the outbox stops, with the note PayPal answered with.
+			const accepted = observation.kind === "DISPUTE_ANSWERED" && observation.note === null;
+			const settled = observation.kind === "DISPUTE_ANSWERED" ? observation.note : null;
 			await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId: effect.jobId, disputeId: effect.disputeId, answer, round,
 				...(effect.filedStage === undefined ? {} : { stage: effect.filedStage }), ...(evidenceType === undefined ? {} : { evidenceType }),
-				filedAt: ports.clock.now() }, { key }, null);
+				accepted, ...(settled === null ? {} : { note: settled }), filedAt: ports.clock.now() }, { key }, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			// A refused answer is never retried. The job shows it refused, a person is alerted with the reason, and the row parks for that person.
 			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason, round,

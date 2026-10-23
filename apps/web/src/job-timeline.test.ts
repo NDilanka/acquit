@@ -627,6 +627,7 @@ const BUYER_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
   evidenceType: null,
   answerRound: null,
   answerStage: null,
+  answerNote: null,
   answerHistory: [],
   unconfirmed: false,
   simulated: false,
@@ -908,6 +909,38 @@ test("the current answer names the stage it was filed under, queued, filed, or r
     "Acquit is sending its acceptance of the buyer's claim to PayPal (arbitration)");
   assert.equal(titles({ answer: "EVIDENCE", answerState: { state: "QUEUED" }, answerStage: null })[1],
     "Acquit is sending its verified attempt as evidence to PayPal");
+});
+
+test("an answer PayPal did not take reads as not taken, names why, and is never called filed or sent", () => {
+  const notTaken = (fields: Partial<NonNullable<TimelineJob["providerDispute"]>>) =>
+    timelineEvents(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: { state: "FILED" }, answerRound: "chargeback-round",
+      answerStage: "CHARGEBACK", answerNote: "PAYPAL_422_DISPUTE_NOT_IN_OPEN_STATE", ...fields }))
+      .filter(event => event.kind === "DISPUTE");
+  // The answer before it was taken stays in the history, and the answer PayPal did not take is named after it.
+  const settled = notTaken({ answerHistory: [FILED_HISTORY[0]!] });
+  assert.deepEqual(settled.map(event => event.title), [
+    "Buyer opened a PayPal dispute (merchandise or service not received)",
+    "Acquit sent PayPal its verified attempt as a message on dispute PAYPAL-DISPUTE-1 (inquiry)",
+    "PayPal did not take Acquit's answer (chargeback): the dispute was no longer open to it.",
+    "Payment held while PayPal reviews the buyer's dispute",
+  ]);
+  assert.deepEqual(settled[2], {
+    at: null,
+    kind: "DISPUTE",
+    title: "PayPal did not take Acquit's answer (chargeback): the dispute was no longer open to it.",
+    detail: "PayPal took nothing from the answer, so the answer history keeps no entry for it. No alert went to a person.",
+    tone: "alert",
+    ids: [{ value: "PAYPAL-DISPUTE-1", label: "PayPal dispute" }],
+    href: null,
+    reasons: [],
+  });
+  // An ALREADY note says PayPal held an answer to the dispute already, and a message that PayPal did not take reads the same way.
+  assert.equal(notTaken({ answer: "MESSAGE", answerStage: "INQUIRY", answerRound: "inquiry-round", answerNote: "PAYPAL_422_ANSWER_ALREADY_SUBMITTED" })[1]?.title,
+    "PayPal did not take Acquit's answer (inquiry): PayPal already held an answer to the dispute.");
+  // The same plain title on a paid job, where the answer is the receipt: the words name no receipt and no filing.
+  assert.equal(timelineEvents(paidJob({ providerDispute: { ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: { state: "FILED" }, answerRound: "chargeback-round",
+    answerNote: "PAYPAL_422_DISPUTE_NOT_IN_OPEN_STATE" } })).find(event => event.kind === "DISPUTE" && event.title.startsWith("PayPal did not"))?.title,
+    "PayPal did not take Acquit's answer: the dispute was no longer open to it.");
 });
 
 test("the arbiter deadline names the hold while PayPal holds the payout, on the dispute row and the next step, and not after PayPal decides for the seller", () => {

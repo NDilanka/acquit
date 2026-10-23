@@ -211,6 +211,14 @@ function refusalWords(reason: string): string {
   return reason;
 }
 
+/**
+ * The plain words for an answer PayPal did not take, from the note the record keeps. An ALREADY note says PayPal held an answer
+ * already; any other settled note says the dispute had left the state that takes one.
+ */
+function notTakenWords(note: string): string {
+  return note.includes("ALREADY") ? "PayPal already held an answer to the dispute" : "the dispute was no longer open to it";
+}
+
 /** PayPal's dispute stages in plain words. A stage the table does not name reads as "dispute". */
 const STAGE_WORDS = new Map([["INQUIRY", "inquiry"], ["CHARGEBACK", "chargeback"], ["PRE_ARBITRATION", "pre-arbitration"], ["ARBITRATION", "arbitration"]]);
 
@@ -294,6 +302,18 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
       kind: "DISPUTE",
       title: `PayPal refused Acquit's answer${stage}: ${refusalWords(answer.reason)}. The payment stays held.`,
       detail: "Acquit's answer did not reach PayPal. An alert went to a person.",
+      tone: "alert",
+      ids: [{ value: dispute.id, label: "PayPal dispute" }],
+      href: null,
+      reasons: [],
+    });
+  } else if (answer?.state === "FILED" && dispute.answerNote !== null && current !== null && current !== "NOT_ANSWERABLE") {
+    // PayPal did not take the answer, so it is never called filed or sent. Nothing reached the history, and no alert went to a person.
+    events.push({
+      at: null,
+      kind: "DISPUTE",
+      title: `PayPal did not take Acquit's answer${stage}: ${notTakenWords(dispute.answerNote)}.`,
+      detail: "PayPal took nothing from the answer, so the answer history keeps no entry for it. No alert went to a person.",
       tone: "alert",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
       href: null,
