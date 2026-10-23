@@ -1,8 +1,9 @@
+import { Link } from "../router";
 import { milestoneLine, PAGE_INTRO, scoreLines, VERIFIER_ROWS, type VerifierRow } from "../verifiers-view";
 
 const STATUS_PILL: Record<VerifierRow["status"], string> = {
   Live: "pill ok",
-  "Judge built, not open for jobs": "pill open",
+  "Live, simulated farms": "pill ok",
   Next: "pill new",
 };
 
@@ -47,6 +48,13 @@ export function VerifiersPage() {
               <b>Hidden check</b>
               <br />
               {row.hiddenCheck}
+            </p>
+          )}
+          {row.demo !== null && (
+            <p>
+              <Link to={row.demo.to} className="btn ghost sm">
+                {row.demo.label}
+              </Link>
             </p>
           )}
         </section>

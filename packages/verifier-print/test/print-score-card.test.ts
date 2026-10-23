@@ -24,8 +24,8 @@ import { runTwin } from "../src/sim/twin.ts";
 import { measurePlacement, verifyPrint } from "../src/verify.ts";
 import type { PrintVerdict } from "../src/verify.ts";
 import type { Box, FrozenPrintContract, PrintRejectReason } from "../src/types.ts";
-import { LAYER_MM, partStl, scaledStl, stripInfill, syntheticGcode } from "./synthetic-print.ts";
-import type { PartKind } from "./synthetic-print.ts";
+import { LAYER_MM, partStl, scaledStl, stripInfill, syntheticGcode } from "../src/sim/synthetic-gcode.ts";
+import type { PartKind } from "../src/sim/synthetic-gcode.ts";
 
 // The card has two literal tallies. The synthetic one runs on every CI job. The slicer one adds the cases
 // PrusaSlicer slices, and runs only in the print-slice job, where ACQUIT_PRUSA names the binary.

@@ -708,3 +708,68 @@ export type ScenarioRun = {
 
 /** `POST /api/demo/scenarios/:name` on 201. */
 export type ScenarioStartResponse = { readonly scenarioId: string; readonly jobId: string };
+
+/**
+ * `POST /api/demo/print/runs` on 201, and `GET /api/demo/print/runs/:id`. Mirrored from apps/api/src/print-demo.ts and
+ * packages/verifier-print/src/run.ts. A run is Simulated end to end: its farm, printer, camera, and G-code.
+ */
+export type PrintRunView = {
+  readonly id: string;
+  readonly farm: string;
+  readonly state: "RUNNING" | "DONE" | "FAILED";
+  readonly startedAt: Instant;
+  readonly endedAt: Instant | null;
+  readonly result: PrintDemoRunView | null;
+  readonly failure: string | null;
+};
+
+export type PrintChallengeView = {
+  readonly id: string;
+  readonly label: string;
+  readonly expect: "FULFIL" | "DECLINE";
+  readonly passed: boolean;
+  readonly detail: string;
+};
+
+export type PrintCertificateView = {
+  readonly simulated: true;
+  readonly seller: string;
+  readonly materials: readonly ["PLA"];
+  readonly buildBedMm: { readonly x: number; readonly y: number };
+  readonly fulfilled: number;
+  readonly declinedTraps: number;
+  readonly suiteId: string;
+  readonly suiteDigest: string;
+  readonly issuedAt: Instant;
+  readonly expiresAt: Instant;
+  readonly digest: string;
+};
+
+export type PrintOutcomeView = {
+  readonly job: { readonly label: string; readonly quantity: number; readonly infillPct: number };
+  /** The planted fraud the farm ran, or null for an honest print. knownGap marks the one the verifier accepts. */
+  readonly fraud: { readonly id: string; readonly label: string; readonly knownGap: boolean } | null;
+  readonly evidence: {
+    readonly layers: number;
+    readonly filamentMm: number;
+    readonly estimatedS: number;
+    readonly telemetryFilamentMm: number;
+    readonly telemetryS: number;
+    readonly frames: number;
+    readonly photos: number;
+  };
+  readonly verdict: "VERIFIED" | "REJECTED";
+  readonly reasons: readonly { readonly kind: string; readonly text: string }[];
+};
+
+export type PrintDemoRunView = {
+  readonly farm: { readonly mode: string; readonly name: string; readonly simulated: true };
+  readonly qualification: {
+    readonly fulfilled: number;
+    readonly declinedTraps: number;
+    readonly qualified: boolean;
+    readonly challenges: readonly PrintChallengeView[];
+  };
+  readonly certificate: PrintCertificateView | null;
+  readonly print: PrintOutcomeView | null;
+};

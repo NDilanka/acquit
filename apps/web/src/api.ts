@@ -19,6 +19,7 @@ import type {
   PlatformReconciliation,
   PlatformSignedInResponse,
   PlatformTables,
+  PrintRunView,
   PublicReceiptResponse,
   ReceiptRow,
   ScenarioName,
@@ -136,4 +137,6 @@ export const api = {
     request<AskToolResponse>("POST", "/api/ask-ledger/tool", { name, arguments: args }, init),
   startScenario: (name: ScenarioName) => request<ScenarioStartResponse>("POST", `/api/demo/scenarios/${encodeURIComponent(name)}`),
   scenarioRun: (scenarioId: string) => request<ScenarioRun>("GET", `/api/demo/scenarios/${encodeURIComponent(scenarioId)}`),
+  startPrintRun: (farm: string) => request<PrintRunView>("POST", "/api/demo/print/runs", { farm }),
+  printRun: (runId: string) => request<PrintRunView>("GET", `/api/demo/print/runs/${encodeURIComponent(runId)}`),
 };

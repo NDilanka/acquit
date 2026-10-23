@@ -1,12 +1,13 @@
-// Test-only prints that run with no slicer. The part meshes come from manifold. The honest G-code cuts each
+// G-code for prints that run with no slicer. The part meshes come from manifold. The honest G-code cuts each
 // layer's mesh section into an external perimeter 0.2 mm inside the outline and parallel infill lines across
-// the interior, spaced to the infill percentage. Each fraud edits these inputs or this output.
+// the interior, spaced to the infill percentage. Each fraud edits these inputs or this output. The simulated
+// farm and the score card both use it, so a file made here is labeled synthetic wherever it is shown.
 
-import { NOZZLE_WIDTH_MM } from "../src/conform.ts";
-import type { Ring } from "../src/raster.ts";
-import { toBinaryStl } from "../src/plate.ts";
-import { interiorRings, kernel, solidOf } from "../src/section.ts";
-import { meshStats } from "../src/stl.ts";
+import { NOZZLE_WIDTH_MM } from "../conform.ts";
+import type { Ring } from "../raster.ts";
+import { toBinaryStl } from "../plate.ts";
+import { interiorRings, kernel, solidOf } from "../section.ts";
+import { meshStats } from "../stl.ts";
 
 export const LAYER_MM = 0.2;
 /** Parts are this tall, so every plate sits within 40 layers. */

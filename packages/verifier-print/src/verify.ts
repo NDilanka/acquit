@@ -153,7 +153,13 @@ export async function verifyPrint(input: PrintEvidence): Promise<PrintVerdict> {
 		meshBox: expectation.plateBox,
 		archive: input.archive,
 	});
+	// Every layer the contract samples needs its own photo. A print with a layer's photo left out fails like one
+	// with a wrong photo, so no caller can pass a print by sending less evidence.
+	const shot = new Set(input.photos.map(photo => photo.layer));
+	const missing: PrintRejectReason[] = input.contract.hidden.sampleLayers
+		.filter(layer => !shot.has(layer))
+		.map(layer => ({ kind: "PHOTO_MISSING", layer }));
 
-	const reasons: PrintRejectReason[] = [...conformance.reasons, ...coupon.reasons, ...telemetry, ...unsampled, ...photos.reasons];
+	const reasons: PrintRejectReason[] = [...conformance.reasons, ...coupon.reasons, ...telemetry, ...unsampled, ...missing, ...photos.reasons];
 	return { result: reasons.length === 0 ? "VERIFIED" : "REJECTED", reasons, placement };
 }
