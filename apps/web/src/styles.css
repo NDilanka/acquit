@@ -220,6 +220,30 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .print-controls > * { flex: 1 1 100%; }
 }
+/* The certificate is a card with a double rule, so it reads as a document and not as one more list. */
+.certificate { border: 3px double var(--line-2); border-radius: var(--r); padding: 16px 18px; background: #fdfcf8; display: grid; gap: 8px; min-width: 0; }
+.certificate > p { margin: 0; }
+.certificate .kvs { margin: 4px 0 0; }
+.cert-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.cert-seller { font-family: var(--serif); font-size: 22px; margin: 0; overflow-wrap: anywhere; }
+/* The timeline: each layer is a row, and its two pictures sit side by side from 640 px, stacked below that. */
+.layer-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; min-width: 0; }
+.layer-row { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfaf7; min-width: 0; }
+.layer-row.fail { border-color: #f0c9c0; background: var(--red-bg); }
+.layer-row > p { margin: 0; }
+.layer-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.layer-head small { color: var(--muted); }
+.layer-pics { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+@media (min-width: 640px) {
+  .layer-pics { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+.layer-pic { margin: 0; min-width: 0; }
+.layer-pic img { display: block; width: 100%; height: auto; image-rendering: pixelated; border: 1px solid var(--line-2); border-radius: 6px; background: #fff; }
+.layer-pic figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.layer-flag { color: var(--red); margin: 0; }
+.layer-row small { overflow-wrap: anywhere; }
+.print-check { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--green-line); border-radius: 8px; background: var(--green-bg); min-width: 0; }
+.print-check > p { margin: 0; }
 
 @media (max-width: 480px) {
   .wrap { padding: 20px 16px 96px; }

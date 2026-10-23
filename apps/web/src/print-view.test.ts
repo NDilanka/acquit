@@ -1,32 +1,68 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FRAUDS, PASS_RULE } from "../../../packages/verifier-print/src/catalog.ts";
-import type { PrintChallengeView, PrintOutcomeView } from "./api-types.ts";
+import type { PrintChallengeView, PrintLayerView, PrintOutcomeView, PrintReceiptView, PrintTimelineView } from "./api-types.ts";
 import { match } from "./route.ts";
 import {
+  browserDigestWords,
+  browserHiddenDigest,
+  canonicalJson,
   challengeStatus,
+  checkDigestInBrowser,
+  distanceWords,
   durationWords,
   evidenceRows,
   failureWords,
   farmDoingLine,
   farmHeading,
+  fulfilmentWords,
   HONEST_LIMIT,
+  layerFlag,
   MONEY_LINE,
+  overlapWords,
   PRINT_INTRO,
   printRefusalWords,
   QUALIFICATION_RULE,
   REAL_AND_SIMULATED,
+  serverDigestWords,
   TRAP_NOTE,
   tallyLine,
+  trapWords,
   verdictView,
 } from "./print-view.ts";
 
+// The honest run's reveal for seed 7 and the digests it commits to, checked outside the verifier (see print-record.test.ts).
+const SAMPLED = [2, 18, 27, 30, 31, 32, 37, 40];
+const REVEAL = { hidden: { sampleLayers: SAMPLED }, salt: "a00cc48230e123bde90b3d7a002ad38da7b6f4c74987873ad0e3ff90cc15eaf0" };
+const HIDDEN_DIGEST = "537ea60d733f73891bc22e0409d7cb6bdf35cae7cbda046ce6221c42f1334bea";
+
+const image = { cols: 1, rows: 1, png: "" };
+const layer = (over: Partial<PrintLayerView>): PrintLayerView => ({ layer: 2, heightMm: 0.3, readable: true, iou: 0.998, fingerprint: "0000000000000000", distance: null, pass: true, reference: image, photo: image, ...over });
+const timeline = (layers: readonly PrintLayerView[]): PrintTimelineView => ({ imageScale: 4, iouMin: 0.9, reuseMaxDistance: 4, layers });
+
+const receipt = (over: Partial<PrintReceiptView>): PrintReceiptView => ({
+  jobId: "job_print_demo",
+  contractDigest: "0".repeat(64),
+  hiddenDigest: HIDDEN_DIGEST,
+  reveal: REVEAL,
+  digestMatches: true,
+  gcodeSha256: "1".repeat(64),
+  telemetry: { frames: 62, chainHead: "2".repeat(64), printerKeySha256: "3".repeat(64) },
+  certificateDigest: "4".repeat(64),
+  verdict: "VERIFIED",
+  reasonKinds: [],
+  openedAt: "2026-10-23T09:00:00Z",
+  ...over,
+});
+
 const outcome = (over: Partial<PrintOutcomeView>): PrintOutcomeView => ({
-  job: { label: "Two 14 mm cubes, 25% infill", quantity: 2, infillPct: 25 },
+  job: { label: "Two 14 mm cubes, 25% infill", quantity: 2, infillPct: 25, toleranceMm: 0.2, layerHeightMm: 0.2, layerCount: 40, markerId: 14175 },
   fraud: null,
   evidence: { layers: 40, filamentMm: 1044.9, estimatedS: 1255, telemetryFilamentMm: 1044.9, telemetryS: 1255, frames: 62, photos: 8 },
   verdict: "VERIFIED",
   reasons: [],
+  timeline: timeline([]),
+  receipt: receipt({}),
   ...over,
 });
 
@@ -104,6 +140,52 @@ test("the evidence rows label the telemetry and the photos as Simulated, and tim
 test("a refusal of a print run is in plain words, and an unknown code is left to the caller", () => {
   assert.equal(printRefusalWords("PRINT_BUSY"), "The print demo is busy with other runs. Try again in a minute.");
   assert.equal(printRefusalWords("SOMETHING_ELSE"), null);
+});
+
+test("a layer that passes shows its overlap beside the mark, and a shifted or reused layer carries a plain flag", () => {
+  const view = timeline([]);
+  assert.equal(overlapWords(0.99767, 0.9), "Overlap 0.998 with the contract section. The pass mark is 0.900 or more.");
+  assert.equal(layerFlag(layer({}), view), null);
+  assert.equal(layerFlag(layer({ iou: 0.8123, pass: false }), view), "Shifted or wrong layer: the overlap is below the 0.90 pass mark.");
+  assert.equal(layerFlag(layer({ distance: 2, pass: false }), view), "Matches an earlier job's photo, distance 2.");
+  assert.equal(layerFlag(layer({ distance: 5 }), view), null, "a distance past the reuse limit is no flag");
+  assert.equal(layerFlag(layer({ readable: false, iou: 0, pass: false }), view), "The photo cannot be read against the contract, so the judge could not measure its overlap.");
+  assert.equal(distanceWords(null), "No earlier photo was sent with this print.");
+  assert.equal(distanceWords(3), "Nearest earlier photo: distance 3.");
+});
+
+test("the trap reads as declined with the farm's reason, and the certificate counts the fulfilled challenges", () => {
+  assert.equal(trapWords(challenge({ id: "trap", expect: "DECLINE", passed: true, detail: "declined: 300 mm is wider than the bed" })), "Declined. Reason: 300 mm is wider than the bed");
+  assert.equal(trapWords(challenge({ id: "trap", expect: "DECLINE", passed: false, detail: "accepted a job it must decline" })), "Accepted. A farm must decline this job to qualify.");
+  assert.equal(fulfilmentWords(5), "5 of 5 challenges fulfilled");
+});
+
+test("the browser's canonical JSON sorts keys by code unit, the same rule the server digests by", () => {
+  assert.equal(canonicalJson({ salt: "s", hidden: { sampleLayers: [2, 18] } }), '{"hidden":{"sampleLayers":[2,18]},"salt":"s"}');
+});
+
+// The server's recompute of this reveal is pinned to the same literal in print-record.test.ts, so the two sides agree.
+test("the browser's WebCrypto digest of the reveal equals the committed digest the server pins", async () => {
+  assert.equal(await browserHiddenDigest(REVEAL), HIDDEN_DIGEST);
+  assert.equal(await checkDigestInBrowser(receipt({})), "match");
+});
+
+test("a reveal with one sampled layer altered is a mismatch in the browser too", async () => {
+  const altered = receipt({ reveal: { hidden: { sampleLayers: SAMPLED.map(item => (item === 40 ? 41 : item)) }, salt: REVEAL.salt } });
+  assert.equal(await browserHiddenDigest(altered.reveal), "8a0674873f0c8719f4cd0e9b6aabdf88876d385bcb653767c0bd79b81c57d296");
+  assert.equal(await checkDigestInBrowser(altered), "mismatch");
+  assert.equal(browserDigestWords("mismatch"), "Recomputed in your browser with WebCrypto: the reveal does not match the digest committed at open.");
+});
+
+test("the digest check says when the browser cannot run it, and the server's check stands alone", () => {
+  assert.equal(browserDigestWords("unavailable"), "This page has no WebCrypto here (it needs a secure origin), so only the server's check is shown.");
+  assert.equal(serverDigestWords(true), "The server's check matches the digest committed at open.");
+  assert.equal(browserDigestWords("pending"), "Checking the digest in your browser.");
+});
+
+test("the copy for the new blocks uses no em or en dashes", () => {
+  const copy = [trapWords(challenge({ id: "trap", expect: "DECLINE", passed: true, detail: "declined: too wide" })), fulfilmentWords(5), overlapWords(0.5, 0.9), serverDigestWords(false), browserDigestWords("mismatch"), browserDigestWords("unavailable")];
+  for (const line of copy) assert.doesNotMatch(line, /[\u2013\u2014]/);
 });
 
 test("a run that ended without a result says whether it timed out, and never says a timed-out run is free to restart", () => {

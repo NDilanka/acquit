@@ -53,11 +53,27 @@ export function fiducialCentres(window: Rect): [number, number][] {
 	];
 }
 
+/** One photographed layer as the judge measured it. The page draws the two grids; it never measures them again. */
+export type LayerMeasure = {
+	readonly layer: number;
+	/** Overlap of the photo's part with the contract section, on the 0.1 mm grid. 0 when the photo cannot be read. */
+	readonly iou: number;
+	readonly fingerprint: string;
+	/** Hamming distance to the nearest archived fingerprint, or null when no photo was archived. */
+	readonly distance: number | null;
+	/** True when the fiducials and the grid were read, so the overlap was measured. */
+	readonly readable: boolean;
+	/** True when the photo's overlap is at least CAMERA_IOU_MIN and no archived photo is within REUSE_MAX_DISTANCE. */
+	readonly pass: boolean;
+	/** The contract section placed by the G-code's placement, on the photo grid. Cells are 1 where the part is. */
+	readonly reference: Grid;
+	/** The farm's photo as the judge received it. */
+	readonly photo: Photo;
+};
+
 export type PhotoCheck = {
 	readonly reasons: readonly PrintRejectReason[];
-	readonly measured: {
-		readonly layers: readonly { readonly layer: number; readonly iou: number; readonly fingerprint: string; readonly distance: number | null }[];
-	};
+	readonly measured: { readonly layers: readonly LayerMeasure[] };
 };
 
 export function checkPhotos(input: {
@@ -71,32 +87,33 @@ export function checkPhotos(input: {
 	const window = windowFor(input.meshBox, input.placement);
 	const centres = fiducialCentres(window);
 	const reasons: PrintRejectReason[] = [];
-	const measured: { layer: number; iou: number; fingerprint: string; distance: number | null }[] = [];
+	const measured: LayerMeasure[] = [];
 
 	for (const photo of input.photos) {
 		const fingerprint = dHash(photo);
 		const distance = input.archive.length === 0
 			? null
 			: Math.min(...input.archive.map(entry => hashDistance(fingerprint, entry.fingerprint)));
-		if (distance !== null && distance <= REUSE_MAX_DISTANCE) reasons.push({ kind: "PHOTO_REUSED", layer: photo.layer, distance });
+		const reused = distance !== null && distance <= REUSE_MAX_DISTANCE;
+		if (reused) reasons.push({ kind: "PHOTO_REUSED", layer: photo.layer, distance });
 
-		const grid = photoGrid(window);
 		const rings = input.sections.get(photo.layer);
 		if (!rings) throw new Error(`no mesh section for photographed layer ${photo.layer}`);
+		const reference = photoGrid(window);
+		fillRings(reference, translateRings(rings, -input.placement.dx, -input.placement.dy));
 		const found = matchFiducials(fiducialBlobs(photo), centres);
-		if (!found || photo.cols !== grid.cols || photo.rows !== grid.rows) {
+		if (!found || photo.cols !== reference.cols || photo.rows !== reference.rows) {
 			reasons.push({ kind: "PHOTO_UNREADABLE", layer: photo.layer });
-			measured.push({ layer: photo.layer, iou: 0, fingerprint, distance });
+			measured.push({ layer: photo.layer, iou: 0, fingerprint, distance, readable: false, pass: false, reference, photo });
 			continue;
 		}
 
 		const fit = fitSimilarity(found.map(([x, y]) => complex(x, y)), centres.map(([x, y]) => complex(x, y)));
 		const silhouette = silhouetteOnBed(photo, fit, window);
-		const reference = photoGrid(window);
-		fillRings(reference, translateRings(rings, -input.placement.dx, -input.placement.dy));
 		const score = iou(silhouette, reference);
-		measured.push({ layer: photo.layer, iou: score, fingerprint, distance });
-		if (score < CAMERA_IOU_MIN) reasons.push({ kind: "GEOMETRY_MISMATCH", layer: photo.layer, iou: score });
+		const overlapOk = score >= CAMERA_IOU_MIN;
+		if (!overlapOk) reasons.push({ kind: "GEOMETRY_MISMATCH", layer: photo.layer, iou: score });
+		measured.push({ layer: photo.layer, iou: score, fingerprint, distance, readable: true, pass: overlapOk && !reused, reference, photo });
 	}
 	return { reasons, measured: { layers: measured } };
 }

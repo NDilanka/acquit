@@ -2,7 +2,7 @@
 // rule (dependency-free, so the browser can bundle it), and the API's run record.
 
 import { PASS_RULE } from "../../../packages/verifier-print/src/catalog.ts";
-import type { PrintChallengeView, PrintDemoRunView, PrintOutcomeView } from "./api-types.ts";
+import type { PrintChallengeView, PrintDemoRunView, PrintLayerView, PrintOutcomeView, PrintReceiptView, PrintTimelineView } from "./api-types.ts";
 
 export const PRINT_TITLE = "3D printing (FDM)";
 
@@ -100,4 +100,80 @@ export function failureWords(failure: string | null): string {
   return failure === "TIMED_OUT"
     ? "The run passed its time limit, so the server ended it. It still counts against the server's limits until its work has stopped, so a new run may be refused for a moment."
     : "The run failed on the server. Start it again.";
+}
+
+/** The trap's line on the certificate: declined with the farm's reason, or accepted, which fails the qualification. */
+export function trapWords(challenge: PrintChallengeView): string {
+  return challenge.passed ? `Declined. Reason: ${challenge.detail.replace(/^declined: /, "")}` : "Accepted. A farm must decline this job to qualify.";
+}
+
+/** The certificate's fulfilment line, read from the run's own counts. */
+export function fulfilmentWords(fulfilled: number): string {
+  return `${fulfilled} of ${PASS_RULE.fulfilled} challenges fulfilled`;
+}
+
+/** The overlap the judge measured, beside the pass mark. Three decimals, so a value near the mark reads as it is. */
+export function overlapWords(iou: number, iouMin: number): string {
+  return `Overlap ${iou.toFixed(3)} with the contract section. The pass mark is ${iouMin.toFixed(3)} or more.`;
+}
+
+/** The plain flag on a failing row, or null when the row has none. The judge's reuse check comes before its overlap check. */
+export function layerFlag(row: PrintLayerView, timeline: PrintTimelineView): string | null {
+  if (!row.readable) return "The photo cannot be read against the contract, so the judge could not measure its overlap.";
+  if (row.distance !== null && row.distance <= timeline.reuseMaxDistance) return `Matches an earlier job's photo, distance ${row.distance}.`;
+  if (row.iou < timeline.iouMin) return `Shifted or wrong layer: the overlap is below the ${timeline.iouMin.toFixed(2)} pass mark.`;
+  return null;
+}
+
+/** The fingerprint's distance to earlier photos, in plain words. */
+export function distanceWords(distance: number | null): string {
+  return distance === null ? "No earlier photo was sent with this print." : `Nearest earlier photo: distance ${distance}.`;
+}
+
+/** A base64 PNG as an image source. */
+export function pngSource(png: string): string {
+  return `data:image/png;base64,${png}`;
+}
+
+/** The same canonical JSON as packages/verifier-print/src/digest.ts. Keys sort by code unit, so the digest matches the server's. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(item => canonicalJson(item)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * The hidden digest the reveal rebuilds, computed with WebCrypto: SHA-256 over the canonical JSON of the hidden terms
+ * and the salt. Null when the page has no WebCrypto (it is served from an insecure origin), so the caller shows the server's check.
+ */
+export async function browserHiddenDigest(reveal: PrintReceiptView["reveal"]): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle === undefined) return null;
+  const bytes = new TextEncoder().encode(canonicalJson({ hidden: reveal.hidden, salt: reveal.salt }));
+  const digest = await subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Whether the browser's recomputed digest matches the one committed at open, or the check cannot run here. */
+export async function checkDigestInBrowser(receipt: PrintReceiptView): Promise<"match" | "mismatch" | "unavailable"> {
+  const computed = await browserHiddenDigest(receipt.reveal);
+  if (computed === null) return "unavailable";
+  return computed === receipt.hiddenDigest ? "match" : "mismatch";
+}
+
+/** The receipt's server check in words. The page shows it beside the browser's, so the two can be compared. */
+export function serverDigestWords(matches: boolean): string {
+  return matches ? "The server's check matches the digest committed at open." : "The server's check does not match the digest committed at open.";
+}
+
+/** The browser's check in words. An unavailable check says so, and the server's check then stands alone. */
+export function browserDigestWords(result: "match" | "mismatch" | "unavailable" | "pending"): string {
+  if (result === "pending") return "Checking the digest in your browser.";
+  if (result === "unavailable") return "This page has no WebCrypto here (it needs a secure origin), so only the server's check is shown.";
+  return result === "match"
+    ? "Recomputed in your browser with WebCrypto: the reveal matches the digest committed at open."
+    : "Recomputed in your browser with WebCrypto: the reveal does not match the digest committed at open.";
 }

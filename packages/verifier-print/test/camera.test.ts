@@ -54,6 +54,29 @@ test("a photo whose fingerprint is archived from another job is PHOTO_REUSED at 
 	assert.ok(check.reasons.some(reason => reason.kind === "PHOTO_REUSED" && reason.layer === 1 && reason.distance === 0));
 });
 
+test("each layer's pass flag follows the overlap: an honest print passes all three layers, a shift fails only layer 3", () => {
+	const honest = conform(squareConformInput(squareGcode(20, 5, true)));
+	const clean = photosOf(squareGcode(20, 5, true), honest.measured.placement);
+	const passing = checkPhotos({ photos: clean.photos, sections: clean.sections, placement: honest.measured.placement, meshBox: SQUARE_MESH, archive: [] });
+	assert.deepEqual(passing.measured.layers.map(layer => [layer.layer, layer.readable, layer.pass, layer.distance]), [[1, true, true, null], [3, true, true, null], [5, true, true, null]]);
+	assert.strictEqual(passing.measured.layers[0].photo, clean.photos[0], "the judge keeps the photo it received");
+
+	const shifted = photosOf(squareGcode(20, 5, true, { layer: 3, mm: 2 }), honest.measured.placement);
+	const failing = checkPhotos({ photos: shifted.photos, sections: shifted.sections, placement: honest.measured.placement, meshBox: SQUARE_MESH, archive: [] });
+	assert.deepEqual(failing.measured.layers.map(layer => [layer.layer, layer.pass]), [[1, true], [3, false], [5, true]]);
+	assert.equal(failing.measured.layers[1].reference.cols, shifted.photos[1].cols);
+});
+
+test("an archived fingerprint within 4 bits fails its row; on this simple square the other layers are within 4 bits too", () => {
+	const honest = conform(squareConformInput(squareGcode(20, 5, true)));
+	const { photos, sections } = photosOf(squareGcode(20, 5, true), honest.measured.placement);
+	const archive = [{ layer: 1, fingerprint: dHash(photos[0]) }];
+	const check = checkPhotos({ photos, sections, placement: honest.measured.placement, meshBox: SQUARE_MESH, archive });
+	// The distances are 0, 2 and 3: a 9 by 8 hash of a plain square changes little from layer to layer.
+	assert.deepEqual(check.measured.layers.map(layer => [layer.layer, layer.pass, layer.distance]), [[1, false, 0], [3, false, 2], [5, false, 3]]);
+	assert.deepEqual(check.reasons.map(reason => [reason.kind, "layer" in reason ? reason.layer : null]), [["PHOTO_REUSED", 1], ["PHOTO_REUSED", 3], ["PHOTO_REUSED", 5]]);
+});
+
 test("a blank photo with no fiducials is PHOTO_UNREADABLE", () => {
 	const honest = conform(squareConformInput(squareGcode(20, 5, true)));
 	const grid = photoGrid(windowFor(SQUARE_MESH, honest.measured.placement));
