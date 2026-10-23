@@ -290,7 +290,7 @@ The 72-hour review window ends with no client action: the timer releases with au
 
 ## Development controls
 
-Every `/api/dev/` route requires `ACQUIT_DEV=1` on the API process and a development session. Without the flag, the API returns `403 { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }`. Cross-origin requests still fail the origin check.
+Every `/api/dev/` route requires `ACQUIT_DEV=1` on the API process and a development session. Without the flag, the API returns `403 { error: "DEV_DISABLED", detail: "Set ACQUIT_DEV=1 when starting the API." }`. The platform session is refused `403 { error: "PLATFORM_READ_ONLY" }` on every `/api/dev/` route before the route runs, so it cannot move the clock, the funding mode, or a dispute ruling. Cross-origin requests still fail the origin check.
 
 | Method | Path | Body | Response |
 |---|---|---|---|

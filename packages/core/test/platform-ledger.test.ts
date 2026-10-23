@@ -10,7 +10,7 @@ import { manifestOf } from "../src/fixtures.ts";
 import { instant, hours, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OperatorId, OrderId, PayoutItemId, ReceiptId, TestId, Version, VisitorId } from "../src/ids.ts";
 import { commercialSplit, reduceLedger } from "../src/ledger.ts";
-import type { Bps } from "../src/paypal.ts";
+import type { Bps, EvidenceType } from "../src/paypal.ts";
 import { quote } from "../src/paypal.ts";
 import { TERMS, applyJobCommand, projectJob } from "../src/job.ts";
 import type { JobRow, PassedAttempt, ProviderDispute, Receipt, RejectedAttempt } from "../src/job.ts";
@@ -403,10 +403,14 @@ test("the platform tables query returns the seven tables to the platform role al
 	} finally { built.close(); }
 });
 
-/** A held job in visitor B's world with PayPal's buyer dispute on it: the stage, the evidence PayPal asks for, and Acquit's filed answer. */
-function disputedRow(id: string, requestedEvidence: readonly string[]): JobRow {
+/**
+ * A held job in visitor B's world with PayPal's buyer dispute on it: the stage, the evidence PayPal asks for, and Acquit's filed answer.
+ * `filed` is the type that answer was filed as. Absent is a record stored before the filed type was kept.
+ */
+function disputedRow(id: string, requestedEvidence: readonly string[], filed?: EvidenceType): JobRow {
 	const providerDispute: ProviderDispute = { id: "PP-R-PPB-10194003", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
-		amount: usd("21.00"), openedAt: now, answer: "EVIDENCE", answerState: { state: "FILED" }, stage: "CHARGEBACK", requestedEvidence };
+		amount: usd("21.00"), openedAt: now, answer: "EVIDENCE", answerState: { state: "FILED" }, stage: "CHARGEBACK", requestedEvidence,
+		...(filed === undefined ? {} : { answerEvidenceType: filed }) };
 	return { ...heldTamperRow(), id: parseJobId(id), providerDispute };
 }
 
@@ -475,8 +479,9 @@ test("a job read keeps the client and operator rules: the owner reads it, and no
 	} finally { built.close(); }
 });
 
-test("the job read names PayPal's dispute stage, the evidence it asks for, and the evidence type Acquit files", async () => {
-	const built = await serviceWith([disputedRow("job_ledger_disputed", ["PROOF_OF_REFUND", "OTHER"]), disputedRow("job_ledger_refund_only", ["PROOF_OF_REFUND"])]);
+test("the job read names PayPal's dispute stage, the evidence it asks for, and the evidence type Acquit filed", async () => {
+	const built = await serviceWith([disputedRow("job_ledger_disputed", ["PROOF_OF_REFUND", "OTHER"], "OTHER"),
+		disputedRow("job_ledger_refund_only", ["PROOF_OF_REFUND"]), disputedRow("job_ledger_stored_before", ["PROOF_OF_REFUND", "OTHER"])]);
 	try {
 		const read = await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_disputed") });
 		if (read.kind !== "JOB") throw new Error("Expected the platform to read the disputed job");
@@ -488,5 +493,10 @@ test("the job read names PayPal's dispute stage, the evidence it asks for, and t
 		// PayPal asked only for refund proof, which Acquit cannot give, so the answer files no evidence type.
 		assert.deepEqual(refundOnly.job.providerDispute?.requestedEvidence, ["PROOF_OF_REFUND"]);
 		assert.equal(refundOnly.job.providerDispute?.evidenceType, null);
+		// A record stored before the filed type was kept asks for OTHER and names none: the page never reads the type from the request.
+		const stored = await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_stored_before") });
+		if (stored.kind !== "JOB") throw new Error("Expected the platform to read the record stored before the type was kept");
+		assert.deepEqual(stored.job.providerDispute?.requestedEvidence, ["PROOF_OF_REFUND", "OTHER"]);
+		assert.equal(stored.job.providerDispute?.evidenceType, null);
 	} finally { built.close(); }
 });

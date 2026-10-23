@@ -285,7 +285,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     // A paid job's answer is its receipt. A held job has no receipt yet, so it names the verified attempt it filed instead.
     const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
     const queued = answer?.state === "QUEUED";
-    // The type is the one PayPal's ask selected. With no type on the record, the answer reads as plain evidence.
+    // The type is the one Acquit filed for this round, not one a later delivery asks for. With no type on the record, the answer reads as plain evidence.
     const label = dispute.evidenceType === null ? "evidence" : EVIDENCE_FILED[dispute.evidenceType];
     const asked = evidenceAskedLine(dispute.requestedEvidence, job.ledger.some((line) => line.kind === "REFUND"));
     events.push({

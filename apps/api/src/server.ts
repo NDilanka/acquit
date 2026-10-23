@@ -679,6 +679,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
+	// The platform reads and holds no command. Every development route moves a job's state or the session's identity, so the platform
+	// is refused on each of them before any runs.
+	if (url.pathname.startsWith("/api/dev/") && current.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 	// The visitor's client/operator switch. It moves this session's principal inside the visitor that
 	// owns it, and it can never name a handle the session's visitor does not hold.
 	if (url.pathname === "/api/demo/switch" && method === "POST") {

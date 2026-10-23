@@ -126,7 +126,7 @@ test("a CREATED delivery the read refused records the dispute on the job that ho
 		const row = await jobOf(store);
 		assert.deepEqual(row.providerDispute, { id: disputeId, status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
 			amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T10:05:00Z"), answer: "EVIDENCE",
-			answerState: { state: "QUEUED" }, answerRound: `${disputeId}:1`, stage: "INQUIRY", offers: [], unconfirmed: true });
+			answerState: { state: "QUEUED" }, answerRound: `${disputeId}:1`, answerEvidenceType: "PROOF_OF_FULFILLMENT", stage: "INQUIRY", offers: [], unconfirmed: true });
 		assert.equal(releaseHeld(row), true);
 	});
 });
