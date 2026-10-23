@@ -383,6 +383,48 @@ test("verified awaiting review: the client is asked to approve or dispute by the
   ]);
 });
 
+test("verified awaiting review under a PayPal hold: the review row says the timeout records the release and the payout waits", () => {
+  const review = (providerDispute: TimelineJob["providerDispute"]) => timelineEvents(locked({
+    status: "VERIFIED",
+    phase: "AWAITING_CLIENT",
+    viewerCanApprove: true,
+    viewerCanDispute: true,
+    reviewEndsAt: "2026-10-20T12:00:00.000Z",
+    mergeCommit: "e4f5a6b",
+    pullRequest: 12,
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+    providerDispute,
+  })).filter(event => event.kind === "REVIEW");
+  // A dispute still open, and one PayPal resolved for the buyer, both hold the payout.
+  const holds: TimelineJob["providerDispute"][] = [LIVE_DISPUTE, { ...LIVE_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_BUYER_FAVOUR" }];
+  for (const providerDispute of holds) {
+    assert.deepEqual(review(providerDispute), [{
+      at: "2026-10-12T10:00:00.000Z",
+      kind: "REVIEW",
+      title: "Waiting for client review",
+      detail: "Approve or dispute by 2026-10-20 12:00 UTC. If the client does nothing, Acquit records the release then, and the payout waits until PayPal decides the dispute.",
+      tone: "held",
+      ids: [],
+      href: null,
+      reasons: [],
+    }]);
+  }
+});
+
+test("verified awaiting review with no hold: a dispute PayPal resolved for the seller keeps the review row's wording", () => {
+  const job = locked({
+    status: "VERIFIED",
+    phase: "AWAITING_CLIENT",
+    reviewEndsAt: "2026-10-20T12:00:00.000Z",
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
+    providerDispute: { ...LIVE_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR" },
+  });
+  assert.equal(
+    timelineEvents(job).find(event => event.kind === "REVIEW")?.detail,
+    "Approve or dispute by 2026-10-20 12:00 UTC. If the client does nothing, Acquit releases the payment then.",
+  );
+});
+
 test("the arbiter's selected release or refund shows its note before the settlement", () => {
   const note = "Fix rounding for returned invoices.";
   const upheld = locked({

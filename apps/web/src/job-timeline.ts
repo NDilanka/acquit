@@ -116,11 +116,15 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
 
   const verified = [...job.attempts.history].reverse().find((a) => a.result === "VERIFIED");
   if (job.reviewEndsAt !== null) {
+    // While PayPal holds the payout, the review timeout only records the release, so the row never promises a payout.
+    const silence = payoutHeldBy(job.providerDispute)
+      ? "If the client does nothing, Acquit records the release then, and the payout waits until PayPal decides the dispute."
+      : "If the client does nothing, Acquit releases the payment then.";
     events.push({
       at: verified?.at ?? null,
       kind: "REVIEW",
       title: "Waiting for client review",
-      detail: `Approve or dispute by ${utc(job.reviewEndsAt)}. If the client does nothing, Acquit releases the payment then.`,
+      detail: `Approve or dispute by ${utc(job.reviewEndsAt)}. ${silence}`,
       tone: "held",
       ids: [],
       href: null,

@@ -37,7 +37,18 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Install PrusaSlicer
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prusa-slicer xvfb xauth
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2 3; do
+            # A hung apt is cut off after 3 minutes, then the install is tried again, up to 3 attempts.
+            if sudo timeout --kill-after=15 180 bash -c 'apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=60 && apt-get install -y --no-install-recommends -o Acquire::Retries=3 -o DPkg::Lock::Timeout=60 prusa-slicer xvfb xauth'; then
+              exit 0
+            fi
+            echo "PrusaSlicer install attempt $attempt of 3 failed" >&2
+            sudo timeout 120 dpkg --configure -a || true
+            if [ "$attempt" -lt 3 ]; then sleep 15; fi
+          done
+          exit 1
       - name: Slicer version
         run: xvfb-run -a prusa-slicer --help 2>&1 | grep -m1 PrusaSlicer-
       - name: Slicer conformance and print score card tests
