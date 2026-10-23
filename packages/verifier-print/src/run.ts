@@ -18,6 +18,10 @@ import type { FarmMode, PrintSource } from "./sim/farm.ts";
 import { FARM_BED_MM } from "./sim/farm.ts";
 import { newPrinterKeys } from "./telemetry.ts";
 import { partStl } from "./sim/synthetic-gcode.ts";
+import { receiptOf } from "./receipt.ts";
+import type { Receipt } from "./receipt.ts";
+import { timelineOf } from "./timeline.ts";
+import type { Timeline } from "./timeline.ts";
 import { verifyPrint } from "./verify.ts";
 import type { PrintVerdict } from "./verify.ts";
 
@@ -40,7 +44,16 @@ export type PrintDemoRun = {
 };
 
 export type PrintOutcome = {
-	readonly job: { readonly label: string; readonly quantity: number; readonly infillPct: number };
+	/** The contract the judge froze: the job's label and count, and the public terms the page shows. */
+	readonly job: {
+		readonly label: string;
+		readonly quantity: number;
+		readonly infillPct: number;
+		readonly toleranceMm: number;
+		readonly layerHeightMm: number;
+		readonly layerCount: number;
+		readonly markerId: number;
+	};
 	/** The corpus mutation the farm ran, or null for an honest print. knownGap marks the one the verifier accepts. */
 	readonly fraud: { readonly id: string; readonly label: string; readonly knownGap: boolean } | null;
 	/** What the G-code and the printer's telemetry say about the print. The verifier reads the same numbers. */
@@ -55,6 +68,10 @@ export type PrintOutcome = {
 	};
 	readonly verdict: PrintVerdict["result"];
 	readonly reasons: readonly { readonly kind: string; readonly text: string }[];
+	/** One row per photographed sampled layer: the judge's numbers and the two pictures. */
+	readonly timeline: Timeline;
+	/** What the job froze, revealed now that the verdict is out. */
+	readonly receipt: Receipt;
 };
 
 export type RunInput = {
@@ -136,12 +153,21 @@ export async function runPrintDemo(input: RunInput): Promise<PrintDemoRun> {
 	});
 	const last = submission.frames[submission.frames.length - 1];
 	const fraud = FRAUDS.find(item => input.mode === `fraud:${item.id}`) ?? null;
+	const { publicTerms } = job.contract;
 	return {
 		farm: farmRecord,
 		qualification,
 		certificate,
 		print: {
-			job: { label: JOB.label, quantity: JOB.quantity, infillPct: JOB.infillPct },
+			job: {
+				label: JOB.label,
+				quantity: JOB.quantity,
+				infillPct: JOB.infillPct,
+				toleranceMm: publicTerms.spec.toleranceMm,
+				layerHeightMm: publicTerms.layerHeightMm,
+				layerCount: publicTerms.layerCount,
+				markerId: publicTerms.markerId,
+			},
 			fraud,
 			evidence: {
 				layers: parsed.value.layers.length,
@@ -154,6 +180,16 @@ export async function runPrintDemo(input: RunInput): Promise<PrintDemoRun> {
 			},
 			verdict: verdict.result,
 			reasons: verdict.reasons.map(reason => ({ kind: reason.kind, text: describePrintReason(reason) })),
+			timeline: timelineOf(verdict.layers, publicTerms.layerHeightMm),
+			receipt: receiptOf({
+				contract: job.contract,
+				seed: job.seed,
+				gcode: submission.gcode,
+				frames: submission.frames,
+				publicKey: keys.publicKey,
+				certificate,
+				verdict,
+			}),
 		},
 	};
 }

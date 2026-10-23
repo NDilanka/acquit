@@ -4,7 +4,7 @@
 
 import type { KeyObject } from "node:crypto";
 import { checkPhotos } from "./camera.ts";
-import type { ArchivedPhoto, Photo } from "./camera.ts";
+import type { ArchivedPhoto, LayerMeasure, Photo } from "./camera.ts";
 import { coupon as witnessCoupon } from "./coupon.ts";
 import { conform, MIN_UNIT_AREA_MM2, NOZZLE_WIDTH_MM } from "./conform.ts";
 import type { Conformance, Placement } from "./conform.ts";
@@ -40,6 +40,8 @@ export type PrintVerdict = {
 	readonly result: "VERIFIED" | "REJECTED";
 	readonly reasons: readonly PrintRejectReason[];
 	readonly placement: Placement | null;
+	/** The judge's measurement of each photographed sampled layer. Empty when the G-code does not parse. */
+	readonly layers: readonly LayerMeasure[];
 };
 
 type Expectation = {
@@ -118,7 +120,7 @@ export async function measurePlacement(input: Pick<PrintEvidence, "contract" | "
 
 export async function verifyPrint(input: PrintEvidence): Promise<PrintVerdict> {
 	const parsed = parseGcode(input.gcode);
-	if (!parsed.ok) return { result: "REJECTED", reasons: [parsed.reason], placement: null };
+	if (!parsed.ok) return { result: "REJECTED", reasons: [parsed.reason], placement: null, layers: [] };
 
 	const expectation = await expectationFor(input);
 	const layerHeight = input.contract.publicTerms.layerHeightMm;
@@ -161,5 +163,5 @@ export async function verifyPrint(input: PrintEvidence): Promise<PrintVerdict> {
 		.map(layer => ({ kind: "PHOTO_MISSING", layer }));
 
 	const reasons: PrintRejectReason[] = [...conformance.reasons, ...coupon.reasons, ...telemetry, ...unsampled, ...missing, ...photos.reasons];
-	return { result: reasons.length === 0 ? "VERIFIED" : "REJECTED", reasons, placement };
+	return { result: reasons.length === 0 ? "VERIFIED" : "REJECTED", reasons, placement, layers: photos.measured.layers };
 }

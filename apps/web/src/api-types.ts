@@ -763,8 +763,55 @@ export type PrintCertificateView = {
   readonly digest: string;
 };
 
+/** A grayscale picture as a base64 PNG. The page draws it with image-rendering: pixelated. */
+export type PrintImageView = { readonly cols: number; readonly rows: number; readonly png: string };
+
+/** One photographed layer as the judge measured it. The page shows these numbers and never measures again. */
+export type PrintLayerView = {
+  readonly layer: number;
+  readonly heightMm: number;
+  readonly readable: boolean;
+  readonly iou: number;
+  readonly fingerprint: string;
+  readonly distance: number | null;
+  readonly pass: boolean;
+  readonly reference: PrintImageView;
+  readonly photo: PrintImageView;
+};
+
+export type PrintTimelineView = {
+  /** Cells per picture pixel. The judge measures every cell; the pictures are reduced by this factor. */
+  readonly imageScale: number;
+  readonly iouMin: number;
+  readonly reuseMaxDistance: number;
+  readonly layers: readonly PrintLayerView[];
+};
+
+/** What the job froze, revealed once the verdict is out. digestMatches is the server's check of the reveal. */
+export type PrintReceiptView = {
+  readonly jobId: string;
+  readonly contractDigest: string;
+  readonly hiddenDigest: string;
+  readonly reveal: { readonly hidden: { readonly sampleLayers: readonly number[] }; readonly salt: string };
+  readonly digestMatches: boolean;
+  readonly gcodeSha256: string;
+  readonly telemetry: { readonly frames: number; readonly chainHead: string | null; readonly printerKeySha256: string };
+  readonly certificateDigest: string;
+  readonly verdict: "VERIFIED" | "REJECTED";
+  readonly reasonKinds: readonly string[];
+  readonly openedAt: Instant;
+};
+
 export type PrintOutcomeView = {
-  readonly job: { readonly label: string; readonly quantity: number; readonly infillPct: number };
+  readonly job: {
+    readonly label: string;
+    readonly quantity: number;
+    readonly infillPct: number;
+    readonly toleranceMm: number;
+    readonly layerHeightMm: number;
+    readonly layerCount: number;
+    readonly markerId: number;
+  };
   /** The planted fraud the farm ran, or null for an honest print. knownGap marks the one the verifier accepts. */
   readonly fraud: { readonly id: string; readonly label: string; readonly knownGap: boolean } | null;
   readonly evidence: {
@@ -778,6 +825,8 @@ export type PrintOutcomeView = {
   };
   readonly verdict: "VERIFIED" | "REJECTED";
   readonly reasons: readonly { readonly kind: string; readonly text: string }[];
+  readonly timeline: PrintTimelineView;
+  readonly receipt: PrintReceiptView;
 };
 
 export type PrintDemoRunView = {
