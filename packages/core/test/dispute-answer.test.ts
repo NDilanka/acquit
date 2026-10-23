@@ -941,3 +941,40 @@ test("a read that asks only for PROOF_OF_REFUND after a type refusal sends nothi
 	assert.deepEqual(read.effects, []);
 	assert.deepEqual(read.next.providerDispute?.answerState, { state: "REFUSED", reason: "PAYPAL_HTTP_400" });
 });
+
+/**
+ * A dispute stored with the evidence types the read asks for, taken through the production sequence to a verified attempt 2: the
+ * dispute opens, the client disputes the work, the arbiter reworks it, the work is submitted, and the verifier passes it.
+ */
+function attemptTwoAnswering(requested: readonly string[]): Plan<JobRow> {
+	const opened = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }, requested), paypalFacts(later)));
+	const disputed = planOf(applyJobCommand(opened.next, { type: "Dispute", jobId, mergeCommit: judgedCommit, reason: "Scripted dispute." }, userFacts(maya)));
+	const reworked = planOf(applyJobCommand(disputed.next, { type: "ResolveDispute", jobId, verdict: "REWORK", note: "Scripted rework." }, userFacts(ruler)));
+	const submitted = planOf(applyJobCommand(reworked.next, { type: "Submit", jobId, sourceCommit }, userFacts(devon)));
+	const attempts = (submitted.next.state as Extract<typeof submitted.next.state, { status: "IN_PROGRESS" }>).attempts;
+	if (attempts.phase !== "VERIFYING") throw new Error(`expected VERIFYING, got ${attempts.phase}`);
+	const verdict = { ...passedVerdict, runId: attempts.pending.runId, sourceCommit };
+	return planOf(applyJobCommand(submitted.next, { type: "VerifierFinished", jobId, report: { kind: "VERDICT", verdict } }, paypalFacts(later)));
+}
+
+test("a verified attempt 2 that answers a dispute asking for PROOF_OF_REFUND and OTHER files OTHER, never PROOF_OF_FULFILLMENT", () => {
+	const verified = attemptTwoAnswering(["PROOF_OF_REFUND", "OTHER"]);
+	assert.equal(verified.next.state.status, "VERIFIED");
+	const evidence = evidenceFrom(verified);
+	assert.equal(evidence.attempt, 2);
+	assert.equal(evidence.evidenceType, "OTHER");
+	assert.equal(evidence.requeued, undefined);
+	assert.equal(effectWanted(verified.next, evidence), true);
+	assert.deepEqual(verified.next.providerDispute?.answerState, { state: "QUEUED" });
+	assert.equal(verified.next.providerDispute?.requestedEvidence?.join(","), "PROOF_OF_REFUND,OTHER");
+});
+
+test("a verified attempt 2 that answers a dispute asking only for PROOF_OF_REFUND files no evidence, and the refusal stands for a person", () => {
+	const verified = attemptTwoAnswering(["PROOF_OF_REFUND"]);
+	assert.equal(verified.next.state.status, "VERIFIED");
+	assert.deepEqual(evidenceOf(verified), []);
+	assert.deepEqual(verified.next.providerDispute?.answerState, { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+	assert.deepEqual(alertsOf(verified).map(alert => [alert.reason, alert.detail]),
+		[["PROVIDER_DISPUTE_ANSWER_REFUSED", `${NO_HONEST_EVIDENCE_TYPE}. The payment stays held.`]]);
+	assert.equal(releaseHeld(verified.next), true);
+});

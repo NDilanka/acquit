@@ -740,13 +740,16 @@ function transitionTable(): {
 					return { next: verified, credits: [], effects: [] };
 				}
 				// The evidence is a new answer, so an earlier answer's refusal or filing does not carry over to it. Where the dispute
-				// offers no evidence to provide, the receipt goes as a message instead.
+				// offers no evidence to provide, the receipt goes as a message instead. The evidence names the type the stored read asks for.
 				const defendedWith = answerOf(verified, dispute.offers);
-				const filed = answerEffects(verified, dispute.id, defendedWith, dispute.simulated === true);
+				const filed = answerEffects(verified, dispute.id, defendedWith, dispute.simulated === true, undefined, undefined, dispute.requestedEvidence);
 				const round = filed.find(isDisputeAnswer);
+				// PayPal asks only for evidence types Acquit cannot honestly give: nothing is sent, and the refusal stands for a person.
+				const unhonest = defendedWith === "EVIDENCE" && evidenceTypeFor(dispute.requestedEvidence) === null;
 				const defended: ProviderDispute = { ...withoutAnswer(dispute), answer: defendedWith,
 					...(round === undefined ? {} : { answerRound: answerRoundOf(round) }),
-					...(dispute.simulated === true ? {} : { answerState: { state: "QUEUED" as const } }) };
+					...(dispute.simulated === true ? {} : { answerState: unhonest ? { state: "REFUSED" as const, reason: NO_HONEST_EVIDENCE_TYPE }
+						: { state: "QUEUED" as const } }) };
 				return { next: { ...verified, providerDispute: defended }, credits: [], effects: filed };
 			}
 			const rejected: RejectedAttempt = { ordinal, verdict };
@@ -1291,11 +1294,14 @@ export function effectWanted(row: JobRow, effect: JobEffect): boolean {
 		// It is wanted only for the verified attempt the row answers with, so attempt 1's evidence is done once attempt 2 passed.
 		// A row queued before attempts were recorded carries none, and keeps the rule it always had.
 		// It is wanted only in the round the row holds: an earlier stage's evidence, or the answer a re-queue replaced, is done.
+		// Once PayPal refused the answer, or the row refused it for want of an honest type, no evidence is wanted: a refusal with no
+		// honest type holds no round, so the round check alone would let an evidence queued before it through.
 		case "DISPUTE_EVIDENCE": {
 			const dispute = row.providerDispute;
 			const attempt: Ordinal | undefined = effect.attempt;
 			return dispute !== undefined && dispute.status !== "RESOLVED" && dispute.id === effect.disputeId && dispute.answer === "EVIDENCE" &&
-				disputeAnswerOf(row) === "EVIDENCE" && (attempt === undefined || attempt === evidenceAttemptOf(row)) && answersRound(dispute, answerRoundOf(effect));
+				dispute.answerState?.state !== "REFUSED" && disputeAnswerOf(row) === "EVIDENCE" && (attempt === undefined || attempt === evidenceAttemptOf(row)) &&
+				answersRound(dispute, answerRoundOf(effect));
 		}
 		// The accepted claim is wanted only while the escrow is still held and no verified work is left to defend: the same
 		// ACCEPT disputeAnswerOf names for the row now.
