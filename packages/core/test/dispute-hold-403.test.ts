@@ -460,7 +460,8 @@ test("a dispute no index entry names is read with House's own app, its refused a
 			if (sent === undefined) throw new Error("expected the queued message");
 			// The message is the verified attempt's receipt text. The rest of the effect is exactly the one requeued answer.
 			const { message, ...answer } = sent.effect;
-			assert.deepEqual(answer, { kind: "DISPUTE_MESSAGE", jobId, requeued: true, stage: "INQUIRY", disputeId, payee: merchant, attempt: 1, simulated: false });
+			assert.deepEqual(answer, { kind: "DISPUTE_MESSAGE", jobId, requeued: true, stage: "INQUIRY", filedStage: "INQUIRY", disputeId, payee: merchant,
+				attempt: 1, simulated: false });
 			assert.match(message ?? "", /^Verified attempt 1 for job job_dispute_403 passed/);
 			assert.equal(await runOutboxOnce(ports, sent.key), "WORKED");
 			// The message goes to PayPal's send-message path from House's own app, with JSON body and no assertion.

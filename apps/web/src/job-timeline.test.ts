@@ -626,6 +626,7 @@ const BUYER_DISPUTE: NonNullable<TimelineJob["providerDispute"]> = {
   requestedEvidence: null,
   evidenceType: null,
   answerRound: null,
+  answerStage: null,
   answerHistory: [],
   unconfirmed: false,
   simulated: false,
@@ -888,6 +889,25 @@ test("a record stored before the history was kept shows its current answer as it
   const paid: FiledAnswer[] = [{ answer: "EVIDENCE", round: "chargeback-round", evidenceType: "PROOF_OF_FULFILLMENT", filedAt: "2026-10-17T10:00:00.000Z" }];
   assert.equal(titles(paidJob({ providerDispute: { ...BUYER_DISPUTE, answerHistory: paid } }))[1],
     "Acquit filed the receipt as Proof of fulfilment with PayPal");
+});
+
+test("the current answer names the stage it was filed under, queued, filed, or refused, and names none where the record has none", () => {
+  const titles = (fields: Partial<NonNullable<TimelineJob["providerDispute"]>>) =>
+    timelineEvents(approvedWithDispute({ ...BUYER_DISPUTE, answerRound: "chargeback-round", ...fields }))
+      .filter(event => event.kind === "DISPUTE").map(event => event.title);
+  const refused = { state: "REFUSED", reason: "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED", evidenceType: "PROOF_OF_FULFILLMENT" } as const;
+  assert.equal(titles({ answer: "EVIDENCE", answerState: { state: "QUEUED" }, answerStage: "CHARGEBACK" })[1],
+    "Acquit is sending its verified attempt as evidence to PayPal (chargeback)");
+  assert.equal(titles({ answer: "EVIDENCE", answerState: { state: "FILED" }, evidenceType: "OTHER", answerStage: "CHARGEBACK", simulated: true })[1],
+    "Acquit filed its verified attempt as Other evidence with PayPal (chargeback) (Simulated)");
+  assert.equal(titles({ answer: "MESSAGE", answerState: { state: "QUEUED" }, answerStage: "INQUIRY" })[1],
+    "Acquit is sending its verified attempt as a message to PayPal on dispute PAYPAL-DISPUTE-1 (inquiry)");
+  assert.equal(titles({ answer: "EVIDENCE", answerState: refused, answerStage: "CHARGEBACK" })[1],
+    "PayPal refused Acquit's answer (chargeback): PayPal refused the evidence type. The payment stays held.");
+  assert.equal(titles({ answer: "ACCEPT", answerState: { state: "QUEUED" }, answerStage: "ARBITRATION" })[1],
+    "Acquit is sending its acceptance of the buyer's claim to PayPal (arbitration)");
+  assert.equal(titles({ answer: "EVIDENCE", answerState: { state: "QUEUED" }, answerStage: null })[1],
+    "Acquit is sending its verified attempt as evidence to PayPal");
 });
 
 test("the arbiter deadline names the hold while PayPal holds the payout, on the dispute row and the next step, and not after PayPal decides for the seller", () => {

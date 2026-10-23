@@ -1074,12 +1074,38 @@ test("a rework keeps the answers the history holds, and hands back only the open
 		[["EVIDENCE", "PP-D-9:1"]]);
 });
 
-test("the job view serves the round the answer is for and every answer PayPal took, and a record stored before the history serves none", () => {
+/**
+ * PayPal's confirmation of an answer the outbox sent, filed the way the outbox files it: the round, stage, and type the answer was sent
+ * under, and the time PayPal took it.
+ */
+const confirmationOf = (effect: Extract<JobEffect, { kind: "DISPUTE_EVIDENCE" | "DISPUTE_MESSAGE" }>, at: Instant) => {
+	const filed = { type: "DisputeAnswerFiled" as const, jobId, disputeId: "PP-D-9", round: answerRoundOf(effect), stage: effect.filedStage, filedAt: at };
+	return effect.kind === "DISPUTE_EVIDENCE" ? { ...filed, answer: "EVIDENCE" as const, evidenceType: effect.evidenceType }
+		: { ...filed, answer: "MESSAGE" as const };
+};
+
+/** The history as the test reads it: answer, stage, round, type, and time of each entry, in the order the record keeps them. */
+const historyOf = (row: JobRow) => (row.providerDispute?.answerHistory ?? []).map(entry =>
+	[entry.answer, entry.stage ?? null, entry.round, entry.evidenceType ?? null, entry.filedAt]);
+
+/** The inquiry's message queued, then the chargeback escalation queued its evidence: the row, and the two answers PayPal will confirm. */
+function messageThenEscalated() {
+	const opened = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["send_message", "accept_claim"]), paypalFacts(later)));
+	const escalated = planOf(applyJobCommand(opened.next, chargeback({ updatedAt: later }), paypalFacts(later)));
+	return { row: escalated.next, message: messageOf(opened), evidence: evidenceFrom(escalated) };
+}
+
+const messageAt = instant("2026-10-06T12:10:00Z");
+const evidenceAt = instant("2026-10-06T12:20:00Z");
+
+test("the job view serves the round and stage the answer is for and every answer PayPal took, and a record stored before the history serves none", () => {
 	const filed = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence"]), paypalFacts(later)));
-	const round = answerRoundOf(evidenceFrom(filed));
-	const confirmed = planOf(applyJobCommand(filed.next, { type: "DisputeAnswerFiled", jobId, disputeId: "PP-D-9", answer: "EVIDENCE", round }, paypalFacts(later)));
+	const evidence = evidenceFrom(filed);
+	const round = answerRoundOf(evidence);
+	const confirmed = planOf(applyJobCommand(filed.next, confirmationOf(evidence, later), paypalFacts(later)));
 	const view = projectJob(confirmed.next, maya, new Map()).providerDispute;
 	assert.equal(view?.answerRound, round);
+	assert.equal(view?.answerStage, "INQUIRY");
 	assert.deepEqual(view?.answerHistory.map(entry => [entry.answer, entry.stage ?? null, entry.round]), [["EVIDENCE", "INQUIRY", round]]);
 	const held = confirmed.next.providerDispute;
 	if (held === undefined) throw new Error("expected a dispute on the row");
@@ -1087,4 +1113,56 @@ test("the job view serves the round the answer is for and every answer PayPal to
 	const legacyView = projectJob(legacy, maya, new Map()).providerDispute;
 	assert.equal(legacyView?.answerRound, null);
 	assert.deepEqual(legacyView?.answerHistory, []);
+});
+
+test("a late message confirmation after the chargeback queued its evidence is kept ahead of the evidence, and files nothing on that round", () => {
+	const { row, message, evidence } = messageThenEscalated();
+	assert.equal(row.providerDispute?.answerState?.state, "QUEUED");
+	const late = planOf(applyJobCommand(row, confirmationOf(message, messageAt), paypalFacts(later))).next;
+	assert.equal(late.providerDispute?.answer, "EVIDENCE");
+	assert.equal(late.providerDispute?.answerRound, answerRoundOf(evidence));
+	assert.equal(late.providerDispute?.answerState?.state, "QUEUED");
+	assert.deepEqual(historyOf(late), [["MESSAGE", "INQUIRY", answerRoundOf(message), null, messageAt]]);
+	// PayPal's confirmation of the same message again adds nothing.
+	assert.deepEqual(planOf(applyJobCommand(late, confirmationOf(message, messageAt), paypalFacts(later))).next, late);
+	const filed = planOf(applyJobCommand(late, confirmationOf(evidence, evidenceAt), paypalFacts(later))).next;
+	assert.equal(filed.providerDispute?.answerState?.state, "FILED");
+	assert.equal(filed.providerDispute?.answerStage, "CHARGEBACK");
+	assert.deepEqual(historyOf(filed), [["MESSAGE", "INQUIRY", answerRoundOf(message), null, messageAt],
+		["EVIDENCE", "CHARGEBACK", answerRoundOf(evidence), "PROOF_OF_FULFILLMENT", evidenceAt]]);
+	assert.equal(projectJob(filed, maya, new Map()).providerDispute?.answerStage, "CHARGEBACK");
+});
+
+test("the same two confirmations, the evidence first, leave the history in the order PayPal took the answers", () => {
+	const { row, message, evidence } = messageThenEscalated();
+	const filed = planOf(applyJobCommand(row, confirmationOf(evidence, evidenceAt), paypalFacts(later))).next;
+	assert.equal(filed.providerDispute?.answerState?.state, "FILED");
+	assert.deepEqual(historyOf(filed), [["EVIDENCE", "CHARGEBACK", answerRoundOf(evidence), "PROOF_OF_FULFILLMENT", evidenceAt]]);
+	const late = planOf(applyJobCommand(filed, confirmationOf(message, messageAt), paypalFacts(later))).next;
+	assert.equal(late.providerDispute?.answer, "EVIDENCE");
+	assert.equal(late.providerDispute?.answerStage, "CHARGEBACK");
+	assert.equal(late.providerDispute?.answerState?.state, "FILED");
+	assert.deepEqual(historyOf(late), [["MESSAGE", "INQUIRY", answerRoundOf(message), null, messageAt],
+		["EVIDENCE", "CHARGEBACK", answerRoundOf(evidence), "PROOF_OF_FULFILLMENT", evidenceAt]]);
+});
+
+test("a late message confirmation over a refusal for no honest evidence type is kept, and the refusal stands", () => {
+	const opened = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["send_message", "accept_claim"]), paypalFacts(later)));
+	const message = messageOf(opened);
+	const refused = planOf(applyJobCommand(opened.next, chargeback({ updatedAt: later }, ["PROOF_OF_REFUND"]), paypalFacts(later)));
+	assert.deepEqual(refused.next.providerDispute?.answerState, { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+	assert.equal(refused.next.providerDispute?.answerStage, "CHARGEBACK");
+	const late = planOf(applyJobCommand(refused.next, confirmationOf(message, messageAt), paypalFacts(later)));
+	// PayPal took the message, so it is kept. The refusal for no honest type was never sent, so PayPal's confirmation files nothing on it.
+	assert.deepEqual(late.next.providerDispute?.answerState, { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+	assert.equal(late.next.providerDispute?.answer, "EVIDENCE");
+	assert.deepEqual(historyOf(late.next), [["MESSAGE", "INQUIRY", answerRoundOf(message), null, messageAt]]);
+	assert.deepEqual(late.effects, []);
+});
+
+test("a confirmation without the stage or type it was sent under keeps only its answer, round, and time", () => {
+	const { row, message } = messageThenEscalated();
+	const late = planOf(applyJobCommand(row, { type: "DisputeAnswerFiled", jobId, disputeId: "PP-D-9", answer: "MESSAGE", round: answerRoundOf(message) },
+		paypalFacts(later))).next;
+	assert.deepEqual(late.providerDispute?.answerHistory, [{ answer: "MESSAGE", round: answerRoundOf(message), filedAt: later }]);
 });

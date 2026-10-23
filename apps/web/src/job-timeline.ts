@@ -214,6 +214,12 @@ function refusalWords(reason: string): string {
 /** PayPal's dispute stages in plain words. A stage the table does not name reads as "dispute". */
 const STAGE_WORDS = new Map([["INQUIRY", "inquiry"], ["CHARGEBACK", "chargeback"], ["PRE_ARBITRATION", "pre-arbitration"], ["ARBITRATION", "arbitration"]]);
 
+/** The stage in brackets after an answer's title, such as " (chargeback)". Nothing where the record names no stage the table knows. */
+function stageSuffix(stage: string | null | undefined): string {
+  const words = stage === null || stage === undefined ? undefined : STAGE_WORDS.get(stage);
+  return words === undefined ? "" : ` (${words})`;
+}
+
 /** The evidence types PayPal can ask for, in plain words. A type the table does not name reads as "more evidence". */
 const EVIDENCE_ASKED = new Map([["PROOF_OF_FULFILLMENT", "proof of fulfilment"], ["PROOF_OF_REFUND", "refund proof"], ["OTHER", "other evidence"]]);
 
@@ -272,6 +278,8 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     reasons: [],
   }];
   const simulated = dispute.simulated ? " (Simulated)" : "";
+  // The stage the answer on the record files under, so a queued, refused, or filed answer names the stage it is for.
+  const stage = stageSuffix(dispute.answerStage);
   const answer = dispute.answerState;
   // Every answer PayPal took is an event of its own, oldest first. The answer on the record is shown below only when its round is not one of them.
   for (const entry of dispute.answerHistory) {
@@ -284,7 +292,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: `PayPal refused Acquit's answer: ${refusalWords(answer.reason)}. The payment stays held.`,
+      title: `PayPal refused Acquit's answer${stage}: ${refusalWords(answer.reason)}. The payment stays held.`,
       detail: "Acquit's answer did not reach PayPal. An alert went to a person.",
       tone: "alert",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
@@ -301,7 +309,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: queued ? `Acquit is sending ${what} as ${label} to PayPal` : `Acquit filed ${what} as ${label} with PayPal${simulated}`,
+      title: queued ? `Acquit is sending ${what} as ${label} to PayPal${stage}` : `Acquit filed ${what} as ${label} with PayPal${stage}${simulated}`,
       detail: sentences([asked, queued ? "PayPal has not confirmed the evidence yet." : "The evidence names the frozen and hidden test counts, the pull request, and the judged commit."]),
       tone: "held",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
@@ -315,8 +323,8 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: queued ? `Acquit is sending ${what} as a message to PayPal on dispute ${dispute.id}`
-        : `Acquit sent PayPal ${what} as a message on dispute ${dispute.id}${simulated}`,
+      title: queued ? `Acquit is sending ${what} as a message to PayPal on dispute ${dispute.id}${stage}`
+        : `Acquit sent PayPal ${what} as a message on dispute ${dispute.id}${stage}${simulated}`,
       detail: queued ? "PayPal has not confirmed the message yet." : "The message names the frozen and hidden test counts, the pull request, and the judged commit.",
       tone: "held",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
@@ -328,7 +336,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: queued ? "Acquit is sending its acceptance of the buyer's claim to PayPal" : `Acquit accepted the buyer's claim${simulated}`,
+      title: queued ? `Acquit is sending its acceptance of the buyer's claim to PayPal${stage}` : `Acquit accepted the buyer's claim${stage}${simulated}`,
       detail: queued ? "PayPal has not confirmed the acceptance yet." : "PayPal returns the held funds to the buyer when it decides the dispute.",
       tone: "alert",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
@@ -441,8 +449,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
  */
 function filedAnswerEvent(job: TimelineJob, dispute: ProviderDisputeView, entry: FiledAnswer, simulated: string): TimelineEvent | null {
   const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
-  const stageWords = entry.stage === undefined ? undefined : STAGE_WORDS.get(entry.stage);
-  const stage = stageWords === undefined ? "" : ` (${stageWords})`;
+  const stage = stageSuffix(entry.stage);
   const ids = [{ value: dispute.id, label: "PayPal dispute" }];
   if (entry.answer === "EVIDENCE") {
     const label = entry.evidenceType === undefined ? "evidence" : EVIDENCE_FILED[entry.evidenceType];

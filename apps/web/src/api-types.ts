@@ -97,6 +97,8 @@ export interface ProviderDisputeView {
   readonly evidenceType: "PROOF_OF_FULFILLMENT" | "OTHER" | null;
   /** The round the answer on the record is for, or null where the record names none. */
   readonly answerRound: string | null;
+  /** The stage the answer on the record files under, such as INQUIRY or CHARGEBACK, or null where the record names none. */
+  readonly answerStage: string | null;
   /** Every answer PayPal took on this dispute, oldest first. Empty when PayPal took none. */
   readonly answerHistory: readonly FiledAnswer[];
   /** True while a signed notice stands in for a read PayPal refused. The payout stays held until a successful read. */
