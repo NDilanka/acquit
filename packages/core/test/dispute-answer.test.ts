@@ -13,8 +13,8 @@ import { SqliteStore } from "../src/store.ts";
 import { checkLaws, commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
 import { hours, instant, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, Instant, MerchantId, OperatorId, OrderId, PayoutItemId, RefundId, StaffId, Version } from "../src/ids.ts";
-import { createPayPal, DISPUTE_ACCESS_REFUSED, quote } from "../src/paypal.ts";
-import type { Bps, DisputeOffer } from "../src/paypal.ts";
+import { createPayPal, DISPUTE_ACCESS_REFUSED, NO_HONEST_EVIDENCE_TYPE, quote } from "../src/paypal.ts";
+import type { Bps, DisputeOffer, EvidenceType } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 import type { Verdict, VerifierRunId } from "../src/verifier.ts";
@@ -857,4 +857,87 @@ test("a late refusal for the round a re-queue replaced files nothing and alerts 
 		reason: DISPUTE_ACCESS_REFUSED, round: "PP-D-9:1" }, paypalFacts(later)));
 	assert.deepEqual(late.next.providerDispute?.answerState, { state: "QUEUED" });
 	assert.deepEqual(late.effects, []);
+});
+
+/** The dispute at CHARGEBACK offering evidence, with the evidence types the read asks the seller for when it names any. */
+const chargeback = (fields: { readonly updatedAt?: Instant } = {}, requested?: readonly string[]) =>
+	({ ...disputeAt("CHARGEBACK", ["provide_evidence", "accept_claim"], fields), ...(requested === undefined ? {} : { requestedEvidence: requested }) });
+
+/** The row once PayPal refused the evidence answer for its type, with the type it was sent as when that is recorded. */
+function refusedAt(row: JobRow, reason: string, evidenceType?: EvidenceType): JobRow {
+	const held = row.providerDispute;
+	if (held === undefined) throw new Error("expected a dispute on the row");
+	return { ...row, providerDispute: { ...held, answerState: { state: "REFUSED", reason, ...(evidenceType === undefined ? {} : { evidenceType }) } } };
+}
+
+test("the evidence answer files the type PayPal asks for: OTHER when it asks for OTHER, never PROOF_OF_REFUND", () => {
+	const asked = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }, ["PROOF_OF_REFUND", "OTHER"]), paypalFacts(later)));
+	assert.equal(evidenceFrom(asked).evidenceType, "OTHER");
+	assert.equal(asked.next.providerDispute?.requestedEvidence?.join(","), "PROOF_OF_REFUND,OTHER");
+	// A read that names no type keeps the type every answer carried before types were read.
+	const unnamed = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }), paypalFacts(later)));
+	assert.equal(evidenceFrom(unnamed).evidenceType, "PROOF_OF_FULFILLMENT");
+	assert.equal(unnamed.next.providerDispute?.requestedEvidence, undefined);
+});
+
+test("PayPal asks only for evidence types Acquit cannot honestly give: no evidence is filed, the answer is refused, and the hold stays", () => {
+	const plan = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }, ["PROOF_OF_REFUND"]), paypalFacts(later)));
+	assert.deepEqual(evidenceOf(plan), []);
+	assert.deepEqual(plan.next.providerDispute?.answerState, { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+	assert.deepEqual(alertsOf(plan).map(alert => [alert.reason, alert.detail]),
+		[["PROVIDER_DISPUTE_ANSWER_REFUSED", `${NO_HONEST_EVIDENCE_TYPE}. The payment stays held.`]]);
+	assert.equal(releaseHeld(plan.next), true);
+});
+
+test("PayPal's late filing of an evidence answer sent before the escalation files nothing on the refused escalation", () => {
+	// The inquiry's evidence went out, then the dispute escalated to a stage asking only for a type Acquit cannot give. Nothing was sent for it.
+	const inquiry = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: now }), paypalFacts(later)));
+	const escalated = planOf(applyJobCommand(inquiry.next, chargeback({ updatedAt: later }, ["PROOF_OF_REFUND"]), paypalFacts(later)));
+	assert.deepEqual(escalated.next.providerDispute?.answerState, { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+	const late = planOf(applyJobCommand(escalated.next, { type: "DisputeAnswerFiled", jobId, disputeId: "PP-D-9", answer: "EVIDENCE",
+		round: "PP-D-9:1" }, paypalFacts(later)));
+	assert.deepEqual(late.next.providerDispute?.answerState, { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+	assert.deepEqual(late.effects, []);
+});
+
+test("an evidence answer PayPal refused for its type is re-queued once as the type the read asks for, under a new request id, and a repeat queues nothing", () => {
+	// The live sequence: the dispute opens at INQUIRY, escalates to CHARGEBACK, and the escalated evidence is the one PayPal refuses.
+	const inquiry = planOf(applyJobCommand(verifiedRow(), disputeAt("INQUIRY", ["provide_evidence", "accept_claim"], { updatedAt: now }), paypalFacts(later)));
+	const filed = planOf(applyJobCommand(inquiry.next, chargeback({ updatedAt: later }), paypalFacts(later)));
+	const first = evidenceFrom(filed);
+	assert.equal(first.stage, "CHARGEBACK");
+	assert.equal(filed.next.providerDispute?.answerRound, "PP-D-9:1:CHARGEBACK");
+	const read = chargeback({ updatedAt: later }, ["PROOF_OF_REFUND", "OTHER"]);
+	const requeue = planOf(applyJobCommand(refusedAt(filed.next, "PAYPAL_HTTP_400"), read, paypalFacts(later)));
+	assert.deepEqual(requeue.effects.map(effect => effect.kind), ["DISPUTE_EVIDENCE"]);
+	const retyped = evidenceFrom(requeue);
+	assert.equal(retyped.evidenceType, "OTHER");
+	assert.equal(retyped.requeued, true);
+	assert.equal(retyped.stage, "CHARGEBACK");
+	assert.equal(requeue.next.providerDispute?.answerRound, "PP-D-9:1:CHARGEBACK:requeued");
+	assert.deepEqual(requeue.next.providerDispute?.answerState, { state: "QUEUED" });
+	assert.equal(requeue.next.providerDispute?.requeued, true);
+	assert.notEqual(operationKey(retyped), operationKey(first), "the retyped answer is its own request, not a replay of the refused one");
+	// The same read again while the re-queue is queued: nothing new. Refused again as OTHER: still nothing, the one re-queue is spent.
+	assert.deepEqual(planOf(applyJobCommand(requeue.next, read, paypalFacts(later))).effects, []);
+	const again = planOf(applyJobCommand(refusedAt(requeue.next, "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED", "OTHER"), read, paypalFacts(later)));
+	assert.deepEqual(again.effects, []);
+	assert.deepEqual(again.next.providerDispute?.answerState,
+		{ state: "REFUSED", reason: "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED", evidenceType: "OTHER" });
+});
+
+test("a refused evidence type is never re-queued as itself: a read that names no type, or the type refused, re-queues nothing", () => {
+	const filed = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }), paypalFacts(later)));
+	const refused = refusedAt(filed.next, "PAYPAL_HTTP_400");
+	assert.deepEqual(planOf(applyJobCommand(refused, chargeback({ updatedAt: later }), paypalFacts(later))).effects, []);
+	assert.deepEqual(planOf(applyJobCommand(refused, chargeback({ updatedAt: later }, ["PROOF_OF_FULFILLMENT"]), paypalFacts(later))).effects, []);
+	const asOther = refusedAt(filed.next, "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED", "OTHER");
+	assert.deepEqual(planOf(applyJobCommand(asOther, chargeback({ updatedAt: later }, ["OTHER"]), paypalFacts(later))).effects, []);
+});
+
+test("a read that asks only for PROOF_OF_REFUND after a type refusal sends nothing, and the refusal stands for a person", () => {
+	const filed = planOf(applyJobCommand(verifiedRow(), chargeback({ updatedAt: now }), paypalFacts(later)));
+	const read = planOf(applyJobCommand(refusedAt(filed.next, "PAYPAL_HTTP_400"), chargeback({ updatedAt: later }, ["PROOF_OF_REFUND"]), paypalFacts(later)));
+	assert.deepEqual(read.effects, []);
+	assert.deepEqual(read.next.providerDispute?.answerState, { state: "REFUSED", reason: "PAYPAL_HTTP_400" });
 });

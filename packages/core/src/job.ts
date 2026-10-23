@@ -29,8 +29,8 @@ import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryE
 import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
-import type { CaptureEvidence, DisputeId, DisputeOffer, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
-import { DISPUTE_ACCESS_REFUSED } from "./paypal.ts";
+import type { CaptureEvidence, DisputeId, DisputeOffer, EvidenceType, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
+import { DISPUTE_ACCESS_REFUSED, EVIDENCE_TYPE_REFUSALS, evidenceTypeFor, NO_HONEST_EVIDENCE_TYPE, refusalWording } from "./paypal.ts";
 import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
@@ -346,10 +346,10 @@ export type JobEffect =
 	 * Acquit answers a buyer dispute with the job's receipt or its verified attempt. The notes are built when the edge selects it.
 	 * `attempt` is the verified attempt the notes describe. It keys the answer, so a later attempt after a rework is a new answer.
 	 * `stage` is the dispute stage the answer is for, so an escalated dispute is answered once more. `requeued` marks the one
-	 * re-queue after PayPal refused the answer for lack of dispute access.
+	 * re-queue after PayPal refused the answer. `evidenceType` is the type PayPal asked for, absent for PROOF_OF_FULFILLMENT.
 	 */
 	| { readonly kind: "DISPUTE_EVIDENCE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly notes: string;
-		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true }
+		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true; readonly evidenceType?: EvidenceType }
 	/** Acquit sends the same receipt-cited notes as a message, while the dispute is at INQUIRY and offers no evidence to provide. */
 	| { readonly kind: "DISPUTE_MESSAGE"; readonly jobId: JobId; readonly disputeId: string; readonly payee: MerchantId; readonly message: string;
 		readonly attempt: Ordinal; readonly simulated: boolean; readonly stage?: string; readonly requeued?: true }
@@ -365,9 +365,11 @@ export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE"
 
 /**
  * What PayPal did with the answer Acquit selected. QUEUED until the outbox sends it, FILED once PayPal confirms it, and
- * REFUSED with the plain reason when PayPal refuses it for good. A person sees the difference on the job.
+ * REFUSED with PayPal's reason when PayPal refuses it for good. A person sees the difference on the job, in plain words.
+ * `evidenceType` is the type a refused evidence answer named, absent for PROOF_OF_FULFILLMENT.
  */
-export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" } | { readonly state: "REFUSED"; readonly reason: string };
+export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" }
+	| { readonly state: "REFUSED"; readonly reason: string; readonly evidenceType?: EvidenceType };
 
 /** A PayPal buyer dispute, as PayPal last answered for it. `outcome` is PayPal's code once the dispute resolves. */
 export type ProviderDispute = {
@@ -388,7 +390,9 @@ export type ProviderDispute = {
 	readonly stage?: string;
 	/** The answer links the latest delivery named. Absent until a delivery names links, so a message is never chosen on a guess. */
 	readonly offers?: readonly DisputeOffer[];
-	/** Set once the answer was re-queued after PayPal refused it for lack of dispute access. The re-queue happens once. */
+	/** The evidence types PayPal asks the seller for on the latest delivery that names any. Absent when it asks for none. */
+	readonly requestedEvidence?: readonly string[];
+	/** Set once the answer was re-queued after PayPal refused it, for lack of dispute access or for the evidence type it named. The re-queue happens once. */
 	readonly requeued?: true;
 	/**
 	 * The round the answer on this record is for: its dispute and attempt, the stage it was filed for, and the one re-queue.
@@ -494,10 +498,12 @@ function transitionTable(): {
 	MergeFinished: Edge<JobRow<PaidState>, JobRef & { readonly outcome: MergeProgress }, JobRow<PaidState>, "SYSTEM">;
 	ProviderDispute: Edge<JobRow, JobRef & { readonly disputeId: string; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
 		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome: string | null; readonly simulated?: true;
-		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[] }, JobRow, "SYSTEM">;
+		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[]; readonly requestedEvidence?: readonly string[] }, JobRow, "SYSTEM">;
 	/** `round` is the answer round PayPal answered, so a late answer to an earlier round of the dispute files nothing on the current one. */
 	DisputeAnswerFiled: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly round?: string }, JobRow, "SYSTEM">;
-	DisputeAnswerRefused: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly reason: string; readonly round?: string },
+	/** `evidenceType` is the type an evidence answer was sent as, so a re-queue never sends the same type PayPal refused. */
+	DisputeAnswerRefused: Edge<JobRow, JobRef & { readonly disputeId: string; readonly answer: DisputeAnswer; readonly reason: string; readonly round?: string;
+		readonly evidenceType?: EvidenceType },
 		JobRow, "SYSTEM">;
 	TimerDue: Edge<JobRow, JobRef & { readonly expectedWakeAt: Instant }, JobRow, "SYSTEM">;
 } {
@@ -918,21 +924,35 @@ function transitionTable(): {
 				command.offers?.includes("provide_evidence") === true && command.status !== "RESOLVED" && disputeAnswerOf(row) === "EVIDENCE";
 			const stage = command.stage ?? held?.stage;
 			const offers = command.offers ?? held?.offers;
+			// The evidence types PayPal asks for on the latest delivery that names any. The evidence answer files the type they choose.
+			const requestedEvidence = command.requestedEvidence ?? held?.requestedEvidence;
 			const answer: DisputeAnswer | undefined = escalated || (first && command.status !== "RESOLVED") ? answerOf(row, offers) : held?.answer;
 			const simulated = held?.simulated === true || command.simulated === true;
-			const filing = first || escalated ? answerEffects(row, command.disputeId, answer, simulated, escalated ? command.stage : undefined) : [];
-			// PayPal refused the answer for lack of dispute access. A successful read that offers the link of the answer the row now
-			// selects re-queues it, once: a message where the read offers no evidence to provide. A stand-in is not a successful read.
-			const refused = held !== undefined && held.answerState?.state === "REFUSED" && held.answerState.reason === DISPUTE_ACCESS_REFUSED;
-			const retry = refused && !standIn && !escalated && held?.requeued !== true && command.status !== "RESOLVED" && command.offers !== undefined
+			const filing = first || escalated ? answerEffects(row, command.disputeId, answer, simulated, escalated ? command.stage : undefined,
+				undefined, requestedEvidence) : [];
+			// PayPal asks only for evidence types Acquit cannot honestly give. Nothing is sent: the answer is refused, and a person is told.
+			const unhonest = (first || escalated) && answer === "EVIDENCE" && evidenceTypeFor(requestedEvidence) === null;
+			// PayPal refused the answer for lack of dispute access, or refused the evidence type it was sent as. A successful read that offers
+			// the link of the answer the row now selects re-queues it, once: a message where the read offers no evidence to provide. A stand-in
+			// is not a successful read. An evidence type refusal re-queues only as a type PayPal did not refuse, so no type is sent twice.
+			const refusal = held?.answerState?.state === "REFUSED" ? held.answerState : undefined;
+			const refused = refusal?.reason === DISPUTE_ACCESS_REFUSED;
+			const typeRefused = held?.answer === "EVIDENCE" && refusal !== undefined && EVIDENCE_TYPE_REFUSALS.includes(refusal.reason);
+			const retry = (refused || typeRefused) && !standIn && !escalated && held?.requeued !== true && command.status !== "RESOLVED" && command.offers !== undefined
 				? answerOf(row, command.offers) : undefined;
-			const requeue = retry !== undefined && ANSWER_LINK[retry] !== undefined && command.offers?.includes(ANSWER_LINK[retry]) === true;
-			const requeued: JobEffect[] = requeue ? answerEffects(row, command.disputeId, retry, simulated, stage, true) : [];
+			// An evidence answer is re-queued only as a type Acquit can honestly give. A type refusal is re-queued only as another type.
+			// A refusal with no type recorded named PROOF_OF_FULFILLMENT, the type every answer carried before the types were read.
+			const refusedType: EvidenceType = refusal?.evidenceType ?? "PROOF_OF_FULFILLMENT";
+			const chosen = evidenceTypeFor(requestedEvidence);
+			const sendable = retry === "EVIDENCE" ? chosen !== null && (!typeRefused || chosen !== refusedType) : !typeRefused;
+			const requeue = retry !== undefined && ANSWER_LINK[retry] !== undefined && command.offers?.includes(ANSWER_LINK[retry]) === true && sendable;
+			const requeued: JobEffect[] = requeue ? answerEffects(row, command.disputeId, retry, simulated, stage, true, requestedEvidence) : [];
 			const recordedAnswer = requeue ? retry : answer;
 			const requeuedFlag = requeue || (!escalated && held?.requeued === true);
 			// The answer is queued until the outbox sends it. A simulated answer is never sent, so it carries no queued state.
 			const queued = [...filing, ...requeued].some(effect => effect.kind === "DISPUTE_EVIDENCE" || effect.kind === "DISPUTE_MESSAGE" || effect.kind === "DISPUTE_ACCEPT");
-			const answerState: DisputeAnswerState | undefined = queued && !simulated ? { state: "QUEUED" } : held?.answerState;
+			const answerState: DisputeAnswerState | undefined = unhonest && !simulated ? { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE }
+				: queued && !simulated ? { state: "QUEUED" } : held?.answerState;
 			// The round the row answers in now: the one this delivery filed or re-queued, or the round it already held.
 			const newRound = [...filing, ...requeued].find(isDisputeAnswer);
 			const answerRound = filing.length > 0 || requeued.length > 0 ? (newRound === undefined ? undefined : answerRoundOf(newRound)) : held?.answerRound;
@@ -946,6 +966,7 @@ function transitionTable(): {
 				...(answerRound === undefined ? {} : { answerRound }),
 				...(stage === undefined ? {} : { stage }),
 				...(offers === undefined ? {} : { offers }),
+				...(requestedEvidence === undefined ? {} : { requestedEvidence }),
 				...(requeuedFlag ? { requeued: true as const } : {}),
 				...(standIn ? { unconfirmed: true as const } : {}),
 				...(simulated ? { simulated: true as const } : {}) };
@@ -1002,6 +1023,8 @@ function transitionTable(): {
 		DisputeAnswerFiled: { by: "SYSTEM", apply: (row, command) => {
 			const held = row.providerDispute;
 			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "FILED") return unchanged(row);
+			// An answer refused for lack of an honest evidence type was never sent, so no PayPal confirmation of an earlier round files it.
+			if (held.answerState?.state === "REFUSED" && held.answerState.reason === NO_HONEST_EVIDENCE_TYPE) return unchanged(row);
 			// PayPal took an earlier round of this answer. The round the row holds now is still waiting on its own, so nothing is filed for it.
 			if (!answersRound(held, command.round)) return unchanged(row);
 			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "FILED" } } }, credits: [], effects: [] };
@@ -1012,9 +1035,13 @@ function transitionTable(): {
 			if (held === undefined || held.id !== command.disputeId || held.answer !== command.answer || held.answerState?.state === "REFUSED") return unchanged(row);
 			// A refusal of an earlier round says nothing about the round the row holds now, and it raises no alert for it.
 			if (!answersRound(held, command.round)) return unchanged(row);
-			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState: { state: "REFUSED", reason: command.reason } } },
+			// The type is kept only where PayPal refused the type, so a re-queue never sends that type again.
+			const typeRefusal = command.evidenceType !== undefined && EVIDENCE_TYPE_REFUSALS.includes(command.reason);
+			const answerState: DisputeAnswerState = { state: "REFUSED", reason: command.reason,
+				...(typeRefusal ? { evidenceType: command.evidenceType } : {}) };
+			return { next: { ...row, version: (row.version + 1) as Version, providerDispute: { ...held, answerState } },
 				credits: [], effects: [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ANSWER_REFUSED", disputeId: command.disputeId,
-					detail: `${command.reason}. The payment stays held.` }] };
+					detail: `${refusalWording(command.reason)}. The payment stays held.` }] };
 		} },
 		TimerDue: { by: "SYSTEM", apply: (row, command, facts) => {
 			if (command.expectedWakeAt !== wakeAt(row) || facts.now < command.expectedWakeAt) return unchanged(row);
@@ -1359,9 +1386,11 @@ export function answersRound(dispute: ProviderDispute, round: string | undefined
 /**
  * The effects a dispute answer files. The notes are built here, from the row, so the outbox row carries exactly what was decided.
  * `stage` is set only on an escalation, and `requeued` only on the one re-queue of a refused answer, so each keys its own answer.
+ * `requested` is the evidence types PayPal asks for: the evidence answer files the type they choose, or nothing when they ask for none
+ * Acquit can honestly give.
  */
 function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | undefined, simulated: boolean,
-	stage?: string, requeued?: true): JobEffect[] {
+	stage?: string, requeued?: true, requested?: readonly string[]): JobEffect[] {
 	const payee = payeeMerchantOf(row);
 	const escrow = heldEscrowOf(row);
 	const attempt = evidenceAttemptOf(row);
@@ -1371,7 +1400,11 @@ function answerEffects(row: JobRow, disputeId: string, answer: DisputeAnswer | u
 	}
 	const marks = { ...(stage === undefined ? {} : { stage }), ...(requeued === undefined ? {} : { requeued }) };
 	if (answer === "EVIDENCE" && attempt !== null) {
-		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated, ...marks }];
+		const evidenceType = evidenceTypeFor(requested);
+		// Nothing PayPal asks for is one Acquit can honestly file, so no answer is sent and a person decides.
+		if (evidenceType === null) return [{ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ANSWER_REFUSED", disputeId,
+			detail: `${NO_HONEST_EVIDENCE_TYPE}. The payment stays held.` }];
+		return [{ kind: "DISPUTE_EVIDENCE", jobId: row.id, disputeId, payee, notes: evidenceNotesOf(row), attempt, simulated, evidenceType, ...marks }];
 	}
 	if (answer === "MESSAGE" && attempt !== null) {
 		return [{ kind: "DISPUTE_MESSAGE", jobId: row.id, disputeId, payee, message: evidenceNotesOf(row), attempt, simulated, ...marks }];

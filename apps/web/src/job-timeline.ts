@@ -197,6 +197,17 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
 }
 
 /**
+ * The plain words for a refused answer's reason. Mirrors core's refusalWording: the record keeps PayPal's code, and no code reaches a person.
+ * The access refusal and any other plain reason pass through unchanged.
+ */
+function refusalWords(reason: string): string {
+  if (reason === "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED") return "PayPal refused the evidence type";
+  if (reason === "PAYPAL_HTTP_400" || reason.startsWith("PAYPAL_400_")) return "PayPal refused the answer as invalid";
+  if (reason.startsWith("PAYPAL_")) return "PayPal refused the answer";
+  return reason;
+}
+
+/**
  * The PayPal buyer dispute, in the order it happens: opened, then the payout held while PayPal reviews it, then
  * decided for the seller or the buyer. PayPal serves no time for the hold or the decision, so those have none.
  */
@@ -221,7 +232,7 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: `PayPal refused Acquit's answer: ${answer.reason}. The payment stays held.`,
+      title: `PayPal refused Acquit's answer: ${refusalWords(answer.reason)}. The payment stays held.`,
       detail: "Acquit's answer did not reach PayPal. An alert went to a person.",
       tone: "alert",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
