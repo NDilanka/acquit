@@ -47,7 +47,8 @@ export type Actor =
 	| { readonly role: "ARBITER"; readonly staffId: StaffId }
 	/**
 	 * The deployment's own operator of last resort: it reads the whole book for the platform dashboards
-	 * (the ledger route) and holds no commands. It is never a job's client, payee, or arbiter.
+	 * (the ledger route), and one job at a time, read-only, for the job page. It holds no commands and is
+	 * never a job's client, payee, or arbiter. Every command it sends is refused.
 	 */
 	| { readonly role: "PLATFORM" };
 
@@ -270,15 +271,16 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			const sources = await store.receiptSources();
 			// One tenant rule for every read: a viewer reaches a job only in its own world. The arbiter
 			// and the system paths are the only cross-tenant readers, and they are never a session.
-			// The platform role is the other cross-tenant reader, and only through PlatformLedger:
-			// a job read or list answers nothing to it, so the dashboards have one door, not two.
+			// The platform role is the other cross-tenant reader. It reads one job at a time, read-only, for the job page,
+			// and it lists nothing: the lists stay closed to it, and the dashboards read the whole book through PlatformLedger.
+			// It holds no command, so a command it sends is refused in executeCommand before anything is read or recorded.
 			const sameWorld = (row: JobRow) => actor.role === "ARBITER" ||
 				(actor.role === "CLIENT" || actor.role === "OPERATOR") && (actor.tenant ?? null) === (row.tenant ?? null);
 			switch (query.type) {
 				case "Job": {
 					const row = await store.readJob(query.jobId);
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
-					const mayRead = sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
+					const mayRead = actor.role === "PLATFORM" || sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
 					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources, ports.privateCases) } : { kind: "DENIED", reason: "NOT_OWNER" };
 				}

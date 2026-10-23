@@ -408,9 +408,14 @@ export type ProviderDispute = {
 	readonly simulated?: true;
 };
 
-/** The dispute as the job view serves it. Null on a job no buyer dispute has reached. */
+/**
+ * The dispute as the job view serves it. Null on a job no buyer dispute has reached. `stage` is PayPal's dispute stage on its
+ * latest delivery, and `requestedEvidence` the evidence types it asks for. `evidenceType` is the type an evidence answer files,
+ * null for any other answer, and null when PayPal asks only for types Acquit cannot give.
+ */
 export type ProviderDisputeView = { readonly id: string; readonly status: string; readonly reason: string; readonly amount: UsdCents | null;
 	readonly openedAt: Instant; readonly outcome: string | null; readonly answer: DisputeAnswer | null; readonly answerState: DisputeAnswerState | null;
+	readonly stage: string | null; readonly requestedEvidence: readonly string[] | null; readonly evidenceType: EvidenceType | null;
 	readonly unconfirmed: boolean; readonly simulated: boolean };
 
 // The table
@@ -1768,8 +1773,10 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		providerDispute: row.providerDispute === undefined ? null : { id: row.providerDispute.id, status: row.providerDispute.status,
 			reason: row.providerDispute.reason, amount: row.providerDispute.amount, openedAt: row.providerDispute.openedAt,
 			outcome: row.providerDispute.outcome ?? null, answer: row.providerDispute.answer ?? null,
-			answerState: row.providerDispute.answerState ?? null, unconfirmed: row.providerDispute.unconfirmed === true,
-			simulated: row.providerDispute.simulated === true },
+			answerState: row.providerDispute.answerState ?? null, stage: row.providerDispute.stage ?? null,
+			requestedEvidence: row.providerDispute.requestedEvidence ?? null,
+			evidenceType: row.providerDispute.answer === "EVIDENCE" ? evidenceTypeFor(row.providerDispute.requestedEvidence) : null,
+			unconfirmed: row.providerDispute.unconfirmed === true, simulated: row.providerDispute.simulated === true },
 		// What selected the release, while it is pending and after it settles. A row stored before F4 serves null.
 		releaseAuthority: state.status === "PAID" ? state.releaseAuthority
 			: state.status === "VERIFIED" && state.review.phase === "RELEASE_PENDING" ? state.review.release.authority : null,

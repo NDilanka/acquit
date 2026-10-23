@@ -1,4 +1,4 @@
-import type { Attempt, JobView, VerifierFields } from "./api-types";
+import type { Attempt, JobView, ProviderDisputeView, VerifierFields } from "./api-types";
 import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
 import { arbiterNoteLine, authorityNote, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
 import { bidStatusWord, payoutHeldBy, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
@@ -207,8 +207,50 @@ function refusalWords(reason: string): string {
   return reason;
 }
 
+/** PayPal's dispute stages in plain words. A stage the table does not name reads as "dispute". */
+const STAGE_WORDS = new Map([["INQUIRY", "inquiry"], ["CHARGEBACK", "chargeback"], ["PRE_ARBITRATION", "pre-arbitration"], ["ARBITRATION", "arbitration"]]);
+
+/** The evidence types PayPal can ask for, in plain words. A type the table does not name reads as "more evidence". */
+const EVIDENCE_ASKED = new Map([["PROOF_OF_FULFILLMENT", "proof of fulfilment"], ["PROOF_OF_REFUND", "refund proof"], ["OTHER", "other evidence"]]);
+
+/** The evidence type Acquit filed, in plain words. */
+const EVIDENCE_FILED: Record<"PROOF_OF_FULFILLMENT" | "OTHER", string> = { PROOF_OF_FULFILLMENT: "Proof of fulfilment", OTHER: "Other evidence" };
+
+/** PayPal's state of the buyer's dispute, from its status and stage. Only an unresolved dispute reaches it, so no decided state is named. */
+function payPalStateWords(dispute: Pick<ProviderDisputeView, "status" | "stage">): string {
+  const stage = (dispute.stage === null ? undefined : STAGE_WORDS.get(dispute.stage)) ?? "dispute";
+  switch (dispute.status) {
+    case "WAITING_FOR_SELLER_RESPONSE": return "PayPal is waiting for the seller's answer.";
+    case "WAITING_FOR_BUYER_RESPONSE": return "PayPal is waiting for the buyer.";
+    case "UNDER_REVIEW": return `PayPal is reviewing the ${stage}.`;
+    default: return `PayPal has the ${stage} open.`;
+  }
+}
+
 /**
- * The PayPal buyer dispute, in the order it happens: opened, then the payout held while PayPal reviews it, then
+ * What PayPal asked the seller for, and the refund proof it could not get: Acquit made no refund, so it sent none.
+ * Null when the record names no request.
+ */
+function evidenceAskedLine(requested: ProviderDisputeView["requestedEvidence"], madeRefund: boolean): string | null {
+  if (requested === null || requested.length === 0) return null;
+  const words = [...new Set(requested.map((code) => EVIDENCE_ASKED.get(code) ?? "more evidence"))];
+  const noRefund = requested.includes("PROOF_OF_REFUND") && !madeRefund ? "Acquit made no refund, so it cannot send refund proof." : null;
+  return sentences([`PayPal asked for ${words.join(" or ")}.`, noRefund]);
+}
+
+/** What a PayPal hold means for the job's next step. The payout waits on PayPal in every phase, and an approval only records the release. */
+function holdWords(job: TimelineJob): string {
+  if (job.status === "VERIFIED" && job.phase === "RELEASE_PENDING") {
+    return "The approval is recorded. The payout waits until PayPal decides the dispute for the seller.";
+  }
+  if (job.status === "VERIFIED" && job.phase === "AWAITING_CLIENT") {
+    return "Approving records the release, but the payout waits until PayPal decides the dispute for the seller.";
+  }
+  return "The payout waits until PayPal decides the dispute for the seller.";
+}
+
+/**
+ * The PayPal buyer dispute, in the order it happens: opened, then the payment held while PayPal reviews it, then
  * decided for the seller or the buyer. PayPal serves no time for the hold or the decision, so those have none.
  */
 function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
@@ -243,11 +285,14 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     // A paid job's answer is its receipt. A held job has no receipt yet, so it names the verified attempt it filed instead.
     const what = job.status === "PAID" ? "the receipt" : "its verified attempt";
     const queued = answer?.state === "QUEUED";
+    // The type is the one PayPal's ask selected. With no type on the record, the answer reads as plain evidence.
+    const label = dispute.evidenceType === null ? "evidence" : EVIDENCE_FILED[dispute.evidenceType];
+    const asked = evidenceAskedLine(dispute.requestedEvidence, job.ledger.some((line) => line.kind === "REFUND"));
     events.push({
       at: null,
       kind: "DISPUTE",
-      title: queued ? `Acquit is sending ${what} as evidence to PayPal` : `Acquit filed ${what} as evidence with PayPal${simulated}`,
-      detail: queued ? "PayPal has not confirmed the evidence yet." : "The evidence names the frozen and hidden test counts, the pull request, and the judged commit.",
+      title: queued ? `Acquit is sending ${what} as ${label} to PayPal` : `Acquit filed ${what} as ${label} with PayPal${simulated}`,
+      detail: sentences([asked, queued ? "PayPal has not confirmed the evidence yet." : "The evidence names the frozen and hidden test counts, the pull request, and the judged commit."]),
       tone: "held",
       ids: [{ value: dispute.id, label: "PayPal dispute" }],
       href: null,
@@ -310,12 +355,13 @@ function providerDisputeEvents(job: TimelineJob): TimelineEvent[] {
     return events;
   }
   if (dispute.status !== "RESOLVED") {
-    if (job.status === "VERIFIED" && job.phase === "RELEASE_PENDING") {
+    // The payment is held while PayPal decides the buyer's dispute, in any phase. Once it has paid out, nothing is held.
+    if (job.escrow === "HELD") {
       events.push({
         at: null,
         kind: "DISPUTE",
-        title: "Payout held while PayPal reviews the dispute",
-        detail: "The approval is recorded. The payout waits until PayPal decides the dispute for the seller.",
+        title: "Payment held while PayPal reviews the buyer's dispute",
+        detail: sentences([payPalStateWords(dispute), holdWords(job)]),
         tone: "held",
         ids: [],
         href: null,
@@ -527,6 +573,12 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
     `${refundNote(job.refundReason, false, total) ?? "A refund is in flight."} Escrow is still held until it settles.`,
   "VERIFIED/AWAITING_CLIENT": ({ job, seat }) => {
     const end = job.reviewEndsAt ? utc(job.reviewEndsAt) : "the review deadline";
+    // While PayPal holds the payout, an approval only records the release, so the line never promises one.
+    if (payoutHeldBy(job.providerDispute)) {
+      return seat === "CLIENT" && job.viewerCanApprove
+        ? `Approve to record the release, or dispute by ${end}. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.`
+        : `The client reviews until ${end}. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.`;
+    }
     return seat === "CLIENT" && job.viewerCanApprove
       ? `Approve to release the payment, or dispute by ${end}. If you do nothing, Acquit releases it then.`
       : `The client reviews until ${end}. If the client does nothing, Acquit releases the payment then.`;

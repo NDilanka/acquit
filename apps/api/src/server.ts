@@ -847,6 +847,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			if (error instanceof BudgetBelowMinimum) { json(res, 400, { error: "BUDGET_BELOW_MINIMUM", detail: error.message }); return; }
 			json(res, 400, { error: "BAD_COMMAND", detail: error instanceof Error ? error.message : "Invalid command" }); return;
 		}
+		// The platform reads one job and holds no command. Core refuses it too; the API names the refusal.
+		if (current.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 		const outcome = await acquit.execute(current.actor, parsed.key, parsed.command);
 		// A visitor's job funds with the test card unless its client chooses otherwise: a judge has no
 		// sandbox buyer account, and the card is the one path to a funded escrow without one.

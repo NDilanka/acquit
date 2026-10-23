@@ -126,6 +126,8 @@ One route carries every user command, matching `Acquit.execute`.
 
 `POST /api/commands` with body `{ key: string, command: UserCommand }`.
 
+The platform role holds no command. Its command is refused `403 { error: "PLATFORM_READ_ONLY" }` before anything is read or recorded, and core refuses it again as `NOT_OWNER`, so a command from the platform reaches no job.
+
 - `key` is a client-generated request key (UUID v4). The web app makes one per user intent and reuses it on retry.
 - Response `200 { outcome: CommandOutcome }` for `COMMITTED` and `REPLAY`.
 - Response `409 { outcome: { kind: "DENIED", reason } }` for a domain refusal.
@@ -157,7 +159,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 |---|---|---|
 | GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form. A visitor's own fork replaces the deployment's repository for that session |
 | GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor }` |
-| GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer |
+| GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer. The platform role reads one job here, read-only: `job.client`, `job.funding`, and `job.clockShiftMs` are null to it, `viewerCanApprove` and `viewerCanDispute` are false, and `GET /api/jobs` lists no job to it. A command it sends is refused `403 { error: "PLATFORM_READ_ONLY" }` (see `POST /api/commands`) |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |
 | GET | `/api/platform/tables` | `{ tables: { jobs, bids, verdicts, ledger_entries, paypal_events, operators, clients }, now }`. Each table is an array of rows keyed for the escrow dashboard's relationships, with money in integer cents. Platform role only: `401` without a session, `403 { error: "PLATFORM_ONLY" }` for any other role. Read-only |

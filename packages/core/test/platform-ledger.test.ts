@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeAcquit, createAcquit, usd } from "../src/acquit.ts";
-import type { Actor } from "../src/acquit.ts";
+import type { Actor, UserCommand } from "../src/acquit.ts";
 import { manifestOf } from "../src/fixtures.ts";
-import { instant, hours, parseJobId } from "../src/ids.ts";
+import { instant, hours, parseJobId, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, BidId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OperatorId, OrderId, PayoutItemId, ReceiptId, TestId, Version, VisitorId } from "../src/ids.ts";
 import { commercialSplit, reduceLedger } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { quote } from "../src/paypal.ts";
 import { TERMS, applyJobCommand, projectJob } from "../src/job.ts";
-import type { JobRow, PassedAttempt, Receipt, RejectedAttempt } from "../src/job.ts";
+import type { JobRow, PassedAttempt, ProviderDispute, Receipt, RejectedAttempt } from "../src/job.ts";
 import { platformJobLedger, platformTables } from "../src/platform.ts";
 import type { OperatorRow } from "../src/operator.ts";
 import { isTestTamper } from "../src/verifier.ts";
@@ -399,5 +400,93 @@ test("the platform tables query returns the seven tables to the platform role al
 		for (const actor of [maya, devon]) {
 			assert.deepEqual(await built.service.query(actor, { type: "PlatformTables" }), { kind: "DENIED", reason: "NOT_OWNER" });
 		}
+	} finally { built.close(); }
+});
+
+/** A held job in visitor B's world with PayPal's buyer dispute on it: the stage, the evidence PayPal asks for, and Acquit's filed answer. */
+function disputedRow(id: string, requestedEvidence: readonly string[]): JobRow {
+	const providerDispute: ProviderDispute = { id: "PP-R-PPB-10194003", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+		amount: usd("21.00"), openedAt: now, answer: "EVIDENCE", answerState: { state: "FILED" }, stage: "CHARGEBACK", requestedEvidence };
+	return { ...heldTamperRow(), id: parseJobId(id), providerDispute };
+}
+
+test("the platform reads one job, read-only: the view names no client, funding, or action it could take", async () => {
+	const built = await serviceWith([paidRow("v_a" as VisitorId), heldTamperRow()]);
+	try {
+		const read = await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_held") });
+		if (read.kind !== "JOB") throw new Error("Expected the platform to read the job");
+		assert.equal(read.job.id, "job_ledger_held");
+		assert.equal(read.job.escrow, "HELD");
+		assert.equal(read.job.client, null);
+		assert.equal(read.job.funding, null);
+		assert.equal(read.job.clockShiftMs, null);
+		assert.equal(read.job.viewerCanApprove, false);
+		assert.equal(read.job.viewerCanDispute, false);
+		assert.equal(read.job.approveUrl, null);
+		assert.equal((await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_paid") })).kind, "JOB");
+	} finally { built.close(); }
+});
+
+test("the platform lists no jobs: an open job is listed to its own client and to no one else", async () => {
+	const built = await serviceWith([captureMismatchRow()]);
+	try {
+		const lena: Actor = { role: "CLIENT", clientId: "lena-client" as ClientId, tenant: "v_c" as VisitorId };
+		const own = await built.service.query(lena, { type: "OpenJobs", cursor: null });
+		if (own.kind !== "JOBS") throw new Error("Expected the client's open jobs");
+		assert.deepEqual(own.jobs.map(job => job.id), ["job_ledger_mismatch"]);
+		const listed = await built.service.query(platform, { type: "OpenJobs", cursor: null });
+		if (listed.kind !== "JOBS") throw new Error("Expected the platform's open jobs");
+		assert.deepEqual(listed.jobs, []);
+	} finally { built.close(); }
+});
+
+test("the platform holds no command: each job command it sends is refused, and the job does not move", async () => {
+	const built = await serviceWith([heldTamperRow()]);
+	try {
+		const jobId = parseJobId("job_ledger_held");
+		const before = await built.store.readJob(jobId);
+		const commands: UserCommand[] = [
+			{ type: "AcceptBid", jobId, bidId: "bid_test-1" as BidId },
+			{ type: "CancelJob", jobId },
+			{ type: "Approve", jobId, mergeCommit: "0042bbeb5d1e" as CommitSha },
+			{ type: "Dispute", jobId, mergeCommit: "0042bbeb5d1e" as CommitSha, reason: "The fix breaks rounding." },
+			{ type: "PlaceBid", jobId, price: usd("300.00"), eta: hours(24), agent: "ts-bugfixer" as AgentId, pitch: "test" },
+			{ type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12, budget: usd("400.00"), deliveryEndsAt: instant("2026-10-27T12:00:00Z") },
+		];
+		for (const command of commands) {
+			assert.deepEqual(await built.service.execute(platform, parseRequestKey(randomUUID()), command), { kind: "DENIED", reason: "NOT_OWNER" }, command.type);
+		}
+		assert.deepEqual(await built.store.readJob(jobId), before);
+	} finally { built.close(); }
+});
+
+test("a job read keeps the client and operator rules: the owner reads it, and no client from another world does", async () => {
+	const built = await serviceWith([paidRow("v_a" as VisitorId)]);
+	try {
+		const jobId = parseJobId("job_ledger_paid");
+		const owner = await built.service.query(maya, { type: "Job", jobId });
+		if (owner.kind !== "JOB") throw new Error("Expected the owner to read the job");
+		assert.equal(owner.job.client, "maya-client");
+		const otherTenant: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: "v_b" as VisitorId };
+		const lena: Actor = { role: "CLIENT", clientId: "lena-client" as ClientId, tenant: "v_c" as VisitorId };
+		for (const actor of [otherTenant, lena, devon]) {
+			assert.deepEqual(await built.service.query(actor, { type: "Job", jobId }), { kind: "DENIED", reason: "NOT_OWNER" });
+		}
+	} finally { built.close(); }
+});
+
+test("the job read names PayPal's dispute stage, the evidence it asks for, and the evidence type Acquit files", async () => {
+	const built = await serviceWith([disputedRow("job_ledger_disputed", ["PROOF_OF_REFUND", "OTHER"]), disputedRow("job_ledger_refund_only", ["PROOF_OF_REFUND"])]);
+	try {
+		const read = await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_disputed") });
+		if (read.kind !== "JOB") throw new Error("Expected the platform to read the disputed job");
+		assert.deepEqual(read.job.providerDispute, { id: "PP-R-PPB-10194003", status: "UNDER_REVIEW", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+			amount: 2100, openedAt: now, outcome: null, answer: "EVIDENCE", answerState: { state: "FILED" }, stage: "CHARGEBACK",
+			requestedEvidence: ["PROOF_OF_REFUND", "OTHER"], evidenceType: "OTHER", unconfirmed: false, simulated: false });
+		const refundOnly = await built.service.query(platform, { type: "Job", jobId: parseJobId("job_ledger_refund_only") });
+		if (refundOnly.kind !== "JOB") throw new Error("Expected the platform to read the refund-only job");
+		// PayPal asked only for refund proof, which Acquit cannot give, so the answer files no evidence type.
+		assert.deepEqual(refundOnly.job.providerDispute?.requestedEvidence, ["PROOF_OF_REFUND"]);
+		assert.equal(refundOnly.job.providerDispute?.evidenceType, null);
 	} finally { built.close(); }
 });

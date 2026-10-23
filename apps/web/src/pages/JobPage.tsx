@@ -7,7 +7,7 @@ import { agentLine, allBids, bidder, houseName, lockedBid, payeeBid, proofLine }
 import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
 import { escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
-import { bidStatusWord, runFailureWord } from "../job-status";
+import { bidStatusWord, payoutHeldBy, runFailureWord } from "../job-status";
 import { canDeliver, nextStep, timelineEvents, verifierLine, type TimelineJob, type Viewer } from "../job-timeline";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
@@ -40,6 +40,9 @@ export function JobPage({ id }: { id: string }) {
   const approve = useIntent();
   const dispute = useIntent();
   const isClient = user.role === "CLIENT";
+  // The platform reads one job and holds no action: it sees the job read-only, and its home is the dashboards.
+  const platform = user.role === "PLATFORM";
+  const home = isClient ? "/" : platform ? "/studio" : "/operator";
   const fundingRetry = location.search.get("funding") === "retry";
 
   const load = useCallback(async () => {
@@ -74,7 +77,7 @@ export function JobPage({ id }: { id: string }) {
     if (checkout && job?.approveUrl) window.location.assign(job.approveUrl);
   }, [checkout, job?.approveUrl]);
 
-  if (missing && !job) return <NotFound title="Job not found" action={{ to: user.role === "CLIENT" ? "/" : "/operator", label: "Back to jobs" }} />;
+  if (missing && !job) return <NotFound title="Job not found" action={{ to: home, label: "Back to jobs" }} />;
   if (error && !job) {
     return (
       <div className="card pad">
@@ -101,8 +104,10 @@ export function JobPage({ id }: { id: string }) {
   // Before Accept the bids are the page; from Accept on the ledger spine leads instead.
   const bidding = job.status === "OPEN" && job.phase === "BIDDING" && checkout === null;
   const canCancel = isClient && bidding;
-  const mergeCommit = job.viewerCanApprove && !job.dispute ? job.mergeCommit : null;
-  const disputeCommit = job.viewerCanDispute && !job.dispute ? job.mergeCommit : null;
+  const mergeCommit = !platform && job.viewerCanApprove && !job.dispute ? job.mergeCommit : null;
+  const disputeCommit = !platform && job.viewerCanDispute && !job.dispute ? job.mergeCommit : null;
+  // While PayPal holds the payout, approving only records the release, and the page says so beside every approval.
+  const disputeHolds = payoutHeldBy(job.providerDispute);
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
   const controls = demoControls(job, { user, visitor });
@@ -164,7 +169,7 @@ export function JobPage({ id }: { id: string }) {
   return (
     <>
       <div className="crumbs">
-        <Link to={isClient ? "/" : "/operator"}>{isClient ? "Jobs" : "Open jobs"}</Link> / <b>{job.title}</b>
+        <Link to={home}>{isClient ? "Jobs" : platform ? "Dashboards" : "Open jobs"}</Link> / <b>{job.title}</b>
       </div>
       <div className="head">
         <div>
@@ -199,6 +204,7 @@ export function JobPage({ id }: { id: string }) {
           </button>
         )}
       </div>
+      {platform && <p className="muted">Viewing as the platform. Read only.</p>}
       <p className="next-step">
         <span className="eyebrow">What happens next</span> <b>{nextStep(timeline, viewer)}</b>
       </p>
@@ -236,7 +242,9 @@ export function JobPage({ id }: { id: string }) {
                   </>
                 )}
                 {job.reviewEndsAt &&
-                  (mergeCommit || disputeCommit ? (
+                  (disputeHolds ? (
+                    <>PayPal holds the payout while it reviews the buyer's dispute, so approving only records the release.</>
+                  ) : mergeCommit || disputeCommit ? (
                     <>If you do nothing, Acquit releases the payment at {utc(job.reviewEndsAt)}.</>
                   ) : (
                     <>
@@ -282,6 +290,7 @@ export function JobPage({ id }: { id: string }) {
                         Open dispute
                       </button>
                     )}
+                    {mergeCommit && disputeHolds && <small className="muted">Approving records the release; the payout waits on PayPal.</small>}
                     {mergeCommit && (
                       <button className="btn green" disabled={approve.busy} onClick={() => setConfirmApprove(true)}>
                         Approve and release
@@ -295,7 +304,7 @@ export function JobPage({ id }: { id: string }) {
           {approve.error && !confirmApprove && <div className="alert">{approve.error}</div>}
           {dispute.error && !disputing && <div className="alert">{dispute.error}</div>}
           {placed?.jobId === job.id && <BidConfirmation placed={placed} onDismiss={() => setPlaced(null)} />}
-          {!isClient && bidding && !job.bids.operators.some((b) => b.handle === user.handle) && (
+          {!isClient && !platform && bidding && !job.bids.operators.some((b) => b.handle === user.handle) && (
             <div className="card pad">
               <h2>Place a bid</h2>
               <BidForm
@@ -347,8 +356,15 @@ export function JobPage({ id }: { id: string }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Approve and release {held ? usd(held.cents) : "the escrow"}?</h3>
             <p>
-              PayPal releases the escrow: {locked ? <b>{locked.handle}</b> : "the operator"} is paid for the job and the rest covers the
-              fees. Acquit merges commit <IdChip value={mergeCommit} />
+              {disputeHolds ? (
+                <>PayPal holds the payout while it reviews the buyer's dispute. Approving records the release, and the payout waits until PayPal decides. </>
+              ) : (
+                <>
+                  PayPal releases the escrow: {locked ? <b>{locked.handle}</b> : "the operator"} is paid for the job and the rest covers the
+                  fees.{" "}
+                </>
+              )}
+              Acquit merges commit <IdChip value={mergeCommit} />
               {job.pullRequest !== null && <> (pull request #{job.pullRequest})</>}. This cannot be undone.
             </p>
             <div className="rows">
