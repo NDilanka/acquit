@@ -205,6 +205,22 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .choice input { margin-top: 3px; }
 .choice small { display: block; color: var(--muted); }
 
+/* The print demo: a farm's qualification, its run, and the judge's verdict. Each list wraps inside the column, down to 390 px. */
+.print-run { display: grid; gap: 12px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.print-run > p { margin: 0; }
+/* The select's longest option is wider than a phone, so the row takes the column's width and the select shrinks inside it. */
+.print-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; min-width: 0; max-width: 100%; }
+.print-controls select { flex: 1 1 220px; min-width: 0; max-width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: #fff; color: var(--ink); }
+.print-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; min-width: 0; }
+.print-list li { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfaf7; min-width: 0; overflow-wrap: anywhere; }
+.print-list small { color: var(--muted); }
+.print-digest { font-size: 12px; }
+/* A digest has no break points, so a value may wrap anywhere, or its key-value row is wider than a phone. */
+.print-run dd { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .print-controls > * { flex: 1 1 100%; }
+}
+
 @media (max-width: 480px) {
   .wrap { padding: 20px 16px 96px; }
   .demobar .wrap { padding: 8px 16px; }

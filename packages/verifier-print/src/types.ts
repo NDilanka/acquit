@@ -152,6 +152,7 @@ export type PrintRejectReason =
 	| { readonly kind: "COUPON_IOU_LOW"; readonly iou: number }
 	| { readonly kind: "COUPON_MARKER_MISMATCH"; readonly expected: number; readonly found: number }
 	| { readonly kind: "PHOTO_UNREADABLE"; readonly layer: number }
+	| { readonly kind: "PHOTO_MISSING"; readonly layer: number }
 	| { readonly kind: "GEOMETRY_MISMATCH"; readonly layer: number; readonly iou: number }
 	| { readonly kind: "PHOTO_REUSED"; readonly layer: number; readonly distance: number }
 	| { readonly kind: "TELEMETRY_MISSING" }

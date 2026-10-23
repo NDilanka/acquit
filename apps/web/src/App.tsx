@@ -12,6 +12,7 @@ import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { VerifiersPage } from "./pages/Verifiers";
+import { PrintDemoPage } from "./pages/PrintDemo";
 import { OperatorHome } from "./pages/OperatorHome";
 import { CliLogin } from "./pages/CliLogin";
 
@@ -59,14 +60,20 @@ export function App() {
   };
 
   // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
-  // The verifier registry is public for the same reason.
+  // The verifier registry and the print demo are public for the same reason. A print run starts its own demo.
   const route = match(location.path);
-  if (route.name === "receipt" || route.name === "verifiers") {
+  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
     return (
       <>
         <TopBar session={session} onSignOut={signOut} />
         <main className="wrap">
-          {route.name === "receipt" ? <PublicReceiptPage receiptId={route.id} /> : <VerifiersPage />}
+          {route.name === "receipt" ? (
+            <PublicReceiptPage receiptId={route.id} />
+          ) : route.name === "verifiers" ? (
+            <VerifiersPage />
+          ) : (
+            <PrintDemoPage session={session} onSignedIn={(s) => { setError(null); setSession(s); }} />
+          )}
         </main>
       </>
     );
