@@ -7,7 +7,7 @@ import test from "node:test";
 import { instant } from "../src/ids.ts";
 import type { CaptureId, MerchantId, OrderId, PayoutBatchId, PayoutItemId, RefundId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
-import { authAssertion, createPayPal, DISPUTE_ACCESS_REFUSED, disputeOfVerifiedDelivery, houseCredentialsFrom, parseCapture, parseCaptureRefundState, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope } from "../src/paypal.ts";
+import { authAssertion, createPayPal, DISPUTE_ACCESS_REFUSED, disputeOfVerifiedDelivery, evidenceTypeFor, houseCredentialsFrom, parseCapture, parseCaptureRefundState, parseDispute, parseReferencedPayout, parseRefund, parseRefundedCapture, parseReimbursement, parseWebhookEnvelope, refusalWording } from "../src/paypal.ts";
 import type { Bps, DisputeId, PayPalCall } from "../src/paypal.ts";
 
 const devon = "D3SSQU3ZEN7R2" as MerchantId;
@@ -742,4 +742,58 @@ test("a verified dispute delivery names the answer links it offers, and an answe
 	assert.deepEqual(standIn?.offers, ["send_message", "accept_claim"]);
 	const unnamed = disputeOfVerifiedDelivery(deliveryRaw(verifiedBody({ links: undefined })), "PP-R-PPB-10194003", received);
 	assert.equal(unnamed !== null && "offers" in unnamed, false, "a body with no links names no offers");
+});
+
+test("provide-evidence sends the evidence type the answer names: OTHER as well as PROOF_OF_FULFILLMENT", async () => {
+	const original = globalThis.fetch;
+	const wire = recordedWire(() => new Response(null, { status: 204 }));
+	try {
+		const notes = "Receipt rcpt_1 (receipt id) records job job_1 as delivered on attempt 1 (attemptsUsed).";
+		await createPayPal(config).dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: "PP-D-9", notes, payee: devon, evidenceType: "OTHER" },
+			"aq-dispute-evidence-other");
+		const [call] = wire.calls;
+		if (!(call.body instanceof FormData)) throw new Error("Expected the multipart body");
+		assert.deepEqual(JSON.parse(await (call.body.get("input") as Blob).text()), { evidences: [{ evidence_type: "OTHER", notes, documents: [] }] });
+	} finally { globalThis.fetch = original; }
+});
+
+test("a dispute answer PayPal refuses as an invalid evidence type keeps the issue it names, and a 400 that names none keeps the status", async () => {
+	const original = globalThis.fetch;
+	try {
+		const issued = recordedWire(() => Response.json({ name: "INVALID_REQUEST", details: [{ issue: "EVIDENCE_TYPE_IS_NOT_ALLOWED" }] }, { status: 400 }));
+		assert.deepEqual(await createPayPal(config).dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: sandboxDispute, notes: "n", payee: devon,
+			evidenceType: "PROOF_OF_FULFILLMENT" }, "aq-dispute-evidence"), { kind: "PERMANENT_FAILURE", reason: "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED" });
+		assert.equal(issued.calls.length, 1);
+		recordedWire(() => Response.json({ name: "INVALID_REQUEST" }, { status: 400 }));
+		assert.deepEqual(await createPayPal(config).dispatch({ kind: "DISPUTE_EVIDENCE", disputeId: sandboxDispute, notes: "n", payee: devon },
+			"aq-dispute-evidence"), { kind: "PERMANENT_FAILURE", reason: "PAYPAL_HTTP_400" });
+	} finally { globalThis.fetch = original; }
+});
+
+test("a dispute read names the evidence types PayPal asks the seller for, and names none when it asks for none", () => {
+	const captureId = "1WL969806P110802T" as CaptureId;
+	const asked = parseDispute(verifiedBody({ dispute_life_cycle_stage: "CHARGEBACK", status: "WAITING_FOR_SELLER_RESPONSE",
+		evidences: [{ evidence_type: "PROOF_OF_REFUND", source: "REQUESTED_FROM_SELLER" }, { evidence_type: "OTHER", source: "REQUESTED_FROM_SELLER" }] }),
+		captureId);
+	assert.deepEqual(asked.requestedEvidence, ["PROOF_OF_REFUND", "OTHER"]);
+	assert.equal(asked.stage, "CHARGEBACK");
+	// Entries the seller submitted, or no entries at all, ask the seller for nothing.
+	const submitted = parseDispute(verifiedBody({ evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", source: "SUBMITTED_BY_SELLER" }] }), captureId);
+	assert.equal("requestedEvidence" in submitted, false);
+	assert.equal("requestedEvidence" in parseDispute(verifiedBody(), captureId), false);
+});
+
+test("the evidence type an answer files is the one PayPal asks for: PROOF_OF_FULFILLMENT, else OTHER, and none it cannot honestly give", () => {
+	assert.equal(evidenceTypeFor(undefined), "PROOF_OF_FULFILLMENT");
+	assert.equal(evidenceTypeFor([]), "PROOF_OF_FULFILLMENT");
+	assert.equal(evidenceTypeFor(["PROOF_OF_REFUND", "OTHER"]), "OTHER");
+	assert.equal(evidenceTypeFor(["OTHER", "PROOF_OF_FULFILLMENT"]), "PROOF_OF_FULFILLMENT");
+	assert.equal(evidenceTypeFor(["PROOF_OF_REFUND"]), null);
+});
+
+test("a refused answer reads in plain words, and only the record keeps PayPal's code", () => {
+	assert.equal(refusalWording("PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED"), "PayPal refused the evidence type");
+	assert.equal(refusalWording("PAYPAL_HTTP_400"), "PayPal refused the answer as invalid");
+	assert.equal(refusalWording("PAYPAL_422_EVIDENCE_NOT_ACCEPTED"), "PayPal refused the answer");
+	assert.equal(refusalWording(DISPUTE_ACCESS_REFUSED), DISPUTE_ACCESS_REFUSED);
 });

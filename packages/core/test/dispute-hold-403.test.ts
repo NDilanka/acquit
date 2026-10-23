@@ -6,14 +6,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Actor } from "../src/acquit.ts";
-import { ingestPayPalWebhook, providerRequestId, runOutboxOnce } from "../src/effects.ts";
+import { ingestPayPalWebhook, operationKey, providerRequestId, runOutboxOnce } from "../src/effects.ts";
 import type { OperationKey, Ports } from "../src/effects.ts";
 import { hours, instant, parseBidId, parseJobId } from "../src/ids.ts";
 import type { AgentId, CaptureId, ClientId, CommitSha, Digest, MerchantId, OperatorId, OrderId, Version } from "../src/ids.ts";
 import { applyJobCommand, releaseHeld, TERMS, wakeAt } from "../src/job.ts";
 import type { JobRow, ProviderDispute } from "../src/job.ts";
 import { commercialSplit, reduceLedger, usd } from "../src/ledger.ts";
-import { createPayPal, DISPUTE_ACCESS_REFUSED, parseDispute, parseWebhookEnvelope, quote } from "../src/paypal.ts";
+import { createPayPal, DISPUTE_ACCESS_REFUSED, NO_HONEST_EVIDENCE_TYPE, parseDispute, parseWebhookEnvelope, quote } from "../src/paypal.ts";
 import type { Bps, PayPalConfig } from "../src/paypal.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import { SqliteStore } from "../src/store.ts";
@@ -372,7 +372,7 @@ const liveConfig: PayPalConfig = { webOrigin: "http://localhost:5243", apiBase: 
 	secret: "platform-secret", webhookId: "", partnerMerchant: platformMerchant, feeModel: model,
 	house: { merchant, clientId: HOUSE_CLIENT, secret: "house-secret" } };
 
-/** One call the real client sent, as the fake fetch saw it. */
+/** One call the real client sent, as the fake fetch saw it. A multipart answer's body is its JSON input part. */
 type SentCall = { readonly method: string; readonly path: string; readonly lane: "PLATFORM" | "HOUSE"; readonly assertion: boolean;
 	readonly requestId: string | null; readonly body: string };
 
@@ -387,9 +387,10 @@ async function withFakePayPal(answer: (call: SentCall) => Response, body: (calls
 			const clientId = Buffer.from((headers.Authorization ?? "").replace("Basic ", ""), "base64").toString().split(":")[0];
 			return Response.json({ access_token: clientId === HOUSE_CLIENT ? "house-token" : "platform-token", expires_in: 300 });
 		}
+		const form = init?.body instanceof FormData ? await (init.body.get("input") as Blob).text() : "";
 		const call: SentCall = { method: init?.method ?? "GET", path: url.pathname, lane: headers.Authorization === "Bearer house-token" ? "HOUSE" : "PLATFORM",
 			assertion: headers["PayPal-Auth-Assertion"] !== undefined, requestId: headers["PayPal-Request-Id"] ?? null,
-			body: typeof init?.body === "string" ? init.body : "" };
+			body: typeof init?.body === "string" ? init.body : form };
 		calls.push(call);
 		return answer(call);
 	}) as typeof fetch;
@@ -424,7 +425,8 @@ function liveRow(): JobRow {
 }
 
 /** The queued outbox rows of one kind, as the drain reads them: each row's key and its effect. */
-type OutboxEffect = { readonly kind: string; readonly requeued?: true; readonly stage?: string; readonly message?: string };
+type OutboxEffect = { readonly kind: string; readonly requeued?: true; readonly stage?: string; readonly message?: string; readonly evidenceType?: string;
+	readonly reason?: string; readonly detail?: string };
 const outboxRowsOf = (store: SqliteStore, kind: string): { readonly key: OperationKey; readonly effect: OutboxEffect }[] =>
 	store.db.prepare("SELECT key, json FROM outbox").all()
 		.map(row => ({ key: String((row as { key: string }).key) as OperationKey,
@@ -531,6 +533,78 @@ test("a re-queued answer PayPal refuses again is not re-queued, and an identical
 	}, verifiedRow());
 });
 
+/** The row the live chargeback delivery found: the evidence answer for the escalated stage refused as the invalid type PayPal named. */
+function liveChargebackRow(): JobRow {
+	const dispute: ProviderDispute = { id: disputeId, status: "WAITING_FOR_SELLER_RESPONSE", reason: "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+		amount: usd("21.00"), openedAt: instant("2026-10-22T10:05:00Z"), updatedAt: instant("2026-10-22T11:00:00Z"), stage: "CHARGEBACK",
+		offers: ["provide_evidence", "accept_claim"], answer: "EVIDENCE", answerRound: `${disputeId}:1:CHARGEBACK`,
+		answerState: { state: "REFUSED", reason: "PAYPAL_HTTP_400" } };
+	return { ...verifiedRow(), providerDispute: dispute };
+}
+
+/** A chargeback read as PayPal sends it at the stage it escalated to, asking the seller for the evidence types given. */
+const chargebackRead = (types: readonly string[]) => ({ ...offering({ updateTime: "2026-10-22T11:00:00Z", status: "WAITING_FOR_SELLER_RESPONSE" },
+	["provide_evidence", "accept_claim"]), dispute_life_cycle_stage: "CHARGEBACK",
+	evidences: types.map(evidence_type => ({ evidence_type, source: "REQUESTED_FROM_SELLER" })) });
+
+test("a live evidence answer PayPal refused for its type is re-sent once as the type the read asks for, and an identical resend sends nothing", async () => {
+	const body = chargebackRead(["PROOF_OF_REFUND", "OTHER"]);
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			assert.equal((await deliver(ports, "WH-CHG-1", UPDATED, body)).status, 202);
+			assert.equal(outcomeOf(store, "WH-CHG-1"), "verified, applied");
+			const requeued = outboxRowsOf(store, "DISPUTE_EVIDENCE").filter(row => row.effect.requeued === true);
+			assert.equal(requeued.length, 1, "the refused answer is re-queued once");
+			const sent = requeued[0];
+			if (sent === undefined) throw new Error("expected the re-queued evidence");
+			assert.equal(sent.effect.evidenceType, "OTHER");
+			assert.equal(sent.effect.stage, "CHARGEBACK");
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			assert.equal(await runOutboxOnce(ports, sent.key), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			// The answer goes to the provide-evidence path with the type PayPal named, under the requeued effect's own request id.
+			const post = calls.filter(call => call.method === "POST");
+			assert.deepEqual(post.map(call => ({ path: call.path, lane: call.lane, requestId: call.requestId })),
+				[{ path: `${disputeUrl}/provide-evidence`, lane: "HOUSE", requestId: providerRequestId(sent.key) }]);
+			assert.equal((JSON.parse(post[0]?.body ?? "{}") as { evidences: { evidence_type: string }[] }).evidences[0]?.evidence_type, "OTHER");
+			// The identical resend is the same read: nothing is queued, PayPal is not asked again, and the hold stands.
+			assert.equal((await deliver(ports, "WH-CHG-2", UPDATED, body)).status, 202);
+			assert.equal(outboxRowsOf(store, "DISPUTE_EVIDENCE").length, 1);
+			assert.equal(calls.filter(call => call.method === "POST").length, 1);
+			assert.equal(releaseHeld(await jobOf(store)), true);
+		});
+	}, liveChargebackRow());
+});
+
+test("a live evidence answer PayPal refused for its type is not re-sent when the read asks only for PROOF_OF_REFUND, and the refusal stands", async () => {
+	const body = chargebackRead(["PROOF_OF_REFUND"]);
+	await withVerifiedJob(async store => {
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			assert.equal((await deliver(livePorts(store), "WH-CHG-REFUND", UPDATED, body)).status, 202);
+			assert.equal(outboxRowsOf(store, "DISPUTE_EVIDENCE").length, 0, "no evidence is queued");
+			assert.equal(calls.filter(call => call.method === "POST").length, 0, "PayPal is not sent an answer");
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: "PAYPAL_HTTP_400" });
+			assert.equal(releaseHeld(await jobOf(store)), true);
+		});
+	}, liveChargebackRow());
+});
+
+test("a first dispute read that asks only for PROOF_OF_REFUND files no evidence, tells a person, and holds the payment", async () => {
+	const body = chargebackRead(["PROOF_OF_REFUND"]);
+	await withVerifiedJob(async store => {
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			assert.equal((await deliver(livePorts(store), "WH-CHG-FIRST", CREATED, body)).status, 202);
+			assert.equal(outboxRowsOf(store, "DISPUTE_EVIDENCE").length, 0);
+			assert.equal(calls.filter(call => call.method === "POST").length, 0);
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+			const alerts = queuedEffectsOf(store).filter(effect => effect.reason === "PROVIDER_DISPUTE_ANSWER_REFUSED");
+			assert.deepEqual(alerts.map(effect => effect.detail), [`${NO_HONEST_EVIDENCE_TYPE}. The payment stays held.`]);
+			assert.equal(releaseHeld(await jobOf(store)), true);
+		});
+	});
+});
+
 test("a dispute whose capture the job's stored capture does not match is never read with House's own app", async () => {
 	const row = verifiedRow();
 	if (row.state.status !== "VERIFIED") throw new Error(`expected VERIFIED, got ${row.state.status}`);
@@ -561,4 +635,87 @@ test("a dispute on a job paid to a merchant other than House is read with the pl
 			assert.equal((await jobOf(store)).providerDispute?.unconfirmed, true);
 		});
 	});
+});
+
+/** The first read of the dispute at INQUIRY: it offers the evidence to provide, and asks the seller for no evidence type. */
+const inquiryRead = () => offering({ updateTime: "2026-10-22T10:30:00Z", status: "WAITING_FOR_SELLER_RESPONSE" }, ["provide_evidence", "accept_claim"]);
+
+test("an evidence answer queued at INQUIRY is never posted once the dispute escalates to a read that asks only for PROOF_OF_REFUND", async () => {
+	let read: object = inquiryRead();
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		await withFakePayPal(call => call.method === "GET" ? Response.json(read) : new Response(null, { status: 204 }), async calls => {
+			assert.equal((await deliver(ports, "WH-INQ-OBS", CREATED, read)).status, 202);
+			const [queued] = outboxRowsOf(store, "DISPUTE_EVIDENCE");
+			if (queued === undefined) throw new Error("expected the inquiry's evidence to be queued");
+			assert.equal(queued.effect.stage, undefined);
+			// The escalation lands before the queued evidence is drained, so the round the row holds is the chargeback's.
+			read = chargebackRead(["PROOF_OF_REFUND"]);
+			assert.equal((await deliver(ports, "WH-CHG-OBS", UPDATED, read)).status, 202);
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+			// The inquiry's answer is delivered as done with no call, and the refusal a person reads stands.
+			assert.equal(await runOutboxOnce(ports, queued.key), "WORKED");
+			assert.deepEqual(calls.filter(call => call.method === "POST"), []);
+			assert.deepEqual(await answerStateOf(store), { state: "REFUSED", reason: NO_HONEST_EVIDENCE_TYPE });
+			const alerts = queuedEffectsOf(store).filter(effect => effect.reason === "PROVIDER_DISPUTE_ANSWER_REFUSED");
+			assert.deepEqual(alerts.map(effect => effect.detail), [`${NO_HONEST_EVIDENCE_TYPE}. The payment stays held.`]);
+			assert.equal(releaseHeld(await jobOf(store)), true);
+		});
+	});
+});
+
+test("an escalated evidence answer that PayPal asks for as OTHER is posted once, as OTHER, under its own request id, and the stale inquiry answer is not", async () => {
+	let read: object = inquiryRead();
+	await withVerifiedJob(async store => {
+		const ports = livePorts(store);
+		await withFakePayPal(call => call.method === "GET" ? Response.json(read) : new Response(null, { status: 204 }), async calls => {
+			assert.equal((await deliver(ports, "WH-INQ-OK", CREATED, read)).status, 202);
+			read = chargebackRead(["OTHER"]);
+			assert.equal((await deliver(ports, "WH-CHG-OK", UPDATED, read)).status, 202);
+			const current = outboxRowsOf(store, "DISPUTE_EVIDENCE").filter(row => row.effect.stage === "CHARGEBACK");
+			const sent = current[0];
+			if (current.length !== 1 || sent === undefined) throw new Error("expected one escalated evidence answer");
+			assert.equal(sent.effect.evidenceType, "OTHER");
+			assert.equal(await runOutboxOnce(ports, sent.key), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			const post = calls.filter(call => call.method === "POST");
+			assert.deepEqual(post.map(call => ({ path: call.path, lane: call.lane, requestId: call.requestId })),
+				[{ path: `${disputeUrl}/provide-evidence`, lane: "HOUSE", requestId: providerRequestId(sent.key) }]);
+			assert.equal((JSON.parse(post[0]?.body ?? "{}") as { evidences: { evidence_type: string }[] }).evidences[0]?.evidence_type, "OTHER");
+		});
+	});
+});
+
+test("a live chargeback read whose delivery key was already applied re-sends the refused evidence once, as OTHER, under a new request id", async () => {
+	const body = chargebackRead(["PROOF_OF_REFUND", "OTHER"]);
+	// The refused answer was filed under the round the dispute escalated to, and the type it then named was PROOF_OF_FULFILLMENT.
+	const refused = providerRequestId(operationKey({ kind: "DISPUTE_EVIDENCE", jobId, disputeId, payee: merchant, notes: "n", attempt: 1,
+		stage: "CHARGEBACK", simulated: false }));
+	await withVerifiedJob(async store => {
+		// The read's delivery key was applied when the refusal was recorded, so this read repeats one already applied.
+		store.db.prepare("INSERT INTO deliveries VALUES (?)").run(`webhook:ProviderDispute:${jobId}:${disputeId}:WAITING_FOR_SELLER_RESPONSE:2026-10-22T11:00:00.000Z:NO_OUTCOME`);
+		const ports = livePorts(store);
+		await withFakePayPal(livePayPal(body, 204), async calls => {
+			assert.equal((await deliver(ports, "WH-CHG-LIVE", UPDATED, body)).status, 202);
+			assert.equal(outcomeOf(store, "WH-CHG-LIVE"), "verified, applied");
+			assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM deliveries").get() as { n: number }).n, 1, "the re-queue writes no delivery key");
+			const requeued = outboxRowsOf(store, "DISPUTE_EVIDENCE").filter(row => row.effect.requeued === true);
+			const sent = requeued[0];
+			if (requeued.length !== 1 || sent === undefined) throw new Error("expected one re-queued evidence answer");
+			assert.equal(sent.effect.evidenceType, "OTHER");
+			assert.equal(sent.effect.stage, "CHARGEBACK");
+			assert.notEqual(providerRequestId(sent.key), refused, "the re-sent answer is its own request");
+			assert.deepEqual(await answerStateOf(store), { state: "QUEUED" });
+			assert.equal(await runOutboxOnce(ports, sent.key), "WORKED");
+			assert.deepEqual(await answerStateOf(store), { state: "FILED" });
+			const post = calls.filter(call => call.method === "POST");
+			assert.deepEqual(post.map(call => ({ path: call.path, lane: call.lane, requestId: call.requestId })),
+				[{ path: `${disputeUrl}/provide-evidence`, lane: "HOUSE", requestId: providerRequestId(sent.key) }]);
+			assert.equal((JSON.parse(post[0]?.body ?? "{}") as { evidences: { evidence_type: string }[] }).evidences[0]?.evidence_type, "OTHER");
+			// The identical resend queues nothing and PayPal is not asked again.
+			assert.equal((await deliver(ports, "WH-CHG-LIVE-2", UPDATED, body)).status, 202);
+			assert.equal(outboxRowsOf(store, "DISPUTE_EVIDENCE").length, 1);
+			assert.equal(calls.filter(call => call.method === "POST").length, 1);
+		});
+	}, liveChargebackRow());
 });

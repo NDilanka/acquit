@@ -100,8 +100,11 @@ export type PayPalCall =
 	| { readonly kind: "REFUND"; readonly captureId: CaptureId; readonly payee: MerchantId; readonly amount: UsdCents }
 	/** From the platform account to the operator's merchant. No auth assertion: the platform pays its own balance. */
 	| { readonly kind: "REIMBURSE"; readonly merchant: MerchantId; readonly amount: UsdCents }
-	/** Disputes v1 provide-evidence on the capture's dispute. The payee names the merchant whose capture is disputed. */
-	| { readonly kind: "DISPUTE_EVIDENCE"; readonly disputeId: string; readonly notes: string; readonly payee: MerchantId }
+	/**
+	 * Disputes v1 provide-evidence on the capture's dispute. The payee names the merchant whose capture is disputed. `evidenceType` is
+	 * absent for PROOF_OF_FULFILLMENT, the type every answer carried before the buyer's requested types were read.
+	 */
+	| { readonly kind: "DISPUTE_EVIDENCE"; readonly disputeId: string; readonly notes: string; readonly payee: MerchantId; readonly evidenceType?: EvidenceType }
 	/** Disputes v1 accept-claim on the capture's dispute. The payee names the merchant whose capture is disputed. */
 	| { readonly kind: "DISPUTE_ACCEPT"; readonly disputeId: string; readonly note: string; readonly payee: MerchantId }
 	/** Disputes v1 send-message on the capture's dispute, while the dispute is at INQUIRY. The payee names the merchant whose capture is disputed. */
@@ -110,6 +113,9 @@ export type PayPalCall =
 
 /** The answer links a dispute read or a signed body offers. Only these three are the links Acquit's selections use. */
 export type DisputeOffer = "provide_evidence" | "send_message" | "accept_claim";
+
+/** The evidence types Acquit can honestly file. PROOF_OF_REFUND is never one: Acquit did not refund the buyer. */
+export type EvidenceType = "PROOF_OF_FULFILLMENT" | "OTHER";
 
 export type PayPalObservation =
 	| { readonly kind: "ORDER_CREATED"; readonly orderId: OrderId; readonly approveUrl: string }
@@ -126,10 +132,11 @@ export type PayPalObservation =
 	 * `amount` is null only on a signed body whose amount could not be read: it still holds the release, and settles nothing.
 	 * `fromVerifiedBody` marks a signed delivery that stood in for a read PayPal refused.
 	 * `stage` is PayPal's dispute_life_cycle_stage, and `offers` the answer links it names: absent when the body names no links at all.
+	 * `requestedEvidence` is the evidence types PayPal asks the seller for, absent when it asks for none.
 	 */
 	| { readonly kind: "DISPUTE"; readonly disputeId: DisputeId; readonly captureId: CaptureId; readonly status: string; readonly reason: string;
 		readonly amount: UsdCents | null; readonly openedAt: Instant; readonly updatedAt?: Instant; readonly outcome?: string; readonly simulated?: true;
-		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[] }
+		readonly fromVerifiedBody?: true; readonly stage?: string; readonly offers?: readonly DisputeOffer[]; readonly requestedEvidence?: readonly string[] }
 	/** PayPal took the answer. `note` names what PayPal already held when it answered 422, and is null on a 2xx. */
 	| { readonly kind: "DISPUTE_ANSWERED"; readonly disputeId: string; readonly answer: "EVIDENCE" | "MESSAGE" | "ACCEPT"; readonly note: string | null };
 
@@ -516,17 +523,18 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 	 * The provide-evidence body. Disputes v1 takes it as multipart with the JSON in an `input` part. The notes are the
 	 * whole evidence here: no document is uploaded, so `documents` is empty.
 	 */
-	function evidenceForm(notes: string): FormData {
+	function evidenceForm(notes: string, evidenceType: EvidenceType = "PROOF_OF_FULFILLMENT"): FormData {
 		const form = new FormData();
-		form.append("input", new Blob([JSON.stringify({ evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", notes, documents: [] }] })],
+		form.append("input", new Blob([JSON.stringify({ evidences: [{ evidence_type: evidenceType, notes, documents: [] }] })],
 			{ type: "application/json" }), "input.json");
 		return form;
 	}
 	/**
 	 * One dispute answer (Disputes v1). A 422 whose issue says PayPal already holds an answer, or the dispute has left the
 	 * state that takes one, confirms with the note and is never retried. Any other 422 is a refusal for a person: it is a
-	 * PERMANENT_FAILURE, not a retry. Every other refusal or failure is left to the caller's guarded wrapper, which makes a
-	 * non-retryable 4xx permanent and leaves 5xx, 401, 408, 409, and 429 unknown.
+	 * PERMANENT_FAILURE, not a retry. A 403 is the platform's missing dispute access. Any other non-retryable 4xx keeps the issue
+	 * PayPal names (PAYPAL_<status>_<ISSUE>), or the status alone when the body names none. Every other failure is left to the
+	 * caller's guarded wrapper, which leaves 5xx, 401, 408, 409, and 429 unknown.
 	 */
 	async function disputeAnswerOutcome(answer: "EVIDENCE" | "MESSAGE" | "ACCEPT", disputeId: string, payee: MerchantId, path: string, body: unknown,
 		requestId: string): Promise<RemoteOutcome> {
@@ -543,6 +551,11 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			}
 			// The platform holds no dispute permission for this merchant: a person grants it, and no retry changes that.
 			if (error instanceof ProviderError && error.status === 403) return { kind: "PERMANENT_FAILURE", reason: DISPUTE_ACCESS_REFUSED };
+			// Any other refusal the guarded wrapper would make permanent keeps the issue PayPal names, so a person reads why it refused.
+			if (error instanceof ProviderError && error.status >= 400 && error.status < 500 && ![401, 408, 409, 429].includes(error.status)) {
+				const issue = issueOf(error.body);
+				return { kind: "PERMANENT_FAILURE", reason: issue === null ? `PAYPAL_HTTP_${error.status}` : `PAYPAL_${error.status}_${issue}` };
+			}
 			throw error;
 		}
 	}
@@ -590,7 +603,7 @@ export function createPayPal(config: PayPalConfig, clock: Clock = { now: () => i
 			if (call.kind === "REFUND") return refundOutcome(call, requestId);
 			if (call.kind === "REIMBURSE") return reimburseOutcome(call, requestId);
 			if (call.kind === "DISPUTE_EVIDENCE") return disputeAnswerOutcome("EVIDENCE", call.disputeId, call.payee,
-				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/provide-evidence`, evidenceForm(call.notes), requestId);
+				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/provide-evidence`, evidenceForm(call.notes, call.evidenceType), requestId);
 			if (call.kind === "DISPUTE_ACCEPT") return disputeAnswerOutcome("ACCEPT", call.disputeId, call.payee,
 				`/v1/customer/disputes/${encodeURIComponent(call.disputeId)}/accept-claim`, { note: call.note }, requestId);
 			// The message is the JSON body the endpoint names ({ "message": ... }), sent under the same request id as the other answers.
@@ -785,7 +798,7 @@ export function parseDispute(json: unknown, captureId: CaptureId): Omit<Extract<
 	const updatedAt = routed(() => utcInstant(dispute.update_time));
 	return { disputeId: text(dispute.dispute_id) as DisputeId, captureId, status: text(dispute.status), reason: text(dispute.reason),
 		amount: money(dispute.dispute_amount), openedAt: utcInstant(dispute.create_time),
-		...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }), ...stageAndOffers(dispute) };
+		...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }), ...stageOffersAndEvidence(dispute) };
 }
 
 /** The answer links a dispute body names, in the order the three answers are listed. Absent when the body carries no links array. */
@@ -796,11 +809,32 @@ export function disputeOffersOf(links: unknown): readonly DisputeOffer[] | undef
 	return DISPUTE_OFFERS.filter(offer => rels.includes(offer));
 }
 
-/** The stage and the answer links a dispute body names. An absent field stays absent, so no caller reads it as "none". */
-function stageAndOffers(body: Record<string, unknown>): { readonly stage?: string; readonly offers?: readonly DisputeOffer[] } {
+/**
+ * The evidence types PayPal asks the seller for: the entries the dispute lists as REQUESTED_FROM_SELLER. Absent when it asks for
+ * none, so a body with no request keeps the answer it always had.
+ */
+function requestedEvidenceOf(body: unknown): string[] | undefined {
+	const entries = routed(() => array(object(body).evidences)) ?? [];
+	const types = entries.flatMap(entry => {
+		const evidence = routed(() => object(entry));
+		if (evidence === null || routed(() => text(evidence.source)) !== "REQUESTED_FROM_SELLER") return [];
+		const type = routed(() => text(evidence.evidence_type));
+		return type === null ? [] : [type];
+	});
+	return types.length === 0 ? undefined : types;
+}
+
+/**
+ * The stage, the answer links, and the evidence types PayPal asks for, as a dispute body names them. An absent field stays
+ * absent, so no caller reads it as "none".
+ */
+function stageOffersAndEvidence(body: Record<string, unknown>): { readonly stage?: string; readonly offers?: readonly DisputeOffer[];
+	readonly requestedEvidence?: readonly string[] } {
 	const stage = routed(() => text(body.dispute_life_cycle_stage));
 	const offers = disputeOffersOf(body.links);
-	return { ...(stage === null ? {} : { stage }), ...(offers === undefined ? {} : { offers }) };
+	const requestedEvidence = requestedEvidenceOf(body);
+	return { ...(stage === null ? {} : { stage }), ...(offers === undefined ? {} : { offers }),
+		...(requestedEvidence === undefined ? {} : { requestedEvidence }) };
 }
 
 /**
@@ -822,7 +856,7 @@ export function disputeOfVerifiedDelivery(raw: string, disputeId: string, receiv
 	return { kind: "DISPUTE", disputeId: disputeId as DisputeId, captureId, status,
 		reason: routed(() => text(resource.reason)) ?? "UNSPECIFIED", amount: routed(() => money(resource.dispute_amount)),
 		openedAt: openedAt ?? receivedAt, ...(updatedAt === null ? {} : { updatedAt }), ...(outcome === null ? {} : { outcome }),
-		fromVerifiedBody: true, ...stageAndOffers(resource) };
+		fromVerifiedBody: true, ...stageOffersAndEvidence(resource) };
 }
 
 /** The refusal code PayPal puts in the body's `name`. */
@@ -840,6 +874,34 @@ const SETTLED_DISPUTE_ANSWER_ISSUE = /ALREADY|NOT_IN_OPEN_STATE|INVALID_DISPUTE_
 
 /** The plain reason a person reads when PayPal refuses a dispute answer with a 403: the platform has no dispute access. */
 export const DISPUTE_ACCESS_REFUSED = "PayPal has not given Acquit dispute access for this merchant";
+
+/** The refusals of an evidence answer that another evidence type may answer. A re-queue is sent only as a type the refusal did not name. */
+export const EVIDENCE_TYPE_REFUSALS: readonly string[] = ["PAYPAL_HTTP_400", "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED"];
+
+/** The reason an evidence answer is not filed when PayPal asks only for evidence types Acquit cannot honestly give. */
+export const NO_HONEST_EVIDENCE_TYPE = "PayPal asked only for evidence Acquit cannot give";
+
+/**
+ * The evidence type an answer files for what PayPal asks: PROOF_OF_FULFILLMENT when it asks for it, else OTHER, and
+ * PROOF_OF_FULFILLMENT when it asks for none. Null when it asks only for types Acquit cannot honestly give.
+ */
+export function evidenceTypeFor(requested: readonly string[] | undefined): EvidenceType | null {
+	if (requested === undefined || requested.length === 0) return "PROOF_OF_FULFILLMENT";
+	if (requested.includes("PROOF_OF_FULFILLMENT")) return "PROOF_OF_FULFILLMENT";
+	if (requested.includes("OTHER")) return "OTHER";
+	return null;
+}
+
+/**
+ * The plain line a person reads for a refused dispute answer. The record keeps PayPal's code, which a re-queue reads; the job
+ * view and the alert say this instead, so no raw code reaches a person.
+ */
+export function refusalWording(reason: string): string {
+	if (reason === "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED") return "PayPal refused the evidence type";
+	if (reason === "PAYPAL_HTTP_400" || reason.startsWith("PAYPAL_400_")) return "PayPal refused the answer as invalid";
+	if (reason.startsWith("PAYPAL_")) return "PayPal refused the answer";
+	return reason;
+}
 
 /** The issue code PayPal puts in the first detail entry. */
 function issueOf(body: unknown): string | null {

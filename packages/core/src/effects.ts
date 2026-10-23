@@ -18,7 +18,7 @@ import { commercialSplit } from "./ledger.ts";
 import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
-import type { PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
+import type { EvidenceType, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
@@ -66,7 +66,8 @@ export function toPayPalCall(effect: Effect): PayPalCall | null {
 		case "RELEASE": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee };
 		case "REFUND": return { kind: effect.kind, captureId: effect.captureId, payee: effect.payee, amount: effect.amount };
 		case "REIMBURSE": return { kind: effect.kind, merchant: effect.merchant, amount: effect.amount };
-		case "DISPUTE_EVIDENCE": return { kind: effect.kind, disputeId: effect.disputeId, notes: effect.notes, payee: effect.payee };
+		case "DISPUTE_EVIDENCE": return { kind: effect.kind, disputeId: effect.disputeId, notes: effect.notes, payee: effect.payee,
+			...(effect.evidenceType === undefined ? {} : { evidenceType: effect.evidenceType }) };
 		case "DISPUTE_MESSAGE": return { kind: effect.kind, disputeId: effect.disputeId, message: effect.message, payee: effect.payee };
 		case "DISPUTE_ACCEPT": return { kind: effect.kind, disputeId: effect.disputeId, note: effect.note, payee: effect.payee };
 		case "PAYPAL_ONBOARD": return { kind: "ONBOARD", operator: effect.operator };
@@ -88,6 +89,7 @@ export function toJobCommand(jobId: JobId, observation: PayPalObservation): Syst
 			...(observation.simulated === true ? { simulated: true as const } : {}),
 			...(observation.stage === undefined ? {} : { stage: observation.stage }),
 			...(observation.offers === undefined ? {} : { offers: observation.offers }),
+			...(observation.requestedEvidence === undefined ? {} : { requestedEvidence: observation.requestedEvidence }),
 			...(observation.fromVerifiedBody === true ? { fromVerifiedBody: true as const } : {}) };
 		default: return null; // OrderCreated additionally needs the outbox's funding round.
 	}
@@ -625,7 +627,9 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey,
 		await ports.store.recordEffect(key, { kind: "CONFIRMED", at: now });
 		return "NONE";
 	}
-	const call: PayPalCall = effect.kind === "DISPUTE_EVIDENCE" ? { kind: effect.kind, disputeId: effect.disputeId, notes: effect.notes, payee: effect.payee }
+	// The evidence type this answer is sent as. An evidence answer queued before types were read is PROOF_OF_FULFILLMENT.
+	const evidenceType: EvidenceType | undefined = effect.kind === "DISPUTE_EVIDENCE" ? effect.evidenceType ?? "PROOF_OF_FULFILLMENT" : undefined;
+	const call: PayPalCall = effect.kind === "DISPUTE_EVIDENCE" ? { kind: effect.kind, disputeId: effect.disputeId, notes: effect.notes, payee: effect.payee, evidenceType }
 		: effect.kind === "DISPUTE_MESSAGE" ? { kind: effect.kind, disputeId: effect.disputeId, message: effect.message, payee: effect.payee }
 		: { kind: effect.kind, disputeId: effect.disputeId, note: effect.note, payee: effect.payee };
 	try {
@@ -642,8 +646,8 @@ async function dispatchDisputeAnswer(ports: Ports, key: OperationKey,
 			await applySystemCommand(ports, { type: "DisputeAnswerFiled", jobId: effect.jobId, disputeId: effect.disputeId, answer, round }, { key }, null);
 		} else if (outcome.kind === "PERMANENT_FAILURE") {
 			// A refused answer is never retried. The job shows it refused, a person is alerted with the reason, and the row parks for that person.
-			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason, round },
-				null, null);
+			await applySystemCommand(ports, { type: "DisputeAnswerRefused", jobId: effect.jobId, disputeId: effect.disputeId, answer, reason: outcome.reason, round,
+				...(evidenceType === undefined ? {} : { evidenceType }) }, null, null);
 			await ports.store.recordEffect(key, { kind: "NEEDS_HUMAN", reason: outcome.reason });
 		} else {
 			await ports.store.recordEffect(key, { kind: "UNCERTAIN", reconcileAt: backoffFrom(now) });

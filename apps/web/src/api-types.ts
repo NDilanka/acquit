@@ -69,7 +69,8 @@ export type RefundReason = "DELIVERY_DEADLINE" | "ATTEMPTS_EXHAUSTED" | "ARBITER
 export type DisputeAnswer = "EVIDENCE" | "MESSAGE" | "ACCEPT" | "NOT_ANSWERABLE";
 
 /** What PayPal did with Acquit's answer: queued until the outbox sends it, filed once PayPal confirms it, or refused with PayPal's reason. */
-export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" } | { readonly state: "REFUSED"; readonly reason: string };
+export type DisputeAnswerState = { readonly state: "QUEUED" } | { readonly state: "FILED" }
+	| { readonly state: "REFUSED"; readonly reason: string; readonly evidenceType?: "PROOF_OF_FULFILLMENT" | "OTHER" };
 
 /** A PayPal buyer dispute against the job's capture, as PayPal last answered for it. Not the in-app review dispute. */
 export interface ProviderDisputeView {

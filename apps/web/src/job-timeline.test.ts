@@ -711,6 +711,22 @@ test("an answer PayPal refused says so with the plain reason, says the payment s
   assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
 });
 
+test("an evidence type PayPal refused, and a generic 400, read in plain words, and no PayPal code reaches the timeline", () => {
+  const refusedType = { state: "REFUSED", reason: "PAYPAL_400_EVIDENCE_TYPE_IS_NOT_ALLOWED", evidenceType: "PROOF_OF_FULFILLMENT" } as const;
+  const typeTitle = timelineEvents(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: refusedType }))
+    .find(event => event.title.startsWith("PayPal refused"))?.title;
+  assert.equal(typeTitle, "PayPal refused Acquit's answer: PayPal refused the evidence type. The payment stays held.");
+  const generic = { state: "REFUSED", reason: "PAYPAL_HTTP_400" } as const;
+  const genericTitle = timelineEvents(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: generic }))
+    .find(event => event.title.startsWith("PayPal refused"))?.title;
+  assert.equal(genericTitle, "PayPal refused Acquit's answer: PayPal refused the answer as invalid. The payment stays held.");
+  const noHonest = { state: "REFUSED", reason: "PayPal asked only for evidence Acquit cannot give" } as const;
+  const noHonestTitle = timelineEvents(approvedWithDispute({ ...BUYER_DISPUTE, answer: "EVIDENCE", answerState: noHonest }))
+    .find(event => event.title.startsWith("PayPal refused"))?.title;
+  assert.equal(noHonestTitle, "PayPal refused Acquit's answer: PayPal asked only for evidence Acquit cannot give. The payment stays held.");
+  assert.equal([typeTitle, genericTitle].some(title => title?.includes("PAYPAL_")), false);
+});
+
 test("a buyer dispute known only from PayPal's signed notice says the read was refused, and holds the payout whatever its outcome", () => {
   const job = approvedWithDispute({ ...BUYER_DISPUTE, status: "RESOLVED", outcome: "RESOLVED_SELLER_FAVOUR", unconfirmed: true });
   assert.equal(nextStep(job, CLIENT), "The payout is held because of a buyer's PayPal dispute. Nothing to do.");
