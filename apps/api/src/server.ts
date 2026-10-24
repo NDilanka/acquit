@@ -296,7 +296,7 @@ function sameChallenge(left: string, right: string): boolean {
  * seeded handle is a row with no visitor, and a visitor's handle is a row that names it. A principal
  * whose visitor row is gone is refused here, so a deleted visitor's cookie dies with its rows.
  */
-function session(req: IncomingMessage, res?: ServerResponse) {
+function session(req: IncomingMessage, res: ServerResponse) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
@@ -316,9 +316,10 @@ function session(req: IncomingMessage, res?: ServerResponse) {
 	// A visitor past its expiry is no principal at all, whatever its session row still says, so the API refuses it
 	// here rather than waiting for the sweep. A lasting account has no expiry; its session is renewed instead.
 	if (principal.visitorId !== null && (visitor === null || (visitor.expiresAt !== null && visitor.expiresAt <= clock.now()))) return null;
-	// A renewed session row moves its cookie with it in the same answer, so the browser's copy never ends first.
+	// A renewed session row moves its cookie with it in the same answer, so the browser's copy never ends first. The
+	// response is required for that reason: a renewal spent without its cookie is not sent again until the next day.
 	if (visitor !== null && visitor.expiresAt === null && renewAccountSession(digest, String(record.expires_at)) && bearer === undefined) {
-		res?.setHeader("Set-Cookie", sessionCookie(token));
+		res.setHeader("Set-Cookie", sessionCookie(token));
 	}
 	const actor: Actor = principal.role === "CLIENT"
 		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
@@ -565,7 +566,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const input = object(await body(req));
 		const account = typeof input.token === "string" ? accountForRecoveryToken(db, input.token) : null;
 		if (account === null) { json(res, 404, { error: "NOT_FOUND" }); return; }
-		const previous = session(req);
+		const previous = session(req, res);
 		if (previous) db.prepare("DELETE FROM sessions WHERE digest = ?").run(tokenDigest(previous.token));
 		const token = mintSession(account.clientHandle);
 		res.setHeader("Set-Cookie", sessionCookie(token));
@@ -578,10 +579,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	// The platform reads and holds no command, so it is refused on every development route here, before any route dispatches. The
 	// dev replay below answers before the session gate, so the session is read here when one is present. An anonymous or client
 	// request carries no platform session and reaches its route as before.
-	if (url.pathname.startsWith("/api/dev/") && session(req)?.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
+	if (url.pathname.startsWith("/api/dev/") && session(req, res)?.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 	if (url.pathname === "/api/session") {
 		if (method === "GET") {
-			const current = session(req);
+			const current = session(req, res);
 			// The read every page load makes, so a lasting account's cookie is renewed with its session row.
 			if (current?.viaCookie && current.visitor?.expiresAt === null) res.setHeader("Set-Cookie", sessionCookie(current.token));
 			json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
@@ -611,7 +612,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				account: selectedVisitor ? accountJson(selectedVisitor) : null, token }); return;
 		}
 		if (method === "DELETE") {
-			const current = session(req);
+			const current = session(req, res);
 			if (current) db.prepare("DELETE FROM sessions WHERE digest = ?").run(tokenDigest(current.token));
 			res.setHeader("Set-Cookie", "acquit_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
 			res.writeHead(204); res.end(); return;
@@ -638,7 +639,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if ((url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") && method === "GET") {
 		const jobId = validJobId(text(url.searchParams.get("jobId"), "job id"));
 		const path = `/jobs/${encodeURIComponent(jobId)}`;
-		const current = session(req);
+		const current = session(req, res);
 		if (!current) { redirect(res, `${path}?funding=retry`); return; }
 		if (url.pathname === "/paypal/cancel") { redirect(res, path); return; }
 		try { redirect(res, await handlePayPalReturn(acquit, current.actor, jobId) ? path : `${path}?funding=retry`); }

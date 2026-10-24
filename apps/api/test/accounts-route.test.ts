@@ -237,6 +237,31 @@ test("any route a lasting account uses renews its cookie with its session, once 
 	nowMs = Date.parse("2026-10-24T09:00:00.000Z");
 });
 
+test("the first dev request after the renewal threshold renews the cookie it answers with, and the rest of the day sends none", async () => {
+	nowMs = Date.parse("2026-10-24T09:00:00.000Z");
+	const { account, token } = await tryAcquit("192.0.2.71");
+	nowMs = Date.parse("2026-11-13T09:00:00.000Z");
+	const ticked = await send({ method: "POST", url: "/api/dev/tick", cookie: token, payload: {} });
+	assert.deepEqual({ status: ticked.status, body: ticked.body }, { status: 200, body: { ok: true } });
+	assert.equal(maxAgeOf(ticked.cookie), 30 * 86_400);
+	assert.equal(read<{ expires_at: string }>("SELECT expires_at FROM sessions WHERE handle = ?", account.client)?.expires_at, "2026-12-13T09:00:00.000Z");
+	nowMs += 60_000;
+	assert.equal((await send({ method: "POST", url: "/api/dev/tick", cookie: token, payload: {} })).cookie, null);
+	nowMs = Date.parse("2026-10-24T09:00:00.000Z");
+});
+
+test("a PayPal return or cancel that resolves the session renews its cookie, so the renewal is never spent without it", async () => {
+	for (const [path, address] of [["/paypal/cancel", "192.0.2.72"], ["/paypal/return", "192.0.2.73"]] as const) {
+		nowMs = Date.parse("2026-10-24T09:00:00.000Z");
+		const { account, token } = await tryAcquit(address);
+		nowMs = Date.parse("2026-11-13T09:00:00.000Z");
+		const back = await send({ method: "GET", url: `${path}?jobId=job_missing1`, cookie: token });
+		assert.deepEqual({ status: back.status, maxAge: maxAgeOf(back.cookie) }, { status: 302, maxAge: 30 * 86_400 }, path);
+		assert.equal(read<{ expires_at: string }>("SELECT expires_at FROM sessions WHERE handle = ?", account.client)?.expires_at, "2026-12-13T09:00:00.000Z", path);
+	}
+	nowMs = Date.parse("2026-10-24T09:00:00.000Z");
+});
+
 test("the House client never holds a session: a mint is refused, and a row naming it opens nothing", async () => {
 	assert.deepEqual(await send({ method: "POST", url: "/api/session", payload: { handle: "house-client" } }),
 		{ status: 403, body: { error: "HOUSE_CLIENT_NO_SESSION" }, cookie: null });
