@@ -244,6 +244,59 @@ test("the House client accepts the lowest bid its accept commits, so a bid that 
 	}
 });
 
+test("three House supervisors ticking over one store at once send exactly one accept and one approve", async () => {
+	const h = await harness({ fixtures });
+	try {
+		const [first] = await startersOf(h);
+		const jobId = first!.id;
+		h.setClock(at(100));
+		await bid(h.acquit, operatorOf(h), jobId, usd("400.00"), `${h.visitor.operatorHandle}-agent`);
+		// Each service is one process's view of the same database. They tick together, so their passes meet at every command.
+		const supervisors = [h.acquit, h.reopen(), h.reopen()];
+		h.setClock(at(130));
+		let row = await rowOf(h, jobId);
+		for (let pass = 0; pass < 20 && row.state.status !== "IN_PROGRESS"; pass++) {
+			await Promise.all(supervisors.map(service => service.tick()));
+			row = await rowOf(h, jobId);
+		}
+		if (row.state.status !== "IN_PROGRESS") throw new Error(`the starter is ${row.state.status}`);
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1);
+		assert.deepEqual(row.bids.map(b => b.status), ["ACCEPTED"]);
+		assert.deepEqual(await assertConserves(h.acquit), { held: 42000, released: 0, refunded: 0, fees: 0, funded: 42000 });
+		h.setClock(at(200));
+		const checked = await verified(h, jobId);
+		if (checked.state.status !== "VERIFIED" || checked.state.review.phase !== "AWAITING_CLIENT") throw new Error("not awaiting review");
+		h.setClock(at(260));
+		row = await rowOf(h, jobId);
+		for (let pass = 0; pass < 20 && row.state.status !== "PAID"; pass++) {
+			await Promise.all(supervisors.map(service => service.tick()));
+			row = await rowOf(h, jobId);
+		}
+		if (row.state.status !== "PAID") throw new Error(`the starter is ${row.state.status}`);
+		assert.equal(h.paypalDispatches.filter(kind => kind === "RELEASE").length, 1);
+		assert.deepEqual(await assertConserves(h.acquit), { held: 0, released: 36000, refunded: 0, fees: 6000, funded: 42000 });
+	} finally { await h.dispose(); }
+});
+
+test("two House accepts under one derived key, sent at once, commit once and the other is the recorded answer", async () => {
+	const h = await harness({ fixtures });
+	try {
+		const [first] = await startersOf(h);
+		const jobId = first!.id;
+		h.setClock(at(100));
+		await bid(h.acquit, operatorOf(h), jobId, usd("400.00"), `${h.visitor.operatorHandle}-agent`);
+		h.setClock(at(130));
+		const house = houseClientActor(h.visitor.id, h.visitor.repository);
+		const acceptKey = derivedRequestKey(`${HOUSE_CLIENT_ID}:accept:${jobId}:0`);
+		const outcomes = await Promise.all([h.acquit.execute(house, acceptKey, { type: "AcceptBid", jobId }),
+			h.reopen().execute(house, acceptKey, { type: "AcceptBid", jobId })]);
+		assert.deepEqual(outcomes.map(outcome => outcome.kind).toSorted(), ["COMMITTED", "REPLAY"]);
+		await until(h, jobId, candidate => candidate.state.status === "IN_PROGRESS");
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1);
+		assert.deepEqual(await assertConserves(h.acquit), { held: 42000, released: 0, refunded: 0, fees: 0, funded: 42000 });
+	} finally { await h.dispose(); }
+});
+
 test("the House client approves 60 seconds after Verified, once, and the operator is paid 360.00 USD", async () => {
 	const h = await harness({ fixtures });
 	try {
