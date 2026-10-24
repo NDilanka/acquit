@@ -95,8 +95,8 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 			if (pending.length === 0) continue;
 			const first = pending.map(bid => bid.placedAt).toSorted()[0]!;
 			if (sinceMs(first, now) < HOUSE_ACCEPT_DELAY_MS) continue;
-			// The card is the starter's funding. Written again here, so a process that stopped between the open and
-			// that write still accepts by card, never through a checkout no one will approve.
+			// The card is the starter's funding. defaultJobFunding inserts it only where the job has no choice yet, so a
+			// process that stopped between the open and that write still accepts by card, and a stored choice is kept.
 			ports.fundWithCard(row.id, now);
 			// No bid is named here. The command takes the lowest PENDING bid of the row it commits, so a bid that
 			// arrived after this pass read the snapshot is still compared.
