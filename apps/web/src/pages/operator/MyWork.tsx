@@ -17,14 +17,6 @@ export function MyWork({ data }: { data: OperatorData }) {
     escrow: data.escrow,
   });
 
-  if (ws.mine.length === 0) {
-    return (
-      <EmptyState icon="work" action={{ to: "/operator", label: "Find work" }}>
-        No awarded work yet. A bid the client accepts shows here with its next step.
-      </EmptyState>
-    );
-  }
-
   const shown = ws.mine.filter(({ job }) => workMatches(job, tab));
   const options = WORK_TABS.map((t) => ({
     value: t.value,
@@ -37,7 +29,11 @@ export function MyWork({ data }: { data: OperatorData }) {
         Held for you: <b className="num">{usd(ws.earnings.heldCents)}</b>
       </p>
       <Segmented label="Work status" options={options} value={tab} onChange={setTab} round />
-      {shown.length === 0 ? (
+      {ws.mine.length === 0 ? (
+        <EmptyState icon="work" action={{ to: "/operator", label: "Find work" }}>
+          No awarded work yet. A bid the client accepts shows here with its next step.
+        </EmptyState>
+      ) : shown.length === 0 ? (
         <EmptyState icon="work">Nothing in this tab right now.</EmptyState>
       ) : (
         shown.map(({ job, status, next }) => {
