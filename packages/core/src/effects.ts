@@ -20,6 +20,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
 import type { EvidenceType, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
+import { isStarterJob } from "./house-client.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
@@ -300,7 +301,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		// The caps refused this act whole: the transaction wrote nothing, and the closed code is the answer.
 		if (committed.kind === "CAPPED") return { kind: "DENIED", reason: committed.reason };
 		if (committed.kind !== "COMMITTED") continue;
-		if (command.type === "OpenJob") {
+		// A starter job is the account's own to win, so the House agent never bids on it, and the House client
+		// takes the fixture's frozen contract as it stands, with no scoping draft to review.
+		if (command.type === "OpenJob" && !isStarterJob(plan.next)) {
 			await placeHouseBid(ports, plan.next);
 			// The scoping draft starts once the job exists. A fixture without a trusted fix is never
 			// scoped, and a deployment without the port opens exactly as it always did.
@@ -1010,7 +1013,7 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		if (result.kind === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {
-		if (row.state.status === "OPEN" && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
+		if (row.state.status === "OPEN" && !isStarterJob(row) && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
 		if (row.state.status !== "OPEN" || row.state.phase.kind !== "FUNDING") continue;
 		const checkout = row.state.phase.checkout;
 		if (!("orderId" in checkout)) continue;
@@ -1038,9 +1041,13 @@ function outboxRow(effect: Effect, now: Instant): OutboxRow {
 }
 /** The House's missing rows are a fact of the deployment, not of the tick: this line is said once per process. */
 let houseRowsMissing = false;
+/** A request key derived from what a system-driven command acts on, so the same act always sends the same key. */
+export function derivedRequestKey(seed: string): RequestKey {
+	const hex = digest(seed);
+	return parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
+}
 async function placeHouseBid(ports: Ports, job: JobRow): Promise<void> {
-	const hex = digest(`house-bid:${job.id}`);
-	const key = parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
+	const key = derivedRequestKey(`house-bid:${job.id}`);
 	const outcome = await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: job.tenant ?? null }, key,
 		{ type: "PlaceBid", jobId: job.id, price: job.contract.budget, eta: hours(24),
 			agent: "house-ts-fixer" as AgentId, pitch: "House quality bar: focused TypeScript fixes against the frozen suite." });

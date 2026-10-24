@@ -36,6 +36,7 @@ import type { Vertical } from "./outcome.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure, SealedHiddenCases, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
 import { resolveHiddenReveal } from "./hidden-seal.ts";
+import { isHouseClient, isStarterJob } from "./house-client.ts";
 import type { PrivateCaseReader, RevealedHiddenCases } from "./hidden-seal.ts";
 
 // Worst-case timeline from capture is delivery 14d, review 72h, dispute 48h, so day 19.
@@ -631,12 +632,13 @@ function transitionTable(): {
 			const tenant = facts.actor.tenant;
 			// Judge mode's job caps are reservations: they are checked and written inside the transaction
 			// that commits this job, so two opens at once cannot both pass the last slot. A client with no
-			// tenant, the deployment's own, opens jobs outside the caps.
+			// tenant, the deployment's own, opens jobs outside the caps. The House client's starter jobs are
+			// counted under their own cap, so they never spend the account's own job allowance.
 			return { next: { id, version: 0 as Version,
 				client: facts.actor.clientId, tenant, title: facts.loaded.title, contract: facts.loaded.contract,
 				openedAt: facts.now, bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } },
 				credits: [], effects: [],
-				reservations: tenant === null ? [] : [{ kind: "JOB", scope: tenant, ref: id, cents: command.budget, at: facts.now }] };
+				reservations: tenant === null ? [] : [{ kind: isHouseClient(facts.actor) ? "STARTER" : "JOB", scope: tenant, ref: id, cents: command.budget, at: facts.now }] };
 		} },
 		PlaceBid: { by: "OPERATOR", apply: (row, command, facts) => {
 			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
@@ -1857,7 +1859,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const used = state.status === "PAID" ? state.receipt.attemptsUsed : history.length + (pending ? 1 : 0);
 	const judged = history.map(attemptView);
 	const done = storedDefinitionOfDone(row);
-	return { id: row.id, title: row.title, status: state.status, vertical: storedVertical(row),
+	return { id: row.id, title: row.title, status: state.status, vertical: storedVertical(row), starter: isStarterJob(row),
 		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
 		// The stored checkout substate while the job waits for its money, so the page names the phase
 		// the row holds instead of guessing from side fields. Null once funding is over.

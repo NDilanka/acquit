@@ -21,7 +21,12 @@ import type { PayPal, PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { platformJobLedger, platformTables } from "./platform.ts";
 import type { PlatformLedgerView, PlatformTables } from "./platform.ts";
 import { SqliteStore } from "./store.ts";
-import { bindVisitorRepository, failVisitor, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
+import { bindVisitorRepository, failVisitor, lastingAccounts, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
+import { defaultJobFunding } from "./funding.ts";
+import { runHouseClient, runHouseClients } from "./starters.ts";
+import type { HouseClientPorts } from "./starters.ts";
+import { capUsage, capWindowStart, CAPS } from "./caps.ts";
+import { isStarterJob } from "./house-client.ts";
 import type { VisitorRow } from "./visitors.ts";
 import { boundedDetail, unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
@@ -107,6 +112,8 @@ export interface JobView {
 	readonly id: JobId;
 	readonly title: string;
 	readonly status: JobStatus;
+	/** A starter job: the House client opened it in the account's workspace for the account's operator to win. */
+	readonly starter: boolean;
 	/** Substate for the UI, such as BIDDING, FUNDING, VERIFYING, AWAITING_CLIENT, DISPUTED, RELEASE_PENDING. */
 	readonly phase: string;
 	/** The stored checkout substate (CREATING_ORDER, AWAITING_APPROVAL, CAPTURING, REFUND_PENDING) while the job waits for its money. Null outside FUNDING. */
@@ -262,6 +269,8 @@ export function createAcquit(config: AcquitConfig): Acquit {
 		scopeDraft: config.scopeDraft,
 		privateCases: config.privateCases,
 		clock };
+	// The starter jobs' card funding lives beside the row, written the way the API writes a visitor's own job.
+	const houseClient: HouseClientPorts = { ...ports, fundWithCard: (jobId, at) => defaultJobFunding(store.db, jobId, "card", at) };
 	let ticking: Promise<TickSummary> | null = null;
 	const service: Acquit = {
 		execute: (actor, key, command, observe) => executeCommand(ports, actor, key, command, observe),
@@ -323,6 +332,7 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			if (!ticking) ticking = (async (): Promise<TickSummary> => {
 				const ran: OutboxRan[] = [];
 				await runDueTimers(ports);
+				await runHouseClients(houseClient, lastingAccounts(store.db));
 				for (let i = 0; i < 20; i++) {
 					const sweep = await runOutboxEffect(ports);
 					if (sweep.kind === "IDLE") break;
@@ -333,11 +343,22 @@ export function createAcquit(config: AcquitConfig): Acquit {
 			return ticking;
 		},
 	};
-	runtimes.set(service, { ports, store, demo: config.demo, organization: config.github.organization });
+	runtimes.set(service, { ports, houseClient, store, demo: config.demo, organization: config.github.organization });
 	return service;
 }
 
-const runtimes = new WeakMap<Acquit, { ports: Ports; store: SqliteStore; demo: AcquitConfig["demo"]; organization: string }>();
+const runtimes = new WeakMap<Acquit, { ports: Ports; houseClient: HouseClientPorts; store: SqliteStore; demo: AcquitConfig["demo"]; organization: string }>();
+
+/** Where one account's starter jobs stand: how many are open, and whether today's allowance is spent. */
+export type StarterStatus = { readonly open: number; readonly openedToday: number; readonly dailyLimit: number; readonly capped: boolean };
+export async function starterStatus(service: Acquit, account: VisitorId): Promise<StarterStatus> {
+	const runtime = runtimes.get(service);
+	if (!runtime) throw new Error("Unknown Acquit service");
+	const open = (await runtime.store.listJobs()).filter(row => row.tenant === account && isStarterJob(row) && row.state.status === "OPEN").length;
+	const openedToday = capUsage(runtime.store.db, { scope: account, since: capWindowStart(runtime.ports.clock.now()) }).starters;
+	const dailyLimit = CAPS.STARTER_JOBS_DAY.limit;
+	return { open, openedToday, dailyLimit, capped: open === 0 && openedToday >= dailyLimit };
+}
 /** HTTP-only checkout boundary: re-read the provider, never trust URL token/PayerID. */
 export function handlePayPalReturn(service: Acquit, actor: Actor, jobId: JobId): Promise<boolean> {
 	const runtime = runtimes.get(service);
@@ -381,8 +402,15 @@ export async function provisionDemoVisitor(service: Acquit, input: { readonly id
 	let forked: VisitorFork | null = null;
 	try {
 		forked = await input.fork();
-		return { kind: "CREATED", visitor: forked.kind === "NO_APP" ? bindVisitorRepository(runtime.store.db, input.id, null)
-			: bindVisitorRepository(runtime.store.db, input.id, forked.repository, forked.id) };
+		const visitor = forked.kind === "NO_APP" ? bindVisitorRepository(runtime.store.db, input.id, null)
+			: bindVisitorRepository(runtime.store.db, input.id, forked.repository, forked.id);
+		// A lasting account opens with the House client's starter jobs. A scenario run's visitor brings its own.
+		// The next tick opens them anyway, so a refused or failed open here never fails the account.
+		if (input.scenarioOf === undefined) {
+			try { await runHouseClient(runtime.houseClient, { id: visitor.id, repository: visitor.repository }); }
+			catch (error) { console.warn(`Acquit: the starter jobs for ${visitor.id} wait for the next tick: ${boundedDetail(error instanceof Error ? error.message : String(error))}`); }
+		}
+		return { kind: "CREATED", visitor };
 	} catch (error) {
 		failVisitor(runtime.store.db, input.id, forked?.kind === "FORKED" ? forked.repository : repository,
 			forked?.kind === "FORKED" ? forked.id : null);

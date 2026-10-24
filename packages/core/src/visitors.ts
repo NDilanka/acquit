@@ -175,6 +175,17 @@ export function repositoryForClient(db: DatabaseSync, clientHandle: string): str
 }
 
 /**
+ * The lasting accounts the House client trades with: provisioned, with no expiry. A scenario run's visitor
+ * expires, and so does every visitor made before accounts lasted, so neither is here; nor is a seeded user,
+ * which has no visitor row at all.
+ */
+export function lastingAccounts(db: DatabaseSync): readonly VisitorRow[] {
+	return db.prepare(`SELECT ${VISITOR_COLUMNS} FROM visitors WHERE expires_at IS NULL AND state = 'ACTIVE'
+			AND NOT EXISTS (SELECT 1 FROM cap_reservations c WHERE c.kind = 'SCENARIO' AND c.ref = visitors.id)
+			ORDER BY created_at, id`).all().map(row);
+}
+
+/**
  * Every visitor the sweep may take, oldest first, that no earlier sweep has already taken. A lasting account that
  * finished provisioning is never here. One whose provisioning failed, or never finished, a day after it began has no
  * session and only a fork to clean up, so it is here. So is every visitor made before accounts lasted, once past its

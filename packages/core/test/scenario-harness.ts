@@ -154,6 +154,8 @@ export type Harness = {
 	readonly disputeReads: string[];
 	/** The kind of every call the fake PayPal's write path was asked to send, in order. A dispute answer a simulated dispute owns never appears here. */
 	readonly paypalDispatches: string[];
+	/** A second service over the same database file and the same fakes, as a restarted process would open it. Closed by dispose. */
+	readonly reopen: () => Acquit;
 };
 
 export async function harness(options: HarnessOptions = {}): Promise<Harness> {
@@ -189,12 +191,15 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const paypalDisputes = new Map<string, DisputeObservation>();
 	const disputeReads: string[] = [];
 	const paypalDispatches: string[] = [];
-	acquit = createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
+	const paypal = fakePayPal(clock, paypalDisputes, disputeReads, paypalDispatches);
+	const compose = () => createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
 		github: { appId: "", privateKey: "", organization: "" },
-		adapters: { paypal: fakePayPal(clock, paypalDisputes, disputeReads, paypalDispatches), github } });
+		adapters: { paypal, github } });
+	acquit = compose();
+	const reopened: Acquit[] = [];
 	const store = new SqliteStore(path);
 	const noFork = async (scenarioOf?: string): Promise<DemoVisitorResult> => provisionDemoVisitor(acquit, { id: newVisitorId(), ipKey: "scenario-test",
 		...(scenarioOf === undefined ? {} : { scenarioOf }), fork: async () => ({ kind: "NO_APP" }) });
@@ -214,7 +219,9 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 		now: clock, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
 	return { acquit, store, github, deps, path, visitor: provisioned.visitor, provision: async requester => noFork(requester.id), setClock: at => { now = at; },
 		paypalDisputes, disputeReads, paypalDispatches,
+		reopen: () => { const service = compose(); reopened.push(service); return service; },
 		dispose: async () => {
+			for (const service of reopened) closeAcquit(service);
 			deps.store.db.close();
 			store.close();
 			closeAcquit(acquit);
