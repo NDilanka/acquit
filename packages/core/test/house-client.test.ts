@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { starterStatus } from "../src/acquit.ts";
+import { createDemoVisitor, starterStatus } from "../src/acquit.ts";
 import type { Acquit, Actor } from "../src/acquit.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
@@ -21,6 +21,7 @@ import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { DisputeId } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { starterPool } from "../src/starters.ts";
+import { newVisitorId, visitorRepositoryName } from "../src/visitors.ts";
 import type { Harness } from "./scenario-harness.ts";
 import { harness } from "./scenario-harness.ts";
 import { DEMO_REPOSITORY, demoFixture, jpyFixture } from "./hidden-fixture.ts";
@@ -474,6 +475,40 @@ test("the starter pool keeps a fixed order and never holds a practice issue", ()
 	assert.deepEqual(starterPool([jpyFixture(), practice, demoFixture()], "acquit-forks/ws-abc", DEMO_REPOSITORY).map(f => f.issue.number), [12, 13]);
 	assert.deepEqual(starterPool([jpyFixture(), demoFixture()], null, DEMO_REPOSITORY).map(f => f.issue.number), [12, 13]);
 	assert.deepEqual(starterPool([practice], null, null), []);
+});
+
+test("a fork's starters are the upstream's pair: #12 then #13, the refill is #12 again, and the splitter's #1 never opens on a fork", async () => {
+	// The deployment's registry as the VM holds it: two invoice-app issues and one expense-splitter issue, on the one upstream.
+	const splitter = demoFixture(undefined, { repository: "maya-client/expense-splitter", issue: { number: 1, title: "Split shares drop remainder cents" } });
+	const registry = [demoFixture(), jpyFixture(), splitter];
+	const h = await harness({ fixtures: registry, clientRepository: DEMO_REPOSITORY });
+	try {
+		const id = newVisitorId();
+		const fork = `acquit-forks/${visitorRepositoryName(id)}`;
+		const created = await createDemoVisitor(h.acquit, { id, ipKey: "starter-pool", repository: fork });
+		if (created.kind !== "CREATED") throw new Error(`the fork visitor was refused: ${created.kind}`);
+		assert.deepEqual(starterPool(registry, fork, DEMO_REPOSITORY).map(f => f.issue.number), [12, 13]);
+		const pair = await startersOf(h, id);
+		assert.deepEqual(pair.map(row => ({ issue: row.contract.definitionOfDone?.issue.number, repository: row.contract.definitionOfDone?.issue.repository,
+			status: row.state.status })), [{ issue: 12, repository: fork, status: "OPEN" }, { issue: 13, repository: fork, status: "OPEN" }]);
+		// The fork's own command is refused for the splitter's issue, as the pool refuses it.
+		const own: Actor = { role: "CLIENT", clientId: "guest-starter-pool-client" as ClientId, tenant: id, repository: fork };
+		assert.deepEqual(await h.acquit.execute(own, key(), { type: "OpenJob", repository: fork, issueNumber: 1, budget: usd("400.00"), deliveryEndsAt: at(86_400) }),
+			{ kind: "DENIED", reason: "NOT_FOUND" });
+		// A lone open starter keeps the refill waiting. Closing the first leaves #13 open, so nothing opens; closing the second opens the third, which is #12 again.
+		assert.equal((await h.acquit.execute(houseClientActor(id, fork), key(), { type: "CancelJob", jobId: pair[0]!.id })).kind, "COMMITTED");
+		h.setClock(at(30));
+		await h.acquit.tick();
+		assert.deepEqual((await startersOf(h, id)).map(row => row.contract.definitionOfDone?.issue.number), [12, 13], "one starter is still open");
+		assert.equal((await startersOf(h, id)).length, 2);
+		await h.acquit.execute(houseClientActor(id, fork), key(), { type: "CancelJob", jobId: pair[1]!.id });
+		h.setClock(at(60));
+		await h.acquit.tick();
+		const refilled = await startersOf(h, id);
+		assert.deepEqual(refilled.map(row => row.contract.definitionOfDone?.issue.number), [12, 13, 12]);
+		assert.deepEqual(refilled.map(row => row.state.status), ["CLOSED", "CLOSED", "OPEN"]);
+		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
+	} finally { await h.dispose(); }
 });
 
 test("a starter back to bidding after a payment that did not go through says so in its projection", async () => {
