@@ -169,6 +169,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       ids: [{ value: release.payoutItemId }, { value: release.captureId }],
       href: null,
       reasons: [],
+      ...houseClient,
     });
   }
 
@@ -679,7 +680,8 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
         ? `Approve to record the release, or dispute by ${end}. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.`
         : `The client reviews until ${end}. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.`;
     }
-    if (job.starter) return "Verified. The House client approves in about a minute.";
+    // The House client approves in about a minute. If it does not, the review-silence release still applies, so the line keeps that sentence.
+    if (job.starter) return "Verified. The House client approves in about a minute. If it does not, Acquit releases the payment then.";
     return seat === "CLIENT" && job.viewerCanApprove
       ? `Approve to release the payment, or dispute by ${end}. If you do nothing, Acquit releases it then.`
       : `The client reviews until ${end}. If the client does nothing, Acquit releases the payment then.`;

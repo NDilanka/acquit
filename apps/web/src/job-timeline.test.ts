@@ -1108,8 +1108,16 @@ test("a starter job's next step names the House client's timing, and its House p
   assert.equal(nextStep({ ...starter, fundingReturned: true, bids: { operators: [bid({})], house: null } }, DEVON),
     "The House client's payment did not go through. The job is open for bids again.");
   const review = { ...locked({}), starter: true, status: "VERIFIED" as const, phase: "AWAITING_CLIENT" as const, reviewEndsAt: "2026-10-27T09:00:00.000Z" };
-  assert.equal(nextStep(review, DEVON), "Verified. The House client approves in about a minute.");
+  // The silence sentence stays: it is true whether or not the House client has approved by then.
+  assert.equal(nextStep(review, DEVON), "Verified. The House client approves in about a minute. If it does not, Acquit releases the payment then.");
   assert.deepEqual(timelineEvents(review).filter((event) => event.house).map((event) => [event.kind, event.house]),
     [["HELD", "client"], ["REVIEW", "client"]]);
+  // The paid line "Released on the client's approval" carries the badge too, so the payout names the House client.
+  const paid = { ...paidJob({}), starter: true };
+  assert.equal(timelineEvents(paid).find((event) => event.kind === "PAYOUT")?.detail,
+    "342.00 USD released to devon. Released on the client's approval. Merged 2026-10-15 10:00 UTC: pull request #12, merge commit c0ffee1, approved abcdef1.");
+  assert.deepEqual(timelineEvents(paid).filter((event) => event.house).map((event) => [event.kind, event.house]),
+    [["HELD", "client"], ["PAYOUT", "client"]]);
   assert.equal(timelineEvents({ ...review, starter: false }).some((event) => event.house), false);
+  assert.equal(timelineEvents({ ...paid, starter: false }).some((event) => event.house), false);
 });
