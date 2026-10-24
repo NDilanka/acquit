@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { CommandOutcome, UserCommand } from "./api-types";
-import { api, ApiError } from "./api";
+import { api } from "./api";
+import { errorText } from "./demo";
 import { denied } from "./format";
 
 type Pending = { signature: string; key: string; command: UserCommand };
@@ -35,7 +36,7 @@ export function useIntent() {
       return outcome;
     } catch (e) {
       // Network or server failure: keep the key so the next click is a safe retry.
-      setError(e instanceof ApiError ? e.message : `Network error: ${String(e)}. Retry is safe.`);
+      setError(errorText(e));
       return null;
     } finally {
       setBusy(false);

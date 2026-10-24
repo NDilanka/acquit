@@ -1,4 +1,5 @@
 import type { CreditAccountView, DisputeView, JobView, LedgerLine, MergeProgress, RefundReason, ReleaseAuthority } from "./api-types";
+import { errorWords } from "./errors.ts";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -94,43 +95,9 @@ export function mergeNote(merge: MergeProgress, pullRequest: number | null, appr
   }
 }
 
-const reasons: Record<string, string> = {
-  NOT_FOUND: "That job or bid no longer exists.",
-  NOT_OWNER: "You do not own this job.",
-  WRONG_STATE: "The job is not in a state that allows this action.",
-  ONBOARDING_REQUIRED: "Finish PayPal payouts onboarding before bidding.",
-  PRICE_OVER_BUDGET: "The price is higher than the job budget.",
-  ALREADY_BID: "You already placed a bid on this job.",
-  HOUSE_ALREADY_BID: "The House has already bid on this job.",
-  INSUFFICIENT_CREDITS: "Not enough bid credits. Each bid costs 10.",
-  DEADLINE_TOO_FAR: "The deadline must be within 14 days.",
-  DEADLINE_PASSED: "The deadline has already passed.",
-  ATTEMPTS_EXHAUSTED: "No delivery attempts are left.",
-  VERIFIER_PENDING: "The verifier is still running.",
-  ARTIFACT_CHANGED: "The delivered artifact changed after verification.",
-  REVIEW_CLOSED: "The review window is closed.",
-  PAYMENT_IN_PROGRESS: "A payment is in progress for this job.",
-  KEY_REUSED_WITH_DIFFERENT_PAYLOAD: "This request was already sent with different values. Reload and try again.",
-  BUSY: "The server is busy with this job. Try again in a moment.",
-  CAP_VISITORS_DAY: "Today's demos are all taken: the daily limit is reached. Try again tomorrow.",
-  CAP_VISITOR_JOBS: "This demo has opened as many jobs as a demo can.",
-  CAP_AMOUNT: "That budget is higher than a demo job allows.",
-  CAP_SPEND_DAY: "This demo has reached its daily limit for job budgets.",
-  CAP_MODEL_RUNS: "This demo has used its verifier runs for today.",
-  CAP_MODEL_RUNS_DAY: "The verifier has reached its daily limit for every demo. Try again tomorrow.",
-  DEMO_NOT_CONFIGURED: "Demos are not set up on this deployment yet.",
-  DEMO_REPOSITORY_FAILED: "GitHub could not create your demo repository. Try again in a moment.",
-  DEMO_PRIVATE: "The live demo is private for now.",
-  SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Start a demo instead.",
-  NOT_DEMO_VISITOR: "Only a demo session can switch between client and operator.",
-  NOT_VISITOR_JOB: "Only the demo's client can change this job.",
-  FUNDING_BOUND: "The payment method was fixed when a bid was accepted.",
-  JOB_CHANGED: "The job changed while its clock moved. Try again.",
-};
-
-/** An HTTP error code: the plain sentence when the code is known, else the API's own detail. */
+/** An HTTP error code as one plain sentence. The raw code never reaches the screen (errors.ts has the words). */
 export function refusalText(code: string, detail?: string): string {
-  return reasons[code] || !detail ? denied(code) : `${code}: ${detail}`;
+  return errorWords(code, detail);
 }
 
 /** `credits` arrives only with an INSUFFICIENT_CREDITS refusal, so the message can say when credits return. */
@@ -138,10 +105,10 @@ export function denied(reason: string, credits?: CreditAccountView | null): stri
   if (reason === "INSUFFICIENT_CREDITS" && credits) {
     return (
       `Not enough bid credits: you have ${credits.available} and a bid costs 10. ` +
-      `Your weekly allowance of ${credits.weeklyAllowance} returns ${utc(credits.nextGrantAt)}. (${reason})`
+      `Your weekly allowance of ${credits.weeklyAllowance} returns ${utc(credits.nextGrantAt)}.`
     );
   }
-  return `${reasons[reason] ?? "The request was refused."} (${reason})`;
+  return errorWords(reason);
 }
 
 const authorities: Record<ReleaseAuthority, string> = {

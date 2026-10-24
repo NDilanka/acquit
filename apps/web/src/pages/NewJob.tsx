@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { JobView, UserCommand } from "../api-types";
-import { api, ApiError, type Repo, type RepoIssue } from "../api";
+import { api, type Repo, type RepoIssue } from "../api";
+import { errorText } from "../demo";
 import { budgetProblem, parseUsd, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link } from "../router";
@@ -31,7 +32,7 @@ export function NewJob() {
         const issue = first?.issues[0];
         if (first && issue) setIssueRef(`${first.repository}#${issue.number}`);
       })
-      .catch((e: unknown) => setLoadError(e instanceof ApiError ? e.message : String(e)));
+      .catch((e: unknown) => setLoadError(errorText(e)));
   }, []);
 
   const selected = useMemo(() => {

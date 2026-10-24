@@ -46,10 +46,3 @@ export function buildOperatorWorkspace(snapshot: OperatorSnapshot): OperatorWork
 export function receiptMarks(row: Pick<ReceiptRow, "source" | "jobId">): { readonly seeded: boolean; readonly jobHref: string | null } {
   return { seeded: row.source === "SEED", jobHref: row.jobId === null ? null : `/jobs/${row.jobId}` };
 }
-
-/** The trail above a page, by the signed-in role. An operator's page never shows the client's crumbs. */
-export function homeCrumbs(role: "CLIENT" | "OPERATOR" | "PLATFORM"): readonly string[] {
-  if (role === "OPERATOR") return ["Workspace"];
-  if (role === "PLATFORM") return ["Dashboards"];
-  return ["Jobs"];
-}

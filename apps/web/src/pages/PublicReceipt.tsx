@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
+import { errorText } from "../demo";
 import { utc } from "../format";
 import { Link } from "../router";
 import { digestOfHiddenCases } from "../receipt-digest";
@@ -38,7 +39,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
         if (!live) return;
         setLoad(error instanceof ApiError && error.status === 404
           ? { kind: "missing" }
-          : { kind: "failed", message: error instanceof Error ? error.message : String(error) });
+          : { kind: "failed", message: errorText(error) });
       },
     );
     return () => { live = false; };

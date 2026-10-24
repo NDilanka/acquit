@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { JobView } from "../api-types";
 import { api, ApiError } from "../api";
+import { errorText } from "../demo";
 import { usd, utc } from "../format";
 import { Link } from "../router";
 import { rememberedJobs, useSession } from "../session";
@@ -33,7 +34,7 @@ export function ClientDashboard() {
   useEffect(() => {
     loadJobs(user.handle)
       .then(setJobs)
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : String(e)));
+      .catch((e: unknown) => setError(errorText(e)));
   }, [user.handle]);
 
   return (

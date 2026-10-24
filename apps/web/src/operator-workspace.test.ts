@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { BidView, OperatorEscrowRow, ReceiptRow } from "./api-types.ts";
-import { buildOperatorWorkspace, homeCrumbs, receiptMarks, type OperatorSnapshot } from "./operator-workspace.ts";
+import { buildOperatorWorkspace, receiptMarks, type OperatorSnapshot } from "./operator-workspace.ts";
 import type { TimelineJob } from "./job-timeline.ts";
 
 const OPERATOR = { operatorId: "op_devon", handle: "devon" };
@@ -191,13 +191,6 @@ test("the escrow rows of jobs the operator does not hold add nothing", () => {
   const stranger: OperatorEscrowRow = { jobId: "job_other", cents: 99000 };
   const ws = buildOperatorWorkspace(snapshot([job(LOCKED)], { escrow: [{ jobId: "job_work", cents: 36000 }, stranger] }));
   assert.equal(ws.earnings.heldCents, 36000);
-});
-
-test("the operator's page crumbs never include the client's", () => {
-  assert.deepEqual(homeCrumbs("OPERATOR"), ["Workspace"]);
-  assert.deepEqual(homeCrumbs("CLIENT"), ["Jobs"]);
-  assert.equal(homeCrumbs("OPERATOR").includes("Jobs"), false);
-  assert.equal(homeCrumbs("OPERATOR").includes("New job"), false);
 });
 
 test("the operator's held earnings say a PayPal dispute can hold the payout, with no per-job data", () => {

@@ -80,7 +80,7 @@ test("a read maps to its panel: a draft in progress, a failure by name, a review
   assert.deepEqual(readPanel({ ok: false, error: new ApiError(404, "NO_DRAFT") }, hidden), { kind: "HIDDEN" });
   assert.deepEqual(readPanel({ ok: false, error: new ApiError(500, "INTERNAL") }, hidden), {
     kind: "UNREADABLE",
-    message: "The request was refused. (INTERNAL)",
+    message: "Something went wrong. Try again in a moment.",
   });
 });
 
@@ -158,12 +158,12 @@ test("an approval that finds the draft already frozen re-reads to show the froze
   assert.deepEqual(step, { panel: review, error: null, reread: true });
 });
 
-test("an unreachable API keeps the review open and says a retry is safe", () => {
+test("an unreachable API keeps the review open and says to try again", () => {
   const review = readPanel({ ok: true, body: draft() }, hidden) as Extract<ScopingPanel, { kind: "REVIEW" }>;
   const step = approvalStep(review, { ok: false, error: new TypeError("Failed to fetch") });
   assert.deepEqual(step, {
     panel: review,
-    error: "Cannot reach the API: TypeError: Failed to fetch. Retry is safe.",
+    error: "Cannot reach the server. Check your connection and try again.",
     reread: false,
   });
 });

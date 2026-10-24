@@ -76,7 +76,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .segmented.round button { border-radius: 999px; }
 .segmented button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--card); border-color: var(--raised-edge); box-shadow: var(--shadow-raised); }
 .stage { min-width: 0; min-height: calc(100vh - 20px); display: flex; flex-direction: column; background: var(--panel); border: 2px solid var(--raised-edge); border-radius: var(--r-panel); box-shadow: var(--shadow-raised); overflow: hidden; }
-.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 28px 36px 0; }
+.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; width: 100%; max-width: 1180px; padding: 28px 32px 0; }
 .topbar-title { min-width: 0; }
 .topbar-title .eyebrow { margin: 0; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
 .topbar-h { margin: 6px 0 0; font-size: 26px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.2; color: var(--ink); }
@@ -93,7 +93,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .side-close { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
   .side-scrim { display: block; position: fixed; inset: 0; z-index: 45; background: rgb(0 0 0 / 0.4); }
   .stage { min-height: 0; }
-  .topbar { padding: 20px 20px 0; }
+  .topbar { padding: 20px 16px 0; }
   .topbar-h { font-size: 22px; }
 }
 @media (max-width: 480px) {
@@ -102,7 +102,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .userpick i { width: 26px; height: 26px; border-radius: 50%; background: var(--green-bg); display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; color: var(--green-text); flex: none; }
 
 /* The width is set, not left to auto margins: in the stage's flex column, auto margins would size the page to its widest table and clip it. */
-.wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 28px 32px 120px; }
+.wrap { width: 100%; max-width: 1180px; margin: 0; padding: 28px 32px 120px; }
 .wrap.wrap-full { max-width: none; padding: 16px 20px 120px; }
 .crumbs { color: var(--muted); font-size: 13px; }
 .crumbs a { text-decoration: none; }
@@ -248,36 +248,133 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .connected span { color: var(--muted); }
 .connected-step { display: grid; gap: 16px; justify-items: start; }
 
-.credits { margin: 0; min-width: 220px; }
-.credits .big { font-size: 28px; font-weight: 600; }
-.credits .big small { font-size: 13px; color: var(--muted); font-weight: 400; }
-.jobline { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-.jobline a { text-decoration: none; }
-.bidpane { border-top: 1px solid var(--line); background: var(--surface); }
-.ws { margin-top: 26px; }
-.ws > h2 { font-size: 16px; margin: 0 0 10px; }
-.work-next { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
-.ws-earn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-.ws-earn .card { margin-bottom: 0; }
-.ws-earn .big { font-size: 24px; font-weight: 600; margin: 4px 0; }
-.ws-earn small { display: block; }
-.receipt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; padding: 12px 20px; border-top: 1px solid var(--line); }
-.receipt-row > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* Operator pages. Each page is a column of cards: Find work adds a filter column on a wide screen and a credits column beside the list. */
+.find-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.find-search { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--muted); }
+.find-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; }
+.find-filters-toggle { display: none; }
+.find-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.find-filters { display: none; margin-bottom: 0; }
+.find-list, .find-info { display: grid; gap: 12px; min-width: 0; }
+.filter-panel { display: grid; gap: 18px; }
+.filter-group { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.filter-group legend { padding: 0; margin: 0 0 3px; font-size: 13px; font-weight: 600; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); cursor: pointer; }
+.check input { margin: 0; accent-color: var(--green); }
+.job-card { display: grid; gap: 8px; margin-bottom: 0; padding: 16px 18px; }
+.job-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; min-width: 0; }
+.job-title { min-width: 0; font-size: 15px; font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+.job-title:hover { text-decoration: underline; }
+.job-budget { flex: none; font-size: 14px; font-weight: 600; }
+.job-meta { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.job-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.job-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding-top: 4px; }
+.bid-job { display: grid; gap: 4px; margin-bottom: 14px; padding: 12px 14px; border-radius: var(--r); background: var(--surface); }
+.side-card { display: grid; gap: 6px; margin-bottom: 0; }
+.side-card h2 { margin: 0 0 2px; }
+.side-card p { margin: 0; }
+.side-big { font-size: 26px; font-weight: 600; line-height: 1.2; }
+.agent-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.copy-cmd { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.copy-cmd code { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.bids-page, .work-page, .earn-page { display: grid; gap: 12px; min-width: 0; }
+.bid-row, .work-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px 16px; margin-bottom: 0; padding: 14px 18px; }
+.bid-main, .work-main { display: grid; gap: 4px; min-width: 0; }
+.work-held { margin: 0; font-size: 15px; }
+.work-next { margin: 0; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.work-next.turn { color: var(--amber); font-weight: 600; }
+.earn-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.earn-stage { display: grid; gap: 6px; margin-bottom: 0; }
+.earn-amount { margin: 0; font-size: 24px; font-weight: 600; overflow-wrap: anywhere; }
+.receipt-line { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr)); align-items: center; gap: 8px 14px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.receipt-id { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.rcell { display: grid; gap: 2px; min-width: 0; }
+.rcell-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.cli-page { display: grid; justify-items: center; padding: 24px 0; }
+.cli-card { width: min(480px, 100%); margin-bottom: 0; display: grid; justify-items: center; gap: 12px; text-align: center; }
+.cli-card h2 { margin: 0; font-size: 18px; }
+.cli-card p { margin: 0; }
+.cli-approve { min-width: 160px; }
 .confirm { margin: 10px 0 16px; border-color: var(--green-line); background: var(--green-bg); }
 .confirm-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .confirm-kvs { margin: 10px 0 0; grid-template-columns: 180px 1fr; }
 .confirm-kvs dt { color: var(--ink-2); }
 @media (max-width: 640px) {
-  .ws-earn { grid-template-columns: minmax(0, 1fr); }
-  .receipt-row { grid-template-columns: minmax(0, 1fr); }
-  .bidpane .row3 { grid-template-columns: minmax(0, 1fr); }
   .confirm .confirm-kvs { grid-template-columns: 9rem minmax(0, 1fr); }
+}
+@media (min-width: 1200px) {
+  .find-layout { grid-template-columns: 200px minmax(0, 1fr) 260px; }
+  .find-filters { display: block; grid-column: 1; grid-row: 1; }
+  .find-list { grid-column: 2; grid-row: 1; }
+  .find-info { grid-column: 3; grid-row: 1; }
+}
+@media (max-width: 1199px) {
+  .find-filters-toggle { display: inline-flex; }
+}
+@media (max-width: 760px) {
+  .bid-row, .work-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .bid-row > .btn, .work-row > .btn { grid-column: 1 / -1; justify-self: start; }
+  .earn-stages { grid-template-columns: minmax(0, 1fr); }
+  .receipt-line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .receipt-id { grid-column: 1 / -1; }
 }
 
 .scrim { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: center; z-index: 40; }
 .modal { width: min(480px, calc(100vw - 32px)); background: var(--card); color: var(--ink); border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); padding: 24px; }
 .modal h3 { margin: 0 0 4px; font-size: 18px; }
 .modal p { margin: 0; color: var(--muted); }
+
+/* The shared Modal: a centred dialog, or a drawer that slides in from the right and is a bottom sheet on a phone. */
+.dialog-scrim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 0.45); }
+.dialog-scrim.drawer { place-items: stretch end; padding: 0; }
+.dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(480px, 100%); max-height: calc(100vh - 32px); background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); outline: none; }
+.dialog.drawer { width: min(440px, 100vw); max-height: none; height: 100%; border-radius: 0; border-width: 0 0 0 1px; }
+.dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 0; }
+.dialog-head h2 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3; }
+.dialog-close { margin: -6px -8px 0 0; }
+.dialog-body { min-height: 0; overflow-y: auto; padding: 12px 20px 16px; }
+.dialog-text { margin: 0; color: var(--ink-2); }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line); }
+.btn.danger-solid { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.danger-solid:hover { background: var(--red); border-color: var(--red); box-shadow: 0 0 0 3px rgb(163 58 42 / 0.18); }
+@media (max-width: 760px) {
+  .dialog-scrim { place-items: end stretch; padding: 0; }
+  .dialog { width: 100%; max-height: 92vh; border-radius: var(--r-card) var(--r-card) 0 0; border-width: 1px 0 0; }
+  .dialog.drawer { width: 100%; height: auto; max-height: 92vh; border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; }
+}
+
+/* Loading: grey bars where a card will be. The shimmer stops for reduced motion. */
+.skeleton-list { display: grid; gap: 12px; }
+.skeleton-card { display: grid; gap: 10px; margin-bottom: 0; }
+.skeleton { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.skeleton-title { width: 46%; height: 16px; }
+.skeleton-line { width: 88%; }
+@keyframes skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Errors: the plain sentence, with a Details line only for a code the page has no sentence for. */
+.alert-msg { margin: 0; }
+.details-line { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+.details-code { border: 0; background: transparent; padding: 0; color: var(--muted); font-size: 12px; text-decoration: underline dotted; }
+
+/* Completions: one toast at a time, bottom centre, leaves after five seconds. */
+.toast-region { position: fixed; left: 50%; bottom: 20px; z-index: 70; width: min(420px, calc(100vw - 32px)); transform: translateX(-50%); pointer-events: none; }
+.toast { margin: 0; padding: 12px 16px; border: 1px solid var(--green-line); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised), var(--shadow); font-size: 14px; font-weight: 500; text-align: center; animation: toast-in 0.18s ease-out; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Form fields in the bid drawer. The counter turns red past the limit. */
+.bid-form { display: grid; gap: 16px; }
+.field { display: grid; gap: 6px; min-width: 0; }
+.field-label { font-weight: 600; font-size: 13px; }
+.field-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.field input, .field select, .field textarea { font: inherit; width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--ink); }
+.field textarea { min-height: 112px; resize: vertical; }
+.counter { color: var(--muted); white-space: nowrap; }
+.counter.over { color: var(--red); font-weight: 600; }
+.cost { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--surface); color: var(--ink-2); font-size: 13px; }
+.bid-submit { width: 100%; }
 
 .demobar { background: var(--green-bg); border-bottom: 1px solid var(--green-line); font-size: 13px; }
 .demobar .wrap { padding: 8px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }

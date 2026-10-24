@@ -81,21 +81,21 @@ test("the clock gives up after three lost races and never retries another refusa
   assert.equal(calls, 1);
 });
 
-test("a demo refusal reads as a plain sentence with its code", () => {
-  assert.equal(denied("CAP_VISITORS_DAY"), "Today's demos are all taken: the daily limit is reached. Try again tomorrow. (CAP_VISITORS_DAY)");
-  assert.equal(denied("SEEDED_LOGIN_DISABLED"), "Seeded sign-in is off on this deployment. Start a demo instead. (SEEDED_LOGIN_DISABLED)");
-  assert.equal(denied("FUNDING_BOUND"), "The payment method was fixed when a bid was accepted. (FUNDING_BOUND)");
+test("a demo refusal reads as a plain sentence, with no code", () => {
+  assert.equal(denied("CAP_VISITORS_DAY"), "Today's demos are all taken: the daily limit is reached. Try again tomorrow.");
+  assert.equal(denied("SEEDED_LOGIN_DISABLED"), "Seeded sign-in is off on this deployment. Start a demo instead.");
+  assert.equal(denied("FUNDING_BOUND"), "The payment method was fixed when a bid was accepted.");
 });
 
 test("a late funding choice and a capped command read from the refusal table, not the API's detail", () => {
   assert.equal(
     errorText(new ApiError(409, "FUNDING_BOUND", "This job's funding was fixed when its client accepted a bid.")),
-    "The payment method was fixed when a bid was accepted. (FUNDING_BOUND)",
+    "The payment method was fixed when a bid was accepted.",
   );
   assert.equal(errorText(new ApiError(403, "NOT_VISITOR_JOB", "This action reaches only a job your own demo's client owns.")),
-    "Only the demo's client can change this job. (NOT_VISITOR_JOB)");
-  assert.equal(denied("CAP_VISITOR_JOBS"), "This demo has opened as many jobs as a demo can. (CAP_VISITOR_JOBS)");
-  assert.equal(denied("CAP_SPEND_DAY"), "This demo has reached its daily limit for job budgets. (CAP_SPEND_DAY)");
+    "Only the demo's client can change this job.");
+  assert.equal(denied("CAP_VISITOR_JOBS"), "This demo has opened as many jobs as a demo can.");
+  assert.equal(denied("CAP_SPEND_DAY"), "This demo has reached its daily limit for job budgets.");
 });
 
 test("only the DEMO_PRIVATE refusal closes the picker, and the closed state promises nothing", () => {
@@ -105,7 +105,7 @@ test("only the DEMO_PRIVATE refusal closes the picker, and the closed state prom
   assert.equal(isDemoPrivate(new Error("Failed to fetch")), false);
   assert.equal(DEMO_PRIVATE_COPY.heading, "The live demo is private for now");
   assert.equal(DEMO_PRIVATE_COPY.line, "The public demo opens soon. Everything runs on the PayPal sandbox.");
-  assert.equal(errorText(new ApiError(403, "DEMO_PRIVATE", "The live demo is private for now.")), "The live demo is private for now. (DEMO_PRIVATE)");
+  assert.equal(errorText(new ApiError(403, "DEMO_PRIVATE", "The live demo is private for now.")), "The live demo is private for now.");
 });
 
 test("the demo bar counts down to the visitor's expiry", () => {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { api, ApiError } from "./api";
+import { api } from "./api";
 import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
 import { pageHeading } from "./nav";
@@ -7,7 +7,7 @@ import { useRouter } from "./router";
 import { match, signedOutPage } from "./route";
 import { Shell } from "./shell";
 import { SessionContext, useSession, type Session } from "./session";
-import { NotFound, RepoLink } from "./ui";
+import { ConfirmDialog, NotFound, RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
 import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
@@ -15,7 +15,7 @@ import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { VerifiersPage } from "./pages/Verifiers";
 import { PrintDemoPage } from "./pages/PrintDemo";
-import { OperatorHome } from "./pages/OperatorHome";
+import { EarningsPage, FindWorkPage, MyBidsPage, MyWorkPage } from "./pages/operator/OperatorRoutes";
 import { CliLogin } from "./pages/CliLogin";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
@@ -44,20 +44,35 @@ export function App() {
         setSession(r.user ? { user: r.user, visitor: r.visitor } : null);
       })
       .catch((e: unknown) => {
-        setError(e instanceof ApiError ? e.message : `Cannot reach the API: ${String(e)}`);
+        setError(errorText(e));
         setSession(null);
       });
   }, []);
 
   const { navigate, location } = useRouter();
-  const signOut = () => {
-    // A demo has no way back in: Start my demo makes a new visitor, which counts against the day's caps.
-    if (session?.visitor && !window.confirm("Leave this demo? You cannot return to it. Start my demo makes a new one.")) return;
+  const [leaving, setLeaving] = useState(false);
+  const endSession = () => {
     void api.signOut().finally(() => {
+      setLeaving(false);
       setSession(null);
       navigate("/");
     });
   };
+  // A demo has no way back in, so leaving it asks first; signing out of a seeded session does not.
+  const signOut = () => {
+    if (session?.visitor) setLeaving(true);
+    else endSession();
+  };
+  const leaveDialog = leaving ? (
+    <ConfirmDialog
+      title="Leave this demo?"
+      body="You cannot return to this demo. Start my demo makes a new one, and it counts against the day's limits."
+      confirmLabel="Leave demo"
+      danger
+      onConfirm={endSession}
+      onCancel={() => setLeaving(false)}
+    />
+  ) : null;
 
   // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
   // The verifier registry and the print demo are public for the same reason. A print run starts its own demo.
@@ -75,6 +90,7 @@ export function App() {
             <PrintDemoPage session={session} onSignedIn={(s) => { setError(null); setSession(s); }} />
           )}
         </main>
+        {leaveDialog}
       </Shell>
     );
   }
@@ -104,6 +120,7 @@ export function App() {
               mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
             )}
           </main>
+          {leaveDialog}
         </>
       )}
     </Shell>
@@ -184,7 +201,13 @@ function Routes() {
     case "job":
       return <JobPage key={route.id} id={route.id} />;
     case "operator":
-      return <OperatorHome />;
+      return <FindWorkPage />;
+    case "operatorBids":
+      return <MyBidsPage />;
+    case "operatorWork":
+      return <MyWorkPage />;
+    case "operatorEarnings":
+      return <EarningsPage />;
     case "cli":
       return <CliLogin />;
     case "studio":
@@ -198,7 +221,7 @@ function Home() {
   const { user } = useSession();
   switch (user.role) {
     case "OPERATOR":
-      return <OperatorHome />;
+      return <FindWorkPage />;
     case "PLATFORM":
       return <Studio />;
     case "CLIENT":
