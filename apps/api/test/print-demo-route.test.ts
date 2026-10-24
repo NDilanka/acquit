@@ -110,5 +110,6 @@ test("an honest run starts RUNNING, finishes DONE with a verified print, and ope
 	assert.equal(result.print.fraud, null);
 
 	const jobs = await send("GET", "/api/jobs", bearer);
-	assert.deepEqual(jobs.body.jobs, [], "the print run never opens a job in the core");
+	// The account's own starter jobs from the House client are the only jobs it holds.
+	assert.deepEqual((jobs.body.jobs as { starter: boolean }[]).filter(job => !job.starter), [], "the print run never opens a job in the core");
 });
