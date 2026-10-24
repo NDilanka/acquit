@@ -28,6 +28,8 @@ export type FixtureContract = {
 	readonly trustedFix?: CommitSha;
 	/** The per-currency-family coverage gate the fixture's draft must satisfy before approval. */
 	readonly coverageFamilies?: readonly CurrencyFamily[];
+	/** A qualification practice issue. It is never opened as a House starter job. */
+	readonly practice?: true;
 };
 
 /** One family the coverage gate names: its own label, and the currency codes that cover it. */
@@ -58,6 +60,8 @@ export type FixtureEntry = {
 	readonly coverageFamilies?: readonly CurrencyFamily[];
 	/** Case sets this fixture retired. A job that froze one is still judged against exactly that set. */
 	readonly retiredHiddenCases?: readonly RetiredHiddenCases[];
+	/** A qualification practice issue. It is never opened as a House starter job. */
+	readonly practice?: true;
 };
 
 /** One retired hidden-case file: its name beside the registry, and the count it holds. */
@@ -114,7 +118,7 @@ export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], rep
 	return null;
 }
 
-const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies", "retiredHiddenCases"];
+const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies", "retiredHiddenCases", "practice"];
 const OWNER_NAME = /^[a-zA-Z0-9-]+$/;
 const REPOSITORY_NAME = /^[a-zA-Z0-9._-]+$/;
 
@@ -207,6 +211,8 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 				}
 			}
 		}
+		const practice = raw.practice;
+		if (practice !== undefined && practice !== true) refuse([at], `${at} practice must be true when present.`);
 		const key = fixtureKey(repository, number);
 		if (seen.has(key)) refuse([at], `${source} registers ${key} twice.`);
 		seen.add(key);
@@ -215,7 +221,8 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 			...(demoForkPrefix === undefined ? {} : { demoForkPrefix }),
 			...(trustedFix === undefined ? {} : { trustedFix: trustedFix as CommitSha }),
 			...(coverageFamilies === undefined ? {} : { coverageFamilies: coverageFamilies as { name: string; currencies: string[] }[] }),
-			...(retiredHiddenCases === undefined ? {} : { retiredHiddenCases: retiredHiddenCases as RetiredHiddenCases[] }) });
+			...(retiredHiddenCases === undefined ? {} : { retiredHiddenCases: retiredHiddenCases as RetiredHiddenCases[] }),
+			...(practice === true ? { practice } : {}) });
 	}
 	return entries;
 }

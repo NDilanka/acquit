@@ -1,7 +1,8 @@
 // The committed example manifest, loaded once for the tests that need a deployment contract. A real
 // deployment's private cases are never in the repository; these eight are public history by design.
 
-import { EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE, hiddenContractOf, loadHiddenCasesFromFile } from "../../verifier/hidden.ts";
+import { EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE, EXAMPLE_JPY_HIDDEN_CASES_PATH, EXAMPLE_JPY_HIDDEN_CASE_SHAPE, hiddenContractOf,
+	loadHiddenCasesFromFile } from "../../verifier/hidden.ts";
 import type { FixtureContract, HiddenContract } from "../src/fixtures.ts";
 import type { CommitSha, TestId } from "../src/ids.ts";
 import type { Glob } from "../src/verifier.ts";
@@ -14,6 +15,12 @@ export const demoProtectedPaths = ["tests/**", ".github/**", "package.json", "pa
 export const DEMO_REPOSITORY = "maya-client/invoice-app";
 export const DEMO_FROZEN_AT = "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha;
 export const DEMO_FROZEN_TEST_PATH = "tests/totals.test.ts";
+
+/** Issue 13 on the same frozen commit, over its own committed example cases: the second starter issue. */
+export function jpyFixture(): FixtureContract {
+	return demoFixture(hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_JPY_HIDDEN_CASES_PATH, EXAMPLE_JPY_HIDDEN_CASE_SHAPE)),
+		{ issue: { number: 13, title: "Totals round wrong for JPY" } });
+}
 
 /** One registered demo fixture over the given hidden contract. Tests that need another fixture extend this one. */
 export function demoFixture(hidden: HiddenContract = exampleContract, overrides: Partial<FixtureContract> = {}): FixtureContract {

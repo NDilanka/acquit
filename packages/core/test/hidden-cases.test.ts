@@ -14,7 +14,7 @@ import type { Digest, TestId } from "../src/ids.ts";
 import * as seedData from "../src/seed-data.ts";
 import { manifestOf } from "../src/fixtures.ts";
 import type { HiddenContract } from "../src/fixtures.ts";
-import { EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE, hiddenContractOf, loadExampleHiddenCases, loadHiddenCasesFromFile, parseHiddenCases } from "../../verifier/hidden.ts";
+import { EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE, EXAMPLE_JPY_HIDDEN_CASES_PATH, EXAMPLE_JPY_HIDDEN_CASE_SHAPE, hiddenContractOf, loadExampleHiddenCases, loadHiddenCasesFromFile, parseHiddenCases } from "../../verifier/hidden.ts";
 import { buildFixtureBook, EXAMPLE_FIXTURES_PATH, FIXTURES_ENV, fixtureContracts, fixtureRegistrySource, loadFixtureRegistry } from "../../verifier/fixtures.ts";
 import { FixtureConfigError } from "../src/fixtures.ts";
 import { dockerArgs } from "../../verifier/subject.ts";
@@ -41,6 +41,7 @@ const TEST_HIDDEN_CASES_PATH = fileURLToPath(new URL("../../verifier/fixtures/hi
 const SHAPE = EXAMPLE_HIDDEN_CASE_SHAPE;
 /** The non-dev test file's own shape: six cases, none of them the public example's. */
 const TEST_SHAPE = { count: 6, idPrefix: "hidden" };
+const jpyDigest = () => hiddenContractOf(loadHiddenCasesFromFile(EXAMPLE_JPY_HIDDEN_CASES_PATH, EXAMPLE_JPY_HIDDEN_CASE_SHAPE)).digest;
 const eight = () => Array.from({ length: 8 }, (_, index) => sampleCase(index + 1));
 const manifest = (cases: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 1, cases, ...extra });
 const invalid = (text: string, what: string) => {
@@ -132,8 +133,8 @@ test("a non-dev process without a registry refuses by name", () => {
 	// A development process falls back to the committed example registry, and it alone.
 	const dev = loadFixtureRegistry({ ACQUIT_DEV: "1" });
 	assert.equal(dev.path, EXAMPLE_FIXTURES_PATH);
-	assert.deepEqual(dev.entries.map(entry => entry.repository), ["maya-client/invoice-app"]);
-	assert.deepEqual(fixtureContracts(dev).map(entry => entry.hiddenManifest), [hiddenContractOf(loadExampleHiddenCases()).digest]);
+	assert.deepEqual(dev.entries.map(entry => `${entry.repository}#${entry.issue.number}`), ["maya-client/invoice-app#12", "maya-client/invoice-app#13"]);
+	assert.deepEqual(fixtureContracts(dev).map(entry => entry.hiddenManifest), [hiddenContractOf(loadExampleHiddenCases()).digest, jpyDigest()]);
 });
 
 test("the registry names the case files, and those files alone decide the contracts", () => {
@@ -157,7 +158,10 @@ test("a non-dev registry refuses the committed public example, and a dev one may
 	});
 	const devRegistry = loadFixtureRegistry({ ACQUIT_FIXTURES: EXAMPLE_FIXTURES_PATH, ACQUIT_DEV: "1" });
 	const dev = buildFixtureBook(devRegistry, { ACQUIT_DEV: "1" });
-	assert.deepEqual([...dev.byDigest.keys()], [hiddenContractOf(loadExampleHiddenCases()).digest]);
+	assert.deepEqual([...dev.byDigest.keys()], [hiddenContractOf(loadExampleHiddenCases()).digest, jpyDigest()]);
+	// Issue 13's committed cases are public too: a non-dev registry naming them alone refuses the same way.
+	assert.throws(() => buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: registryFor(
+		readFileSync(EXAMPLE_JPY_HIDDEN_CASES_PATH, "utf8"), { hidden: 8, hiddenIdPrefix: "jpy" }) }), {}), /public example/);
 	// The non-dev test fixture is never mistaken for the public example: a registry naming it loads.
 	const test = buildFixtureBook(loadFixtureRegistry({ ACQUIT_FIXTURES: registryFor(
 		readFileSync(TEST_HIDDEN_CASES_PATH, "utf8")) }));
