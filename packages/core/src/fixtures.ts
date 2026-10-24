@@ -21,7 +21,7 @@ export type FixtureContract = {
 	readonly hiddenTests: readonly TestId[];
 	readonly hiddenManifest: Digest;
 	readonly protectedPaths: readonly Glob[];
-	/** The `<org>/` org whose `demo-<visitor>` forks open this fixture; absent, no fork names it. */
+	/** The `<org>/` org whose `ws-<visitor>` (and older `demo-<visitor>`) forks open this fixture; absent, no fork names it. */
 	readonly demoForkPrefix?: string;
 	/** The fixture's trusted fix commit, the second phase AI scoping's filters require a drafted
 	 * case to pass on. Absent, the fixture is not scoped: OpenJob never kicks a draft for it. */
@@ -99,6 +99,9 @@ export function manifestOf(fixture: FixtureContract, repository: string): Defini
 		hiddenTests: fixture.hiddenTests, hiddenManifest: fixture.hiddenManifest, protectedPaths: fixture.protectedPaths };
 }
 
+/** The fork names a visitor's repository carries: `ws-` for accounts made now, `demo-` for the ones made before. */
+const VISITOR_FORK_NAMES = ["ws-", "demo-"] as const;
+
 type FixtureKeyed = { readonly repository: string; readonly issue: { readonly number: number }; readonly demoForkPrefix?: string };
 
 /**
@@ -112,7 +115,7 @@ export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], rep
 	if (exact) return exact;
 	if (actorRepository !== null && actorRepository === repository) {
 		const forks = fixtures.filter(f => f.issue.number === issueNumber && f.demoForkPrefix !== undefined
-			&& repository.startsWith(`${f.demoForkPrefix}demo-`));
+			&& VISITOR_FORK_NAMES.some(name => repository.startsWith(`${f.demoForkPrefix}${name}`)));
 		return forks.length === 1 ? forks[0] : null;
 	}
 	return null;
