@@ -56,7 +56,8 @@ function verdictFor(tree: ScriptedTree, request: VerifierRunRequest, at: Instant
 /** A dispute as PayPal's read answers it, keyed by the dispute id the test names. */
 type DisputeObservation = Extract<PayPalObservation, { kind: "DISPUTE" }>;
 
-function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation>, disputeReads: string[], dispatches: string[]): PayPal {
+function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation>, disputeReads: string[], dispatches: string[],
+	faults: Map<PayPalCall["kind"], { times: number; reason: string }>): PayPal {
 	const quotes = new Map<string, FeeQuote>();
 	const cardOrders = new Set<string>();
 	const quoteOf = (key: string): FeeQuote => {
@@ -74,6 +75,12 @@ function fakePayPal(now: () => Instant, disputes: Map<string, DisputeObservation
 		async dispatch(call: PayPalCall, requestId: string): Promise<RemoteOutcome> {
 			// Every call that reaches PayPal's write path is recorded by kind, so a test can name the ones a run never sent.
 			dispatches.push(call.kind);
+			// A refused write comes back as the permanent failure PayPal's 4xx answers are, so the core's own path settles it.
+			const fault = faults.get(call.kind);
+			if (fault && fault.times > 0) {
+				fault.times--;
+				return { kind: "PERMANENT_FAILURE", reason: fault.reason };
+			}
 			if (call.kind === "CREATE_ORDER") {
 				const orderId = `ORDER-${call.jobId}` as OrderId;
 				quotes.set(orderId, call.quote);
@@ -154,6 +161,8 @@ export type Harness = {
 	readonly disputeReads: string[];
 	/** The kind of every call the fake PayPal's write path was asked to send, in order. A dispute answer a simulated dispute owns never appears here. */
 	readonly paypalDispatches: string[];
+	/** Makes the next `times` PayPal writes of this kind fail permanently with `reason`, as a refused card does. */
+	readonly failPayPal: (kind: PayPalCall["kind"], times: number, reason: string) => void;
 	/** A second service over the same database file and the same fakes, as a restarted process would open it. Closed by dispose. */
 	readonly reopen: () => Acquit;
 };
@@ -191,7 +200,8 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const paypalDisputes = new Map<string, DisputeObservation>();
 	const disputeReads: string[] = [];
 	const paypalDispatches: string[] = [];
-	const paypal = fakePayPal(clock, paypalDisputes, disputeReads, paypalDispatches);
+	const faults = new Map<PayPalCall["kind"], { times: number; reason: string }>();
+	const paypal = fakePayPal(clock, paypalDisputes, disputeReads, paypalDispatches, faults);
 	const compose = () => createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
@@ -219,6 +229,7 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 		now: clock, repository: DEMO_REPOSITORY, issueNumber: 12, pollMs: 5, waitMs: options.waitMs ?? 20_000 };
 	return { acquit, store, github, deps, path, visitor: provisioned.visitor, provision: async requester => noFork(requester.id), setClock: at => { now = at; },
 		paypalDisputes, disputeReads, paypalDispatches,
+		failPayPal: (kind, times, reason) => { faults.set(kind, { times, reason }); },
 		reopen: () => { const service = compose(); reopened.push(service); return service; },
 		dispose: async () => {
 			for (const service of reopened) closeAcquit(service);

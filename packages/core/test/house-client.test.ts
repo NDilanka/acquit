@@ -323,6 +323,70 @@ test("a rejected attempt follows the normal rules: the House client waits, and t
 	} finally { await h.dispose(); }
 });
 
+const nothingHeld = { held: 0, released: 0, refunded: 0, fees: 0, funded: 0 };
+
+test("a card the provider refuses at order creation returns the job to bidding and the bid to pending, and the next round retries across a restart", async () => {
+	const h = await harness({ fixtures });
+	try {
+		const [first] = await startersOf(h);
+		const jobId = first!.id;
+		h.setClock(at(100));
+		const bidId = await bid(h.acquit, operatorOf(h), jobId, usd("400.00"), `${h.visitor.operatorHandle}-agent`);
+		h.failPayPal("CREATE_ORDER", 1, "PAYPAL_HTTP_422");
+		h.setClock(at(130));
+		await h.acquit.tick();
+		const refused = await rowOf(h, jobId);
+		if (refused.state.status !== "OPEN") throw new Error(`the starter is ${refused.state.status}`);
+		assert.deepEqual({ phase: refused.state.phase, bids: refused.bids.map(b => b.status),
+			fundingReturned: projectJob(refused, operatorOf(h), new Map()).fundingReturned },
+		{ phase: { kind: "BIDDING", fundingRounds: 1 }, bids: ["PENDING"], fundingReturned: true });
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1);
+		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
+		// The process restarts before the next round. The new process reads the same row and sends the next round's accept.
+		h.setClock(at(160));
+		await h.reopen().tick();
+		const retried = await until(h, jobId, row => row.state.status === "IN_PROGRESS");
+		if (retried.state.status !== "IN_PROGRESS") throw new Error(`the starter is ${retried.state.status}`);
+		assert.equal(retried.state.escrow.payee.bidId, bidId);
+		assert.equal(retried.state.escrow.payee.price, 40000);
+		assert.equal(retried.state.escrow.book[0].cents, 42000);
+		assert.deepEqual(retried.bids.map(b => b.status), ["ACCEPTED"]);
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 2);
+		assert.deepEqual(await assertConserves(h.acquit), { held: 42000, released: 0, refunded: 0, fees: 0, funded: 42000 });
+	} finally { await h.dispose(); }
+});
+
+test("the House client stops after three refused cards: no fourth order is sent, and that holds across a restart", async () => {
+	const h = await harness({ fixtures });
+	try {
+		const [first] = await startersOf(h);
+		const jobId = first!.id;
+		h.setClock(at(100));
+		await bid(h.acquit, operatorOf(h), jobId, usd("400.00"), `${h.visitor.operatorHandle}-agent`);
+		h.failPayPal("CREATE_ORDER", Infinity, "PAYPAL_HTTP_422");
+		for (const round of [1, 2, 3]) {
+			h.setClock(at(100 + 30 * round));
+			await h.acquit.tick();
+			const row = await rowOf(h, jobId);
+			if (row.state.status !== "OPEN") throw new Error(`round ${round}: the starter is ${row.state.status}`);
+			assert.deepEqual({ phase: row.state.phase, bids: row.bids.map(b => b.status) },
+				{ phase: { kind: "BIDDING", fundingRounds: round }, bids: ["PENDING"] }, `round ${round}`);
+			assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, round, `round ${round} sent one order`);
+			assert.deepEqual(await assertConserves(h.acquit), nothingHeld, `round ${round} holds nothing`);
+		}
+		// Past the third round the House client does not accept again, in this process or in a restarted one.
+		h.setClock(at(400));
+		await h.acquit.tick();
+		await h.reopen().tick();
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 3);
+		const row = await rowOf(h, jobId);
+		if (row.state.status !== "OPEN") throw new Error(`the starter is ${row.state.status}`);
+		assert.deepEqual({ phase: row.state.phase, bids: row.bids.map(b => b.status) },
+			{ phase: { kind: "BIDDING", fundingRounds: 3 }, bids: ["PENDING"] });
+		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
+	} finally { await h.dispose(); }
+});
+
 test("the House client refills once per gap, rotates the pool, and stops at six starter jobs a day", async () => {
 	const h = await harness({ fixtures });
 	try {
