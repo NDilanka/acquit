@@ -371,7 +371,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .field-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .field input, .field select, .field textarea { font: inherit; width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--ink); }
 .field textarea { min-height: 112px; resize: vertical; }
-.counter { color: var(--muted); }
+.counter { color: var(--muted); white-space: nowrap; }
 .counter.over { color: var(--red); font-weight: 600; }
 .cost { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--surface); color: var(--ink-2); font-size: 13px; }
 .bid-submit { width: 100%; }
