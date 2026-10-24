@@ -132,7 +132,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .stat-value { margin: 0; font-size: 30px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; overflow-wrap: anywhere; }
 .stat-note { margin: 0; font-size: 12.5px; color: var(--muted); }
 /* Inputs, selects, and textareas on a page take the boxy control look. The AG Studio canvas keeps its own controls. */
-.wrap :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):not(.studio-host *) { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 10px; }
+.wrap :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):not(.studio-host *, .find-search *) { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 10px; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
 @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 
@@ -260,6 +260,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .find-search { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--muted); }
 .find-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; }
 .find-search:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.find-search input:focus-visible { outline: none; }
 .find-filters-toggle { display: none; }
 .find-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .find-filters { display: none; margin-bottom: 0; }
