@@ -193,8 +193,8 @@ test("the escrow rows of jobs the operator does not hold add nothing", () => {
   assert.equal(ws.earnings.heldCents, 36000);
 });
 
-test("the operator's held earnings say a PayPal dispute can hold the payout, with no per-job data", () => {
+test("the operator's awaiting-review earnings say when the money releases, with no per-job data", () => {
   // The suite has no DOM, so the sentence is checked in the page's source, as the job page tests do.
   const source = readFileSync(new URL("./pages/operator/Earnings.tsx", import.meta.url), "utf8");
-  assert.ok(source.includes("Released when the client approves or the review window closes, unless a PayPal dispute holds the payout."));
+  assert.ok(source.includes("Released when the client approves or the review window closes."));
 });

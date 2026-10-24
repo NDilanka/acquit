@@ -81,7 +81,7 @@ export function App() {
   if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
     return (
       <Shell session={session} heading={heading} onSignOut={signOut}>
-        <main className="wrap">
+        <main id="content" tabIndex={-1} className="wrap">
           {route.name === "receipt" ? (
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
@@ -102,12 +102,12 @@ export function App() {
   return (
     <Shell session={session} heading={heading} onSignOut={signOut}>
       {session === undefined ? (
-        <main className="wrap muted">Loading…</main>
+        <main id="content" tabIndex={-1} className="wrap muted">Loading…</main>
       ) : (
         <>
           {session?.visitor && <DemoBar session={session} visitor={session.visitor} onSwitched={setSession} />}
           {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
-          <main className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
+          <main id="content" tabIndex={-1} className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
             {error && !session && <div className="alert">{error}</div>}
             {session ? (
               <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>

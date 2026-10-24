@@ -1,5 +1,6 @@
 import type { CreditAccountView, DisputeView, JobView, LedgerLine, MergeProgress, RefundReason, ReleaseAuthority } from "./api-types";
 import { errorWords } from "./errors.ts";
+import { relativeTime } from "./time.ts";
 
 export function usd(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -135,8 +136,16 @@ export function disputeNote(dispute: DisputeView, held = false): string {
   return `Disputed ${utc(dispute.openedAt)}: ${dispute.reason} The arbiter decides by ${utc(dispute.resolveBy)}, or ${deadlineOutcome(held)}`;
 }
 
-export function creditLine(credits: CreditAccountView): string {
-  return `${credits.available} of ${credits.weeklyAllowance} credits left this week. Next grant ${utc(credits.nextGrantAt)}.`;
+/** "20 of 30 left this week. New credits in 2 days." The exact grant time, `utc(credits.nextGrantAt)`, goes in the title beside it. */
+export function creditLine(credits: CreditAccountView, now: number): string {
+  return `${credits.available} of ${credits.weeklyAllowance} left this week. New credits ${relativeTime(credits.nextGrantAt, now)}.`;
+}
+
+const RUNNERS: Readonly<Record<string, string>> = { "claude-code": "Claude Code", codex: "Codex" };
+
+/** An agent's runner in words. A runner this map does not know yet shows as it is, which beats showing nothing. */
+export function runnerLabel(runner: string): string {
+  return RUNNERS[runner] ?? runner;
 }
 
 /** `settled` is true once the job is REFUNDED; `maxAttempts` is the job's attempt allowance (used plus left). */

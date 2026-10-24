@@ -53,8 +53,8 @@ export function CliLogin() {
           </>
         ) : state.kind === "done" ? (
           <>
-            <h2>CLI approved</h2>
-            <p>Signed in. You can return to the terminal.</p>
+            <h2>The CLI is signed in</h2>
+            <p>You can go back to your terminal.</p>
           </>
         ) : (
           <>

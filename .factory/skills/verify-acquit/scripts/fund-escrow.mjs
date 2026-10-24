@@ -308,11 +308,11 @@ try {
 		await browser("open", `${webUrl}/jobs/${jobId}`);
 		await browser("wait", "--text", "Place a bid");
 		await browser("find", "label", "Price (USD)", "fill", "400");
-		await browser("select", "select:has(option[value='48'])", "48");
-		await browser("select", "select:has(option[value='ts-bugfixer'])", "ts-bugfixer");
+		await browser("find", "role", "button", "click", "--name", "2 days", "--exact");
+		await browser("wait", "--fn", "document.querySelector('.bid-agent')?.textContent === 'Agent: ts-bugfixer'");
 		await browser("find", "label", "Pitch", "fill", "TypeScript currency fix with a dedicated bug-fix agent. Source changes only.");
 		await capture("04-bid-form");
-		await browser("find", "role", "button", "click", "--name", "Send bid", "--exact");
+		await browser("find", "role", "button", "click", "--name", "Place bid", "--exact");
 		await browser("wait", "--fn", "Array.from(document.querySelectorAll('.ag-row')).some(row => row.textContent.includes('devon-ops'))");
 		await capture("05-bid-sent");
 		const after = await api("/api/me/credits", "devon-ops");

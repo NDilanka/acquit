@@ -14,6 +14,7 @@
   --r: 10px; --r-card: 14px; --r-panel: 36px;
   --shadow: 0 1px 2px rgba(17, 21, 18, 0.05), 0 4px 16px rgba(17, 21, 18, 0.04);
   --shadow-raised: 0 9px 15px rgba(36, 39, 51, 0.05);
+  --focus: var(--blue);
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -26,6 +27,7 @@
   --red: #ff8f7d; --red-bg: #301a17; --red-line: #5c2d26;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.25);
   --shadow-raised: 0 9px 15px rgba(0, 0, 0, 0.35);
+  --focus: var(--blue);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -40,6 +42,11 @@ button { font: inherit; cursor: pointer; }
 h1 { font-size: 28px; line-height: 1.2; letter-spacing: -0.02em; margin: 8px 0 10px; font-weight: 650; }
 h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
 pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+:is(a, button, input, select, textarea, .side-item, .idchip):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* main takes focus only from the skip link, and a ring around the whole page would read as a selection. */
+#content:focus { outline: none; }
+.skip-link { position: absolute; top: 8px; left: 8px; z-index: 80; padding: 8px 14px; border-radius: var(--r); background: var(--card); color: var(--ink); font-weight: 600; text-decoration: none; box-shadow: var(--shadow); transform: translateY(-200%); }
+.skip-link:focus { transform: none; }
 
 /* The shell: a boxy sidebar on the grey canvas, and one white panel that holds the top bar and the page. */
 .app { min-height: 100vh; background: var(--paper); }
@@ -50,7 +57,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .side-brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 18px; font-weight: 600; text-decoration: none; }
 .side-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ink); color: var(--card); font-size: 16px; font-weight: 700; }
 .side-close { display: none; }
-.side-label { margin: 22px 12px 10px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--faint); }
+.side-label { margin: 22px 12px 10px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
 .side-nav { display: grid; gap: 2px; }
 .side-item { display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 12px; border: 1px solid transparent; border-radius: var(--r); color: var(--muted); font-size: 15px; text-decoration: none; }
 .side-item:hover { color: var(--ink); background: var(--surface); }
@@ -125,7 +132,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .stat-value { margin: 0; font-size: 30px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; overflow-wrap: anywhere; }
 .stat-note { margin: 0; font-size: 12.5px; color: var(--muted); }
 /* Inputs, selects, and textareas on a page take the boxy control look. The AG Studio canvas keeps its own controls. */
-.wrap :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):not(.studio-host *) { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 10px; }
+.wrap :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):not(.studio-host *, .find-search *) { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 10px; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
 @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 
@@ -252,6 +259,8 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .find-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
 .find-search { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--muted); }
 .find-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; }
+.find-search:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.find-search input:focus-visible { outline: none; }
 .find-filters-toggle { display: none; }
 .find-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .find-filters { display: none; margin-bottom: 0; }
@@ -308,6 +317,9 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .find-filters { display: block; grid-column: 1; grid-row: 1; }
   .find-list { grid-column: 2; grid-row: 1; }
   .find-info { grid-column: 3; grid-row: 1; }
+  .find-layout.no-filters { grid-template-columns: minmax(0, 1fr) 260px; }
+  .no-filters .find-list { grid-column: 1; }
+  .no-filters .find-info { grid-column: 2; }
 }
 @media (max-width: 1199px) {
   .find-filters-toggle { display: inline-flex; }
@@ -351,7 +363,10 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .skeleton-title { width: 46%; height: 16px; }
 .skeleton-line { width: 88%; }
 @keyframes skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .toast { animation: none; }
+  .side { transition: none; }
+}
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* Errors: the plain sentence, with a Details line only for a code the page has no sentence for. */
@@ -374,7 +389,11 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .counter { color: var(--muted); white-space: nowrap; }
 .counter.over { color: var(--red); font-weight: 600; }
 .cost { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--surface); color: var(--ink-2); font-size: 13px; }
-.bid-submit { width: 100%; }
+.bid-inline-submit { display: grid; margin-top: 16px; }
+.bid-agent { margin: 0; color: var(--ink-2); }
+.load-failed { display: grid; justify-items: start; gap: 8px; }
+.ready-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 0; }
+.ready-strip a { color: inherit; font-weight: 600; }
 
 .demobar { background: var(--green-bg); border-bottom: 1px solid var(--green-line); font-size: 13px; }
 .demobar .wrap { padding: 8px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }

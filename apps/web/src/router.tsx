@@ -32,7 +32,7 @@ export function useRouter() {
   return ctx;
 }
 
-export function Link({ to, className, children }: { to: string; className?: string; children: ReactNode }) {
+export function Link({ to, className, tour, children }: { to: string; className?: string; tour?: string; children: ReactNode }) {
   const { navigate } = useRouter();
   const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
@@ -40,7 +40,7 @@ export function Link({ to, className, children }: { to: string; className?: stri
     navigate(to);
   };
   return (
-    <a href={to} className={className} onClick={onClick}>
+    <a href={to} className={className} data-tour={tour} onClick={onClick}>
       {children}
     </a>
   );

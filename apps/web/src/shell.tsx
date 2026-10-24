@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Icon } from "./icons";
 import { isNavActive, navFor, signedOutNav, type NavItem, type Role } from "./nav";
 import { Link, useRouter } from "./router";
@@ -11,6 +11,12 @@ import type { ThemeChoice } from "./theme";
 const HELP_URL = "https://github.com/NDilanka/acquit#readme";
 
 const ROLE_CAPTION: Record<Role, string> = { CLIENT: "Client", OPERATOR: "Operator", PLATFORM: "Platform" };
+
+const NAV_TOUR: Readonly<Record<string, string>> = {
+  "/operator/work": "nav-my-work",
+  "/operator/bids": "nav-my-bids",
+  "/operator/earnings": "nav-earnings",
+};
 
 const THEME_CHOICES: readonly { readonly value: ThemeChoice; readonly label: string }[] = [
   { value: "dark", label: "Dark" },
@@ -52,6 +58,9 @@ export function Shell({
 
   return (
     <div className="app">
+      <a href="#content" className="skip-link" onClick={skipToContent}>
+        Skip to content
+      </a>
       <header className="mbar">
         <Link to="/" className="side-brand">
           <span className="side-mark">A</span>
@@ -74,8 +83,8 @@ export function Shell({
           </div>
           <nav className="side-nav" aria-label="Pages" onClick={() => setMenuOpen(false)}>
             {items.filter((item) => !item.group).map((item) => navLink(item, path, role))}
-            {items.some((item) => item.group === "Tools") && <p className="side-label mono">Tools</p>}
-            {items.filter((item) => item.group === "Tools").map((item) => navLink(item, path, role))}
+            {items.some((item) => item.group === "Public") && <p className="side-label mono">Public</p>}
+            {items.filter((item) => item.group === "Public").map((item) => navLink(item, path, role))}
           </nav>
           <div className="side-foot">
             {showsDemoCta(match(path), signedIn) && (
@@ -94,7 +103,7 @@ export function Shell({
           <header className="topbar">
             <div className="topbar-title">
               <p className="eyebrow mono">{heading.eyebrow}</p>
-              <p className="topbar-h">{heading.title}</p>
+              <h1 className="topbar-h">{heading.title}</h1>
             </div>
             <div className="topbar-right">
               <span className="topbar-date">{today}</span>
@@ -109,9 +118,17 @@ export function Shell({
   );
 }
 
+/** The router reads only the path, so the skip link moves focus itself instead of leaving #content in the address. */
+function skipToContent(e: ReactMouseEvent<HTMLAnchorElement>) {
+  const main = document.getElementById("content");
+  if (!main) return;
+  e.preventDefault();
+  main.focus();
+}
+
 function navLink(item: NavItem, path: string, role: Role | null) {
   return (
-    <Link key={item.to} to={item.to} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
+    <Link key={item.to} to={item.to} tour={NAV_TOUR[item.to]} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
       <Icon name={item.icon} />
       <span>{item.label}</span>
     </Link>

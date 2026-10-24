@@ -1,4 +1,4 @@
-import type { BidView, JobView, OperatorEscrowRow, OperatorView, ReceiptRow } from "./api-types.ts";
+import type { BidView, CreditAccountView, JobView, OperatorEscrowRow, OperatorView, ReceiptRow } from "./api-types.ts";
 import { relativeTime } from "./time.ts";
 
 /** Every bid on a job, the operators' and the House's. A job's count shows on its card. */
@@ -11,25 +11,57 @@ export function ownBid(job: Pick<JobView, "bids">, operatorId: string): BidView 
   return job.bids.operators.find((b) => b.operator === operatorId) ?? null;
 }
 
-export type FindTab = "best" | "recent" | "placed";
+/** My bids owns the list of jobs the operator already bid on, so Find work has no tab for it. */
+export type FindTab = "best" | "recent";
 export const FIND_TABS: readonly { readonly value: FindTab; readonly label: string }[] = [
   { value: "best", label: "Best matches" },
   { value: "recent", label: "Most recent" },
-  { value: "placed", label: "Bid placed" },
 ];
 
 export type BudgetRange = "any" | "under100" | "100to400" | "over400";
 export type DeadlineRange = "any" | "under3" | "under7";
 export type BidRange = "any" | "none" | "few" | "many";
-export type VerifierChoice = "any" | "code" | "print";
 export type FindFilters = {
   readonly budget: BudgetRange;
-  readonly verifier: VerifierChoice;
   readonly deadline: DeadlineRange;
   readonly bids: BidRange;
   readonly fundedOnly: boolean;
 };
-export const NO_FILTERS: FindFilters = { budget: "any", verifier: "any", deadline: "any", bids: "any", fundedOnly: false };
+export const NO_FILTERS: FindFilters = { budget: "any", deadline: "any", bids: "any", fundedOnly: false };
+
+/** Below this many open jobs a filter column is noise: a new workspace holds two starter jobs. */
+export const FILTERS_FROM_OPEN_JOBS = 6;
+
+export function showsFilters(jobs: readonly Pick<JobView, "status">[]): boolean {
+  return jobs.filter((job) => job.status === "OPEN").length >= FILTERS_FROM_OPEN_JOBS;
+}
+
+export type BidBlocker = "agent" | "payouts" | "credits";
+
+/** The first thing that stops the operator from bidding, in the order it must be fixed, or null when a bid can go. */
+export function bidBlocker(input: {
+  readonly agents: readonly unknown[];
+  readonly payouts: OperatorView["payouts"];
+  readonly credits: Pick<CreditAccountView, "available">;
+  readonly bidCost: number;
+}): BidBlocker | null {
+  if (input.agents.length === 0) return "agent";
+  if (input.payouts !== "READY") return "payouts";
+  if (input.credits.available < input.bidCost) return "credits";
+  return null;
+}
+
+/** The ready-to-bid strip's sentence for a blocker. The agent line names the CLI command until agents can be added in the app. */
+export function blockerLine(blocker: BidBlocker, nextGrantAt: string, now: number): string {
+  switch (blocker) {
+    case "agent":
+      return "A bid needs an agent. Run acquit agent create in your terminal.";
+    case "payouts":
+      return "Connect PayPal payouts before you bid.";
+    case "credits":
+      return `You have no bid credits left this week. New credits arrive ${relativeTime(nextGrantAt, now)}.`;
+  }
+}
 
 const DAY_MS = 86_400_000;
 
@@ -65,15 +97,9 @@ function inBids(count: number, range: BidRange): boolean {
   }
 }
 
-/** Every open job is a repository issue judged by its hidden tests, so only the Code verifier has jobs to show. */
-function inVerifier(choice: VerifierChoice): boolean {
-  return choice !== "print";
-}
-
 function matchesFilters(job: JobView, filters: FindFilters, now: number): boolean {
   return (
     inBudget(job.budget, filters.budget) &&
-    inVerifier(filters.verifier) &&
     inDeadline(job, filters.deadline, now) &&
     inBids(bidCount(job), filters.bids) &&
     (!filters.fundedOnly || job.escrow === "HELD")
@@ -99,12 +125,7 @@ export function findJobs(
   const query = options.query.trim().toLowerCase();
   return jobs
     .filter((job) => job.status === "OPEN")
-    .filter((job) => {
-      const placed = ownBid(job, options.operatorId) !== null;
-      if (options.tab === "best") return !placed;
-      if (options.tab === "placed") return placed;
-      return true;
-    })
+    .filter((job) => options.tab !== "best" || ownBid(job, options.operatorId) === null)
     .filter((job) => matchesQuery(job, query))
     .filter((job) => matchesFilters(job, options.filters, options.now));
 }

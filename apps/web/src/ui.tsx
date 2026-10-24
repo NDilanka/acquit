@@ -45,7 +45,7 @@ export function NotFound({
   const link = notFoundLink(signedIn);
   return (
     <section className="card pad notfound">
-      <h1>{title}</h1>
+      <h2>{title}</h2>
       <p className="muted">{message}</p>
       <p>
         <Link to={link.to} className="btn sm">
@@ -78,18 +78,20 @@ export function ConnectedRepo({ repository }: { repository: string | null }) {
   );
 }
 
-/** The empty state: an icon, one sentence, and at most one action. */
+/** The empty state: an icon, one sentence, and at most one action. `inline` drops the card for use inside another card. */
 export function EmptyState({
   icon = "jobs",
   action,
+  inline = false,
   children,
 }: {
   icon?: IconName;
   action?: { readonly to: string; readonly label: string };
+  inline?: boolean;
   children: ReactNode;
 }) {
   return (
-    <section className="card empty-state">
+    <section className={inline ? "empty-state" : "card empty-state"}>
       <span className="empty-icon">
         <Icon name={icon} size={18} />
       </span>
@@ -156,12 +158,14 @@ export function Modal({
   onClose,
   variant = "dialog",
   actions,
+  tour,
   children,
 }: {
   title: string;
   onClose: () => void;
   variant?: "dialog" | "drawer";
   actions?: ReactNode;
+  tour?: string;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -196,7 +200,7 @@ export function Modal({
 
   return (
     <div className={`dialog-scrim ${variant}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div ref={panel} className={`dialog ${variant}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={onKeyDown}>
+      <div ref={panel} className={`dialog ${variant}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-tour={tour} onKeyDown={onKeyDown}>
         <div className="dialog-head">
           <h2 id={titleId}>{title}</h2>
           <button type="button" className="btn ghost sm dialog-close" aria-label="Close" onClick={onClose}>

@@ -56,9 +56,25 @@ export function OperatorPage({ children }: { children: (data: OperatorData, relo
   }, [reload, user.role]);
 
   if (user.role !== "OPERATOR") {
-    return <NotFound signedIn title="This page is for operators" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}).`} />;
+    return <NotFound signedIn title="This page is for operators" message="Switch to Operator in the sidebar to see it." />;
   }
   if (load.kind === "loading") return <SkeletonList count={3} />;
-  if (load.kind === "failed") return <ErrorNote error={load.error} />;
+  if (load.kind === "failed") {
+    return (
+      <div className="load-failed">
+        <ErrorNote error={load.error} />
+        <button
+          type="button"
+          className="btn secondary sm"
+          onClick={() => {
+            setLoad({ kind: "loading" });
+            void reload();
+          }}
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
   return <>{children(load.data, reload)}</>;
 }

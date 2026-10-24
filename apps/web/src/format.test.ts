@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, refundNote, shortId, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, refundNote, runnerLabel, shortId, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -70,11 +70,22 @@ test("an open dispute under a PayPal hold says the deadline records the release 
   assert.equal(deadlineOutcome(true), "Acquit records the release for the operator, and the payout waits until PayPal decides the dispute.");
 });
 
-test("the weekly credit line names the balance, the allowance, and the next grant", () => {
+test("the weekly credit line names the balance, the allowance, and when new credits arrive, in relative time", () => {
+  const now = Date.parse("2026-11-07T00:00:00.000Z");
   assert.equal(
-    creditLine({ available: 20, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z" }),
-    "20 of 30 credits left this week. Next grant 2026-11-09 00:00 UTC.",
+    creditLine({ available: 20, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z" }, now),
+    "20 of 30 left this week. New credits in 2 days.",
   );
+  assert.equal(
+    creditLine({ available: 0, weeklyAllowance: 30, nextGrantAt: "2026-11-07T05:00:00.000Z" }, now),
+    "0 of 30 left this week. New credits in 5 h.",
+  );
+});
+
+test("a runner reads in words, and an unknown runner shows as it is", () => {
+  assert.equal(runnerLabel("claude-code"), "Claude Code");
+  assert.equal(runnerLabel("codex"), "Codex");
+  assert.equal(runnerLabel("droid"), "droid");
 });
 
 test("a bid refused for credits says when credits return", () => {
