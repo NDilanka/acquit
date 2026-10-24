@@ -4,17 +4,16 @@ import { isNavActive, navFor, pageHeading, signedOutNav, type NavItem } from "./
 
 const pairs = (items: readonly NavItem[]) => items.map((item) => [item.label, item.to]);
 
-test("a client's navigation is My jobs and Post a job, then the three pages every role gets", () => {
+test("a client's navigation is My jobs and Post a job, then the two public pages", () => {
   assert.deepEqual(pairs(navFor("CLIENT")), [
     ["My jobs", "/"],
     ["Post a job", "/jobs/new"],
     ["Verifiers", "/verifiers"],
-    ["Print demo", "/print"],
-    ["CLI sign-in", "/cli"],
+    ["Print verifier", "/print"],
   ]);
 });
 
-test("an operator's navigation is Find work, My bids, My work, Earnings, and Dashboards, then the three Tools pages", () => {
+test("an operator's navigation is Find work, My bids, My work, Earnings, and Dashboards, then the two public pages", () => {
   assert.deepEqual(pairs(navFor("OPERATOR")), [
     ["Find work", "/operator"],
     ["My bids", "/operator/bids"],
@@ -22,32 +21,31 @@ test("an operator's navigation is Find work, My bids, My work, Earnings, and Das
     ["Earnings", "/operator/earnings"],
     ["Dashboards", "/studio"],
     ["Verifiers", "/verifiers"],
-    ["Print demo", "/print"],
-    ["CLI sign-in", "/cli"],
+    ["Print verifier", "/print"],
   ]);
 });
 
-test("the three public pages sit under the Tools label, and Tutorials and Agents are not listed yet", () => {
-  const tools = navFor("OPERATOR").filter((item) => item.group === "Tools").map((item) => item.label);
-  assert.deepEqual(tools, ["Verifiers", "Print demo", "CLI sign-in"]);
+test("the public pages sit under the Public label, and CLI sign-in, Tutorials, and Agents are not listed", () => {
+  const publicPages = navFor("OPERATOR").filter((item) => item.group === "Public").map((item) => item.label);
+  assert.deepEqual(publicPages, ["Verifiers", "Print verifier"]);
   const labels = navFor("OPERATOR").map((item) => item.label);
+  assert.equal(labels.includes("CLI sign-in"), false);
   assert.equal(labels.includes("Tutorials"), false);
   assert.equal(labels.includes("Agents"), false);
 });
 
-test("a platform user's navigation is Dashboards, then the three pages every role gets", () => {
+test("a platform user's navigation is Dashboards, then the two public pages", () => {
   assert.deepEqual(pairs(navFor("PLATFORM")), [
     ["Dashboards", "/studio"],
     ["Verifiers", "/verifiers"],
-    ["Print demo", "/print"],
-    ["CLI sign-in", "/cli"],
+    ["Print verifier", "/print"],
   ]);
 });
 
-test("signed out, the sidebar lists only Verifiers and Print demo", () => {
+test("signed out, the sidebar lists Verifiers and Print verifier", () => {
   assert.deepEqual(pairs(signedOutNav()), [
     ["Verifiers", "/verifiers"],
-    ["Print demo", "/print"],
+    ["Print verifier", "/print"],
   ]);
 });
 
@@ -79,6 +77,11 @@ test("a client's My jobs stays lit on a job page, and Post a job is lit only on 
   assert.equal(isNavActive(myJobs, "/jobs/new", "CLIENT"), false);
 });
 
+test("an operator's Find work stays lit on a job page, and no other operator row lights there", () => {
+  const lit = navFor("OPERATOR").filter((item) => isNavActive(item, "/jobs/abc123", "OPERATOR")).map((item) => item.label);
+  assert.deepEqual(lit, ["Find work"]);
+});
+
 test("each route has one heading, and the eyebrow names the role", () => {
   assert.deepEqual(pageHeading({ name: "home" }, "CLIENT"), { eyebrow: "Client", title: "My jobs" });
   assert.deepEqual(pageHeading({ name: "home" }, "OPERATOR"), { eyebrow: "Operator", title: "Find work" });
@@ -87,5 +90,6 @@ test("each route has one heading, and the eyebrow names the role", () => {
   assert.deepEqual(pageHeading({ name: "operatorEarnings" }, "OPERATOR"), { eyebrow: "Operator", title: "Earnings" });
   assert.deepEqual(pageHeading({ name: "studio" }, "PLATFORM"), { eyebrow: "Platform", title: "Dashboards" });
   assert.deepEqual(pageHeading({ name: "verifiers" }, null), { eyebrow: "Public", title: "Verifiers" });
+  assert.deepEqual(pageHeading({ name: "print" }, null), { eyebrow: "Public", title: "Print verifier" });
   assert.deepEqual(pageHeading({ name: "notFound" }, null), { eyebrow: "Acquit", title: "Page not found" });
 });
