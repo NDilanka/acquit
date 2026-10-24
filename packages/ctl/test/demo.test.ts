@@ -145,7 +145,7 @@ const openOutcome = async (url: string, token: string, repository: string, budge
 	return { status: response.status, body: await response.json() as { outcome: { kind: string; reason?: string } } };
 };
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
-	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
+	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; account: { client: string } | null }>);
 type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null;
 	readonly deliveryEndsAt: string; readonly clockShiftMs: number | null;
 	readonly contract: { readonly repository: string } | null };
@@ -190,7 +190,7 @@ test("public mode refuses a seeded handle and mints a visitor through Start my d
 		assert.equal(body.visitor.expiresAt, null);
 		const signed = await sessionOf(url, body.token);
 		assert.deepEqual(signed.user, { handle: body.visitor.client, role: "CLIENT" });
-		assert.equal(signed.visitor?.id, body.visitor.id);
+		assert.equal(signed.account?.client, body.visitor.client);
 	});
 });
 
@@ -204,7 +204,7 @@ test("an account's session lasts 30 days, and a visitor that has an expiry loses
 			// A visitor made before accounts lasted carries an expiry. Once it passes, the session is refused even though its row stands.
 			db.prepare("UPDATE visitors SET expires_at = ? WHERE id = ?").run("2025-10-08T12:00:00.000Z", created.visitor.id);
 		} finally { db.close(); }
-		assert.deepEqual(await sessionOf(url, created.token), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
+		assert.deepEqual(await sessionOf(url, created.token), { user: null, account: null, mode: "public", fundingMode: "checkout" });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${created.token}` } })).status, 401);
 	});
 });
@@ -220,7 +220,7 @@ test("public mode refuses a seeded session that an earlier run left behind", asy
 		} finally { db.close(); }
 		const restored = await fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } });
 		assert.equal(restored.status, 200);
-		assert.deepEqual(await restored.json(), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
+		assert.deepEqual(await restored.json(), { user: null, account: null, mode: "public", fundingMode: "checkout" });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
 	});
 });
@@ -273,7 +273,7 @@ test("public mode mints no session from a visitor handle, and dev mode keeps see
 		assert.deepEqual(body.user, { handle: "maya-client", role: "CLIENT" });
 		assert.deepEqual(await (await fetch(`${url}/api/users`)).json(),
 			{ users: [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] });
-		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null, mode: "dev", fundingMode: "checkout" });
+		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, account: null, mode: "dev", fundingMode: "checkout" });
 	});
 });
 
@@ -457,12 +457,12 @@ test("the session route names the mode it serves, so the page knows which sign-i
 	await apiFixture(false, async url => {
 		const anonymous = await fetch(`${url}/api/session`);
 		assert.equal(anonymous.status, 200);
-		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
+		assert.deepEqual(await anonymous.json(), { user: null, account: null, mode: "public", fundingMode: "checkout" });
 	});
 	await apiFixture(true, async url => {
 		const anonymous = await fetch(`${url}/api/session`);
 		assert.equal(anonymous.status, 200);
-		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "dev", fundingMode: "checkout" });
+		assert.deepEqual(await anonymous.json(), { user: null, account: null, mode: "dev", fundingMode: "checkout" });
 	});
 });
 
