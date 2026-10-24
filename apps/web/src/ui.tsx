@@ -198,8 +198,11 @@ export function Modal({
     }
   };
 
+  // `.dialog` styles the panel, so the scrim takes only the drawer class.
+  const scrimClass = variant === "drawer" ? "dialog-scrim drawer" : "dialog-scrim";
+
   return (
-    <div className={`dialog-scrim ${variant}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className={scrimClass} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div ref={panel} className={`dialog ${variant}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-tour={tour} onKeyDown={onKeyDown}>
         <div className="dialog-head">
           <h2 id={titleId}>{title}</h2>
