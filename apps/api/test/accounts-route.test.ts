@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { test, after } from "node:test";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -221,4 +222,40 @@ test("only an account makes a saved link: a seeded session and a signed-out call
 	assert.deepEqual(await send({ method: "POST", url: "/api/account/recovery", cookie: tokenOf(seeded.cookie) }),
 		{ status: 403, body: { error: "NOT_AN_ACCOUNT" }, cookie: null });
 	assert.deepEqual(await send({ method: "POST", url: "/api/account/recovery" }), { status: 401, body: { error: "UNAUTHENTICATED" }, cookie: null });
+});
+
+test("any route a lasting account uses renews its cookie with its session, once a day at most", async () => {
+	nowMs = Date.parse("2026-10-24T09:00:00.000Z");
+	const { token } = await tryAcquit();
+	nowMs = Date.parse("2026-11-13T09:00:00.000Z");
+	const renewed = await send({ method: "GET", url: "/api/jobs", cookie: token });
+	assert.equal(renewed.status, 200);
+	assert.equal(maxAgeOf(renewed.cookie), 30 * 86_400);
+	// Within the day the row is not moved, so the answer carries no new cookie.
+	nowMs += 60_000;
+	assert.equal((await send({ method: "GET", url: "/api/jobs", cookie: token })).cookie, null);
+	nowMs = Date.parse("2026-10-24T09:00:00.000Z");
+});
+
+test("the House client never holds a session: a mint is refused, and a row naming it opens nothing", async () => {
+	assert.deepEqual(await send({ method: "POST", url: "/api/session", payload: { handle: "house-client" } }),
+		{ status: 403, body: { error: "HOUSE_CLIENT_NO_SESSION" }, cookie: null });
+	const forged = "house-client-forged-token-0123456789abcdef";
+	const db = new DatabaseSync(process.env.DATABASE_PATH!);
+	try {
+		db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(createHash("sha256").update(forged).digest("hex"), "house-client", "2027-01-01T00:00:00.000Z");
+	} finally { db.close(); }
+	assert.equal((await send({ method: "GET", url: "/api/session", cookie: forged })).body.user, null);
+	assert.deepEqual(await send({ method: "GET", url: "/api/jobs", cookie: forged }), { status: 401, body: { error: "UNAUTHENTICATED" }, cookie: null });
+});
+
+test("a new account opens with two starter jobs from the House client, and the job list reports the day's count", async () => {
+	const { token } = await tryAcquit("192.0.2.70");
+	await send({ method: "POST", url: "/api/account/role", cookie: token, payload: { role: "OPERATOR" } });
+	const listed = await send({ method: "GET", url: "/api/jobs", cookie: token });
+	assert.equal(listed.status, 200);
+	const starters = (listed.body.jobs as { starter: boolean; client: string | null; budget: number }[]).filter(job => job.starter);
+	assert.equal(starters.length, 2, JSON.stringify(listed.body.jobs));
+	assert.deepEqual(listed.body.starters, { open: 2, openedToday: 2, dailyLimit: 6, capped: false });
+	assert.equal(starters.every(job => job.client === null && job.budget === 40_000), true, JSON.stringify(starters));
 });
