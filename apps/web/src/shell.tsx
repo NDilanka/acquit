@@ -73,7 +73,7 @@ export function Shell({
             </button>
           </div>
           {signedIn !== undefined && <p className="side-label mono">{signedIn ? "Your workspace" : "Public pages"}</p>}
-          <nav className="side-nav" aria-label="Pages">
+          <nav className="side-nav" aria-label="Pages" onClick={() => setMenuOpen(false)}>
             {items.map((item) => (
               <Link key={item.to} to={item.to} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
                 <Icon name={item.icon} />

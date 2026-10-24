@@ -83,6 +83,22 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .topbar-right { display: flex; align-items: center; gap: 12px; flex: none; padding-top: 2px; }
 .topbar-date { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .sandbox { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--amber); background: var(--amber-bg); border: 1px solid var(--amber-line); padding: 3px 8px; border-radius: 999px; }
+/* Below 760 px the sidebar is a sheet behind a slim top bar, and the white panel takes the full width. The sheet is hidden from keyboard and screen readers until it opens. */
+@media (max-width: 760px) {
+  .mbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; top: 0; z-index: 30; height: 60px; padding: 0 16px; background: var(--paper); }
+  .mbar-menu { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
+  .frame { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 8px 8px; min-height: 0; }
+  .side { position: fixed; top: 0; left: 0; bottom: 0; z-index: 50; width: min(300px, 86vw); height: 100vh; padding: 14px 12px 12px; background: var(--paper); box-shadow: var(--shadow); visibility: hidden; transform: translateX(-102%); transition: transform 0.18s ease, visibility 0.18s; }
+  .side.open { visibility: visible; transform: translateX(0); }
+  .side-close { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
+  .side-scrim { display: block; position: fixed; inset: 0; z-index: 45; background: rgb(0 0 0 / 0.4); }
+  .stage { min-height: 0; }
+  .topbar { padding: 20px 20px 0; }
+  .topbar-h { font-size: 22px; }
+}
+@media (max-width: 480px) {
+  .topbar-date { display: none; }
+}
 .userpick i { width: 26px; height: 26px; border-radius: 50%; background: var(--green-bg); display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; color: var(--green-text); flex: none; }
 
 .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 32px 120px; }
