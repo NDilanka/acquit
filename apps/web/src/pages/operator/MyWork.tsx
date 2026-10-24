@@ -36,20 +36,20 @@ export function MyWork({ data }: { data: OperatorData }) {
       ) : shown.length === 0 ? (
         <EmptyState icon="work">Nothing in this tab right now.</EmptyState>
       ) : (
-        shown.map(({ job, status, next }) => {
+        shown.map(({ job, status, next }, i) => {
           const held = data.escrow.find((row) => row.jobId === job.id)?.cents;
           const yourTurn = workMatches(job, "delivery");
           return (
-            <article key={job.id} className="card work-row">
+            <article key={job.id} className="card work-row" data-tour={i === 0 ? "work-row" : undefined}>
               <div className="work-main">
                 <Link to={`/jobs/${job.id}`} className="job-title">
                   {job.title}
                 </Link>
                 <p className={`work-next${yourTurn ? " turn" : ""}`}>{next}</p>
-                <p className="job-meta num">Money held {held === undefined ? "none" : usd(held)}</p>
+                <p className="job-meta num">{held === undefined ? "Nothing held yet" : `Held ${usd(held)}`}</p>
               </div>
               <span className={`pill ${status.tone}`}>{status.label}</span>
-              <Link to={`/jobs/${job.id}`} className="btn secondary sm">
+              <Link to={`/jobs/${job.id}`} className={yourTurn ? "btn sm" : "btn secondary sm"}>
                 Open
               </Link>
             </article>

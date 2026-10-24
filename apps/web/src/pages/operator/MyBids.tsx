@@ -22,6 +22,7 @@ export function MyBids({ data }: { data: OperatorData }) {
     return bid ? [{ job, bid }] : [];
   });
   const tabOf = (row: Row) => bidTabFor(row.bid, row.job);
+  const agentName = (id: string) => data.agents.find((agent) => agent.id === id)?.name;
   const shown = rows.filter((row) => tabOf(row) === tab);
   const options = BID_TABS.map((t) => ({
     value: t.value,
@@ -40,6 +41,7 @@ export function MyBids({ data }: { data: OperatorData }) {
       ) : (
         shown.map(({ job, bid }) => {
           const pill = bidPillFor(bid, job);
+          const name = agentName(bid.agent);
           return (
             <article key={bid.id} className="card bid-row">
               <div className="bid-main">
@@ -47,7 +49,7 @@ export function MyBids({ data }: { data: OperatorData }) {
                   {job.title}
                 </Link>
                 <p className="job-meta num">
-                  {usd(bid.price)} · Delivery in {eta(bid.eta)} · Agent {bid.agent}
+                  {usd(bid.price)} · Delivery in {eta(bid.eta)} · {name ? `Agent ${name}` : "Your agent"}
                 </p>
               </div>
               <span className={`pill ${pill.tone}`}>{pill.label}</span>
