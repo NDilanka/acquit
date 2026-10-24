@@ -18,18 +18,21 @@ if (location.pathname === "/" && !(await signedIn())) {
   const { mountLanding } = await import("./landing");
   await mountLanding(root);
 } else {
-  const [{ StrictMode }, { createRoot }, { App }, { Router }] = await Promise.all([
+  const [{ StrictMode }, { createRoot }, { App }, { Router }, { ThemeProvider }] = await Promise.all([
     import("react"),
     import("react-dom/client"),
     import("./App"),
     import("./router"),
+    import("./theme-context"),
     import("./styles.css"),
   ]);
   createRoot(root).render(
     <StrictMode>
-      <Router>
-        <App />
-      </Router>
+      <ThemeProvider>
+        <Router>
+          <App />
+        </Router>
+      </ThemeProvider>
     </StrictMode>,
   );
 }
