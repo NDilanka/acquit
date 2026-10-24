@@ -188,7 +188,7 @@ export function JobPage({ id }: { id: string }) {
             {job.contract && <span>{suiteLine(job.contract)}</span>}
             {job.starter && (
               <span>
-                <HouseBadge>House client</HouseBadge>
+                Starter job from <HouseBadge>House client</HouseBadge>
               </span>
             )}
             {locked && (
