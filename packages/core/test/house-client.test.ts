@@ -83,10 +83,11 @@ async function until(h: Harness, jobId: JobId, predicate: (row: JobRow) => boole
 async function assertConserves(service: Acquit): Promise<{ held: number; released: number; refunded: number; fees: number; funded: number }> {
 	const answer = await service.query(platform, { type: "PlatformTables" });
 	if (answer.kind !== "PLATFORM_TABLES") throw new Error("the platform tables were refused");
-	for (const job of answer.tables.jobs) {
+	const jobs = answer.tables.jobs;
+	for (const job of jobs) {
 		assert.equal(job.grossCents, job.heldCents + job.releasedCents + job.refundedCents + job.feeCents, `${job.jobId} conserves`);
 	}
-	const sum = (pick: (job: (typeof answer.tables.jobs)[number]) => number) => answer.tables.jobs.reduce((total, job) => total + pick(job), 0);
+	const sum = (pick: (job: (typeof jobs)[number]) => number) => jobs.reduce((total, job) => total + pick(job), 0);
 	const totals = { held: sum(job => job.heldCents), released: sum(job => job.releasedCents), refunded: sum(job => job.refundedCents),
 		fees: sum(job => job.feeCents), funded: sum(job => job.grossCents) };
 	assert.equal(totals.funded, totals.held + totals.released + totals.refunded + totals.fees);
