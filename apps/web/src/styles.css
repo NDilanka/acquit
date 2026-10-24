@@ -76,7 +76,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .segmented.round button { border-radius: 999px; }
 .segmented button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--card); border-color: var(--raised-edge); box-shadow: var(--shadow-raised); }
 .stage { min-width: 0; min-height: calc(100vh - 20px); display: flex; flex-direction: column; background: var(--panel); border: 2px solid var(--raised-edge); border-radius: var(--r-panel); box-shadow: var(--shadow-raised); overflow: hidden; }
-.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 28px 36px 0; }
+.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; width: 100%; max-width: 1180px; padding: 28px 32px 0; }
 .topbar-title { min-width: 0; }
 .topbar-title .eyebrow { margin: 0; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
 .topbar-h { margin: 6px 0 0; font-size: 26px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.2; color: var(--ink); }
@@ -93,7 +93,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .side-close { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
   .side-scrim { display: block; position: fixed; inset: 0; z-index: 45; background: rgb(0 0 0 / 0.4); }
   .stage { min-height: 0; }
-  .topbar { padding: 20px 20px 0; }
+  .topbar { padding: 20px 16px 0; }
   .topbar-h { font-size: 22px; }
 }
 @media (max-width: 480px) {
@@ -102,7 +102,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .userpick i { width: 26px; height: 26px; border-radius: 50%; background: var(--green-bg); display: grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; color: var(--green-text); flex: none; }
 
 /* The width is set, not left to auto margins: in the stage's flex column, auto margins would size the page to its widest table and clip it. */
-.wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 28px 32px 120px; }
+.wrap { width: 100%; max-width: 1180px; margin: 0; padding: 28px 32px 120px; }
 .wrap.wrap-full { max-width: none; padding: 16px 20px 120px; }
 .crumbs { color: var(--muted); font-size: 13px; }
 .crumbs a { text-decoration: none; }
@@ -248,30 +248,76 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .connected span { color: var(--muted); }
 .connected-step { display: grid; gap: 16px; justify-items: start; }
 
-.credits { margin: 0; min-width: 220px; }
-.credits .big { font-size: 28px; font-weight: 600; }
-.credits .big small { font-size: 13px; color: var(--muted); font-weight: 400; }
-.jobline { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-.jobline a { text-decoration: none; }
-.bidpane { border-top: 1px solid var(--line); background: var(--surface); }
-.ws { margin-top: 26px; }
-.ws > h2 { font-size: 16px; margin: 0 0 10px; }
-.work-next { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
-.ws-earn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-.ws-earn .card { margin-bottom: 0; }
-.ws-earn .big { font-size: 24px; font-weight: 600; margin: 4px 0; }
-.ws-earn small { display: block; }
-.receipt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; padding: 12px 20px; border-top: 1px solid var(--line); }
-.receipt-row > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* Operator pages. Each page is a column of cards: Find work adds a filter column on a wide screen and a credits column beside the list. */
+.find-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.find-search { display: flex; align-items: center; gap: 8px; flex: 1 1 240px; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--muted); }
+.find-search input { flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; }
+.find-filters-toggle { display: none; }
+.find-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.find-filters { display: none; margin-bottom: 0; }
+.find-list, .find-info { display: grid; gap: 12px; min-width: 0; }
+.filter-panel { display: grid; gap: 18px; }
+.filter-group { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.filter-group legend { padding: 0; margin: 0 0 3px; font-size: 13px; font-weight: 600; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); cursor: pointer; }
+.check input { margin: 0; accent-color: var(--green); }
+.job-card { display: grid; gap: 8px; margin-bottom: 0; padding: 16px 18px; }
+.job-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; min-width: 0; }
+.job-title { min-width: 0; font-size: 15px; font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+.job-title:hover { text-decoration: underline; }
+.job-budget { flex: none; font-size: 14px; font-weight: 600; }
+.job-meta { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.job-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.job-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; padding-top: 4px; }
+.bid-job { display: grid; gap: 4px; margin-bottom: 14px; padding: 12px 14px; border-radius: var(--r); background: var(--surface); }
+.side-card { display: grid; gap: 6px; margin-bottom: 0; }
+.side-card h2 { margin: 0 0 2px; }
+.side-card p { margin: 0; }
+.side-big { font-size: 26px; font-weight: 600; line-height: 1.2; }
+.agent-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.copy-cmd { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.copy-cmd code { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.bids-page, .work-page, .earn-page { display: grid; gap: 12px; min-width: 0; }
+.bid-row, .work-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px 16px; margin-bottom: 0; padding: 14px 18px; }
+.bid-main, .work-main { display: grid; gap: 4px; min-width: 0; }
+.work-held { margin: 0; font-size: 15px; }
+.work-next { margin: 0; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.work-next.turn { color: var(--amber); font-weight: 600; }
+.earn-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.earn-stage { display: grid; gap: 6px; margin-bottom: 0; }
+.earn-amount { margin: 0; font-size: 24px; font-weight: 600; overflow-wrap: anywhere; }
+.receipt-line { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, 1fr)); align-items: center; gap: 8px 14px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.receipt-id { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.rcell { display: grid; gap: 2px; min-width: 0; }
+.rcell-label { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.cli-page { display: grid; justify-items: center; padding: 24px 0; }
+.cli-card { width: min(480px, 100%); margin-bottom: 0; display: grid; justify-items: center; gap: 12px; text-align: center; }
+.cli-card h2 { margin: 0; font-size: 18px; }
+.cli-card p { margin: 0; }
+.cli-approve { min-width: 160px; }
 .confirm { margin: 10px 0 16px; border-color: var(--green-line); background: var(--green-bg); }
 .confirm-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .confirm-kvs { margin: 10px 0 0; grid-template-columns: 180px 1fr; }
 .confirm-kvs dt { color: var(--ink-2); }
 @media (max-width: 640px) {
-  .ws-earn { grid-template-columns: minmax(0, 1fr); }
-  .receipt-row { grid-template-columns: minmax(0, 1fr); }
-  .bidpane .row3 { grid-template-columns: minmax(0, 1fr); }
   .confirm .confirm-kvs { grid-template-columns: 9rem minmax(0, 1fr); }
+}
+@media (min-width: 1200px) {
+  .find-layout { grid-template-columns: 200px minmax(0, 1fr) 260px; }
+  .find-filters { display: block; grid-column: 1; grid-row: 1; }
+  .find-list { grid-column: 2; grid-row: 1; }
+  .find-info { grid-column: 3; grid-row: 1; }
+}
+@media (max-width: 1199px) {
+  .find-filters-toggle { display: inline-flex; }
+}
+@media (max-width: 760px) {
+  .bid-row, .work-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .bid-row > .btn, .work-row > .btn { grid-column: 1 / -1; justify-self: start; }
+  .earn-stages { grid-template-columns: minmax(0, 1fr); }
+  .receipt-line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .receipt-id { grid-column: 1 / -1; }
 }
 
 .scrim { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: center; z-index: 40; }

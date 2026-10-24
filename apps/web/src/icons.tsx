@@ -17,7 +17,10 @@ export type IconName =
   | "calendar"
   | "sun"
   | "moon"
-  | "monitor";
+  | "monitor"
+  | "bids"
+  | "work"
+  | "earnings";
 
 const PATHS: Record<IconName, ReactNode> = {
   jobs: (
@@ -99,6 +102,25 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <rect x="2" y="3" width="20" height="14" rx="2" />
       <path d="M8 21h8M12 17v4" />
+    </>
+  ),
+  bids: (
+    <>
+      <path d="M9 11l3 3L22 4" />
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </>
+  ),
+  work: (
+    <>
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    </>
+  ),
+  earnings: (
+    <>
+      <path d="M20 12V8H6a2 2 0 0 1 0-4h12v4" />
+      <path d="M4 6v12a2 2 0 0 0 2 2h14v-4" />
+      <path d="M18 12a2 2 0 0 0 0 4h4v-4z" />
     </>
   ),
 };

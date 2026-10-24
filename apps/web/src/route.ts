@@ -7,6 +7,9 @@ export type Route =
   | { name: "verifiers" }
   | { name: "print" }
   | { name: "operator" }
+  | { name: "operatorBids" }
+  | { name: "operatorWork" }
+  | { name: "operatorEarnings" }
   | { name: "cli" }
   | { name: "studio" }
   | { name: "notFound" };
@@ -15,7 +18,10 @@ export function match(path: string): Route {
   if (path === "/" || path === "") return { name: "home" };
   if (path === "/demo" || path === "/demo/") return { name: "demo" };
   if (path === "/jobs/new") return { name: "newJob" };
-  if (path === "/operator") return { name: "operator" };
+  if (path === "/operator" || path === "/operator/") return { name: "operator" };
+  if (path === "/operator/bids") return { name: "operatorBids" };
+  if (path === "/operator/work") return { name: "operatorWork" };
+  if (path === "/operator/earnings") return { name: "operatorEarnings" };
   if (path === "/cli") return { name: "cli" };
   if (path === "/studio") return { name: "studio" };
   if (path === "/verifiers" || path === "/verifiers/") return { name: "verifiers" };
@@ -40,6 +46,9 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" {
     case "newJob":
     case "job":
     case "operator":
+    case "operatorBids":
+    case "operatorWork":
+    case "operatorEarnings":
     case "cli":
     case "studio":
       return "signIn";

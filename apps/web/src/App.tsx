@@ -15,7 +15,7 @@ import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
 import { VerifiersPage } from "./pages/Verifiers";
 import { PrintDemoPage } from "./pages/PrintDemo";
-import { OperatorHome } from "./pages/OperatorHome";
+import { EarningsPage, FindWorkPage, MyBidsPage, MyWorkPage } from "./pages/operator/OperatorRoutes";
 import { CliLogin } from "./pages/CliLogin";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
@@ -201,7 +201,13 @@ function Routes() {
     case "job":
       return <JobPage key={route.id} id={route.id} />;
     case "operator":
-      return <OperatorHome />;
+      return <FindWorkPage />;
+    case "operatorBids":
+      return <MyBidsPage />;
+    case "operatorWork":
+      return <MyWorkPage />;
+    case "operatorEarnings":
+      return <EarningsPage />;
     case "cli":
       return <CliLogin />;
     case "studio":
@@ -215,7 +221,7 @@ function Home() {
   const { user } = useSession();
   switch (user.role) {
     case "OPERATOR":
-      return <OperatorHome />;
+      return <FindWorkPage />;
     case "PLATFORM":
       return <Studio />;
     case "CLIENT":

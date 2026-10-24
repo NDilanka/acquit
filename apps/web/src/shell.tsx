@@ -72,14 +72,10 @@ export function Shell({
               <Icon name="close" />
             </button>
           </div>
-          {signedIn !== undefined && <p className="side-label mono">{signedIn ? "Your workspace" : "Public pages"}</p>}
           <nav className="side-nav" aria-label="Pages" onClick={() => setMenuOpen(false)}>
-            {items.map((item) => (
-              <Link key={item.to} to={item.to} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
-                <Icon name={item.icon} />
-                <span>{item.label}</span>
-              </Link>
-            ))}
+            {items.filter((item) => !item.group).map((item) => navLink(item, path, role))}
+            {items.some((item) => item.group === "Tools") && <p className="side-label mono">Tools</p>}
+            {items.filter((item) => item.group === "Tools").map((item) => navLink(item, path, role))}
           </nav>
           <div className="side-foot">
             {showsDemoCta(match(path), signedIn) && (
@@ -110,6 +106,15 @@ export function Shell({
       </div>
       {menuOpen && <div className="side-scrim" aria-hidden="true" onClick={() => setMenuOpen(false)} />}
     </div>
+  );
+}
+
+function navLink(item: NavItem, path: string, role: Role | null) {
+  return (
+    <Link key={item.to} to={item.to} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
+      <Icon name={item.icon} />
+      <span>{item.label}</span>
+    </Link>
   );
 }
 

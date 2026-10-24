@@ -1,26 +1,31 @@
 import type { Route } from "./route";
 
 export type Role = "CLIENT" | "OPERATOR" | "PLATFORM";
-export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "terminal";
-export type NavItem = { readonly to: string; readonly label: string; readonly icon: NavIcon };
+export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "terminal" | "bids" | "work" | "earnings";
+/** A Tools item sits under its own label in the sidebar. */
+export type NavItem = { readonly to: string; readonly label: string; readonly icon: NavIcon; readonly group?: "Tools" };
 
 const ROLE_PAGES: Record<Role, readonly NavItem[]> = {
   CLIENT: [
     { to: "/", label: "My jobs", icon: "jobs" },
     { to: "/jobs/new", label: "Post a job", icon: "plus" },
   ],
+  // Tutorials joins this list in O5, once its page exists.
   OPERATOR: [
     { to: "/operator", label: "Find work", icon: "search" },
+    { to: "/operator/bids", label: "My bids", icon: "bids" },
+    { to: "/operator/work", label: "My work", icon: "work" },
+    { to: "/operator/earnings", label: "Earnings", icon: "earnings" },
     { to: "/studio", label: "Dashboards", icon: "dashboard" },
   ],
   PLATFORM: [{ to: "/studio", label: "Dashboards", icon: "dashboard" }],
 };
 
-/** Every role also gets these three pages. */
+/** Every role also gets these three pages, under the Tools label. */
 const PUBLIC_PAGES: readonly NavItem[] = [
-  { to: "/verifiers", label: "Verifiers", icon: "shield" },
-  { to: "/print", label: "Print demo", icon: "printer" },
-  { to: "/cli", label: "CLI sign-in", icon: "terminal" },
+  { to: "/verifiers", label: "Verifiers", icon: "shield", group: "Tools" },
+  { to: "/print", label: "Print demo", icon: "printer", group: "Tools" },
+  { to: "/cli", label: "CLI sign-in", icon: "terminal", group: "Tools" },
 ];
 
 export function navFor(role: Role): readonly NavItem[] {
@@ -61,6 +66,12 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Public", title: "Print demo" };
     case "operator":
       return { eyebrow, title: "Find work" };
+    case "operatorBids":
+      return { eyebrow, title: "My bids" };
+    case "operatorWork":
+      return { eyebrow, title: "My work" };
+    case "operatorEarnings":
+      return { eyebrow, title: "Earnings" };
     case "cli":
       return { eyebrow: "Acquit CLI", title: "CLI sign-in" };
     case "studio":
