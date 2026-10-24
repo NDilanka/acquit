@@ -3,17 +3,21 @@ import { test } from "node:test";
 import type { BidView } from "./api-types.ts";
 import type { TimelineJob } from "./job-timeline.ts";
 import {
+  bidBlocker,
   bidCount,
   bidPillFor,
   bidTab,
   bidTabFor,
   dueLine,
   earningsPipeline,
+  blockerLine,
   escrowLine,
+  FIND_TABS,
   findJobs,
   NO_FILTERS,
   ownBid,
   payoutLine,
+  showsFilters,
   workMatches,
   type FindFilters,
 } from "./operator-views.ts";
@@ -87,14 +91,41 @@ const OPEN_OLD = job({
 });
 const JOBS = [OPEN_NEW, OPEN_MINE, OPEN_OLD] as const;
 
-function find(tab: "best" | "recent" | "placed", over: Partial<{ query: string; filters: FindFilters }> = {}): string[] {
+function find(tab: "best" | "recent", over: Partial<{ query: string; filters: FindFilters }> = {}): string[] {
   return findJobs(JOBS, { operatorId: ME, tab, query: over.query ?? "", filters: over.filters ?? NO_FILTERS, now: NOW }).map((j) => j.id);
 }
 
-test("best matches leaves out the jobs the operator already bid on; placed shows only those", () => {
+test("Find work has two tabs, Best matches and Most recent; My bids lists the jobs already bid on", () => {
+  assert.deepEqual(FIND_TABS.map((t) => t.label), ["Best matches", "Most recent"]);
+});
+
+test("best matches leaves out the jobs the operator already bid on; most recent keeps them", () => {
   assert.deepEqual(find("best"), ["job_new", "job_old"]);
-  assert.deepEqual(find("placed"), ["job_mine"]);
   assert.deepEqual(find("recent"), ["job_new", "job_mine", "job_old"]);
+});
+
+test("the filter column shows from 6 open jobs, and closed jobs do not count toward it", () => {
+  const open = (n: number) => Array.from({ length: n }, () => ({ status: "OPEN" as const }));
+  assert.equal(showsFilters(open(2)), false);
+  assert.equal(showsFilters(open(5)), false);
+  assert.equal(showsFilters(open(6)), true);
+  assert.equal(showsFilters([...open(5), { status: "PAID" }, { status: "CLOSED" }]), false);
+});
+
+test("the ready strip names the first blocker: no agent, then payouts, then credits", () => {
+  const ready = { agents: [{}], payouts: "READY", credits: { available: 30 }, bidCost: 10 } as const;
+  assert.equal(bidBlocker(ready), null);
+  assert.equal(bidBlocker({ ...ready, agents: [], payouts: "NOT_STARTED", credits: { available: 0 } }), "agent");
+  assert.equal(bidBlocker({ ...ready, payouts: "AWAITING_CONSENT", credits: { available: 0 } }), "payouts");
+  assert.equal(bidBlocker({ ...ready, credits: { available: 9 } }), "credits");
+  assert.equal(bidBlocker({ ...ready, credits: { available: 10 } }), null);
+});
+
+test("the ready strip's sentences, with the credit return in relative time", () => {
+  const grant = new Date(NOW + 2 * DAY).toISOString();
+  assert.equal(blockerLine("agent", grant, NOW), "A bid needs an agent. Run acquit agent create in your terminal.");
+  assert.equal(blockerLine("payouts", grant, NOW), "Connect PayPal payouts before you bid.");
+  assert.equal(blockerLine("credits", grant, NOW), "You have no bid credits left this week. New credits arrive in 2 days.");
 });
 
 test("only open jobs are listed, in the order the API serves them", () => {
@@ -127,11 +158,6 @@ test("the bid counts split 0, 1 to 4, and 5 or more", () => {
   assert.deepEqual(find("recent", { filters: { ...NO_FILTERS, bids: "none" } }), ["job_new", "job_old"]);
   assert.deepEqual(find("recent", { filters: { ...NO_FILTERS, bids: "few" } }), ["job_mine"]);
   assert.deepEqual(find("recent", { filters: { ...NO_FILTERS, bids: "many" } }), []);
-});
-
-test("the Print verifier has no open jobs, since every open job is judged by its repository's tests", () => {
-  assert.deepEqual(find("recent", { filters: { ...NO_FILTERS, verifier: "print" } }), []);
-  assert.deepEqual(find("recent", { filters: { ...NO_FILTERS, verifier: "code" } }), ["job_new", "job_mine", "job_old"]);
 });
 
 test("the funded filter keeps only jobs whose escrow holds", () => {
