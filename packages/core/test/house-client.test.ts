@@ -511,6 +511,49 @@ test("a fork's starters are the upstream's pair: #12 then #13, the refill is #12
 	} finally { await h.dispose(); }
 });
 
+test("a starter on an issue the pool no longer holds is cancelled once, a starter with a pending bid is left alone, and the money conserves", async () => {
+	const h = await harness({ fixtures: [demoFixture(), jpyFixture()], clientRepository: DEMO_REPOSITORY });
+	try {
+		const id = newVisitorId();
+		const fork = `acquit-forks/${visitorRepositoryName(id)}`;
+		const created = await createDemoVisitor(h.acquit, { id, ipKey: "retire-test", repository: fork });
+		if (created.kind !== "CREATED") throw new Error(`the fork visitor was refused: ${created.kind}`);
+		const operator = created.visitor.operatorHandle;
+		const forkOperator: Actor = { role: "OPERATOR", operatorId: operator as OperatorId, tenant: id };
+		// A registry that still named #1 on the upstream opened it on the fork. The account's pool holds #12 and #13 only, so #1 is off it.
+		const earlier = h.reopen([demoFixture(), jpyFixture(), demoFixture(undefined, { issue: { number: 1, title: "Split shares drop remainder cents" } })]);
+		const openWrongIssue = async (): Promise<JobId> => {
+			const outcome = await earlier.execute(houseClientActor(id, fork), key(), { type: "OpenJob", repository: fork, issueNumber: 1,
+				budget: usd("400.00"), deliveryEndsAt: at(86_400) });
+			if (outcome.kind !== "COMMITTED" || outcome.result.kind !== "JOB") throw new Error(`the wrong-issue starter was refused: ${JSON.stringify(outcome)}`);
+			return outcome.result.job.id;
+		};
+		const wrong = await openWrongIssue();
+		const pending = await openWrongIssue();
+		h.setClock(at(100));
+		await bid(h.acquit, forkOperator, pending, usd("300.00"), `${operator}-agent`);
+		h.setClock(at(110));
+		await h.acquit.tick();
+		const rows = await startersOf(h, id);
+		const rowFor = (jobId: JobId): JobRow => {
+			const row = rows.find(candidate => candidate.id === jobId);
+			if (!row) throw new Error(`no starter ${jobId}`);
+			return row;
+		};
+		assert.equal(rowFor(wrong).state.status, "CLOSED", "the wrong-issue starter with no bid is cancelled");
+		assert.equal(rowFor(pending).state.status, "OPEN", "the wrong-issue starter with a pending bid is left alone");
+		assert.deepEqual(rowFor(pending).bids.map(b => b.status), ["PENDING"]);
+		// The pass cancelled the job under its derived key once: the same cancel now answers REPLAY.
+		const replay = await h.acquit.execute(houseClientActor(id, fork), derivedRequestKey(`${HOUSE_CLIENT_ID}:retire:${wrong}`), { type: "CancelJob", jobId: wrong });
+		assert.equal(replay.kind, "REPLAY");
+		h.setClock(at(120));
+		await h.acquit.tick();
+		assert.equal(rowFor(pending).state.status, "OPEN", "a later pass still leaves it alone");
+		assert.equal(rowFor(wrong).state.status, "CLOSED");
+		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
+	} finally { await h.dispose(); }
+});
+
 test("a starter back to bidding after a payment that did not go through says so in its projection", async () => {
 	const h = await harness({ fixtures });
 	try {

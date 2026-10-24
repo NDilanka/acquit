@@ -59,6 +59,17 @@ function startersOf(jobs: readonly JobRow[], account: HouseAccount): readonly Jo
 
 const sinceMs = (at: Instant, now: Instant) => Date.parse(now) - Date.parse(at);
 
+/** A bid that still holds or could fund a starter: a PENDING one could be accepted, a CHOSEN one is being funded, an ACCEPTED one is funded. */
+const liveBid = (bid: JobRow["bids"][number]): boolean => bid.status === "PENDING" || bid.status === "CHOSEN" || bid.status === "ACCEPTED";
+
+/** Whether the pool no longer holds a starter's issue: no registry fixture matches its repository and issue, or the one that does is not in the pool. */
+function offPool(row: JobRow, fixtures: readonly FixtureContract[], pool: readonly FixtureContract[], upstream: string | null): boolean {
+	const done = row.contract.definitionOfDone;
+	if (!done) return false;
+	const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, done.issue.repository, upstream);
+	return fixture === null || !pool.includes(fixture);
+}
+
 /** One pass over every account. Returns how many commands committed. */
 export async function runHouseClients(ports: HouseClientPorts, accounts: readonly HouseAccount[]): Promise<number> {
 	let acted = 0;
@@ -73,11 +84,20 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 	let acted = 0;
 	const jobs = await ports.store.listJobs();
 	const starters = startersOf(jobs, account);
-	const open = starters.filter(row => row.state.status === "OPEN").length;
+	const pool = starterPool(ports.fixtures, account.repository, ports.clientRepository ?? null);
+	// A starter on an issue the pool no longer holds is cancelled while no bid on it could still fund it. The cancel is the
+	// account's own command under a key derived from the job, so a replayed pass answers REPLAY, and a funded job is never touched.
+	const retired = new Set<JobId>();
+	for (const row of starters) {
+		if (row.state.status !== "OPEN" || !offPool(row, ports.fixtures, pool, ports.clientRepository ?? null) || row.bids.some(liveBid)) continue;
+		const outcome = await send(`retire:${row.id}`, { type: "CancelJob", jobId: row.id });
+		if (outcome.kind === "COMMITTED") acted++;
+		if (outcome.kind !== "DENIED") retired.add(row.id);
+	}
+	const open = starters.filter(row => row.state.status === "OPEN" && !retired.has(row.id)).length;
 	// The opening pair, then one more whenever none is open. The ordinal is the count already opened, so a
 	// replayed pass names the same starter, and the day's cap is the reservation OpenJob writes.
 	const wanted = starters.length < STARTER_OPENING_COUNT ? STARTER_OPENING_COUNT - starters.length : open === 0 ? 1 : 0;
-	const pool = starterPool(ports.fixtures, account.repository, ports.clientRepository ?? null);
 	for (let i = 0; i < wanted && pool.length > 0; i++) {
 		const ordinal = starters.length + i;
 		const fixture = pool[ordinal % pool.length]!;
@@ -90,6 +110,7 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 		if (outcome.kind === "COMMITTED") acted++;
 	}
 	for (const row of starters) {
+		if (retired.has(row.id)) continue;
 		const now = ports.clock.now();
 		if (row.state.status === "OPEN" && row.state.phase.kind === "BIDDING" && row.state.phase.fundingRounds < HOUSE_ACCEPT_ROUNDS) {
 			const pending = row.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING");
