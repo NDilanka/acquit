@@ -166,7 +166,6 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .alert.warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-line); }
 .field-error { display: block; color: var(--red); font-size: 13px; }
 
-.signin { max-width: 520px; margin: 40px auto; padding: 28px; }
 .scenarios { margin: 18px 0 22px; display: grid; gap: 10px; min-width: 0; }
 .scenarios h2 { margin: 0; }
 .scenario-grid { display: grid; gap: 10px; }
@@ -253,7 +252,6 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .checkout-step { margin: 0 0 6px; }
 .connected { display: grid; gap: 2px; margin: 0; overflow-wrap: anywhere; }
 .connected span { color: var(--muted); }
-.connected-step { display: grid; gap: 16px; justify-items: start; }
 
 /* Operator pages. Each page is a column of cards: Find work adds a filter column on a wide screen and a credits column beside the list. */
 .find-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -429,14 +427,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .save-account { display: grid; gap: 14px; }
 .save-account > *, .save-account .alert { margin: 0; }
 .save-status { display: flex; align-items: center; gap: 8px; margin: 0; }
-.save-actions { display: flex; flex-wrap: wrap; gap: 8px; }.seg { display: inline-flex; border: 1px solid var(--green-line); border-radius: 8px; overflow: hidden; background: var(--card); }
-.seg button { border: 0; background: transparent; padding: 5px 12px; font-weight: 600; font-size: 13px; color: var(--ink-2); }
-.seg button + button { border-left: 1px solid var(--green-line); }
-.seg button.on { background: var(--green); color: #fff; cursor: default; }
-.seg button[disabled]:not(.on) { color: var(--faint); cursor: not-allowed; }
-.choice { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; }
-.choice input { margin-top: 3px; }
-.choice small { display: block; color: var(--muted); }
+.save-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* The print demo: a farm's qualification, its run, and the judge's verdict. Each list wraps inside the column, down to 390 px. */
 .print-run { display: grid; gap: 12px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
@@ -489,7 +480,6 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .kvs { grid-template-columns: 1fr; }
   .kvs dd { margin-bottom: 6px; }
   .rows div { gap: 12px; }
-  .signin { padding: 20px 16px; margin: 16px auto; }
   .tbl th, .tbl td { padding: 10px 8px; }
   .card:has(> .tbl) { overflow-x: auto; }
   .acquit-grid { font-size: 12px; }
