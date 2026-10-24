@@ -8,9 +8,18 @@ test("a known refusal reads as one plain sentence, with no code", () => {
   assert.equal(errorWords("PRICE_OVER_BUDGET"), "The price is higher than the job budget.");
   assert.equal(
     errorWords("CAP_VISITORS_DAY"),
-    "Today's demos are all taken: the daily limit is reached. Try again tomorrow.",
+    "Acquit has made as many new accounts as it can today. Try again tomorrow, or open your saved account link.",
   );
   assert.equal(errorWords("INSUFFICIENT_CREDITS"), "Not enough bid credits. Each bid costs 10.");
+});
+
+test("an account refusal reads from the refusal table, not the API's detail", () => {
+  assert.equal(errorWords("SEEDED_LOGIN_DISABLED"), "Seeded sign-in is off on this deployment. Use Try Acquit instead.");
+  assert.equal(errorWords("FUNDING_BOUND"), "The payment method was fixed when a bid was accepted.");
+  assert.equal(errorWords("NOT_VISITOR_JOB", "This action reaches only a job your own client owns."), "Only the job's client can change this job.");
+  assert.equal(errorWords("CAP_VISITOR_JOBS"), "Your account has opened as many jobs as an account can.");
+  assert.equal(errorWords("CAP_SPEND_DAY"), "Your account has reached its daily limit for job budgets.");
+  assert.equal(errorWords("NOT_AN_ACCOUNT"), "Only a Try Acquit account can do this.");
 });
 
 test("an unknown code reads generically, and never as CODE: detail", () => {

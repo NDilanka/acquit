@@ -14,11 +14,13 @@ import { usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { sweepExpiredVisitors } from "../src/sweep.ts";
-import { insertVisitor, newVisitorId, principalOf, readVisitor, repositoryForClient, visitorHandles, visitorOfHandle, visitorRepositoryName } from "../src/visitors.ts";
+import { accountName, insertVisitor, newVisitorId, principalOf, readVisitor, repositoryForClient, reserveVisitor, visitorOfHandle, visitorRepositoryName } from "../src/visitors.ts";
 import { demoFixture } from "./hidden-fixture.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const merchant = "sandbox-seller" as MerchantId;
+/** A name draw that answers the given integers in order: the color, the animal, then each suffix tried. */
+const draws = (...values: number[]) => () => { const next = values.shift(); if (next === undefined) throw new Error("draw exhausted"); return next; };
 
 test("a fresh database holds the seeded principals, and none of them has a visitor", () => {
 	const store = new SqliteStore(":memory:");
@@ -33,9 +35,10 @@ test("a visitor resolves through its two principals and names only its own repos
 	const store = new SqliteStore(":memory:");
 	try {
 		const id = newVisitorId();
-		const visitor = insertVisitor(store.db, { id, ipKey: "ip-a", repository: "acquit-forks/demo-abc123", merchant, now });
-		const handles = visitorHandles(id);
-		assert.deepEqual({ client: visitor.clientHandle, operator: visitor.operatorHandle }, handles);
+		const visitor = insertVisitor(store.db, { id, ipKey: "ip-a", repository: "acquit-forks/demo-abc123", merchant, now, pick: draws(40, 22) });
+		const handles = { client: "teal-otter", operator: "teal-otter-ops" };
+		assert.deepEqual({ client: visitor.clientHandle, operator: visitor.operatorHandle, name: visitor.displayName },
+			{ ...handles, name: "Teal Otter" });
 		assert.deepEqual(principalOf(store.db, handles.client), { handle: handles.client, role: "CLIENT", visitorId: id });
 		assert.deepEqual(principalOf(store.db, handles.operator), { handle: handles.operator, role: "OPERATOR", visitorId: id });
 		assert.equal(visitorOfHandle(store.db, handles.client)?.id, id);
@@ -58,16 +61,46 @@ test("a visitor resolves through its two principals and names only its own repos
 	} finally { store.close(); }
 });
 
-test("two visitors never collide on an id, a handle, or a repository name", () => {
-	const ids = new Set<string>();
-	for (let index = 0; index < 50; index++) {
-		const id = newVisitorId();
-		const handles = visitorHandles(id);
-		assert.equal(ids.has(id), false);
-		assert.match(handles.client, /^guest-[0-9a-f]{12}-client$/);
-		assert.match(handles.operator, /^guest-[0-9a-f]{12}-ops$/);
-		ids.add(id);
-	}
+test("an account name is two words, and its handles are the slug and the slug plus -ops", () => {
+	assert.deepEqual(accountName(40, 22, null), { displayName: "Teal Otter", client: "teal-otter", operator: "teal-otter-ops" });
+	assert.deepEqual(accountName(0, 0, 0x4f), { displayName: "Amber Badger", client: "amber-badger-4f", operator: "amber-badger-4f-ops" });
+	assert.deepEqual(accountName(45, 45, 0), { displayName: "Wintry Zebra", client: "wintry-zebra-00", operator: "wintry-zebra-00-ops" });
+});
+
+test("a taken name gets a two-character suffix, so two accounts never share a handle", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		const first = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: null, merchant, now, pick: draws(40, 22) });
+		const second = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: null, merchant, now, pick: draws(40, 22, 0x4f) });
+		const third = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: null, merchant, now, pick: draws(40, 22, 0x4f, 0x07) });
+		assert.deepEqual([first, second, third].map(v => [v.displayName, v.clientHandle, v.operatorHandle]), [
+			["Teal Otter", "teal-otter", "teal-otter-ops"],
+			["Teal Otter", "teal-otter-4f", "teal-otter-4f-ops"],
+			["Teal Otter", "teal-otter-07", "teal-otter-07-ops"],
+		]);
+	} finally { store.close(); }
+});
+
+test("a name some other row already answers to is skipped, whichever table holds it", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		// An operator row with no principal, the way a House operator is stored, still takes its handle.
+		store.db.prepare("INSERT INTO operators VALUES (?, 0, ?, 0)").run("teal-otter-ops", JSON.stringify({ id: "teal-otter-ops" }));
+		const visitor = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: null, merchant, now, pick: draws(40, 22, 0x10) });
+		assert.equal(visitor.clientHandle, "teal-otter-10");
+	} finally { store.close(); }
+});
+
+test("a Try Acquit account has no expiry, and a scenario run's visitor keeps one day", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		const account = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: null, merchant, now });
+		assert.equal(account.expiresAt, null);
+		assert.equal(readVisitor(store.db, account.id)?.expiresAt, null);
+		const reserved = reserveVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: null, merchant, now, scenarioOf: account.id });
+		assert.equal(reserved.kind, "RESERVED");
+		assert.equal(reserved.kind === "RESERVED" ? reserved.visitor.expiresAt : null, "2026-10-07T12:00:00.000Z");
+	} finally { store.close(); }
 });
 
 test("a fork that fails leaves the visitor FAILED, kept for the sweep, and no session", async () => {
@@ -87,7 +120,7 @@ test("a fork that fails leaves the visitor FAILED, kept for the sweep, and no se
 		const row = readVisitor(store.db, id);
 		assert.equal(row?.state, "FAILED");
 		assert.equal(row?.repository, null);
-		assert.equal(principalOf(store.db, visitorHandles(id).client)?.visitorId, id);
+		assert.equal(principalOf(store.db, row?.clientHandle ?? "")?.visitorId, id);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });
 

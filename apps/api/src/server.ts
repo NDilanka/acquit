@@ -21,6 +21,8 @@ import { mayControlJob } from "../../../packages/core/src/job.ts";
 import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
 import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
+import { accountForRecoveryToken, makeRecoveryToken, recoveryLinkMade } from "../../../packages/core/src/accounts.ts";
+import { attemptLimiter, RESTORE_ATTEMPTS, RESTORE_WINDOW_MS } from "./attempts.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
 import { config, clientRepository, databasePath, demoAllowlist, devEnabled, fixtures, fixturesByManifest, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
@@ -206,6 +208,7 @@ const askTools = askToolList(askPaypal !== null);
 const askOperatorTools = askOperatorToolList();
 // An operator's turn passes this admission before the shared budget reserves, so one operator cannot spend the deployment's minute.
 const admitOperatorTurn = operatorTurnLimiter();
+const admitRestore = attemptLimiter(RESTORE_ATTEMPTS, RESTORE_WINDOW_MS);
 /** An operator's ask executor, built for one request from its session actor: its own jobs, receipts, and payouts, read under that actor. The platform's executor is never reused for an operator. */
 function askOperatorExecutorFor(actor: Extract<Actor, { role: "OPERATOR" }>): AskToolExecutor {
 	return askOperatorToolExecutor({
@@ -271,6 +274,10 @@ function readAskMessages(value: unknown): readonly AskMessage[] {
 }
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
+/** A lasting account's session. Each use moves its deadline out again, so an account in use never signs out by itself. */
+const ACCOUNT_SESSION_TTL_MS = 30 * 86_400_000;
+/** How stale a lasting session's deadline may get before a use writes a new one, so a busy page is not a write per request. */
+const ACCOUNT_SESSION_RENEW_MS = 86_400_000;
 const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
@@ -293,28 +300,50 @@ function session(req: IncomingMessage) {
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
 	if (!token) return null;
-	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), clock.now());
+	const digest = tokenDigest(token);
+	const record = db.prepare("SELECT handle, expires_at FROM sessions WHERE digest = ? AND expires_at > ?").get(digest, clock.now());
 	if (!record) return null;
 	const principal = principalOf(db, String(record.handle));
 	if (!principal) return null;
-	// Public mode has one way in: Start my demo. A principal with no visitor belongs to the seeded
+	// Public mode has one way in: Try Acquit. A principal with no visitor belongs to the seeded
 	// world, so its session is refused here, not only at the mint: an old cookie dies with the mode.
 	// The platform principal is the one exception, and only its own key-gated mint makes a session.
 	if (!devEnabled && principal.visitorId === null && principal.role !== "PLATFORM") return null;
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
-	// A visitor past its expiry is no principal at all, whatever its session row still says: the demo
-	// ends when the visitor does, so the API refuses it here rather than waiting for the sweep.
-	if (principal.visitorId !== null && (visitor === null || visitor.expiresAt <= clock.now())) return null;
+	// A visitor past its expiry is no principal at all, whatever its session row still says, so the API refuses it
+	// here rather than waiting for the sweep. A lasting account has no expiry; its session is renewed instead.
+	if (principal.visitorId !== null && (visitor === null || (visitor.expiresAt !== null && visitor.expiresAt <= clock.now()))) return null;
+	if (visitor !== null && visitor.expiresAt === null) renewAccountSession(digest, String(record.expires_at));
 	const actor: Actor = principal.role === "CLIENT"
 		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
 			...(visitor?.repository ? { repository: visitor.repository } : {}) }
 		: principal.role === "PLATFORM" ? { role: "PLATFORM" }
 		: { role: "OPERATOR", operatorId: principal.handle as OperatorId, tenant: principal.visitorId };
-	return { handle: principal.handle, role: principal.role, visitor, token, actor };
+	return { handle: principal.handle, role: principal.role, visitor, token, viaCookie: bearer === undefined, actor };
 }
-/** The visitor as the web reads it: both of its handles, its repository, and when the demo ends. */
-function visitorJson(visitor: VisitorRow): { id: string; client: string; operator: string; repository: string | null; expiresAt: string } {
+function renewAccountSession(digest: string, expiresAt: string): void {
+	const renewed = Date.parse(clock.now()) + ACCOUNT_SESSION_TTL_MS;
+	if (renewed - Date.parse(expiresAt) < ACCOUNT_SESSION_RENEW_MS) return;
+	db.prepare("UPDATE sessions SET expires_at = ? WHERE digest = ?").run(new Date(renewed).toISOString(), digest);
+}
+/** The session cookie, living exactly as long as the session row it names. */
+function sessionCookie(token: string): string {
+	const row = db.prepare("SELECT expires_at FROM sessions WHERE digest = ?").get(tokenDigest(token));
+	const seconds = row === undefined ? 0 : Math.max(0, Math.floor((Date.parse(String(row.expires_at)) - Date.parse(clock.now())) / 1000));
+	return `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${seconds}`;
+}
+/** The visitor as the old start route answered it: both of its handles, its repository, and its expiry, null for a lasting account. */
+function visitorJson(visitor: VisitorRow): { id: string; client: string; operator: string; repository: string | null; expiresAt: string | null } {
 	return { id: visitor.id, client: visitor.clientHandle, operator: visitor.operatorHandle, repository: visitor.repository, expiresAt: visitor.expiresAt };
+}
+/**
+ * The account as the web reads it: its name, both handles, its repository, and whether a recovery link exists. Every
+ * visitor holds both roles. `lasting` is false only for a visitor made before accounts lasted.
+ */
+function accountJson(visitor: VisitorRow) {
+	return { name: visitor.displayName, client: visitor.clientHandle, operator: visitor.operatorHandle,
+		roles: ["CLIENT", "OPERATOR"] as const, repository: visitor.repository, lasting: visitor.expiresAt === null,
+		recoveryLinkMade: recoveryLinkMade(db, visitor.id) };
 }
 /**
  * The request's client address. The API binds loopback behind the deployment's proxy, which answers
@@ -343,14 +372,16 @@ function insertSession(token: string, handle: string): void {
 	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, sessionExpiry(handle));
 }
 /**
- * The session's own deadline: a week, or the visitor's own expiry when that comes first. A visitor
- * lives a day, so its cookie must not outlive it; a seeded handle keeps the week.
+ * The session's own deadline. A lasting account's runs 30 days and is renewed on use. A seeded handle keeps a week,
+ * and an expiring visitor's session never outlives the visitor.
  */
 function sessionExpiry(handle: string): string {
 	const week = new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString();
 	const principal = principalOf(db, handle);
 	const visitor = principal?.visitorId ? readVisitor(db, principal.visitorId) : null;
-	return visitor !== null && visitor.expiresAt < week ? visitor.expiresAt : week;
+	if (visitor === null) return week;
+	if (visitor.expiresAt === null) return new Date(Date.parse(clock.now()) + ACCOUNT_SESSION_TTL_MS).toISOString();
+	return visitor.expiresAt < week ? visitor.expiresAt : week;
 }
 function mintSession(handle: string): string {
 	const token = randomBytes(32).toString("base64url");
@@ -495,11 +526,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		json(res, 200, { open: demoOpenTo(demoAllowlist, clientAddressOf(req)) });
 		return;
 	}
-	// Start my demo: one visitor, one disposable client repository forked by the App, and a session for
-	// its client. The configuration and the caps come first, and the visitor's row is written before the
-	// App is asked for anything, so a refused visitor never leaves a fork behind and a fork that fails is
-	// still tracked by the sweep.
-	if (url.pathname === "/api/demo" && method === "POST") {
+	// Try Acquit: one lasting account, one client repository forked by the App, and a session for its
+	// client. The configuration and the caps come first, and the account's row is written before the
+	// App is asked for anything, so a refused account never leaves a fork behind and a fork that fails is
+	// still tracked by the sweep. /api/demo is the old name, answering the old shape as well.
+	if ((url.pathname === "/api/accounts" || url.pathname === "/api/demo") && method === "POST") {
 		const address = clientAddressOf(req);
 		if (!demoOpenTo(demoAllowlist, address)) { json(res, 403, DEMO_PRIVATE); return; }
 		const ipKey = ipKeyOf(address);
@@ -512,8 +543,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 		if (created.kind === "FAILED") { json(res, 502, { error: "DEMO_REPOSITORY_FAILED", detail: created.detail }); return; }
 		const token = mintSession(created.visitor.clientHandle);
-		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
-		json(res, 201, { user: { handle: created.visitor.clientHandle, role: "CLIENT" }, visitor: visitorJson(created.visitor), token });
+		res.setHeader("Set-Cookie", sessionCookie(token));
+		json(res, 201, { user: { handle: created.visitor.clientHandle, role: "CLIENT" }, account: accountJson(created.visitor),
+			...(url.pathname === "/api/demo" ? { visitor: visitorJson(created.visitor) } : {}), token });
+		return;
+	}
+	// A saved account link, signed out or signed in as anyone. The token travels only in this body, never in a URL.
+	// Every token that opens nothing answers the same 404, and one address gets a few tries per window, so the link's
+	// 256 bits are the only way in. The caller's own session, if any, ends here: the browser holds one account.
+	if (url.pathname === "/api/account/restore" && method === "POST") {
+		if (!admitRestore(ipKeyOf(clientAddressOf(req)))) { json(res, 429, { error: "RESTORE_LIMITED" }); return; }
+		const input = object(await body(req));
+		const account = typeof input.token === "string" ? accountForRecoveryToken(db, input.token) : null;
+		if (account === null) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		const previous = session(req);
+		if (previous) db.prepare("DELETE FROM sessions WHERE digest = ?").run(tokenDigest(previous.token));
+		const token = mintSession(account.clientHandle);
+		res.setHeader("Set-Cookie", sessionCookie(token));
+		json(res, 200, { user: { handle: account.clientHandle, role: "CLIENT" }, account: accountJson(account) });
 		return;
 	}
 	if (url.pathname.startsWith("/api/dev/") && !devEnabled) {
@@ -524,8 +571,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	// request carries no platform session and reaches its route as before.
 	if (url.pathname.startsWith("/api/dev/") && session(req)?.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 	if (url.pathname === "/api/session") {
-		if (method === "GET") { const current = session(req); json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
-			visitor: current?.visitor ? visitorJson(current.visitor) : null,
+		if (method === "GET") {
+			const current = session(req);
+			// The read every page load makes, so a lasting account's cookie is renewed with its session row.
+			if (current?.viaCookie && current.visitor?.expiresAt === null) res.setHeader("Set-Cookie", sessionCookie(current.token));
+			json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
+			account: current?.visitor ? accountJson(current.visitor) : null,
 			// The deployment's own sign-in shape, so a page draws the public one or the seeded picker
 			// without probing a second route for it. The funding mode a job without its own choice
 			// accepts with, so the accept dialog names the same method the order will use.
@@ -533,20 +584,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (method === "POST") {
 			const handle = text(object(await body(req)).handle, "handle");
 			if (!devEnabled) {
-				// Public mode mints sessions only through Start my demo. A seeded handle is named as such;
-				// every other handle is refused the same way, so a visitor handle is never a credential.
+				// Public mode mints sessions only through Try Acquit and a saved link. A seeded handle is named as
+				// such; every other handle is refused the same way, so an account handle is never a credential.
 				const principal = principalOf(db, handle);
 				json(res, 403, { error: principal && principal.visitorId === null ? "SEEDED_LOGIN_DISABLED" : "SESSION_MINT_DISABLED",
-					detail: "Start my demo mints the only session in public mode." });
+					detail: "Try Acquit mints the only session in public mode." });
 				return;
 			}
 			const selected = principalOf(db, handle);
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
 			const selectedVisitor = selected.visitorId === null ? null : readVisitor(db, selected.visitorId);
 			const token = mintSession(selected.handle);
-			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+			res.setHeader("Set-Cookie", sessionCookie(token));
 			json(res, 200, { user: { handle: selected.handle, role: selected.role },
-				visitor: selectedVisitor ? visitorJson(selectedVisitor) : null, token }); return;
+				account: selectedVisitor ? accountJson(selectedVisitor) : null, token }); return;
 		}
 		if (method === "DELETE") {
 			const current = session(req);
@@ -665,7 +716,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			json(res, 403, { error: "PLATFORM_KEY_MISMATCH" }); return;
 		}
 		const token = mintSession("platform");
-		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+		res.setHeader("Set-Cookie", sessionCookie(token));
 		json(res, 201, { user: { handle: "platform", role: "PLATFORM" }, token });
 		return;
 	}
@@ -683,14 +734,32 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const current = session(req);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
-	// The visitor's client/operator switch. It moves this session's principal inside the visitor that
-	// owns it, and it can never name a handle the session's visitor does not hold.
+	// The account's client/operator switch. It moves this session's principal inside the account that owns
+	// it, and it can never name a handle the session's account does not hold. /api/demo/switch is the old
+	// name: it toggles, and answers the old shape as well.
+	if (url.pathname === "/api/account/role" && method === "POST") {
+		if (!current.visitor) { json(res, 403, { error: "NOT_AN_ACCOUNT" }); return; }
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "role") || (input.role !== "CLIENT" && input.role !== "OPERATOR")) throw new BadBody("Expected role CLIENT or OPERATOR");
+		const target = input.role === "CLIENT" ? current.visitor.clientHandle : current.visitor.operatorHandle;
+		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
+		json(res, 200, { user: { handle: target, role: input.role }, account: accountJson(current.visitor) });
+		return;
+	}
 	if (url.pathname === "/api/demo/switch" && method === "POST") {
 		if (!current.visitor) { json(res, 403, { error: "NOT_DEMO_VISITOR" }); return; }
 		const toClient = current.handle !== current.visitor.clientHandle;
 		const target = toClient ? current.visitor.clientHandle : current.visitor.operatorHandle;
 		db.prepare("UPDATE sessions SET handle = ? WHERE digest = ?").run(target, tokenDigest(current.token));
-		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, visitor: visitorJson(current.visitor), token: current.token });
+		json(res, 200, { user: { handle: target, role: toClient ? "CLIENT" : "OPERATOR" }, account: accountJson(current.visitor),
+			visitor: visitorJson(current.visitor), token: current.token });
+		return;
+	}
+	// Makes the account's saved link, or a new one that ends the old. The token is answered once and never stored.
+	if (url.pathname === "/api/account/recovery" && method === "POST") {
+		const recoveryToken = current.visitor ? makeRecoveryToken(db, current.visitor.id, clock.now()) : null;
+		if (recoveryToken === null) { json(res, 403, { error: "NOT_AN_ACCOUNT" }); return; }
+		json(res, 200, { recoveryToken });
 		return;
 	}
 	// The judge scenarios. Only a visitor's own session starts or reads one; the run itself lives on the

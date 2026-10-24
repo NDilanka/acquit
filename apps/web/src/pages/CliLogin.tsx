@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, ApiError } from "../api";
 import { approveFailure, codeHint, type Copy, type Failure, isCodeFormat, NOT_VALID, signInPrompt } from "../cli";
-import { errorText } from "../demo";
+import { errorText } from "../errors";
 import { useRouter } from "../router";
 import { useSession } from "../session";
 

@@ -4,7 +4,7 @@ import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, ScopingCase
 import { api, ApiError } from "../api";
 import type { PlacedBid } from "../bid-confirmation";
 import { agentLine, allBids, bidder, houseName, lockedBid, payeeBid, proofLine } from "../bids";
-import { clockAhead, CLOCK_STEPS, demoControls, errorText, withJobChangedRetry } from "../demo";
+import { errorText } from "../errors";
 import { deadlineOutcome, escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
 import { bidStatusWord, payoutHeldBy, runFailureWord } from "../job-status";
@@ -23,7 +23,7 @@ import { MoneyCard } from "./job/MoneyCard";
 import { Timeline } from "./job/Timeline";
 
 export function JobPage({ id }: { id: string }) {
-  const { user, visitor, fundingMode } = useSession();
+  const { user, fundingMode } = useSession();
   const { location } = useRouter();
   const [job, setJob] = useState<JobView | null>(null);
   const [diff, setDiff] = useState<JobDiff | null>(null);
@@ -111,7 +111,6 @@ export function JobPage({ id }: { id: string }) {
   const disputeHolds = payoutHeldBy(job.providerDispute);
   const reviewing = job.phase === "AWAITING_CLIENT" && !job.dispute;
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
-  const controls = demoControls(job, { user, visitor });
   // A job's own choice wins; before accept, a job nobody chose for funds with the deployment's default.
   const source: FundingMode = job.funding ?? fundingMode;
 
@@ -338,8 +337,6 @@ export function JobPage({ id }: { id: string }) {
 
         <aside>
           <MoneyCard job={job} locked={locked} />
-          {controls.funding && <FundingChoice job={job} onChosen={() => void load()} />}
-          {controls.clock && <JobClock job={job} onAdvanced={setJob} />}
         </aside>
       </div>
 
@@ -674,87 +671,6 @@ function Breakdown({ price, payee }: { price: number; payee: string }) {
         <span>Total</span>
         <b className="num">{usd(price + fee)}</b>
       </div>
-    </div>
-  );
-}
-
-const FUNDING_CHOICES: readonly { mode: FundingMode; label: string; note: string }[] = [
-  { mode: "card", label: "Sandbox test card", note: "Acquit charges a PayPal sandbox test card when you accept. No PayPal login." },
-  { mode: "checkout", label: "PayPal checkout", note: "You approve the order on PayPal's sandbox site with a sandbox buyer account." },
-];
-
-function FundingChoice({ job, onChosen }: { job: JobView; onChosen: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const choose = async (mode: FundingMode) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.setFunding(job.id, mode);
-      onChosen();
-    } catch (e) {
-      setError(errorText(e));
-      // An accept bound the funding in the meantime, so the reload closes this card on the job's real state.
-      if (e instanceof ApiError && e.code === "FUNDING_BOUND") onChosen();
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="card pad">
-      <h2>Payment method</h2>
-      <p className="muted small">How you pay when you accept a bid. Only this job changes.</p>
-      {FUNDING_CHOICES.map((c) => (
-        <label key={c.mode} className="choice">
-          <input
-            type="radio"
-            name="funding"
-            checked={job.funding === c.mode}
-            disabled={busy}
-            onChange={() => void choose(c.mode)}
-          />
-          <span>
-            <b>{c.label}</b>
-            <small>{c.note}</small>
-          </span>
-        </label>
-      ))}
-      {error && <div className="alert">{error}</div>}
-    </div>
-  );
-}
-
-function JobClock({ job, onAdvanced }: { job: JobView; onAdvanced: (job: JobView) => void }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [moved, setMoved] = useState<string | null>(null);
-  const advance = async (step: (typeof CLOCK_STEPS)[number]) => {
-    setBusy(step.label);
-    setError(null);
-    try {
-      const r = await withJobChangedRetry(() => api.advanceJobClock(job.id, step.ms));
-      onAdvanced(r.job);
-      setMoved(step.label.replace("Advance", "Moved this job forward"));
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  return (
-    <div className="card pad">
-      <h2>Job clock</h2>
-      <p className="muted small">Skip ahead on this job's deadlines and review window. Other jobs keep their own time.</p>
-      <p><b>{clockAhead(job.clockShiftMs ?? 0)}</b></p>
-      <div className="act">
-        {CLOCK_STEPS.map((s) => (
-          <button key={s.label} className="btn ghost sm" disabled={busy !== null} onClick={() => void advance(s)}>
-            {busy === s.label ? "Moving…" : s.label}
-          </button>
-        ))}
-      </div>
-      {moved && !error && <p className="muted small">{moved}.</p>}
-      {error && <div className="alert">{error}</div>}
     </div>
   );
 }

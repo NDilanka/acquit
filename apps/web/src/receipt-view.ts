@@ -133,4 +133,4 @@ export function operatorLine(operator: PublicReceipt["operator"]): string {
 export const SANDBOX_NOTE = "PayPal sandbox. No real money moves.";
 
 /** The line a judge-scenario receipt carries: its agent was a script, and the verifier run that judged it was real. */
-export const SCRIPTED_NOTE = "Scripted agent (Simulated) did this work in a judge scenario. The verifier run that judged it was real.";
+export const SCRIPTED_NOTE = "Scripted agent (Simulated) did this work in a scenario. The verifier run that checked it was real.";

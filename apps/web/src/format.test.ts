@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, refundNote, runnerLabel, shortId, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, middleTruncate, refundNote, runnerLabel, shortId, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
@@ -155,4 +155,11 @@ test("a short id keeps its prefix and eight characters", () => {
   assert.equal(shortId("9f2c4e1ab7d03e55c8a1f0b2d6e4c9a7b3f5d812"), "9f2c4e1a…");
   assert.equal(shortId("8KX12"), "8KX12");
   assert.equal(shortId("rcpt_abcdefgh"), "rcpt_abcdefgh");
+});
+
+test("a long value is cut in the middle to its width, and a short one is left whole", () => {
+  assert.equal(middleTruncate("abcdefghij", 7), "abcd…ij");
+  assert.equal(middleTruncate("abcdefg", 7), "abcdefg");
+  assert.equal(middleTruncate("https://acquit.example/welcome-back#AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde", 48),
+    "https://acquit.example/welcome-b…23456789-_abcde");
 });

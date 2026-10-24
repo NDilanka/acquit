@@ -231,10 +231,10 @@ test("the expiry sweep the CLI runs first leaves a RUNNING or fresh finished sce
 		started = await start(h, "verified-and-paid", visitor);
 		assert.equal(started.run.state, "RUNNING");
 		const db = h.deps.store.db;
-		// A clock two days ahead expires every visitor. The expiry pass sweeps the harness's own requester, which has no
-		// fork, and leaves the RUNNING run's visitor and its fork alone.
+		// A clock two days ahead expires every visitor that has an expiry. The expiry pass leaves the harness's own
+		// requester, a lasting account, and the RUNNING run's visitor and its fork alone.
 		const jump = after(2 * 86_400_000);
-		assert.deepEqual(await sweepExpiredVisitors({ db, app: h.github, source: DEMO_REPOSITORY, now: jump }), { swept: [h.visitor.id], repositories: [], kept: [] });
+		assert.deepEqual(await sweepExpiredVisitors({ db, app: h.github, source: DEMO_REPOSITORY, now: jump }), { swept: [], repositories: [], kept: [] });
 		assert.equal(h.github.clientRepos.size, 1);
 		assert.notEqual(readVisitor(db, visitor.id)?.state, "SWEPT");
 

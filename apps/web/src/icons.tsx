@@ -20,7 +20,8 @@ export type IconName =
   | "monitor"
   | "bids"
   | "work"
-  | "earnings";
+  | "earnings"
+  | "check";
 
 const PATHS: Record<IconName, ReactNode> = {
   jobs: (
@@ -123,6 +124,7 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M18 12a2 2 0 0 0 0 4h4v-4z" />
     </>
   ),
+  check: <path d="M5 12.5 9.5 17 19 7.5" />,
 };
 
 export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {

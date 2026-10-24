@@ -52,7 +52,7 @@ export type CapUsage = {
 
 /** One row per closed refusal code: the limit, the kind that spends it, the counter it reads, and how. */
 export const CAPS = {
-	VISITORS_DAY: { limit: 50, kind: "VISITOR", counter: "visitorsToday", mode: "count", scope: "visitors in 24 h" },
+	VISITORS_DAY: { limit: 200, kind: "VISITOR", counter: "visitorsToday", mode: "count", scope: "accounts made in 24 h" },
 	VISITOR_JOBS: { limit: 3, kind: "JOB", counter: "jobs", mode: "count", scope: "one visitor's jobs" },
 	AMOUNT: { limit: 100_000, kind: "JOB", counter: null, mode: "value", scope: "one job's budget, in cents" },
 	SPEND_DAY: { limit: 200_000, kind: "JOB", counter: "budget", mode: "sum", scope: "one visitor's promised budget in 24 h, in cents" },

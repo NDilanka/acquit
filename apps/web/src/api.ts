@@ -1,4 +1,5 @@
 import type {
+  AccountSessionResponse,
   AskToolResponse,
   AskToolsResponse,
   AskTurnRequest,
@@ -8,9 +9,7 @@ import type {
   DemoAccessResponse,
   FigureId,
   FigureTrace,
-  FundingMode,
   JobDetailResponse,
-  JobResponse,
   JobView,
   OperatorEscrowRow,
   OperatorView,
@@ -22,6 +21,7 @@ import type {
   PrintRunView,
   PublicReceiptResponse,
   ReceiptRow,
+  RecoveryResponse,
   ScenarioName,
   ScenarioRun,
   ScenarioStartResponse,
@@ -95,8 +95,11 @@ export const api = {
   session: () => request<SessionResponse>("GET", "/api/session"),
   signIn: (handle: string) => request<SignedInResponse>("POST", "/api/session", { handle }),
   demoAccess: () => request<DemoAccessResponse>("GET", "/api/demo/access"),
-  startDemo: () => request<SignedInResponse>("POST", "/api/demo", {}),
-  switchDemo: () => request<SignedInResponse>("POST", "/api/demo/switch", {}),
+  createAccount: () => request<SignedInResponse>("POST", "/api/accounts", {}),
+  switchRole: (role: "CLIENT" | "OPERATOR") => request<AccountSessionResponse>("POST", "/api/account/role", { role }),
+  makeRecoveryLink: () => request<RecoveryResponse>("POST", "/api/account/recovery", {}),
+  // The token goes in the body, never the address, so no server or proxy log records it.
+  restoreAccount: (token: string) => request<AccountSessionResponse>("POST", "/api/account/restore", { token }),
   signOut: () => request<void>("DELETE", "/api/session"),
   users: () => request<{ users: SessionUser[] }>("GET", "/api/users"),
   repos: () => request<{ repos: Repo[] }>("GET", "/api/repos"),
@@ -106,13 +109,9 @@ export const api = {
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),
   job: (id: string) => request<JobDetailResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
-  setFunding: (id: string, mode: FundingMode) =>
-    request<{ mode: FundingMode }>("POST", `/api/jobs/${encodeURIComponent(id)}/funding`, { mode }),
   scoping: (id: string) => request<ScopingResponse>("GET", `/api/jobs/${encodeURIComponent(id)}/scoping`),
   approveScoping: (id: string, leaveOut: readonly string[]) =>
     request<ScopingApproveResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/scoping/approve`, { leaveOut }),
-  advanceJobClock: (id: string, advanceMs: number) =>
-    request<JobResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/clock`, { advanceMs }),
   operator: () => request<{ operator: OperatorView; agents: AgentSummary[] }>("GET", "/api/me/operator"),
   credits: () => request<{ credits: CreditAccountView }>("GET", "/api/me/credits"),
   receipts: () => request<{ receipts: ReceiptRow[]; nextCursor: null }>("GET", "/api/me/receipts"),

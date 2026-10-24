@@ -1,9 +1,9 @@
-// The judge-mode visitor. One row owns an identity (two principals), a disposable client repository,
-// and an expiry. The visitor's clock and funding choices are per job, so nothing here is process-wide:
-// two visitors share no row, no handle, and no repository name. Sessions live in the API; this module
-// owns the rows they resolve to.
+// The visitor row: one identity (two principals), a disposable client repository, and a lifetime. A
+// Try Acquit account is a visitor with no expiry; a scenario run's visitor keeps a day. Two visitors share
+// no row, no handle, and no repository name. Sessions live in the API; this module owns the rows they
+// resolve to.
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { capUsage, capWindowStart, reservationRefusal } from "./caps.ts";
 import type { CapRefusal, Reservation } from "./caps.ts";
@@ -14,8 +14,8 @@ import type { AgentId, Instant, MerchantId, OperatorId, Version, VisitorId } fro
 import type { UsdCents } from "./ledger.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
 
-/** A visitor's whole demo life. Long enough for a judge to read the page, short enough to sweep daily. */
-export const VISITOR_TTL_MS = 86_400_000;
+/** A scenario run's visitor lives a day. A Try Acquit account has no expiry at all. */
+export const SCENARIO_VISITOR_TTL_MS = 86_400_000;
 
 /**
  * Where a visitor is in its provisioning. A row is reserved PROVISIONING before its repository exists,
@@ -27,7 +27,10 @@ export type VisitorState = "PROVISIONING" | "ACTIVE" | "FAILED" | "SWEPT";
 export type VisitorRow = {
 	readonly id: VisitorId;
 	readonly createdAt: Instant;
-	readonly expiresAt: Instant;
+	/** Null for a lasting account. A scenario visitor, and a visitor made before accounts lasted, has one. */
+	readonly expiresAt: Instant | null;
+	/** The readable name an account shows, such as "Teal Otter". Null for a visitor made before names existed. */
+	readonly displayName: string | null;
 	/** The digest of the request address, never the address. */
 	readonly ipKey: string;
 	readonly clientHandle: string;
@@ -65,6 +68,8 @@ export type NewVisitor = {
 	 * start counted under that requester, not a visitor counted under the address, so VISITORS_DAY is untouched.
 	 */
 	readonly scenarioOf?: string;
+	/** The name draw, a uniform integer below the bound. Tests pin it; the default is crypto.randomInt. */
+	readonly pick?: (bound: number) => number;
 };
 
 /** `v_` plus 48 random bits, so two visitors cannot collide on a handle or a repository name. */
@@ -72,9 +77,50 @@ export function newVisitorId(): VisitorId {
 	return parseVisitorId(`v_${randomBytes(6).toString("hex")}`);
 }
 
-export function visitorHandles(id: VisitorId): { readonly client: string; readonly operator: string } {
-	const hex = id.slice(2);
-	return { client: `guest-${hex}-client`, operator: `guest-${hex}-ops` };
+const NAME_COLORS = ["amber", "azure", "birch", "brisk", "cedar", "coral", "crimson", "dusky", "ember", "fern", "frost", "golden",
+	"granite", "hazel", "indigo", "ivory", "jade", "juniper", "lilac", "linen", "maple", "misty", "mossy", "navy", "ochre", "olive",
+	"pearl", "plum", "quiet", "rapid", "rosy", "ruby", "rustic", "sage", "scarlet", "silver", "slate", "sunny", "swift", "tawny",
+	"teal", "umber", "velvet", "violet", "willow", "wintry"] as const;
+const NAME_ANIMALS = ["badger", "beaver", "bison", "crane", "falcon", "ferret", "finch", "fox", "gecko", "heron", "ibis", "jackal",
+	"koala", "lark", "lemur", "lynx", "marten", "moose", "newt", "ocelot", "orca", "osprey", "otter", "owl", "panda", "pelican",
+	"puffin", "quail", "raven", "robin", "salmon", "seal", "sparrow", "stoat", "swan", "tapir", "tern", "toucan", "trout",
+	"turtle", "vole", "walrus", "wombat", "wren", "yak", "zebra"] as const;
+/** How many suffixed slugs one creation tries before it gives up. 256 suffixes exist per slug. */
+const NAME_ATTEMPTS = 32;
+
+/** An account's readable name and the two handles derived from it: "Teal Otter", "teal-otter", "teal-otter-ops". */
+export type AccountName = { readonly displayName: string; readonly client: string; readonly operator: string };
+
+const titleCase = (word: string): string => word.charAt(0).toUpperCase() + word.slice(1);
+
+/** The name for one draw. A suffix is two hex characters, added only when the plain slug is taken. */
+export function accountName(color: number, animal: number, suffix: number | null): AccountName {
+	const first = NAME_COLORS[color % NAME_COLORS.length]!;
+	const second = NAME_ANIMALS[animal % NAME_ANIMALS.length]!;
+	const slug = suffix === null ? `${first}-${second}` : `${first}-${second}-${(suffix % 256).toString(16).padStart(2, "0")}`;
+	return { displayName: `${titleCase(first)} ${titleCase(second)}`, client: slug, operator: `${slug}-ops` };
+}
+
+/** Whether any row already answers to a handle or to the operator rows a new visitor writes under it. */
+function nameTaken(db: DatabaseSync, name: AccountName): boolean {
+	const agent = `${name.operator}-agent`;
+	return db.prepare(`SELECT 1 FROM principals WHERE handle IN (?, ?) UNION ALL SELECT 1 FROM operators WHERE id IN (?, ?)
+		UNION ALL SELECT 1 FROM agents WHERE id = ? UNION ALL SELECT 1 FROM credits WHERE id IN (?, ?) LIMIT 1`)
+		.get(name.client, name.operator, name.client, name.operator, agent, name.client, name.operator) !== undefined;
+}
+
+/**
+ * A free name, drawn inside the caller's write transaction so no other writer can take it before the
+ * rows land. The plain slug first, then the same words with a two-character suffix.
+ */
+function freeAccountName(db: DatabaseSync, pick: (bound: number) => number): AccountName {
+	const color = pick(NAME_COLORS.length);
+	const animal = pick(NAME_ANIMALS.length);
+	for (let attempt = 0; attempt < NAME_ATTEMPTS; attempt++) {
+		const name = accountName(color, animal, attempt === 0 ? null : pick(256));
+		if (!nameTaken(db, name)) return name;
+	}
+	throw new Error("No free account name for this draw");
 }
 
 /** The visitor's client repository name inside the App's organization. Deterministic per visitor. */
@@ -82,7 +128,7 @@ export function visitorRepositoryName(id: VisitorId): string {
 	return `demo-${id.slice(2)}`;
 }
 
-const VISITOR_COLUMNS = "id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id, state";
+const VISITOR_COLUMNS = "id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id, state, display_name";
 
 const stateOf = (value: unknown): VisitorState => {
 	const state = String(value);
@@ -90,7 +136,9 @@ const stateOf = (value: unknown): VisitorState => {
 };
 
 const row = (value: Record<string, unknown>): VisitorRow => ({
-	id: parseVisitorId(String(value.id)), createdAt: String(value.created_at) as Instant, expiresAt: String(value.expires_at) as Instant,
+	id: parseVisitorId(String(value.id)), createdAt: String(value.created_at) as Instant,
+	expiresAt: value.expires_at === null || value.expires_at === undefined ? null : String(value.expires_at) as Instant,
+	displayName: value.display_name === null || value.display_name === undefined ? null : String(value.display_name),
 	ipKey: String(value.ip_key), clientHandle: String(value.client_handle), operatorHandle: String(value.operator_handle),
 	repository: value.repository === null || value.repository === undefined ? null : String(value.repository),
 	repositoryId: typeof value.repository_id === "number" ? value.repository_id : null,
@@ -127,15 +175,20 @@ export function repositoryForClient(db: DatabaseSync, clientHandle: string): str
 }
 
 /**
- * Every visitor past its expiry, oldest first, that no earlier sweep has already taken. The sweep's input. A scenario
- * run's visitor is left out: its fork belongs to the scenario sweep, which waits for the run to finish, so an
- * ordinary pass never removes a fork a RUNNING or freshly finished run still uses.
+ * Every visitor the sweep may take, oldest first, that no earlier sweep has already taken. A lasting account that
+ * finished provisioning is never here. One whose provisioning failed, or never finished, a day after it began has no
+ * session and only a fork to clean up, so it is here. So is every visitor made before accounts lasted, once past its
+ * expiry. A scenario run's visitor is left out: its fork belongs to the scenario sweep, which waits for the run to
+ * finish, so an ordinary pass never removes a fork a RUNNING or freshly finished run still uses.
  */
 export function expiredVisitors(db: DatabaseSync, now: Instant): readonly VisitorRow[] {
-	return db.prepare(`SELECT ${VISITOR_COLUMNS} FROM visitors WHERE expires_at <= ? AND state <> 'SWEPT'
+	const abandonedBefore = new Date(Date.parse(now) - SCENARIO_VISITOR_TTL_MS).toISOString();
+	return db.prepare(`SELECT ${VISITOR_COLUMNS} FROM visitors WHERE state <> 'SWEPT'
+			AND ((expires_at IS NOT NULL AND expires_at <= ?)
+				OR (expires_at IS NULL AND state IN ('PROVISIONING', 'FAILED') AND created_at <= ?))
 			AND NOT EXISTS (SELECT 1 FROM cap_reservations c WHERE c.kind = 'SCENARIO' AND c.ref = visitors.id)
 			ORDER BY created_at`)
-		.all(now).map(row);
+		.all(now, abandonedBefore).map(row);
 }
 
 /**
@@ -158,7 +211,7 @@ export function sweepVisitor(db: DatabaseSync, id: VisitorId): void {
 }
 
 /**
- * Creates the visitor's whole identity in one transaction: the row, its two principals, its operator
+ * Creates the visitor's whole identity in one transaction: the row, its readable name and two principals, its operator
  * (READY on the deployment's sandbox seller), its one agent, its first weekly grant, and the
  * reservation that spends one slot of the deployment's visitor day. The check and the rows it guards share
  * that transaction, so two creations at once cannot both pass the day's last slot. An
@@ -168,31 +221,34 @@ export function sweepVisitor(db: DatabaseSync, id: VisitorId): void {
  * sweep a name to remove; the bind replaces it with the App's own answer.
  */
 export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorReservation {
-	const handles = visitorHandles(input.id);
-	const expiresAt = new Date(Date.parse(input.now) + VISITOR_TTL_MS).toISOString() as Instant;
-	const visitor: VisitorRow = { id: input.id, createdAt: input.now, expiresAt, ipKey: input.ipKey,
-		clientHandle: handles.client, operatorHandle: handles.operator, repository: input.repository,
-		repositoryId: input.repositoryId ?? null, state: "PROVISIONING" };
-	const operator: OperatorRow = { id: handles.operator as OperatorId, handle: handles.operator, kind: "INDEPENDENT",
-		version: 0 as Version, payouts: { kind: "READY", merchant: input.merchant, connectedAt: input.now } };
-	const agentId = `${handles.operator}-agent`;
-	const agent: Agent = { id: agentId as AgentId, owner: operator.id, name: agentId, runner: "claude-code",
-		promptDigest: createHash("sha256").update(`judge-mode demo agent ${input.id}`).digest("hex") as Agent["promptDigest"], tools: [] };
-	const empty: CreditAccount = { operator: operator.id, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
-	const account = reduceCredits(empty, { kind: "Grant", week: creditWeek(input.now), paidReceipts: 0, at: input.now });
-	if (account === "INSUFFICIENT_CREDITS") throw new Error("Visitor grant failed");
+	const expiresAt = input.scenarioOf === undefined ? null
+		: new Date(Date.parse(input.now) + SCENARIO_VISITOR_TTL_MS).toISOString() as Instant;
 	const spend: Reservation = input.scenarioOf === undefined
 		? { kind: "VISITOR", scope: input.ipKey, ref: input.id, cents: 0 as UsdCents, at: input.now }
 		: { kind: "SCENARIO", scope: input.scenarioOf, ref: input.id, cents: 0 as UsdCents, at: input.now };
+	let visitor: VisitorRow;
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		// The allowance is re-read inside the write transaction, so the answer this transaction commits on
 		// is the answer of the rows it is about to write.
 		const refused = reservationRefusal(spend, capUsage(db, { scope: spend.scope, since: capWindowStart(input.now) }));
 		if (refused !== null) { db.exec("ROLLBACK"); return { kind: "CAPPED", reason: refused }; }
-		db.prepare("INSERT INTO visitors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		const name = freeAccountName(db, input.pick ?? randomInt);
+		visitor = { id: input.id, createdAt: input.now, expiresAt, displayName: name.displayName, ipKey: input.ipKey,
+			clientHandle: name.client, operatorHandle: name.operator, repository: input.repository,
+			repositoryId: input.repositoryId ?? null, state: "PROVISIONING" };
+		const operator: OperatorRow = { id: name.operator as OperatorId, handle: name.operator, kind: "INDEPENDENT",
+			version: 0 as Version, payouts: { kind: "READY", merchant: input.merchant, connectedAt: input.now } };
+		const agentId = `${name.operator}-agent`;
+		const agent: Agent = { id: agentId as AgentId, owner: operator.id, name: agentId, runner: "claude-code",
+			promptDigest: createHash("sha256").update(`account starter agent ${input.id}`).digest("hex") as Agent["promptDigest"], tools: [] };
+		const empty: CreditAccount = { operator: operator.id, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
+		const account = reduceCredits(empty, { kind: "Grant", week: creditWeek(input.now), paidReceipts: 0, at: input.now });
+		if (account === "INSUFFICIENT_CREDITS") throw new Error("Visitor grant failed");
+		db.prepare(`INSERT INTO visitors (id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id,
+				state, display_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.run(visitor.id, visitor.createdAt, visitor.expiresAt, visitor.ipKey, visitor.clientHandle, visitor.operatorHandle,
-				visitor.repository, visitor.repositoryId, visitor.state);
+				visitor.repository, visitor.repositoryId, visitor.state, visitor.displayName);
 		db.prepare("INSERT INTO principals VALUES (?, ?, ?)").run(visitor.clientHandle, "CLIENT", visitor.id);
 		db.prepare("INSERT INTO principals VALUES (?, ?, ?)").run(visitor.operatorHandle, "OPERATOR", visitor.id);
 		db.prepare("INSERT INTO operators VALUES (?, ?, ?, 0)").run(operator.id, operator.version, JSON.stringify(operator));

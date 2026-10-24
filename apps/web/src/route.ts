@@ -1,6 +1,8 @@
 export type Route =
   | { name: "home" }
   | { name: "demo" }
+  | { name: "start" }
+  | { name: "welcomeBack" }
   | { name: "newJob" }
   | { name: "job"; id: string }
   | { name: "receipt"; id: string }
@@ -17,6 +19,8 @@ export type Route =
 export function match(path: string): Route {
   if (path === "/" || path === "") return { name: "home" };
   if (path === "/demo" || path === "/demo/") return { name: "demo" };
+  if (path === "/start" || path === "/start/") return { name: "start" };
+  if (path === "/welcome-back" || path === "/welcome-back/") return { name: "welcomeBack" };
   if (path === "/jobs/new") return { name: "newJob" };
   if (path === "/operator" || path === "/operator/") return { name: "operator" };
   if (path === "/operator/bids") return { name: "operatorBids" };
@@ -33,16 +37,21 @@ export function match(path: string): Route {
   return { name: "notFound" };
 }
 
-export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" {
+/** What a signed-out browser sees on a route. `/demo` is the old address of `/start`, so it moves there. */
+export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" | "toStart" | "welcomeBack" {
   switch (route.name) {
     case "home":
       return "landing";
     case "notFound":
       return "notFound";
+    case "demo":
+      return "toStart";
+    case "welcomeBack":
+      return "welcomeBack";
     case "receipt":
     case "verifiers":
     case "print":
-    case "demo":
+    case "start":
     case "newJob":
     case "job":
     case "operator":
@@ -55,7 +64,8 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" {
   }
 }
 
-// The call to action waits while the session loads (undefined), so it never flashes for a signed-in visitor.
-export function showsDemoCta(route: Route, signedIn: boolean | undefined): boolean {
-  return signedIn === false && route.name !== "demo";
+// The call to action waits while the session loads (undefined), so it never flashes for a signed-in user. The pages
+// that carry their own Try Acquit button do not get a second one.
+export function showsTryCta(route: Route, signedIn: boolean | undefined): boolean {
+  return signedIn === false && route.name !== "demo" && route.name !== "start" && route.name !== "welcomeBack";
 }

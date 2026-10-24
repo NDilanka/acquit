@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
-import { errorText } from "../demo";
+import { errorText } from "../errors";
 import { utc } from "../format";
 import { Link } from "../router";
 import { digestOfHiddenCases } from "../receipt-digest";
@@ -118,7 +118,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
         <h2>Hidden cases</h2>
         {r.hiddenCases === null ? (
           <p className="muted">
-            This job ran the fixture's own hidden tests. They are shared by every visitor, so they are never published.
+            This job ran the fixture's own hidden tests. They are shared by every account, so they are never published.
           </p>
         ) : (
           <>

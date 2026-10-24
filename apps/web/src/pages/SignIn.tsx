@@ -1,29 +1,124 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
+import { PRIVATE_COPY, START_COPY, startFailure } from "../account";
 import { api, ApiError, type SessionUser } from "../api";
 import type { DeploymentMode } from "../api-types";
-import { DEMO_PRIVATE_COPY, errorText, isDemoPrivate } from "../demo";
-import { START_DEMO_ACTION } from "../judge-tour";
-import { Link, useRouter } from "../router";
+import { errorText } from "../errors";
+import { Icon } from "../icons";
+import { useRouter } from "../router";
 import type { Session } from "../session";
-import { ConnectedRepo } from "../ui";
-import { JudgeScenarios } from "./JudgeScenarios";
+import { useToast } from "../toast";
+import { ErrorNote, Modal, Spinner } from "../ui";
 
 type SignedIn = (session: Session) => void;
 
+/** The Try Acquit page. The dev deployment adds the seeded picker under it. */
 export function SignIn({ mode, onSignedIn }: { mode: DeploymentMode; onSignedIn: SignedIn }) {
-  return mode === "public" ? (
-    <>
-      <StartDemo onSignedIn={onSignedIn} />
-      <PlatformKey onSignedIn={onSignedIn} />
-    </>
-  ) : (
-    <SeededPicker onSignedIn={onSignedIn} />
+  return (
+    <div className="start">
+      <StartCard onSignedIn={onSignedIn} staff={mode === "public"} />
+      {mode === "dev" && <SeededPicker onSignedIn={onSignedIn} />}
+    </div>
   );
 }
 
-function useSignIn(onSignedIn: SignedIn) {
+export type TryState = "ready" | "busy" | "error" | "limit" | "private";
+
+/** Makes an account in one call and lands on My jobs as its client, with the welcome toast. */
+export function useTryAcquit(onSignedIn: SignedIn) {
+  const [state, setState] = useState<TryState>("ready");
+  const [error, setError] = useState<unknown>(null);
+  const { navigate } = useRouter();
+  const toast = useToast();
+  const start = async () => {
+    setState("busy");
+    setError(null);
+    try {
+      const made = await api.createAccount();
+      navigate("/");
+      onSignedIn({ user: made.user, account: made.account });
+      toast(START_COPY.made);
+    } catch (e) {
+      setError(e);
+      setState(startFailure(e));
+    }
+  };
+  return { state, setState, error, start };
+}
+
+/** The failure above the button, then the green button itself, which reads its busy label while the account is made. */
+export function TryAcquit({ state, error, onStart }: { state: TryState; error: unknown; onStart: () => void }) {
+  const busy = state === "busy";
+  return (
+    <>
+      {state === "error" && <ErrorNote error={error} message={START_COPY.failed} />}
+      {state === "limit" && <ErrorNote error={error} />}
+      <button type="button" className="btn green start-action" disabled={busy || state === "limit"} onClick={onStart}>
+        {busy && <Spinner />}
+        {busy ? START_COPY.busy : START_COPY.action}
+      </button>
+    </>
+  );
+}
+
+function StartCard({ onSignedIn, staff }: { onSignedIn: SignedIn; staff: boolean }) {
+  const tryAcquit = useTryAcquit(onSignedIn);
+  const { setState } = tryAcquit;
+  const [staffOpen, setStaffOpen] = useState(false);
+  useEffect(() => {
+    // A failed check keeps the button. The server still refuses a closed deployment, and that refusal closes it.
+    let live = true;
+    api
+      .demoAccess()
+      .then((r) => {
+        if (live && !r.open) setState("private");
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [setState]);
+
+  return (
+    <section className="card pad start-card" aria-label="Try Acquit">
+      {tryAcquit.state === "private" ? (
+        <>
+          <h2>{PRIVATE_COPY.heading}</h2>
+          <p className="start-lead">{PRIVATE_COPY.line}</p>
+        </>
+      ) : (
+        <>
+          <p className="start-lead">{START_COPY.lead}</p>
+          <ul className="start-points">
+            {START_COPY.points.map((point) => (
+              <li key={point}>
+                <Icon name="check" size={16} />
+                <span>{point}</span>
+              </li>
+            ))}
+          </ul>
+          <TryAcquit state={tryAcquit.state} error={tryAcquit.error} onStart={() => void tryAcquit.start()} />
+          <p className="muted start-note">{START_COPY.saved}</p>
+        </>
+      )}
+      {staff && (
+        <button type="button" className="start-staff" onClick={() => setStaffOpen(true)}>
+          {START_COPY.staff}
+        </button>
+      )}
+      {staffOpen && (
+        <Modal title={START_COPY.staff} onClose={() => setStaffOpen(false)}>
+          <PlatformKey onSignedIn={onSignedIn} />
+        </Modal>
+      )}
+    </section>
+  );
+}
+
+function SeededPicker({ onSignedIn }: { onSignedIn: SignedIn }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const { navigate } = useRouter();
+  const [users, setUsers] = useState<SessionUser[] | null>(null);
   const run = async (label: string, start: () => Promise<Session>) => {
     setBusy(label);
     setError(null);
@@ -35,141 +130,25 @@ function useSignIn(onSignedIn: SignedIn) {
       setBusy(null);
     }
   };
-  return { error, setError, busy, run };
-}
-
-type RoleChoice = { readonly role: SessionUser["role"]; readonly label: string; readonly note: string; readonly busy: string; readonly next: string };
-
-const ROLE_CHOICES: readonly [RoleChoice, RoleChoice] = [
-  { role: "CLIENT", label: "I want work done", note: "You post jobs and pay into escrow", busy: "Starting your demo…", next: "Go to your jobs" },
-  { role: "OPERATOR", label: "I deliver work", note: "You deliver fixes and get paid", busy: "Starting your demo as the operator…", next: "Go to open jobs" },
-];
-
-function StartDemo({ onSignedIn }: { onSignedIn: SignedIn }) {
-  const [connected, setConnected] = useState<Session | null>(null);
-  // Set when the API keeps the demo private from this address, by the access check or by a refused start.
-  const [privateDemo, setPrivateDemo] = useState(false);
-  // A demo starts once per sign-up, whether a role choice or a scenario asks first: a retry after a failed switch,
-  // or a scenario run started from this page, reuses it instead of opening another visitor.
-  const created = useRef<Promise<Session> | null>(null);
-  const { error, busy, run } = useSignIn(setConnected);
-  const id = useId();
-  useEffect(() => {
-    // A failed check keeps the picker. The start call is still refused on the server, and that refusal closes it.
-    let live = true;
-    api
-      .demoAccess()
-      .then((r) => {
-        if (live && !r.open) setPrivateDemo(true);
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, []);
-  const ensureDemo = (): Promise<Session> => {
-    created.current ??= api.startDemo().catch((e: unknown) => {
-      created.current = null;
-      if (isDemoPrivate(e)) setPrivateDemo(true);
-      throw e;
-    });
-    return created.current;
-  };
-  const choose = (choice: RoleChoice) =>
-    run(choice.role, async () => {
-      const demo = await ensureDemo();
-      if (demo.user.role === choice.role) return demo;
-      return await api.switchDemo();
-    });
-  const chosen = connected && ROLE_CHOICES.find((c) => c.role === connected.user.role);
-  if (privateDemo) return <DemoPrivate />;
-  return (
-    <div className="signin card">
-      <div className="eyebrow">Judge mode</div>
-      <h1>Try Acquit with your own demo</h1>
-      <p className="muted">
-        You get a client and an operator of your own and a fresh copy of the demo repository. Nobody else sees your jobs. Payments
-        run against the PayPal sandbox, and the demo ends after 24 hours.
-      </p>
-      <JudgeScenarios ensureDemo={ensureDemo} />
-      {connected && chosen ? (
-        <div className="connected-step">
-          <ConnectedRepo repository={connected.visitor?.repository ?? null} />
-          <button className="btn green" onClick={() => onSignedIn(connected)}>
-            {chosen.next}
-          </button>
-        </div>
-      ) : (
-        <div role="group" aria-labelledby={`${id}-start`}>
-          <h2 id={`${id}-start`}>{START_DEMO_ACTION}</h2>
-          <div className="userlist">
-            {ROLE_CHOICES.map((c) => (
-              <button
-                key={c.role}
-                className="userpick"
-                disabled={busy !== null}
-                aria-labelledby={`${id}-${c.role}`}
-                aria-describedby={`${id}-${c.role}-note`}
-                onClick={() => void choose(c)}
-              >
-                <span>
-                  <b id={`${id}-${c.role}`}>{c.label}</b>
-                  <small id={`${id}-${c.role}-note`}>{c.note}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-          {busy && (
-            <p className="muted" role="status">
-              {ROLE_CHOICES.find((c) => c.role === busy)?.busy}
-            </p>
-          )}
-        </div>
-      )}
-      {error && <div className="alert">{error}</div>}
-    </div>
-  );
-}
-
-/** The closed demo: no start button and no scenario, only the honest state and a way back to the front page. */
-function DemoPrivate() {
-  return (
-    <div className="signin card">
-      <div className="eyebrow">Judge mode</div>
-      <h1>{DEMO_PRIVATE_COPY.heading}</h1>
-      <p className="muted">{DEMO_PRIVATE_COPY.line}</p>
-      <Link to="/" className="btn ghost">
-        Back to the home page
-      </Link>
-    </div>
-  );
-}
-
-function SeededPicker({ onSignedIn }: { onSignedIn: SignedIn }) {
-  const { error, setError, busy, run } = useSignIn(onSignedIn);
-  const { navigate } = useRouter();
   const platform = () =>
     run("platform", async () => {
       const session = await api.signIn("platform");
       navigate("/studio");
       return session;
     });
-  const [users, setUsers] = useState<SessionUser[] | null>(null);
 
   useEffect(() => {
     api
       .users()
       .then((r) => setUsers(r.users))
       .catch((e: unknown) => setError(errorText(e)));
-  }, [setError]);
+  }, []);
 
   return (
-    <div className="signin card">
+    <section className="card pad start-card">
       <div className="eyebrow">Dev sign-in</div>
-      <h1>Sign in as a seeded user</h1>
-      <p className="muted">
-        The skeleton has no passwords. Pick a user; payments run against the PayPal sandbox.
-      </p>
+      <h2>Sign in as a seeded user</h2>
+      <p className="muted">The skeleton has no passwords. Pick a user; payments run against the PayPal sandbox.</p>
       {error && <div className="alert">{error}</div>}
       {users === null && !error && <p className="muted">Loading users…</p>}
       <div className="userlist">
@@ -187,7 +166,7 @@ function SeededPicker({ onSignedIn }: { onSignedIn: SignedIn }) {
       <button className="btn ghost sm signin-quiet" disabled={busy !== null} onClick={() => void platform()}>
         {busy === "platform" ? "Signing in…" : "Platform dashboards"}
       </button>
-    </div>
+    </section>
   );
 }
 
@@ -204,7 +183,7 @@ function PlatformKey({ onSignedIn }: { onSignedIn: SignedIn }) {
     try {
       const r = await api.platformSession(key);
       navigate("/studio");
-      onSignedIn({ user: r.user, visitor: null });
+      onSignedIn({ user: r.user, account: null });
     } catch (err) {
       setError(err instanceof ApiError && err.status === 403 ? "Wrong platform key" : errorText(err));
     } finally {
@@ -212,7 +191,7 @@ function PlatformKey({ onSignedIn }: { onSignedIn: SignedIn }) {
     }
   };
   return (
-    <form className="signin card form platform-key" onSubmit={(e) => void submit(e)}>
+    <form className="form platform-key" onSubmit={(e) => void submit(e)}>
       <label htmlFor={`${id}-key`}>
         <span>Platform key</span>
         <input id={`${id}-key`} type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} required />

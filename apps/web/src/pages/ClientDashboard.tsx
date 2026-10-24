@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { JobView } from "../api-types";
 import { api, ApiError } from "../api";
-import { errorText } from "../demo";
+import { errorText } from "../errors";
 import { usd, utc } from "../format";
 import { Link } from "../router";
 import { rememberedJobs, useSession } from "../session";
@@ -27,7 +27,7 @@ async function loadJobs(handle: string): Promise<JobView[]> {
 }
 
 export function ClientDashboard() {
-  const { user, visitor } = useSession();
+  const { user, account } = useSession();
   const [jobs, setJobs] = useState<JobView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,9 +46,9 @@ export function ClientDashboard() {
         </div>
         <Link to="/jobs/new" className="btn">New job</Link>
       </div>
-      {visitor && (
+      {account && (
         <div className="card pad">
-          <ConnectedRepo repository={visitor.repository} />
+          <ConnectedRepo repository={account.repository} />
         </div>
       )}
       {error && <div className="alert">{error}</div>}

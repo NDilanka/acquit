@@ -45,7 +45,7 @@ globalThis.fetch = async (input, init) => {
 };
 `;
 type VisitorBody = { readonly id: string; readonly client: string; readonly operator: string;
-	readonly repository: string | null; readonly expiresAt: string };
+	readonly repository: string | null; readonly expiresAt: string | null };
 type DemoBody = { readonly user: { readonly handle: string; readonly role: string }; readonly visitor: VisitorBody; readonly token: string };
 /** The visitor's own repository is forked by the App, so this fixture needs the App's three names. */
 const githubAppEnv = (): Record<string, string> => {
@@ -145,7 +145,7 @@ const openOutcome = async (url: string, token: string, repository: string, budge
 	return { status: response.status, body: await response.json() as { outcome: { kind: string; reason?: string } } };
 };
 const sessionOf = (url: string, token: string) => fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } })
-	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; visitor: VisitorBody | null }>);
+	.then(response => response.json() as Promise<{ user: { handle: string; role: string } | null; account: { client: string } | null }>);
 type JobBody = { readonly job: { readonly id: string; readonly phase: string; readonly funding: string | null;
 	readonly deliveryEndsAt: string; readonly clockShiftMs: number | null;
 	readonly contract: { readonly repository: string } | null };
@@ -187,25 +187,24 @@ test("public mode refuses a seeded handle and mints a visitor through Start my d
 		assert.equal(body.user.handle, body.visitor.client);
 		assert.notEqual(body.visitor.client, body.visitor.operator);
 		assert.equal(body.visitor.repository, null);
-		assert.equal(Date.parse(body.visitor.expiresAt), 1_760_000_000_000 + 86_400_000);
+		assert.equal(body.visitor.expiresAt, null);
 		const signed = await sessionOf(url, body.token);
 		assert.deepEqual(signed.user, { handle: body.visitor.client, role: "CLIENT" });
-		assert.equal(signed.visitor?.id, body.visitor.id);
+		assert.equal(signed.account?.client, body.visitor.client);
 	});
 });
 
-test("a visitor's session dies with its visitor, and never outlives it", async () => {
+test("an account's session lasts 30 days, and a visitor that has an expiry loses its session at it", async () => {
 	await apiFixture(false, async (url, databasePath) => {
 		const created = await (await post(url, "/api/demo", {})).json() as DemoBody;
 		const db = new DatabaseSync(databasePath);
 		try {
-			// The session's own deadline is at most the visitor's: no cookie outlives the demo.
 			const row = db.prepare("SELECT expires_at FROM sessions WHERE handle = ?").get(created.visitor.client) as { expires_at: string };
-			assert.equal(row.expires_at, created.visitor.expiresAt);
-			// Once the visitor's own expiry passes, the session is refused even though its row stands.
+			assert.equal(row.expires_at, "2025-11-08T08:53:20.000Z");
+			// A visitor made before accounts lasted carries an expiry. Once it passes, the session is refused even though its row stands.
 			db.prepare("UPDATE visitors SET expires_at = ? WHERE id = ?").run("2025-10-08T12:00:00.000Z", created.visitor.id);
 		} finally { db.close(); }
-		assert.deepEqual(await sessionOf(url, created.token), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
+		assert.deepEqual(await sessionOf(url, created.token), { user: null, account: null, mode: "public", fundingMode: "checkout" });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${created.token}` } })).status, 401);
 	});
 });
@@ -221,7 +220,7 @@ test("public mode refuses a seeded session that an earlier run left behind", asy
 		} finally { db.close(); }
 		const restored = await fetch(`${url}/api/session`, { headers: { Authorization: `Bearer ${token}` } });
 		assert.equal(restored.status, 200);
-		assert.deepEqual(await restored.json(), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
+		assert.deepEqual(await restored.json(), { user: null, account: null, mode: "public", fundingMode: "checkout" });
 		assert.equal((await fetch(`${url}/api/jobs`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
 	});
 });
@@ -274,7 +273,7 @@ test("public mode mints no session from a visitor handle, and dev mode keeps see
 		assert.deepEqual(body.user, { handle: "maya-client", role: "CLIENT" });
 		assert.deepEqual(await (await fetch(`${url}/api/users`)).json(),
 			{ users: [{ handle: "maya-client", role: "CLIENT" }, { handle: "devon-ops", role: "OPERATOR" }] });
-		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, visitor: null, mode: "dev", fundingMode: "checkout" });
+		assert.deepEqual(await sessionOf(url, body.token), { user: { handle: "maya-client", role: "CLIENT" }, account: null, mode: "dev", fundingMode: "checkout" });
 	});
 });
 
@@ -316,7 +315,7 @@ test("the API's own writes wait for the lane's write lock instead of failing the
 
 test("a demo the caps refuse leaves no fork behind", async () => {
 	await apiFixture(false, async (url, databasePath) => {
-		for (let index = 0; index < 50; index++) {
+		for (let index = 0; index < 200; index++) {
 			assert.equal((await post(url, "/api/demo", {})).status, 201);
 		}
 		// The deployment's day is spent: the next visitor is refused by code, and the App is never asked.
@@ -325,7 +324,7 @@ test("a demo the caps refuse leaves no fork behind", async () => {
 		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_DAY" });
 		const calls = (await readFile(join(dirname(databasePath), "fetch.log"), "utf8")).trim().split("\n").filter(line => line !== "");
 		const forks = calls.map(line => JSON.parse(line) as { readonly url: string }).filter(call => call.url.endsWith("/forks"));
-		assert.equal(forks.length, 50, `A refused visitor never reaches the App, so fifty forks are made: ${calls.length} calls.`);
+		assert.equal(forks.length, 200, `A refused account never reaches the App, so 200 forks are made: ${calls.length} calls.`);
 	}, true);
 });
 
@@ -458,12 +457,12 @@ test("the session route names the mode it serves, so the page knows which sign-i
 	await apiFixture(false, async url => {
 		const anonymous = await fetch(`${url}/api/session`);
 		assert.equal(anonymous.status, 200);
-		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "public", fundingMode: "checkout" });
+		assert.deepEqual(await anonymous.json(), { user: null, account: null, mode: "public", fundingMode: "checkout" });
 	});
 	await apiFixture(true, async url => {
 		const anonymous = await fetch(`${url}/api/session`);
 		assert.equal(anonymous.status, 200);
-		assert.deepEqual(await anonymous.json(), { user: null, visitor: null, mode: "dev", fundingMode: "checkout" });
+		assert.deepEqual(await anonymous.json(), { user: null, account: null, mode: "dev", fundingMode: "checkout" });
 	});
 });
 
@@ -511,11 +510,11 @@ test("a visitor's own caps bind: its jobs and what one may promise, while one ad
 test("the deployment's visitor day is capped across addresses, and it is a rolling day", async () => {
 	await apiFixture(false, async url => {
 		// Each visitor comes from its own address, so only the deployment's day can bind.
-		for (let index = 0; index < 50; index++) {
+		for (let index = 0; index < 200; index++) {
 			const created = await post(url, "/api/demo", {}, undefined, { "X-Forwarded-For": `10.0.0.${index + 1}` });
 			assert.equal(created.status, 201, `visitor ${index + 1}`);
 		}
-		const refused = await post(url, "/api/demo", {}, undefined, { "X-Forwarded-For": "10.0.0.99" });
+		const refused = await post(url, "/api/demo", {}, undefined, { "X-Forwarded-For": "10.0.0.250" });
 		assert.equal(refused.status, 429);
 		assert.deepEqual(await refused.json(), { error: "CAP_VISITORS_DAY" });
 	});

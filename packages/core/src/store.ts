@@ -20,6 +20,39 @@ import type { FixtureRef } from "./fixtures.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import { SEEDED_USERS } from "./seed-data.ts";
 
+/**
+ * The visitors table. A null expires_at is a lasting account. display_name is the account's readable name, and
+ * recovery_digest is the SHA-256 of its one live recovery token, never the token.
+ */
+const VISITORS_SHAPE = `id TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT,
+	ip_key TEXT NOT NULL, client_handle TEXT NOT NULL, operator_handle TEXT NOT NULL, repository TEXT,
+	repository_id INTEGER, state TEXT NOT NULL DEFAULT 'ACTIVE', display_name TEXT, recovery_digest TEXT, recovery_made_at TEXT`;
+
+/**
+ * A database from before lasting accounts holds expires_at as NOT NULL, and SQLite cannot drop a column constraint
+ * in place, so the table is rebuilt once with every row copied as it was. Each row keeps its expiry: only accounts
+ * made from here on last. One transaction, so a crash leaves the old table whole.
+ */
+function migrateLastingAccounts(db: DatabaseSync): void {
+	const expiry = db.prepare("SELECT \"notnull\" AS required FROM pragma_table_info('visitors') WHERE name = 'expires_at'").get();
+	if (expiry !== undefined && Number(expiry.required) === 1) {
+		const copied = "id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id, state";
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			db.exec(`CREATE TABLE visitors_lasting (${VISITORS_SHAPE});
+				INSERT INTO visitors_lasting (${copied}) SELECT ${copied} FROM visitors;
+				DROP TABLE visitors;
+				ALTER TABLE visitors_lasting RENAME TO visitors;
+				CREATE INDEX IF NOT EXISTS visitors_expiry ON visitors(expires_at);`);
+			db.exec("COMMIT");
+		} catch (error) {
+			db.exec("ROLLBACK");
+			throw error;
+		}
+	}
+	db.exec("CREATE UNIQUE INDEX IF NOT EXISTS visitors_recovery ON visitors(recovery_digest) WHERE recovery_digest IS NOT NULL");
+}
+
 /** The store's own schema. The fixtures drive the M1 manifest backfill; absent, no backfill runs. */
 export function openDatabase(path: string, fixtures: readonly FixtureRef[] = []): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -48,9 +81,7 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY);
 		CREATE TABLE IF NOT EXISTS webhook_events (id TEXT PRIMARY KEY, received_at TEXT NOT NULL, event_type TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, outcome TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, handle TEXT NOT NULL, expires_at TEXT NOT NULL);
-		CREATE TABLE IF NOT EXISTS visitors (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
-			ip_key TEXT NOT NULL, client_handle TEXT NOT NULL, operator_handle TEXT NOT NULL, repository TEXT,
-			repository_id INTEGER, state TEXT NOT NULL DEFAULT 'ACTIVE');
+		CREATE TABLE IF NOT EXISTS visitors (${VISITORS_SHAPE});
 		CREATE INDEX IF NOT EXISTS visitors_expiry ON visitors(expires_at);
 		CREATE TABLE IF NOT EXISTS principals (handle TEXT PRIMARY KEY, role TEXT NOT NULL, visitor_id TEXT);
 		-- Judge mode's spends, append-only. One row per act, written in the transaction that commits it,
@@ -130,6 +161,7 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 	const visitorColumns = new Set(db.prepare("SELECT name FROM pragma_table_info('visitors')").all().map(row => String(row.name)));
 	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
 	if (!visitorColumns.has("repository_id")) db.exec("ALTER TABLE visitors ADD COLUMN repository_id INTEGER");
+	migrateLastingAccounts(db);
 	// The seeded handles are principals with no visitor: the rows every session resolves through, so
 	// the SEEDED_USERS constant is a seed, never an authentication source. The platform principal is
 	// the third such row: the deployment's own reader of the whole book, held by no picker.

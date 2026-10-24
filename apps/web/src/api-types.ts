@@ -531,36 +531,47 @@ export type VerifierFields = {
   };
 };
 
-/** A judge-mode visitor: its own client and operator handles, its forked repository, and when the demo ends. */
-export interface VisitorView {
-  readonly id: string;
+/**
+ * A Try Acquit account: its display name, the handles of its two roles, and its repository. `lasting` is false only
+ * for an account made before accounts lasted, and `recoveryLinkMade` says whether a recovery link exists for it.
+ */
+export interface AccountView {
+  readonly name: string | null;
   readonly client: string;
   readonly operator: string;
-  /** Null when the deployment has no GitHub App, so the visitor's jobs open on the deployment's repository. */
+  readonly roles: readonly ("CLIENT" | "OPERATOR")[];
+  /** Null when the deployment has no GitHub App, so the account's jobs open on the deployment's repository. */
   readonly repository: string | null;
-  readonly expiresAt: Instant;
+  readonly lasting: boolean;
+  readonly recoveryLinkMade: boolean;
 }
 
 export type SessionUser = { readonly handle: string; readonly role: "CLIENT" | "OPERATOR" | "PLATFORM" };
 
-/** `public` offers only Start my demo; `dev` offers the seeded picker. */
+/** `public` offers only Try Acquit and the platform key; `dev` also offers the seeded picker. */
 export type DeploymentMode = "public" | "dev";
 
-/** `GET /api/session`. `visitor` is null for a seeded session. `fundingMode` is the deployment's default for a job nobody chose for. */
+/** `GET /api/session`. `account` is null for a seeded or platform session. `fundingMode` is the deployment's default for a job nobody chose for. */
 export type SessionResponse = {
   readonly user: SessionUser | null;
-  readonly visitor: VisitorView | null;
+  readonly account: AccountView | null;
   readonly mode: DeploymentMode;
   readonly fundingMode: FundingMode;
 };
 
-/** `POST /api/session`, `POST /api/demo`, and `POST /api/demo/switch`. */
-export type SignedInResponse = { readonly user: SessionUser; readonly visitor: VisitorView | null; readonly token: string };
+/** `POST /api/session` and `POST /api/accounts`. */
+export type SignedInResponse = { readonly user: SessionUser; readonly account: AccountView | null; readonly token: string };
 
-/** `GET /api/demo/access`: whether the public demo is open to the caller's address. Nothing else. */
+/** `POST /api/account/role` and `POST /api/account/restore`. */
+export type AccountSessionResponse = { readonly user: SessionUser; readonly account: AccountView };
+
+/** `POST /api/account/recovery`: the new token, answered once. Acquit keeps only its digest. */
+export type RecoveryResponse = { readonly recoveryToken: string };
+
+/** `GET /api/demo/access`: whether Try Acquit is open to the caller's address. Nothing else. */
 export type DemoAccessResponse = { readonly open: boolean };
 
-/** `POST /api/platform/session`: the platform role has no visitor. */
+/** `POST /api/platform/session`: the platform role has no account. */
 export type PlatformSignedInResponse = { readonly user: SessionUser; readonly token: string };
 
 export interface OperatorView {

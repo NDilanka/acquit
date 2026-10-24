@@ -1,5 +1,5 @@
-// The expiry sweep: a visitor past its 24 hours loses its repository and its sessions, and its row is
-// marked SWEPT. Everything its jobs need to finish stays: its operator, its agent, its credits, its
+// The expiry sweep: a visitor made before accounts lasted, once past its 24 hours, loses its repository and its
+// sessions, and its row is marked SWEPT. A lasting account is never swept. Everything its jobs need to finish stays: its operator, its agent, its credits, its
 // jobs, and its bids. A refusal leaves the row for the next sweep instead of forgetting a repository
 // still out there.
 
@@ -13,12 +13,13 @@ import { closeAcquit, createAcquit, provisionDemoVisitor } from "../src/acquit.t
 import type { Actor } from "../src/acquit.ts";
 import { createFakeGitHubApp, GitHubAppError, unconfiguredGitHubApp } from "../src/github.ts";
 import { instant, parseRequestKey } from "../src/ids.ts";
-import type { ClientId, JobId, MerchantId, OperatorId } from "../src/ids.ts";
+import type { ClientId, Instant, JobId, MerchantId, OperatorId } from "../src/ids.ts";
 import { usd } from "../src/ledger.ts";
 import type { Bps } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
 import { sweepExpiredVisitors } from "../src/sweep.ts";
 import { insertVisitor, newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../src/visitors.ts";
+import type { NewVisitor, VisitorRow } from "../src/visitors.ts";
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 
 const merchant = "sandbox-seller" as MerchantId;
@@ -27,13 +28,25 @@ const live = instant(new Date().toISOString());
 const long = instant(new Date(Date.now() - 3 * 86_400_000).toISOString());
 const now = instant(new Date().toISOString());
 
+/** Gives a stored visitor the one-day expiry every visitor had before accounts lasted, and returns that expiry. */
+function expireAsLegacy(store: SqliteStore, visitor: VisitorRow): Instant {
+	const expiresAt = new Date(Date.parse(visitor.createdAt) + 86_400_000).toISOString() as Instant;
+	store.db.prepare("UPDATE visitors SET expires_at = ? WHERE id = ?").run(expiresAt, visitor.id);
+	return expiresAt;
+}
+/** A visitor row as one made before accounts lasted: the same identity, with its day-long expiry. */
+function legacyVisitor(store: SqliteStore, input: NewVisitor): VisitorRow {
+	const visitor = insertVisitor(store.db, input);
+	return { ...visitor, expiresAt: expireAsLegacy(store, visitor) };
+}
+
 test("a sweep deletes an expired visitor's repository, marks its row SWEPT, and leaves a live visitor alone", async () => {
 	const store = new SqliteStore(":memory:");
 	const app = createFakeGitHubApp();
 	const oldFork = await app.createClientRepo({ repository: source, name: "demo-old" });
 	const liveFork = await app.createClientRepo({ repository: source, name: "demo-live" });
-	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: oldFork.repository, repositoryId: oldFork.id, merchant, now: long });
-	const staying = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: liveFork.repository, repositoryId: liveFork.id, merchant, now: live });
+	const expired = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-a", repository: oldFork.repository, repositoryId: oldFork.id, merchant, now: long });
+	const staying = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-b", repository: liveFork.repository, repositoryId: liveFork.id, merchant, now: live });
 	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
 	assert.deepEqual(report, { swept: [expired.id], repositories: [{ repository: "acquit-forks/demo-old", outcome: "DELETED" }], kept: [] });
 	// The row stays as the record of a visitor that lived: it is marked, not deleted, so the jobs it opened
@@ -54,7 +67,7 @@ test("a sweep deletes an expired visitor's repository, marks its row SWEPT, and 
 test("a repository that is already gone is not a failure, and the visitor is still marked", async () => {
 	const store = new SqliteStore(":memory:");
 	const app = createFakeGitHubApp();
-	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-gone", merchant, now: long });
+	const expired = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-gone", merchant, now: long });
 	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
 	assert.deepEqual(report, { swept: [expired.id], repositories: [{ repository: "acquit-forks/demo-gone", outcome: "ABSENT" }], kept: [] });
 	assert.equal(readVisitor(store.db, expired.id)?.state, "SWEPT");
@@ -65,7 +78,7 @@ test("a repository this deployment cannot remove keeps the visitor for the next 
 	const store = new SqliteStore(":memory:");
 	const refusing = { deleteClientRepo: async (): Promise<"DELETED" | "ABSENT"> => {
 		throw new GitHubAppError("GITHUB_FORK_MISMATCH", "acquit-forks/demo-taken is not the fork this visitor creates."); } };
-	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-taken", merchant, now: long });
+	const expired = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-taken", merchant, now: long });
 	const report = await sweepExpiredVisitors({ db: store.db, app: refusing, source, now });
 	assert.deepEqual(report.swept, []);
 	assert.deepEqual(report.repositories, []);
@@ -76,7 +89,7 @@ test("a repository this deployment cannot remove keeps the visitor for the next 
 
 test("without an App nothing is forgotten, because the repository would be left behind", async () => {
 	const store = new SqliteStore(":memory:");
-	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-no-app", merchant, now: long });
+	const expired = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-no-app", merchant, now: long });
 	const report = await sweepExpiredVisitors({ db: store.db, app: unconfiguredGitHubApp(), source, now });
 	assert.deepEqual(report.kept, [{ id: expired.id, repository: "acquit-forks/demo-no-app", reason: "GITHUB_APP_NOT_CONFIGURED" }]);
 	assert.equal(readVisitor(store.db, expired.id)?.id, expired.id);
@@ -88,7 +101,7 @@ test("the sweep refuses a name whose repository is no longer the visitor's fork"
 	const app = createFakeGitHubApp();
 	const forked = await app.createClientRepo({ repository: source, name: "demo-abc123" });
 	// The name holds a repository of the same source that is not this visitor's fork: only the id tells.
-	const replaced = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: forked.repository,
+	const replaced = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-a", repository: forked.repository,
 		repositoryId: (forked.id ?? 0) + 1, merchant, now: long });
 	const report = await sweepExpiredVisitors({ db: store.db, app, source, now });
 	assert.deepEqual(report.swept, []);
@@ -96,7 +109,7 @@ test("the sweep refuses a name whose repository is no longer the visitor's fork"
 	assert.equal(app.clientRepos.has("demo-abc123"), true, "nothing is deleted");
 	assert.equal(readVisitor(store.db, replaced.id)?.state, "ACTIVE");
 	// The visitor whose recorded id is the fork's own is swept.
-	const mine = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: forked.repository,
+	const mine = legacyVisitor(store, { id: newVisitorId(), ipKey: "ip-b", repository: forked.repository,
 		repositoryId: forked.id, merchant, now: long });
 	assert.deepEqual((await sweepExpiredVisitors({ db: store.db, app, source, now })).swept, [mine.id]);
 	assert.equal(app.clientRepos.has("demo-abc123"), false);
@@ -128,7 +141,7 @@ test("a swept visitor keeps its operator, credits, and jobs, loses its sessions,
 			fork: async () => ({ kind: "FORKED", repository: forked.repository, id: forked.id }) });
 		assert.equal(created.kind, "CREATED");
 		if (created.kind !== "CREATED") throw new Error("The caps refused the fixture's visitor");
-		const visitor = created.visitor;
+		const visitor = { ...created.visitor, expiresAt: expireAsLegacy(store, created.visitor) };
 		for (const handle of [visitor.clientHandle, visitor.operatorHandle]) {
 			store.db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(`digest-${handle}`, handle, visitor.expiresAt);
 		}
@@ -173,4 +186,31 @@ test("a swept visitor keeps its operator, credits, and jobs, loses its sessions,
 		// Idempotent: a swept visitor is not swept twice.
 		assert.deepEqual(await sweepExpiredVisitors({ db: store.db, app, source, now: currentNow }), { swept: [], repositories: [], kept: [] });
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
+});
+
+test("a lasting account is never swept, however long ago it was made", async () => {
+	const store = new SqliteStore(":memory:");
+	const app = createFakeGitHubApp();
+	const fork = await app.createClientRepo({ repository: source, name: "demo-lasting" });
+	const account = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: fork.repository, repositoryId: fork.id, merchant, now: long });
+	store.db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run("digest-lasting", account.clientHandle, "2099-01-01T00:00:00.000Z");
+	const muchLater = instant(new Date(Date.now() + 365 * 86_400_000).toISOString());
+	assert.deepEqual(await sweepExpiredVisitors({ db: store.db, app, source, now: muchLater }), { swept: [], repositories: [], kept: [] });
+	assert.equal(readVisitor(store.db, account.id)?.state, "ACTIVE");
+	assert.equal(app.clientRepos.has("demo-lasting"), true);
+	assert.equal(rowsOf(store, "sessions", "handle = ?", account.clientHandle), 1);
+	store.close();
+});
+
+test("an account whose provisioning failed is swept a day after it began, and not before", async () => {
+	const store = new SqliteStore(":memory:");
+	const app = createFakeGitHubApp();
+	const fork = await app.createClientRepo({ repository: source, name: "demo-failed" });
+	const failed = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: fork.repository, repositoryId: fork.id, merchant, now: live });
+	store.db.prepare("UPDATE visitors SET state = 'FAILED' WHERE id = ?").run(failed.id);
+	assert.deepEqual(await sweepExpiredVisitors({ db: store.db, app, source, now }), { swept: [], repositories: [], kept: [] });
+	const nextDay = instant(new Date(Date.parse(live) + 86_400_000).toISOString());
+	assert.deepEqual(await sweepExpiredVisitors({ db: store.db, app, source, now: nextDay }),
+		{ swept: [failed.id], repositories: [{ repository: "acquit-forks/demo-failed", outcome: "DELETED" }], kept: [] });
+	store.close();
 });
