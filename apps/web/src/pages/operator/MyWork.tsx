@@ -2,11 +2,11 @@ import { lockedBid } from "../../bids.ts";
 import { usd } from "../../format";
 import { Link } from "../../router";
 import type { OperatorWorkspace } from "../../operator-workspace";
-import { IdChip } from "../../ui";
+import { EmptyState, IdChip } from "../../ui";
 
 export function MyWork({ mine }: { mine: OperatorWorkspace["mine"] }) {
   if (mine.length === 0) {
-    return <div className="card pad muted">No awarded work yet. A bid the client accepts shows here with its next step.</div>;
+    return <EmptyState icon="jobs" action={{ to: "/operator", label: "Find work" }}>No awarded work yet. A bid the client accepts shows here with its next step.</EmptyState>;
   }
   return (
     <>

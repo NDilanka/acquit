@@ -5,16 +5,17 @@ import { Link, useRouter } from "./router";
 import { match, showsDemoCta } from "./route";
 import type { Session } from "./session";
 import { useTheme } from "./theme-context";
+import { Segmented } from "./ui";
 import type { ThemeChoice } from "./theme";
 
 const HELP_URL = "https://github.com/NDilanka/acquit#readme";
 
 const ROLE_CAPTION: Record<Role, string> = { CLIENT: "Client", OPERATOR: "Operator", PLATFORM: "Platform" };
 
-const THEME_CHOICES: readonly { readonly choice: ThemeChoice; readonly label: string }[] = [
-  { choice: "dark", label: "Dark" },
-  { choice: "light", label: "Light" },
-  { choice: "system", label: "System" },
+const THEME_CHOICES: readonly { readonly value: ThemeChoice; readonly label: string }[] = [
+  { value: "dark", label: "Dark" },
+  { value: "light", label: "Light" },
+  { value: "system", label: "System" },
 ];
 
 /** The sidebar, the top bar, and the page panel. Every page renders inside it except the signed-out landing. */
@@ -115,25 +116,7 @@ export function Shell({
 /** Dark, Light, System. The choice is saved, and System follows the operating system. */
 export function ThemeSwitch() {
   const { choice, setChoice } = useTheme();
-  return (
-    <div className="theme-switch" role="radiogroup" aria-label="Theme">
-      {THEME_CHOICES.map((option) => {
-        const on = choice === option.choice;
-        return (
-          <button
-            key={option.choice}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            className={on ? "on" : ""}
-            onClick={() => setChoice(option.choice)}
-          >
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
+  return <Segmented label="Theme" options={THEME_CHOICES} value={choice} onChange={setChoice} />;
 }
 
 /** The bottom card of the sidebar. It opens a menu with the theme switch, Help, and Sign out. */

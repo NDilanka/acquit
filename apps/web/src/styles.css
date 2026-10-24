@@ -56,7 +56,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .side-item:hover { color: var(--ink); background: var(--surface); }
 .side-item.on { color: var(--ink); font-weight: 600; background: var(--surface); border-color: var(--raised-edge); box-shadow: var(--shadow-raised); }
 .side-foot { display: grid; gap: 10px; margin-top: auto; padding-top: 16px; }
-.side-cta { display: block; text-align: center; padding: 11px 16px; }
+.btn.side-cta { display: flex; min-height: 44px; }
 .side-scrim { display: none; }
 .acct { position: relative; }
 .acct-card { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--raised-edge); border-radius: 14px; background: var(--surface); color: var(--ink); text-align: left; box-shadow: var(--shadow-raised); }
@@ -69,9 +69,12 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .acct-label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
 .acct-item { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; border: 1px solid transparent; border-radius: var(--r); background: transparent; color: var(--ink-2); font-size: 14px; text-align: left; text-decoration: none; }
 .acct-item:hover { background: var(--surface); border-color: var(--raised-edge); }
-.theme-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 3px; border-radius: var(--r); background: var(--surface-2); }
-.theme-switch button { height: 30px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; }
-.theme-switch button.on { color: var(--ink); font-weight: 600; background: var(--card); border-color: var(--raised-edge); box-shadow: var(--shadow-raised); }
+/* A segmented toggle: the pressed segment is the raised, white one. The round track is the Figma Grid / List pill. */
+.segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--r); background: var(--surface-2); }
+.segmented.round { border-radius: 999px; }
+.segmented button { min-height: 32px; padding: 0 14px; border: 1px solid transparent; border-radius: var(--r); background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.segmented.round button { border-radius: 999px; }
+.segmented button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: var(--card); border-color: var(--raised-edge); box-shadow: var(--shadow-raised); }
 .stage { min-width: 0; min-height: calc(100vh - 20px); display: flex; flex-direction: column; background: var(--panel); border: 2px solid var(--raised-edge); border-radius: var(--r-panel); box-shadow: var(--shadow-raised); overflow: hidden; }
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 28px 36px 0; }
 .topbar-title { min-width: 0; }
@@ -93,6 +96,19 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .meta b { color: var(--ink-2); font-weight: 500; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow); margin-bottom: 16px; }
 .pad { padding: 18px 20px; }
+/* A panel is a grouped block on the white panel: a tinted, boxy surface with no shadow. */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); padding: 18px 20px; margin-bottom: 16px; }
+/* The empty state: an icon, one sentence, and at most one action. */
+.empty-state { display: grid; justify-items: start; gap: 10px; padding: 22px 20px; }
+.empty-state p { margin: 0; color: var(--ink-2); }
+.empty-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--r); background: var(--surface); border: 1px solid var(--raised-edge); box-shadow: var(--shadow-raised); color: var(--muted); }
+/* A stat tile: a mono label over a large number. */
+.stat { display: grid; gap: 6px; padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
+.stat-label { margin: 0; font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+.stat-value { margin: 0; font-size: 30px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.15; overflow-wrap: anywhere; }
+.stat-note { margin: 0; font-size: 12.5px; color: var(--muted); }
+/* Inputs, selects, and textareas on a page take the boxy control look. The AG Studio canvas keeps its own controls. */
+.wrap :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):not(.studio-host *) { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r); padding: 8px 10px; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
 @media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
 
@@ -108,11 +124,16 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .idchip.copied { color: var(--green-text); background: var(--green-bg); border-color: var(--green-line); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
-.btn { display: inline-block; text-decoration: none; border: 1px solid var(--green); background: var(--green); color: #fff; padding: 9px 16px; border-radius: var(--r); font-weight: 600; font-size: 13.5px; white-space: nowrap; }
-.btn:hover { background: var(--green-2); border-color: var(--green-2); box-shadow: 0 0 0 4px rgb(16 138 0 / 0.18); }
-.btn.sm { padding: 6px 12px; font-size: 13px; }
+/* Buttons: the primary is green; the secondary is a white boxy control with the raised edge; ghost is text only; danger is red. All have the sidebar item's 10px radius. */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 16px; border: 1px solid var(--green); border-radius: var(--r); background: var(--green); color: #fff; font-weight: 600; font-size: 14px; line-height: 1; text-decoration: none; white-space: nowrap; }
+.btn:hover { background: var(--green-2); border-color: var(--green-2); box-shadow: 0 0 0 3px rgb(16 138 0 / 0.18); }
+.btn.sm { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.btn.secondary { background: var(--card); border-color: var(--raised-edge); color: var(--ink); box-shadow: var(--shadow-raised); }
+.btn.secondary:hover { background: var(--surface); border-color: var(--raised-edge); box-shadow: var(--shadow-raised); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--ink); }
 .btn.ghost:hover { background: var(--surface-2); border-color: transparent; box-shadow: none; }
+.btn.danger { background: var(--red-bg); border-color: var(--red-line); color: var(--red); }
+.btn.danger:hover { background: var(--red-bg); border-color: var(--red); box-shadow: none; }
 .btn.green { background: var(--green); border-color: var(--green); }
 .btn.green:hover { background: var(--green-2); }
 .btn[disabled] { background: var(--surface-2); border-color: var(--line); color: var(--faint); cursor: not-allowed; box-shadow: none; }
@@ -160,7 +181,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .form label > span, .form legend { font-weight: 600; font-size: 13px; }
 .form fieldset { border: 0; padding: 0; margin: 0; }
 .form .radio { display: flex; gap: 8px; align-items: center; }
-.form input, .form select, .form textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--card); color: var(--ink); }
+.form input, .form select, .form textarea { font: inherit; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--ink); }
 .form textarea { resize: vertical; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 12px; }
 .act { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }

@@ -3,7 +3,7 @@ import type { JobView } from "../../api-types";
 import { usd, utc } from "../../format";
 import { bidStatusWord } from "../../job-status";
 import { Link } from "../../router";
-import { IdChip, StatusPill } from "../../ui";
+import { EmptyState, IdChip, StatusPill } from "../../ui";
 import { BidForm } from "../BidForm";
 
 export function OpenJobs({
@@ -19,7 +19,7 @@ export function OpenJobs({
   onToggle: (jobId: string) => void;
   onPlaced: (placed: PlacedBid) => void;
 }) {
-  if (jobs.length === 0) return <div className="card pad muted">No open jobs right now.</div>;
+  if (jobs.length === 0) return <EmptyState icon="search">No open jobs right now.</EmptyState>;
   return (
     <>
       {jobs.map((j) => {
