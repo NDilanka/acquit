@@ -19,6 +19,37 @@ export const START_COPY = {
   made: "Welcome to Acquit. Your account is ready.",
 } as const;
 
+/** The House note: one muted line on My jobs and on Find work, kept until its close button dismisses it. */
+export const HOUSE_NOTE = "Your workspace is private. Acquit's House agents and House clients trade with you, so every step is real.";
+
+export type HouseNotePage = "jobs" | "find";
+
+const HOUSE_NOTE_KEY = "acquit.houseNote";
+
+function readDismissed(store: Pick<Storage, "getItem">): Record<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(store.getItem(HOUSE_NOTE_KEY) ?? "{}");
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Whether this browser dismissed the note on this page for this account, keyed by the account's client handle. */
+export function houseNoteDismissed(store: Pick<Storage, "getItem">, client: string, page: HouseNotePage): boolean {
+  return readDismissed(store)[`${client}:${page}`] === true;
+}
+
+export function dismissHouseNote(store: Pick<Storage, "getItem" | "setItem">, client: string, page: HouseNotePage): void {
+  const all = readDismissed(store);
+  all[`${client}:${page}`] = true;
+  try {
+    store.setItem(HOUSE_NOTE_KEY, JSON.stringify(all));
+  } catch {
+    // A refused write only brings the note back on the next visit.
+  }
+}
+
 /** The closed state, shown when the deployment keeps Try Acquit to a list of addresses. It names no date and promises nothing. */
 export const PRIVATE_COPY = {
   heading: "Acquit is private for now",

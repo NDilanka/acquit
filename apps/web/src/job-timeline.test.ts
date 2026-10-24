@@ -70,6 +70,8 @@ const BASE: TimelineJob = {
   contract: null,
   funding: "card",
   clockShiftMs: 0,
+  starter: false,
+  fundingReturned: false,
 };
 
 /** A job in flight with devon locked in and the contract frozen. */
@@ -578,6 +580,7 @@ test("a House bid reads as the House, with its receipts line", () => {
       ids: [{ value: "bid_house" }],
       href: null,
       reasons: [],
+      house: "agent",
     },
   ]);
 });
@@ -1095,4 +1098,18 @@ test("a PAID job keeps its verifier card with the agent line, read-only: PAID st
   for (const prompt of ["{failure && !readOnly && (", "{pending && !readOnly && (", "{idle && !readOnly && ("]) {
     assert.ok(source.includes(prompt), `${prompt} keeps the prompt off a settled job`);
   }
+});
+
+test("a starter job's next step names the House client's timing, and its House parties carry the badge", () => {
+  const starter: TimelineJob = { ...BASE, starter: true };
+  assert.equal(nextStep(starter, NOA), "Place a bid. The House client accepts the best bid in about 30 seconds.");
+  assert.equal(nextStep({ ...starter, bids: { operators: [bid({})], house: null } }, DEVON),
+    "Your bid is in. The House client accepts the best bid in about 30 seconds.");
+  assert.equal(nextStep({ ...starter, fundingReturned: true, bids: { operators: [bid({})], house: null } }, DEVON),
+    "The House client's payment did not go through. The job is open for bids again.");
+  const review = { ...locked({}), starter: true, status: "VERIFIED" as const, phase: "AWAITING_CLIENT" as const, reviewEndsAt: "2026-10-27T09:00:00.000Z" };
+  assert.equal(nextStep(review, DEVON), "Verified. The House client approves in about a minute.");
+  assert.deepEqual(timelineEvents(review).filter((event) => event.house).map((event) => [event.kind, event.house]),
+    [["HELD", "client"], ["REVIEW", "client"]]);
+  assert.equal(timelineEvents({ ...review, starter: false }).some((event) => event.house), false);
 });

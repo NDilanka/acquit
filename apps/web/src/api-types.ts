@@ -137,6 +137,10 @@ export interface JobView {
   readonly title: string;
   readonly status: JobStatus;
   readonly phase: JobPhase;
+  /** A starter job: the House client opened it in the account's workspace for the account's operator to win. */
+  readonly starter: boolean;
+  /** True while the job is back to bidding because an accept's payment did not go through. */
+  readonly fundingReturned: boolean;
   /** The stored checkout substate, non-null exactly while the job is OPEN in FUNDING. */
   readonly checkoutPhase: CheckoutPhase | null;
   readonly budget: UsdCents;
@@ -190,6 +194,9 @@ export interface JobView {
 }
 
 export type FundingMode = "card" | "checkout";
+
+/** `GET /api/jobs` beside the list, for a lasting account: the House client's starter jobs open and opened today. Null for anyone else. */
+export type StarterStatus = { readonly open: number; readonly openedToday: number; readonly dailyLimit: number; readonly capped: boolean };
 
 export type CheckoutPhase = "CREATING_ORDER" | "AWAITING_APPROVAL" | "CAPTURING" | "REFUND_PENDING";
 

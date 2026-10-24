@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { api, type AgentSummary } from "../../api";
-import type { CreditAccountView, OperatorEscrowRow, OperatorView, ReceiptRow } from "../../api-types";
+import type { CreditAccountView, OperatorEscrowRow, OperatorView, ReceiptRow, StarterStatus } from "../../api-types";
 import type { TimelineJob } from "../../job-timeline";
+import { JOBS_CHANGED } from "../../operator-events";
 import { useSession } from "../../session";
 import { ErrorNote, NotFound, SkeletonList } from "../../ui";
 
@@ -13,6 +14,8 @@ export type OperatorData = {
   readonly jobs: readonly TimelineJob[];
   readonly receipts: readonly ReceiptRow[];
   readonly escrow: readonly OperatorEscrowRow[];
+  /** The House client's starter jobs for this account. Null for a seeded operator. */
+  readonly starters: StarterStatus | null;
 };
 
 type Load = { readonly kind: "loading" } | { readonly kind: "failed"; readonly error: unknown } | { readonly kind: "ready"; readonly data: OperatorData };
@@ -32,6 +35,7 @@ async function fetchOperatorData(): Promise<OperatorData> {
     jobs: jobs.jobs,
     receipts: receipts.receipts,
     escrow: escrow.escrow,
+    starters: jobs.starters ?? null,
   };
 }
 
@@ -52,7 +56,11 @@ export function OperatorPage({ children }: { children: (data: OperatorData, relo
   }, []);
 
   useEffect(() => {
-    if (user.role === "OPERATOR") void reload();
+    if (user.role !== "OPERATOR") return;
+    void reload();
+    const onChanged = () => void reload();
+    window.addEventListener(JOBS_CHANGED, onChanged);
+    return () => window.removeEventListener(JOBS_CHANGED, onChanged);
   }, [reload, user.role]);
 
   if (user.role !== "OPERATOR") {

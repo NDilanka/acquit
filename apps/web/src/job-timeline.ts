@@ -2,6 +2,7 @@ import type { Attempt, FiledAnswer, JobView, ProviderDisputeView, VerifierFields
 import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
 import { arbiterNoteLine, authorityNote, deadlineOutcome, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
 import { bidStatusWord, payoutHeldBy, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
+import { STARTER_COPY } from "./operator-views.ts";
 import { tallyWords } from "./receipt-view.ts";
 import { seededLabel } from "./scoping-review.ts";
 
@@ -28,6 +29,8 @@ export type TimelineEvent = {
   readonly href: string | null;
   /** The reason lines of a counted rejection, shown beneath its detail. Empty for every other event. */
   readonly reasons: readonly string[];
+  /** Set only when the event names a party Acquit runs: a House agent's bid, or the House client of a starter job. */
+  readonly house?: "agent" | "client";
 };
 
 export type MoneyRow = {
@@ -57,6 +60,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
   const repository = job.contract?.repository ?? null;
   const prHref = (pr: number) => (repository === null ? null : `https://github.com/${repository}/pull/${pr}`);
   const arbiter = arbiterNoteLine(job);
+  const houseClient = job.starter ? { house: "client" as const } : {};
 
   if (job.contract) {
     const c = job.contract;
@@ -86,6 +90,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       ids: [{ value: bid.id }],
       href: null,
       reasons: [],
+      ...(bid.label === "HOUSE" ? { house: "agent" as const } : {}),
     });
   }
 
@@ -100,6 +105,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       ids: [],
       href: null,
       reasons: [],
+      ...houseClient,
     });
   }
 
@@ -129,6 +135,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       ids: [],
       href: null,
       reasons: [],
+      ...houseClient,
     });
   }
 
@@ -179,6 +186,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       ids: [],
       href: null,
       reasons: [],
+      ...houseClient,
     });
   }
 
@@ -623,6 +631,11 @@ const FUNDING_WAIT = "PayPal is confirming the payment. Escrow holds the money o
 
 const NEXT: Record<StateKey, (c: StepContext) => string> = {
   "OPEN/BIDDING": ({ job, seat, viewer }) => {
+    if (job.starter) {
+      if (job.fundingReturned) return STARTER_COPY.returned;
+      if (seat === "BIDDER") return `Your bid is in. ${STARTER_COPY.accepts}`;
+      return viewer.role === "OPERATOR" ? `Place a bid. ${STARTER_COPY.accepts}` : STARTER_COPY.accepts;
+    }
     if (seat === "CLIENT") {
       return allBids(job).length > 0
         ? "Accept one bid to pay it into escrow."
@@ -666,6 +679,7 @@ const NEXT: Record<StateKey, (c: StepContext) => string> = {
         ? `Approve to record the release, or dispute by ${end}. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.`
         : `The client reviews until ${end}. PayPal holds the payout while it reviews the buyer's dispute, so nothing pays out yet.`;
     }
+    if (job.starter) return "Verified. The House client approves in about a minute.";
     return seat === "CLIENT" && job.viewerCanApprove
       ? `Approve to release the payment, or dispute by ${end}. If you do nothing, Acquit releases it then.`
       : `The client reviews until ${end}. If the client does nothing, Acquit releases the payment then.`;

@@ -1860,6 +1860,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 	const judged = history.map(attemptView);
 	const done = storedDefinitionOfDone(row);
 	return { id: row.id, title: row.title, status: state.status, vertical: storedVertical(row), starter: isStarterJob(row),
+		fundingReturned: state.status === "OPEN" && state.phase.kind === "BIDDING" && state.phase.fundingRounds > 0,
 		phase: state.status === "OPEN" ? state.phase.kind : state.status === "IN_PROGRESS" ? state.attempts.phase : state.status === "VERIFIED" ? state.review.phase : state.status,
 		// The stored checkout substate while the job waits for its money, so the page names the phase
 		// the row holds instead of guessing from side fields. Null once funding is over.

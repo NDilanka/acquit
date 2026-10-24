@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { utc } from "../../format";
 import { verifierIndex, type TimelineEvent } from "../../job-timeline";
-import { IdChip } from "../../ui";
+import { HouseBadge, IdChip } from "../../ui";
 
 /** The proof in time order. The verifier block sits in the middle of it, where the judging happens. */
 export function Timeline({ events, verifier }: { events: readonly TimelineEvent[]; verifier: ReactNode }) {
@@ -29,6 +29,7 @@ function EventNode({ event }: { event: TimelineEvent }) {
       <div className="tl-body">
         <div className="tl-head">
           <b>{event.title}</b>
+          {event.house && <HouseBadge>{event.house === "client" ? "House client" : "House"}</HouseBadge>}
           {event.at && <small className="num muted">{utc(event.at)}</small>}
         </div>
         <p className="tl-detail">{event.detail}</p>

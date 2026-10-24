@@ -114,6 +114,8 @@ export interface JobView {
 	readonly status: JobStatus;
 	/** A starter job: the House client opened it in the account's workspace for the account's operator to win. */
 	readonly starter: boolean;
+	/** True while the job is back to bidding because an accept's payment did not go through. */
+	readonly fundingReturned: boolean;
 	/** Substate for the UI, such as BIDDING, FUNDING, VERIFYING, AWAITING_CLIENT, DISPUTED, RELEASE_PENDING. */
 	readonly phase: string;
 	/** The stored checkout substate (CREATING_ORDER, AWAITING_APPROVAL, CAPTURING, REFUND_PENDING) while the job waits for its money. Null outside FUNDING. */

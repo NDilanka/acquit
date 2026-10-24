@@ -13,6 +13,7 @@ import { derivedRequestKey } from "../src/effects.ts";
 import { HOUSE_CLIENT_ID, houseClientActor } from "../src/house-client.ts";
 import { hours, instant, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, BidId, ClientId, Instant, JobId, MerchantId, OperatorId, Version } from "../src/ids.ts";
+import { projectJob } from "../src/job.ts";
 import type { JobRow } from "../src/job.ts";
 import { usd } from "../src/ledger.ts";
 import type { UsdCents } from "../src/ledger.ts";
@@ -317,4 +318,15 @@ test("the starter pool keeps a fixed order and never holds a practice issue", ()
 	assert.deepEqual(starterPool([jpyFixture(), practice, demoFixture()], "acquit-forks/ws-abc").map(f => f.issue.number), [12, 13]);
 	assert.deepEqual(starterPool([jpyFixture(), demoFixture()], null).map(f => f.issue.number), [12, 13]);
 	assert.deepEqual(starterPool([practice], null), []);
+});
+
+test("a starter back to bidding after a payment that did not go through says so in its projection", async () => {
+	const h = await harness({ fixtures });
+	try {
+		const [first] = await startersOf(h);
+		const fresh = projectJob(first!, operatorOf(h), new Map());
+		assert.deepEqual({ starter: fresh.starter, fundingReturned: fresh.fundingReturned }, { starter: true, fundingReturned: false });
+		const returned: JobRow = { ...first!, state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 1 } } };
+		assert.equal(projectJob(returned, operatorOf(h), new Map()).fundingReturned, true);
+	} finally { await h.dispose(); }
 });

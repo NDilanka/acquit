@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { BidView, JobView } from "../../api-types";
 import { eta, usd } from "../../format";
 import { Link } from "../../router";
-import { BID_TABS, bidPillFor, bidTabFor, ownBid, type BidTab } from "../../operator-views";
+import { BID_TABS, bidPillFor, bidTabFor, ownBid, STARTER_COPY, starterFoot, type BidTab } from "../../operator-views";
 import { EmptyState, Segmented } from "../../ui";
 import type { OperatorData } from "./OperatorPage";
 
@@ -51,6 +51,7 @@ export function MyBids({ data }: { data: OperatorData }) {
                 <p className="job-meta num">
                   {usd(bid.price)} · Delivery in {eta(bid.eta)} · {name ? `Agent ${name}` : "Your agent"}
                 </p>
+                {starterFoot(job, bid) === STARTER_COPY.another && <small className="muted">{STARTER_COPY.another}</small>}
               </div>
               <span className={`pill ${pill.tone}`}>{pill.label}</span>
               <Link to={`/jobs/${job.id}`} className="btn secondary sm">

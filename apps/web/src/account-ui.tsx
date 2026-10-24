@@ -1,11 +1,30 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import type { AccountView, SessionUser } from "./api-types";
-import { afterSwitch, markLinkSaved, recoveryLink, SAVE_COPY, signOutPrompt, switchedToast } from "./account";
+import { afterSwitch, dismissHouseNote, HOUSE_NOTE, houseNoteDismissed, markLinkSaved, recoveryLink, SAVE_COPY, signOutPrompt, switchedToast, type HouseNotePage } from "./account";
+import { Icon } from "./icons";
 import { useRouter } from "./router";
 import type { Session } from "./session";
 import { useToast } from "./toast";
 import { ConfirmDialog, CopyField, ErrorNote, Modal, Spinner } from "./ui";
+
+/** The House note under a page's content, for an account only, until its close button removes it for good. */
+export function HouseNote({ account, page }: { account: AccountView | null; page: HouseNotePage }) {
+  const [gone, setGone] = useState(() => account === null || houseNoteDismissed(localStorage, account.client, page));
+  if (gone || account === null) return null;
+  const dismiss = () => {
+    dismissHouseNote(localStorage, account.client, page);
+    setGone(true);
+  };
+  return (
+    <div className="house-note">
+      <p className="muted">{HOUSE_NOTE}</p>
+      <button type="button" className="btn ghost sm" aria-label="Dismiss this note" onClick={dismiss}>
+        <Icon name="close" size={14} />
+      </button>
+    </div>
+  );
+}
 
 type SwitchRole = "CLIENT" | "OPERATOR";
 

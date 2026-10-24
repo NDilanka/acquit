@@ -32,7 +32,9 @@ Every other `/api` route returns `401 { error: "UNAUTHENTICATED" }` without a se
 
 Public mode is `ACQUIT_DEV` unset. A session resolves through the `principals` table, never through the seeded constants, and a handle whose visitor row is gone stops resolving.
 
-A Try Acquit account is a visitor row with no expiry. It holds two principals, a client `<slug>` and an operator `<slug>-ops`, where the slug comes from a readable name such as "Teal Otter" (`teal-otter`, or `teal-otter-4f` when that slug is taken). Its session lasts 30 days, and a use more than a day after the last renewal moves the deadline 30 days out again. The sweep never takes an account that finished provisioning. A scenario run's visitor keeps its one-day expiry and its own sweep, and a visitor made before accounts lasted keeps the expiry it was made with.
+A Try Acquit account is a visitor row with no expiry. It holds two principals, a client `<slug>` and an operator `<slug>-ops`, where the slug comes from a readable name such as "Teal Otter" (`teal-otter`, or `teal-otter-4f` when that slug is taken). Its session lasts 30 days, and a use more than a day after the last renewal moves the deadline 30 days out again. The sweep never takes an account that finished provisioning. A scenario run's visitor keeps its one-day expiry and its own sweep, and a visitor made before accounts lasted keeps the expiry it was made with. A renewal sends the moved cookie on whichever route renewed it.
+
+Each lasting account also trades with the House client (`house-client`), Acquit's own counterparty in that account's workspace. It is never a principal: `POST /api/session` answers `403 { error: "HOUSE_CLIENT_NO_SESSION" }` for its handle in either mode, and a session row naming it opens nothing. It keeps two starter jobs open for the account's operator at first and one after, at most 6 a day (`CAP_STARTER_JOBS_DAY`), accepts the lowest pending bid 30 s after the first bid and pays by sandbox card, and approves 60 s after Verified unless the review is disputed or PayPal holds the release. The House agent never bids on a starter job.
 
 | Method | Path | Body | Response |
 |---|---|---|---|
@@ -164,7 +166,7 @@ A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and t
 | Method | Path | Response |
 |---|---|---|
 | GET | `/api/repos` | `{ repos: [{ repository, issues: [{ number, title, suite: { commit, visible, hidden } }] }] }` for the post form. A visitor's own fork replaces the deployment's repository for that session |
-| GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor }` |
+| GET | `/api/jobs?status=OPEN` | `{ jobs: JobView[], nextCursor, starters }`. `job.starter` marks the House client's starter jobs, and `job.fundingReturned` is true while a job is back to bidding because an accept's payment did not go through. `starters` is `{ open, openedToday, dailyLimit, capped }` for a lasting account and null for any other session |
 | GET | `/api/jobs/:id` | `{ job: JobView, handles, now }`. `job.funding` is served to the job's own client alone: the source this job's accept will use, or null when nobody chose for it and the deployment's default applies. `job.clockShiftMs` is that client's own lever too: the total its advances moved the job's instants, 0 on a job nobody advanced, null to every other viewer. The platform role reads one job here, read-only: `job.client`, `job.funding`, and `job.clockShiftMs` are null to it, `viewerCanApprove` and `viewerCanDispute` are false, and `GET /api/jobs` lists no job to it. A command it sends is refused `403 { error: "PLATFORM_READ_ONLY" }` (see `POST /api/commands`) |
 | GET | `/api/me/operator` | `{ operator: OperatorView, agents: [{ id, name, runner }] }` (operators only) |
 | GET | `/api/me/credits` | `{ credits: CreditAccountView }` (operators only) |

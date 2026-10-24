@@ -21,6 +21,7 @@ const WORDS = new Map<string, string>(
     CAP_SCENARIOS_DAY: "Scenario runs have reached today's limit for the whole deployment. Try again tomorrow.",
     CAP_SCENARIOS_REQUESTER_DAY: "You have used today's scenario runs. Try again tomorrow.",
     CAP_SPEND_DAY: "Your account has reached its daily limit for job budgets.",
+    CAP_STARTER_JOBS_DAY: "New starter jobs arrive tomorrow.",
     CAP_VISITOR_JOBS: "Your account has opened as many jobs as an account can.",
     CAP_VISITORS_DAY: "Acquit has made as many new accounts as it can today. Try again tomorrow, or open your saved account link.",
     CLI_CODE_EXPIRED: "This sign-in link has expired. Run acquit login again.",

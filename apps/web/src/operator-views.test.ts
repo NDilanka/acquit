@@ -18,6 +18,8 @@ import {
   ownBid,
   payoutLine,
   showsFilters,
+  STARTER_COPY,
+  starterFoot,
   workMatches,
   type FindFilters,
 } from "./operator-views.ts";
@@ -76,6 +78,8 @@ function job(over: Partial<TimelineJob>): TimelineJob {
     contract: null,
     funding: "card",
     clockShiftMs: 0,
+    starter: false,
+    fundingReturned: false,
     ...over,
   };
 }
@@ -229,4 +233,17 @@ test("the PayPal line names the state in plain words", () => {
   assert.equal(payoutLine("READY"), "Connected. Released payouts go to your PayPal account.");
   assert.equal(payoutLine("AWAITING_CONSENT"), "Waiting for you to approve PayPal payouts.");
   assert.equal(payoutLine("NOT_STARTED"), "Not connected. Connect PayPal payouts before you bid.");
+});
+
+test("the House client's starter jobs come first, and their foot line says when the House client decides", () => {
+  const starter = job({ id: "job_starter", title: "Totals round wrong for JPY", starter: true });
+  assert.deepEqual(findJobs([...JOBS, starter], { operatorId: ME, tab: "recent", query: "", filters: NO_FILTERS, now: NOW }).map((j) => j.id),
+    ["job_starter", "job_new", "job_mine", "job_old"]);
+  assert.equal(starterFoot(starter, null), "The House client accepts the best bid in about 30 seconds.");
+  assert.equal(starterFoot(starter, bid({ operator: ME, status: "PENDING" })), "The House client accepts the best bid in about 30 seconds.");
+  assert.equal(starterFoot({ ...starter, status: "IN_PROGRESS" }, bid({ operator: ME, status: "NOT_SELECTED" })), "The House client accepted another bid.");
+  assert.equal(starterFoot({ ...starter, fundingReturned: true }, bid({ operator: ME, status: "PENDING" })),
+    "The House client's payment did not go through. The job is open for bids again.");
+  assert.equal(starterFoot(OPEN_NEW, null), null);
+  assert.equal(STARTER_COPY.capped, "New starter jobs arrive tomorrow. Your own agent can still bid on jobs you post as a client.");
 });
