@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { canSwitchRole, cardName, initials, linkSaved, ROLE_CAPTION } from "./account";
+import { RoleSwitch, SaveAccountModal, SignOutDialog } from "./account-ui";
 import { Icon } from "./icons";
 import { isNavActive, navFor, signedOutNav, type NavItem, type Role } from "./nav";
 import { Link, useRouter } from "./router";
-import { match, showsDemoCta } from "./route";
+import { match, showsTryCta } from "./route";
 import type { Session } from "./session";
 import { useTheme } from "./theme-context";
 import { Segmented } from "./ui";
 import type { ThemeChoice } from "./theme";
 
 const HELP_URL = "https://github.com/NDilanka/acquit#readme";
-
-const ROLE_CAPTION: Record<Role, string> = { CLIENT: "Client", OPERATOR: "Operator", PLATFORM: "Platform" };
 
 const NAV_TOUR: Readonly<Record<string, string>> = {
   "/operator/work": "nav-my-work",
@@ -29,11 +30,13 @@ export function Shell({
   session,
   heading,
   onSignOut,
+  onSession,
   children,
 }: {
   session: Session | null | undefined;
   heading: { readonly eyebrow: string; readonly title: string };
   onSignOut: () => void;
+  onSession: (session: Session) => void;
   children: ReactNode;
 }) {
   const { location } = useRouter();
@@ -81,15 +84,16 @@ export function Shell({
               <Icon name="close" />
             </button>
           </div>
+          {session && canSwitchRole(session.user, session.account) && <RoleSwitch user={session.user} onSwitched={onSession} />}
           <nav className="side-nav" aria-label="Pages" onClick={() => setMenuOpen(false)}>
             {items.filter((item) => !item.group).map((item) => navLink(item, path, role))}
             {items.some((item) => item.group === "Public") && <p className="side-label mono">Public</p>}
             {items.filter((item) => item.group === "Public").map((item) => navLink(item, path, role))}
           </nav>
           <div className="side-foot">
-            {showsDemoCta(match(path), signedIn) && (
-              <Link to="/demo" className="btn side-cta">
-                Start the demo
+            {showsTryCta(match(path), signedIn) && (
+              <Link to="/start" className="btn green side-cta">
+                Try Acquit
               </Link>
             )}
             {session ? (
@@ -141,19 +145,33 @@ export function ThemeSwitch() {
   return <Segmented label="Theme" options={THEME_CHOICES} value={choice} onChange={setChoice} />;
 }
 
-/** The bottom card of the sidebar. It opens a menu with the theme switch, Help, and Sign out. */
+/** The bottom card of the sidebar. Its menu holds the theme switch, Save your account, Help, and Sign out. */
 function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState<"save" | "signOut" | null>(null);
+  // Bumped when the saved flag changes, so the card reads storage again.
+  const [, setSavedTick] = useState(0);
   const card = useRef<HTMLDivElement>(null);
-  const user = session.user;
+  const cardButton = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const focusMenu = useRef(false);
+  const { user, account } = session;
+  const saved = account ? linkSaved(localStorage, account.client) : true;
+  const name = cardName(user, account);
 
   useEffect(() => {
     if (!open) return;
+    if (focusMenu.current) {
+      focusMenu.current = false;
+      menu.current?.querySelector<HTMLElement>("button, a")?.focus();
+    }
     const onDown = (e: MouseEvent) => {
       if (!card.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      cardButton.current?.focus();
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -163,41 +181,82 @@ function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () =
     };
   }, [open]);
 
+  const onCardKey = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (e.key !== "ArrowDown") return;
+    e.preventDefault();
+    focusMenu.current = true;
+    if (open) menu.current?.querySelector<HTMLElement>("button, a")?.focus();
+    else setOpen(true);
+  };
+
+  const choose = (next: "save" | "signOut") => {
+    setOpen(false);
+    if (next === "signOut" && !account) onSignOut();
+    else setDialog(next);
+  };
+
   return (
     <div className="acct" ref={card}>
       {open && (
-        <div className="acct-menu">
+        <div className="acct-menu" ref={menu}>
           <div className="acct-theme">
             <span className="acct-label">Theme</span>
             <ThemeSwitch />
           </div>
+          {account && (
+            <button type="button" className="acct-item" onClick={() => choose("save")}>
+              <Icon name="shield" size={16} />
+              Save your account
+              {!saved && <span className="acct-dot inline" aria-label="Not saved yet" />}
+            </button>
+          )}
           <a className="acct-item" href={HELP_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>
             <Icon name="help" size={16} />
             Help
           </a>
-          <button
-            type="button"
-            className="acct-item"
-            onClick={() => {
-              setOpen(false);
-              onSignOut();
-            }}
-          >
+          <button type="button" className="acct-item" onClick={() => choose("signOut")}>
             <Icon name="logout" size={16} />
-            {session.visitor ? "Leave demo" : "Sign out"}
+            Sign out
           </button>
         </div>
       )}
-      <button type="button" className="acct-card" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((o) => !o)}>
+      <button
+        ref={cardButton}
+        type="button"
+        className="acct-card"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={onCardKey}
+      >
         <span className="acct-avatar" aria-hidden="true">
-          {user.handle.slice(0, 2).toUpperCase()}
+          {initials(name)}
+          {!saved && <span className="acct-dot" />}
         </span>
         <span className="acct-text">
-          <b>{user.handle}</b>
+          <b>{name}</b>
           <small>{ROLE_CAPTION[user.role]}</small>
+          {!saved && <span className="sr-only">Your account link is not saved yet.</span>}
         </span>
         <Icon name="chevrons" size={14} />
       </button>
+      {/* The sidebar is a transformed sheet at 390 px, which would trap a fixed dialog inside it. */}
+      {dialog === "save" && account && createPortal(
+        <SaveAccountModal account={account} onClose={() => setDialog(null)} onSavedChange={() => setSavedTick((n) => n + 1)} />,
+        document.body,
+      )}
+      {dialog === "signOut" && createPortal(
+        <SignOutDialog
+          saved={saved}
+          onSignOut={() => {
+            setDialog(null);
+            onSignOut();
+          }}
+          onSave={() => setDialog("save")}
+          onCancel={() => setDialog(null)}
+        />,
+        document.body,
+      )}
     </div>
   );
 }

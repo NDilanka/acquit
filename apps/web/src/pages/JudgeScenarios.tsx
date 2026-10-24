@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { api, ApiError } from "../api";
 import type { ScenarioName, ScenarioRun } from "../api-types";
-import { errorText } from "../demo";
+import { errorText } from "../errors";
 import { SCENARIO_CARDS } from "../judge-tour";
 import { buildRunView, nextPollMs, startRefusalWords, type RunStepView, type ScenarioCard } from "../scenario-run";
 
@@ -63,7 +63,7 @@ export function JudgeScenarios({ ensureDemo }: { ensureDemo: () => Promise<unkno
       <h2 id={`${id}-title`}>Run a whole job story</h2>
       <p className="muted">
         Each button runs one job from start to end on the server, and its steps appear here as they finish. Each run gets its own
-        client and operator, separate from your demo.
+        client and operator, separate from your account.
       </p>
       <div className="scenario-grid">
         {SCENARIO_CARDS.map(card => (

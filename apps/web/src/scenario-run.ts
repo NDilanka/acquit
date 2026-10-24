@@ -106,11 +106,11 @@ const STATE_WORDS: Readonly<Record<ScenarioRun["state"], string>> = { RUNNING: "
 // Refusals in plain words. A code not named here keeps the page's own wording for the codes it already knows.
 const REFUSAL_WORDS: Readonly<Record<string, string>> = {
   UNKNOWN_SCENARIO: "That scenario does not exist.",
-  NOT_DEMO_VISITOR: "Start your demo first. A scenario runs on a demo of your own.",
-  UNAUTHENTICATED: "Your session has ended. Start a new demo.",
+  NOT_DEMO_VISITOR: "Make your account first. A scenario runs in a workspace of its own.",
+  UNAUTHENTICATED: "Your session has ended. Open your saved account link to sign in again.",
   NOT_FOUND: "That scenario run no longer exists.",
   SCENARIO_FIXTURE_MISSING: "This deployment does not carry the job the scenarios open on, so no scenario can run here.",
-  SCENARIO_FIXTURE_MISMATCH: "The scenarios' job is not on the repository this deployment copies demos from, so no scenario can run here.",
+  SCENARIO_FIXTURE_MISMATCH: "The scenarios' job is not on the repository this deployment copies workspaces from, so no scenario can run here.",
   SCENARIO_RUNNING_LIMIT: "You already have as many scenario runs going as you may. Wait for one to finish, then start another.",
   SCENARIO_STORE_FULL: "The server is keeping every scenario run it can, and all of them are still going. Try again in a few minutes.",
   SCENARIO_OPEN_FAILED: "The scenario could not open its job, so nothing was started. Try again.",
@@ -125,7 +125,7 @@ const STEP_FAILED_PREFIX = "FAILED ";
 const RUNNING_TEXT = "Running. Each step appears when the server finishes it, with the time it measured.";
 const RESTARTED_TEXT = "Failed: the server restarted during this run, so its steps were not resumed.";
 const NO_END_TEXT = "No end state could be read.";
-const JOB_NOTE = "The run's job belongs to its own demo visitor, so this page cannot open it. The steps above are the record of that job.";
+const JOB_NOTE = "The run's job belongs to its own workspace, so this page cannot open it. The steps above are the record of that job.";
 
 /** Reads a closed-code table without taking inherited keys such as "constructor" as an answer. */
 function lookup(table: Readonly<Record<string, string>>, key: string): string | undefined {

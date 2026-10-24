@@ -1,14 +1,16 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { roleHome } from "./account";
 import { api } from "./api";
-import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
-import { demoEnds, errorText } from "./demo";
+import type { DeploymentMode, FundingMode } from "./api-types";
+import { errorText } from "./errors";
 import { pageHeading } from "./nav";
 import { useRouter } from "./router";
 import { match, signedOutPage } from "./route";
 import { Shell } from "./shell";
 import { SessionContext, useSession, type Session } from "./session";
-import { ConfirmDialog, NotFound, RepoLink } from "./ui";
+import { NotFound, SkeletonCard } from "./ui";
 import { SignIn } from "./pages/SignIn";
+import { WelcomeBack } from "./pages/WelcomeBack";
 import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
@@ -23,7 +25,7 @@ const StudioPage = lazy(() => import("./studio/StudioPage"));
 
 function Studio() {
   return (
-    <Suspense fallback={<p className="muted">Loading the dashboards…</p>}>
+    <Suspense fallback={<SkeletonCard lines={4} />}>
       <StudioPage />
     </Suspense>
   );
@@ -41,7 +43,7 @@ export function App() {
       .then((r) => {
         setMode(r.mode);
         setFundingMode(r.fundingMode);
-        setSession(r.user ? { user: r.user, visitor: r.visitor } : null);
+        setSession(r.user ? { user: r.user, account: r.account } : null);
       })
       .catch((e: unknown) => {
         setError(errorText(e));
@@ -50,47 +52,34 @@ export function App() {
   }, []);
 
   const { navigate, location } = useRouter();
-  const [leaving, setLeaving] = useState(false);
-  const endSession = () => {
+  // The account menu asks before this runs; a seeded or platform session signs out at once.
+  const signOut = () => {
     void api.signOut().finally(() => {
-      setLeaving(false);
       setSession(null);
       navigate("/");
     });
   };
-  // A demo has no way back in, so leaving it asks first; signing out of a seeded session does not.
-  const signOut = () => {
-    if (session?.visitor) setLeaving(true);
-    else endSession();
+  const signedIn = (s: Session) => {
+    setError(null);
+    setSession(s);
   };
-  const leaveDialog = leaving ? (
-    <ConfirmDialog
-      title="Leave this demo?"
-      body="You cannot return to this demo. Start my demo makes a new one, and it counts against the day's limits."
-      confirmLabel="Leave demo"
-      danger
-      onConfirm={endSession}
-      onCancel={() => setLeaving(false)}
-    />
-  ) : null;
 
   // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
-  // The verifier registry and the print demo are public for the same reason. A print run starts its own demo.
+  // The verifier registry and the print verifier are public for the same reason. A print run makes its own account.
   const route = match(location.path);
   const heading = pageHeading(route, session?.user.role ?? null);
   if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
     return (
-      <Shell session={session} heading={heading} onSignOut={signOut}>
+      <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
         <main id="content" tabIndex={-1} className="wrap">
           {route.name === "receipt" ? (
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
             <VerifiersPage />
           ) : (
-            <PrintDemoPage session={session} onSignedIn={(s) => { setError(null); setSession(s); }} />
+            <PrintDemoPage session={session} onSignedIn={signedIn} />
           )}
         </main>
-        {leaveDialog}
       </Shell>
     );
   }
@@ -100,29 +89,31 @@ export function App() {
   if (session === null && signedOutView === "landing") return <LandingReload />;
 
   return (
-    <Shell session={session} heading={heading} onSignOut={signOut}>
-      {session === undefined ? (
-        <main id="content" tabIndex={-1} className="wrap muted">Loading…</main>
-      ) : (
-        <>
-          {session?.visitor && <DemoBar session={session} visitor={session.visitor} onSwitched={setSession} />}
-          {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
-          <main id="content" tabIndex={-1} className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
-            {error && !session && <div className="alert">{error}</div>}
-            {session ? (
-              <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>
-                {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
-                <Routes key={session.user.handle} />
-              </SessionContext.Provider>
-            ) : signedOutView === "notFound" ? (
+    <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
+      {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
+      <main id="content" tabIndex={-1} className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
+        {session === undefined ? (
+          <SkeletonCard />
+        ) : route.name === "welcomeBack" ? (
+          <WelcomeBack session={session} onSignedIn={signedIn} />
+        ) : session ? (
+          <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>
+            {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
+            <Routes key={session.user.handle} />
+          </SessionContext.Provider>
+        ) : (
+          <>
+            {error && <div className="alert">{error}</div>}
+            {signedOutView === "notFound" ? (
               <NotFound signedIn={false} />
+            ) : signedOutView === "toStart" ? (
+              <Redirect to="/start" />
             ) : (
-              mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
+              mode && <SignIn mode={mode} onSignedIn={signedIn} />
             )}
-          </main>
-          {leaveDialog}
-        </>
-      )}
+          </>
+        )}
+      </main>
     </Shell>
   );
 }
@@ -133,55 +124,11 @@ function LandingReload() {
   return null;
 }
 
-function DemoBar({ session, visitor, onSwitched }: { session: Session; visitor: VisitorView; onSwitched: (s: Session) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const active = session.user.role;
-  const doSwitch = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api.switchDemo();
-      onSwitched({ user: r.user, visitor: r.visitor });
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const roles = [
-    { role: "CLIENT", label: "Act as client", handle: visitor.client },
-    { role: "OPERATOR", label: "Act as operator", handle: visitor.operator },
-  ] as const;
-  return (
-    <div className="demobar">
-      <div className="wrap">
-        <b>Your demo</b>
-        <div className="seg" role="group" aria-label="Demo account">
-          {roles.map((r) => (
-            <button
-              key={r.role}
-              className={active === r.role ? "on" : ""}
-              aria-pressed={active === r.role}
-              disabled={busy || active === r.role}
-              title={r.handle}
-              onClick={() => void doSwitch()}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-        <span className="muted">
-          Signed in as <b className="mono">{session.user.handle}</b>
-        </span>
-        <span className="muted demo-extra">
-          Repository <RepoLink repository={visitor.repository} />
-        </span>
-        <span className="muted demo-extra" title={visitor.expiresAt}>{demoEnds(visitor.expiresAt, Date.now())}</span>
-        {error && <span className="alert">{error}</span>}
-      </div>
-    </div>
-  );
+/** Replaces the address, so Back does not return to a page that only moves on. */
+function Redirect({ to }: { to: string }) {
+  const { navigate } = useRouter();
+  useEffect(() => navigate(to, true), [to]);
+  return null;
 }
 
 function Routes() {
@@ -190,8 +137,10 @@ function Routes() {
   const route = match(location.path);
   switch (route.name) {
     case "home":
-    case "demo":
       return <Home />;
+    case "demo":
+    case "start":
+      return <Redirect to={roleHome(user.role)} />;
     case "newJob":
       return user.role === "CLIENT" ? (
         <NewJob />
@@ -212,6 +161,7 @@ function Routes() {
       return <CliLogin />;
     case "studio":
       return <Studio />;
+    case "welcomeBack":
     case "notFound":
       return <NotFound signedIn />;
   }

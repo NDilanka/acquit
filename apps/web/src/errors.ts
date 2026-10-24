@@ -15,14 +15,14 @@ const WORDS = new Map<string, string>(
     ATTEMPTS_EXHAUSTED: "No delivery attempts are left.",
     BUDGET_BELOW_MINIMUM: "The budget must be at least 10.00 USD.",
     BUSY: "The server is busy with this job. Try again in a moment.",
-    CAP_AMOUNT: "That budget is higher than a demo job allows.",
-    CAP_MODEL_RUNS: "This demo has used its verifier runs for today.",
-    CAP_MODEL_RUNS_DAY: "The verifier has reached its daily limit for every demo. Try again tomorrow.",
+    CAP_AMOUNT: "That budget is higher than a sandbox job allows.",
+    CAP_MODEL_RUNS: "Your account has used its verifier runs for today.",
+    CAP_MODEL_RUNS_DAY: "The verifier has reached its daily limit for every account. Try again tomorrow.",
     CAP_SCENARIOS_DAY: "Scenario runs have reached today's limit for the whole deployment. Try again tomorrow.",
     CAP_SCENARIOS_REQUESTER_DAY: "You have used today's scenario runs. Try again tomorrow.",
-    CAP_SPEND_DAY: "This demo has reached its daily limit for job budgets.",
-    CAP_VISITOR_JOBS: "This demo has opened as many jobs as a demo can.",
-    CAP_VISITORS_DAY: "Today's demos are all taken: the daily limit is reached. Try again tomorrow.",
+    CAP_SPEND_DAY: "Your account has reached its daily limit for job budgets.",
+    CAP_VISITOR_JOBS: "Your account has opened as many jobs as an account can.",
+    CAP_VISITORS_DAY: "Acquit has made as many new accounts as it can today. Try again tomorrow, or open your saved account link.",
     CLI_CODE_EXPIRED: "This sign-in link has expired. Run acquit login again.",
     CLI_CODE_UNKNOWN: "That sign-in code is not valid. Run acquit login again.",
     CLI_CODE_USED: "This sign-in link was already used. Run acquit login again.",
@@ -30,9 +30,9 @@ const WORDS = new Map<string, string>(
     COVERAGE_GATE: "Some rules have no test yet. Add cases for them, then approve again.",
     DEADLINE_PASSED: "The deadline has already passed.",
     DEADLINE_TOO_FAR: "The deadline must be within 14 days.",
-    DEMO_NOT_CONFIGURED: "Demos are not set up on this deployment yet.",
-    DEMO_PRIVATE: "The live demo is private for now.",
-    DEMO_REPOSITORY_FAILED: "GitHub could not create your demo repository. Try again in a moment.",
+    DEMO_NOT_CONFIGURED: "Accounts are not set up on this deployment yet.",
+    DEMO_PRIVATE: "Acquit is private for now.",
+    DEMO_REPOSITORY_FAILED: "GitHub could not create your workspace repository. Try again in a moment.",
     DEV_DISABLED: "Dev tools are off on this deployment.",
     FUNDING_BOUND: "The payment method was fixed when a bid was accepted.",
     GITHUB_NOT_CONFIGURED: "GitHub is not connected on this deployment yet.",
@@ -46,10 +46,11 @@ const WORDS = new Map<string, string>(
     MODEL_KEY_MISSING: "The assistant has no model key on this deployment.",
     NO_DRAFT: "The hidden tests are not drafted yet.",
     NO_MANIFEST: "The job has no frozen test manifest yet.",
-    NOT_DEMO_VISITOR: "Only a demo session can switch between client and operator.",
+    NOT_AN_ACCOUNT: "Only a Try Acquit account can do this.",
+    NOT_DEMO_VISITOR: "Only a Try Acquit account can switch between client and operator.",
     NOT_FOUND: "That job or bid no longer exists.",
     NOT_OWNER: "You do not own this job.",
-    NOT_VISITOR_JOB: "Only the demo's client can change this job.",
+    NOT_VISITOR_JOB: "Only the job's client can change this job.",
     NOTHING_APPROVED: "Approve at least one test before you continue.",
     ONBOARDING_REQUIRED: "Finish PayPal payouts onboarding before bidding.",
     ORIGIN_DENIED: "This page cannot be used from this address.",
@@ -61,8 +62,9 @@ const WORDS = new Map<string, string>(
     PLATFORM_ONLY: "Only the platform can open this.",
     PLATFORM_READ_ONLY: "The platform view is read only.",
     PRICE_OVER_BUDGET: "The price is higher than the job budget.",
+    RESTORE_LIMITED: "Too many tries from this network. Wait 15 minutes, then open the link again.",
     REVIEW_CLOSED: "The review window is closed.",
-    SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Start a demo instead.",
+    SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Use Try Acquit instead.",
     SESSION_MINT_DISABLED: "Starting a session is off on this deployment.",
     TOOL_FAILED: "The assistant's tool failed. Try again in a moment.",
     UNAUTHENTICATED: "Your sign-in has expired. Sign in again.",
@@ -113,6 +115,11 @@ export type DescribedError = {
   /** The code and the server's detail, shown only when the page has no sentence for them: a copyable Details line. */
   readonly details: string | null;
 };
+
+/** The sentence a failed call shows. A code the page has no words for reads generically, never as CODE: detail. */
+export function errorText(e: unknown): string {
+  return describeError(e).message;
+}
 
 /** Any thrown value as a sentence plus, for an unknown code, the code for a Details line. */
 export function describeError(error: unknown): DescribedError {

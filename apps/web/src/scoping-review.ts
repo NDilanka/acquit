@@ -1,6 +1,6 @@
 import type { FilterCounts, JobView, Receipt, ScopingApproveResponse, ScopingCase, ScopingResponse } from "./api-types";
 import { ApiError } from "./api.ts";
-import { errorText } from "./demo.ts";
+import { errorText } from "./errors.ts";
 import { draftFailureWord } from "./job-status.ts";
 
 /** What the client's scoping panel shows. Only REVIEW takes input; a frozen draft is immutable. */

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { describeError } from "./errors";
-import { shortId } from "./format";
+import { middleTruncate, shortId } from "./format";
 import { statusLabel, type StatusInput } from "./job-status";
 import { Icon, type IconName } from "./icons";
 import { notFoundLink } from "./not-found";
@@ -66,7 +66,7 @@ export function RepoLink({ repository }: { repository: string | null }) {
   );
 }
 
-/** What the demo connected for the visitor: shown once at sign-up and on the client's dashboard. */
+/** What Acquit connected for an account: shown on the client's dashboard. */
 export function ConnectedRepo({ repository }: { repository: string | null }) {
   return (
     <p className="connected">
@@ -277,12 +277,15 @@ export function SkeletonList({ count = 3, lines = 2 }: { count?: number; lines?:
   );
 }
 
-/** A failed read or action: the plain sentence, and a Details line only when the page has no sentence for the code. */
-export function ErrorNote({ error }: { error: unknown }) {
+/**
+ * A failed read or action: the plain sentence, and a Details line only when the page has no sentence for the code.
+ * `message` replaces the sentence where the page words a failure its own way.
+ */
+export function ErrorNote({ error, message: own }: { error: unknown; message?: string }) {
   const { message, details } = describeError(error);
   return (
     <div className="alert" role="alert">
-      <p className="alert-msg">{message}</p>
+      <p className="alert-msg">{own ?? message}</p>
       {details && <CopyDetails value={details} />}
     </div>
   );
@@ -304,4 +307,59 @@ function CopyDetails({ value }: { value: string }) {
       </button>
     </p>
   );
+}
+
+/** A small spinner beside a busy label. The label carries the meaning, so the spinner is hidden from screen readers. */
+export function Spinner() {
+  return <span className="spinner" aria-hidden="true" />;
+}
+
+const COPY_SHOWN = 48;
+
+/** A label, a mono value cut in the middle past its width, and a Copy button that reads "Copied" for 1.5 s. */
+export function CopyField({ label, value, onCopied }: { label: string; value: string; onCopied?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const id = useId();
+  const copy = () => {
+    void copyText(value).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      onCopied?.();
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="copyfield">
+      <span className="copyfield-label" id={`${id}-label`}>
+        {label}
+      </span>
+      <div className="copyfield-row">
+        <code className="copyfield-value mono" title={value} aria-labelledby={`${id}-label`}>
+          {middleTruncate(value, COPY_SHOWN)}
+        </code>
+        <button type="button" className="btn secondary sm" aria-label={copied ? "Copied" : `Copy ${label.toLowerCase()}`} onClick={copy}>
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** The clipboard API is missing or refused outside a secure, focused page, so the old copy command stands in. */
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
 }

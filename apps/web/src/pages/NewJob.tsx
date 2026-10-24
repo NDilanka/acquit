@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { JobView, UserCommand } from "../api-types";
 import { api, type Repo, type RepoIssue } from "../api";
-import { errorText } from "../demo";
+import { errorText } from "../errors";
 import { budgetProblem, parseUsd, usd, utc } from "../format";
 import { useIntent } from "../intent";
 import { Link } from "../router";

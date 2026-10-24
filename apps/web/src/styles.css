@@ -364,7 +364,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .skeleton-line { width: 88%; }
 @keyframes skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .skeleton, .toast { animation: none; }
+  .skeleton, .toast, .spinner { animation: none; }
   .side { transition: none; }
 }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -395,10 +395,41 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ready-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 0; }
 .ready-strip a { color: inherit; font-weight: 600; }
 
-.demobar { background: var(--green-bg); border-bottom: 1px solid var(--green-line); font-size: 13px; }
-.demobar .wrap { padding: 8px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
-.demobar .alert { margin: 0; padding: 4px 10px; }
-.seg { display: inline-flex; border: 1px solid var(--green-line); border-radius: 8px; overflow: hidden; background: var(--card); }
+/* Accounts: the Try Acquit and Welcome back card, the sidebar role switch, the reminder dot, and the account link. */
+.start { display: grid; gap: 16px; width: 100%; max-width: 480px; margin: 40px auto 0; }
+.start-card { display: grid; gap: 16px; margin: 0; }
+.start-card > * { margin: 0; }
+.start-lead { margin: 0; font-size: 15px; color: var(--ink-2); }
+.start-points { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; font-size: 14px; color: var(--ink-2); }
+.start-points li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 10px; align-items: start; }
+.start-points .icon { margin-top: 3px; color: var(--green-text); }
+.btn.start-action { width: 100%; min-height: 44px; }
+.start-note { margin: 0; font-size: 13px; }
+.start-staff { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.start-staff:hover { color: var(--ink); }
+.start-status { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 15px; color: var(--ink-2); }
+.start-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.start-home { justify-self: start; }
+.start-card .platform-key { padding: 0; }
+.role-switch { display: grid; gap: 8px; margin: 12px 0 14px; }
+.segmented.full { display: flex; width: 100%; }
+.segmented.full button { display: inline-flex; flex: 1; align-items: center; justify-content: center; gap: 6px; min-height: 36px; }
+.segmented button[disabled] { cursor: progress; }
+.role-switch .alert { margin: 0; }
+.spinner { display: inline-block; flex: none; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.acct-avatar { position: relative; }
+.acct-dot { position: absolute; top: -1px; right: -1px; width: 10px; height: 10px; border: 2px solid var(--surface); border-radius: 50%; background: var(--amber); }
+.acct-dot.inline { position: static; margin-left: auto; border: 0; width: 8px; height: 8px; }
+.copyfield { display: grid; gap: 6px; min-width: 0; }
+.copyfield-label { font-weight: 600; font-size: 13px; }
+.copyfield-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px 6px 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); }
+.copyfield-value { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 12.5px; color: var(--ink); background: transparent; }
+.copyfield-row .btn { flex: none; }
+.save-account { display: grid; gap: 14px; }
+.save-account > *, .save-account .alert { margin: 0; }
+.save-status { display: flex; align-items: center; gap: 8px; margin: 0; }
+.save-actions { display: flex; flex-wrap: wrap; gap: 8px; }.seg { display: inline-flex; border: 1px solid var(--green-line); border-radius: 8px; overflow: hidden; background: var(--card); }
 .seg button { border: 0; background: transparent; padding: 5px 12px; font-weight: 600; font-size: 13px; color: var(--ink-2); }
 .seg button + button { border-left: 1px solid var(--green-line); }
 .seg button.on { background: var(--green); color: #fff; cursor: default; }
@@ -449,8 +480,8 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 480px) {
   .wrap { padding: 20px 16px 96px; }
-  .demobar .wrap { padding: 8px 16px; }
-  .demobar, .meta, .crumbs, .rows b { overflow-wrap: anywhere; }
+  .meta, .crumbs, .rows b { overflow-wrap: anywhere; }
+  .start { margin-top: 16px; }
   .head { flex-wrap: wrap; gap: 12px; }
   .credits { min-width: 0; width: 100%; }
   .pad { padding: 14px 14px; }
@@ -468,7 +499,6 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 640px) {
   .sandbox { padding: 2px 6px; font-size: 10px; letter-spacing: 0.03em; }
-  .demobar .demo-extra { display: none; }
 }
 
 .scoping { overflow: hidden; }

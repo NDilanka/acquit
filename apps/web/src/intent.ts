@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { CommandOutcome, UserCommand } from "./api-types";
 import { api } from "./api";
-import { errorText } from "./demo";
+import { errorText } from "./errors";
 import { denied } from "./format";
 
 type Pending = { signature: string; key: string; command: UserCommand };

@@ -138,7 +138,7 @@ test("the evidence rows label the telemetry and the photos as Simulated, and tim
 });
 
 test("a refusal of a print run is in plain words, and an unknown code is left to the caller", () => {
-  assert.equal(printRefusalWords("PRINT_BUSY"), "The print demo is busy with other runs. Try again in a minute.");
+  assert.equal(printRefusalWords("PRINT_BUSY"), "The print verifier is busy with other runs. Try again in a minute.");
   assert.equal(printRefusalWords("SOMETHING_ELSE"), null);
 });
 

@@ -1,11 +1,9 @@
 import type { ScenarioCard } from "./scenario-run.ts";
 
-export const START_DEMO_ACTION = "Start my demo";
-
 /** The label every scripted step carries on screen, so the scripted agent is never read as a real model. */
 export const SCRIPTED_LABEL = "Scripted agent (Simulated)";
 
-/** The six judge scenarios, in the order the sign-in page shows them. */
+/** The six scenarios, in the order the scenario list shows them. */
 export const SCENARIO_CARDS: readonly ScenarioCard[] = [
   {
     name: "verified-and-paid",

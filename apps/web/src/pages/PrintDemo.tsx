@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useId, useState } from "react";
 import { api, ApiError } from "../api";
 import type { PrintDemoRunView, PrintLayerView, PrintOutcomeView, PrintReceiptView, PrintRunView, PrintTimelineView } from "../api-types";
-import { errorText } from "../demo";
+import { errorText } from "../errors";
 import { utc } from "../format";
 import { Link } from "../router";
 import type { Session } from "../session";
@@ -40,7 +40,7 @@ type Props = { readonly session: Session | null | undefined; readonly onSignedIn
  * The public print demo, one job page read top to bottom: what is real, the run, the contract, the qualification
  * certificate, the layer timeline, the verdict, the evidence, the score card, and the receipt. A simulated farm
  * qualifies, then prints one job, and the real print judge decides. It reads without a session, like the verifier
- * registry. A run needs a demo of its own, so the first run starts one.
+ * registry. A run needs an account of its own, so the first run makes one.
  */
 export function PrintDemoPage({ session, onSignedIn }: Props) {
   const [run, setRun] = useState<PrintRunView | null>(null);
@@ -77,9 +77,9 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
     setError(null);
     setRun(null);
     try {
-      if (!session?.visitor) {
-        const demo = await api.startDemo();
-        onSignedIn({ user: demo.user, visitor: demo.visitor });
+      if (!session?.account) {
+        const made = await api.createAccount();
+        onSignedIn({ user: made.user, account: made.account });
       }
       setRun(await api.startPrintRun(farm));
     } catch (e) {
@@ -115,7 +115,7 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
         <h2 id={`${id}-run`}>Run a farm</h2>
         <p className="muted">
           Each run draws new challenges and a new coupon. Every print is the same job: two 14 mm square parts, 8 mm high, at 25%
-          infill. A run starts a demo of your own first, if you have none. The judge runs on the server.
+          infill. A run makes your own Acquit account first, if you have none. The judge runs on the server.
         </p>
         <div className="print-controls">
           <button type="button" className="btn" disabled={busy || loading} onClick={() => void start("honest")}>

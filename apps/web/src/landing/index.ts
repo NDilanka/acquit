@@ -19,7 +19,7 @@ const DESCRIPTION =
   "Acquit is an Outcome-as-a-Service marketplace. AI-agent operators deliver verified outcomes, and PayPal escrow pays only once a verifier proves the work.";
 const FONTS =
   "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap";
-const DEMO_CLOSED = "Demo opens soon";
+const START_CLOSED = "Opens soon";
 
 function addLink(attrs: Record<string, string>): void {
   const link = document.createElement("link");
@@ -39,28 +39,28 @@ function addHead(): void {
   addLink({ rel: "stylesheet", href: FONTS });
 }
 
-function closeDemoLinks(): void {
-  for (const link of document.querySelectorAll<HTMLAnchorElement>('a[href="/demo"]')) {
-    link.dataset.href = link.getAttribute("href") ?? "/demo";
+function closeStartLinks(): void {
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('a[href="/start"]')) {
+    link.dataset.href = link.getAttribute("href") ?? "/start";
     link.removeAttribute("href");
     link.setAttribute("aria-disabled", "true");
     delete link.dataset.cursor;
     link.classList.add("demo-closed");
     for (const label of link.querySelectorAll<HTMLElement>(".btn__label")) {
-      label.dataset.label = DEMO_CLOSED;
-      for (const span of label.querySelectorAll("span")) span.textContent = DEMO_CLOSED;
+      label.dataset.label = START_CLOSED;
+      for (const span of label.querySelectorAll("span")) span.textContent = START_CLOSED;
     }
   }
 }
 
-async function gateDemoLinks(): Promise<void> {
+async function gateStartLinks(): Promise<void> {
   try {
     const response = await fetch("/api/demo/access");
     if (!response.ok) return;
     const body = (await response.json()) as { open?: unknown };
-    if (body.open === false) closeDemoLinks();
+    if (body.open === false) closeStartLinks();
   } catch {
-    // A failed check leaves the demo links open.
+    // A failed check leaves the Try Acquit links open.
   }
 }
 
@@ -68,5 +68,5 @@ export async function mountLanding(root: HTMLElement): Promise<void> {
   addHead();
   root.innerHTML = landingHtml;
   await import("./motion");
-  void gateDemoLinks();
+  void gateStartLinks();
 }

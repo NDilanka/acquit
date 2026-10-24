@@ -31,7 +31,7 @@ export function navFor(role: Role): readonly NavItem[] {
   return [...ROLE_PAGES[role], ...PUBLIC_PAGES];
 }
 
-/** Signed out, the sidebar lists the public pages; the Start the demo button sits under them. */
+/** Signed out, the sidebar lists the public pages; the Try Acquit button sits under them. */
 export function signedOutNav(): readonly NavItem[] {
   return PUBLIC_PAGES;
 }
@@ -54,7 +54,10 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
     case "home":
       return { eyebrow, title: role === "CLIENT" ? "My jobs" : role === "OPERATOR" ? "Find work" : "Dashboards" };
     case "demo":
-      return { eyebrow: "Judge mode", title: "Try the demo" };
+    case "start":
+      return { eyebrow: "Welcome", title: "Try Acquit" };
+    case "welcomeBack":
+      return { eyebrow: "Welcome", title: "Welcome back" };
     case "newJob":
       return { eyebrow, title: "Post a job" };
     case "job":

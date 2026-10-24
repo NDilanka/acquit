@@ -80,10 +80,10 @@ export function durationWords(seconds: number): string {
 
 const PRINT_REFUSAL_WORDS: Partial<Record<string, string>> = {
   PRINT_RUNNING_LIMIT: "A run of yours is still going. Wait for it to finish, then start another.",
-  PRINT_BUSY: "The print demo is busy with other runs. Try again in a minute.",
+  PRINT_BUSY: "The print verifier is busy with other runs. Try again in a minute.",
   PRINT_RATE_LIMITED: "You have started the most runs allowed this hour. Try again later.",
-  PRINT_STORE_FULL: "The print demo has no room for another run right now. Try again later.",
-  UNKNOWN_FARM: "That farm is not one the print demo runs.",
+  PRINT_STORE_FULL: "The print verifier has no room for another run right now. Try again later.",
+  UNKNOWN_FARM: "That farm is not one the print verifier runs.",
   NOT_FOUND: "That run is not here. The server may have restarted and dropped it.",
 };
 

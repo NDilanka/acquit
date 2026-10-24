@@ -92,4 +92,7 @@ test("each route has one heading, and the eyebrow names the role", () => {
   assert.deepEqual(pageHeading({ name: "verifiers" }, null), { eyebrow: "Public", title: "Verifiers" });
   assert.deepEqual(pageHeading({ name: "print" }, null), { eyebrow: "Public", title: "Print verifier" });
   assert.deepEqual(pageHeading({ name: "notFound" }, null), { eyebrow: "Acquit", title: "Page not found" });
+  assert.deepEqual(pageHeading({ name: "start" }, null), { eyebrow: "Welcome", title: "Try Acquit" });
+  assert.deepEqual(pageHeading({ name: "demo" }, null), { eyebrow: "Welcome", title: "Try Acquit" });
+  assert.deepEqual(pageHeading({ name: "welcomeBack" }, "CLIENT"), { eyebrow: "Welcome", title: "Welcome back" });
 });

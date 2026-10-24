@@ -192,3 +192,10 @@ export function shortId(value: string): string {
   const rest = value.slice(cut);
   return `${value.slice(0, cut)}${rest.slice(0, 8)}${rest.length > 8 ? "…" : ""}`;
 }
+
+/** A long value cut in the middle, so both its start and its end stay readable. */
+export function middleTruncate(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const tail = Math.floor((max - 1) / 3);
+  return `${value.slice(0, max - 1 - tail)}…${value.slice(value.length - tail)}`;
+}

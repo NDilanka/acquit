@@ -1,8 +1,8 @@
 import { createContext, useContext } from "react";
-import type { FundingMode, SessionUser, VisitorView } from "./api-types";
+import type { AccountView, FundingMode, SessionUser } from "./api-types";
 
-/** A signed-in browser. `visitor` is set only for a judge-mode demo session. */
-export type Session = { readonly user: SessionUser; readonly visitor: VisitorView | null };
+/** A signed-in browser. `account` is set only for a Try Acquit account, never for a seeded or platform session. */
+export type Session = { readonly user: SessionUser; readonly account: AccountView | null };
 
 /** `fundingMode` is the deployment's default, read once when the app loads; a job's own choice wins over it. */
 export const SessionContext = createContext<(Session & { signOut: () => void; fundingMode: FundingMode }) | null>(null);

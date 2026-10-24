@@ -44,6 +44,9 @@ test("the landing never says tamper-proof or pluggable", () => {
   assert.doesNotMatch(html, /tamper-proof|pluggable/i);
 });
 
-test("the landing has five links to /demo, which the demo-access check closes when access is shut", () => {
-  assert.equal(html.match(/href="\/demo"/g)?.length, 5);
+test("the landing has five links to /start and none to /demo, and every former demo button reads Try Acquit", () => {
+  assert.equal(html.match(/href="\/start"/g)?.length, 5);
+  assert.equal(html.match(/href="\/demo"/g), null);
+  assert.equal(html.match(/data-label="Try Acquit">Try Acquit</g)?.length, 4);
+  assert.doesNotMatch(html, /Live demo|Try the live demo/);
 });
