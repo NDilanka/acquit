@@ -1109,7 +1109,7 @@ test("a starter job's next step names the House client's timing, and its House p
     "The House client's payment did not go through. The job is open for bids again.");
   const review = { ...locked({}), starter: true, status: "VERIFIED" as const, phase: "AWAITING_CLIENT" as const, reviewEndsAt: "2026-10-27T09:00:00.000Z" };
   // The silence sentence stays: it is true whether or not the House client has approved by then.
-  assert.equal(nextStep(review, DEVON), "Verified. The House client approves in about a minute. If it does not, Acquit releases the payment then.");
+  assert.equal(nextStep(review, DEVON), "Verified. The House client approves in about a minute. If approval has not arrived, Acquit releases the payment when the review window closes at 2026-10-27 09:00 UTC.");
   assert.deepEqual(timelineEvents(review).filter((event) => event.house).map((event) => [event.kind, event.house]),
     [["HELD", "client"], ["REVIEW", "client"]]);
   // The paid line "Released on the client's approval" carries the badge too, so the payout names the House client.

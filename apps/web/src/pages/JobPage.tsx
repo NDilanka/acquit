@@ -263,6 +263,11 @@ export function JobPage({ id }: { id: string }) {
                     <>PayPal holds the payout while it reviews the buyer's dispute, so approving only records the release.</>
                   ) : mergeCommit || disputeCommit ? (
                     <>If you do nothing, Acquit releases the payment at {utc(job.reviewEndsAt)}.</>
+                  ) : job.starter ? (
+                    <>
+                      The House client approves in about a minute. If approval has not arrived, Acquit releases the payment when the review
+                      window closes at {utc(job.reviewEndsAt)}.
+                    </>
                   ) : (
                     <>
                       The client can approve or dispute until {utc(job.reviewEndsAt)}. If the client does nothing, Acquit releases the
