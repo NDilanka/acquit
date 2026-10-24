@@ -256,7 +256,8 @@ export const processLogAlerts: { raise(effect: Extract<JobEffect, { kind: "ALERT
 
 export function createAcquit(config: AcquitConfig): Acquit {
 	const clock = config.clock ?? { now: () => instant(new Date().toISOString()) };
-	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })));
+	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })),
+		config.clientRepository ?? null);
 	const github = config.adapters?.github ?? createGitHubApp(config.github);
 	const ports: Ports = { store, paypal: config.adapters?.paypal ?? createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		fixtures: config.fixtures,

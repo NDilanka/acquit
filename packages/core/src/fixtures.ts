@@ -106,15 +106,18 @@ type FixtureKeyed = { readonly repository: string; readonly issue: { readonly nu
 
 /**
  * The fixture a job is opened against: an exact repository and issue match, or, for a visitor
- * actor opening a job on the very repository its session carries, the one fixture whose demo fork
- * prefix and issue that repository names. Two fixtures that both name it are ambiguous and match
- * nothing, so a fork never freezes whichever entry happens to be listed first.
+ * actor opening a job on the very repository its session carries, the one fixture on the upstream
+ * (the client repository every fork is made from) whose demo fork prefix and issue that repository
+ * names. A fork of any other repository names no fixture, so a fork of the invoice app never opens
+ * an expense-splitter issue. Two fixtures that both name it are ambiguous and match nothing, so a
+ * fork never freezes whichever entry happens to be listed first. With no upstream, no fork matches.
  */
-export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], repository: string, issueNumber: number, actorRepository: string | null): T | null {
+export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], repository: string, issueNumber: number, actorRepository: string | null,
+	upstream: string | null): T | null {
 	const exact = fixtures.find(f => f.repository === repository && f.issue.number === issueNumber && (actorRepository === null || actorRepository === repository));
 	if (exact) return exact;
-	if (actorRepository !== null && actorRepository === repository) {
-		const forks = fixtures.filter(f => f.issue.number === issueNumber && f.demoForkPrefix !== undefined
+	if (upstream !== null && actorRepository !== null && actorRepository === repository) {
+		const forks = fixtures.filter(f => f.repository === upstream && f.issue.number === issueNumber && f.demoForkPrefix !== undefined
 			&& VISITOR_FORK_NAMES.some(name => repository.startsWith(`${f.demoForkPrefix}${name}`)));
 		return forks.length === 1 ? forks[0] : null;
 	}

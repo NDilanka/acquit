@@ -126,7 +126,7 @@ test("a swept visitor keeps its operator, credits, and jobs, loses its sessions,
 	const noon = instant("2026-10-06T12:00:00.000Z");
 	const deadline = instant("2026-10-06T13:00:00.000Z");
 	let currentNow = noon;
-	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture(exampleContract, { repository: source })], demo: { merchant },
+	const service = createAcquit({ databaseUrl: path, fixtures: [demoFixture(exampleContract, { repository: source })], clientRepository: source, demo: { merchant },
 		clock: { now: () => currentNow },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },

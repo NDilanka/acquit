@@ -57,7 +57,7 @@ test("OpenJob opens the fixture the registry names, never nothing", async () => 
 
 test("OpenJob freezes the repository the caller's own visitor holds, and refuses any other", async () => {
 	const root = await mkdtemp(join(tmpdir(), "acquit-visitor-repo-"));
-	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), fixtures: [demoFixture(exampleContract, { repository: live })], clock: { now: () => instant("2026-10-06T12:00:00Z") },
+	const service = createAcquit({ databaseUrl: join(root, "acquit.db"), fixtures: [demoFixture(exampleContract, { repository: live })], clientRepository: live, clock: { now: () => instant("2026-10-06T12:00:00Z") },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5243", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: "sandbox-seller" as MerchantId, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") } },
 		verifier: { ciUrl: "", callbackSecret: "" }, github: { appId: "", privateKey: "", organization: "" } });

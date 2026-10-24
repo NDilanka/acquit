@@ -64,7 +64,7 @@ export function scenarioRoutingFor(composition: ScenarioComposition): ScenarioRo
 		fixture: composition.fixture,
 		forkSource: composition.forkSource,
 		forkedFixture: (forkRepository, issueNumber) => {
-			const fixture = matchFixture(composition.fixtures, forkRepository, issueNumber, forkRepository);
+			const fixture = matchFixture(composition.fixtures, forkRepository, issueNumber, forkRepository, composition.forkSource);
 			return fixture === null ? null : { repository: fixture.repository, issueNumber: fixture.issue.number };
 		},
 		provision: composition.provision,

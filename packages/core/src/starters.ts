@@ -42,11 +42,12 @@ export type HouseClientPorts = Ports & { readonly fundWithCard: (jobId: JobId, a
 /**
  * The fixtures a starter can be opened from on this account's repository, in a fixed order so the rotation is the
  * same in every process. A practice issue is never a starter: it belongs to qualification, not to the market.
+ * On a fork, only the fixtures on the upstream the forks are made from are in the pool.
  */
-export function starterPool(fixtures: readonly FixtureContract[], repository: string | null): readonly FixtureContract[] {
+export function starterPool(fixtures: readonly FixtureContract[], repository: string | null, upstream: string | null): readonly FixtureContract[] {
 	return fixtures
 		.filter(fixture => fixture.practice !== true)
-		.filter(fixture => matchFixture(fixtures, repository ?? fixture.repository, fixture.issue.number, repository) === fixture)
+		.filter(fixture => matchFixture(fixtures, repository ?? fixture.repository, fixture.issue.number, repository, upstream) === fixture)
 		.toSorted((a, b) => a.repository.localeCompare(b.repository) || a.issue.number - b.issue.number);
 }
 
@@ -76,7 +77,7 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 	// The opening pair, then one more whenever none is open. The ordinal is the count already opened, so a
 	// replayed pass names the same starter, and the day's cap is the reservation OpenJob writes.
 	const wanted = starters.length < STARTER_OPENING_COUNT ? STARTER_OPENING_COUNT - starters.length : open === 0 ? 1 : 0;
-	const pool = starterPool(ports.fixtures, account.repository);
+	const pool = starterPool(ports.fixtures, account.repository, ports.clientRepository ?? null);
 	for (let i = 0; i < wanted && pool.length > 0; i++) {
 		const ordinal = starters.length + i;
 		const fixture = pool[ordinal % pool.length]!;

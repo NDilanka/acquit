@@ -263,7 +263,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			// on a registered fixture repository. Either way the manifest freezes exactly this command's
 			// fixture, keyed by repository and issue, and never a contract compiled into this package.
 			const actorRepository = actor.role === "CLIENT" ? actor.repository ?? null : null;
-			const fixture = matchFixture(ports.fixtures, command.repository, command.issueNumber, actorRepository);
+			const fixture = matchFixture(ports.fixtures, command.repository, command.issueNumber, actorRepository, ports.clientRepository ?? null);
 			if (!fixture) return { kind: "DENIED", reason: "NOT_FOUND" };
 			openFixture = fixture;
 			loaded = { kind: "OPEN_JOB", title: fixture.issue.title,

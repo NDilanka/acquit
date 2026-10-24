@@ -140,6 +140,8 @@ export type HarnessOptions = {
 	/** Holds every verifier verdict until this resolves, so runs stay RUNNING. */
 	readonly verdictGate?: Promise<void>;
 	readonly waitMs?: number;
+	/** The client repository the forks are made from. Defaults to the demo repository, as a deployment without ACQUIT_CLIENT_REPOSITORY does. */
+	readonly clientRepository?: string;
 };
 
 export type Harness = {
@@ -163,8 +165,8 @@ export type Harness = {
 	readonly paypalDispatches: string[];
 	/** Makes the next `times` PayPal writes of this kind fail permanently with `reason`, as a refused card does. */
 	readonly failPayPal: (kind: PayPalCall["kind"], times: number, reason: string) => void;
-	/** A second service over the same database file and the same fakes, as a restarted process would open it. Closed by dispose. */
-	readonly reopen: () => Acquit;
+	/** A second service over the same database file and the same fakes, as a restarted process would open it. Closed by dispose. A registry given here replaces the harness's own. */
+	readonly reopen: (fixtures?: readonly FixtureContract[]) => Acquit;
 };
 
 export async function harness(options: HarnessOptions = {}): Promise<Harness> {
@@ -202,7 +204,8 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	const paypalDispatches: string[] = [];
 	const faults = new Map<PayPalCall["kind"], { times: number; reason: string }>();
 	const paypal = fakePayPal(clock, paypalDisputes, disputeReads, paypalDispatches, faults);
-	const compose = () => createAcquit({ databaseUrl: path, fixtures: [...(options.fixtures ?? [demoFixture()])], demo: { merchant }, clock: { now: clock },
+	const compose = (registry: readonly FixtureContract[] = options.fixtures ?? [demoFixture()]) => createAcquit({ databaseUrl: path, fixtures: [...registry],
+		clientRepository: options.clientRepository ?? DEMO_REPOSITORY, demo: { merchant }, clock: { now: clock },
 		paypal: { apiBase: "https://api-m.sandbox.paypal.com", webOrigin: "http://localhost:5273", clientId: "test", secret: "test",
 			webhookId: "", partnerMerchant: merchant, feeModel: model, fundingMode: () => options.publicFunding ? "checkout" : "card" },
 		verifier: { ciUrl: "", callbackSecret: CALLBACK_SECRET }, verifierPort: verifier,
@@ -230,7 +233,7 @@ export async function harness(options: HarnessOptions = {}): Promise<Harness> {
 	return { acquit, store, github, deps, path, visitor: provisioned.visitor, provision: async requester => noFork(requester.id), setClock: at => { now = at; },
 		paypalDisputes, disputeReads, paypalDispatches,
 		failPayPal: (kind, times, reason) => { faults.set(kind, { times, reason }); },
-		reopen: () => { const service = compose(); reopened.push(service); return service; },
+		reopen: fixtures => { const service = compose(fixtures); reopened.push(service); return service; },
 		dispose: async () => {
 			for (const service of reopened) closeAcquit(service);
 			deps.store.db.close();

@@ -23,7 +23,7 @@ import { SqliteStore } from "../src/store.ts";
 import { starterPool } from "../src/starters.ts";
 import type { Harness } from "./scenario-harness.ts";
 import { harness } from "./scenario-harness.ts";
-import { demoFixture, jpyFixture } from "./hidden-fixture.ts";
+import { DEMO_REPOSITORY, demoFixture, jpyFixture } from "./hidden-fixture.ts";
 import { randomUUID } from "node:crypto";
 
 const EPOCH = Date.parse("2026-10-06T12:00:00Z");
@@ -471,9 +471,9 @@ test("the House client refills once per gap, rotates the pool, and stops at six 
 
 test("the starter pool keeps a fixed order and never holds a practice issue", () => {
 	const practice = { ...demoFixture(undefined, { issue: { number: 14, title: "Practice" } }), practice: true as const };
-	assert.deepEqual(starterPool([jpyFixture(), practice, demoFixture()], "acquit-forks/ws-abc").map(f => f.issue.number), [12, 13]);
-	assert.deepEqual(starterPool([jpyFixture(), demoFixture()], null).map(f => f.issue.number), [12, 13]);
-	assert.deepEqual(starterPool([practice], null), []);
+	assert.deepEqual(starterPool([jpyFixture(), practice, demoFixture()], "acquit-forks/ws-abc", DEMO_REPOSITORY).map(f => f.issue.number), [12, 13]);
+	assert.deepEqual(starterPool([jpyFixture(), demoFixture()], null, DEMO_REPOSITORY).map(f => f.issue.number), [12, 13]);
+	assert.deepEqual(starterPool([practice], null, null), []);
 });
 
 test("a starter back to bidding after a payment that did not go through says so in its projection", async () => {
