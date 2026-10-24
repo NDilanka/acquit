@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { shortId } from "./format";
 import { statusLabel, type StatusInput } from "./job-status";
+import { Icon, type IconName } from "./icons";
+import { notFoundLink } from "./not-found";
 import { Link } from "./router";
 
 export function StatusPill({ job }: { job: StatusInput }) {
@@ -29,22 +31,25 @@ export function IdChip({ value }: { value: string }) {
   );
 }
 
-/** The one not-found card: a missing page, a missing job, a page another role may not open, and a signed-out bad URL. */
+/** The one not-found layout for a missing page, job, or receipt, and a page another role may not open: a heading, one sentence, and the link for the visitor's role. */
 export function NotFound({
   title = "Page not found",
-  message,
-  action,
+  message = "Nothing lives at this address.",
+  signedIn,
 }: {
   title?: string;
   message?: string;
-  action: { readonly to: string; readonly label: string };
+  signedIn: boolean;
 }) {
+  const link = notFoundLink(signedIn);
   return (
     <section className="card pad notfound">
       <h1>{title}</h1>
-      {message && <p className="muted">{message}</p>}
+      <p className="muted">{message}</p>
       <p>
-        <Link to={action.to}>{action.label}</Link>
+        <Link to={link.to} className="btn sm">
+          {link.label}
+        </Link>
       </p>
     </section>
   );
@@ -72,3 +77,68 @@ export function ConnectedRepo({ repository }: { repository: string | null }) {
   );
 }
 
+/** The empty state: an icon, one sentence, and at most one action. */
+export function EmptyState({
+  icon = "jobs",
+  action,
+  children,
+}: {
+  icon?: IconName;
+  action?: { readonly to: string; readonly label: string };
+  children: ReactNode;
+}) {
+  return (
+    <section className="card empty-state">
+      <span className="empty-icon">
+        <Icon name={icon} size={18} />
+      </span>
+      <p>{children}</p>
+      {action && (
+        <Link to={action.to} className="btn secondary sm">
+          {action.label}
+        </Link>
+      )}
+    </section>
+  );
+}
+
+/** A figure with its label: a mono caption over a large number, and an optional note. */
+export function StatTile({ label, value, note }: { label: string; value: ReactNode; note?: ReactNode }) {
+  return (
+    <div className="stat">
+      <p className="stat-label mono">{label}</p>
+      <p className="stat-value">{value}</p>
+      {note && <p className="stat-note">{note}</p>}
+    </div>
+  );
+}
+
+/** A segmented toggle, like the Figma Grid / List control. The pressed segment is the raised one. */
+export function Segmented<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  round = false,
+}: {
+  label: string;
+  options: readonly { readonly value: T; readonly label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+  round?: boolean;
+}) {
+  return (
+    <div className={`segmented${round ? " round" : ""}`} role="group" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={option.value === value}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}

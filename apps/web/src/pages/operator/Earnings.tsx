@@ -3,7 +3,7 @@ import { usd } from "../../format";
 import { Link } from "../../router";
 import { receiptMarks, type OperatorWorkspace } from "../../operator-workspace";
 import { receiptPageHref } from "../../receipt-view";
-import { IdChip } from "../../ui";
+import { EmptyState, IdChip } from "../../ui";
 
 function verifiedLine(row: ReceiptRow): string {
   if (row.jobId === null) return row.passedVerifiedCi ? "Passed verified CI" : "Not verified";
@@ -31,7 +31,7 @@ export function Earnings({ earnings }: { earnings: OperatorWorkspace["earnings"]
           <small className="muted">Each settled job leaves a receipt. Seeded rows are the deployment's starting history.</small>
         </div>
         {earnings.receipts.length === 0 ? (
-          <div className="pad muted">No receipts yet.</div>
+          <EmptyState icon="jobs" action={{ to: "/operator", label: "Find work" }}>No receipts yet.</EmptyState>
         ) : (
           earnings.receipts.map((row) => {
             const marks = receiptMarks(row);

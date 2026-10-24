@@ -2,8 +2,10 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import type { DeploymentMode, FundingMode, VisitorView } from "./api-types";
 import { demoEnds, errorText } from "./demo";
-import { Link, useRouter } from "./router";
-import { match, showsDemoCta, signedOutPage } from "./route";
+import { pageHeading } from "./nav";
+import { useRouter } from "./router";
+import { match, signedOutPage } from "./route";
+import { Shell } from "./shell";
 import { SessionContext, useSession, type Session } from "./session";
 import { NotFound, RepoLink } from "./ui";
 import { SignIn } from "./pages/SignIn";
@@ -26,8 +28,6 @@ function Studio() {
     </Suspense>
   );
 }
-
-const ROLE_CAPTION = { CLIENT: "client", OPERATOR: "operator", PLATFORM: "platform" } as const;
 
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -62,48 +62,51 @@ export function App() {
   // A seller's receipt link is public: it renders with or without a session, so it never waits behind the sign-in picker.
   // The verifier registry and the print demo are public for the same reason. A print run starts its own demo.
   const route = match(location.path);
+  const heading = pageHeading(route, session?.user.role ?? null);
   if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
     return (
-      <>
-        <TopBar session={session} onSignOut={signOut} />
+      <Shell session={session} heading={heading} onSignOut={signOut}>
         <main className="wrap">
           {route.name === "receipt" ? (
-            <PublicReceiptPage receiptId={route.id} />
+            <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
             <VerifiersPage />
           ) : (
             <PrintDemoPage session={session} onSignedIn={(s) => { setError(null); setSession(s); }} />
           )}
         </main>
-      </>
+      </Shell>
     );
   }
 
-  if (session === undefined) return <div className="wrap muted">Loading…</div>;
-
   const signedOutView = signedOutPage(route);
+  // The landing is its own entry with its own CSS, so it renders without the shell.
+  if (session === null && signedOutView === "landing") return <LandingReload />;
 
   return (
-    <>
-      <TopBar session={session} onSignOut={signOut} />
-      {session?.visitor && <DemoBar session={session} visitor={session.visitor} onSwitched={setSession} />}
-      {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
-      <main className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
-        {error && !session && <div className="alert">{error}</div>}
-        {session ? (
-          <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>
-            {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
-            <Routes key={session.user.handle} />
-          </SessionContext.Provider>
-        ) : signedOutView === "landing" ? (
-          <LandingReload />
-        ) : signedOutView === "notFound" ? (
-          <NotFound action={{ to: "/demo", label: "Start the demo" }} />
-        ) : (
-          mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
-        )}
-      </main>
-    </>
+    <Shell session={session} heading={heading} onSignOut={signOut}>
+      {session === undefined ? (
+        <main className="wrap muted">Loading…</main>
+      ) : (
+        <>
+          {session?.visitor && <DemoBar session={session} visitor={session.visitor} onSwitched={setSession} />}
+          {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
+          <main className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
+            {error && !session && <div className="alert">{error}</div>}
+            {session ? (
+              <SessionContext.Provider value={{ ...session, signOut, fundingMode }}>
+                {/* Keyed on the handle so a client/operator switch remounts the page and reloads it as the new principal. */}
+                <Routes key={session.user.handle} />
+              </SessionContext.Provider>
+            ) : signedOutView === "notFound" ? (
+              <NotFound signedIn={false} />
+            ) : (
+              mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
+            )}
+          </main>
+        </>
+      )}
+    </Shell>
   );
 }
 
@@ -176,7 +179,7 @@ function Routes() {
       return user.role === "CLIENT" ? (
         <NewJob />
       ) : (
-        <NotFound title="Clients post jobs" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}). Operators bid on open jobs.`} action={{ to: "/", label: "Back to the dashboard" }} />
+        <NotFound signedIn title="Clients post jobs" message={`Only clients can post jobs, and you are signed in as ${user.handle} (${user.role.toLowerCase()}).`} />
       );
     case "job":
       return <JobPage key={route.id} id={route.id} />;
@@ -187,7 +190,7 @@ function Routes() {
     case "studio":
       return <Studio />;
     case "notFound":
-      return <NotFound action={{ to: "/", label: "Back to the dashboard" }} />;
+      return <NotFound signedIn />;
   }
 }
 
@@ -201,49 +204,4 @@ function Home() {
     case "CLIENT":
       return <ClientDashboard />;
   }
-}
-
-function TopBar({ session, onSignOut }: { session: Session | null | undefined; onSignOut: () => void }) {
-  const user = session?.user ?? null;
-  const { location } = useRouter();
-  const on = (p: string) => (location.path === p ? "on" : "");
-  const signedIn = session === undefined ? undefined : session !== null;
-  return (
-    <header className="top">
-      <Link to="/" className="brand">
-        <span className="mark">A</span>
-        Acquit <em>Cleared, then paid</em>
-      </Link>
-      {user?.role === "CLIENT" && (
-        <nav className="nav">
-          <Link to="/" className={on("/")}>Jobs</Link>
-          <Link to="/jobs/new" className={on("/jobs/new")}>New job</Link>
-        </nav>
-      )}
-      {user?.role === "OPERATOR" && (
-        <nav className="nav">
-          <Link to="/operator" className={on("/operator") || on("/")}>Open jobs</Link>
-          <Link to="/studio" className={on("/studio")}>Dashboards</Link>
-        </nav>
-      )}
-      {user?.role === "PLATFORM" && (
-        <nav className="nav">
-          <Link to="/studio" className={on("/studio") || on("/")}>Dashboards</Link>
-        </nav>
-      )}
-      <span className="sp" />
-      {showsDemoCta(match(location.path), signedIn) && <Link to="/demo" className="btn sm">Try the live demo</Link>}
-      <span className="sandbox" title="PayPal sandbox. No real money moves.">Sandbox</span>
-      {user && (
-        <>
-          <span className="avatar">
-            <i>{user.handle.slice(0, 2).toUpperCase()}</i>
-            <span className="avatar-name">{user.handle}</span>
-            <small className="muted">{ROLE_CAPTION[user.role]}</small>
-          </span>
-          <button className="btn ghost sm" onClick={onSignOut}>{session?.visitor ? "Leave demo" : "Sign out"}</button>
-        </>
-      )}
-    </header>
-  );
 }

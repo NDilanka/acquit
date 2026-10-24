@@ -10,7 +10,7 @@
 .studio-widget .pill { align-self: flex-start; }
 .studio-widget .mono { overflow-wrap: anywhere; }
 .studio-value { font-size: 26px; font-weight: 600; line-height: 1.15; }
-.pill.break { color: var(--red); background: var(--red-bg); border-color: #f0c9c0; }
+.pill.break { color: var(--red); background: var(--red-bg); border-color: var(--red-line); }
 /* The verdict timeline fills its tile and scrolls inside it; the tile keeps the grid at least 240px tall. */
 .verdict-grid { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; }
 .verdict-grid .ag-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -21,9 +21,9 @@
 .verdict-grid .verdict-attempt { display: flex; align-items: center; gap: 8px; height: 100%; padding-left: 26px; font-size: 12px; min-width: 0; }
 .verdict-grid .verdict-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .verdict-grid .verdict-totals { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; height: 100%; font-size: 12px; }
-.verdict-grid .verdict-spark { display: block; color: var(--green); overflow: visible; }
+.verdict-grid .verdict-spark { display: block; color: var(--green-text); overflow: visible; }
 .verdict-grid .verdict-spark polyline { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
-.verdict-grid .verdict-chip { display: inline-block; margin-right: 4px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: #fbfaf7; font-size: 11px; max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.verdict-grid .verdict-chip { display: inline-block; margin-right: 4px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-size: 11px; max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 /* Narrow tiles (<= 640px) list the jobs as cards. The list scrolls inside the tile and the totals stay pinned below it. */
 .verdict-cards { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; font-size: 13px; }
 .verdict-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
@@ -63,7 +63,7 @@
 .studio-widget:has(> .explain-open) > :not(.eyebrow):not(.explain-open) { grid-column: 1 / -1; }
 .explain-dialog { width: min(560px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: 85vh; overflow-y: auto; margin: auto; padding: 16px 18px;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
-.explain-dialog::backdrop { background: rgb(17 21 18 / 0.35); }
+.explain-dialog::backdrop { background: rgb(0 0 0 / 0.45); }
 .explain-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .explain-head h2 { margin: 0; font-size: 18px; }
 /* The Changes list fills its tile and scrolls inside it, under a note and the chain check. */

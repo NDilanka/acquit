@@ -4,7 +4,7 @@ import { api, ApiError } from "../api";
 import { usd, utc } from "../format";
 import { Link } from "../router";
 import { rememberedJobs, useSession } from "../session";
-import { ConnectedRepo, IdChip, StatusPill } from "../ui";
+import { ConnectedRepo, EmptyState, IdChip, StatusPill } from "../ui";
 
 /**
  * The contract documents only `GET /api/jobs?status=OPEN`. We ask for `/api/jobs` first (own jobs plus
@@ -54,7 +54,7 @@ export function ClientDashboard() {
       {!jobs && !error && <p className="muted">Loading jobs…</p>}
       {jobs && jobs.length === 0 && (
         <div className="card pad empty">
-          <p>No jobs yet. Create one from a repository issue.</p>
+          <EmptyState icon="plus" action={{ to: "/jobs/new", label: "Post a job" }}>No jobs yet. Create one from a repository issue.</EmptyState>
           <Link to="/jobs/new" className="btn">New job</Link>
         </div>
       )}

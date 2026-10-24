@@ -14,6 +14,7 @@ import { api, ApiError } from "../api";
 import type { PlatformJobLedger, PlatformTables } from "../api-types";
 import { Link } from "../router";
 import { useSession } from "../session";
+import { useTheme } from "../theme-context";
 import { ASK_TOOL_DISPLAY_CARDS, useAskLedger, type AskLedger } from "./AskLedger";
 import { escrowData, STUDIO_EARNINGS_DATA } from "../studio-source";
 import { ASK_AGENT_NAME } from "../ask-ledger";
@@ -461,8 +462,8 @@ function useMedia(query: string): boolean {
 }
 
 /**
- * Studio's theme params are read from the app's custom properties at mount, so its computed font and
- * accent are the app's own values rather than a second copy of the palette.
+ * Studio's theme params are read from the app's custom properties each time the theme changes, so its
+ * computed font and accent are the app's own values rather than a second copy of the palette.
  */
 function acquitStudioTheme() {
   const css = getComputedStyle(document.documentElement);
@@ -510,7 +511,9 @@ function AcquitStudio({
   widgets: AgWidgetsConfig<AcquitRegistry>;
   ask: AskLedger | undefined;
 }) {
-  const theme = useMemo(acquitStudioTheme, []);
+  // The Studio theme is read from the app's CSS variables, so it is computed again on each Dark / Light switch.
+  const { theme: appTheme } = useTheme();
+  const theme = useMemo(acquitStudioTheme, [appTheme]);
   // Studio may keep the first handler it is given, so it calls through a ref to the current one.
   const handler = useRef(onState);
   handler.current = onState;

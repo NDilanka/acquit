@@ -4,6 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script>document.documentElement.dataset.mode = localStorage.getItem("acquit:mode") === "light" ? "light" : "dark";</script>
+    <!-- The app's theme is set before first paint. The landing at "/" keeps its own data-mode and must not get data-theme, because its core.js queries every [data-theme]. -->
+    <script>
+      (function () {
+        if (location.pathname === "/") return;
+        try {
+          var s = localStorage.getItem("acquit.theme");
+          var dark = s === "dark" || (s === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      html[data-theme="light"] { background: #eeeeee; color-scheme: light; }
+      html[data-theme="dark"] { background: #0c0d0f; color-scheme: dark; }
+    </style>
     <title>Acquit</title>
   </head>
   <body>
