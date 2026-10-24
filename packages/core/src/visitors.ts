@@ -123,9 +123,9 @@ function freeAccountName(db: DatabaseSync, pick: (bound: number) => number): Acc
 	throw new Error("No free account name for this draw");
 }
 
-/** The visitor's client repository name inside the App's organization. Deterministic per visitor. */
+/** The visitor's client repository name inside the App's organization. Deterministic per visitor. Accounts made before this name kept `demo-`. */
 export function visitorRepositoryName(id: VisitorId): string {
-	return `demo-${id.slice(2)}`;
+	return `ws-${id.slice(2)}`;
 }
 
 const VISITOR_COLUMNS = "id, created_at, expires_at, ip_key, client_handle, operator_handle, repository, repository_id, state, display_name";
@@ -172,6 +172,17 @@ export function repositoryForClient(db: DatabaseSync, clientHandle: string): str
 	const principal = principalOf(db, clientHandle);
 	if (!principal || principal.role !== "CLIENT" || principal.visitorId === null) return null;
 	return readVisitor(db, principal.visitorId)?.repository ?? null;
+}
+
+/**
+ * The lasting accounts the House client trades with: provisioned, with no expiry. A scenario run's visitor
+ * expires, and so does every visitor made before accounts lasted, so neither is here; nor is a seeded user,
+ * which has no visitor row at all.
+ */
+export function lastingAccounts(db: DatabaseSync): readonly VisitorRow[] {
+	return db.prepare(`SELECT ${VISITOR_COLUMNS} FROM visitors WHERE expires_at IS NULL AND state = 'ACTIVE'
+			AND NOT EXISTS (SELECT 1 FROM cap_reservations c WHERE c.kind = 'SCENARIO' AND c.ref = visitors.id)
+			ORDER BY created_at, id`).all().map(row);
 }
 
 /**

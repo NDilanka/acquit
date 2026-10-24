@@ -21,13 +21,15 @@ export type FixtureContract = {
 	readonly hiddenTests: readonly TestId[];
 	readonly hiddenManifest: Digest;
 	readonly protectedPaths: readonly Glob[];
-	/** The `<org>/` org whose `demo-<visitor>` forks open this fixture; absent, no fork names it. */
+	/** The `<org>/` org whose `ws-<visitor>` (and older `demo-<visitor>`) forks open this fixture; absent, no fork names it. */
 	readonly demoForkPrefix?: string;
 	/** The fixture's trusted fix commit, the second phase AI scoping's filters require a drafted
 	 * case to pass on. Absent, the fixture is not scoped: OpenJob never kicks a draft for it. */
 	readonly trustedFix?: CommitSha;
 	/** The per-currency-family coverage gate the fixture's draft must satisfy before approval. */
 	readonly coverageFamilies?: readonly CurrencyFamily[];
+	/** A qualification practice issue. It is never opened as a House starter job. */
+	readonly practice?: true;
 };
 
 /** One family the coverage gate names: its own label, and the currency codes that cover it. */
@@ -58,6 +60,8 @@ export type FixtureEntry = {
 	readonly coverageFamilies?: readonly CurrencyFamily[];
 	/** Case sets this fixture retired. A job that froze one is still judged against exactly that set. */
 	readonly retiredHiddenCases?: readonly RetiredHiddenCases[];
+	/** A qualification practice issue. It is never opened as a House starter job. */
+	readonly practice?: true;
 };
 
 /** One retired hidden-case file: its name beside the registry, and the count it holds. */
@@ -95,6 +99,9 @@ export function manifestOf(fixture: FixtureContract, repository: string): Defini
 		hiddenTests: fixture.hiddenTests, hiddenManifest: fixture.hiddenManifest, protectedPaths: fixture.protectedPaths };
 }
 
+/** The fork names a visitor's repository carries: `ws-` for accounts made now, `demo-` for the ones made before. */
+const VISITOR_FORK_NAMES = ["ws-", "demo-"] as const;
+
 type FixtureKeyed = { readonly repository: string; readonly issue: { readonly number: number }; readonly demoForkPrefix?: string };
 
 /**
@@ -108,13 +115,13 @@ export function matchFixture<T extends FixtureKeyed>(fixtures: readonly T[], rep
 	if (exact) return exact;
 	if (actorRepository !== null && actorRepository === repository) {
 		const forks = fixtures.filter(f => f.issue.number === issueNumber && f.demoForkPrefix !== undefined
-			&& repository.startsWith(`${f.demoForkPrefix}demo-`));
+			&& VISITOR_FORK_NAMES.some(name => repository.startsWith(`${f.demoForkPrefix}${name}`)));
 		return forks.length === 1 ? forks[0] : null;
 	}
 	return null;
 }
 
-const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies", "retiredHiddenCases"];
+const ENTRY_FIELDS: readonly string[] = ["repository", "issue", "frozenAt", "frozenTestPath", "visible", "hidden", "hiddenIdPrefix", "protectedPaths", "hiddenCases", "frozenExtractor", "demoForkPrefix", "trustedFix", "coverageFamilies", "retiredHiddenCases", "practice"];
 const OWNER_NAME = /^[a-zA-Z0-9-]+$/;
 const REPOSITORY_NAME = /^[a-zA-Z0-9._-]+$/;
 
@@ -207,6 +214,8 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 				}
 			}
 		}
+		const practice = raw.practice;
+		if (practice !== undefined && practice !== true) refuse([at], `${at} practice must be true when present.`);
 		const key = fixtureKey(repository, number);
 		if (seen.has(key)) refuse([at], `${source} registers ${key} twice.`);
 		seen.add(key);
@@ -215,7 +224,8 @@ export function parseFixtureRegistry(text: string, source: string): readonly Fix
 			...(demoForkPrefix === undefined ? {} : { demoForkPrefix }),
 			...(trustedFix === undefined ? {} : { trustedFix: trustedFix as CommitSha }),
 			...(coverageFamilies === undefined ? {} : { coverageFamilies: coverageFamilies as { name: string; currencies: string[] }[] }),
-			...(retiredHiddenCases === undefined ? {} : { retiredHiddenCases: retiredHiddenCases as RetiredHiddenCases[] }) });
+			...(retiredHiddenCases === undefined ? {} : { retiredHiddenCases: retiredHiddenCases as RetiredHiddenCases[] }),
+			...(practice === true ? { practice } : {}) });
 	}
 	return entries;
 }

@@ -70,6 +70,8 @@ const BASE: TimelineJob = {
   contract: null,
   funding: "card",
   clockShiftMs: 0,
+  starter: false,
+  fundingReturned: false,
 };
 
 /** A job in flight with devon locked in and the contract frozen. */
@@ -578,6 +580,7 @@ test("a House bid reads as the House, with its receipts line", () => {
       ids: [{ value: "bid_house" }],
       href: null,
       reasons: [],
+      house: "agent",
     },
   ]);
 });
@@ -1095,4 +1098,26 @@ test("a PAID job keeps its verifier card with the agent line, read-only: PAID st
   for (const prompt of ["{failure && !readOnly && (", "{pending && !readOnly && (", "{idle && !readOnly && ("]) {
     assert.ok(source.includes(prompt), `${prompt} keeps the prompt off a settled job`);
   }
+});
+
+test("a starter job's next step names the House client's timing, and its House parties carry the badge", () => {
+  const starter: TimelineJob = { ...BASE, starter: true };
+  assert.equal(nextStep(starter, NOA), "Place a bid. The House client accepts the best bid in about 30 seconds.");
+  assert.equal(nextStep({ ...starter, bids: { operators: [bid({})], house: null } }, DEVON),
+    "Your bid is in. The House client accepts the best bid in about 30 seconds.");
+  assert.equal(nextStep({ ...starter, fundingReturned: true, bids: { operators: [bid({})], house: null } }, DEVON),
+    "The House client's payment did not go through. The job is open for bids again.");
+  const review = { ...locked({}), starter: true, status: "VERIFIED" as const, phase: "AWAITING_CLIENT" as const, reviewEndsAt: "2026-10-27T09:00:00.000Z" };
+  // The silence sentence stays: it is true whether or not the House client has approved by then.
+  assert.equal(nextStep(review, DEVON), "Verified. The House client approves in about a minute. If approval has not arrived, Acquit releases the payment when the review window closes at 2026-10-27 09:00 UTC.");
+  assert.deepEqual(timelineEvents(review).filter((event) => event.house).map((event) => [event.kind, event.house]),
+    [["HELD", "client"], ["REVIEW", "client"]]);
+  // The paid line "Released on the client's approval" carries the badge too, so the payout names the House client.
+  const paid = { ...paidJob({}), starter: true };
+  assert.equal(timelineEvents(paid).find((event) => event.kind === "PAYOUT")?.detail,
+    "342.00 USD released to devon. Released on the client's approval. Merged 2026-10-15 10:00 UTC: pull request #12, merge commit c0ffee1, approved abcdef1.");
+  assert.deepEqual(timelineEvents(paid).filter((event) => event.house).map((event) => [event.kind, event.house]),
+    [["HELD", "client"], ["PAYOUT", "client"]]);
+  assert.equal(timelineEvents({ ...review, starter: false }).some((event) => event.house), false);
+  assert.equal(timelineEvents({ ...paid, starter: false }).some((event) => event.house), false);
 });

@@ -172,7 +172,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
         {scoreCardLines(r.scoreCard).map((line) => (
           <p key={line}>{line}</p>
         ))}
-        <small className="muted">The code judge's card as its CI run last verified it. The same card covers every job; it is not a per-job record.</small>
+        <small className="muted">The code verifier's card as its CI run last verified it. The same card covers every job; it is not a per-job record.</small>
         <p>
           <Link to="/verifiers">How this verifier is tested</Link>
         </p>

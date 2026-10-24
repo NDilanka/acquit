@@ -190,7 +190,7 @@ test("a fork of the scenario's repository freezes the scenario fixture beside an
 		assert.equal(posted.status, 201);
 		const { scenarioId, jobId } = posted.body as { scenarioId: string; jobId: string };
 		const definition = (await h.store.readJob(jobId as JobId))?.contract?.definitionOfDone;
-		assert.match(definition?.issue.repository ?? "", /^acquit-forks\/demo-/);
+		assert.match(definition?.issue.repository ?? "", /^acquit-forks\/ws-/);
 		assert.equal(definition?.frozenAt, DEMO_FROZEN_AT);
 		assert.deepEqual(definition?.protectedPaths, demoProtectedPaths);
 		assert.equal(definition?.hiddenManifest, exampleContract.digest);

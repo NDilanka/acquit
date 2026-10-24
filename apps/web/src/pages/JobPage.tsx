@@ -15,7 +15,7 @@ import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, re
 import { Link, useRouter } from "../router";
 import { receiptPageHref } from "../receipt-view";
 import { useSession } from "../session";
-import { ConfirmDialog, IdChip, NotFound, StatusPill } from "../ui";
+import { ConfirmDialog, HouseBadge, IdChip, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 import { BidConfirmation } from "./operator/BidConfirmation";
 import { DeliverPanel } from "./job/DeliverPanel";
@@ -186,9 +186,14 @@ export function JobPage({ id }: { id: string }) {
               Deadline <b className="num">{utc(job.deliveryEndsAt)}</b>
             </span>
             {job.contract && <span>{suiteLine(job.contract)}</span>}
+            {job.starter && (
+              <span>
+                Starter job from <HouseBadge>House client</HouseBadge>
+              </span>
+            )}
             {locked && (
               <span>
-                Operator <b>{locked.handle}</b>
+                Operator <b>{locked.handle}</b> {locked.label === "HOUSE" && <HouseBadge />}
               </span>
             )}
             {job.receipt && (
@@ -258,6 +263,11 @@ export function JobPage({ id }: { id: string }) {
                     <>PayPal holds the payout while it reviews the buyer's dispute, so approving only records the release.</>
                   ) : mergeCommit || disputeCommit ? (
                     <>If you do nothing, Acquit releases the payment at {utc(job.reviewEndsAt)}.</>
+                  ) : job.starter ? (
+                    <>
+                      The House client approves in about a minute. If approval has not arrived, Acquit releases the payment when the review
+                      window closes at {utc(job.reviewEndsAt)}.
+                    </>
                   ) : (
                     <>
                       The client can approve or dispute until {utc(job.reviewEndsAt)}. If the client does nothing, Acquit releases the
@@ -613,7 +623,9 @@ function Bids({
         cellRenderer: (p: { data?: BidView }) =>
           p.data && (
             <div className="cellstack">
-              <b>{bidder(p.data)}</b>
+              <b>
+                {bidder(p.data)} {p.data.label === "HOUSE" && <HouseBadge />}
+              </b>
               {p.data.pitch && <small className="muted">{p.data.pitch}</small>}
             </div>
           ),

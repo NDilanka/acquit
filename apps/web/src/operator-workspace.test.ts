@@ -67,6 +67,8 @@ const BASE: TimelineJob = {
   contract: null,
   funding: "card",
   clockShiftMs: 0,
+  starter: false,
+  fundingReturned: false,
 };
 
 const LOCKED: Partial<TimelineJob> = {

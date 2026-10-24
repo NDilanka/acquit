@@ -20,6 +20,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
 import type { EvidenceType, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
+import { isHouseClient, isStarterJob } from "./house-client.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
@@ -228,6 +229,12 @@ export type Ports = {
 	readonly clock: { now(): Instant };
 };
 
+/** The House client's pick among a job's bids: the lowest PENDING operator bid, the earlier one on a tie, then the lower id. */
+function lowestPendingBid(row: JobRow | null): JobRow["bids"][number] | undefined {
+	return row?.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING")
+		.toSorted((a, b) => a.price - b.price || a.placedAt.localeCompare(b.placedAt) || a.id.localeCompare(b.id))[0];
+}
+
 export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey, command: UserCommand, observe?: RanObserver): Promise<CommandOutcome> {
 	// TODO Digest the payload. A recorded (actor, key) with the same digest returns REPLAY with its result.
 	//      A different digest returns DENIED KEY_REUSED_WITH_DIFFERENT_PAYLOAD.
@@ -249,6 +256,8 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const now = ports.clock.now();
 		let openFixture: FixtureContract | null = null;
 		let loaded: Loaded = { kind: "NONE" };
+		// What the table applies: the command as sent, except a House accept that named no bid, which takes the bid chosen below.
+		let applied: UserCommand = command;
 		if (command.type === "OpenJob") {
 			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs
 			// on a registered fixture repository. Either way the manifest freezes exactly this command's
@@ -267,8 +276,11 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			if (!operator || !agent) return { kind: "DENIED", reason: "NOT_FOUND" };
 			loaded = { kind: "PLACE_BID", operator, agent, credits: await ports.store.readCredits(operator.id) };
 		} else if (command.type === "AcceptBid") {
-			const bid = row?.bids.find(b => b.id === command.bidId);
+			// A starter accept names no bid. The House client takes the lowest PENDING bid of the row this attempt reads, so the
+			// bid and the version it commits come from one read, and a version conflict chooses again from the fresh row.
+			const bid = command.bidId === undefined ? (isHouseClient(actor) ? lowestPendingBid(row) : undefined) : row?.bids.find(b => b.id === command.bidId);
 			if (!bid) return { kind: "DENIED", reason: "NOT_FOUND" };
+			applied = { ...command, bidId: bid.id };
 			// The job's own choice wins; a job nobody chose for funds with the deployment's mode.
 			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel),
 				fundingMode: row?.funding ?? ports.fundingMode?.() ?? "checkout" };
@@ -277,7 +289,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));
 			loaded = { kind: "BIDDER_CREDITS", accounts };
 		}
-		const plan = applyJobCommand(row, command as JobCommand, { actor, now, loaded });
+		const plan = applyJobCommand(row, applied as JobCommand, { actor, now, loaded });
 		if (typeof plan === "string") return { kind: "DENIED", reason: plan };
 		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources(), ports.privateCases);
 		let result: PublicResult = { kind: "JOB", job };
@@ -300,7 +312,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		// The caps refused this act whole: the transaction wrote nothing, and the closed code is the answer.
 		if (committed.kind === "CAPPED") return { kind: "DENIED", reason: committed.reason };
 		if (committed.kind !== "COMMITTED") continue;
-		if (command.type === "OpenJob") {
+		// A starter job is the account's own to win, so the House agent never bids on it, and the House client
+		// takes the fixture's frozen contract as it stands, with no scoping draft to review.
+		if (command.type === "OpenJob" && !isStarterJob(plan.next)) {
 			await placeHouseBid(ports, plan.next);
 			// The scoping draft starts once the job exists. A fixture without a trusted fix is never
 			// scoped, and a deployment without the port opens exactly as it always did.
@@ -1010,7 +1024,7 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		if (result.kind === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {
-		if (row.state.status === "OPEN" && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
+		if (row.state.status === "OPEN" && !isStarterJob(row) && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
 		if (row.state.status !== "OPEN" || row.state.phase.kind !== "FUNDING") continue;
 		const checkout = row.state.phase.checkout;
 		if (!("orderId" in checkout)) continue;
@@ -1038,9 +1052,13 @@ function outboxRow(effect: Effect, now: Instant): OutboxRow {
 }
 /** The House's missing rows are a fact of the deployment, not of the tick: this line is said once per process. */
 let houseRowsMissing = false;
+/** A request key derived from what a system-driven command acts on, so the same act always sends the same key. */
+export function derivedRequestKey(seed: string): RequestKey {
+	const hex = digest(seed);
+	return parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
+}
 async function placeHouseBid(ports: Ports, job: JobRow): Promise<void> {
-	const hex = digest(`house-bid:${job.id}`);
-	const key = parseRequestKey(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`);
+	const key = derivedRequestKey(`house-bid:${job.id}`);
 	const outcome = await executeCommand(ports, { role: "OPERATOR", operatorId: "house-tsfix" as OperatorId, tenant: job.tenant ?? null }, key,
 		{ type: "PlaceBid", jobId: job.id, price: job.contract.budget, eta: hours(24),
 			agent: "house-ts-fixer" as AgentId, pitch: "House quality bar: focused TypeScript fixes against the frozen suite." });

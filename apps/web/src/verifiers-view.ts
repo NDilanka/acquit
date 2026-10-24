@@ -25,7 +25,7 @@ export type VerifierRow = {
   readonly demo: { readonly to: string; readonly label: string } | null;
 };
 
-export const PAGE_INTRO = "Acquit judges each kind of work with its own verifier. Each score card below comes from a CI test run. The test runs the real judge on a fixed set of known cheats and honest work, and the build fails when the result changes. A verifier marked Next has no score card yet.";
+export const PAGE_INTRO = "Acquit checks each kind of work with its own verifier. Each score card below comes from a CI test run. The test runs the real verifier on a fixed set of known cheats and honest work, and the build fails when the result changes. A verifier marked Next has no score card yet.";
 
 /** One sentence per milestone: the share of the job's price that the milestone releases. */
 export function milestoneLine(milestone: { readonly title: string; readonly releaseBps: number }): string {
@@ -69,7 +69,7 @@ export const VERIFIER_ROWS: readonly VerifierRow[] = [
     milestones: CODE_MANIFEST.milestones,
     scoreCard: PUBLISHED_SCORE_CARD,
     scoreWords: { cheats: "known cheats", honest: "honest submissions" },
-    scoreNote: "The CI test runs the real code judge on every case. The build fails if the result differs from this card.",
+    scoreNote: "The CI test runs the real code verifier on every case. The build fails if the result differs from this card.",
     simulatedNote: null,
     hiddenCheck: null,
     demo: null,

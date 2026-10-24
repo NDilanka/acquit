@@ -17,6 +17,19 @@
 				{ "name": "three-decimal", "currencies": ["BHD", "KWD", "OMR", "JOD"] }
 			],
 			"demoForkPrefix": "acquit-forks/"
+		},
+		{
+			"repository": "maya-client/invoice-app",
+			"issue": { "number": 13, "title": "Totals round wrong for JPY" },
+			"frozenAt": "a3b6ead29f4e367d1871e753b516cc9e832871e4",
+			"frozenTestPath": "tests/totals.test.ts",
+			"visible": 48,
+			"hidden": 8,
+			"hiddenIdPrefix": "jpy",
+			"protectedPaths": ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"],
+			"hiddenCases": "hidden-cases-jpy.example.json",
+			"frozenExtractor": "invoice-totals",
+			"demoForkPrefix": "acquit-forks/"
 		}
 	]
 }

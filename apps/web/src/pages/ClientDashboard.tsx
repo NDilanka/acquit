@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { JobView } from "../api-types";
+import { HouseNote } from "../account-ui";
 import { api, ApiError } from "../api";
 import { errorText } from "../errors";
 import { usd, utc } from "../format";
@@ -23,7 +24,8 @@ async function loadJobs(handle: string): Promise<JobView[]> {
   const missing = rememberedJobs(handle).filter((id) => !byId.has(id));
   const extra = await Promise.all(missing.map((id) => api.job(id).then((r) => r.job).catch(() => null)));
   for (const j of extra) if (j) byId.set(j.id, j);
-  return [...byId.values()];
+  // A starter job is the House client's, posted for this account's operator to win, so it is not one of the client's jobs.
+  return [...byId.values()].filter((j) => !j.starter);
 }
 
 export function ClientDashboard() {
@@ -60,6 +62,7 @@ export function ClientDashboard() {
         </div>
       )}
       {jobs && jobs.length > 0 && <JobTable jobs={jobs} />}
+      <HouseNote account={account} page="jobs" />
     </>
   );
 }

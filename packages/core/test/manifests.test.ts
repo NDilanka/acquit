@@ -204,6 +204,9 @@ test("matchFixture keys on fixture repository and issue, with the demo fork rule
 	assert.equal(matchFixture(fixtures, "maya-client/invoice-app", 7, null), null, "wrong issue for the repo");
 	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, "acquit-forks/demo-aabbcc112233")?.repository, fixtureA.repository);
 	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, null), null, "a fork name without a visitor actor");
+	// An account made now forks as ws-; one made before keeps its demo- fork, and both open the fixture.
+	assert.equal(matchFixture(fixtures, "acquit-forks/ws-aabbcc112233", 12, "acquit-forks/ws-aabbcc112233")?.repository, fixtureA.repository);
+	assert.equal(matchFixture(fixtures, "acquit-forks/wsx-aabbcc112233", 12, "acquit-forks/wsx-aabbcc112233"), null, "a name that only starts like ws");
 	assert.equal(matchFixture(fixtures, "acquit-forks/other-aabbcc112233", 12, "acquit-forks/other-aabbcc112233"), null, "a fork outside the fixture's demo prefix");
 });
 

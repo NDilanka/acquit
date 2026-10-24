@@ -108,7 +108,8 @@ function contractOf(entry: FixtureEntry, set: CaseSet, registryPath: string): Fi
 		frozenTests: frozenTestIds(entry.visible), hiddenTests: hidden.ids, hiddenManifest: hidden.digest,
 		protectedPaths: entry.protectedPaths, ...(entry.demoForkPrefix === undefined ? {} : { demoForkPrefix: entry.demoForkPrefix }),
 		...(entry.trustedFix === undefined ? {} : { trustedFix: entry.trustedFix }),
-		...(entry.coverageFamilies === undefined ? {} : { coverageFamilies: entry.coverageFamilies }) };
+		...(entry.coverageFamilies === undefined ? {} : { coverageFamilies: entry.coverageFamilies }),
+		...(entry.practice === true ? { practice: true } : {}) };
 }
 
 /** The contracts OpenJob offers: one per registered fixture, over its current file alone. Retired sets are never offered here. */

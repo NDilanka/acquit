@@ -115,7 +115,7 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
         <h2 id={`${id}-run`}>Run a farm</h2>
         <p className="muted">
           Each run draws new challenges and a new coupon. Every print is the same job: two 14 mm square parts, 8 mm high, at 25%
-          infill. A run makes your own Acquit account first, if you have none. The judge runs on the server.
+          infill. A run makes your own Acquit account first, if you have none. The verifier runs on the server.
         </p>
         <div className="print-controls">
           <button type="button" className="btn" disabled={busy || loading} onClick={() => void start("honest")}>
@@ -148,7 +148,7 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
         {print === null ? (
           <p className="muted">
             {result === null
-              ? "Start a run to see the contract the judge froze for the job."
+              ? "Start a run to see the contract the verifier froze for the job."
               : "The farm did not qualify, so no job was opened for it to print."}
           </p>
         ) : (
@@ -296,7 +296,7 @@ function LayerTimeline({ timeline }: { timeline: PrintTimelineView }) {
     <div className="print-run">
       <p className="muted">
         One row for each layer the contract samples. The left picture is the contract section, placed by the G-code, and the
-        right is the farm's photo (Simulated). Both are drawn at one pixel per {timeline.imageScale} cells. The judge measured
+        right is the farm's photo (Simulated). Both are drawn at one pixel per {timeline.imageScale} cells. The verifier measured
         every 0.1 mm cell, so the numbers and the pictures differ in scale. A row covers the photo checks only; the G-code and
         telemetry checks can still reject the print, and the verdict below names them.
       </p>
@@ -343,7 +343,7 @@ function LayerRow({ row, timeline }: { row: PrintLayerView; timeline: PrintTimel
 function VerdictPanel({ print }: { print: PrintOutcomeView }) {
   const verdict = verdictView(print);
   return (
-    <section className="print-run" aria-label="The print and the judge's verdict" aria-live="polite">
+    <section className="print-run" aria-label="The print and the verifier's verdict" aria-live="polite">
       <div className="meta">
         <span className={verdict.tone === "ok" ? "pill ok" : "pill alert"}>
           <span className="dot" />

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { HouseNote } from "../../account-ui";
 import type { BidView, CreditAccountView, JobView, OperatorView } from "../../api-types";
 import type { AgentSummary } from "../../api";
 import type { PlacedBid } from "../../bid-confirmation";
@@ -19,6 +20,8 @@ import {
   ownBid,
   payoutLine,
   showsFilters,
+  STARTER_COPY,
+  starterFoot,
   type BidRange,
   type BudgetRange,
   type DeadlineRange,
@@ -26,13 +29,15 @@ import {
   type FindTab,
 } from "../../operator-views";
 import { useToast } from "../../toast";
-import { EmptyState, IdChip, Modal, Segmented } from "../../ui";
+import { useSession } from "../../session";
+import { EmptyState, HouseBadge, IdChip, Modal, Segmented } from "../../ui";
 import { BidForm } from "../BidForm";
 import type { OperatorData } from "./OperatorPage";
 
 /** Find work: the open jobs the operator can bid on. The bid opens in a drawer, and a placed bid is confirmed by a toast. */
 export function FindWork({ data, reload }: { data: OperatorData; reload: () => Promise<void> }) {
   const toast = useToast();
+  const { account } = useSession();
   const [tab, setTab] = useState<FindTab>("best");
   const [query, setQuery] = useState("");
   const [picked, setFilters] = useState<FindFilters>(NO_FILTERS);
@@ -93,6 +98,7 @@ export function FindWork({ data, reload }: { data: OperatorData; reload: () => P
 
         <div className="find-list">
           <ReadyStrip data={data} now={now} />
+          {data.starters?.capped && <p className="muted starter-capped">{STARTER_COPY.capped}</p>}
           {!anyOpen ? (
             <EmptyState icon="search">No open jobs right now. New jobs show here as clients post them.</EmptyState>
           ) : jobs.length === 0 ? (
@@ -110,6 +116,7 @@ export function FindWork({ data, reload }: { data: OperatorData; reload: () => P
           <PayoutsCard operator={data.operator} />
         </aside>
       </div>
+      <HouseNote account={account} page="find" />
 
       {sheet && filtersShown && (
         <Modal
@@ -265,13 +272,14 @@ function JobCard({ job, now, first, bid, onBid }: { job: JobView; now: number; f
         {count === 1 ? "1 bid so far" : `${count} bids so far`} · {dueLine(job, now)}
       </p>
       <div className="job-chips">
+        {job.starter && <HouseBadge>House client</HouseBadge>}
         {job.contract && <span className="chip mono">{`${job.contract.repository} #${job.contract.issue}`}</span>}
         <span className="chip">Code, hidden tests</span>
         {job.contract && <span className="chip">{`${job.contract.frozenTests} visible tests, ${job.contract.hiddenTests} hidden`}</span>}
         <IdChip value={job.id} />
       </div>
       <div className="job-foot">
-        <small className="muted">{escrowLine(job)}</small>
+        <small className="muted">{starterFoot(job, bid) ?? escrowLine(job)}</small>
         {bid && pill ? (
           <span className={`pill ${pill.tone}`}>
             Bid placed: {usd(bid.price)}, {pill.label}

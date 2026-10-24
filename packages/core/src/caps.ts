@@ -16,8 +16,11 @@ export function capWindowStart(now: Instant): Instant {
 	return instant(new Date(Date.parse(now) - CAP_WINDOW_MS).toISOString());
 }
 
-/** The acts a cap pays for. A reservation names one, with the scope it is counted in. */
-export type CapKind = "VISITOR" | "JOB" | "RUN" | "SCENARIO";
+/**
+ * The acts a cap pays for. A reservation names one, with the scope it is counted in. STARTER is a job the
+ * House client opens in an account's workspace, counted apart from the account's own jobs.
+ */
+export type CapKind = "VISITOR" | "JOB" | "RUN" | "SCENARIO" | "STARTER";
 
 /**
  * One act's spend, written in the transaction that commits the act. Append-only: nothing releases a
@@ -48,6 +51,8 @@ export type CapUsage = {
 	readonly scenarios: number;
 	/** Every scenario start in the window, deployment-wide. */
 	readonly scenariosToday: number;
+	/** The scope's own House starter jobs in the window. */
+	readonly starters: number;
 };
 
 /** One row per closed refusal code: the limit, the kind that spends it, the counter it reads, and how. */
@@ -60,6 +65,7 @@ export const CAPS = {
 	MODEL_RUNS_DAY: { limit: 1_000, kind: "RUN", counter: "runsToday", mode: "count", scope: "verifier runs in 24 h, the free tier's day" },
 	SCENARIOS_DAY: { limit: 100, kind: "SCENARIO", counter: "scenariosToday", mode: "count", scope: "scenario starts in 24 h, deployment-wide" },
 	SCENARIOS_REQUESTER_DAY: { limit: 10, kind: "SCENARIO", counter: "scenarios", mode: "count", scope: "one requester's scenario starts in 24 h" },
+	STARTER_JOBS_DAY: { limit: 6, kind: "STARTER", counter: "starters", mode: "count", scope: "one account's House starter jobs in 24 h" },
 } as const satisfies Record<string, { readonly limit: number; readonly kind: CapKind;
 	readonly counter: keyof CapUsage | null; readonly mode: "count" | "sum" | "value"; readonly scope: string }>;
 
@@ -88,6 +94,7 @@ export function capUsage(db: DatabaseSync, input: { readonly scope: string; read
 		runsToday: count("kind = 'RUN' AND at_wall > ?", input.since),
 		scenarios: count("kind = 'SCENARIO' AND scope = ? AND at_wall > ?", input.scope, input.since),
 		scenariosToday: count("kind = 'SCENARIO' AND at_wall > ?", input.since),
+		starters: count("kind = 'STARTER' AND scope = ? AND at_wall > ?", input.scope, input.since),
 	};
 }
 

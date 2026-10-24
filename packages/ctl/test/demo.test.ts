@@ -470,7 +470,7 @@ test("Start my demo forks the visitor's own client repository and binds it into 
 	await apiFixture(false, async url => {
 		const visitor = await (await post(url, "/api/demo", {})).json() as DemoBody;
 		// The App forks the deployment's client repository under the visitor's own name: no PAT, no shared repo.
-		assert.equal(visitor.visitor.repository, `acquit-forks/demo-${visitor.visitor.id.slice(2)}`);
+		assert.equal(visitor.visitor.repository, `acquit-forks/ws-${visitor.visitor.id.slice(2)}`);
 		// The post form reads the repository this visitor may open a job on.
 		const repos = await fetch(`${url}/api/repos`, { headers: { Authorization: `Bearer ${visitor.token}` } })
 			.then(response => response.json() as Promise<{ repos: { repository: string }[] }>);

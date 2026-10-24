@@ -102,19 +102,24 @@ export function loadHiddenCasesFromFile(path: string, shape: HiddenCaseShape): r
 /** The committed example: eight public cases, under the fixture 1 id prefix. Cases 7 and 8 are negative totals. */
 export const EXAMPLE_HIDDEN_CASES_PATH = fileURLToPath(new URL("./fixtures/hidden-cases.example.json", import.meta.url));
 export const EXAMPLE_HIDDEN_CASE_SHAPE: HiddenCaseShape = { count: 8, idPrefix: "hidden" };
+/** The second committed example, issue 13's eight zero-decimal cases. Public too, so it is refused outside development alike. */
+export const EXAMPLE_JPY_HIDDEN_CASES_PATH = fileURLToPath(new URL("./fixtures/hidden-cases-jpy.example.json", import.meta.url));
+export const EXAMPLE_JPY_HIDDEN_CASE_SHAPE: HiddenCaseShape = { count: 8, idPrefix: "jpy" };
 export function loadExampleHiddenCases(): readonly HiddenCase[] {
 	return loadHiddenCasesFromFile(EXAMPLE_HIDDEN_CASES_PATH, EXAMPLE_HIDDEN_CASE_SHAPE);
 }
 
 /**
- * The digests that identify a committed public example: today's eight cases, and the six-case example committed
- * before cases 7 and 8 were added (its first six rows). A deployment may still hold a copy of that older file.
+ * The digests that identify a committed public example: today's eight cases, the six-case example committed
+ * before cases 7 and 8 were added (its first six rows), which a deployment may still hold a copy of, and
+ * issue 13's eight.
  */
 let exampleDigests: readonly Digest[] | null = null;
 export function publicExampleDigests(): readonly Digest[] {
 	if (exampleDigests === null) {
 		const cases = loadExampleHiddenCases();
-		exampleDigests = [hiddenContractOf(cases).digest, hiddenContractOf(cases.slice(0, 6)).digest];
+		const jpy = loadHiddenCasesFromFile(EXAMPLE_JPY_HIDDEN_CASES_PATH, EXAMPLE_JPY_HIDDEN_CASE_SHAPE);
+		exampleDigests = [hiddenContractOf(cases).digest, hiddenContractOf(cases.slice(0, 6)).digest, hiddenContractOf(jpy).digest];
 	}
 	return exampleDigests;
 }

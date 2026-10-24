@@ -16,6 +16,15 @@ export function StatusPill({ job }: { job: StatusInput }) {
   );
 }
 
+/** Follows the name of every party Acquit runs itself: the House agents and the House client. */
+export function HouseBadge({ children = "House" }: { children?: ReactNode }) {
+  return (
+    <span className="pill new house-badge" title="Run by Acquit">
+      {children}
+    </span>
+  );
+}
+
 /** A job id, commit, or PayPal id as a small chip. The full value rides on hover and copies on click. */
 export function IdChip({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);

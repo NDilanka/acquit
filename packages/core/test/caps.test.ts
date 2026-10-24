@@ -30,7 +30,7 @@ const noon = instant("2026-10-06T12:00:00.000Z");
 
 /** The counters a test starts from: nobody has done anything. */
 const usage = (over: Partial<CapUsage>): CapUsage => ({ visitorsToday: 0, jobs: 0,
-	budget: 0 as UsdCents, runs: 0, runsToday: 0, scenarios: 0, scenariosToday: 0, ...over });
+	budget: 0 as UsdCents, runs: 0, runsToday: 0, scenarios: 0, scenariosToday: 0, starters: 0, ...over });
 
 /** A service whose clock stands still, so a window has an exact edge. */
 function serviceAt(path: string) {
@@ -57,7 +57,7 @@ const jobIdOf = (outcome: CommandOutcome): JobId =>
 test("the cap table is the one place the limits live", () => {
 	assert.deepEqual(Object.fromEntries(Object.entries(CAPS).map(([name, spec]) => [name, spec.limit])), {
 		VISITORS_DAY: 200, VISITOR_JOBS: 3, AMOUNT: 100_000, SPEND_DAY: 200_000,
-		MODEL_RUNS: 10, MODEL_RUNS_DAY: 1_000, SCENARIOS_DAY: 100, SCENARIOS_REQUESTER_DAY: 10 });
+		MODEL_RUNS: 10, MODEL_RUNS_DAY: 1_000, SCENARIOS_DAY: 100, SCENARIOS_REQUESTER_DAY: 10, STARTER_JOBS_DAY: 6 });
 });
 
 test("a scenario start is capped by the deployment's 100 and its requester's 10, and never by the visitor day", () => {
@@ -118,13 +118,13 @@ test("the counters read the reservation table by wall clock and by scope", async
 		reserved("2026-10-06T11:56:00.000Z", "SCENARIO", "v_other", "v_run_2");
 		// One visitor's own day: its jobs and its runs. The visitor row older than the window is gone.
 		assert.deepEqual(capUsage(store.db, { scope: "v_1", since: capWindowStart(noon) }),
-			{ visitorsToday: 2, jobs: 1, budget: 40_000, runs: 1, runsToday: 1, scenarios: 0, scenariosToday: 2 });
+			{ visitorsToday: 2, jobs: 1, budget: 40_000, runs: 1, runsToday: 1, scenarios: 0, scenariosToday: 2, starters: 0 });
 		// An address scope holds no jobs or runs: the other visitor's job and run are not its own.
 		assert.deepEqual(capUsage(store.db, { scope: "ip-a", since: capWindowStart(noon) }),
-			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1, scenarios: 0, scenariosToday: 2 });
+			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1, scenarios: 0, scenariosToday: 2, starters: 0 });
 		// A requester's scenario starts are its own; the deployment's count reads all of them.
 		assert.deepEqual(capUsage(store.db, { scope: "v_requester", since: capWindowStart(noon) }),
-			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1, scenarios: 1, scenariosToday: 2 });
+			{ visitorsToday: 2, jobs: 0, budget: 0, runs: 0, runsToday: 1, scenarios: 1, scenariosToday: 2, starters: 0 });
 	} finally { store.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -214,8 +214,9 @@ test("a capped visitor's job and run are refused by code, and a tenant-less clie
 		// counted in no visitor's scope: the same act that a visitor's fourth job is refused for commits here.
 		const own: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null };
 		assert.equal((await service.execute(own, parseRequestKey(randomUUID()), open(usd("1000.00")))).kind, "COMMITTED");
+		// The House client's two starter jobs count under their own cap, never the account's three.
 		assert.deepEqual(capUsage(store.db, { scope: guest.visitor.id as string, since: capWindowStart(noon) }),
-			{ visitorsToday: 1, jobs: 3, budget: 120_000, runs: 10, runsToday: 10, scenarios: 0, scenariosToday: 0 });
+			{ visitorsToday: 1, jobs: 3, budget: 120_000, runs: 10, runsToday: 10, scenarios: 0, scenariosToday: 0, starters: 2 });
 		assert.equal(capUsage(store.db, { scope: "maya-client", since: capWindowStart(noon) }).jobs, 0);
 	} finally { store.close(); closeAcquit(service); await rm(root, { recursive: true, force: true }); }
 });

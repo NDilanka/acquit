@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "cases": [
+    { "id": "jpy:1", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 1234 }], "JPY"], "expected": "1234" },
+    { "id": "jpy:2", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 10.4 }], "JPY"], "expected": "10" },
+    { "id": "jpy:3", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 99.6 }], "JPY"], "expected": "100" },
+    { "id": "jpy:4", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 1500 }, { "amount": 250 }], "JPY"], "expected": "1750" },
+    { "id": "jpy:5", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 3.7 }, { "amount": 1.2 }], "JPY"], "expected": "5" },
+    { "id": "jpy:6", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": 0.4 }], "JPY"], "expected": "0" },
+    { "id": "jpy:7", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": -120.2 }], "JPY"], "expected": "-120" },
+    { "id": "jpy:8", "target": { "module": "src/money.ts", "export": "formatTotal" }, "args": [[{ "amount": -50 }, { "amount": 20.6 }], "JPY"], "expected": "-29" }
+  ]
+}

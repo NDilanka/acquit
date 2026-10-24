@@ -103,14 +103,14 @@ test("a challenge reads as fulfilled or not passed, and a trap as declined or ac
 });
 
 test("a verified print says so, and the replay names itself as the known gap", () => {
-  assert.deepEqual(verdictView(outcome({})), { tone: "ok", title: "Verified", sentence: "The judge accepted this print." });
+  assert.deepEqual(verdictView(outcome({})), { tone: "ok", title: "Verified", sentence: "The verifier accepted this print." });
   const replay = verdictView(outcome({ fraud: { id: "replay-same-file", label: "Replays an earlier print of the same file", knownGap: true } }));
   assert.equal(replay.title, "Verified");
-  assert.match(replay.sentence, /This fraud is the known gap: the judge matches only the file hash/);
+  assert.match(replay.sentence, /This fraud is the known gap: the verifier matches only the file hash/);
 });
 
 test("a rejected print is refused in plain words", () => {
-  assert.deepEqual(verdictView(outcome({ verdict: "REJECTED", reasons: [] })), { tone: "alert", title: "Rejected", sentence: "The judge refused this print, for the reasons below." });
+  assert.deepEqual(verdictView(outcome({ verdict: "REJECTED", reasons: [] })), { tone: "alert", title: "Rejected", sentence: "The verifier refused this print, for the reasons below." });
 });
 
 test("an honest print says the farm printed what it submitted, and a fraud names what it ran", () => {
@@ -149,7 +149,7 @@ test("a layer that passes shows its overlap beside the mark, and a shifted or re
   assert.equal(layerFlag(layer({ iou: 0.8123, pass: false }), view), "Shifted or wrong layer: the overlap is below the 0.90 pass mark.");
   assert.equal(layerFlag(layer({ distance: 2, pass: false }), view), "Matches an earlier job's photo, distance 2.");
   assert.equal(layerFlag(layer({ distance: 5 }), view), null, "a distance past the reuse limit is no flag");
-  assert.equal(layerFlag(layer({ readable: false, iou: 0, pass: false }), view), "The photo cannot be read against the contract, so the judge could not measure its overlap.");
+  assert.equal(layerFlag(layer({ readable: false, iou: 0, pass: false }), view), "The photo cannot be read against the contract, so the verifier could not measure its overlap.");
   assert.equal(distanceWords(null), "No earlier photo was sent with this print.");
   assert.equal(distanceWords(3), "Nearest earlier photo: distance 3.");
 });

@@ -6,11 +6,11 @@ import type { PrintChallengeView, PrintDemoRunView, PrintLayerView, PrintOutcome
 
 export const PRINT_TITLE = "3D printing (FDM)";
 
-export const PRINT_INTRO = "A simulated farm answers five hidden print jobs and one trap job. A farm that qualifies may print one job, and the real print judge decides whether that print is honest. Every farm, printer, and camera on this page is Simulated.";
+export const PRINT_INTRO = "A simulated farm answers five hidden print jobs and one trap job. A farm that qualifies may print one job, and the real print verifier decides whether that print is honest. Every farm, printer, and camera on this page is Simulated.";
 
 /** What the page's runs are made of. The judge is real; the rest is Simulated. */
 export const REAL_AND_SIMULATED = [
-  { label: "Real", text: "The print judge. It is the same code that the score card on the verifiers page tests, and it runs on this server for each print." },
+  { label: "Real", text: "The print verifier. It is the same code that the score card on the verifiers page tests, and it runs on this server for each print." },
   { label: "Simulated", text: "The farm, its printer's telemetry, its camera photos, and the G-code. The G-code comes from a built-in generator, not from a slicer." },
 ] as const;
 
@@ -42,12 +42,12 @@ export function challengeStatus(challenge: PrintChallengeView): string {
 /** The run's verdict as the page words it: the judge's result, and the known gap named where it applies. */
 export function verdictView(outcome: PrintOutcomeView): { readonly tone: "ok" | "alert"; readonly title: string; readonly sentence: string } {
   if (outcome.verdict === "REJECTED") {
-    return { tone: "alert", title: "Rejected", sentence: "The judge refused this print, for the reasons below." };
+    return { tone: "alert", title: "Rejected", sentence: "The verifier refused this print, for the reasons below." };
   }
   const gap = outcome.fraud?.knownGap
-    ? " This fraud is the known gap: the judge matches only the file hash, so an earlier print of the same file passes."
+    ? " This fraud is the known gap: the verifier matches only the file hash, so an earlier print of the same file passes."
     : "";
-  return { tone: "ok", title: "Verified", sentence: `The judge accepted this print.${gap}` };
+  return { tone: "ok", title: "Verified", sentence: `The verifier accepted this print.${gap}` };
 }
 
 /** What the farm did with the print, in one sentence. */
@@ -119,7 +119,7 @@ export function overlapWords(iou: number, iouMin: number): string {
 
 /** The plain flag on a failing row, or null when the row has none. The judge's reuse check comes before its overlap check. */
 export function layerFlag(row: PrintLayerView, timeline: PrintTimelineView): string | null {
-  if (!row.readable) return "The photo cannot be read against the contract, so the judge could not measure its overlap.";
+  if (!row.readable) return "The photo cannot be read against the contract, so the verifier could not measure its overlap.";
   if (row.distance !== null && row.distance <= timeline.reuseMaxDistance) return `Matches an earlier job's photo, distance ${row.distance}.`;
   if (row.iou < timeline.iouMin) return `Shifted or wrong layer: the overlap is below the ${timeline.iouMin.toFixed(2)} pass mark.`;
   return null;

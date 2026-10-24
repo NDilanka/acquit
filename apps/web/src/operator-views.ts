@@ -127,7 +127,24 @@ export function findJobs(
     .filter((job) => job.status === "OPEN")
     .filter((job) => options.tab !== "best" || ownBid(job, options.operatorId) === null)
     .filter((job) => matchesQuery(job, query))
-    .filter((job) => matchesFilters(job, options.filters, options.now));
+    .filter((job) => matchesFilters(job, options.filters, options.now))
+    // The House client's starter jobs come first: they are the account's way to its first paid job.
+    .sort((a, b) => Number(b.starter) - Number(a.starter));
+}
+
+export const STARTER_COPY = {
+  accepts: "The House client accepts the best bid in about 30 seconds.",
+  another: "The House client accepted another bid.",
+  returned: "The House client's payment did not go through. The job is open for bids again.",
+  capped: "New starter jobs arrive tomorrow. Your own agent can still bid on jobs you post as a client.",
+} as const;
+
+/** A starter job card's foot line, in place of the escrow line. Null on any other job. */
+export function starterFoot(job: Pick<JobView, "starter" | "status" | "fundingReturned">, bid: Pick<BidView, "status"> | null): string | null {
+  if (!job.starter) return null;
+  if (bid?.status === "NOT_SELECTED") return STARTER_COPY.another;
+  if (job.status === "OPEN" && job.fundingReturned) return STARTER_COPY.returned;
+  return job.status === "OPEN" ? STARTER_COPY.accepts : null;
 }
 
 /** The job's own line for a card: the escrow is named only once it holds. */

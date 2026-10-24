@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
+import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, starterStatus, hours, instant, parseBidId, parseJobId, parseRequestKey, SEEDED_USERS } from "../../../packages/core/src/acquit.ts";
 import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents, VisitorFork } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, JobId, StaffId, VisitorId } from "../../../packages/core/src/ids.ts";
@@ -18,6 +18,7 @@ import { chooseJobFunding, defaultJobFunding } from "../../../packages/core/src/
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
 import { mayControlJob } from "../../../packages/core/src/job.ts";
+import { HOUSE_CLIENT_ID } from "../../../packages/core/src/house-client.ts";
 import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
 import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
@@ -295,7 +296,7 @@ function sameChallenge(left: string, right: string): boolean {
  * seeded handle is a row with no visitor, and a visitor's handle is a row that names it. A principal
  * whose visitor row is gone is refused here, so a deleted visitor's cookie dies with its rows.
  */
-function session(req: IncomingMessage) {
+function session(req: IncomingMessage, res: ServerResponse) {
 	const bearer = req.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]+)$/)?.[1];
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
@@ -303,6 +304,8 @@ function session(req: IncomingMessage) {
 	const digest = tokenDigest(token);
 	const record = db.prepare("SELECT handle, expires_at FROM sessions WHERE digest = ? AND expires_at > ?").get(digest, clock.now());
 	if (!record) return null;
+	// The House client is never a principal. A session row naming it, however it came to exist, opens nothing.
+	if (String(record.handle) === HOUSE_CLIENT_ID) return null;
 	const principal = principalOf(db, String(record.handle));
 	if (!principal) return null;
 	// Public mode has one way in: Try Acquit. A principal with no visitor belongs to the seeded
@@ -313,7 +316,11 @@ function session(req: IncomingMessage) {
 	// A visitor past its expiry is no principal at all, whatever its session row still says, so the API refuses it
 	// here rather than waiting for the sweep. A lasting account has no expiry; its session is renewed instead.
 	if (principal.visitorId !== null && (visitor === null || (visitor.expiresAt !== null && visitor.expiresAt <= clock.now()))) return null;
-	if (visitor !== null && visitor.expiresAt === null) renewAccountSession(digest, String(record.expires_at));
+	// A renewed session row moves its cookie with it in the same answer, so the browser's copy never ends first. The
+	// response is required for that reason: a renewal spent without its cookie is not sent again until the next day.
+	if (visitor !== null && visitor.expiresAt === null && renewAccountSession(digest, String(record.expires_at)) && bearer === undefined) {
+		res.setHeader("Set-Cookie", sessionCookie(token));
+	}
 	const actor: Actor = principal.role === "CLIENT"
 		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
 			...(visitor?.repository ? { repository: visitor.repository } : {}) }
@@ -321,10 +328,12 @@ function session(req: IncomingMessage) {
 		: { role: "OPERATOR", operatorId: principal.handle as OperatorId, tenant: principal.visitorId };
 	return { handle: principal.handle, role: principal.role, visitor, token, viaCookie: bearer === undefined, actor };
 }
-function renewAccountSession(digest: string, expiresAt: string): void {
+/** Moves a lasting account's session deadline to 30 days from now, at most once a day. Says whether it moved. */
+function renewAccountSession(digest: string, expiresAt: string): boolean {
 	const renewed = Date.parse(clock.now()) + ACCOUNT_SESSION_TTL_MS;
-	if (renewed - Date.parse(expiresAt) < ACCOUNT_SESSION_RENEW_MS) return;
+	if (renewed - Date.parse(expiresAt) < ACCOUNT_SESSION_RENEW_MS) return false;
 	db.prepare("UPDATE sessions SET expires_at = ? WHERE digest = ?").run(new Date(renewed).toISOString(), digest);
+	return true;
 }
 /** The session cookie, living exactly as long as the session row it names. */
 function sessionCookie(token: string): string {
@@ -384,6 +393,7 @@ function sessionExpiry(handle: string): string {
 	return visitor.expiresAt < week ? visitor.expiresAt : week;
 }
 function mintSession(handle: string): string {
+	if (handle === HOUSE_CLIENT_ID) throw new Error("The House client never holds a session");
 	const token = randomBytes(32).toString("base64url");
 	insertSession(token, handle);
 	return token;
@@ -512,7 +522,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/users" && method === "GET") {
 		// Public mode has one pair per session: the caller's own. The seeded list is a development fixture.
 		if (!devEnabled) {
-			const current = session(req);
+			const current = session(req, res);
 			if (!current?.visitor) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 			json(res, 200, { users: [{ handle: current.visitor.clientHandle, role: "CLIENT" },
 				{ handle: current.visitor.operatorHandle, role: "OPERATOR" }] });
@@ -556,7 +566,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const input = object(await body(req));
 		const account = typeof input.token === "string" ? accountForRecoveryToken(db, input.token) : null;
 		if (account === null) { json(res, 404, { error: "NOT_FOUND" }); return; }
-		const previous = session(req);
+		const previous = session(req, res);
 		if (previous) db.prepare("DELETE FROM sessions WHERE digest = ?").run(tokenDigest(previous.token));
 		const token = mintSession(account.clientHandle);
 		res.setHeader("Set-Cookie", sessionCookie(token));
@@ -569,10 +579,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	// The platform reads and holds no command, so it is refused on every development route here, before any route dispatches. The
 	// dev replay below answers before the session gate, so the session is read here when one is present. An anonymous or client
 	// request carries no platform session and reaches its route as before.
-	if (url.pathname.startsWith("/api/dev/") && session(req)?.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
+	if (url.pathname.startsWith("/api/dev/") && session(req, res)?.actor.role === "PLATFORM") { json(res, 403, { error: "PLATFORM_READ_ONLY" }); return; }
 	if (url.pathname === "/api/session") {
 		if (method === "GET") {
-			const current = session(req);
+			const current = session(req, res);
 			// The read every page load makes, so a lasting account's cookie is renewed with its session row.
 			if (current?.viaCookie && current.visitor?.expiresAt === null) res.setHeader("Set-Cookie", sessionCookie(current.token));
 			json(res, 200, { user: current ? { handle: current.handle, role: current.role } : null,
@@ -583,6 +593,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			mode: devEnabled ? "dev" : "public", fundingMode: settings.paypal.fundingMode() }); return; }
 		if (method === "POST") {
 			const handle = text(object(await body(req)).handle, "handle");
+			// The House client is a built-in counterparty, not an account, in either mode.
+			if (handle === HOUSE_CLIENT_ID) { json(res, 403, { error: "HOUSE_CLIENT_NO_SESSION" }); return; }
 			if (!devEnabled) {
 				// Public mode mints sessions only through Try Acquit and a saved link. A seeded handle is named as
 				// such; every other handle is refused the same way, so an account handle is never a credential.
@@ -600,7 +612,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				account: selectedVisitor ? accountJson(selectedVisitor) : null, token }); return;
 		}
 		if (method === "DELETE") {
-			const current = session(req);
+			const current = session(req, res);
 			if (current) db.prepare("DELETE FROM sessions WHERE digest = ?").run(tokenDigest(current.token));
 			res.setHeader("Set-Cookie", "acquit_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
 			res.writeHead(204); res.end(); return;
@@ -627,7 +639,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if ((url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") && method === "GET") {
 		const jobId = validJobId(text(url.searchParams.get("jobId"), "job id"));
 		const path = `/jobs/${encodeURIComponent(jobId)}`;
-		const current = session(req);
+		const current = session(req, res);
 		if (!current) { redirect(res, `${path}?funding=retry`); return; }
 		if (url.pathname === "/paypal/cancel") { redirect(res, path); return; }
 		try { redirect(res, await handlePayPalReturn(acquit, current.actor, jobId) ? path : `${path}?funding=retry`); }
@@ -731,7 +743,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (receipt === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, receipt);
 		return;
 	}
-	const current = session(req);
+	const current = session(req, res);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
 	// The account's client/operator switch. It moves this session's principal inside the account that owns
@@ -1118,7 +1130,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const result = await acquit.query(current.actor, { type: "OpenJobs", cursor: url.searchParams.get("cursor") });
 		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		const status = url.searchParams.get("status");
-		json(res, 200, { jobs: status ? result.jobs.filter(job => job.status === status) : result.jobs, nextCursor: result.nextCursor }); return;
+		const starters = current.visitor !== null && current.visitor.expiresAt === null ? await starterStatus(acquit, current.visitor.id) : null;
+		json(res, 200, { jobs: status ? result.jobs.filter(job => job.status === status) : result.jobs, nextCursor: result.nextCursor, starters }); return;
 	}
 	const match = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
 	if (match && method === "GET") {

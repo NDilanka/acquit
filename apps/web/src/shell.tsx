@@ -6,6 +6,7 @@ import { Icon } from "./icons";
 import { isNavActive, navFor, signedOutNav, type NavItem, type Role } from "./nav";
 import { Link, useRouter } from "./router";
 import { match, showsTryCta } from "./route";
+import { useOperatorWatch } from "./operator-watch";
 import type { Session } from "./session";
 import { useTheme } from "./theme-context";
 import { Segmented } from "./ui";
@@ -45,6 +46,8 @@ export function Shell({
   const signedIn = session === undefined ? undefined : session !== null;
   const role: Role | null = session ? session.user.role : null;
   const items: readonly NavItem[] = session ? navFor(session.user.role) : signedIn === false ? signedOutNav() : [];
+  const workBadge = useOperatorWatch(session ? session.user : null);
+  const badges: Readonly<Record<string, number>> = { "/operator/work": workBadge };
 
   // Moving to another page closes the mobile sheet; Escape closes it too.
   useEffect(() => setMenuOpen(false), [path]);
@@ -86,7 +89,7 @@ export function Shell({
           </div>
           {session && canSwitchRole(session.user, session.account) && <RoleSwitch user={session.user} onSwitched={onSession} />}
           <nav className="side-nav" aria-label="Pages" onClick={() => setMenuOpen(false)}>
-            {items.filter((item) => !item.group).map((item) => navLink(item, path, role))}
+            {items.filter((item) => !item.group).map((item) => navLink(item, path, role, badges[item.to] ?? 0))}
             {items.some((item) => item.group === "Public") && <p className="side-label mono">Public</p>}
             {items.filter((item) => item.group === "Public").map((item) => navLink(item, path, role))}
           </nav>
@@ -130,11 +133,16 @@ function skipToContent(e: ReactMouseEvent<HTMLAnchorElement>) {
   main.focus();
 }
 
-function navLink(item: NavItem, path: string, role: Role | null) {
+function navLink(item: NavItem, path: string, role: Role | null, badge = 0) {
   return (
     <Link key={item.to} to={item.to} tour={NAV_TOUR[item.to]} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
       <Icon name={item.icon} />
       <span>{item.label}</span>
+      {badge > 0 && (
+        <span className="nav-badge num" aria-label={`${badge} waiting on you`}>
+          {badge}
+        </span>
+      )}
     </Link>
   );
 }
