@@ -20,7 +20,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
 import type { EvidenceType, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
-import { isStarterJob } from "./house-client.ts";
+import { isHouseClient, isStarterJob } from "./house-client.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
@@ -229,6 +229,12 @@ export type Ports = {
 	readonly clock: { now(): Instant };
 };
 
+/** The House client's pick among a job's bids: the lowest PENDING operator bid, the earlier one on a tie, then the lower id. */
+function lowestPendingBid(row: JobRow | null): JobRow["bids"][number] | undefined {
+	return row?.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING")
+		.toSorted((a, b) => a.price - b.price || a.placedAt.localeCompare(b.placedAt) || a.id.localeCompare(b.id))[0];
+}
+
 export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey, command: UserCommand, observe?: RanObserver): Promise<CommandOutcome> {
 	// TODO Digest the payload. A recorded (actor, key) with the same digest returns REPLAY with its result.
 	//      A different digest returns DENIED KEY_REUSED_WITH_DIFFERENT_PAYLOAD.
@@ -250,6 +256,8 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		const now = ports.clock.now();
 		let openFixture: FixtureContract | null = null;
 		let loaded: Loaded = { kind: "NONE" };
+		// What the table applies: the command as sent, except a House accept that named no bid, which takes the bid chosen below.
+		let applied: UserCommand = command;
 		if (command.type === "OpenJob") {
 			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs
 			// on a registered fixture repository. Either way the manifest freezes exactly this command's
@@ -268,8 +276,11 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			if (!operator || !agent) return { kind: "DENIED", reason: "NOT_FOUND" };
 			loaded = { kind: "PLACE_BID", operator, agent, credits: await ports.store.readCredits(operator.id) };
 		} else if (command.type === "AcceptBid") {
-			const bid = row?.bids.find(b => b.id === command.bidId);
+			// A starter accept names no bid. The House client takes the lowest PENDING bid of the row this attempt reads, so the
+			// bid and the version it commits come from one read, and a version conflict chooses again from the fresh row.
+			const bid = command.bidId === undefined ? (isHouseClient(actor) ? lowestPendingBid(row) : undefined) : row?.bids.find(b => b.id === command.bidId);
 			if (!bid) return { kind: "DENIED", reason: "NOT_FOUND" };
+			applied = { ...command, bidId: bid.id };
 			// The job's own choice wins; a job nobody chose for funds with the deployment's mode.
 			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel),
 				fundingMode: row?.funding ?? ports.fundingMode?.() ?? "checkout" };
@@ -278,7 +289,7 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));
 			loaded = { kind: "BIDDER_CREDITS", accounts };
 		}
-		const plan = applyJobCommand(row, command as JobCommand, { actor, now, loaded });
+		const plan = applyJobCommand(row, applied as JobCommand, { actor, now, loaded });
 		if (typeof plan === "string") return { kind: "DENIED", reason: plan };
 		const job = projectJob(plan.next, actor, await ports.store.receiptCounts(), await ports.store.receiptRowCounts(), await ports.store.receiptSources(), ports.privateCases);
 		let result: PublicResult = { kind: "JOB", job };

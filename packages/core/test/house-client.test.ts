@@ -19,6 +19,7 @@ import { usd } from "../src/ledger.ts";
 import type { UsdCents } from "../src/ledger.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { DisputeId } from "../src/paypal.ts";
+import { SqliteStore } from "../src/store.ts";
 import { starterPool } from "../src/starters.ts";
 import type { Harness } from "./scenario-harness.ts";
 import { harness } from "./scenario-harness.ts";
@@ -198,11 +199,49 @@ test("the House client accepts the lowest bid 30 seconds after the first, by car
 		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1);
 		// The same accept under the same derived key is the recorded answer, never a second order.
 		const replay = await h.acquit.execute(houseClientActor(h.visitor.id, h.visitor.repository), derivedRequestKey(`${HOUSE_CLIENT_ID}:accept:${jobId}:0`),
-			{ type: "AcceptBid", jobId, bidId: rival });
+			{ type: "AcceptBid", jobId });
 		assert.equal(replay.kind, "REPLAY");
 		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1);
 		assert.deepEqual(await assertConserves(h.acquit), { held: 36750, released: 0, refunded: 0, fees: 0, funded: 36750 });
 	} finally { await h.dispose(); }
+});
+
+test("the House client accepts the lowest bid its accept commits, so a bid that lands after the pass read its snapshot is compared", async () => {
+	const h = await harness({ fixtures });
+	const readJobs = SqliteStore.prototype.listJobs;
+	try {
+		seedOperators(h);
+		const [first] = await startersOf(h);
+		const jobId = first!.id;
+		h.setClock(at(100));
+		await bid(h.acquit, operatorOf(h), jobId, usd("400.00"), `${h.visitor.operatorHandle}-agent`);
+		// The House pass's own snapshot read returns the 40000 bid alone; a rival then bids 35000 before the accept reads the row.
+		// The pass's read is told apart by its caller, so the tick's other reads of the table pass through unchanged.
+		const injected = { rival: null as BidId | null };
+		SqliteStore.prototype.listJobs = async function (this: SqliteStore) {
+			const fromHousePass = new Error().stack?.includes("runHouseClient") === true;
+			const rows = await readJobs.call(this);
+			if (fromHousePass && injected.rival === null) {
+				injected.rival = await bid(h.acquit, { role: "OPERATOR", operatorId: "rival-ops" as OperatorId, tenant: h.visitor.id }, jobId, usd("350.00"), "rival-agent");
+			}
+			return rows;
+		};
+		h.setClock(at(130));
+		const row = await until(h, jobId, candidate => candidate.state.status === "IN_PROGRESS");
+		assert.notEqual(injected.rival, null, "the rival bid committed after the snapshot");
+		if (row.state.status !== "IN_PROGRESS") throw new Error(`the starter is ${row.state.status}`);
+		assert.equal(row.state.escrow.payee.bidId, injected.rival);
+		assert.equal(row.state.escrow.payee.price, 35000);
+		assert.equal(row.state.escrow.book[0].cents, 36750);
+		assert.deepEqual(row.bids.map(b => b.status), ["NOT_SELECTED", "ACCEPTED"]);
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1);
+		assert.deepEqual(await assertConserves(h.acquit), { held: 36750, released: 0, refunded: 0, fees: 0, funded: 36750 });
+		// Only the House client may accept without naming a bid: an operator's or a client's bare accept finds no bid.
+		assert.deepEqual(await h.acquit.execute(clientOf(h), key(), { type: "AcceptBid", jobId }), { kind: "DENIED", reason: "NOT_FOUND" });
+	} finally {
+		SqliteStore.prototype.listJobs = readJobs;
+		await h.dispose();
+	}
 });
 
 test("the House client approves 60 seconds after Verified, once, and the operator is paid 360.00 USD", async () => {

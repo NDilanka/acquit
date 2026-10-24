@@ -95,11 +95,12 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 			if (pending.length === 0) continue;
 			const first = pending.map(bid => bid.placedAt).toSorted()[0]!;
 			if (sinceMs(first, now) < HOUSE_ACCEPT_DELAY_MS) continue;
-			const best = pending.toSorted((a, b) => a.price - b.price || a.placedAt.localeCompare(b.placedAt) || a.id.localeCompare(b.id))[0]!;
 			// The card is the starter's funding. Written again here, so a process that stopped between the open and
 			// that write still accepts by card, never through a checkout no one will approve.
 			ports.fundWithCard(row.id, now);
-			const outcome = await send(`accept:${row.id}:${row.state.phase.fundingRounds}`, { type: "AcceptBid", jobId: row.id, bidId: best.id });
+			// No bid is named here. The command takes the lowest PENDING bid of the row it commits, so a bid that
+			// arrived after this pass read the snapshot is still compared.
+			const outcome = await send(`accept:${row.id}:${row.state.phase.fundingRounds}`, { type: "AcceptBid", jobId: row.id });
 			if (outcome.kind === "COMMITTED") acted++;
 		} else if (row.state.status === "VERIFIED" && row.state.review.phase === "AWAITING_CLIENT") {
 			// A PayPal buyer dispute holds the release; the House client waits it out like a person would.

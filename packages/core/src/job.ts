@@ -522,7 +522,8 @@ function artifactOf(command: JudgedArtifact): CommitSha {
 function transitionTable(): {
 	OpenJob: Edge<null, { readonly repository: string; readonly issueNumber: number; readonly budget: UsdCents; readonly deliveryEndsAt: Instant }, Open, "CLIENT">;
 	PlaceBid: Edge<Open, JobRef & { readonly price: UsdCents; readonly eta: Hours; readonly agent: AgentId; readonly pitch: string }, Open, "OPERATOR">;
-	AcceptBid: Edge<Open, JobRef & { readonly bidId: BidId }, Open, "CLIENT">;
+	// An accept with no bidId is the House client's starter accept: executeCommand names the lowest PENDING bid of the row it commits.
+	AcceptBid: Edge<Open, JobRef & { readonly bidId?: BidId }, Open, "CLIENT">;
 	CancelJob: Edge<Open, JobRef, JobRow<ClosedState>, "CLIENT">;
 	OrderCreated: Edge<Open, JobRef & { readonly round: number; readonly orderId: OrderId; readonly approveUrl: string }, Open, "SYSTEM">;
 	FundingFailed: Edge<Open, JobRef & { readonly round: number; readonly reason: string }, Open, "SYSTEM">;
