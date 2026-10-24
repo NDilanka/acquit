@@ -279,6 +279,57 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .modal h3 { margin: 0 0 4px; font-size: 18px; }
 .modal p { margin: 0; color: var(--muted); }
 
+/* The shared Modal: a centred dialog, or a drawer that slides in from the right and is a bottom sheet on a phone. */
+.dialog-scrim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 0.45); }
+.dialog-scrim.drawer { place-items: stretch end; padding: 0; }
+.dialog { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(480px, 100%); max-height: calc(100vh - 32px); background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); outline: none; }
+.dialog.drawer { width: min(440px, 100vw); max-height: none; height: 100%; border-radius: 0; border-width: 0 0 0 1px; }
+.dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 0; }
+.dialog-head h2 { margin: 0; font-size: 18px; font-weight: 600; line-height: 1.3; }
+.dialog-close { margin: -6px -8px 0 0; }
+.dialog-body { min-height: 0; overflow-y: auto; padding: 12px 20px 16px; }
+.dialog-text { margin: 0; color: var(--ink-2); }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--line); }
+.btn.danger-solid { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.danger-solid:hover { background: var(--red); border-color: var(--red); box-shadow: 0 0 0 3px rgb(163 58 42 / 0.18); }
+@media (max-width: 760px) {
+  .dialog-scrim { place-items: end stretch; padding: 0; }
+  .dialog { width: 100%; max-height: 92vh; border-radius: var(--r-card) var(--r-card) 0 0; border-width: 1px 0 0; }
+  .dialog.drawer { width: 100%; height: auto; max-height: 92vh; border-width: 1px 0 0; border-radius: var(--r-card) var(--r-card) 0 0; }
+}
+
+/* Loading: grey bars where a card will be. The shimmer stops for reduced motion. */
+.skeleton-list { display: grid; gap: 12px; }
+.skeleton-card { display: grid; gap: 10px; margin-bottom: 0; }
+.skeleton { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%); background-size: 200% 100%; animation: skeleton-shimmer 1.4s ease-in-out infinite; }
+.skeleton-title { width: 46%; height: 16px; }
+.skeleton-line { width: 88%; }
+@keyframes skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Errors: the plain sentence, with a Details line only for a code the page has no sentence for. */
+.alert-msg { margin: 0; }
+.details-line { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+.details-code { border: 0; background: transparent; padding: 0; color: var(--muted); font-size: 12px; text-decoration: underline dotted; }
+
+/* Completions: one toast at a time, bottom centre, leaves after five seconds. */
+.toast-region { position: fixed; left: 50%; bottom: 20px; z-index: 70; width: min(420px, calc(100vw - 32px)); transform: translateX(-50%); pointer-events: none; }
+.toast { margin: 0; padding: 12px 16px; border: 1px solid var(--green-line); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised), var(--shadow); font-size: 14px; font-weight: 500; text-align: center; animation: toast-in 0.18s ease-out; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Form fields in the bid drawer. The counter turns red past the limit. */
+.bid-form { display: grid; gap: 16px; }
+.field { display: grid; gap: 6px; min-width: 0; }
+.field-label { font-weight: 600; font-size: 13px; }
+.field-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.field input, .field select, .field textarea { font: inherit; width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--ink); }
+.field textarea { min-height: 112px; resize: vertical; }
+.counter { color: var(--muted); }
+.counter.over { color: var(--red); font-weight: 600; }
+.cost { margin: 0; padding: 10px 12px; border-radius: var(--r); background: var(--surface); color: var(--ink-2); font-size: 13px; }
+.bid-submit { width: 100%; }
+
 .demobar { background: var(--green-bg); border-bottom: 1px solid var(--green-line); font-size: 13px; }
 .demobar .wrap { padding: 8px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
 .demobar .alert { margin: 0; padding: 4px 10px; }

@@ -81,10 +81,10 @@ test("a bid refused for credits says when credits return", () => {
   const credits = { available: 0, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z" };
   assert.equal(
     denied("INSUFFICIENT_CREDITS", credits),
-    "Not enough bid credits: you have 0 and a bid costs 10. Your weekly allowance of 30 returns 2026-11-09 00:00 UTC. (INSUFFICIENT_CREDITS)",
+    "Not enough bid credits: you have 0 and a bid costs 10. Your weekly allowance of 30 returns 2026-11-09 00:00 UTC.",
   );
-  assert.equal(denied("INSUFFICIENT_CREDITS"), "Not enough bid credits. Each bid costs 10. (INSUFFICIENT_CREDITS)");
-  assert.equal(denied("NOT_OWNER", credits), "You do not own this job. (NOT_OWNER)");
+  assert.equal(denied("INSUFFICIENT_CREDITS"), "Not enough bid credits. Each bid costs 10.");
+  assert.equal(denied("NOT_OWNER", credits), "You do not own this job.");
 });
 
 test("a settled refund names its reason in plain words", () => {

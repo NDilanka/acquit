@@ -1,10 +1,11 @@
 import type { JobView } from "./api-types";
 import { ApiError } from "./api.ts";
-import { refusalText } from "./format.ts";
+import { describeError } from "./errors.ts";
 import type { Session } from "./session.tsx";
 
+/** The sentence a failed call shows. A code the page has no words for reads generically, never as CODE: detail. */
 export function errorText(e: unknown): string {
-  return e instanceof ApiError ? refusalText(e.code, e.detail) : `Cannot reach the API: ${String(e)}. Retry is safe.`;
+  return describeError(e).message;
 }
 
 /** The judge-mode controls a job page may show. Both stay hidden on a job the caller's demo does not own. */

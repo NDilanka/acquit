@@ -15,7 +15,7 @@ import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, re
 import { Link, useRouter } from "../router";
 import { receiptPageHref } from "../receipt-view";
 import { useSession } from "../session";
-import { IdChip, NotFound, StatusPill } from "../ui";
+import { ConfirmDialog, IdChip, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 import { BidConfirmation } from "./operator/BidConfirmation";
 import { DeliverPanel } from "./job/DeliverPanel";
@@ -32,6 +32,7 @@ export function JobPage({ id }: { id: string }) {
   const [checkout, setCheckout] = useState<BidView | null>(null);
   const [confirm, setConfirm] = useState<BidView | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
+  const [cancelAsk, setCancelAsk] = useState(false);
   const [disputing, setDisputing] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
   const [placed, setPlaced] = useState<PlacedBid | null>(null);
@@ -56,7 +57,7 @@ export function JobPage({ id }: { id: string }) {
     } catch (e) {
       setDiff(null);
       setMissing(e instanceof ApiError && e.status === 404);
-      setError(e instanceof ApiError ? e.message : String(e));
+      setError(errorText(e));
       return null;
     }
   }, [id]);
@@ -128,7 +129,7 @@ export function JobPage({ id }: { id: string }) {
   };
 
   const doCancel = async () => {
-    if (!window.confirm("Cancel this job? Bidders get their credits back.")) return;
+    setCancelAsk(false);
     const outcome = await cancel.send(`cancel:${job.id}`, (): UserCommand => ({ type: "CancelJob", jobId: job.id }));
     if (outcome) await load();
   };
@@ -199,11 +200,23 @@ export function JobPage({ id }: { id: string }) {
           </div>
         </div>
         {canCancel && (
-          <button className="btn ghost" disabled={cancel.busy} onClick={() => void doCancel()}>
+          <button className="btn ghost" disabled={cancel.busy} onClick={() => setCancelAsk(true)}>
             {cancel.busy ? "Cancelling…" : "Cancel job"}
           </button>
         )}
       </div>
+      {cancelAsk && (
+        <ConfirmDialog
+          title="Cancel this job?"
+          body="Bidders get their credits back."
+          confirmLabel="Cancel job"
+          cancelLabel="Keep job"
+          danger
+          busy={cancel.busy}
+          onConfirm={() => void doCancel()}
+          onCancel={() => setCancelAsk(false)}
+        />
+      )}
       {platform && <p className="muted">Viewing as the platform. Read only.</p>}
       <p className="next-step">
         <span className="eyebrow">What happens next</span> <b>{nextStep(timeline, viewer)}</b>

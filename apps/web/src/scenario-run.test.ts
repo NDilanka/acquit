@@ -210,10 +210,10 @@ test("each start refusal reads in plain words, and the code stays visible", () =
   assert.equal(startRefusalWords("SCENARIO_STORE_FULL"), "The server is keeping every scenario run it can, and all of them are still going. Try again in a few minutes.");
   assert.equal(startRefusalWords("CAP_SCENARIOS_DAY"), "Scenario runs have reached today's limit for the whole deployment. Try again tomorrow.");
   assert.equal(startRefusalWords("CAP_SCENARIOS_REQUESTER_DAY"), "You have used today's scenario runs. Try again tomorrow.");
-  assert.equal(startRefusalWords("CAP_VISITORS_DAY"), "Today's demos are all taken: the daily limit is reached. Try again tomorrow. (CAP_VISITORS_DAY)");
+  assert.equal(startRefusalWords("CAP_VISITORS_DAY"), "Today's demos are all taken: the daily limit is reached. Try again tomorrow.");
   assert.equal(startRefusalWords("NOT_DEMO_VISITOR"), "Start your demo first. A scenario runs on a demo of your own.");
   assert.equal(startRefusalWords("SCENARIO_FIXTURE_MISMATCH"), "The scenarios' job is not on the repository this deployment copies demos from, so no scenario can run here.");
-  assert.equal(startRefusalWords("SOME_UNNAMED_CODE"), "The request was refused. (SOME_UNNAMED_CODE)");
+  assert.equal(startRefusalWords("SOME_UNNAMED_CODE"), "Something went wrong. Try again in a moment.");
 });
 
 test("a settle step reads Pending work settles, with the sandbox note only when PayPal ran, and the time it measured", () => {
