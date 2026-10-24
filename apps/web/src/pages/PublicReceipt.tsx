@@ -25,7 +25,7 @@ type Load =
   | { readonly kind: "ready"; readonly receipt: PublicReceipt };
 
 /** The public receipt of one paid job. Read-only: the page has no action, because the proof is the whole page. */
-export function PublicReceiptPage({ receiptId }: { receiptId: string }) {
+export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; signedIn: boolean }) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [check, setCheck] = useState<DigestCheck>({ kind: "PENDING" });
 
@@ -58,7 +58,7 @@ export function PublicReceiptPage({ receiptId }: { receiptId: string }) {
 
   if (load.kind === "loading") return <div className="muted">Loading the receipt…</div>;
   if (load.kind === "missing") {
-    return <NotFound title="Receipt not found" message="No paid job has this receipt." action={{ to: "/", label: "Back to Acquit" }} />;
+    return <NotFound signedIn={signedIn} title="Receipt not found" message="No paid job has this receipt." />;
   }
   if (load.kind === "failed") return <div className="alert">{load.message}</div>;
 

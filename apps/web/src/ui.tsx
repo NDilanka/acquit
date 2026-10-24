@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { shortId } from "./format";
 import { statusLabel, type StatusInput } from "./job-status";
 import { Icon, type IconName } from "./icons";
+import { notFoundLink } from "./not-found";
 import { Link } from "./router";
 
 export function StatusPill({ job }: { job: StatusInput }) {
@@ -30,22 +31,25 @@ export function IdChip({ value }: { value: string }) {
   );
 }
 
-/** The one not-found card: a missing page, a missing job, a page another role may not open, and a signed-out bad URL. */
+/** The one not-found layout for a missing page, job, or receipt, and a page another role may not open: a heading, one sentence, and the link for the visitor's role. */
 export function NotFound({
   title = "Page not found",
-  message,
-  action,
+  message = "Nothing lives at this address.",
+  signedIn,
 }: {
   title?: string;
   message?: string;
-  action: { readonly to: string; readonly label: string };
+  signedIn: boolean;
 }) {
+  const link = notFoundLink(signedIn);
   return (
     <section className="card pad notfound">
       <h1>{title}</h1>
-      {message && <p className="muted">{message}</p>}
+      <p className="muted">{message}</p>
       <p>
-        <Link to={action.to}>{action.label}</Link>
+        <Link to={link.to} className="btn sm">
+          {link.label}
+        </Link>
       </p>
     </section>
   );

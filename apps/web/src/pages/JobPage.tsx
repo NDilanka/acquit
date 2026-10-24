@@ -77,7 +77,7 @@ export function JobPage({ id }: { id: string }) {
     if (checkout && job?.approveUrl) window.location.assign(job.approveUrl);
   }, [checkout, job?.approveUrl]);
 
-  if (missing && !job) return <NotFound title="Job not found" action={{ to: home, label: "Back to jobs" }} />;
+  if (missing && !job) return <NotFound signedIn title="Job not found" message="No job has this id, or your account cannot open it." />;
   if (error && !job) {
     return (
       <div className="card pad">

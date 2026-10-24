@@ -68,7 +68,7 @@ export function App() {
       <Shell session={session} heading={heading} onSignOut={signOut}>
         <main className="wrap">
           {route.name === "receipt" ? (
-            <PublicReceiptPage receiptId={route.id} />
+            <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
             <VerifiersPage />
           ) : (
@@ -99,7 +99,7 @@ export function App() {
                 <Routes key={session.user.handle} />
               </SessionContext.Provider>
             ) : signedOutView === "notFound" ? (
-              <NotFound action={{ to: "/demo", label: "Start the demo" }} />
+              <NotFound signedIn={false} />
             ) : (
               mode && <SignIn mode={mode} onSignedIn={(s) => { setError(null); setSession(s); }} />
             )}
@@ -179,7 +179,7 @@ function Routes() {
       return user.role === "CLIENT" ? (
         <NewJob />
       ) : (
-        <NotFound title="Clients post jobs" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}). Operators bid on open jobs.`} action={{ to: "/", label: "Back to the dashboard" }} />
+        <NotFound signedIn title="Clients post jobs" message={`Only clients can post jobs, and you are signed in as ${user.handle} (${user.role.toLowerCase()}).`} />
       );
     case "job":
       return <JobPage key={route.id} id={route.id} />;
@@ -190,7 +190,7 @@ function Routes() {
     case "studio":
       return <Studio />;
     case "notFound":
-      return <NotFound action={{ to: "/", label: "Back to the dashboard" }} />;
+      return <NotFound signedIn />;
   }
 }
 

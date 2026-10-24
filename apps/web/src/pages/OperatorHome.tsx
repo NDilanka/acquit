@@ -45,7 +45,7 @@ export function OperatorHome() {
   }, [load, user.role]);
 
   if (user.role !== "OPERATOR") {
-    return <NotFound title="This page is for operators" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}).`} action={{ to: "/", label: "Back to your jobs" }} />;
+    return <NotFound signedIn title="This page is for operators" message={`You are signed in as ${user.handle} (${user.role.toLowerCase()}).`} />;
   }
 
   const onPlaced = (bid: PlacedBid) => {
