@@ -22,6 +22,10 @@ import { insertVisitor, newVisitorId, readVisitor, reserveVisitor } from "../../
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const merchant = "sandbox-seller" as MerchantId;
 const NAMES = ["ACQUIT_GITHUB_APP_ID", "ACQUIT_GITHUB_APP_ORG", "ACQUIT_GITHUB_APP_PRIVATE_KEY", "ACQUIT_GITHUB_API_BASE"] as const;
+/** A visitor made before accounts lasted carries the one-day expiry it was made with. Accounts made now have none. */
+const expireAsLegacy = (store: SqliteStore, visitor: { readonly id: string; readonly createdAt: string }): void => {
+	store.db.prepare("UPDATE visitors SET expires_at = ? WHERE id = ?").run(new Date(Date.parse(visitor.createdAt) + 86_400_000).toISOString(), visitor.id);
+};
 
 test("sweep reports an expired visitor on a dry run, then removes its repository and its rows", async () => {
 	const stub = createServer((request, response) => {
@@ -45,6 +49,7 @@ test("sweep reports an expired visitor on a dry run, then removes its repository
 	const store = new SqliteStore(path);
 	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old", repositoryId: 7001,
 		merchant, now: instant(new Date(Date.now() - 3 * 86_400_000).toISOString()) });
+	expireAsLegacy(store, expired);
 	const staying = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-b", repository: "acquit-forks/demo-live",
 		merchant, now: instant(new Date().toISOString()) });
 	store.close();
@@ -108,6 +113,7 @@ test("sweep leaves a RUNNING scenario's fork even though its visitor has expired
 	const threeDaysAgo = instant(new Date(Date.now() - 3 * 86_400_000).toISOString());
 	const expired = insertVisitor(store.db, { id: newVisitorId(), ipKey: "ip-a", repository: "acquit-forks/demo-old", repositoryId: 7001,
 		merchant, now: threeDaysAgo });
+	expireAsLegacy(store, expired);
 	// A scenario's visitor, expired by the same clock, whose run is still RUNNING. The run is committed through the core
 	// run store, so its journal row is the one the app writes.
 	const scenarioId = newVisitorId();

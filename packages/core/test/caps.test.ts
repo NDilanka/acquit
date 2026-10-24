@@ -56,7 +56,7 @@ const jobIdOf = (outcome: CommandOutcome): JobId =>
 
 test("the cap table is the one place the limits live", () => {
 	assert.deepEqual(Object.fromEntries(Object.entries(CAPS).map(([name, spec]) => [name, spec.limit])), {
-		VISITORS_DAY: 50, VISITOR_JOBS: 3, AMOUNT: 100_000, SPEND_DAY: 200_000,
+		VISITORS_DAY: 200, VISITOR_JOBS: 3, AMOUNT: 100_000, SPEND_DAY: 200_000,
 		MODEL_RUNS: 10, MODEL_RUNS_DAY: 1_000, SCENARIOS_DAY: 100, SCENARIOS_REQUESTER_DAY: 10 });
 });
 
@@ -68,7 +68,7 @@ test("a scenario start is capped by the deployment's 100 and its requester's 10,
 	assert.equal(reservationRefusal(scenario({}), usage({ scenarios: 9 })), null);
 	assert.equal(reservationRefusal(scenario({}), usage({ scenarios: 10 })), "CAP_SCENARIOS_REQUESTER_DAY");
 	// VISITORS_DAY is the visitor kind's alone: a full visitor day refuses no scenario start.
-	assert.equal(reservationRefusal(scenario({}), usage({ visitorsToday: 50 })), null);
+	assert.equal(reservationRefusal(scenario({}), usage({ visitorsToday: 200 })), null);
 	// And the scenario counters never refuse a visitor.
 	assert.equal(reservationRefusal({ kind: "VISITOR", scope: "ip-a", ref: "v_1", cents: 0 as UsdCents, at: noon },
 		usage({ scenariosToday: 100, scenarios: 10 })), null);
@@ -83,8 +83,8 @@ test("the window is one rolling day, and a reservation is refused by the cap it 
 	const run = (over: Partial<Reservation>): Reservation =>
 		({ kind: "RUN", scope: "v_1", ref: "job_1:verify:1", cents: 0 as UsdCents, at: noon, ...over });
 	// Visitors: only the deployment's day binds; one address has no allowance of its own.
-	assert.equal(reservationRefusal(visitor({}), usage({ visitorsToday: 49 })), null);
-	assert.equal(reservationRefusal(visitor({}), usage({ visitorsToday: 50 })), "CAP_VISITORS_DAY");
+	assert.equal(reservationRefusal(visitor({}), usage({ visitorsToday: 199 })), null);
+	assert.equal(reservationRefusal(visitor({}), usage({ visitorsToday: 200 })), "CAP_VISITORS_DAY");
 	// Jobs: how many the visitor has, what one may promise, and what it has promised today.
 	assert.equal(reservationRefusal(job({ cents: usd("1000.00") }), usage({ jobs: 2 })), null);
 	assert.equal(reservationRefusal(job({ cents: usd("1.00") }), usage({ jobs: 3 })), "CAP_VISITOR_JOBS");

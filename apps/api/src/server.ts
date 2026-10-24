@@ -271,6 +271,10 @@ function readAskMessages(value: unknown): readonly AskMessage[] {
 }
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
+/** A lasting account's session. Each use moves its deadline out again, so an account in use never signs out by itself. */
+const ACCOUNT_SESSION_TTL_MS = 30 * 86_400_000;
+/** How stale a lasting session's deadline may get before a use writes a new one, so a busy page is not a write per request. */
+const ACCOUNT_SESSION_RENEW_MS = 86_400_000;
 const CLI_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const port = Number(process.env.PORT ?? 4310);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
@@ -293,27 +297,40 @@ function session(req: IncomingMessage) {
 	const cookie = req.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith("acquit_session="))?.slice("acquit_session=".length);
 	const token = bearer ?? cookie;
 	if (!token) return null;
-	const record = db.prepare("SELECT handle FROM sessions WHERE digest = ? AND expires_at > ?").get(tokenDigest(token), clock.now());
+	const digest = tokenDigest(token);
+	const record = db.prepare("SELECT handle, expires_at FROM sessions WHERE digest = ? AND expires_at > ?").get(digest, clock.now());
 	if (!record) return null;
 	const principal = principalOf(db, String(record.handle));
 	if (!principal) return null;
-	// Public mode has one way in: Start my demo. A principal with no visitor belongs to the seeded
+	// Public mode has one way in: Try Acquit. A principal with no visitor belongs to the seeded
 	// world, so its session is refused here, not only at the mint: an old cookie dies with the mode.
 	// The platform principal is the one exception, and only its own key-gated mint makes a session.
 	if (!devEnabled && principal.visitorId === null && principal.role !== "PLATFORM") return null;
 	const visitor = principal.visitorId === null ? null : readVisitor(db, principal.visitorId);
-	// A visitor past its expiry is no principal at all, whatever its session row still says: the demo
-	// ends when the visitor does, so the API refuses it here rather than waiting for the sweep.
-	if (principal.visitorId !== null && (visitor === null || visitor.expiresAt <= clock.now())) return null;
+	// A visitor past its expiry is no principal at all, whatever its session row still says, so the API refuses it
+	// here rather than waiting for the sweep. A lasting account has no expiry; its session is renewed instead.
+	if (principal.visitorId !== null && (visitor === null || (visitor.expiresAt !== null && visitor.expiresAt <= clock.now()))) return null;
+	if (visitor !== null && visitor.expiresAt === null) renewAccountSession(digest, String(record.expires_at));
 	const actor: Actor = principal.role === "CLIENT"
 		? { role: "CLIENT", clientId: principal.handle as ClientId, tenant: principal.visitorId,
 			...(visitor?.repository ? { repository: visitor.repository } : {}) }
 		: principal.role === "PLATFORM" ? { role: "PLATFORM" }
 		: { role: "OPERATOR", operatorId: principal.handle as OperatorId, tenant: principal.visitorId };
-	return { handle: principal.handle, role: principal.role, visitor, token, actor };
+	return { handle: principal.handle, role: principal.role, visitor, token, viaCookie: bearer === undefined, actor };
 }
-/** The visitor as the web reads it: both of its handles, its repository, and when the demo ends. */
-function visitorJson(visitor: VisitorRow): { id: string; client: string; operator: string; repository: string | null; expiresAt: string } {
+function renewAccountSession(digest: string, expiresAt: string): void {
+	const renewed = Date.parse(clock.now()) + ACCOUNT_SESSION_TTL_MS;
+	if (renewed - Date.parse(expiresAt) < ACCOUNT_SESSION_RENEW_MS) return;
+	db.prepare("UPDATE sessions SET expires_at = ? WHERE digest = ?").run(new Date(renewed).toISOString(), digest);
+}
+/** The session cookie, living exactly as long as the session row it names. */
+function sessionCookie(token: string): string {
+	const row = db.prepare("SELECT expires_at FROM sessions WHERE digest = ?").get(tokenDigest(token));
+	const seconds = row === undefined ? 0 : Math.max(0, Math.floor((Date.parse(String(row.expires_at)) - Date.parse(clock.now())) / 1000));
+	return `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${seconds}`;
+}
+/** The visitor as the old start route answered it: both of its handles, its repository, and its expiry, null for a lasting account. */
+function visitorJson(visitor: VisitorRow): { id: string; client: string; operator: string; repository: string | null; expiresAt: string | null } {
 	return { id: visitor.id, client: visitor.clientHandle, operator: visitor.operatorHandle, repository: visitor.repository, expiresAt: visitor.expiresAt };
 }
 /**
@@ -343,14 +360,16 @@ function insertSession(token: string, handle: string): void {
 	db.prepare("INSERT INTO sessions VALUES (?, ?, ?)").run(tokenDigest(token), handle, sessionExpiry(handle));
 }
 /**
- * The session's own deadline: a week, or the visitor's own expiry when that comes first. A visitor
- * lives a day, so its cookie must not outlive it; a seeded handle keeps the week.
+ * The session's own deadline. A lasting account's runs 30 days and is renewed on use. A seeded handle keeps a week,
+ * and an expiring visitor's session never outlives the visitor.
  */
 function sessionExpiry(handle: string): string {
 	const week = new Date(Date.parse(clock.now()) + CLI_SESSION_TTL_MS).toISOString();
 	const principal = principalOf(db, handle);
 	const visitor = principal?.visitorId ? readVisitor(db, principal.visitorId) : null;
-	return visitor !== null && visitor.expiresAt < week ? visitor.expiresAt : week;
+	if (visitor === null) return week;
+	if (visitor.expiresAt === null) return new Date(Date.parse(clock.now()) + ACCOUNT_SESSION_TTL_MS).toISOString();
+	return visitor.expiresAt < week ? visitor.expiresAt : week;
 }
 function mintSession(handle: string): string {
 	const token = randomBytes(32).toString("base64url");
@@ -512,7 +531,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 		if (created.kind === "FAILED") { json(res, 502, { error: "DEMO_REPOSITORY_FAILED", detail: created.detail }); return; }
 		const token = mintSession(created.visitor.clientHandle);
-		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+		res.setHeader("Set-Cookie", sessionCookie(token));
 		json(res, 201, { user: { handle: created.visitor.clientHandle, role: "CLIENT" }, visitor: visitorJson(created.visitor), token });
 		return;
 	}
@@ -544,7 +563,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			if (!selected) { json(res, 400, { error: "UNKNOWN_USER" }); return; }
 			const selectedVisitor = selected.visitorId === null ? null : readVisitor(db, selected.visitorId);
 			const token = mintSession(selected.handle);
-			res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+			res.setHeader("Set-Cookie", sessionCookie(token));
 			json(res, 200, { user: { handle: selected.handle, role: selected.role },
 				visitor: selectedVisitor ? visitorJson(selectedVisitor) : null, token }); return;
 		}
@@ -665,7 +684,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			json(res, 403, { error: "PLATFORM_KEY_MISMATCH" }); return;
 		}
 		const token = mintSession("platform");
-		res.setHeader("Set-Cookie", `acquit_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+		res.setHeader("Set-Cookie", sessionCookie(token));
 		json(res, 201, { user: { handle: "platform", role: "PLATFORM" }, token });
 		return;
 	}
