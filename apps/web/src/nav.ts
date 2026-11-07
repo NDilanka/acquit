@@ -27,11 +27,11 @@ const PUBLIC_PAGES: readonly NavItem[] = [
   { to: "/print", label: "Print verifier", icon: "printer", group: "Public" },
 ];
 
-/** The scenarios need a signed-in account, so only a signed-in role lists them. */
 const SCENARIOS: NavItem = { to: "/tour", label: "Scenarios", icon: "play", group: "Public" };
 
+/** A run starts on the account's own visitor, and a platform session is not one, so the platform does not list Scenarios. */
 export function navFor(role: Role): readonly NavItem[] {
-  return [...ROLE_PAGES[role], ...PUBLIC_PAGES, SCENARIOS];
+  return role === "PLATFORM" ? [...ROLE_PAGES[role], ...PUBLIC_PAGES] : [...ROLE_PAGES[role], ...PUBLIC_PAGES, SCENARIOS];
 }
 
 /** Signed out, the sidebar lists the public pages; the Try Acquit button sits under them. */

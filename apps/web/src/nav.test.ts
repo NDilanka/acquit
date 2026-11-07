@@ -41,7 +41,6 @@ test("a platform user's navigation is Dashboards, then the two public pages", ()
     ["Dashboards", "/studio"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
-    ["Scenarios", "/tour"],
   ]);
 });
 
