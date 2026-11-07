@@ -239,8 +239,8 @@ test("the House client's starter jobs come first, and their foot line says when 
   const starter = job({ id: "job_starter", title: "Totals round wrong for JPY", starter: true });
   assert.deepEqual(findJobs([...JOBS, starter], { operatorId: ME, tab: "recent", query: "", filters: NO_FILTERS, now: NOW }).map((j) => j.id),
     ["job_starter", "job_new", "job_mine", "job_old"]);
-  assert.equal(starterFoot(starter, null), "The House client accepts the best bid in about 30 seconds.");
-  assert.equal(starterFoot(starter, bid({ operator: ME, status: "PENDING" })), "The House client accepts the best bid in about 30 seconds.");
+  assert.equal(starterFoot(starter, null), "The House client accepts the best bid in about a minute.");
+  assert.equal(starterFoot(starter, bid({ operator: ME, status: "PENDING" })), "The House client accepts the best bid in about a minute.");
   assert.equal(starterFoot({ ...starter, status: "IN_PROGRESS" }, bid({ operator: ME, status: "NOT_SELECTED" })), "The House client accepted another bid.");
   assert.equal(starterFoot({ ...starter, fundingReturned: true }, bid({ operator: ME, status: "PENDING" })),
     "The House client's payment did not go through. The job is open for bids again.");

@@ -1102,9 +1102,9 @@ test("a PAID job keeps its verifier card with the agent line, read-only: PAID st
 
 test("a starter job's next step names the House client's timing, and its House parties carry the badge", () => {
   const starter: TimelineJob = { ...BASE, starter: true };
-  assert.equal(nextStep(starter, NOA), "Place a bid. The House client accepts the best bid in about 30 seconds.");
+  assert.equal(nextStep(starter, NOA), "Place a bid. The House client accepts the best bid in about a minute.");
   assert.equal(nextStep({ ...starter, bids: { operators: [bid({})], house: null } }, DEVON),
-    "Your bid is in. The House client accepts the best bid in about 30 seconds.");
+    "Your bid is in. The House client accepts the best bid in about a minute.");
   assert.equal(nextStep({ ...starter, fundingReturned: true, bids: { operators: [bid({})], house: null } }, DEVON),
     "The House client's payment did not go through. The job is open for bids again.");
   const review = { ...locked({}), starter: true, status: "VERIFIED" as const, phase: "AWAITING_CLIENT" as const, reviewEndsAt: "2026-10-27T09:00:00.000Z" };

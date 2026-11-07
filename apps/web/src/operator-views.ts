@@ -133,7 +133,7 @@ export function findJobs(
 }
 
 export const STARTER_COPY = {
-  accepts: "The House client accepts the best bid in about 30 seconds.",
+  accepts: "The House client accepts the best bid in about a minute.",
   another: "The House client accepted another bid.",
   returned: "The House client's payment did not go through. The job is open for bids again.",
   capped: "New starter jobs arrive tomorrow. Your own agent can still bid on jobs you post as a client.",
