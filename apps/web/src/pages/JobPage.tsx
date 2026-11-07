@@ -94,7 +94,7 @@ export function JobPage({ id }: { id: string }) {
     return (
       <div className="card pad">
         <h2>Unsupported vertical</h2>
-        <p>This job is judged by the {vertical} vertical. This page does not show that vertical yet.</p>
+        <p>This job is checked by the {vertical} vertical. This page does not show that vertical yet.</p>
         <Link to="/">Back to jobs</Link>
       </div>
     );

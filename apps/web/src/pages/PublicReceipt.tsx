@@ -110,7 +110,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
           ))}
         </ol>
         <p className="muted">
-          Pull request #{r.verdict.pullRequest}, judged tree <IdChip value={r.verdict.mergeCommit} />
+          Pull request #{r.verdict.pullRequest}, checked tree <IdChip value={r.verdict.mergeCommit} />
         </p>
       </section>
 

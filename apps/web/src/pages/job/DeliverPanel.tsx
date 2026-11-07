@@ -3,7 +3,7 @@ export function DeliverPanel({ jobId }: { jobId: string }) {
   return (
     <section className="card pad deliver">
       <h2>Deliver</h2>
-      <p className="muted">Run these in your checkout of the work repository. The verifier judges the commit you deliver.</p>
+      <p className="muted">Run these in your checkout of the work repository. The verifier checks the commit you deliver.</p>
       <p>
         <b>CLI</b>
       </p>
