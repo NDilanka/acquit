@@ -20,7 +20,7 @@ import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
 import type { EvidenceType, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
-import { isHouseClient, isStarterJob } from "./house-client.ts";
+import { isHouseClient, isStarterJob, retirable } from "./house-client.ts";
 import type { JobScopingRow } from "./scoping.ts";
 import type { FixtureContract } from "./fixtures.ts";
 import { isStoreBusy } from "./store.ts";
@@ -285,6 +285,12 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel),
 				fundingMode: row?.funding ?? ports.fundingMode?.() ?? "checkout" };
 		} else if (command.type === "CancelJob") {
+			// A House retire is decided on the row this attempt reads, so a bid or an accept that committed after the pass's
+			// snapshot keeps the starter. The refusal comes before any cancel or refund is written; a user's cancel is unchanged.
+			if (command.retire === true && isHouseClient(actor) && row !== null
+				&& !retirable(row, ports.fixtures, actor.role === "CLIENT" ? actor.repository ?? null : null, ports.clientRepository ?? null)) {
+				return { kind: "DENIED", reason: "WRONG_STATE" };
+			}
 			const accounts = new Map<OperatorId, CreditAccount>();
 			for (const bid of row?.bids ?? []) if (bid.kind !== "HOUSE") accounts.set(bid.operator, await ports.store.readCredits(bid.operator));
 			loaded = { kind: "BIDDER_CREDITS", accounts };

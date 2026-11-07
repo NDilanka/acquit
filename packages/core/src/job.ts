@@ -524,7 +524,8 @@ function transitionTable(): {
 	PlaceBid: Edge<Open, JobRef & { readonly price: UsdCents; readonly eta: Hours; readonly agent: AgentId; readonly pitch: string }, Open, "OPERATOR">;
 	// An accept with no bidId is the House client's starter accept: executeCommand names the lowest PENDING bid of the row it commits.
 	AcceptBid: Edge<Open, JobRef & { readonly bidId?: BidId }, Open, "CLIENT">;
-	CancelJob: Edge<Open, JobRef, JobRow<ClosedState>, "CLIENT">;
+	// A retire is the House client's own cancel of a starter it no longer needs; executeCommand grants it only on the row it commits.
+	CancelJob: Edge<Open, JobRef & { readonly retire?: true }, JobRow<ClosedState>, "CLIENT">;
 	OrderCreated: Edge<Open, JobRef & { readonly round: number; readonly orderId: OrderId; readonly approveUrl: string }, Open, "SYSTEM">;
 	FundingFailed: Edge<Open, JobRef & { readonly round: number; readonly reason: string }, Open, "SYSTEM">;
 	BuyerApproved: Edge<Open, JobRef & { readonly orderId: OrderId }, Open, "SYSTEM">;

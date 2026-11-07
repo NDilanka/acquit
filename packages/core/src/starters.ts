@@ -13,9 +13,7 @@
 import type { CommandOutcome, UserCommand } from "./acquit.ts";
 import { derivedRequestKey, executeCommand } from "./effects.ts";
 import type { Ports } from "./effects.ts";
-import type { FixtureContract } from "./fixtures.ts";
-import { matchFixture } from "./fixtures.ts";
-import { HOUSE_CLIENT_ID, houseClientActor, isStarterJob } from "./house-client.ts";
+import { HOUSE_CLIENT_ID, houseClientActor, isStarterJob, retirable, starterPool } from "./house-client.ts";
 import { addHours, hours, instant } from "./ids.ts";
 import type { Instant, JobId, VisitorId } from "./ids.ts";
 import type { UsdCents } from "./ledger.ts";
@@ -39,18 +37,6 @@ export type HouseAccount = { readonly id: VisitorId; readonly repository: string
 /** What the pass needs beside the ports: the jobs' funding choice, which lives beside the row. */
 export type HouseClientPorts = Ports & { readonly fundWithCard: (jobId: JobId, at: Instant) => void };
 
-/**
- * The fixtures a starter can be opened from on this account's repository, in a fixed order so the rotation is the
- * same in every process. A practice issue is never a starter: it belongs to qualification, not to the market.
- * On a fork, only the fixtures on the upstream the forks are made from are in the pool.
- */
-export function starterPool(fixtures: readonly FixtureContract[], repository: string | null, upstream: string | null): readonly FixtureContract[] {
-	return fixtures
-		.filter(fixture => fixture.practice !== true)
-		.filter(fixture => matchFixture(fixtures, repository ?? fixture.repository, fixture.issue.number, repository, upstream) === fixture)
-		.toSorted((a, b) => a.repository.localeCompare(b.repository) || a.issue.number - b.issue.number);
-}
-
 /** The account's starter jobs, oldest first. Their count is the ordinal the next starter opens under. */
 function startersOf(jobs: readonly JobRow[], account: HouseAccount): readonly JobRow[] {
 	return jobs.filter(row => row.tenant === account.id && isStarterJob(row))
@@ -58,17 +44,6 @@ function startersOf(jobs: readonly JobRow[], account: HouseAccount): readonly Jo
 }
 
 const sinceMs = (at: Instant, now: Instant) => Date.parse(now) - Date.parse(at);
-
-/** A bid that still holds or could fund a starter: a PENDING one could be accepted, a CHOSEN one is being funded, an ACCEPTED one is funded. */
-const liveBid = (bid: JobRow["bids"][number]): boolean => bid.status === "PENDING" || bid.status === "CHOSEN" || bid.status === "ACCEPTED";
-
-/** Whether the pool no longer holds a starter's issue: no registry fixture matches its repository and issue, or the one that does is not in the pool. */
-function offPool(row: JobRow, fixtures: readonly FixtureContract[], pool: readonly FixtureContract[], upstream: string | null): boolean {
-	const done = row.contract.definitionOfDone;
-	if (!done) return false;
-	const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, done.issue.repository, upstream);
-	return fixture === null || !pool.includes(fixture);
-}
 
 /** One pass over every account. Returns how many commands committed. */
 export async function runHouseClients(ports: HouseClientPorts, accounts: readonly HouseAccount[]): Promise<number> {
@@ -85,12 +60,13 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 	const jobs = await ports.store.listJobs();
 	const starters = startersOf(jobs, account);
 	const pool = starterPool(ports.fixtures, account.repository, ports.clientRepository ?? null);
-	// A starter on an issue the pool no longer holds is cancelled while no bid on it could still fund it. The cancel is the
-	// account's own command under a key derived from the job, so a replayed pass answers REPLAY, and a funded job is never touched.
+	// A starter on an issue the pool no longer holds is cancelled while no bid on it could still fund it. This snapshot only picks
+	// the candidates: the cancel asks the same question of the row it commits, so a bid or an accept that lands later keeps the
+	// starter. The cancel is the account's own command under a key derived from the job, so a replayed pass answers REPLAY.
 	const retired = new Set<JobId>();
 	for (const row of starters) {
-		if (row.state.status !== "OPEN" || !offPool(row, ports.fixtures, pool, ports.clientRepository ?? null) || row.bids.some(liveBid)) continue;
-		const outcome = await send(`retire:${row.id}`, { type: "CancelJob", jobId: row.id });
+		if (!retirable(row, ports.fixtures, account.repository, ports.clientRepository ?? null)) continue;
+		const outcome = await send(`retire:${row.id}`, { type: "CancelJob", jobId: row.id, retire: true });
 		if (outcome.kind === "COMMITTED") acted++;
 		if (outcome.kind !== "DENIED") retired.add(row.id);
 	}

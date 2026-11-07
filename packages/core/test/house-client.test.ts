@@ -10,7 +10,7 @@ import type { Acquit, Actor } from "../src/acquit.ts";
 import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { derivedRequestKey } from "../src/effects.ts";
-import { HOUSE_CLIENT_ID, houseClientActor } from "../src/house-client.ts";
+import { HOUSE_CLIENT_ID, houseClientActor, starterPool } from "../src/house-client.ts";
 import { hours, instant, parseRequestKey } from "../src/ids.ts";
 import type { AgentId, BidId, ClientId, Instant, JobId, MerchantId, OperatorId, Version } from "../src/ids.ts";
 import { projectJob } from "../src/job.ts";
@@ -20,7 +20,6 @@ import type { UsdCents } from "../src/ledger.ts";
 import type { Agent, OperatorRow } from "../src/operator.ts";
 import type { DisputeId } from "../src/paypal.ts";
 import { SqliteStore } from "../src/store.ts";
-import { starterPool } from "../src/starters.ts";
 import { newVisitorId, visitorRepositoryName } from "../src/visitors.ts";
 import type { Harness } from "./scenario-harness.ts";
 import { harness } from "./scenario-harness.ts";
@@ -544,7 +543,7 @@ test("a starter on an issue the pool no longer holds is cancelled once, a starte
 		assert.equal(rowFor(pending).state.status, "OPEN", "the wrong-issue starter with a pending bid is left alone");
 		assert.deepEqual(rowFor(pending).bids.map(b => b.status), ["PENDING"]);
 		// The pass cancelled the job under its derived key once: the same cancel now answers REPLAY.
-		const replay = await h.acquit.execute(houseClientActor(id, fork), derivedRequestKey(`${HOUSE_CLIENT_ID}:retire:${wrong}`), { type: "CancelJob", jobId: wrong });
+		const replay = await h.acquit.execute(houseClientActor(id, fork), derivedRequestKey(`${HOUSE_CLIENT_ID}:retire:${wrong}`), { type: "CancelJob", jobId: wrong, retire: true });
 		assert.equal(replay.kind, "REPLAY");
 		h.setClock(at(120));
 		await h.acquit.tick();
