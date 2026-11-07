@@ -3,7 +3,7 @@ import { allBids, bidder, lockedBid, proofLine } from "./bids.ts";
 import { arbiterNoteLine, authorityNote, deadlineOutcome, eta, mergeNote, refundNote, usd, utc } from "./format.ts";
 import { bidStatusWord, payoutHeldBy, stateKey, type StateKey, type StatusTone } from "./job-status.ts";
 import { STARTER_COPY } from "./operator-views.ts";
-import { tallyWords } from "./receipt-view.ts";
+import { reasonWords, tallyWords } from "./receipt-view.ts";
 import { seededLabel } from "./scoping-review.ts";
 
 /** The job view as the page holds it: the mirrored JobView plus the attempt history the projection serves. */
@@ -73,7 +73,8 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       tone: "open",
       ids: [
         { value: c.frozenAt, label: "Frozen commit" },
-        { value: c.hiddenManifest, label: "Hidden cases sealed" },
+        // Withheld from a scenario's requester, who reads the job without the private suite's digest.
+        ...(c.hiddenManifest === null ? [] : [{ value: c.hiddenManifest, label: "Hidden cases sealed" }]),
       ],
       href: null,
       reasons: [],
@@ -535,7 +536,8 @@ function attemptEvent(attempt: Attempt, total: number, status: JobView["status"]
       reasons: [],
     };
   }
-  const reasons = attempt.reasons.length > 0 ? attempt.reasons.map(sentence) : ["The verifier rejected the work."];
+  // A closed code (TESTS_FAILED:hidden) reads in words; a sentence the owner's view sends passes through unchanged.
+  const reasons = attempt.reasons.length > 0 ? attempt.reasons.map(reasonWords).map(sentence) : ["The verifier rejected the work."];
   const unlisted = attempt.reasonsTruncated;
   const unlistedLine = unlisted > 0 ? `${unlisted} more ${unlisted === 1 ? "reason" : "reasons"} not listed.` : null;
   const reasonLines = unlistedLine === null ? reasons : [...reasons, unlistedLine];

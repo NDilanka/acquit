@@ -184,7 +184,7 @@ export interface JobView {
     readonly frozenTestPath: string;
     readonly frozenTests: number;
     readonly hiddenTests: number;
-    readonly hiddenManifest: string;
+    readonly hiddenManifest: string | null;
     readonly protectedPaths: readonly string[];
   } | null;
   /** The source this job's accept will use, served to the owning client only. Null when the deployment's default applies. */

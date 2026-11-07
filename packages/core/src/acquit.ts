@@ -7,7 +7,7 @@ import { createGitHubApp } from "./github.ts";
 import type { GitHubAppPort } from "./github.ts";
 import { instant } from "./ids.ts";
 import type { AgentId, BidId, ClientId, CommitSha, Hours, Instant, JobId, MerchantId, OperatorId, RequestKey, StaffId, VisitorId } from "./ids.ts";
-import { projectJob } from "./job.ts";
+import { projectJob, projectJobForRequester } from "./job.ts";
 import type { PrivateCaseReader } from "./hidden-seal.ts";
 import type { DomainFailure, JobEffect, JobProjection, JobRow, JobStatus, MergeProgress, ProviderDisputeView, Receipt, ReceiptView, RefundReason, ReleaseIntent, UserJobCommand } from "./job.ts";
 import type { LedgerLine, UsdCents } from "./ledger.ts";
@@ -294,8 +294,9 @@ export function createAcquit(config: AcquitConfig): Acquit {
 					const row = await store.readJob(query.jobId);
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
 					// The account that started a scenario run reads the job that run opened in the platform's read-only view, so no
-					// owner-only field and no command affordance comes with it. The commands keep their own checks.
-					if (startedRunJob(store.db, actor, row)) return { kind: "JOB", job: projectJob(row, { role: "PLATFORM" }, counts, houseRows, sources, ports.privateCases) };
+					// owner-only field and no command affordance comes with it, and the private suite is withheld as a receipt withholds
+					// it (projectJobForRequester). The commands keep their own checks.
+					if (startedRunJob(store.db, actor, row)) return { kind: "JOB", job: projectJobForRequester(row, counts, houseRows, sources, ports.privateCases) };
 					const mayRead = actor.role === "PLATFORM" || sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
 					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources, ports.privateCases) } : { kind: "DENIED", reason: "NOT_OWNER" };

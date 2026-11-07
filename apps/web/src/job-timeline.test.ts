@@ -280,6 +280,21 @@ test("rejected attempt with tallies: the job page states the counts first, then 
   assert.deepEqual(timelineEvents(truncatedJob).at(-1)?.reasons, ["Hidden tests failed: hidden:6.", "2 more reasons not listed."]);
 });
 
+test("a scenario requester's closed reason codes read in words, and a withheld digest leaves no sealed id on the contract", () => {
+  // The requester's projection names a rejection by its closed code and withholds the private set's digest.
+  const coded: Attempt = { ordinal: 1, sourceCommit: "a1b2c3d", at: "2026-10-12T10:00:00.000Z", result: "REJECTED",
+    reasons: ["TESTS_FAILED:hidden"], reasonsTruncated: 0, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 5 } };
+  const job = locked({ attempts: { used: 1, left: 2, last: "REJECTED", reasons: coded.reasons, history: [coded], pending: null, failure: null },
+    contract: { ...CONTRACT, hiddenManifest: null } });
+  const events = timelineEvents(job);
+  assert.equal(events.at(-1)?.detail, "Passed all 48 visible tests. Failed 1 of 6 hidden tests. Escrow still held.");
+  assert.deepEqual(events.at(-1)?.reasons, ["Hidden tests failed."]);
+  assert.deepEqual(events.find(event => event.kind === "CONTRACT")?.ids.map(id => id.label), ["Frozen commit"]);
+  // Without the withholding, the same contract still names its digest.
+  const owned = timelineEvents(locked({}));
+  assert.deepEqual(owned.find(event => event.kind === "CONTRACT")?.ids.map(id => id.label), ["Frozen commit", "Hidden cases sealed"]);
+});
+
 test("rejected attempt with tallies: the reason lines render as their own paragraphs after the detail", () => {
   // The suite has no DOM, so the renderer's wiring is checked in its source, as layout-wrap.test.ts does.
   const source = readFileSync(new URL("./pages/job/Timeline.tsx", import.meta.url), "utf8");

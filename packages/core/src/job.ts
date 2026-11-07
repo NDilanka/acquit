@@ -33,6 +33,7 @@ import type { CaptureEvidence, DisputeId, DisputeOffer, EvidenceType, FeeQuote, 
 import { DISPUTE_ACCESS_REFUSED, EVIDENCE_TYPE_REFUSALS, evidenceTypeFor, NO_HONEST_EVIDENCE_TYPE, refusalWording } from "./paypal.ts";
 import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
+import { reasonCode } from "./score-card.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
 import type { DefinitionOfDone, RunFailure, SealedHiddenCases, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
 import { resolveHiddenReveal } from "./hidden-seal.ts";
@@ -1800,7 +1801,8 @@ export type ContractProjection = {
 	readonly frozenTestPath: string;
 	readonly frozenTests: number;
 	readonly hiddenTests: number;
-	readonly hiddenManifest: Digest;
+	/** The digest of the unsalted private case set. Null where the private suite is withheld (projectJobForRequester). */
+	readonly hiddenManifest: Digest | null;
 	readonly protectedPaths: readonly string[];
 	/** The salted digest of an AI-drafted per-job case set, frozen at approval. Absent on a fixture's curated set, so an unsealed contract keeps its existing shape. The cases and the salt are never projected here. */
 	readonly sealedHiddenCases?: SealedHiddenCases;
@@ -1832,6 +1834,23 @@ export function attemptView(record: AttemptRecord): AttemptView {
 			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: verdict.tallies?.frozen ?? null, hidden: verdict.tallies?.hidden ?? null, pullRequest: null };
 }
 
+/** The judged attempts a projection serves: the open ones on an in-progress job, the kept ones on a verified or refunded job, none otherwise. */
+function historyOf(state: JobState): readonly AttemptRecord[] {
+	return state.status === "IN_PROGRESS" ? state.attempts.history
+		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
+}
+
+/**
+ * The attempt a scenario requester reads: attemptView, except that a rejection names its reasons as the closed codes a
+ * public receipt names (reasonCode, as receipts.ts names them), never the describeRejectReason text, which names each
+ * individual test id.
+ */
+function requesterAttemptView(record: AttemptRecord): AttemptView {
+	const view = attemptView(record);
+	const verdict = record.verdict;
+	return verdict.result === "REJECTED" ? { ...view, reasons: verdict.reasons.map(reasonCode) } : view;
+}
+
 /** The House bid row's line, counted from the real receipt rows: every row is a fix, the paid ones passed verified CI. Seeded rows are display history the store keeps out of these counts; the receipts views label them Seeded. */
 export function houseLine(rows: { readonly total: number; readonly paid: number } | null): string | null {
 	if (rows === null) return null;
@@ -1853,8 +1872,7 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		: funding?.checkout.phase === "REFUND_PENDING" ? funding.checkout.escrow : null;
 	const refund = refundIntentOf(row);
 	const ledger = storedBook(row);
-	const history = state.status === "IN_PROGRESS" ? state.attempts.history
-		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
+	const history = historyOf(state);
 	const pending = state.status === "IN_PROGRESS" && state.attempts.phase === "VERIFYING" ? state.attempts.pending : null;
 	const failure = state.status === "IN_PROGRESS" && state.attempts.phase !== "REFUND_PENDING" ? state.attempts.failure : null;
 	// A settled job's attempts live in its receipt or its history, not in the in-flight counter.
@@ -1926,4 +1944,23 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		// alike. The store writes the row in the settlement's transaction, so a settled job's row is
 		// always there; without the read (or the row) the receipt reads as the real row it looks like.
 		receipt: state.status === "PAID" ? { ...state.receipt, source: receiptSources?.get(state.receipt.id) ?? "JOB" } : null };
+}
+
+/**
+ * The job a judge scenario's requester reads: the platform's read-only view, with the private suite withheld the way a
+ * public receipt withholds it. The digest of the private case set (contract.hiddenManifest) is null, a rejected attempt
+ * names closed reason codes (TESTS_FAILED:hidden) and not the test ids, and a run failure keeps its closed name but not
+ * its free-text detail. The seal (contract.sealedHiddenCases) and the reveal after close (hiddenReveal) are the public
+ * commitment and reveal a receipt also carries, so they stay. Every other viewer, the owning client included, and the
+ * PLATFORM view keep the full projection.
+ */
+export function projectJobForRequester(row: JobRow, paidReceipts: ReadonlyMap<OperatorId, number>,
+	houseRows?: ReadonlyMap<OperatorId, { readonly total: number; readonly paid: number }>,
+	receiptSources?: ReadonlyMap<ReceiptId, ReceiptSource>, privateCases: PrivateCaseReader = () => null): JobProjection {
+	const full = projectJob(row, { role: "PLATFORM" }, paidReceipts, houseRows, receiptSources, privateCases);
+	const history = historyOf(row.state).map(requesterAttemptView);
+	return { ...full,
+		contract: full.contract === null ? null : { ...full.contract, hiddenManifest: null },
+		attempts: { ...full.attempts, history, reasons: history.at(-1)?.reasons ?? [],
+			failure: full.attempts.failure === null ? null : { ...full.attempts.failure, detail: "" } } };
 }
