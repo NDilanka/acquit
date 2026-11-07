@@ -143,8 +143,10 @@ function stepTitle(name: string): string {
   return lookup(STEP_TITLES, name) ?? name;
 }
 
-// The server names the step that settled a wait-only step by its id; the page shows that step's title.
-const SETTLED_BY = /\(already settled by ([a-z-]+)\)$/;
+// A wait-only step's outcome: the status the job already held, then the step that settled it by its id, when one did.
+// The status reads in plain words and the settling step by its title, so "REFUNDED (already settled by settle)" reads
+// "Refunded (already settled at Pending work settles)".
+const ALREADY_SETTLED = /^([A-Z_]+) \(already settled(?: by ([a-z-]+))?\)$/;
 
 // The outcomes a buyer dispute's steps record, in plain words. Any other outcome reads as the server sent it. The approve
 // step's HELD is read only on that step: accept-and-fund also records HELD, in every scenario.
@@ -187,8 +189,12 @@ function outcomeWords(outcome: string): string {
 }
 
 function resultWords(name: string, outcome: string): string {
-  const words = name === "approve" && outcome === "HELD" ? APPROVED_HELD : (lookup(DISPUTE_OUTCOME_WORDS, outcome) ?? outcomeWords(outcome));
-  return words.replace(SETTLED_BY, (_, settled: string) => `(already settled at ${stepTitle(settled)})`);
+  const settled = ALREADY_SETTLED.exec(outcome);
+  if (settled) {
+    const [, status = "", step] = settled;
+    return `${plainWords(status)} (already settled${step === undefined ? "" : ` at ${stepTitle(step)}`})`;
+  }
+  return name === "approve" && outcome === "HELD" ? APPROVED_HELD : (lookup(DISPUTE_OUTCOME_WORDS, outcome) ?? outcomeWords(outcome));
 }
 
 function observedWords(end: ScenarioEndState): string {

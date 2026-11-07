@@ -232,7 +232,7 @@ test("a settle step reads Pending work settles, with the sandbox note only when 
   ]);
 });
 
-test("a step an earlier step already settled names that step by its title, not its id", () => {
+test("a step an earlier step already settled names that step by its title, and its status in words, not as a raw code", () => {
   const view = buildRunView({
     ...RUN,
     steps: [
@@ -242,10 +242,12 @@ test("a step an earlier step already settled names that step by its title, not i
     ],
   });
   assert.deepEqual(view.steps.map(entry => entry.result), [
-    "REFUNDED (already settled at Pending work settles)",
-    "PAID (already settled at Arbiter rules on the dispute)",
-    "PAID (already settled)",
+    "Refunded (already settled at Pending work settles)",
+    "Paid (already settled at Arbiter rules on the dispute)",
+    "Paid (already settled)",
   ]);
+  // No raw status prefix survives, whichever step settled it or none did.
+  assert.equal(view.steps.some(entry => /\b(PAID|REFUNDED)\b/.test(entry.result)), false);
 });
 
 test("a settle step that ran GitHub work reads GitHub work repository, with no sandbox note", () => {
