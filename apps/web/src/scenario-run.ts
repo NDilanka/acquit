@@ -71,7 +71,7 @@ const STEP_TITLES: Readonly<Record<string, string>> = {
   "push-honest-reference-table": "Scripted agent pushes honest-reference-table",
   "push-cheat-hardcode-visible-values": "Scripted agent pushes cheat-hardcode-visible-values",
   "push-cheat-edit-frozen-test": "Scripted agent pushes cheat-edit-frozen-test",
-  submit: "Verifier judges the submission",
+  submit: "Verifier checks the submission",
   approve: "Client approves the delivery",
   dispute: "Client disputes the delivery",
   "dispute-created": "Buyer opens a PayPal dispute",

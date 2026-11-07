@@ -128,7 +128,7 @@ test("a FAILED run that ends in a wrong end state names the step, and the observ
     ],
     endState: { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
   });
-  assert.equal(view.endText, "Failed after Verifier judges the submission. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
+  assert.equal(view.endText, "Failed after Verifier checks the submission. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
   assert.equal(view.observed, "IN_PROGRESS (TESTS_FAILED:hidden)");
   assert.equal(view.endText.includes("Paid."), false);
 });
@@ -144,7 +144,7 @@ test("a FAILED run whose step was refused names that step and says no end state 
     ],
     endState: null,
   });
-  assert.equal(view.endText, "Failed at Verifier judges the submission. The server stopped waiting for a step to finish. The run reached no end state.");
+  assert.equal(view.endText, "Failed at Verifier checks the submission. The server stopped waiting for a step to finish. The run reached no end state.");
   assert.equal(view.observed, null);
 });
 
@@ -158,7 +158,7 @@ test("a FAILED run whose verdict was not the one its scenario needs names the st
     ],
     endState: { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
   });
-  assert.equal(view.endText, "Failed at Verifier judges the submission. The verifier's verdict was not the one this scenario needs. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
+  assert.equal(view.endText, "Failed at Verifier checks the submission. The verifier's verdict was not the one this scenario needs. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
   assert.equal(view.observed, "IN_PROGRESS (TESTS_FAILED:hidden)");
   assert.equal(view.endText.includes("no end state"), false);
 });

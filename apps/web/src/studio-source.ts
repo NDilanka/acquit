@@ -28,7 +28,7 @@ const NO_OPERATOR = "No operator yet";
 export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<AcquitRegistry> {
   return {
     description:
-      "Acquit's escrow book across every tenant. One row per job in jobs; bids, verdicts, ledger_entries, paypal_events, and clients join to jobs. Each bid joins to the operator who placed it, and each job to the operator it was locked to. Money is in dollars. A job's held amount is in escrow only while its status is IN_PROGRESS or VERIFIED. Released, refunded, and fee amounts are settled. A verdict is one judged attempt. Each measure is computed on one table. takeRate, escrowAtRisk, and refundRate are computed on jobs. verifierPassRate is computed on verdicts, so it is queried apart from the jobs measures. One query that mixes them joins jobs to verdicts and drops each job that has no verdict, such as a refunded job.",
+      "Acquit's escrow book across every tenant. One row per job in jobs; bids, verdicts, ledger_entries, paypal_events, and clients join to jobs. Each bid joins to the operator who placed it, and each job to the operator it was locked to. Money is in dollars. A job's held amount is in escrow only while its status is IN_PROGRESS or VERIFIED. Released, refunded, and fee amounts are settled. A verdict is one checked attempt. Each measure is computed on one table. takeRate, escrowAtRisk, and refundRate are computed on jobs. verifierPassRate is computed on verdicts, so it is queried apart from the jobs measures. One query that mixes them joins jobs to verdicts and drops each job that has no verdict, such as a refunded job.",
     sources: [
       {
         id: "jobs",
@@ -76,7 +76,7 @@ export function escrowData(tables: PlatformTables): AgDataSourcesDefinition<Acqu
       {
         id: "verdicts",
         name: "Verdicts",
-        description: "Every judged attempt on a job. verified is 1 for a pass; tamper is 1 for a rejection that touched the frozen tests.",
+        description: "Every checked attempt on a job. verified is 1 for a pass; tamper is 1 for a rejection that touched the frozen tests.",
         data: engineRows(tables.verdicts),
         fields: [
           { id: "verdictId", format: "textFormat" },

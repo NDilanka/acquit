@@ -830,7 +830,7 @@ test("a receipt PayPal took as a message says so on the dispute, queued or filed
   assert.equal(message(paidJob({ providerDispute: { ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed } }))?.title,
     "Acquit sent PayPal the receipt as a message on dispute PAYPAL-DISPUTE-1");
   assert.equal(message(approvedWithDispute({ ...BUYER_DISPUTE, answer: "MESSAGE", answerState: filed }))?.detail,
-    "The message names the frozen and hidden test counts, the pull request, and the judged commit.");
+    "The message names the frozen and hidden test counts, the pull request, and the checked commit.");
 });
 
 /** The answers PayPal took on the live record: an inquiry message, then the chargeback evidence that escalated it. */
@@ -852,7 +852,7 @@ test("the timeline shows each answer PayPal took once, oldest first, with the st
     at: "2026-10-16T10:00:00.000Z",
     kind: "DISPUTE",
     title: "Acquit sent PayPal its verified attempt as a message on dispute PP-R-PPB-10194003 (inquiry)",
-    detail: "The message names the frozen and hidden test counts, the pull request, and the judged commit.",
+    detail: "The message names the frozen and hidden test counts, the pull request, and the checked commit.",
     tone: "held",
     ids: [{ value: "PP-R-PPB-10194003", label: "PayPal dispute" }],
     href: null,
@@ -1023,7 +1023,7 @@ test("a live dispute on a job awaiting review holds the payment in plain words, 
     "Acquit filed its verified attempt as Other evidence with PayPal",
     "Payment held while PayPal reviews the buyer's dispute",
   ]);
-  assert.equal(disputes[1]?.detail, "PayPal asked for refund proof or other evidence. Acquit made no refund, so it cannot send refund proof. The evidence names the frozen and hidden test counts, the pull request, and the judged commit.");
+  assert.equal(disputes[1]?.detail, "PayPal asked for refund proof or other evidence. Acquit made no refund, so it cannot send refund proof. The evidence names the frozen and hidden test counts, the pull request, and the checked commit.");
   assert.deepEqual(disputes[2], {
     at: null,
     kind: "DISPUTE",
