@@ -10,7 +10,7 @@ import { provisionDemoVisitor } from "../src/acquit.ts";
 import { createFakeGitHubApp, GitHubAppError } from "../src/github.ts";
 import type { FakeGitHubApp } from "../src/github.ts";
 import { instant } from "../src/ids.ts";
-import type { Instant, JobId } from "../src/ids.ts";
+import type { ClientId, Instant, JobId, OperatorId } from "../src/ids.ts";
 import { boundedRuns, ScenarioRefused, startScenario } from "../src/scenarios.ts";
 import type { StartedScenario } from "../src/scenarios.ts";
 import { openDatabase } from "../src/store.ts";
@@ -101,6 +101,78 @@ test("a fork with no finished run, from a start the core refused or one never st
 		const report = await sweepScenarioRuns({ db: h.deps.store.db, app: h.github, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
 		assert.deepEqual([...report.swept].sort(), [stranded.id, refused.id].sort());
 		assert.equal(h.github.clientRepos.size, 0);
+	} finally { await h.dispose(); }
+});
+
+/** The requester's two roles over the run's job, read the way the Job query reads it: the client role, then the operator role. */
+const requesterReads = (h: Harness, jobId: JobId) => Promise.all([
+	h.acquit.query({ role: "CLIENT", clientId: h.visitor.clientHandle as ClientId, tenant: h.visitor.id }, { type: "Job", jobId }),
+	h.acquit.query({ role: "OPERATOR", operatorId: h.visitor.operatorHandle as OperatorId, tenant: h.visitor.id }, { type: "Job", jobId }),
+]);
+const NOT_OWNER = { kind: "DENIED", reason: "NOT_OWNER" };
+
+test("the requester's read of a run's job ends once the sweep takes the run's visitor, and the job stays settled", async () => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		const visitor = await forkedVisitor(h, h.visitor);
+		const run = await (await start(h, "verified-and-paid", visitor)).finished;
+		assert.equal(run.state, "DONE");
+		const jobId = run.jobId as JobId;
+		const [asClient, asOperator] = await requesterReads(h, jobId);
+		assert.equal(asClient.kind, "JOB", "the requester reads the run's job before the sweep");
+		assert.equal(asOperator.kind, "JOB", "both roles of the requester read it before the sweep");
+
+		const report = await sweepScenarioRuns({ db: h.deps.store.db, app: h.github, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		assert.deepEqual(report.swept, [visitor.id]);
+		assert.equal(readVisitor(h.deps.store.db, visitor.id)?.state, "SWEPT");
+		assert.deepEqual(await requesterReads(h, jobId), [NOT_OWNER, NOT_OWNER]);
+		// The sweep ends the read, not the job: the platform still reads the job, settled.
+		const platform = await h.acquit.query({ role: "PLATFORM" }, { type: "Job", jobId });
+		assert.ok(platform.kind === "JOB" && platform.job.status === "PAID", "the settled job is still there");
+	} finally { await h.dispose(); }
+});
+
+test("the requester's read ends once the run's work repo is removed, even while its visitor fork is kept", async () => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		const visitor = await forkedVisitor(h, h.visitor);
+		const run = await (await start(h, "verified-and-paid", visitor)).finished;
+		assert.equal(run.state, "DONE");
+		const jobId = run.jobId as JobId;
+		assert.equal((await requesterReads(h, jobId))[0].kind, "JOB");
+
+		const mismatch = (): Promise<never> => Promise.reject(Object.assign(new Error("not ours"), { code: "GITHUB_FORK_MISMATCH" }));
+		const forkRefused: ScenarioRepoDeleter = { deleteClientRepo: mismatch, deleteWorkRepo: request => h.github.deleteWorkRepo(request) };
+		const db = h.deps.store.db;
+		const report = await sweepScenarioRuns({ db, app: forkRefused, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		assert.deepEqual(report.swept, [], "the visitor fork is refused, so the visitor is not swept");
+		assert.deepEqual(report.workRepos.map(work => work.outcome), ["DELETED"], "the run's work repo is removed");
+		assert.notEqual(readVisitor(db, visitor.id)?.state, "SWEPT");
+		assert.deepEqual(await requesterReads(h, jobId), [NOT_OWNER, NOT_OWNER]);
+	} finally { await h.dispose(); }
+});
+
+test("the requester's read ends once the run's visitor is swept, even while the run's work repo removal is kept", async () => {
+	const h = await harness();
+	try {
+		h.setClock(nowInstant());
+		const visitor = await forkedVisitor(h, h.visitor);
+		const run = await (await start(h, "verified-and-paid", visitor)).finished;
+		assert.equal(run.state, "DONE");
+		const jobId = run.jobId as JobId;
+		assert.equal((await requesterReads(h, jobId))[0].kind, "JOB");
+
+		const mismatch = (): Promise<never> => Promise.reject(Object.assign(new Error("not ours"), { code: "GITHUB_FORK_MISMATCH" }));
+		const workRefused: ScenarioRepoDeleter = { deleteClientRepo: request => h.github.deleteClientRepo(request), deleteWorkRepo: mismatch };
+		const db = h.deps.store.db;
+		const report = await sweepScenarioRuns({ db, app: workRefused, source: DEMO_REPOSITORY, now: after(PAST_TTL) });
+		assert.deepEqual(report.swept, [visitor.id], "the visitor fork is removed, so the visitor is swept");
+		assert.equal(readVisitor(db, visitor.id)?.state, "SWEPT");
+		assert.deepEqual(report.workRepos, [], "the work repo removal is refused and kept");
+		assert.deepEqual(report.kept.map(item => item.reason), ["GITHUB_FORK_MISMATCH"]);
+		assert.deepEqual(await requesterReads(h, jobId), [NOT_OWNER, NOT_OWNER]);
 	} finally { await h.dispose(); }
 });
 

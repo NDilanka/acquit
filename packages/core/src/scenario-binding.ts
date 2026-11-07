@@ -4,6 +4,7 @@
 
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { Actor } from "./acquit.ts";
 import { parseRequestKey } from "./ids.ts";
 import type { JobId, RequestKey } from "./ids.ts";
 import type { PayPalObservation } from "./paypal.ts";
@@ -47,6 +48,25 @@ export function arbiterOwns(db: DatabaseSync, run: { readonly id: string; readon
 /** Whether a run may inject and read a simulated buyer dispute on a job. */
 export function buyerDisputeOwns(db: DatabaseSync, run: { readonly id: string; readonly jobId: string }): boolean {
 	return runOwnsJob(db, run, "buyer-dispute");
+}
+
+/**
+ * Whether the actor is the account that started the scenario run that opened this job. Only the requester of a run
+ * gets it, and only for the job that run's OpenJob committed (openedJobOf), so no other account and no other job
+ * qualifies. It widens the Job read alone, to the platform's read-only view of the job; no command or work-repo token
+ * follows from it. The grant ends with the run's cleanup: once the scenario sweep takes the run's visitor (SWEPT), or
+ * removes the run's work repo (work_swept_at), this read is refused. The receipts and the job row stay, so settlement
+ * and the cleanup journal still read them.
+ */
+export function startedRunJob(db: DatabaseSync, actor: Actor, job: { readonly id: string; readonly tenant: string | null }): boolean {
+	if ((actor.role !== "CLIENT" && actor.role !== "OPERATOR") || actor.tenant === null) return false;
+	const run = db.prepare(`SELECT r.id, r.visitor_id FROM scenario_runs r
+			JOIN visitors v ON v.id = r.visitor_id
+			LEFT JOIN scenario_cleanup k ON k.run_id = r.id
+			WHERE r.requester_id = ? AND r.job_id = ? AND v.state <> 'SWEPT' AND k.work_swept_at IS NULL`).get(actor.tenant, job.id);
+	if (run === undefined) return false;
+	const visitorId = String(run.visitor_id);
+	return job.tenant === visitorId && openedJobOf(db, { id: String(run.id), visitorId }) === job.id;
 }
 
 /** A buyer dispute as PayPal's read would answer it, for the dispute a scenario simulated. */

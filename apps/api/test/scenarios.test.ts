@@ -13,8 +13,9 @@ import { assertTimings, harness, start } from "../../../packages/core/test/scena
 import type { Harness } from "../../../packages/core/test/scenario-harness.ts";
 import { demoFixture, demoProtectedPaths, DEMO_FROZEN_AT, DEMO_REPOSITORY, exampleContract } from "../../../packages/core/test/hidden-fixture.ts";
 import { provisionDemoVisitor } from "../../../packages/core/src/acquit.ts";
-import type { DemoVisitorResult } from "../../../packages/core/src/acquit.ts";
-import type { CommitSha, JobId } from "../../../packages/core/src/ids.ts";
+import type { Actor, DemoVisitorResult } from "../../../packages/core/src/acquit.ts";
+import type { JobProjection } from "../../../packages/core/src/job.ts";
+import type { ClientId, CommitSha, JobId, OperatorId } from "../../../packages/core/src/ids.ts";
 import { startScenario } from "../../../packages/core/src/scenarios.ts";
 import type { ScenarioRun, ScenarioRuns } from "../../../packages/core/src/scenarios.ts";
 import { frozenTests } from "../../../packages/core/src/score-card-trees.ts";
@@ -115,6 +116,80 @@ test("another visitor's run is refused as NOT_FOUND, the same answer an unknown 
 		assert.deepEqual(await scenarioReply(routing, stranger, "GET", scenarioId), { status: 404, body: { error: "NOT_FOUND" } });
 		assert.deepEqual(await scenarioReply(routing, stranger, "GET", "scn_nobody-holds-this"), { status: 404, body: { error: "NOT_FOUND" } });
 		assert.equal((await scenarioReply(routing, h.visitor, "GET", scenarioId)).status, 200);
+	} finally { await h.dispose(); }
+});
+
+/**
+ * The job body the route sends a viewer: the Job query's job, serialized as the route serializes it. Refused reads throw.
+ * The route is GET /api/jobs/:id (server.ts), which sends { job, handles, diff, now } around this same projection.
+ */
+async function wireJob(h: Harness, actor: Actor, jobId: JobId): Promise<{ job: JobProjection; text: string }> {
+	const read = await h.acquit.query(actor, { type: "Job", jobId });
+	if (read.kind !== "JOB") throw new Error(`the read was refused: ${read.kind}`);
+	const text = JSON.stringify({ job: read.job });
+	return { job: (JSON.parse(text) as { job: JobProjection }).job, text };
+}
+
+test("the requester reads a run's job without the private suite: the digest is null, a rejection names closed codes, and no test id is in the body", async () => {
+	const h = await harness();
+	try {
+		const routing = routingOf(h);
+		const asClient: Actor = { role: "CLIENT", clientId: h.visitor.clientHandle as ClientId, tenant: h.visitor.id };
+		// In flight: hidden-test-fail is rejected on its hidden tests, so the job stays IN_PROGRESS with its escrow held.
+		const failed = await scenarioReply(routing, h.visitor, "POST", "hidden-test-fail");
+		const inFlight = failed.body as { scenarioId: string; jobId: JobId };
+		const failedRun = await settle(routing, h.visitor, inFlight.scenarioId);
+		assert.deepEqual(failedRun.endState, { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" });
+		const requested = await wireJob(h, asClient, inFlight.jobId);
+		assert.equal(requested.job.status, "IN_PROGRESS");
+		assert.equal(requested.job.contract?.hiddenManifest, null, "the curated set's digest is withheld");
+		assert.equal(requested.job.contract?.hiddenTests, 8, "the count of the private suite stays, as the receipt's tallies show it");
+		assert.equal(requested.job.contract !== null && "sealedHiddenCases" in requested.job.contract, false, "a curated set carries no seal");
+		assert.equal(requested.job.hiddenReveal, null, "a curated set reveals nothing");
+		assert.deepEqual(requested.job.attempts.history.map(attempt => ({ result: attempt.result, reasons: attempt.reasons })),
+			[{ result: "REJECTED", reasons: ["TESTS_FAILED:hidden"] }]);
+		assert.deepEqual(requested.job.attempts.reasons, ["TESTS_FAILED:hidden"]);
+		assert.equal(requested.job.attempts.failure, null);
+		assert.equal(requested.text.includes(exampleContract.digest), false, "the digest is not anywhere in the body");
+		assert.equal(/hidden:[1-8]/.test(requested.text), false, "no individual hidden test id is in the body");
+		// The control: the PLATFORM view of the same job still names the digest and the failing test, so the withholding is the requester's alone.
+		const platform = await wireJob(h, { role: "PLATFORM" }, inFlight.jobId);
+		assert.equal(platform.job.contract?.hiddenManifest, exampleContract.digest);
+		assert.deepEqual(platform.job.attempts.history[0]?.reasons, ["Hidden tests failed: hidden:1"]);
+
+		// Completed: verified-and-paid is PAID on the client's approval, and its body names no test id and no digest.
+		const paid = await scenarioReply(routing, h.visitor, "POST", "verified-and-paid");
+		const settledRun = paid.body as { scenarioId: string; jobId: JobId };
+		assert.deepEqual((await settle(routing, h.visitor, settledRun.scenarioId)).endState, { jobStatus: "PAID", reason: "CLIENT_APPROVAL" });
+		const completed = await wireJob(h, asClient, settledRun.jobId);
+		assert.equal(completed.job.status, "PAID");
+		assert.equal(completed.job.contract?.hiddenManifest, null);
+		assert.equal(completed.job.contract?.hiddenTests, 8);
+		assert.equal(completed.job.hiddenReveal, null);
+		assert.equal(completed.job.attempts.used, 1, "the verified run used its one attempt");
+		assert.notEqual(completed.job.receipt, null, "the settled job carries its receipt");
+		assert.equal(completed.text.includes(exampleContract.digest), false);
+		assert.equal(/hidden:[1-8]/.test(completed.text), false);
+	} finally { await h.dispose(); }
+});
+
+test("the account that started a run reads the run's job read-only, and a stranger's read is NOT_OWNER", async () => {
+	const h = await harness();
+	try {
+		const routing = routingOf(h);
+		const posted = await scenarioReply(routing, h.visitor, "POST", "verified-and-paid");
+		const { scenarioId, jobId } = posted.body as { scenarioId: string; jobId: JobId };
+		assert.equal((await settle(routing, h.visitor, scenarioId)).state, "DONE");
+		const asClient: Actor = { role: "CLIENT", clientId: h.visitor.clientHandle as ClientId, tenant: h.visitor.id };
+		const asOperator: Actor = { role: "OPERATOR", operatorId: h.visitor.operatorHandle as OperatorId, tenant: h.visitor.id };
+		const stranger: Actor = { role: "CLIENT", clientId: "stranger-client" as ClientId, tenant: newVisitorId() };
+		const clientRead = await h.acquit.query(asClient, { type: "Job", jobId });
+		const operatorRead = await h.acquit.query(asOperator, { type: "Job", jobId });
+		// The read is the platform's view: the run's own client is not named, and no approve or dispute is offered.
+		assert.ok(clientRead.kind === "JOB" && clientRead.job.id === jobId && clientRead.job.client === null);
+		assert.ok(clientRead.kind === "JOB" && clientRead.job.viewerCanApprove === false && clientRead.job.viewerCanDispute === false);
+		assert.ok(operatorRead.kind === "JOB" && operatorRead.job.id === jobId && operatorRead.job.client === null);
+		assert.deepEqual(await h.acquit.query(stranger, { type: "Job", jobId }), { kind: "DENIED", reason: "NOT_OWNER" });
 	} finally { await h.dispose(); }
 });
 

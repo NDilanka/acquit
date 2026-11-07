@@ -8,6 +8,7 @@ export type IconName =
   | "dashboard"
   | "shield"
   | "printer"
+  | "play"
   | "terminal"
   | "help"
   | "logout"
@@ -58,6 +59,7 @@ const PATHS: Record<IconName, ReactNode> = {
       <rect x="6" y="14" width="12" height="8" />
     </>
   ),
+  play: <polygon points="6 3 20 12 6 21 6 3" />,
   terminal: (
     <>
       <path d="m4 17 6-6-6-6" />

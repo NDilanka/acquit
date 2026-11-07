@@ -5,6 +5,7 @@
 import type { ScenarioEndState, ScenarioLabel, ScenarioName, ScenarioReachLabel, ScenarioRun, ScenarioStep } from "./api-types";
 import { refusalText } from "./format.ts";
 import { SCENARIO_CARDS } from "./judge-tour.ts";
+import { reasonWords } from "./receipt-view.ts";
 
 export type ScenarioCard = {
   readonly name: ScenarioName;
@@ -68,9 +69,9 @@ const STEP_TITLES: Readonly<Record<string, string>> = {
   "open-job": "Client opens the job",
   "place-bid": "Operator places a bid",
   "accept-and-fund": "Client accepts and funds escrow",
-  "push-honest-reference-table": "Scripted agent pushes honest-reference-table",
-  "push-cheat-hardcode-visible-values": "Scripted agent pushes cheat-hardcode-visible-values",
-  "push-cheat-edit-frozen-test": "Scripted agent pushes cheat-edit-frozen-test",
+  "push-honest-reference-table": "Scripted agent writes the honest fix",
+  "push-cheat-hardcode-visible-values": "Scripted agent writes the shortcut",
+  "push-cheat-edit-frozen-test": "Scripted agent edits the frozen test",
   submit: "Verifier checks the submission",
   approve: "Client approves the delivery",
   dispute: "Client disputes the delivery",
@@ -125,7 +126,7 @@ const STEP_FAILED_PREFIX = "FAILED ";
 const RUNNING_TEXT = "Running. Each step appears when the server finishes it, with the time it measured.";
 const RESTARTED_TEXT = "Failed: the server restarted during this run, so its steps were not resumed.";
 const NO_END_TEXT = "No end state could be read.";
-const JOB_NOTE = "The run's job belongs to its own workspace, so this page cannot open it. The steps above are the record of that job.";
+const JOB_NOTE = "The job page shows where this run left the job.";
 
 /** Reads a closed-code table without taking inherited keys such as "constructor" as an answer. */
 function lookup(table: Readonly<Record<string, string>>, key: string): string | undefined {
@@ -142,8 +143,10 @@ function stepTitle(name: string): string {
   return lookup(STEP_TITLES, name) ?? name;
 }
 
-// The server names the step that settled a wait-only step by its id; the page shows that step's title.
-const SETTLED_BY = /\(already settled by ([a-z-]+)\)$/;
+// A wait-only step's outcome: the status the job already held, then the step that settled it by its id, when one did.
+// The status reads in plain words and the settling step by its title, so "REFUNDED (already settled by settle)" reads
+// "Refunded (already settled at Pending work settles)".
+const ALREADY_SETTLED = /^([A-Z_]+) \(already settled(?: by ([a-z-]+))?\)$/;
 
 // The outcomes a buyer dispute's steps record, in plain words. Any other outcome reads as the server sent it. The approve
 // step's HELD is read only on that step: accept-and-fund also records HELD, in every scenario.
@@ -153,13 +156,49 @@ const DISPUTE_OUTCOME_WORDS: Readonly<Record<string, string>> = {
   "dispute RESOLVED_SELLER_FAVOUR": "PayPal resolved the dispute for the seller.",
 };
 
+// The reasons a run's end can name, in the words a person reads. Other reasons read through reasonWords, the receipt's table.
+const END_REASON_WORDS: Readonly<Record<string, string>> = {
+  CLIENT_APPROVAL: "Approved by the client",
+  ARBITER_UPHELD: "Upheld by the arbiter",
+  DELIVERY_DEADLINE: "Delivery deadline passed",
+};
+
+/** A closed code in words, so "IN_PROGRESS" reads "In progress". */
+function plainWords(code: string): string {
+  const words = code.toLowerCase().replace(/[_:]/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function reasonWordsOf(code: string): string {
+  return lookup(END_REASON_WORDS, code) ?? (reasonWords(code) === code ? plainWords(code) : reasonWords(code));
+}
+
+// A step's outcome as the server sends it: a closed code, a rejection with its reason, a failure, or a settle list.
+function outcomeWords(outcome: string): string {
+  const rejected = /^REJECTED (\S+)$/.exec(outcome);
+  if (rejected?.[1]) return `Rejected: ${reasonWordsOf(rejected[1])}.`;
+  const failed = /^FAILED (\S+)$/.exec(outcome);
+  if (failed?.[1]) return stepWords(failed[1]);
+  if (outcome.startsWith("SETTLED ")) return `Settled: ${outcome.slice("SETTLED ".length).toLowerCase().replace(/_/g, " ")}.`;
+  // The server names the job, bid, and tree in these outcomes. The page says what happened, and the ids stay in the record.
+  if (outcome.startsWith("opened ")) return "Job opened.";
+  if (outcome.startsWith("bid ")) return "Bid placed.";
+  if (outcome.startsWith("pushed ")) return "Work pushed to the job's repository.";
+  if (/^[A-Z_]+$/.test(outcome)) return `${plainWords(outcome)}.`;
+  return outcome;
+}
+
 function resultWords(name: string, outcome: string): string {
-  const words = name === "approve" && outcome === "HELD" ? APPROVED_HELD : (lookup(DISPUTE_OUTCOME_WORDS, outcome) ?? outcome);
-  return words.replace(SETTLED_BY, (_, settled: string) => `(already settled at ${stepTitle(settled)})`);
+  const settled = ALREADY_SETTLED.exec(outcome);
+  if (settled) {
+    const [, status = "", step] = settled;
+    return `${plainWords(status)} (already settled${step === undefined ? "" : ` at ${stepTitle(step)}`})`;
+  }
+  return name === "approve" && outcome === "HELD" ? APPROVED_HELD : (lookup(DISPUTE_OUTCOME_WORDS, outcome) ?? outcomeWords(outcome));
 }
 
 function observedWords(end: ScenarioEndState): string {
-  return end.reason === null ? end.jobStatus : `${end.jobStatus} (${end.reason})`;
+  return end.reason === null ? plainWords(end.jobStatus) : `${plainWords(end.jobStatus)} (${reasonWordsOf(end.reason)})`;
 }
 
 /** A start refusal, or a cap refusal, in plain words. The code is the server's closed name. */
@@ -168,7 +207,7 @@ export function startRefusalWords(code: string, detail?: string): string {
 }
 
 function stepWords(code: string): string {
-  return lookup(REFUSAL_WORDS, code) ?? `The step failed (${code}).`;
+  return lookup(REFUSAL_WORDS, code) ?? "Something went wrong. Try again in a moment.";
 }
 
 function stepView(step: ScenarioStep): RunStepView {
@@ -184,7 +223,7 @@ function stepView(step: ScenarioStep): RunStepView {
 }
 
 function endedText(run: ScenarioRun, end: ScenarioEndState): string {
-  return `The job ended ${observedWords(end)}, and this scenario needs ${observedWords(EXPECTED_END[run.name])}.`;
+  return `The job's end state is ${observedWords(end)}, and this scenario needs ${observedWords(EXPECTED_END[run.name])}.`;
 }
 
 function failedText(run: ScenarioRun): string {
@@ -208,9 +247,8 @@ function endTextOf(run: ScenarioRun): string {
 }
 
 /**
- * The page's view of one run. `jobHref` is always null: the run's job is owned by the run's own visitor, and
- * the requester's session reads only its own visitor's jobs, so GET /api/jobs/:id refuses it with NOT_OWNER
- * (packages/core/src/acquit.ts sameWorld, the Job query). A link here would lead to a refusal.
+ * The page's view of one run. `jobHref` is the run's job once the run has stopped: the requester's session reads
+ * that job through startedRunJob in the Job query (packages/core/src/acquit.ts), in the platform's read-only view.
  */
 export function buildRunView(run: ScenarioRun): RunView {
   return {
@@ -220,7 +258,7 @@ export function buildRunView(run: ScenarioRun): RunView {
     steps: run.steps.map(stepView),
     endText: endTextOf(run),
     observed: run.endState === null ? null : observedWords(run.endState),
-    jobHref: null,
+    jobHref: run.state === "RUNNING" || !run.jobId ? null : `/jobs/${encodeURIComponent(run.jobId)}`,
     jobNote: JOB_NOTE,
   };
 }
