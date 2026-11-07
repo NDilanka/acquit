@@ -39,7 +39,7 @@ button { font: inherit; cursor: pointer; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
 .r { text-align: right; }
-h1 { font-size: 28px; line-height: 1.2; letter-spacing: -0.02em; margin: 8px 0 10px; font-weight: 650; }
+h1, .page-title { font-size: 28px; line-height: 1.2; letter-spacing: -0.02em; margin: 8px 0 10px; font-weight: 650; }
 h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
 pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 :is(a, button, input, select, textarea, .side-item, .idchip):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -503,7 +503,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .next-step { margin: 0 0 18px; font-size: 15px; color: var(--ink-2); }
 .next-step .eyebrow { margin-right: 6px; }
-.verifier { overflow: hidden; }
+.verifier { overflow: hidden; border-top: 1px solid var(--line); }
 .verifier .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-bottom: 8px; }
 /* The agent line sits right under the header, not 40px below it: the header's 8px, no paragraph margin, no top padding. */
 .verifier .verifier-agent { margin: 0; padding-top: 0; }

@@ -71,7 +71,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
       <div className="crumbs">Receipt</div>
       <div className="head">
         <div>
-          <h1>{r.title ?? "Paid job"}</h1>
+          <h2 className="page-title">{r.title ?? "Paid job"}</h2>
           <div className="meta">
             <IdChip value={r.id} />
             {r.issue !== null && <span>Issue #{r.issue}</span>}

@@ -13,7 +13,7 @@ export function VerifiersPage() {
     <>
       <div className="head">
         <div>
-          <h1>Verifiers</h1>
+          <h2 className="page-title">Verifiers</h2>
           <p className="muted">{PAGE_INTRO}</p>
         </div>
       </div>

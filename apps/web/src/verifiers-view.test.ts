@@ -38,7 +38,7 @@ test("the code row is Live and reads 11 of 11 cheats and 20 of 20 honest submiss
   assert.equal(code.simulatedNote, null);
 });
 
-test("the print row reads 11 of 12 frauds and 22 of 22 honest prints, names replay-same-file, is live for simulated farms only, and links to the print verifier", () => {
+test("the print row reads 11 of 12 frauds and 22 of 22 honest prints, names its replay gap in plain words, is live for simulated farms only, and links to the print verifier", () => {
   const print = rowTitled("3D printing (FDM)");
   assert.equal(print.status, "Live, simulated farms");
   assert.notEqual(print.status, "Live");
@@ -46,8 +46,9 @@ test("the print row reads 11 of 12 frauds and 22 of 22 honest prints, names repl
   assert.deepEqual(print.scoreCard, { cheatsCaught: 11, cheatsTotal: 12, honestPassed: 22, honestTotal: 22, gaps: ["replay-same-file"] });
   assert.deepEqual(linesOf(print), [
     "Caught 11 of 12 known frauds. Passed 22 of 22 honest prints.",
-    "Known gaps: replay-same-file.",
+    "Known gaps: it does not yet catch a replay of an earlier print of the same file.",
   ]);
+  assert.doesNotMatch([...linesOf(print), print.scoreNote ?? ""].join(" "), /replay-same-file/);
   assert.equal(print.simulatedNote, "Telemetry and photos are Simulated. Software proves the G-code and the evidence, not the atoms.");
 });
 
