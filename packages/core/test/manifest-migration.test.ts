@@ -59,7 +59,7 @@ test("the migration gives every stored job the manifest it was frozen with, once
 			.map(row => JSON.stringify(row));
 		// The migration, exactly what `ctl migrate` runs: open with the registry's fixture refs.
 		const refs = [{ repository: fixture.repository, issue: { number: 12 }, frozenTestPath: fixture.frozenTestPath, demoForkPrefix: fixture.demoForkPrefix }];
-		const migrated = openDatabase(path, refs);
+		const migrated = openDatabase(path, refs, fixture.repository);
 		const manifests = migrated.prepare("SELECT job_id, json FROM job_manifests ORDER BY job_id").all();
 		assert.equal(manifests.length, 3);
 		const expected = manifestOf(fixture, "maya-client/invoice-app");
@@ -72,7 +72,7 @@ test("the migration gives every stored job the manifest it was frozen with, once
 		assert.deepEqual(after, before);
 		migrated.close();
 		// A second migration inserts nothing new.
-		const again = openDatabase(path, refs);
+		const again = openDatabase(path, refs, fixture.repository);
 		assert.equal(again.prepare("SELECT COUNT(*) AS n FROM job_manifests").get()!.n, 3);
 		assert.deepEqual(again.prepare("SELECT id, json FROM jobs ORDER BY id").all().map(row => JSON.stringify(row)), before);
 		again.close();
@@ -139,7 +139,7 @@ test("the migration gives a held visitor job on a registered demo fork its manif
 		}
 		const before = new SqliteStore(path).db.prepare("SELECT id, json FROM jobs ORDER BY id").all().map(row => JSON.stringify(row));
 		const refs = [{ repository: fixture.repository, issue: { number: 12 }, frozenTestPath: fixture.frozenTestPath, demoForkPrefix: fixture.demoForkPrefix }];
-		const migrated = openDatabase(path, refs);
+		const migrated = openDatabase(path, refs, fixture.repository);
 		const manifests = migrated.prepare("SELECT job_id, json FROM job_manifests").all();
 		assert.equal(manifests.length, 1, "the visitor job holds exactly one manifest row");
 		assert.equal(String(manifests[0]!.job_id), "job_visitor");
@@ -148,11 +148,11 @@ test("the migration gives a held visitor job on a registered demo fork its manif
 		assert.deepEqual(migrated.prepare("SELECT id, json FROM jobs ORDER BY id").all().map(row => JSON.stringify(row)), before);
 		migrated.close();
 		// A second migration inserts nothing new.
-		const again = openDatabase(path, refs);
+		const again = openDatabase(path, refs, fixture.repository);
 		assert.equal(again.prepare("SELECT COUNT(*) AS n FROM job_manifests").get()!.n, 1);
 		again.close();
 		// The migrated job's dispatch reads its manifest and starts the run; no CONTRACT_NOT_FROZEN park.
-		const reader = new SqliteStore(path, refs);
+		const reader = new SqliteStore(path, refs, fixture.repository);
 		const started: VerifierRunRequest[] = [];
 		const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };
 		const ports: Ports = { store: reader, feeModel: { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") }, fixtures: [],

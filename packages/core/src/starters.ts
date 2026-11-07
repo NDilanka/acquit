@@ -13,9 +13,7 @@
 import type { CommandOutcome, UserCommand } from "./acquit.ts";
 import { derivedRequestKey, executeCommand } from "./effects.ts";
 import type { Ports } from "./effects.ts";
-import type { FixtureContract } from "./fixtures.ts";
-import { matchFixture } from "./fixtures.ts";
-import { HOUSE_CLIENT_ID, houseClientActor, isStarterJob } from "./house-client.ts";
+import { HOUSE_CLIENT_ID, houseClientActor, isStarterJob, retirable, starterPool } from "./house-client.ts";
 import { addHours, hours, instant } from "./ids.ts";
 import type { Instant, JobId, VisitorId } from "./ids.ts";
 import type { UsdCents } from "./ledger.ts";
@@ -39,17 +37,6 @@ export type HouseAccount = { readonly id: VisitorId; readonly repository: string
 /** What the pass needs beside the ports: the jobs' funding choice, which lives beside the row. */
 export type HouseClientPorts = Ports & { readonly fundWithCard: (jobId: JobId, at: Instant) => void };
 
-/**
- * The fixtures a starter can be opened from on this account's repository, in a fixed order so the rotation is the
- * same in every process. A practice issue is never a starter: it belongs to qualification, not to the market.
- */
-export function starterPool(fixtures: readonly FixtureContract[], repository: string | null): readonly FixtureContract[] {
-	return fixtures
-		.filter(fixture => fixture.practice !== true)
-		.filter(fixture => matchFixture(fixtures, repository ?? fixture.repository, fixture.issue.number, repository) === fixture)
-		.toSorted((a, b) => a.repository.localeCompare(b.repository) || a.issue.number - b.issue.number);
-}
-
 /** The account's starter jobs, oldest first. Their count is the ordinal the next starter opens under. */
 function startersOf(jobs: readonly JobRow[], account: HouseAccount): readonly JobRow[] {
 	return jobs.filter(row => row.tenant === account.id && isStarterJob(row))
@@ -72,11 +59,21 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 	let acted = 0;
 	const jobs = await ports.store.listJobs();
 	const starters = startersOf(jobs, account);
-	const open = starters.filter(row => row.state.status === "OPEN").length;
+	const pool = starterPool(ports.fixtures, account.repository, ports.clientRepository ?? null);
+	// A starter on an issue the pool no longer holds is cancelled while no bid on it could still fund it. This snapshot only picks
+	// the candidates: the cancel asks the same question of the row it commits, so a bid or an accept that lands later keeps the
+	// starter. The cancel is the account's own command under a key derived from the job, so a replayed pass answers REPLAY.
+	const retired = new Set<JobId>();
+	for (const row of starters) {
+		if (!retirable(row, ports.fixtures, account.repository, ports.clientRepository ?? null)) continue;
+		const outcome = await send(`retire:${row.id}`, { type: "CancelJob", jobId: row.id, retire: true });
+		if (outcome.kind === "COMMITTED") acted++;
+		if (outcome.kind !== "DENIED") retired.add(row.id);
+	}
+	const open = starters.filter(row => row.state.status === "OPEN" && !retired.has(row.id)).length;
 	// The opening pair, then one more whenever none is open. The ordinal is the count already opened, so a
 	// replayed pass names the same starter, and the day's cap is the reservation OpenJob writes.
 	const wanted = starters.length < STARTER_OPENING_COUNT ? STARTER_OPENING_COUNT - starters.length : open === 0 ? 1 : 0;
-	const pool = starterPool(ports.fixtures, account.repository);
 	for (let i = 0; i < wanted && pool.length > 0; i++) {
 		const ordinal = starters.length + i;
 		const fixture = pool[ordinal % pool.length]!;
@@ -89,6 +86,7 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 		if (outcome.kind === "COMMITTED") acted++;
 	}
 	for (const row of starters) {
+		if (retired.has(row.id)) continue;
 		const now = ports.clock.now();
 		if (row.state.status === "OPEN" && row.state.phase.kind === "BIDDING" && row.state.phase.fundingRounds < HOUSE_ACCEPT_ROUNDS) {
 			const pending = row.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING");

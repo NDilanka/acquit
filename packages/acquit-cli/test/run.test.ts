@@ -1309,16 +1309,17 @@ test("the rerun fetch never recurses into a work-tree submodule, so the scoped t
 		const modulesMark = remote.requests().length;
 		prepareWorkRepo(git, fixedModules, modulesBare, frozen, env, askpass.env);
 		assert.equal(remote.requests().length, modulesMark, "a planted .gitmodules re-enabled recursion");
-		// Control: the old fetch shape (a remote name git resolves from config, no flag) dials the
-		// planted host and sends the canary, so the zero-hit arms prove the fix and not a dead server.
+		// Control: a fetch that recurses dials the planted host and sends the canary, so the zero-hit
+		// arms prove the fix and not a dead server. Recursion is named because git 2.56 no longer
+		// fetches this planted submodule on demand, which would leave the control proving nothing.
 		const controlBare = bareFor("control");
 		const control = plantRun1("job_CTRL", controlBare);
 		const controlMark = remote.requests().length;
-		const oldShape = spawnSync("git", ["--git-dir", control.gitDir, "--work-tree", control.workTree, "fetch", "--quiet", "--no-tags", "origin"],
+		const oldShape = spawnSync("git", ["--git-dir", control.gitDir, "--work-tree", control.workTree, "fetch", "--quiet", "--no-tags", "--recurse-submodules=yes", "origin"],
 			{ encoding: "utf8", env: { ...env, ...askpass.env }, timeout: 60_000 });
 		const fresh = remote.requests().slice(controlMark);
-		assert.ok(fresh.length > 0, `the old fetch shape never dialed the planted host: ${oldShape.stderr}`);
-		assert.equal(carriedCanary(fresh, canary), true, "the old fetch shape never sent the canary");
+		assert.ok(fresh.length > 0, `the recursive control fetch never dialed the planted host: ${oldShape.stderr}`);
+		assert.equal(carriedCanary(fresh, canary), true, "the recursive control fetch never sent the canary");
 	} finally {
 		remote.stop();
 		secret.remove();

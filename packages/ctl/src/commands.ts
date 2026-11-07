@@ -435,8 +435,9 @@ export async function migrate(parsed: Parsed, ctx: Context): Promise<Result> {
 	// The manifest backfill matches each stored job by the fixture registry this deployment declares;
 	// a registry that names none of the database's jobs refuses by name instead of guessing.
 	const { fixtureRefs, loadFixtureRegistry } = await import("../../verifier/fixtures.ts");
+	const { clientRepositoryEnv } = await import("../../verifier/config.ts");
 	const registry = loadFixtureRegistry();
-	const store = new SqliteStore(path, fixtureRefs(registry));
+	const store = new SqliteStore(path, fixtureRefs(registry), clientRepositoryEnv());
 	try {
 		const names = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
 			.map(row => String(row.name));

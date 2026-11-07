@@ -97,7 +97,7 @@ function portsFor(store: SqliteStore, fixtures: readonly FixtureContract[]): Por
 		verifyWebhookDelivery: async () => ({ kind: "VERIFIED" }),
 		readResource: async () => ({ kind: "UNKNOWN" }) as ResourceRead,
 	};
-	return { store, feeModel: model, fixtures, clock: { now: () => now }, verifier: { start: unimplemented, parseCallback: unimplemented },
+	return { store, feeModel: model, fixtures, clientRepository: "maya-client/invoice-app", clock: { now: () => now }, verifier: { start: unimplemented, parseCallback: unimplemented },
 		github: { merge: unimplemented }, alerts: { raise: unimplemented }, paypal };
 }
 
@@ -199,22 +199,33 @@ test("a visitor opens on its own fork and the manifest names the fork; nobody el
 
 test("matchFixture keys on fixture repository and issue, with the demo fork rule", () => {
 	const fixtures = [fixtureA, fixtureB];
-	assert.equal(matchFixture(fixtures, "maya-client/invoice-app", 12, null)?.issue.title, fixtureA.issue.title);
-	assert.equal(matchFixture(fixtures, "maya-client/expense-splitter", 7, null)?.repository, fixtureB.repository);
-	assert.equal(matchFixture(fixtures, "maya-client/invoice-app", 7, null), null, "wrong issue for the repo");
-	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, "acquit-forks/demo-aabbcc112233")?.repository, fixtureA.repository);
-	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, null), null, "a fork name without a visitor actor");
+	const upstream = fixtureA.repository;
+	assert.equal(matchFixture(fixtures, "maya-client/invoice-app", 12, null, upstream)?.issue.title, fixtureA.issue.title);
+	assert.equal(matchFixture(fixtures, "maya-client/expense-splitter", 7, null, upstream)?.repository, fixtureB.repository);
+	assert.equal(matchFixture(fixtures, "maya-client/invoice-app", 7, null, upstream), null, "wrong issue for the repo");
+	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, "acquit-forks/demo-aabbcc112233", upstream)?.repository, fixtureA.repository);
+	assert.equal(matchFixture(fixtures, "acquit-forks/demo-aabbcc112233", 12, null, upstream), null, "a fork name without a visitor actor");
 	// An account made now forks as ws-; one made before keeps its demo- fork, and both open the fixture.
-	assert.equal(matchFixture(fixtures, "acquit-forks/ws-aabbcc112233", 12, "acquit-forks/ws-aabbcc112233")?.repository, fixtureA.repository);
-	assert.equal(matchFixture(fixtures, "acquit-forks/wsx-aabbcc112233", 12, "acquit-forks/wsx-aabbcc112233"), null, "a name that only starts like ws");
-	assert.equal(matchFixture(fixtures, "acquit-forks/other-aabbcc112233", 12, "acquit-forks/other-aabbcc112233"), null, "a fork outside the fixture's demo prefix");
+	assert.equal(matchFixture(fixtures, "acquit-forks/ws-aabbcc112233", 12, "acquit-forks/ws-aabbcc112233", upstream)?.repository, fixtureA.repository);
+	assert.equal(matchFixture(fixtures, "acquit-forks/wsx-aabbcc112233", 12, "acquit-forks/wsx-aabbcc112233", upstream), null, "a name that only starts like ws");
+	assert.equal(matchFixture(fixtures, "acquit-forks/other-aabbcc112233", 12, "acquit-forks/other-aabbcc112233", upstream), null, "a fork outside the fixture's demo prefix");
 });
 
-test("a fork that two registered fixtures both name matches neither, so it never freezes the listed first", () => {
-	const sharing: FixtureContract = { ...fixtureA, repository: "other-client/invoice-app", frozenAt: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as CommitSha };
+test("a fork matches only the fixture on the upstream its forks are made from", () => {
+	const fork = "acquit-forks/ws-aabbcc112233";
+	const splitter = { ...fixtureB, demoForkPrefix: "acquit-forks/" };
+	const fixtures = [fixtureA, splitter];
+	assert.equal(matchFixture(fixtures, fork, 7, fork, fixtureA.repository), null, "an expense-splitter issue is not opened on the invoice app's fork");
+	assert.equal(matchFixture(fixtures, fork, 12, fork, fixtureA.repository)?.repository, fixtureA.repository);
+	assert.equal(matchFixture(fixtures, fork, 7, fork, fixtureB.repository)?.repository, fixtureB.repository, "a fork of the splitter opens its issue");
+	assert.equal(matchFixture(fixtures, fork, 12, fork, null), null, "with no upstream known, no fork matches");
+});
+
+test("a fork that two registered fixtures on its upstream both name matches neither, so it never freezes the listed first", () => {
+	const sharing: FixtureContract = { ...fixtureA, frozenAt: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as CommitSha };
 	const fork = "acquit-forks/demo-aabbcc112233";
-	assert.equal(matchFixture([sharing, fixtureA], fork, 12, fork), null, "both entries carry the same prefix and issue");
-	assert.equal(matchFixture([fixtureA, sharing], fork, 12, fork), null, "the order of the registry does not decide it");
+	assert.equal(matchFixture([sharing, fixtureA], fork, 12, fork, fixtureA.repository), null, "both entries carry the same upstream, prefix, and issue");
+	assert.equal(matchFixture([fixtureA, sharing], fork, 12, fork, fixtureA.repository), null, "the order of the registry does not decide it");
 });
 
 test("two jobs on two fixtures in one verifier process: each run receives only its own cases", async () => {

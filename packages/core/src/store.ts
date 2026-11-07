@@ -53,8 +53,8 @@ function migrateLastingAccounts(db: DatabaseSync): void {
 	db.exec("CREATE UNIQUE INDEX IF NOT EXISTS visitors_recovery ON visitors(recovery_digest) WHERE recovery_digest IS NOT NULL");
 }
 
-/** The store's own schema. The fixtures drive the M1 manifest backfill; absent, no backfill runs. */
-export function openDatabase(path: string, fixtures: readonly FixtureRef[] = []): DatabaseSync {
+/** The store's own schema. The fixtures drive the M1 manifest backfill; absent, no backfill runs. The upstream is the client repository the forks are made from. */
+export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [], upstream: string | null = null): DatabaseSync {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 	const db = new DatabaseSync(path);
 	// The lock guard goes on before the first write. The migration below drops a table, and a second
@@ -137,8 +137,8 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [])
 		const done = storedDefinitionOfDone(job);
 		if (!done) continue;
 		// The stored repository is the visitor context the open validated (a visitor's job sits on the
-		// fork its session carried), so a registered demo fork matches; every other job matches exactly.
-		const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, done.issue.repository);
+		// fork its session carried), so a registered demo fork of the upstream matches; every other job matches exactly.
+		const fixture = matchFixture(fixtures, done.issue.repository, done.issue.number, done.issue.repository, upstream);
 		if (!fixture) { console.warn(`Manifest backfill skipped for ${logBare(String(row.id))}: no registered fixture for ${done.issue.repository}#${done.issue.number}`); continue; }
 		db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(String(row.id), JSON.stringify({ ...done, frozenTestPath: fixture.frozenTestPath }));
 	}
@@ -269,9 +269,11 @@ export function outboxDue(state: OutboxState): string | null {
 export class SqliteStore implements Store {
 	readonly db: DatabaseSync;
 	readonly #fixtures: readonly FixtureRef[];
-	constructor(path: string, fixtures: readonly FixtureRef[] = []) {
+	readonly #upstream: string | null;
+	constructor(path: string, fixtures: readonly FixtureRef[] = [], upstream: string | null = null) {
 		this.#fixtures = fixtures;
-		this.db = openDatabase(path, fixtures);
+		this.#upstream = upstream;
+		this.db = openDatabase(path, fixtures, upstream);
 	}
 	// The job's own funding source lives beside the row, not in it: a command that read a row before a
 	// choice was stored must not be able to write a stale copy back over it.
@@ -435,10 +437,10 @@ export class SqliteStore implements Store {
 				// The manifest freeze travels with the job's own transaction on every path that stores a
 				// row whose contract carries one. The first write wins, so a later commit never moves it.
 				// The frozen contract's own repository is the actor context its open validated: a
-				// registered demo fork matches, and every other job matches exactly.
+				// registered demo fork of the upstream matches, and every other job matches exactly.
 				const frozen = storedDefinitionOfDone(row);
 				if (frozen) {
-					const fixture = matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, frozen.issue.repository);
+					const fixture = matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, frozen.issue.repository, this.#upstream);
 					const done = fixture ? { ...frozen, frozenTestPath: fixture.frozenTestPath }
 						: frozen.frozenTestPath !== undefined ? frozen : null;
 					if (done) this.db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(row.id, JSON.stringify(done));
