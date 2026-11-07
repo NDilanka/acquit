@@ -5,6 +5,8 @@ import { match, showsTryCta, signedOutPage } from "./route.ts";
 test("/demo, /start, and /welcome-back match with or without a trailing slash", () => {
   assert.deepEqual(match("/demo"), { name: "demo" });
   assert.deepEqual(match("/demo/"), { name: "demo" });
+  assert.deepEqual(match("/tour"), { name: "tour" });
+  assert.deepEqual(match("/tour/"), { name: "tour" });
   assert.deepEqual(match("/start"), { name: "start" });
   assert.deepEqual(match("/start/"), { name: "start" });
   assert.deepEqual(match("/welcome-back"), { name: "welcomeBack" });
@@ -18,6 +20,7 @@ test("/ stays the home route", () => {
 test("signed out, / is the landing page, /demo moves to /start, and every other route asks for sign-in", () => {
   assert.equal(signedOutPage(match("/")), "landing");
   assert.equal(signedOutPage(match("/demo")), "toStart");
+  assert.equal(signedOutPage(match("/tour")), "toStart");
   assert.equal(signedOutPage(match("/start")), "signIn");
   assert.equal(signedOutPage(match("/welcome-back")), "welcomeBack");
   assert.equal(signedOutPage(match("/cli")), "signIn");

@@ -1,7 +1,7 @@
 import type { Route } from "./route";
 
 export type Role = "CLIENT" | "OPERATOR" | "PLATFORM";
-export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "bids" | "work" | "earnings";
+export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "play" | "bids" | "work" | "earnings";
 /** A Public item sits under its own label in the sidebar. */
 export type NavItem = { readonly to: string; readonly label: string; readonly icon: NavIcon; readonly group?: "Public" };
 
@@ -27,8 +27,11 @@ const PUBLIC_PAGES: readonly NavItem[] = [
   { to: "/print", label: "Print verifier", icon: "printer", group: "Public" },
 ];
 
+/** The scenarios need a signed-in account, so only a signed-in role lists them. */
+const SCENARIOS: NavItem = { to: "/tour", label: "Scenarios", icon: "play", group: "Public" };
+
 export function navFor(role: Role): readonly NavItem[] {
-  return [...ROLE_PAGES[role], ...PUBLIC_PAGES];
+  return [...ROLE_PAGES[role], ...PUBLIC_PAGES, SCENARIOS];
 }
 
 /** Signed out, the sidebar lists the public pages; the Try Acquit button sits under them. */
@@ -68,6 +71,8 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Public", title: "Verifiers" };
     case "print":
       return { eyebrow: "Public", title: "Print verifier" };
+    case "tour":
+      return { eyebrow, title: "Scenarios" };
     case "operator":
       return { eyebrow, title: "Find work" };
     case "operatorBids":

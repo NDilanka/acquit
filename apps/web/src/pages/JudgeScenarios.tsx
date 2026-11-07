@@ -8,10 +8,10 @@ import { buildRunView, nextPollMs, startRefusalWords, type RunStepView, type Sce
 type Panel = { readonly scenarioId: string; readonly run: ScenarioRun | null; readonly error: string | null };
 
 /**
- * The judge-scenario buttons, one per card. One click starts a run on the server, and the run's steps show as the server
- * finishes them. A run starts only from a demo, so `ensureDemo` gives the click its demo session first.
+ * The scenario buttons, one per card, on the signed-in /tour page. One click starts a run on the server, and the run's
+ * steps show as the server finishes them. The run belongs to the signed-in account, so no second account is made here.
  */
-export function JudgeScenarios({ ensureDemo }: { ensureDemo: () => Promise<unknown> }) {
+export function JudgeScenarios() {
   const [starting, setStarting] = useState<ScenarioName | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -48,7 +48,6 @@ export function JudgeScenarios({ ensureDemo }: { ensureDemo: () => Promise<unkno
     setStartError(null);
     setPanel(null);
     try {
-      await ensureDemo();
       const started = await api.startScenario(card.name);
       setPanel({ scenarioId: started.scenarioId, run: null, error: null });
     } catch (e) {
@@ -63,7 +62,7 @@ export function JudgeScenarios({ ensureDemo }: { ensureDemo: () => Promise<unkno
       <h2 id={`${id}-title`}>Run a whole job story</h2>
       <p className="muted">
         Each button runs one job from start to end on the server, and its steps appear here as they finish. Each run gets its own
-        client and operator, separate from your account.
+        client and operator, so it never changes your own jobs. When a run ends, you can open its job.
       </p>
       <div className="scenario-grid">
         {SCENARIO_CARDS.map(card => (
@@ -103,8 +102,12 @@ function RunPanel({ run, error }: { run: ScenarioRun | null; error: string | nul
       {error && <div className="alert">{error}</div>}
       <p className={failed ? "alert" : undefined} role="status">{view.endText}</p>
       {view.observed !== null && <p className="muted">Observed end state: {view.observed}</p>}
-      {view.jobHref !== null && <a className="btn ghost sm" href={view.jobHref}>Open the job</a>}
-      <p className="muted">{view.jobNote}</p>
+      {view.jobHref !== null && (
+        <>
+          <a className="btn ghost sm" href={view.jobHref}>Open the job</a>
+          <p className="muted">{view.jobNote}</p>
+        </>
+      )}
     </section>
   );
 }

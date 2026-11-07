@@ -42,27 +42,28 @@ test("a RUNNING run mid-way shows its finished steps with their labels and times
     state: "RUNNING",
     stateWords: "Running",
     steps: [
-      { title: "Client opens the job", actorText: "Client", label: "Scripted agent (Simulated)", reached: [], result: "opened job_1", ms: 412 },
-      { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", reached: [], result: "bid bid_1", ms: 388 },
+      { title: "Client opens the job", actorText: "Client", label: "Scripted agent (Simulated)", reached: [], result: "Job opened.", ms: 412 },
+      { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", reached: [], result: "Bid placed.", ms: 388 },
       { title: "Client accepts and funds escrow", actorText: "Client", label: "Scripted agent (Simulated)",
         reached: [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }, { label: "GitHub work repository", sandboxNote: null }],
-        result: "HELD", ms: 9120 },
+        result: "Held.", ms: 9120 },
     ],
     endText: "Running. Each step appears when the server finishes it, with the time it measured.",
     observed: null,
     jobHref: null,
-    jobNote: "The run's job belongs to its own workspace, so this page cannot open it. The steps above are the record of that job.",
+    jobNote: "The job page shows where this run left the job.",
   });
 });
 
 // One DONE run per scenario, each ending in its own end state. The end text is the card's own sentence.
 const DONE_CASES: readonly [ScenarioName, JobStatus, string, string, string][] = [
-  ["verified-and-paid", "PAID", "CLIENT_APPROVAL", "Paid. The client approved a verified fix.", "PAID (CLIENT_APPROVAL)"],
-  ["hidden-test-fail", "IN_PROGRESS", "TESTS_FAILED:hidden", "Rejected on hidden tests. The escrow stays held.", "IN_PROGRESS (TESTS_FAILED:hidden)"],
-  ["test-tamper", "IN_PROGRESS", "PROTECTED_PATH_MODIFIED", "Rejected for changing a protected test file. The escrow stays held.", "IN_PROGRESS (PROTECTED_PATH_MODIFIED)"],
-  ["dispute-arbiter", "PAID", "ARBITER_UPHELD", "Paid. The arbiter upheld the delivered fix.", "PAID (ARBITER_UPHELD)"],
-  ["buyer-dispute", "PAID", "CLIENT_APPROVAL", "Paid. The buyer's PayPal dispute resolved for the seller after the approval was held.", "PAID (CLIENT_APPROVAL)"],
-  ["deadline-refund", "REFUNDED", "DELIVERY_DEADLINE", "Refunded. The delivery deadline passed.", "REFUNDED (DELIVERY_DEADLINE)"],
+  ["verified-and-paid", "PAID", "CLIENT_APPROVAL", "Paid. The client approved a verified fix.", "Paid (Approved by the client)"],
+  ["hidden-test-fail", "IN_PROGRESS", "TESTS_FAILED:hidden", "Rejected on hidden tests. The escrow stays held.", "In progress (Hidden tests failed)"],
+  ["test-tamper", "IN_PROGRESS", "PROTECTED_PATH_MODIFIED", "Rejected for changing a protected test file. The escrow stays held.",
+    "In progress (A protected test file was changed)"],
+  ["dispute-arbiter", "PAID", "ARBITER_UPHELD", "Paid. The arbiter upheld the delivered fix.", "Paid (Upheld by the arbiter)"],
+  ["buyer-dispute", "PAID", "CLIENT_APPROVAL", "Paid. The buyer's PayPal dispute resolved for the seller after the approval was held.", "Paid (Approved by the client)"],
+  ["deadline-refund", "REFUNDED", "DELIVERY_DEADLINE", "Refunded. The delivery deadline passed.", "Refunded (Delivery deadline passed)"],
 ];
 
 test("a buyer-disputes run names its dispute as simulated, and reads the held approval and the resolution in plain words", () => {
@@ -99,7 +100,7 @@ for (const [name, jobStatus, reason, endText, observed] of DONE_CASES) {
     assert.equal(view.stateWords, "Done");
     assert.equal(view.endText, endText);
     assert.equal(view.observed, observed);
-    assert.equal(view.jobHref, null);
+    assert.equal(view.jobHref, "/jobs/job_1");
   });
 }
 
@@ -128,8 +129,8 @@ test("a FAILED run that ends in a wrong end state names the step, and the observ
     ],
     endState: { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
   });
-  assert.equal(view.endText, "Failed after Verifier checks the submission. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
-  assert.equal(view.observed, "IN_PROGRESS (TESTS_FAILED:hidden)");
+  assert.equal(view.endText, "Failed after Verifier checks the submission. The job's end state is In progress (Hidden tests failed), and this scenario needs Paid (Approved by the client).");
+  assert.equal(view.observed, "In progress (Hidden tests failed)");
   assert.equal(view.endText.includes("Paid."), false);
 });
 
@@ -158,8 +159,8 @@ test("a FAILED run whose verdict was not the one its scenario needs names the st
     ],
     endState: { jobStatus: "IN_PROGRESS", reason: "TESTS_FAILED:hidden" },
   });
-  assert.equal(view.endText, "Failed at Verifier checks the submission. The verifier's verdict was not the one this scenario needs. The job ended IN_PROGRESS (TESTS_FAILED:hidden), and this scenario needs PAID (CLIENT_APPROVAL).");
-  assert.equal(view.observed, "IN_PROGRESS (TESTS_FAILED:hidden)");
+  assert.equal(view.endText, "Failed at Verifier checks the submission. The verifier's verdict was not the one this scenario needs. The job's end state is In progress (Hidden tests failed), and this scenario needs Paid (Approved by the client).");
+  assert.equal(view.observed, "In progress (Hidden tests failed)");
   assert.equal(view.endText.includes("no end state"), false);
 });
 
@@ -201,7 +202,7 @@ test("a run stored before reach was kept shows its labels and says its reach was
     startedAt: "2026-05-01T10:00:00.000Z", endedAt: "2026-05-01T10:00:01.000Z" };
   const view = buildRunView({ ...RUN, name: "dispute-arbiter", steps: [legacy] });
   assert.deepEqual(view.steps, [
-    { title: "Arbiter rules on the dispute", actorText: "Arbiter", label: "Scripted agent (Simulated)", reached: null, result: "ARBITER_UPHELD", ms: 1734 },
+    { title: "Arbiter rules on the dispute", actorText: "Arbiter", label: "Scripted agent (Simulated)", reached: null, result: "Arbiter upheld.", ms: 1734 },
   ]);
 });
 
@@ -225,9 +226,9 @@ test("a settle step reads Pending work settles, with the sandbox note only when 
     ],
   });
   assert.deepEqual(view.steps, [
-    { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", reached: [], result: "bid bid_1", ms: 388 },
+    { title: "Operator places a bid", actorText: "Operator", label: "Scripted agent (Simulated)", reached: [], result: "Bid placed.", ms: 388 },
     { title: "Pending work settles", actorText: "System", label: "PayPal sandbox",
-      reached: [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }], result: "SETTLED REFUND, REIMBURSE", ms: 4235 },
+      reached: [{ label: "PayPal sandbox", sandboxNote: "No real money moves." }], result: "Settled: refund, reimburse.", ms: 4235 },
   ]);
 });
 
@@ -254,7 +255,7 @@ test("a settle step that ran GitHub work reads GitHub work repository, with no s
   });
   assert.deepEqual(view.steps, [
     { title: "Pending work settles", actorText: "System", label: "GitHub work repository",
-      reached: [{ label: "GitHub work repository", sandboxNote: null }], result: "SETTLED MERGE", ms: 6 },
+      reached: [{ label: "GitHub work repository", sandboxNote: null }], result: "Settled: merge.", ms: 6 },
   ]);
 });
 
@@ -265,7 +266,7 @@ test("a record-run step reads Server records the run, with its own label and rea
     steps: [step("record-run", "SYSTEM", SERVER, 3, "FAILED STORE_WRITE_FAILED")],
   });
   assert.deepEqual(view.steps, [
-    { title: "Server records the run", actorText: "System", label: "Server record (no outside call)", reached: [], result: "FAILED STORE_WRITE_FAILED", ms: 3 },
+    { title: "Server records the run", actorText: "System", label: "Server record (no outside call)", reached: [], result: "Something went wrong. Try again in a moment.", ms: 3 },
   ]);
 });
 
@@ -280,7 +281,7 @@ test("a FAILED run whose settle step failed names that step and its code, and sa
     ],
     endState: null,
   });
-  assert.equal(view.endText, "Failed at Pending work settles. The step failed (PAYPAL_UNAVAILABLE). The run reached no end state.");
+  assert.equal(view.endText, "Failed at Pending work settles. Something went wrong. Try again in a moment. The run reached no end state.");
   assert.equal(view.observed, null);
 });
 
@@ -291,8 +292,8 @@ test("a FAILED run whose final write failed names the record-run step and keeps 
     steps: [step("record-run", "SYSTEM", SERVER, 3, "FAILED STORE_WRITE_FAILED")],
     endState: { jobStatus: "PAID", reason: "CLIENT_APPROVAL" },
   });
-  assert.equal(view.endText, "Failed at Server records the run. The step failed (STORE_WRITE_FAILED). The job ended PAID (CLIENT_APPROVAL), and this scenario needs PAID (CLIENT_APPROVAL).");
-  assert.equal(view.observed, "PAID (CLIENT_APPROVAL)");
+  assert.equal(view.endText, "Failed at Server records the run. Something went wrong. Try again in a moment. The job's end state is Paid (Approved by the client), and this scenario needs Paid (Approved by the client).");
+  assert.equal(view.observed, "Paid (Approved by the client)");
 });
 
 test("a run still going is read again in 2 seconds, and a stopped run is not read again", () => {

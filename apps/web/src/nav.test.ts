@@ -10,6 +10,7 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
     ["Post a job", "/jobs/new"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
+    ["Scenarios", "/tour"],
   ]);
 });
 
@@ -22,12 +23,13 @@ test("an operator's navigation is Find work, My bids, My work, Earnings, and Das
     ["Dashboards", "/studio"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
+    ["Scenarios", "/tour"],
   ]);
 });
 
 test("the public pages sit under the Public label, and CLI sign-in, Tutorials, and Agents are not listed", () => {
   const publicPages = navFor("OPERATOR").filter((item) => item.group === "Public").map((item) => item.label);
-  assert.deepEqual(publicPages, ["Verifiers", "Print verifier"]);
+  assert.deepEqual(publicPages, ["Verifiers", "Print verifier", "Scenarios"]);
   const labels = navFor("OPERATOR").map((item) => item.label);
   assert.equal(labels.includes("CLI sign-in"), false);
   assert.equal(labels.includes("Tutorials"), false);
@@ -39,10 +41,11 @@ test("a platform user's navigation is Dashboards, then the two public pages", ()
     ["Dashboards", "/studio"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
+    ["Scenarios", "/tour"],
   ]);
 });
 
-test("signed out, the sidebar lists Verifiers and Print verifier", () => {
+test("signed out, the sidebar lists Verifiers and Print verifier, and not Scenarios", () => {
   assert.deepEqual(pairs(signedOutNav()), [
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
@@ -91,6 +94,7 @@ test("each route has one heading, and the eyebrow names the role", () => {
   assert.deepEqual(pageHeading({ name: "studio" }, "PLATFORM"), { eyebrow: "Platform", title: "Dashboards" });
   assert.deepEqual(pageHeading({ name: "verifiers" }, null), { eyebrow: "Public", title: "Verifiers" });
   assert.deepEqual(pageHeading({ name: "print" }, null), { eyebrow: "Public", title: "Print verifier" });
+  assert.deepEqual(pageHeading({ name: "tour" }, "OPERATOR"), { eyebrow: "Operator", title: "Scenarios" });
   assert.deepEqual(pageHeading({ name: "notFound" }, null), { eyebrow: "Acquit", title: "Page not found" });
   assert.deepEqual(pageHeading({ name: "start" }, null), { eyebrow: "Welcome", title: "Try Acquit" });
   assert.deepEqual(pageHeading({ name: "demo" }, null), { eyebrow: "Welcome", title: "Try Acquit" });

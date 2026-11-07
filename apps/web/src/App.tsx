@@ -19,6 +19,7 @@ import { VerifiersPage } from "./pages/Verifiers";
 import { PrintDemoPage } from "./pages/PrintDemo";
 import { EarningsPage, FindWorkPage, MyBidsPage, MyWorkPage } from "./pages/operator/OperatorRoutes";
 import { CliLogin } from "./pages/CliLogin";
+import { JudgeScenarios } from "./pages/JudgeScenarios";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -159,6 +160,8 @@ function Routes() {
       return <EarningsPage />;
     case "cli":
       return <CliLogin />;
+    case "tour":
+      return <JudgeScenarios />;
     case "studio":
       return <Studio />;
     case "welcomeBack":

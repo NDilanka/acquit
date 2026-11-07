@@ -8,6 +8,7 @@ export type Route =
   | { name: "receipt"; id: string }
   | { name: "verifiers" }
   | { name: "print" }
+  | { name: "tour" }
   | { name: "operator" }
   | { name: "operatorBids" }
   | { name: "operatorWork" }
@@ -30,6 +31,7 @@ export function match(path: string): Route {
   if (path === "/studio") return { name: "studio" };
   if (path === "/verifiers" || path === "/verifiers/") return { name: "verifiers" };
   if (path === "/print" || path === "/print/") return { name: "print" };
+  if (path === "/tour" || path === "/tour/") return { name: "tour" };
   const job = /^\/jobs\/([^/]+)\/?$/.exec(path);
   if (job?.[1]) return { name: "job", id: decodeURIComponent(job[1]) };
   const receipt = /^\/receipts\/([^/]+)\/?$/.exec(path);
@@ -37,7 +39,7 @@ export function match(path: string): Route {
   return { name: "notFound" };
 }
 
-/** What a signed-out browser sees on a route. `/demo` is the old address of `/start`, so it moves there. */
+/** What a signed-out browser sees on a route. `/demo` is the old address of `/start`, so it moves there, and so do the scenarios. */
 export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" | "toStart" | "welcomeBack" {
   switch (route.name) {
     case "home":
@@ -45,6 +47,7 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
     case "notFound":
       return "notFound";
     case "demo":
+    case "tour":
       return "toStart";
     case "welcomeBack":
       return "welcomeBack";
