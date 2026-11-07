@@ -44,7 +44,7 @@ export function ClientDashboard() {
       <div className="head">
         <div>
           <div className="eyebrow">Client</div>
-          <h1>Your jobs</h1>
+          <h2 className="page-title">Your jobs</h2>
         </div>
         <Link to="/jobs/new" className="btn">New job</Link>
       </div>

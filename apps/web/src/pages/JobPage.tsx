@@ -173,7 +173,7 @@ export function JobPage({ id }: { id: string }) {
       </div>
       <div className="head">
         <div>
-          <h1>{job.title}</h1>
+          <h2 className="page-title">{job.title}</h2>
           <div className="meta">
             <IdChip value={job.id} />
           </div>
@@ -753,7 +753,7 @@ function Verifier({ job, diff, locked, readOnly }: { job: TimelineJob; diff: Job
   const shownDiff = diff && latest.includes(diff.commit) ? diff : null;
   const idle = history.length === 0 && !pending;
   return (
-    <section className="card verifier">
+    <section className="verifier">
       <div className="pad hd">
         <h2>Verifier</h2>
         <small className="muted">{verifierLine(job)}</small>

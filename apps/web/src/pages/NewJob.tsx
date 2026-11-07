@@ -67,7 +67,7 @@ export function NewJob() {
       <div className="crumbs">
         <Link to="/">Jobs</Link> / <b>New job</b>
       </div>
-      <h1>New job</h1>
+      <h2 className="page-title">New job</h2>
       {loadError && <div className="alert">{loadError}</div>}
       <form className="card pad form" onSubmit={(e) => void submit(e)}>
         <label>

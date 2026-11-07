@@ -313,7 +313,7 @@ function Dashboard<T>({
       <div className="head">
         <div>
           <div className="eyebrow">Dashboards</div>
-          <h1>{title}</h1>
+          <h2 className="page-title">{title}</h2>
           <p className="muted">{lead}</p>
         </div>
         <div className="head-actions">

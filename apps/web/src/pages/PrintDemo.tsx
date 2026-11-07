@@ -96,7 +96,7 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
       <div className="head">
         <div>
           <div className="eyebrow">Simulated farms</div>
-          <h1>{PRINT_TITLE}</h1>
+          <h2 className="page-title">{PRINT_TITLE}</h2>
           <p className="muted">{PRINT_INTRO}</p>
         </div>
       </div>
