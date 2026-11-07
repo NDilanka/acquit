@@ -547,10 +547,110 @@ test("a starter on an issue the pool no longer holds is cancelled once, a starte
 		assert.equal(replay.kind, "REPLAY");
 		h.setClock(at(120));
 		await h.acquit.tick();
-		assert.equal(rowFor(pending).state.status, "OPEN", "a later pass still leaves it alone");
-		assert.equal(rowFor(wrong).state.status, "CLOSED");
+		// Read from the store: the rows above were read before this pass, so they cannot say what the second pass left.
+		assert.equal((await rowOf(h, pending)).state.status, "OPEN", "a later pass still leaves it alone");
+		assert.deepEqual((await rowOf(h, pending)).bids.map(b => b.status), ["PENDING"]);
+		assert.equal((await rowOf(h, wrong)).state.status, "CLOSED");
 		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
 	} finally { await h.dispose(); }
+});
+
+/**
+ * A fork account with two starters on #1, which its pool does not hold: how a registry that once named #1 on the upstream
+ * opened them. Returns the account's operator actor and agent, and the two starters.
+ */
+async function offPoolStarters(h: Harness, ipKey: string) {
+	const id = newVisitorId();
+	const fork = `acquit-forks/${visitorRepositoryName(id)}`;
+	const created = await createDemoVisitor(h.acquit, { id, ipKey, repository: fork });
+	if (created.kind !== "CREATED") throw new Error(`the fork visitor was refused: ${created.kind}`);
+	const handle = created.visitor.operatorHandle;
+	const operator: Actor = { role: "OPERATOR", operatorId: handle as OperatorId, tenant: id };
+	const earlier = h.reopen([demoFixture(), jpyFixture(), demoFixture(undefined, { issue: { number: 1, title: "Split shares drop remainder cents" } })]);
+	const open = async (): Promise<JobId> => {
+		const outcome = await earlier.execute(houseClientActor(id, fork), key(), { type: "OpenJob", repository: fork, issueNumber: 1,
+			budget: usd("400.00"), deliveryEndsAt: at(86_400) });
+		if (outcome.kind !== "COMMITTED" || outcome.result.kind !== "JOB") throw new Error(`the wrong-issue starter was refused: ${JSON.stringify(outcome)}`);
+		return outcome.result.job.id;
+	};
+	return { id, fork, operator, agent: `${handle}-agent`, first: await open(), second: await open() };
+}
+
+test("a bid that lands after the pass read its snapshot keeps an off-pool starter: the retire refuses the row it commits and writes no cancel", async () => {
+	const h = await harness({ fixtures: [demoFixture(), jpyFixture()], clientRepository: DEMO_REPOSITORY });
+	const readJob = SqliteStore.prototype.readJob;
+	try {
+		const { id, fork, operator, agent, first: wrong, second } = await offPoolStarters(h, "late-bid-test");
+		// The second starter holds a PENDING bid, so the pass leaves it alone and opens nothing beside it.
+		h.setClock(at(100));
+		await bid(h.acquit, operator, second, usd("300.00"), agent);
+		// The pass's snapshot holds no bid on the first starter. The retire's own read of that row is the first read its
+		// command makes, so a bid committed on that read lands after the snapshot and before the retire decides.
+		const injected: { done: boolean; late: BidId | null } = { done: false, late: null };
+		SqliteStore.prototype.readJob = async function (this: SqliteStore, jobId: JobId) {
+			if (!injected.done && jobId === wrong && new Error().stack?.includes("executeCommand") === true) {
+				injected.done = true;
+				injected.late = await bid(h.acquit, operator, wrong, usd("300.00"), agent);
+			}
+			return readJob.call(this, jobId);
+		};
+		h.setClock(at(110));
+		await h.acquit.tick();
+		assert.notEqual(injected.late, null, "the late bid committed after the snapshot");
+		const row = await rowOf(h, wrong);
+		assert.equal(row.state.status, "OPEN", "the starter with a late PENDING bid stays open");
+		assert.deepEqual(row.bids.map(b => b.status), ["PENDING"]);
+		assert.equal(row.bids[0]!.id, injected.late);
+		// No cancel was written: the retire under its own key is refused on the row as it now stands, not replayed.
+		assert.deepEqual(await h.acquit.execute(houseClientActor(id, fork), derivedRequestKey(`${HOUSE_CLIENT_ID}:retire:${wrong}`),
+			{ type: "CancelJob", jobId: wrong, retire: true }), { kind: "DENIED", reason: "WRONG_STATE" });
+		h.setClock(at(120));
+		await h.acquit.tick();
+		assert.equal((await rowOf(h, wrong)).state.status, "OPEN", "a later pass still leaves it alone");
+		assert.deepEqual((await rowOf(h, wrong)).bids.map(b => b.status), ["PENDING"]);
+		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
+	} finally {
+		SqliteStore.prototype.readJob = readJob;
+		await h.dispose();
+	}
+});
+
+test("a bid accepted into funding after the pass read its snapshot keeps the starter: the retire refuses the row mid-funding, and one order is created", async () => {
+	// Checkout funding: the order waits for the buyer, so the starter is still funding when the retire reads it.
+	const h = await harness({ fixtures: [demoFixture(), jpyFixture()], clientRepository: DEMO_REPOSITORY, publicFunding: true });
+	const readJob = SqliteStore.prototype.readJob;
+	try {
+		const { id, fork, operator, agent, first: wrong, second } = await offPoolStarters(h, "concurrent-accept-test");
+		h.setClock(at(100));
+		await bid(h.acquit, operator, second, usd("300.00"), agent);
+		// Another supervisor over the same database bids on the first starter and accepts it into funding, after this pass
+		// read its snapshot and before the retire reads the row. The accept names no bid: the House client takes the lowest PENDING.
+		const rival = h.reopen();
+		const injected: { done: boolean; accepted: string } = { done: false, accepted: "NOT_RUN" };
+		SqliteStore.prototype.readJob = async function (this: SqliteStore, jobId: JobId) {
+			if (!injected.done && jobId === wrong && new Error().stack?.includes("executeCommand") === true) {
+				injected.done = true;
+				await bid(rival, operator, wrong, usd("300.00"), agent);
+				injected.accepted = (await rival.execute(houseClientActor(id, fork), key(), { type: "AcceptBid", jobId: wrong })).kind;
+			}
+			return readJob.call(this, jobId);
+		};
+		h.setClock(at(110));
+		await h.acquit.tick();
+		assert.equal(injected.accepted, "COMMITTED", "the rival's accept committed after the snapshot");
+		const row = await rowOf(h, wrong);
+		assert.equal(row.state.status, "OPEN", "the funding starter is not cancelled");
+		if (row.state.status !== "OPEN" || row.state.phase.kind !== "FUNDING") throw new Error(`the starter is ${row.state.status}`);
+		assert.deepEqual(row.bids.map(b => b.status), ["CHOSEN"]);
+		assert.equal(row.state.phase.checkout.phase, "AWAITING_APPROVAL");
+		assert.equal(h.paypalDispatches.filter(kind => kind === "CREATE_ORDER").length, 1, "exactly one order is created");
+		assert.deepEqual(await h.acquit.execute(houseClientActor(id, fork), derivedRequestKey(`${HOUSE_CLIENT_ID}:retire:${wrong}`),
+			{ type: "CancelJob", jobId: wrong, retire: true }), { kind: "DENIED", reason: "WRONG_STATE" });
+		assert.deepEqual(await assertConserves(h.acquit), nothingHeld);
+	} finally {
+		SqliteStore.prototype.readJob = readJob;
+		await h.dispose();
+	}
 });
 
 test("a starter back to bidding after a payment that did not go through says so in its projection", async () => {
