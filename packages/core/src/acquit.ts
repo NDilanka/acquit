@@ -21,6 +21,7 @@ import type { PayPal, PayPalConfig, ReleaseEvidence } from "./paypal.ts";
 import { platformJobLedger, platformTables } from "./platform.ts";
 import type { PlatformLedgerView, PlatformTables } from "./platform.ts";
 import { SqliteStore } from "./store.ts";
+import { startedRunJob } from "./scenario-binding.ts";
 import { bindVisitorRepository, failVisitor, lastingAccounts, reserveVisitor, visitorRepositoryName } from "./visitors.ts";
 import { defaultJobFunding } from "./funding.ts";
 import { runHouseClient, runHouseClients } from "./starters.ts";
@@ -292,6 +293,9 @@ export function createAcquit(config: AcquitConfig): Acquit {
 				case "Job": {
 					const row = await store.readJob(query.jobId);
 					if (!row) return { kind: "DENIED", reason: "NOT_FOUND" };
+					// The account that started a scenario run reads the job that run opened in the platform's read-only view, so no
+					// owner-only field and no command affordance comes with it. The commands keep their own checks.
+					if (startedRunJob(store.db, actor, row)) return { kind: "JOB", job: projectJob(row, { role: "PLATFORM" }, counts, houseRows, sources, ports.privateCases) };
 					const mayRead = actor.role === "PLATFORM" || sameWorld(row) && (row.state.status === "OPEN" || actor.role === "CLIENT" && row.client === actor.clientId ||
 						actor.role === "OPERATOR" && row.bids.some(bid => bid.operator === actor.operatorId) || actor.role === "ARBITER");
 					return mayRead ? { kind: "JOB", job: projectJob(row, actor, counts, houseRows, sources, ports.privateCases) } : { kind: "DENIED", reason: "NOT_OWNER" };

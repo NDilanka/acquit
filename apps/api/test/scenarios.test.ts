@@ -13,8 +13,8 @@ import { assertTimings, harness, start } from "../../../packages/core/test/scena
 import type { Harness } from "../../../packages/core/test/scenario-harness.ts";
 import { demoFixture, demoProtectedPaths, DEMO_FROZEN_AT, DEMO_REPOSITORY, exampleContract } from "../../../packages/core/test/hidden-fixture.ts";
 import { provisionDemoVisitor } from "../../../packages/core/src/acquit.ts";
-import type { DemoVisitorResult } from "../../../packages/core/src/acquit.ts";
-import type { CommitSha, JobId } from "../../../packages/core/src/ids.ts";
+import type { Actor, DemoVisitorResult } from "../../../packages/core/src/acquit.ts";
+import type { ClientId, CommitSha, JobId, OperatorId } from "../../../packages/core/src/ids.ts";
 import { startScenario } from "../../../packages/core/src/scenarios.ts";
 import type { ScenarioRun, ScenarioRuns } from "../../../packages/core/src/scenarios.ts";
 import { frozenTests } from "../../../packages/core/src/score-card-trees.ts";
@@ -115,6 +115,26 @@ test("another visitor's run is refused as NOT_FOUND, the same answer an unknown 
 		assert.deepEqual(await scenarioReply(routing, stranger, "GET", scenarioId), { status: 404, body: { error: "NOT_FOUND" } });
 		assert.deepEqual(await scenarioReply(routing, stranger, "GET", "scn_nobody-holds-this"), { status: 404, body: { error: "NOT_FOUND" } });
 		assert.equal((await scenarioReply(routing, h.visitor, "GET", scenarioId)).status, 200);
+	} finally { await h.dispose(); }
+});
+
+test("the account that started a run reads the run's job read-only, and a stranger's read is NOT_OWNER", async () => {
+	const h = await harness();
+	try {
+		const routing = routingOf(h);
+		const posted = await scenarioReply(routing, h.visitor, "POST", "verified-and-paid");
+		const { scenarioId, jobId } = posted.body as { scenarioId: string; jobId: JobId };
+		assert.equal((await settle(routing, h.visitor, scenarioId)).state, "DONE");
+		const asClient: Actor = { role: "CLIENT", clientId: h.visitor.clientHandle as ClientId, tenant: h.visitor.id };
+		const asOperator: Actor = { role: "OPERATOR", operatorId: h.visitor.operatorHandle as OperatorId, tenant: h.visitor.id };
+		const stranger: Actor = { role: "CLIENT", clientId: "stranger-client" as ClientId, tenant: newVisitorId() };
+		const clientRead = await h.acquit.query(asClient, { type: "Job", jobId });
+		const operatorRead = await h.acquit.query(asOperator, { type: "Job", jobId });
+		// The read is the platform's view: the run's own client is not named, and no approve or dispute is offered.
+		assert.ok(clientRead.kind === "JOB" && clientRead.job.id === jobId && clientRead.job.client === null);
+		assert.ok(clientRead.kind === "JOB" && clientRead.job.viewerCanApprove === false && clientRead.job.viewerCanDispute === false);
+		assert.ok(operatorRead.kind === "JOB" && operatorRead.job.id === jobId && operatorRead.job.client === null);
+		assert.deepEqual(await h.acquit.query(stranger, { type: "Job", jobId }), { kind: "DENIED", reason: "NOT_OWNER" });
 	} finally { await h.dispose(); }
 });
 
