@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ASK_ROUTE, labelledSampleTurn, SAMPLE_ANSWER_LABEL, SAMPLE_ASK_INSTRUCTIONS, SAMPLE_ASK_PROMPT_STARTERS, SAMPLE_ASK_TOOL_NAMES, askToolLabel } from "./ask-ledger.ts";
+import { ASK_ROUTE, labelledSampleTurn, OPERATOR_ASK_INSTRUCTIONS, SAMPLE_ANSWER_LABEL, SAMPLE_ASK_INSTRUCTIONS, SAMPLE_ASK_PROMPT_STARTERS, SAMPLE_ASK_TOOL_NAMES, askToolLabel } from "./ask-ledger.ts";
 
 // The platform's and operator's tool names. The sample book's copy must name none of them.
 const PLATFORM_TOOL = /\b(platform_totals|list_jobs|get_job|get_order|list_disputes|get_dispute|get_refund|list_transactions|trace_figure|my_jobs|my_job|my_payouts|my_totals)\b/;
@@ -31,6 +31,21 @@ test("every sample answer the page shows carries the label, and a turn with no a
     "a label the answer already carries is not doubled");
   assert.equal(labelledSampleTurn({ ok: true, message: null, calls: [], model: "m", sessionId: null, factoryCredits: null }).message, null,
     "a turn with no answer text has nothing to label");
+});
+
+test("a label that sits only inside a code fence does not count, so the page appends the visible label", () => {
+  const fenced = "Held is $320.\n\n```" + SAMPLE_ANSWER_LABEL + "\nNot provenance\n```";
+  assert.equal(labelledSampleTurn({ ok: true, message: fenced, calls: [], model: "m", sessionId: null, factoryCredits: null }).message,
+    `${fenced}\n\n${SAMPLE_ANSWER_LABEL}`, "a fenced label is not the visible label");
+  const finalParagraph = `Held is $320.\n\n${SAMPLE_ANSWER_LABEL}`;
+  assert.equal(labelledSampleTurn({ ok: true, message: finalParagraph, calls: [], model: "m", sessionId: null, factoryCredits: null }).message, finalParagraph,
+    "a label as the final paragraph is kept");
+});
+
+test("the sample and operator copy asks for plain words in place of status codes", () => {
+  assert.match(SAMPLE_ASK_INSTRUCTIONS, /Never print a status code such as IN_PROGRESS/, "the sample copy forbids status codes");
+  assert.match(SAMPLE_ASK_INSTRUCTIONS, /plain words your tools return/, "the sample copy points at the tools' plain words");
+  assert.match(OPERATOR_ASK_INSTRUCTIONS, /Never print a status code such as IN_PROGRESS/, "the operator copy forbids status codes");
 });
 
 test("a sample turn posts to the sample route alone, and the answer the page shows carries the label", async () => {

@@ -17,6 +17,7 @@ import { platformEscrowTotals } from "../../../packages/core/src/platform.ts";
 import type { PlatformJobLedger, PlatformPayPalEventRow } from "../../../packages/core/src/platform.ts";
 import type { JobView } from "../../../packages/core/src/acquit.ts";
 import { operatorEscrow } from "./escrow.ts";
+import { escrowWord, statusWord } from "./ask-words.ts";
 import type { PayoutRowView } from "./payouts.ts";
 import type { ReceiptRowView } from "./receipts.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
@@ -474,17 +475,20 @@ async function operatorJobRows(deps: OperatorAskDeps): Promise<OperatorJobRow[]>
 	return [...held, ...settled];
 }
 
+/** A job row with its status and escrow in plain words, as my_jobs and my_job answer it. The totals and payouts read the codes, so they keep them. */
+const plainJobRow = (row: OperatorJobRow) => ({ ...row, status: statusWord(row.status), escrow: escrowWord(row.escrow) });
+
 /** The operator's executor: its four tools, each answered from the operator's own rows. Any other name, the platform's included, falls to the default before any read. */
 export function askOperatorToolExecutor(deps: OperatorAskDeps): AskToolExecutor {
 	return async (name, args) => {
 		switch (name) {
-			case "my_jobs": return { jobs: await operatorJobRows(deps) };
+			case "my_jobs": return { jobs: (await operatorJobRows(deps)).map(plainJobRow) };
 			case "my_job": {
 				const id = argText(args, "jobId");
 				const job = id === "" ? undefined : (await operatorJobRows(deps)).find(candidate => candidate.jobId === id);
 				// Another operator's job and an unknown id get this same answer, so a reply never shows whether a job exists.
 				if (!job) throw new Error(`no job of yours named ${id === "" ? "(none given)" : id}`);
-				return job;
+				return plainJobRow(job);
 			}
 			case "my_payouts": {
 				// A payout row names no operator, so it is the operator's where its job is one of the operator's settled jobs.

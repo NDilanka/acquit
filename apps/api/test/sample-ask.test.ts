@@ -33,23 +33,32 @@ test("sample_totals and explain_sample_figure return the literal sample figures,
 	const execute = sampleAskToolExecutor();
 	const totals = await execute("sample_totals", {}) as Record<string, unknown>;
 	assert.deepEqual(totals, { sample: SAMPLE_LABEL, held: 32000, released: 20300, refunded: 9000, fees: 2700, heldJobs: 2 });
-	const figure = await execute("explain_sample_figure", { figure: "held" }) as { sample: string; totalCents: number; lines: { paypal: { status: string } }[] };
+	const figure = await execute("explain_sample_figure", { figure: "held" }) as { sample: string; totalCents: number; lines: { kind: string; cents: number; paypal: { status: string } }[] };
 	assert.equal(figure.sample, SAMPLE_LABEL);
 	assert.equal(figure.totalCents, 32000);
-	assert.ok(figure.lines.every(line => line.paypal.status === "NOT_CHECKED"), "every line says PayPal was not checked");
-	assert.deepEqual(figure, { ...sampleExplain("held"), sample: SAMPLE_LABEL }, "the explain tool is the explain route's own answer");
+	assert.ok(figure.lines.every(line => line.paypal.status === "Not checked against PayPal"), "every line says PayPal was not checked, in words");
+	assert.ok(figure.lines.every(line => line.kind === "Held"), "every held line reads as Held, not HELD");
+	assert.deepEqual(figure.lines.map(line => line.cents), sampleExplain("held").lines.map(line => line.cents), "the lines are the explain route's own lines");
 });
 
-test("list_sample_jobs and get_sample_job answer the six sample jobs, each labelled sample", async () => {
+test("list_sample_jobs and get_sample_job answer the six sample jobs, each labelled sample, with their codes in plain words", async () => {
 	const execute = sampleAskToolExecutor();
-	const listed = await execute("list_sample_jobs", {}) as { sample: string; jobs: { jobId: string; title: string }[] };
+	const listed = await execute("list_sample_jobs", {}) as { sample: string; jobs: { jobId: string; title: string; status: string; escrow: string }[] };
 	assert.equal(listed.sample, SAMPLE_LABEL);
 	assert.deepEqual(listed.jobs.map(job => job.jobId), ["job_sample01", "job_sample02", "job_sample03", "job_sample04", "job_sample05", "job_sample06"]);
 	for (const job of listed.jobs) assert.match(job.title, /^Sample: /);
-	const one = await execute("get_sample_job", { jobId: "job_sample04" }) as { sample: string; job: { jobId: string; status: string } };
+	assert.deepEqual(listed.jobs.map(job => [job.status, job.escrow]), [
+		["Open for bids", "Not funded"], ["In progress", "Held"], ["Verified, awaiting release", "Held"],
+		["Paid", "Released"], ["Refunded", "Refunded"], ["Paid", "Released"],
+	]);
+	const one = await execute("get_sample_job", { jobId: "job_sample04" }) as { sample: string; job: { jobId: string; status: string; escrow: string } };
 	assert.equal(one.sample, SAMPLE_LABEL);
 	assert.equal(one.job.jobId, "job_sample04");
-	assert.equal(one.job.status, "PAID");
+	assert.equal(one.job.status, "Paid");
+	assert.equal(one.job.escrow, "Released");
+	const rejected = await execute("get_sample_job", { jobId: "job_sample02" }) as { job: { attempts: { result: string; reasons: string[] }[]; lines: { kind: string }[] } };
+	assert.deepEqual(rejected.job.attempts.map(attempt => [attempt.result, attempt.reasons]), [["Rejected", ["Visible tests failed"]]]);
+	assert.deepEqual(rejected.job.lines.map(line => line.kind), ["Held"]);
 });
 
 test("forged real job, order, refund, dispute, and capture ids are not found, and no tool answers a platform or PayPal name", async () => {
@@ -299,4 +308,19 @@ test("every sample answer carries the sample label, whatever the model wrote, an
 	const server = readFileSync(join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
 	assert.match(server, /json\(res, 200, \{ \.\.\.outcome, message: labelSampleAnswer\(outcome\.message\) \}\)/, "the sample route labels the answer it sends");
 	assert.match(server, /scope: "SAMPLE", signal \}/, "the sample turn passes its signal to the model");
+});
+
+test("a label that does not show as the answer's own text is labelled again: a fenced label, an unclosed fence, an indented or early label", () => {
+	const fenced = `Held is $320.\n\n\`\`\`${SAMPLE_LABEL}\nNot provenance\n\`\`\``;
+	assert.equal(labelSampleAnswer(fenced), `${fenced}\n\n${SAMPLE_LABEL}`, "a label in a fence's info string is not visible, so it is appended");
+	assert.equal(labelSampleAnswer(`Held is $320.\n\n\`\`\`\n${SAMPLE_LABEL}`), `Held is $320.\n\n\`\`\`\n${SAMPLE_LABEL}\n\n${SAMPLE_LABEL}`,
+		"a label inside a fence that never closes is not visible, so it is appended");
+	assert.equal(labelSampleAnswer(`Held is $320.\n\n~~~\n~~~\n${SAMPLE_LABEL}`), `Held is $320.\n\n~~~\n~~~\n${SAMPLE_LABEL}\n\n${SAMPLE_LABEL}`,
+		"a label after a closed fence with no blank line before it is not the final paragraph, so it is appended");
+	assert.equal(labelSampleAnswer(`Held is $320.\n\n    ${SAMPLE_LABEL}`), `Held is $320.\n\n    ${SAMPLE_LABEL}\n\n${SAMPLE_LABEL}`,
+		"an indented label is a code block, so it is appended");
+	assert.equal(labelSampleAnswer(`${SAMPLE_LABEL}\n\nHeld is $320.`), `${SAMPLE_LABEL}\n\nHeld is $320.\n\n${SAMPLE_LABEL}`,
+		"a label that is not the last paragraph is appended after the answer");
+	assert.equal(labelSampleAnswer(`Held is $320.\n\n\`\`\`\nHeld is $320.\n\`\`\`\n\n${SAMPLE_LABEL}`), `Held is $320.\n\n\`\`\`\nHeld is $320.\n\`\`\`\n\n${SAMPLE_LABEL}`,
+		"a label that is the final paragraph after a closed fence is kept, not doubled");
 });

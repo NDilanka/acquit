@@ -5,6 +5,8 @@
 
 import { FIGURE_IDS, isFigureId, type FigureId } from "../../../packages/core/src/explain.ts";
 import type { ModelCallAllowance } from "../../../packages/core/src/model.ts";
+import { answerEndsWithLabel } from "../../../packages/core/src/sample-label.ts";
+import { attemptResultWord, escrowWord, ledgerKindWord, paypalCheckWord, reasonWord, statusWord } from "./ask-words.ts";
 import { OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, type AskToolExecutor } from "./ask.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
 
@@ -52,11 +54,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * A sample answer as the route sends it: the model's text with the sample label after it, whatever the model wrote. The
  * label is added in code, so no answer reads as platform money even when the model leaves the label out or words it away.
+ * A label the model wrote counts only as the answer's own last paragraph, not inside a code fence, where it does not show.
  * An empty answer stays empty; it has no text to label.
  */
 export function labelSampleAnswer(message: string | null): string | null {
 	if (message === null || message.trim() === "") return message;
-	return message.includes(SAMPLE_LABEL) ? message : `${message}\n\n${SAMPLE_LABEL}`;
+	return answerEndsWithLabel(message, SAMPLE_LABEL) ? message : `${message}\n\n${SAMPLE_LABEL}`;
 }
 
 /** The tool list the sample route serves: the four reads, each worded for the sample book. */
@@ -77,9 +80,17 @@ export function sampleAskToolList(): readonly { readonly name: string; readonly 
 	];
 }
 
+/** A sample job as the tools answer it: its status, escrow, verdicts, and ledger lines in plain words. The book itself keeps its codes. */
+function plainJob(job: ReturnType<typeof sampleBook>["jobs"][number]) {
+	return { ...job, status: statusWord(job.status), escrow: escrowWord(job.escrow),
+		lines: job.lines.map(line => ({ ...line, kind: ledgerKindWord(line.kind) })),
+		attempts: job.attempts.map(attempt => ({ ...attempt, result: attemptResultWord(attempt.result), reasons: attempt.reasons.map(reasonWord) })) };
+}
+
 /**
  * The sample book's executor. Its only input is the sample book, so no store or PayPal read is reachable from it. Each
- * answer carries the `sample` label; explain keeps its own `label` for the figure's name.
+ * answer carries the `sample` label; explain keeps its own `label` for the figure's name. Codes the book stores (status,
+ * escrow, verdict, ledger kind, PayPal check, reason) are answered in plain words, so the model has no code to repeat.
  */
 export function sampleAskToolExecutor(): AskToolExecutor {
 	return async (name, args) => {
@@ -92,18 +103,20 @@ export function sampleAskToolExecutor(): AskToolExecutor {
 					heldJobs: jobs.filter(job => job.escrow === "HELD").length };
 			}
 			case "list_sample_jobs":
-				return { sample: SAMPLE_LABEL, jobs: jobs.map(job => ({ jobId: job.jobId, title: job.title, status: job.status, escrow: job.escrow,
-					heldCents: job.paidCents, operator: job.operator?.handle ?? null })) };
+				return { sample: SAMPLE_LABEL, jobs: jobs.map(job => ({ jobId: job.jobId, title: job.title, status: statusWord(job.status),
+					escrow: escrowWord(job.escrow), heldCents: job.paidCents, operator: job.operator?.handle ?? null })) };
 			case "get_sample_job": {
 				const id = typeof args["jobId"] === "string" ? args["jobId"].trim() : "";
 				const job = id === "" ? undefined : jobs.find(candidate => candidate.jobId === id);
 				if (!job) throw new Error(`not found: no sample job named ${id === "" ? "(none given)" : id}`);
-				return { sample: SAMPLE_LABEL, job };
+				return { sample: SAMPLE_LABEL, job: plainJob(job) };
 			}
 			case "explain_sample_figure": {
 				const figure = args["figure"];
 				if (!isFigureId(figure)) throw new Error(`explain_sample_figure needs one figure: ${FIGURE_IDS.join(", ")}`);
-				return { sample: SAMPLE_LABEL, ...sampleExplain(figure) };
+				const trace = sampleExplain(figure);
+				return { sample: SAMPLE_LABEL, ...trace, lines: trace.lines.map(line => ({ ...line, kind: ledgerKindWord(line.kind),
+					paypal: { ...line.paypal, status: paypalCheckWord(line.paypal.status) } })) };
 			}
 			default: throw new Error(`no tool named ${name}`);
 		}

@@ -78,9 +78,10 @@ test("an operator's executor refuses a name outside its four, platform's or PayP
 
 test("my_job answers another operator's job id exactly as it answers an unknown id, and answers the operator's own job", async () => {
 	const { execute } = executorFor("op-a", book);
-	const own = await execute("my_job", { jobId: "job_a_held" }) as { jobId: string; escrow: string };
+	const own = await execute("my_job", { jobId: "job_a_held" }) as { jobId: string; status: string; escrow: string };
 	assert.equal(own.jobId, "job_a_held");
-	assert.equal(own.escrow, "HELD");
+	assert.equal(own.status, "In progress", "the status is in plain words, not IN_PROGRESS");
+	assert.equal(own.escrow, "Held", "the escrow is in plain words, not HELD");
 	const refusal = async (jobId: string): Promise<string> => {
 		try { await execute("my_job", { jobId }); } catch (error) { return error instanceof Error ? error.message : String(error); }
 		return "answered";
