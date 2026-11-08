@@ -19,7 +19,7 @@ You need these accounts and tools:
 - A GitHub account and the `gh` CLI.
 - A PayPal Developer account with two sandbox test accounts. One is a Personal account that pays. The other is a Business account that receives payouts.
 - Docker, running.
-- Node.js 20 or later.
+- Node.js 24 or later.
 - An Anthropic API key. Your provider bills you for the agent's usage.
 - Two email addresses, one for each Acquit account.
 
