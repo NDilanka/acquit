@@ -34,7 +34,7 @@ import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
 import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, OPERATOR_ASK_TOOL_NAMES, OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
-import type { AskMessage, AskToolExecutor, AskToolSchema } from "./ask.ts";
+import type { AskMessage, AskToolExecutor, AskToolSchema, AskTurnOutcome } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
@@ -48,6 +48,7 @@ import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 import { traceFigure } from "./figure-trace.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
+import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_CALLER, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
 
@@ -210,6 +211,11 @@ const askTools = askToolList(askPaypal !== null);
 const askOperatorTools = askOperatorToolList();
 // An operator's turn passes this admission before the shared budget reserves, so one operator cannot spend the deployment's minute.
 const admitOperatorTurn = operatorTurnLimiter();
+// The sample book's Ask: its own executor and tool list, and the account and address admission its turns pass.
+const sampleExecutor = sampleAskToolExecutor();
+const sampleAskTools = sampleAskToolList();
+const admitSampleTurn = sampleTurnLimiter();
+const acquireSampleSlot = sampleInFlightGate();
 const admitRestore = attemptLimiter(RESTORE_ATTEMPTS, RESTORE_WINDOW_MS);
 /** An operator's ask executor, built for one request from its session actor: its own jobs, receipts, and payouts, read under that actor. The platform's executor is never reused for an operator. */
 function askOperatorExecutorFor(actor: Extract<Actor, { role: "OPERATOR" }>): AskToolExecutor {
@@ -273,6 +279,15 @@ function readAskMessages(value: unknown): readonly AskMessage[] {
 		}
 		throw new BadBody("Invalid message role");
 	});
+}
+/** A sample turn's body, read the way the platform's turn route reads it. Its relayed tools are for the prompt only: the sample executor is the closed set that runs. */
+function readSampleTurn(raw: string): { messages: readonly AskMessage[]; instructions: string | undefined; tools: readonly AskToolSchema[] } {
+	let parsed: unknown;
+	try { parsed = JSON.parse(raw); } catch { throw new BadBody("Expected a JSON body"); }
+	const input = object(parsed);
+	if (Object.keys(input).some(key => key !== "messages" && key !== "instructions" && key !== "tools")) throw new BadBody("Unsupported field");
+	return { messages: readAskMessages(input.messages), tools: readAskTools(input.tools),
+		instructions: input.instructions === undefined ? undefined : text(input.instructions, "instructions", 16_000) };
 }
 const CLI_CODE_TTL_MS = 10 * 60_000;
 const CLI_SESSION_TTL_MS = 7 * 86_400_000;
@@ -807,6 +822,64 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const figure = url.searchParams.get("figure");
 		if (!isFigureId(figure)) { json(res, 400, { error: "UNKNOWN_FIGURE", figures: FIGURE_IDS }); return; }
 		json(res, 200, sampleExplain(figure));
+		return;
+	}
+	// The sample book's Ask the ledger: the same agent over the sample book alone. Its tools read apps/api/src/sample-book.ts
+	// and no store row or PayPal object, so a real id is not found. Any signed-in account may ask; the gate above refuses the rest.
+	if (url.pathname === "/api/sample/ask/tools" && method === "GET") {
+		json(res, 200, { tools: sampleAskTools, model: askModelName(), keyConfigured: await askKeyConfigured() });
+		return;
+	}
+	if (url.pathname === "/api/sample/ask/turn" && method === "POST") {
+		let raw: string;
+		try { raw = await rawBody(req, ASK_TURN_BODY_LIMIT_BYTES); }
+		catch (error) {
+			if (error instanceof TooLarge) { json(res, 413, { error: "ASK_BODY_TOO_LARGE" }); return; }
+			throw error;
+		}
+		let relayed: ReturnType<typeof readSampleTurn>;
+		try { relayed = readSampleTurn(raw); }
+		catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		// At most SAMPLE_MAX_IN_FLIGHT sample turns run their model work at once. A turn refused for want of a slot is refused
+		// before it is admitted, so it charges no key.
+		const releaseSlot = acquireSampleSlot();
+		if (releaseSlot === null) { json(res, 429, { error: "MODEL_BUDGET", detail: "Sample Ask is busy with other turns. Try again in a moment." }); return; }
+		try {
+			// The turn is admitted by its account and by its address before the shared budget reserves, so a refused turn reserves nothing.
+			if (!admitSampleTurn([`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`])) {
+				json(res, 429, { error: "MODEL_BUDGET", detail: `A sample turn is limited to ${OPERATOR_TURNS_PER_MINUTE} a minute and ${OPERATOR_TURNS_PER_DAY} a day for each account and each address.` });
+				return;
+			}
+			const timedOut: AskTurnOutcome = { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: "the model did not answer in time" };
+			// A client that leaves before the answer ends the turn too: no retry starts for a response nobody reads.
+			const clientGone = new AbortController();
+			res.once("close", () => { if (!res.writableFinished) clientGone.abort(); });
+			const outcome = await withDeadline(signal => askLedgerTurn({ model: askModel, callLog: askCallLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
+				{ ...relayed, scope: "SAMPLE", signal }), SAMPLE_TURN_DEADLINE_MS, timedOut, clientGone.signal);
+			if (!outcome.ok) {
+				json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
+					: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
+				return;
+			}
+			// Every sample answer carries the sample label, whatever the model wrote.
+			json(res, 200, { ...outcome, message: labelSampleAnswer(outcome.message) });
+			return;
+		} finally {
+			releaseSlot();
+		}
+	}
+	if (url.pathname === "/api/sample/ask/tool" && method === "POST") {
+		let named: { name?: unknown; arguments?: unknown };
+		try {
+			const input = object(await body(req));
+			if (Object.keys(input).some(key => key !== "name" && key !== "arguments")) throw new BadBody("Unsupported field");
+			named = input;
+		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
+		try {
+			json(res, 200, { result: await sampleExecutor(text(named.name, "tool name", 60), object(named.arguments ?? {})) });
+		} catch (error) {
+			json(res, 502, { error: "TOOL_FAILED", detail: boundedDetail(error instanceof Error ? error.message : String(error)) });
+		}
 		return;
 	}
 	if (url.pathname === "/api/platform/ledger" && method === "GET") {

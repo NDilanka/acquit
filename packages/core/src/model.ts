@@ -130,6 +130,11 @@ function parseDroidResult(output: string): DroidResultLine | null {
 export const MODEL_CALLS_MINUTE = 20;
 export const MODEL_CALLS_DAY = 1000;
 
+/** A caller group's own ceiling inside the shared budget, named for its refusal. Its calls count against the group's
+ * windows and against the global ones, and a group at its ceiling is refused while the global capacity it leaves stays
+ * for every caller outside the group. Calls from outside the group are not counted against the group. */
+export type ModelCallAllowance = { readonly name: string; readonly callers: readonly string[]; readonly perMinute: number; readonly perDay: number };
+
 /** One line of the call log every app model call shares. The START record is written before the
  * caller runs anything; the END record carries the outcome and the usage the answer reported. */
 export type ModelCallRecord = {
@@ -240,24 +245,37 @@ async function releaseBudgetLock(lockPath: string, token: string): Promise<void>
 
 /** Reserves one model call at `call.at` when the shared budget allows it, writing the call's START
  * record before the caller runs anything, so crashes, failures, and retries all count. Refuses
- * when the rolling minute already holds its 19 calls or the day its 999. `call.at` is the wall
+ * when the rolling minute already holds its 19 calls or the day its 999, and, for a call from an
+ * allowance's group, when that group's own windows are full. `call.at` is the wall
  * clock -- the dev offset clock used for domain deadlines never reaches the budget. The windows
  * are always re-read inside the lock, and that re-read decides; the unlocked read first only
  * spares the lock when the answer is already no. A waiter that never gets the lock refuses with
  * BUDGET too, and that refusal carries the message naming the lock path and the operator's
  * recovery command. */
-export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">):
+export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">, allowance?: ModelCallAllowance):
 Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> {
 	const at = Date.parse(call.at);
-	const overBudget = async (): Promise<boolean> => {
-		const starts = (await log.records()).filter(record => record.phase === "START").map(record => Date.parse(record.at));
-		return starts.filter(startedAt => startedAt > at - 60_000).length >= MODEL_CALLS_MINUTE - 1
-			|| starts.filter(startedAt => startedAt > at - 86_400_000).length >= MODEL_CALLS_DAY - 1;
+	const refused = (detail?: string) => ({ ok: false as const, reason: "BUDGET" as const, ...(detail === undefined ? {} : { detail }) });
+	// The global windows first, then the caller group's own windows when this call belongs to the group. Both are read
+	// inside the lock below, so the group's ceiling and the global caps are decided by the same count.
+	const overBudget = async (): Promise<ReturnType<typeof refused> | null> => {
+		const starts = (await log.records()).filter(record => record.phase === "START");
+		const within = (records: readonly ModelCallRecord[], span: number) => records.filter(record => Date.parse(record.at) > at - span).length;
+		if (within(starts, 60_000) >= MODEL_CALLS_MINUTE - 1 || within(starts, 86_400_000) >= MODEL_CALLS_DAY - 1) return refused();
+		if (allowance?.callers.includes(call.caller) === true) {
+			const group = starts.filter(record => allowance.callers.includes(record.caller));
+			if (within(group, 60_000) >= allowance.perMinute || within(group, 86_400_000) >= allowance.perDay) {
+				return refused(`the ${allowance.name} allowance inside the shared model budget is spent for now`);
+			}
+		}
+		return null;
 	};
-	if (await overBudget()) return { ok: false, reason: "BUDGET" };
+	const early = await overBudget();
+	if (early !== null) return early;
 	try {
-		return await withBudgetLock(modelCallLockPath(log.path), async (): Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> => {
-			if (await overBudget()) return { ok: false, reason: "BUDGET" };
+		return await withBudgetLock(modelCallLockPath(log.path), async (): Promise<{ ok: true } | ReturnType<typeof refused>> => {
+			const held = await overBudget();
+			if (held !== null) return held;
 			await log.append({ ...call, phase: "START" });
 			return { ok: true };
 		});

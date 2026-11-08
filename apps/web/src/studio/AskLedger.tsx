@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgAiHarness, AgAiHarnessSetupParams, AgAiToolDetailParams, AgStudioApi } from "ag-studio";
 import type { AgAiToolDisplay } from "ag-studio-react";
-import { api } from "../api";
 import type { AskToolSchema } from "../api-types";
 import { createAskLedgerHarness, memoryHistoryStore } from "../ask-harness.ts";
-import { ASK_TOOL_DISPLAY, LEDGER_CARD_TOOLS, askToolLabel, isLedgerCard, type AskScope } from "../ask-ledger";
+import { ASK_ROUTE, ASK_TOOL_DISPLAY, LEDGER_CARD_TOOLS, askToolLabel, isLedgerCard, type AskScope } from "../ask-ledger";
 import type { DashboardId } from "../dashboard-widgets.ts";
 import { FigureCallCard } from "./FigureExplain";
 import { readFailure } from "./live";
@@ -36,6 +35,7 @@ export function LedgerCallCard({ status, result }: AgAiToolDetailParams) {
 export const ASK_TOOL_DISPLAY_CARDS: Record<string, AgAiToolDisplay> = {
   ...ASK_TOOL_DISPLAY,
   trace_figure: { label: ({ args }) => ({ text: askToolLabel("trace_figure", args) }), detail: FigureCallCard, hidden: false },
+  explain_sample_figure: { label: ({ args }) => ({ text: askToolLabel("explain_sample_figure", args) }), detail: FigureCallCard, hidden: false },
   ...Object.fromEntries(LEDGER_CARD_TOOLS.map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), detail: LedgerCallCard, hidden: false } satisfies AgAiToolDisplay])),
 };
 
@@ -58,7 +58,8 @@ export function useAskLedger(dashboard: DashboardId, scope: AskScope = "PLATFORM
   const [history] = useState(memoryHistoryStore);
   useEffect(() => {
     let live = true;
-    api.askLedgerTools().then(
+    // The scope's own route: the sample book's tools never come from the platform's list.
+    ASK_ROUTE[scope].tools().then(
       (r) => {
         if (!live) return;
         served.current = r.tools;
@@ -69,7 +70,7 @@ export function useAskLedger(dashboard: DashboardId, scope: AskScope = "PLATFORM
     return () => {
       live = false;
     };
-  }, []);
+  }, [scope]);
 
   const built = useRef<{ studio: AgStudioApi; harness: AgAiHarness } | null>(null);
   const setup = useCallback(

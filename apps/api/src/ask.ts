@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boundedDetail } from "../../../packages/core/src/verifier.ts";
 import { classifyDroidRun, droidResultText, DROID_MODEL, factoryApiKey, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
-import type { ModelCallLog } from "../../../packages/core/src/model.ts";
+import type { ModelCallAllowance, ModelCallLog } from "../../../packages/core/src/model.ts";
 import { platformEscrowTotals } from "../../../packages/core/src/platform.ts";
 import type { PlatformJobLedger, PlatformPayPalEventRow } from "../../../packages/core/src/platform.ts";
 import type { JobView } from "../../../packages/core/src/acquit.ts";
@@ -46,8 +46,9 @@ export type AskTurnOutcome =
 		readonly sessionId: string | null; readonly factoryCredits: number | null }
 	| { readonly ok: false; readonly reason: "MODEL_PROVIDER_ERROR" | "MODEL_RATE_LIMITED" | "MODEL_BUDGET" | "MODEL_KEY_MISSING"; readonly detail: string };
 
-/** The model-turn port, shared by both providers: the composed prompt in, the answer text out. */
-export type AskModelPort = (prompt: string) => Promise<AskModelResult>;
+/** The model-turn port, shared by both providers: the composed prompt in, the answer text out. The signal, when given,
+ * aborts the provider's work: the port stops its child or request and answers a failure at once. */
+export type AskModelPort = (prompt: string, signal?: AbortSignal) => Promise<AskModelResult>;
 
 export type AskModelResult =
 	| { readonly ok: true; readonly text: string; readonly sessionId: string | null; readonly factoryCredits: number | null }
@@ -60,6 +61,10 @@ export type AskModelResult =
 export type AskTurnDeps = {
 	readonly model: AskModelPort;
 	readonly callLog: ModelCallLog;
+	/** Names the turn in the shared budget log. The platform's and an operator's turns are "ask-ledger". */
+	readonly caller?: string;
+	/** A caller group's own ceiling inside the shared budget. Its calls, retries included, count against it. */
+	readonly allowance?: ModelCallAllowance;
 };
 
 /** The instruction every turn runs under, whatever the agent's own definition adds: one JSON
@@ -83,8 +88,18 @@ export const ASK_OPERATOR_TURN_CONTRACT = [
 	"- To answer the reader, reply with the message and no calls; the run then ends.",
 ].join("\n");
 
-/** Which dashboard a turn serves: the platform's escrow book, or one operator's own earnings. */
-export type AskScope = "PLATFORM" | "OPERATOR";
+/** The contract the sample book's turns run under: its tools read the sample book alone, and every answer is labelled as sample data. */
+export const ASK_SAMPLE_TURN_CONTRACT = [
+	"You are Ask the ledger, the agent on Acquit's sample book.",
+	"You answer questions about the Simulated sample data in the sample book, from your tools alone. It is not the platform's real money and it is not checked against PayPal.",
+	"Reply with ONLY one JSON object (no prose around it, no code fences):",
+	'  {"message": <string or null>, "calls": [{"id": "<a unique call id>", "name": "<tool name>", "arguments": <object>}]}',
+	"- To use tools first, reply with a null message and the calls.",
+	"- To answer the reader, reply with the message and no calls; the run then ends. Say in that message that the answer is about Simulated sample data.",
+].join("\n");
+
+/** Which dashboard a turn serves: the platform's escrow book, one operator's own earnings, or the sample book. */
+export type AskScope = "PLATFORM" | "OPERATOR" | "SAMPLE";
 
 /** The prompt one model turn runs under: the agent's instruction, the envelope contract, the tool
  * schemas, the conversation. It names no secret -- the key travels in the child's environment. */
@@ -152,24 +167,43 @@ export function askModelName(): string {
  * clock: the turn takes no clock at all, so the dev offset clock that governs domain deadlines
  * cannot reach the budget through it. */
 export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly messages: readonly AskMessage[]; readonly tools: readonly AskToolSchema[];
-	readonly instructions?: string; readonly scope?: AskScope }): Promise<AskTurnOutcome> {
+	readonly instructions?: string; readonly scope?: AskScope; readonly signal?: AbortSignal }): Promise<AskTurnOutcome> {
 	const provider = modelProvider();
 	const model = askModelName();
-	const prompt = buildAskPrompt({ ...input, contract: input.scope === "OPERATOR" ? ASK_OPERATOR_TURN_CONTRACT : ASK_TURN_CONTRACT });
+	const contract = input.scope === "OPERATOR" ? ASK_OPERATOR_TURN_CONTRACT : input.scope === "SAMPLE" ? ASK_SAMPLE_TURN_CONTRACT : ASK_TURN_CONTRACT;
+	const prompt = buildAskPrompt({ ...input, contract });
+	const caller = deps.caller ?? "ask-ledger";
+	const signal = input.signal;
+	// A function, not a property read: TypeScript narrows `signal.aborted` after one check, and the later checks must still read it live.
+	const isCancelled = (): boolean => signal?.aborted === true;
+	const cancelled: AskTurnOutcome = { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: "the turn was cancelled before the model answered" };
 	const stamp = (): string => new Date().toISOString();
 	const recordEnd = async (attempt: AskModelResult): Promise<void> => {
-		await deps.callLog.append({ at: stamp(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
+		await deps.callLog.append({ at: stamp(), caller, jobId: null, provider, model, phase: "END",
 			outcome: attempt.ok ? "answered" : attempt.reason,
 			sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
 	};
-	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
+	// A turn already cancelled (its request ended, or its deadline passed) reserves nothing and runs nothing.
+	if (isCancelled()) return cancelled;
+	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model }, deps.allowance);
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
-	let result = await deps.model(prompt);
+	// Cancelled while the reservation was being written: the START stands, its END records the cancel, and no model call runs.
+	if (isCancelled()) {
+		await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" });
+		return cancelled;
+	}
+	let result = await deps.model(prompt, signal);
 	await recordEnd(result);
-	if (!result.ok && result.reason === "PROVIDER_ERROR") {
-		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
+	// A provider error retries once, but never once the turn is cancelled: a retry that starts past the deadline, or after
+	// the request ended, spends budget on an answer nobody reads.
+	if (!result.ok && result.reason === "PROVIDER_ERROR" && !isCancelled()) {
+		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model }, deps.allowance);
 		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: retried.detail ?? "the shared model budget refused the one retry" };
-		result = await deps.model(prompt);
+		if (isCancelled()) {
+			await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" });
+			return cancelled;
+		}
+		result = await deps.model(prompt, signal);
 		await recordEnd(result);
 	}
 	if (!result.ok) {
@@ -540,7 +574,8 @@ export function openrouterAskPort(deps: { readonly fetch?: typeof fetch; readonl
 	const fetchImpl = deps.fetch ?? fetch;
 	const env = deps.env ?? process.env;
 	const keyOf = deps.key ?? (async () => keyringKey());
-	return async prompt => {
+	return async (prompt, signal) => {
+		if (signal?.aborted === true) return { ok: false, reason: "PROVIDER_ERROR", detail: "the turn was cancelled before OpenRouter was asked" };
 		const held = await keyOf();
 		if (held === null || held === "" || /[\r\n]/.test(held)) return { ok: false, reason: "NO_KEY", detail: "no usable OpenRouter key in the keyring" };
 		const base = env["OPENROUTER_API_BASE"]?.trim() || "https://openrouter.ai/api/v1";
@@ -550,7 +585,8 @@ export function openrouterAskPort(deps: { readonly fetch?: typeof fetch; readonl
 				method: "POST",
 				headers: { authorization: `Bearer ${held}`, "content-type": "application/json" },
 				body: JSON.stringify({ model: HOUSE_MODEL_OPENROUTER, max_tokens: 2048, messages: [{ role: "user", content: prompt }] }),
-				signal: AbortSignal.timeout(120_000), redirect: "error",
+				// The request ends at its own 120 seconds, or as soon as the turn is cancelled, whichever comes first.
+				signal: signal === undefined ? AbortSignal.timeout(120_000) : AbortSignal.any([signal, AbortSignal.timeout(120_000)]), redirect: "error",
 			});
 		} catch (error) {
 			return { ok: false, reason: "PROVIDER_ERROR", detail: boundedDetail(error instanceof Error ? error.message : String(error)) };
@@ -577,7 +613,8 @@ export function droidAskArgv(file: string): readonly string[] {
  * model asks to run can execute, so the port's only product is the answer text. */
 export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): AskModelPort {
 	const env = deps.env ?? process.env;
-	return async prompt => {
+	return async (prompt, signal) => {
+		if (signal?.aborted === true) return { ok: false, reason: "PROVIDER_ERROR", detail: "the turn was cancelled before droid started" };
 		const key = await factoryApiKey(env);
 		if (key === null) return { ok: false, reason: "NO_KEY", detail: "no usable Factory key" };
 		const dir = await mkdtemp(join(tmpdir(), "acquit-ask-"));
@@ -592,12 +629,23 @@ export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): A
 			const run = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
 				// stderr is ignored, not piped: nothing here reads it, and a chatty child would fill the
 				// pipe buffer and wedge on a write that never drains, past every timeout this port sets.
-				const child = spawn("timeout", argv, { env: { ...env, FACTORY_API_KEY: key }, cwd: dir, stdio: ["ignore", "pipe", "ignore"] });
+				// Cancelled before the spawn: nothing starts. The check and the spawn share this synchronous step, so no abort can slip between them.
+				if (signal?.aborted === true) { reject(new Error("the droid turn was cancelled")); return; }
+				// On POSIX the child leads its own process group, so a kill takes `timeout` and the droid it runs together.
+				const child = spawn("timeout", argv, { env: { ...env, FACTORY_API_KEY: key }, cwd: dir, stdio: ["ignore", "pipe", "ignore"], detached: process.platform !== "win32" });
+				const killTree = (): void => {
+					if (child.pid !== undefined && process.platform !== "win32") {
+						try { process.kill(-child.pid, "SIGKILL"); return; } catch { /* the group is already gone */ }
+					}
+					child.kill("SIGKILL");
+				};
 				let stdout = "";
-				const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("the droid turn timed out")); }, 300_000);
+				const onAbort = (): void => { clearTimeout(timer); killTree(); reject(new Error("the droid turn was cancelled")); };
+				const timer = setTimeout(() => { killTree(); reject(new Error("the droid turn timed out")); }, 300_000);
+				signal?.addEventListener("abort", onAbort, { once: true });
 				child.stdout.on("data", (chunk: Buffer) => { stdout += String(chunk); });
-				child.on("error", (error: Error) => { clearTimeout(timer); reject(error); });
-				child.on("exit", (code: number | null) => { clearTimeout(timer); resolve({ code, stdout }); });
+				child.on("error", (error: Error) => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); reject(error); });
+				child.on("exit", (code: number | null) => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); resolve({ code, stdout }); });
 			}).catch((error: unknown) => {
 				const detail = error instanceof Error ? error.message : String(error);
 				return { code: null as number | null, stdout: "", spawnDetail: detail };

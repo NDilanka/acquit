@@ -15,8 +15,8 @@ import type {
   AgStudioApi,
 } from "ag-studio";
 import type { AgAiToolDisplay } from "ag-studio-react";
-import type { AskMessage, AskToolSchema, AskTurnRequest, AskTurnResponse, FigureTrace } from "./api-types";
-import { api, ApiError } from "./api.ts";
+import type { AskMessage, AskToolSchema, AskToolsResponse, AskTurnRequest, AskTurnResponse, FigureTrace } from "./api-types";
+import { api, ApiError, type CallOptions } from "./api.ts";
 import type { DashboardId } from "./dashboard-widgets.ts";
 import { FIGURE_LABELS, isFigureId } from "../../../packages/core/src/explain.ts";
 import { isFigureTrace } from "./figure-trace.ts";
@@ -62,13 +62,36 @@ const DATA_AND_PAGE_RECIPES = [
 ].join("\n");
 
 /** The ledger agent's prompt, naming the widget types the dashboard publishes so a delegation picks a real one. */
-export function askInstructions(catalogue: readonly { readonly type: string; readonly description?: string }[]): string {
+export function askInstructions(catalogue: readonly { readonly type: string; readonly description?: string }[], base: string = ASK_INSTRUCTIONS): string {
   if (catalogue.length === 0) {
-    return `${ASK_INSTRUCTIONS}\n\nThe dashboard currently publishes no widget types, so decline a widget request rather than delegating it.\n\n${DATA_AND_PAGE_RECIPES}`;
+    return `${base}\n\nThe dashboard currently publishes no widget types, so decline a widget request rather than delegating it.\n\n${DATA_AND_PAGE_RECIPES}`;
   }
   const entries = catalogue.map((entry) => (entry.description ? `- ${entry.type}: ${entry.description}` : `- ${entry.type}`));
-  return [ASK_INSTRUCTIONS, ["## Widget catalogue", ...entries].join("\n"), DELEGATION_RECIPE, DATA_AND_PAGE_RECIPES].join("\n\n");
+  return [base, ["## Widget catalogue", ...entries].join("\n"), DELEGATION_RECIPE, DATA_AND_PAGE_RECIPES].join("\n\n");
 }
+
+/**
+ * The sample book's ask: the same agent over the sample book alone. It names no PayPal tool, since the sample's tools
+ * never reach PayPal, and it calls every figure sample so none reads as the platform's money.
+ */
+export const SAMPLE_ASK_INSTRUCTIONS = [
+  "You are Ask the ledger, the agent on the sample book's dashboard on Acquit.",
+  "You answer questions about the sample escrow book, from your tools alone; never answer from memory or guess a figure.",
+  "The sample book is simulated sample data. It is not Acquit's real book and it is not checked against PayPal, so call every figure you give a sample figure.",
+  "Check sample_totals for totals, list_sample_jobs for the list, get_sample_job for one job by its id, and explain_sample_figure to trace a figure to its ledger lines before you answer.",
+  "Your tools reach only the sample book. If a question needs a real job, a real PayPal order, or the platform's money, say that you cannot see it here.",
+  "Give amounts in dollars, name the sample jobs you checked, and say which sample money is still held and which has been paid.",
+  "You only read. You cannot capture, refund, release or pay out money, and you never claim to have done so.",
+  "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
+  "When the reader asks a question the sample tables answer across jobs, operators, bids, verdicts, or events, delegate it to the data agent with delegate_to.",
+  "When the reader asks to change what the page shows or how it is laid out, delegate it to the page agent with delegate_to.",
+  "delegate_to is always available. Say a delegation failed only when its result reports an error (the delegate_to result in this conversation), and then say why.",
+].join("\n");
+
+export const SAMPLE_ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
+  { label: "Which sample jobs still hold escrow?", prompt: "Which sample jobs still hold escrow, and how much is held on each?" },
+  { label: "Trace the sample held figure", prompt: "Trace the sample held figure to the sample ledger lines that make it up." },
+];
 
 export const ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
   { label: "Escrow held vs PayPal", prompt: ASK_VALIDATION_QUESTION },
@@ -262,6 +285,8 @@ export type AskAdapterDeps = {
   readonly dashboard?: DashboardId;
   readonly renderedCount?: (type: string) => number;
   readonly renderWaitMs?: number;
+  /** The turn route the adapter posts to. The platform's by default; the sample book's own for the sample scope. */
+  readonly turn?: AskTurnRoute;
 };
 
 let minted = 0;
@@ -274,13 +299,14 @@ const mintId = () => `ask-${Date.now().toString(36)}-${(++minted).toString(36)}`
 export function askLedgerAdapter(deps: AskAdapterDeps = {}): AgLlmAdapter {
   const newId = deps.newId ?? mintId;
   const now = deps.now ?? Date.now;
+  const turn = deps.turn ?? PLATFORM_ROUTE.turn;
   return {
     executeTurn(request: AgLlmRequest, options) {
       const signal = options?.signal;
       const ids = { response: newId(), createdAt: now() };
       // Never rejects: a refused or failed turn is a response the loop reads, not a thrown promise
       // that would also surface as an unhandled rejection when nothing awaits `complete`.
-      const complete = api.askLedgerTurn(toAskTurnBody(request), { signal, fetch: deps.fetch }).then(
+      const complete = turn(toAskTurnBody(request), { signal, fetch: deps.fetch }).then(
         (turn) => fromAskTurn(turn, ids),
         (error: unknown) => failedTurn(error, ids, signal?.aborted === true),
       );
@@ -331,6 +357,41 @@ export function askParamFields(parameters: Record<string, unknown>): AskParamFie
 export type AskToolCaller = (name: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
 
 const callTool: AskToolCaller = async (name, args, signal) => (await api.askLedgerTool(name, args, { signal })).result;
+const sampleCallTool: AskToolCaller = async (name, args, signal) => (await api.sampleAskTool(name, args, { signal })).result;
+
+/** One model turn, posted to a route the server answers under its own contract. */
+export type AskTurnRoute = (body: AskTurnRequest, init: CallOptions) => Promise<AskTurnResponse>;
+
+/** The routes one scope's agents use: its tool list, its model turn, and its tool call. The sample book's are its own, so a sample turn never reaches the platform's executor. */
+export type AskRoute = { readonly tools: () => Promise<AskToolsResponse>; readonly turn: AskTurnRoute; readonly tool: AskToolCaller };
+
+const PLATFORM_ROUTE: AskRoute = {
+  tools: () => api.askLedgerTools(),
+  turn: (body, init) => api.askLedgerTurn(body, init),
+  tool: callTool,
+};
+
+// Kept equal to the server's SAMPLE_LABEL (apps/api/src/sample-ask.ts), which sample-ask.test.ts reads from the server's source.
+export const SAMPLE_ANSWER_LABEL = "Simulated sample data. Not checked against PayPal.";
+
+/**
+ * A sample turn as the page shows it. The server already appends the label to every sample answer; the page checks it too,
+ * so no sample answer reaches the transcript without the label, whatever text the turn carried.
+ */
+export function labelledSampleTurn(turn: AskTurnResponse): AskTurnResponse {
+  const message = turn.message;
+  if (message === null || message.trim() === "" || message.includes(SAMPLE_ANSWER_LABEL)) return turn;
+  return { ...turn, message: `${message}\n\n${SAMPLE_ANSWER_LABEL}` };
+}
+
+const SAMPLE_ROUTE: AskRoute = {
+  tools: () => api.sampleAskTools(),
+  turn: async (body, init) => labelledSampleTurn(await api.sampleAskTurn(body, init)),
+  tool: sampleCallTool,
+};
+
+/** The route each scope's ask uses. An operator's ask shares the platform's routes; the server scopes each by its session. */
+export const ASK_ROUTE: Record<AskScope, AskRoute> = { PLATFORM: PLATFORM_ROUTE, OPERATOR: PLATFORM_ROUTE, SAMPLE: SAMPLE_ROUTE };
 
 /** The served read-only tools as Studio tools, each executed by the app's own tool route. */
 export function buildAskTools(studio: Pick<AgStudioApi, "defineAiTool">, specs: readonly AskToolSchema[], call: AskToolCaller = callTool): AgAiTool[] {
@@ -356,7 +417,7 @@ function shapeFields(s: AgAiParamsBuilder, fields: readonly AskParamField[]) {
 }
 
 /** Tools whose result a Studio card draws from `data`. The model reads only the response text, which is the same either way. */
-const CARD_TOOLS: readonly string[] = ["trace_figure"];
+const CARD_TOOLS: readonly string[] = ["trace_figure", "explain_sample_figure"];
 
 export async function runTool(call: AskToolCaller, name: string, args: Record<string, unknown>, ctx: AgAiToolContext): Promise<AgAiToolResult> {
   try {
@@ -426,6 +487,18 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
       const figure = args.figure;
       return isFigureId(figure) ? `Tracing ${FIGURE_LABELS[figure].toLowerCase()} to its ledger lines` : "Tracing a figure to its ledger lines";
     }
+    case "sample_totals":
+      return "Totalling the sample book";
+    case "list_sample_jobs":
+      return "Reading the sample book";
+    case "get_sample_job": {
+      const id = named("jobId");
+      return id ? `Reading sample job ${id}` : "Reading a sample job";
+    }
+    case "explain_sample_figure": {
+      const figure = args.figure;
+      return isFigureId(figure) ? `Tracing sample ${FIGURE_LABELS[figure].toLowerCase()} to its ledger lines` : "Tracing a sample figure to its ledger lines";
+    }
     default:
       return name;
   }
@@ -436,15 +509,18 @@ export function askToolLabel(name: string, args: Partial<Record<string, unknown>
 export const ASK_TOOL_NAMES = ["list_jobs", "get_job", "platform_totals", "get_order", "list_disputes", "get_dispute", "get_refund",
   "list_transactions", "trace_figure"] as const;
 
-/** Which dashboard's ask a harness serves: the platform's escrow book, or one operator's own earnings. */
-export type AskScope = "PLATFORM" | "OPERATOR";
+/** Which dashboard's ask a harness serves: the platform's escrow book, one operator's own earnings, or the sample book. */
+export type AskScope = "PLATFORM" | "OPERATOR" | "SAMPLE";
 
 // Kept equal to the server's OPERATOR_ASK_TOOL_NAMES, which ask-ledger.test.ts reads from the server's source.
 export const OPERATOR_ASK_TOOL_NAMES = ["my_jobs", "my_job", "my_payouts", "my_totals"] as const;
 
-/** How the Studio chat panel words the ledger tools' rows, the platform's and an operator's; Studio's own tools keep theirs. */
+// Kept equal to the server's SAMPLE_ASK_TOOL_NAMES (apps/api/src/sample-ask.ts), which ask-ledger.test.ts reads from the server's source.
+export const SAMPLE_ASK_TOOL_NAMES = ["sample_totals", "list_sample_jobs", "get_sample_job", "explain_sample_figure"] as const;
+
+/** How the Studio chat panel words the ledger tools' rows, the platform's, an operator's, and the sample book's; Studio's own tools keep theirs. */
 export const ASK_TOOL_DISPLAY: Record<string, AgAiToolDisplay> = Object.fromEntries(
-  [...ASK_TOOL_NAMES, ...OPERATOR_ASK_TOOL_NAMES].map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), hidden: false } satisfies AgAiToolDisplay]),
+  [...ASK_TOOL_NAMES, ...OPERATOR_ASK_TOOL_NAMES, ...SAMPLE_ASK_TOOL_NAMES].map((name) => [name, { label: ({ args }) => ({ text: askToolLabel(name, args) }), hidden: false } satisfies AgAiToolDisplay]),
 );
 
 /** An operator's ask: its own money only. The model is told its tools reach that operator's jobs alone, and it has no delegation. */

@@ -128,6 +128,10 @@ export const api = {
   platformExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/platform/explain?figure=${encodeURIComponent(figure)}`),
   sampleBook: (init?: CallOptions) => request<SampleBook>("GET", "/api/sample/book", undefined, init),
   sampleExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/sample/explain?figure=${encodeURIComponent(figure)}`),
+  sampleAskTools: () => request<AskToolsResponse>("GET", "/api/sample/ask/tools"),
+  sampleAskTurn: (body: AskTurnRequest, init?: CallOptions) => request<AskTurnResponse>("POST", "/api/sample/ask/turn", body, init),
+  sampleAskTool: (name: string, args: Record<string, unknown>, init?: CallOptions) =>
+    request<AskToolResponse>("POST", "/api/sample/ask/tool", { name, arguments: args }, init),
   loadStudioLayout: (dashboard: string) =>
     request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),
   saveStudioLayout: (dashboard: string, state: string) =>

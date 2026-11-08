@@ -16,15 +16,20 @@ import type { AskToolSchema } from "./api-types";
 import {
   ASK_AGENT_ID,
   ASK_AGENT_NAME,
+  ASK_INSTRUCTIONS,
   ASK_MAX_TURNS,
   ASK_PROMPT_STARTERS,
+  ASK_ROUTE,
   OPERATOR_ASK_INSTRUCTIONS,
   OPERATOR_ASK_PROMPT_STARTERS,
+  SAMPLE_ASK_INSTRUCTIONS,
+  SAMPLE_ASK_PROMPT_STARTERS,
   askInstructions,
   askLedgerAdapter,
   buildAskTools,
   type AskAdapterDeps,
   type AskScope,
+  type AskToolCaller,
 } from "./ask-ledger.ts";
 import { COLUMNS, NATIVE_TYPES, WIDGET_IDS, WIDGET_SPANS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { firstFreeTrack, placementFits, selectedPage, widgetPlaced, type Track } from "./studio-data.ts";
@@ -245,11 +250,11 @@ function dashboardAdd(
 }
 
 /** The served tool list as the agent's tools: re-resolved every turn, rebuilt only when the served list changes. */
-function servedTools(served: () => readonly AskToolSchema[]): (api: AgStudioApi) => AgAiTool[] {
+function servedTools(served: () => readonly AskToolSchema[], call?: AskToolCaller): (api: AgStudioApi) => AgAiTool[] {
   let built: { specs: readonly AskToolSchema[]; tools: AgAiTool[] } | null = null;
   return (api) => {
     const specs = served();
-    if (built?.specs !== specs) built = { specs, tools: buildAskTools(api, specs) };
+    if (built?.specs !== specs) built = { specs, tools: buildAskTools(api, specs, call) };
     return built.tools;
   };
 }
@@ -257,7 +262,9 @@ function servedTools(served: () => readonly AskToolSchema[]): (api: AgStudioApi)
 /**
  * The dashboard's harness: the ledger agent fronting the conversation, and Studio's widget, data, and
  * page agents as its delegates. All run on the one adapter, so every model turn goes through the app's
- * own route. An operator's harness (scope OPERATOR) is the ledger agent alone; see below.
+ * own route. An operator's harness (scope OPERATOR) is the ledger agent alone; see below. The sample
+ * book's harness (scope SAMPLE) is the same set of agents on the sample route: its tools, its turns, and
+ * its sample instructions, with no PayPal tool named.
  */
 export function createAskLedgerHarness(
   studio: AgStudioApi,
@@ -265,8 +272,10 @@ export function createAskLedgerHarness(
   deps?: AskAdapterDeps & { readonly scope?: AskScope; readonly history?: AgAiHistoryStore },
 ): AgAiHarness {
   if (deps?.scope === "OPERATOR") return createOperatorAskLedgerHarness(studio, served, deps);
-  const adapter = askLedgerAdapter(deps);
-  const ledgerTools = servedTools(served);
+  const sample = deps?.scope === "SAMPLE";
+  const route = ASK_ROUTE[sample ? "SAMPLE" : "PLATFORM"];
+  const adapter = askLedgerAdapter({ ...deps, turn: deps?.turn ?? route.turn });
+  const ledgerTools = servedTools(served, route.tool);
   const { outcomes, failures, observer } = delegateOutcomes();
   const changes = changeLogFor(studio, ASK_AGENT_NAME);
   return createAiHarness(studio, ({ builtIn }) => ({
@@ -274,8 +283,10 @@ export function createAskLedgerHarness(
       directLlmRunner({
         id: ASK_AGENT_ID,
         name: ASK_AGENT_NAME,
-        description: "Answers questions about Acquit's escrow ledger and PayPal's view of it, from read-only tools.",
-        instructions: (ctx) => askInstructions(widgetCatalogue(ctx.api)),
+        description: sample
+          ? "Answers questions about the sample escrow book, which is simulated sample data, from read-only tools."
+          : "Answers questions about Acquit's escrow ledger and PayPal's view of it, from read-only tools.",
+        instructions: (ctx) => askInstructions(widgetCatalogue(ctx.api), sample ? SAMPLE_ASK_INSTRUCTIONS : ASK_INSTRUCTIONS),
         maxTurns: ASK_MAX_TURNS,
         tools: (ctx) => [...ledgerTools(ctx.api), honestDelegate(ctx.tools.delegateTo(["widget", "data", "page"]), { outcomes, failures }, ctx.api, ctx.studio)],
         adapter,
@@ -306,7 +317,7 @@ export function createAskLedgerHarness(
       }),
     ],
     primary: ASK_AGENT_ID,
-    promptStarters: ASK_PROMPT_STARTERS,
+    promptStarters: sample ? SAMPLE_ASK_PROMPT_STARTERS : ASK_PROMPT_STARTERS,
     observers: [observer, changes.observer],
     history: deps?.history ?? askHistory,
   }));
