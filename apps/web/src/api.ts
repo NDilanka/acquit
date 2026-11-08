@@ -22,6 +22,7 @@ import type {
   PublicReceiptResponse,
   ReceiptRow,
   RecoveryResponse,
+  SampleBook,
   ScenarioName,
   ScenarioRun,
   ScenarioStartResponse,
@@ -125,6 +126,8 @@ export const api = {
   platformTables: (init?: CallOptions) => request<{ tables: PlatformTables; now: string }>("GET", "/api/platform/tables", undefined, init),
   platformReconciliation: (init?: CallOptions) => request<PlatformReconciliation>("GET", "/api/platform/reconciliation", undefined, init),
   platformExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/platform/explain?figure=${encodeURIComponent(figure)}`),
+  sampleBook: (init?: CallOptions) => request<SampleBook>("GET", "/api/sample/book", undefined, init),
+  sampleExplain: (figure: FigureId) => request<FigureTrace>("GET", `/api/sample/explain?figure=${encodeURIComponent(figure)}`),
   loadStudioLayout: (dashboard: string) =>
     request<{ state: string | null }>("GET", `/api/studio/layout?dashboard=${encodeURIComponent(dashboard)}`),
   saveStudioLayout: (dashboard: string, state: string) =>

@@ -11,7 +11,7 @@ import {
 } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { api, ApiError } from "../api";
-import type { PlatformJobLedger, PlatformTables } from "../api-types";
+import type { PlatformJobLedger, PlatformTables, SampleBook } from "../api-types";
 import { Link } from "../router";
 import { useSession } from "../session";
 import { useTheme } from "../theme-context";
@@ -24,6 +24,7 @@ import {
   EarningsContext,
   EscrowContext,
   ReconcileContext,
+  SampleReconcileContext,
   PAGE_LAYOUT,
   WIDGETS,
   freshState,
@@ -55,6 +56,7 @@ import {
   type ReadState,
   type Transport,
 } from "./live";
+import { ExplainSourceContext, type ExplainSource } from "./FigureExplain";
 import "./studio.css";
 
 // The ESM entry registers only the data-engine module. The AI module brings the context service
@@ -64,8 +66,9 @@ AgStudioModuleRegistry.registerModules([AgStudioAiModule]);
 const SAVE_DEBOUNCE_MS = 300;
 const NARROW = "(max-width: 640px)";
 
-export default function StudioPage() {
+export default function StudioPage({ sample = false }: { sample?: boolean }) {
   const { user } = useSession();
+  if (sample) return <SampleDashboard />;
   switch (user.role) {
     case "PLATFORM":
       return <EscrowDashboard />;
@@ -274,6 +277,44 @@ function EarningsDashboard({ handle }: { handle: string }) {
       source={earningsSource}
     >
       {(earnings, studio) => <EarningsContext.Provider value={earnings}>{studio}</EarningsContext.Provider>}
+    </Dashboard>
+  );
+}
+
+/** Every Explain on the sample book reads the sample endpoint, so its lines are the seeded ones and say so. */
+const SAMPLE_EXPLAIN: ExplainSource = { read: (figure) => api.sampleExplain(figure), sample: true };
+
+/**
+ * The sample book: one seeded set of escrow jobs that every signed-in account sees the same way. It reads only the
+ * sample endpoint, so it opens no stream, reads no PayPal object, and takes no Ask agent. Nothing it shows is a real row.
+ */
+function SampleDashboard() {
+  const [load, setLoad] = useState<Load<SampleBook>>({ kind: "loading" });
+  useEffect(() => {
+    let live = true;
+    api.sampleBook({ signal: AbortSignal.timeout(READ_TIMEOUT_MS) }).then(
+      (book) => live && setLoad({ kind: "ready", data: book }),
+      (e: unknown) => live && setLoad({ kind: "failed", error: `The sample book could not be loaded because ${readFailure(e)}.` }),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  return (
+    <Dashboard
+      id="sample"
+      title="Sample book"
+      lead="Simulated sample data: a seeded set of escrow jobs that every signed-in account sees the same way. Each figure and PayPal reference here is labelled sample, and nothing on this page reads a real account or PayPal."
+      load={load}
+      source={escrowSource}
+    >
+      {(book, studio) => (
+        <ExplainSourceContext.Provider value={SAMPLE_EXPLAIN}>
+          <EscrowContext.Provider value={book.jobs}>
+            <SampleReconcileContext.Provider value={book.reconciliation}>{studio}</SampleReconcileContext.Provider>
+          </EscrowContext.Provider>
+        </ExplainSourceContext.Provider>
+      )}
     </Dashboard>
   );
 }

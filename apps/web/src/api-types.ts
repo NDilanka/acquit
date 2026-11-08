@@ -506,6 +506,17 @@ export type FigureTrace = {
   readonly lines: readonly FigureTraceLine[];
 };
 
+/**
+ * `GET /api/sample/book`: the sample book the sample dashboard reads. Seeded rows, labelled as sample, the same for every
+ * signed-in account. `reconciliation` ties each ledger line to a sample PayPal reference in the book itself; nothing is read from PayPal.
+ */
+export type SampleBook = {
+  readonly asOf: string;
+  readonly jobs: readonly PlatformJobLedger[];
+  readonly tables: PlatformTables;
+  readonly reconciliation: { readonly entries: number; readonly tied: number; readonly note: string };
+};
+
 /** One data line of `GET /api/platform/stream`: the store committed a write. It carries no data; the page reads again. */
 export type PlatformStreamEvent = { readonly kind: "changed"; readonly at: string };
 

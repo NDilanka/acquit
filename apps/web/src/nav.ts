@@ -5,10 +5,14 @@ export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "pri
 /** A Public item sits under its own label in the sidebar. */
 export type NavItem = { readonly to: string; readonly label: string; readonly icon: NavIcon; readonly group?: "Public" };
 
+/** The sample book is the same read-only dashboard for every signed-in role, so each role lists it after its own pages. */
+const SAMPLE_BOOK: NavItem = { to: "/studio/sample", label: "Sample book", icon: "dashboard" };
+
 const ROLE_PAGES: Record<Role, readonly NavItem[]> = {
   CLIENT: [
     { to: "/", label: "My jobs", icon: "jobs" },
     { to: "/jobs/new", label: "Post a job", icon: "plus" },
+    SAMPLE_BOOK,
   ],
   // Tutorials joins this list in O5, once its page exists.
   OPERATOR: [
@@ -17,8 +21,9 @@ const ROLE_PAGES: Record<Role, readonly NavItem[]> = {
     { to: "/operator/work", label: "My work", icon: "work" },
     { to: "/operator/earnings", label: "Earnings", icon: "earnings" },
     { to: "/studio", label: "Dashboards", icon: "dashboard" },
+    SAMPLE_BOOK,
   ],
-  PLATFORM: [{ to: "/studio", label: "Dashboards", icon: "dashboard" }],
+  PLATFORM: [{ to: "/studio", label: "Dashboards", icon: "dashboard" }, SAMPLE_BOOK],
 };
 
 /** Every role also gets these two pages, under the Public label. /cli is reached from the link the terminal prints. */
@@ -85,6 +90,8 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Acquit CLI", title: "CLI sign-in" };
     case "studio":
       return { eyebrow, title: "Dashboards" };
+    case "studioSample":
+      return { eyebrow, title: "Sample book" };
     case "notFound":
       return { eyebrow: "Acquit", title: "Page not found" };
   }

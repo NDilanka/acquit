@@ -24,10 +24,10 @@ import { JudgeScenarios } from "./pages/JudgeScenarios";
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
 
-function Studio() {
+function Studio({ sample = false }: { sample?: boolean }) {
   return (
     <Suspense fallback={<SkeletonCard lines={4} />}>
-      <StudioPage />
+      <StudioPage sample={sample} />
     </Suspense>
   );
 }
@@ -92,7 +92,7 @@ export function App() {
   return (
     <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
       {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
-      <main id="content" tabIndex={-1} className={session && route.name === "studio" ? "wrap wrap-full" : "wrap"}>
+      <main id="content" tabIndex={-1} className={session && (route.name === "studio" || route.name === "studioSample") ? "wrap wrap-full" : "wrap"}>
         {session === undefined ? (
           <SkeletonCard />
         ) : route.name === "welcomeBack" ? (
@@ -164,6 +164,8 @@ function Routes() {
       return <JudgeScenarios />;
     case "studio":
       return <Studio />;
+    case "studioSample":
+      return <Studio sample />;
     case "welcomeBack":
     case "notFound":
       return <NotFound signedIn />;
