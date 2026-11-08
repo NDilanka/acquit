@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgAiChatMessage, AgAiChatSession, AgAiHarness, AgStudioApi } from "ag-studio";
 import type { AskToolSchema } from "./api-types";
-import { ASK_AGENT_ID, ASK_AGENT_NAME, OPERATOR_ASK_TOOL_NAMES, askRows, type AskAdapterDeps } from "./ask-ledger.ts";
+import { ASK_AGENT_ID, ASK_AGENT_NAME, OPERATOR_ASK_TOOL_NAMES, SAMPLE_ASK_TOOL_NAMES, askRows, type AskAdapterDeps } from "./ask-ledger.ts";
 import { createAskLedgerHarness, NEW_WIDGET_WORKFLOW, openAskThread } from "./ask-harness.ts";
 import { WIDGET_IDS, WIDGET_ROWS, type DashboardId, type DashboardState } from "./dashboard-widgets.ts";
 import { stacked } from "./studio-data.ts";
@@ -78,6 +78,12 @@ function mockStudioApi(
     execute,
   });
   const ok = (response: string) => ({ success: true as const, response });
+  // The context a Studio tool's execute receives: its signal, and the success and error results its body returns.
+  const toolContext = {
+    signal: new AbortController().signal,
+    success: (response: string, data?: unknown) => ({ success: true as const, response, ...(data === undefined ? {} : { data }) }),
+    error: (messages: string[]) => ({ success: false as const, issues: messages.map((message) => ({ message })) }),
+  };
   const internals = {
     translate: (key: string) => key,
     aiString: (key: string, fallback?: string) => fallback ?? key,
@@ -86,7 +92,7 @@ function mockStudioApi(
   };
   const base: Record<string, unknown> = {
     defineAiTool: (config: { name: string; description?: string; execute?: unknown }) =>
-      tool(config.name, config.description ?? "", (call) => (config.execute as (v: unknown, c: unknown) => unknown)(call.args, undefined)),
+      tool(config.name, config.description ?? "", (call) => (config.execute as (v: unknown, c: unknown) => unknown)(call.args, toolContext)),
     getAiContext: () => ({
       schema: () => ({ tables: [], relationships: [] }),
       catalogue: () => catalogue,
@@ -677,4 +683,63 @@ test("an add with no placement at all lands on the first free spot", async () =>
   const session = await runAdd(api, [heldAdd({}), complete("Added and configured the held-escrow widget.")], "Added the held-escrow widget.");
   assert.equal(delegateResult(session)?.success, true, "the delegate succeeded");
   assert.deepEqual(state.pages[0].widgetLayout?.["held-escrow-main"], { xTrack: 0, yTrack: 0, xSpan: 3, ySpan: 2 }, "the widget takes its spec's 3x2 at the origin");
+});
+
+// The sample book's Ask: the same agents on the sample route alone. Its turns, its delegations, and its tool calls all
+// ride /api/sample/ask/*, and no platform route is reached.
+const SAMPLE_SPECS: AskToolSchema[] = SAMPLE_ASK_TOOL_NAMES.map((name) => ({ name, description: `${name}, the sample book.`, parameters: { type: "object", properties: {} }, kind: "client" }));
+const onlySampleRoute = (urls: readonly string[]) => urls.every((url) => url.startsWith("/api/sample/ask/"));
+
+test("a sample delegation to the data agent rides the sample route, under the sample instructions", async () => {
+  const { api } = mockStudioApi([]);
+  const urls: string[] = [];
+  const scripted = scriptedFetch([delegateTo("data", "Which sample operator holds the most escrow?"), text("Operator alpha holds the most sample escrow.")], [
+    call("child-1", "complete_task", { summary: "Operator alpha holds the most sample escrow, $378.00.", artifacts: [] }),
+  ]);
+  const recorded = (async (url: string, init: RequestInit) => {
+    urls.push(String(url));
+    return scripted.fetch(url, init);
+  }) as typeof globalThis.fetch;
+  const harness = createAskLedgerHarness(api, () => SAMPLE_SPECS, { dashboard: "sample", scope: "SAMPLE", fetch: recorded });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Which sample operator holds the most escrow?");
+  await settle(session);
+  assert.ok(urls.length >= 3, `the parent turn, the data agent's turn, and the parent's answer each reached a route: ${urls.join(", ")}`);
+  assert.ok(onlySampleRoute(urls), `every turn rode the sample route: ${urls.join(", ")}`);
+  assert.equal(delegateResult(session)?.success, true);
+  assert.equal(delegateResult(session)?.response, "Operator alpha holds the most sample escrow, $378.00.");
+  assert.ok(scripted.childBodies[0]?.instructions?.includes("You are a data analyst."), "the delegate ran the built-in data agent");
+  const parent = scripted.parentBodies[0]?.instructions ?? "";
+  assert.match(parent, /sample escrow book/, "the ledger agent is told it reads the sample book");
+  assert.doesNotMatch(parent, /\b(get_order|list_disputes|platform_totals|list_transactions)\b/, "no platform tool name reaches the sample agent");
+});
+
+test("a sample tool call goes to the sample tool route, and no platform route is reached", async () => {
+  const { api } = mockStudioApi([]);
+  const urls: string[] = [];
+  let turn = 0;
+  const route = (async (url: string, init: RequestInit) => {
+    urls.push(String(url));
+    if (url === "/api/sample/ask/tool") {
+      return new Response(JSON.stringify({ result: { sample: "Simulated sample data. Not checked against PayPal.", heldJobs: 2 } }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    turn += 1;
+    return answer(turn === 1 ? call("call-1", "sample_totals", {}) : text("Two sample jobs hold escrow."));
+  }) as typeof fetch;
+  // The tool route is called with the global fetch (the platform's tool route is too), so the stub stands in for it and is restored after.
+  const saved = globalThis.fetch;
+  globalThis.fetch = route;
+  try {
+    const harness = createAskLedgerHarness(api, () => SAMPLE_SPECS, { dashboard: "sample", scope: "SAMPLE", fetch: route });
+    const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+    session.sendMessage("How many sample jobs hold escrow?");
+    await settle(session);
+    assert.ok(urls.includes("/api/sample/ask/tool"), `the sample tool ran on the sample tool route: ${urls.join(", ")}`);
+    assert.ok(onlySampleRoute(urls), `every ask request rode the sample route: ${urls.join(", ")}`);
+    const part = toolParts(session).find((p) => p.toolCall.name === "sample_totals");
+    assert.ok(part, "the ledger agent called sample_totals");
+    assert.equal((part.toolCall.result as { success?: boolean } | undefined)?.success, true, "the sample tool answered");
+  } finally {
+    globalThis.fetch = saved;
+  }
 });

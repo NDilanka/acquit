@@ -60,6 +60,8 @@ export type AskModelResult =
 export type AskTurnDeps = {
 	readonly model: AskModelPort;
 	readonly callLog: ModelCallLog;
+	/** Names the turn in the shared budget log. The platform's and an operator's turns are "ask-ledger". */
+	readonly caller?: string;
 };
 
 /** The instruction every turn runs under, whatever the agent's own definition adds: one JSON
@@ -83,8 +85,18 @@ export const ASK_OPERATOR_TURN_CONTRACT = [
 	"- To answer the reader, reply with the message and no calls; the run then ends.",
 ].join("\n");
 
-/** Which dashboard a turn serves: the platform's escrow book, or one operator's own earnings. */
-export type AskScope = "PLATFORM" | "OPERATOR";
+/** The contract the sample book's turns run under: its tools read the sample book alone, and every answer is labelled as sample data. */
+export const ASK_SAMPLE_TURN_CONTRACT = [
+	"You are Ask the ledger, the agent on Acquit's sample book.",
+	"You answer questions about the Simulated sample data in the sample book, from your tools alone. It is not the platform's real money and it is not checked against PayPal.",
+	"Reply with ONLY one JSON object (no prose around it, no code fences):",
+	'  {"message": <string or null>, "calls": [{"id": "<a unique call id>", "name": "<tool name>", "arguments": <object>}]}',
+	"- To use tools first, reply with a null message and the calls.",
+	"- To answer the reader, reply with the message and no calls; the run then ends. Say in that message that the answer is about Simulated sample data.",
+].join("\n");
+
+/** Which dashboard a turn serves: the platform's escrow book, one operator's own earnings, or the sample book. */
+export type AskScope = "PLATFORM" | "OPERATOR" | "SAMPLE";
 
 /** The prompt one model turn runs under: the agent's instruction, the envelope contract, the tool
  * schemas, the conversation. It names no secret -- the key travels in the child's environment. */
@@ -155,19 +167,21 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	readonly instructions?: string; readonly scope?: AskScope }): Promise<AskTurnOutcome> {
 	const provider = modelProvider();
 	const model = askModelName();
-	const prompt = buildAskPrompt({ ...input, contract: input.scope === "OPERATOR" ? ASK_OPERATOR_TURN_CONTRACT : ASK_TURN_CONTRACT });
+	const contract = input.scope === "OPERATOR" ? ASK_OPERATOR_TURN_CONTRACT : input.scope === "SAMPLE" ? ASK_SAMPLE_TURN_CONTRACT : ASK_TURN_CONTRACT;
+	const prompt = buildAskPrompt({ ...input, contract });
+	const caller = deps.caller ?? "ask-ledger";
 	const stamp = (): string => new Date().toISOString();
 	const recordEnd = async (attempt: AskModelResult): Promise<void> => {
-		await deps.callLog.append({ at: stamp(), caller: "ask-ledger", jobId: null, provider, model, phase: "END",
+		await deps.callLog.append({ at: stamp(), caller, jobId: null, provider, model, phase: "END",
 			outcome: attempt.ok ? "answered" : attempt.reason,
 			sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
 	};
-	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
+	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model });
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
 	let result = await deps.model(prompt);
 	await recordEnd(result);
 	if (!result.ok && result.reason === "PROVIDER_ERROR") {
-		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller: "ask-ledger", jobId: null, provider, model });
+		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model });
 		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: retried.detail ?? "the shared model budget refused the one retry" };
 		result = await deps.model(prompt);
 		await recordEnd(result);

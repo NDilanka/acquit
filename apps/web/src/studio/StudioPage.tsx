@@ -65,6 +65,8 @@ AgStudioModuleRegistry.registerModules([AgStudioAiModule]);
 
 const SAVE_DEBOUNCE_MS = 300;
 const NARROW = "(max-width: 640px)";
+/** The width at which the sample book's Ask panel sits beside the widgets without covering them. */
+const WIDE = "(min-width: 1200px)";
 
 export default function StudioPage({ sample = false }: { sample?: boolean }) {
   const { user } = useSession();
@@ -286,9 +288,14 @@ const SAMPLE_EXPLAIN: ExplainSource = { read: (figure) => api.sampleExplain(figu
 
 /**
  * The sample book: one seeded set of escrow jobs that every signed-in account sees the same way. It reads only the
- * sample endpoint, so it opens no stream, reads no PayPal object, and takes no Ask agent. Nothing it shows is a real row.
+ * sample endpoints, so it opens no stream and reads no PayPal object. Its Ask agent reads the sample book alone, and
+ * shows only where the window is wide enough for the chat panel. Nothing it shows is a real row.
  */
 function SampleDashboard() {
+  // The sample book's Ask shows beside the widgets only where the chat panel leaves them room. Below that width the
+  // page keeps its layout with no chat panel; the ask's tool list is still read, but nothing renders from it there.
+  const wide = useMedia(WIDE);
+  const ask = useAskLedger("sample", "SAMPLE");
   const [load, setLoad] = useState<Load<SampleBook>>({ kind: "loading" });
   useEffect(() => {
     let live = true;
@@ -306,6 +313,7 @@ function SampleDashboard() {
       title="Sample book"
       lead="Simulated sample data: a seeded set of escrow jobs that every signed-in account sees the same way. Each figure and PayPal reference here is labelled sample, and nothing on this page reads a real account or PayPal."
       load={load}
+      ask={wide ? ask : undefined}
       source={escrowSource}
     >
       {(book, studio) => (
