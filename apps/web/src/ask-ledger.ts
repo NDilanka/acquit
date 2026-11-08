@@ -371,9 +371,22 @@ const PLATFORM_ROUTE: AskRoute = {
   tool: callTool,
 };
 
+// Kept equal to the server's SAMPLE_LABEL (apps/api/src/sample-ask.ts), which sample-ask.test.ts reads from the server's source.
+export const SAMPLE_ANSWER_LABEL = "Simulated sample data. Not checked against PayPal.";
+
+/**
+ * A sample turn as the page shows it. The server already appends the label to every sample answer; the page checks it too,
+ * so no sample answer reaches the transcript without the label, whatever text the turn carried.
+ */
+export function labelledSampleTurn(turn: AskTurnResponse): AskTurnResponse {
+  const message = turn.message;
+  if (message === null || message.trim() === "" || message.includes(SAMPLE_ANSWER_LABEL)) return turn;
+  return { ...turn, message: `${message}\n\n${SAMPLE_ANSWER_LABEL}` };
+}
+
 const SAMPLE_ROUTE: AskRoute = {
   tools: () => api.sampleAskTools(),
-  turn: (body, init) => api.sampleAskTurn(body, init),
+  turn: async (body, init) => labelledSampleTurn(await api.sampleAskTurn(body, init)),
   tool: sampleCallTool,
 };
 

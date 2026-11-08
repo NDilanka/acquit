@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
-import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt } from "../src/ask.ts";
+import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, type AskModelResult } from "../src/ask.ts";
 import { modelCallLog } from "../../../packages/core/src/model.ts";
-import { sampleAskToolExecutor, sampleAskToolList, sampleTurnLimiter, SAMPLE_ASK_TOOL_NAMES, SAMPLE_LABEL, withDeadline } from "../src/sample-ask.ts";
+import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, withDeadline } from "../src/sample-ask.ts";
 import { sampleExplain } from "../src/sample-book.ts";
 
 const FORGED_REAL_IDS = ["job_real_paid", "job_real_refund", "REFUND_REAL_SENTINEL", "CAP-REAL_SENTINEL", "PAYOUT_REAL_SENTINEL", "rcpt_real", "SAMPLE-ORDER-02"];
@@ -143,8 +143,160 @@ test("the sample turn's admission caps a day at sixty for one key", () => {
 });
 
 test("a model call past its deadline is answered without the model, and a call inside it is answered with it", async () => {
-	assert.equal(await withDeadline(new Promise<string>(() => undefined), 20, "answered without the model"), "answered without the model");
-	assert.equal(await withDeadline(Promise.resolve("the model's answer"), 1_000, "answered without the model"), "the model's answer");
-	const failing = withDeadline(Promise.reject(new Error("provider failed")), 1_000, "fallback");
+	assert.equal(await withDeadline(() => new Promise<string>(() => undefined), 20, "answered without the model"), "answered without the model");
+	assert.equal(await withDeadline(() => Promise.resolve("the model's answer"), 1_000, "answered without the model"), "the model's answer");
+	const failing = withDeadline(() => Promise.reject(new Error("provider failed")), 1_000, "fallback");
 	await assert.rejects(failing, /provider failed/, "a failure inside the deadline is the failure, not the fallback");
+});
+
+test("the work is handed a signal that aborts at the deadline, and a request that ends answers at once with its signal aborted", async () => {
+	const atDeadline: { signal?: AbortSignal } = {};
+	assert.equal(await withDeadline(signal => { atDeadline.signal = signal; return new Promise<string>(() => undefined); }, 20, "fallback"), "fallback");
+	assert.equal(atDeadline.signal?.aborted, true, "the deadline aborted the work");
+	const ended = new AbortController();
+	const onRequestEnd: { signal?: AbortSignal } = {};
+	const started = Date.now();
+	const answered = withDeadline(signal => { onRequestEnd.signal = signal; return new Promise<string>(() => undefined); }, 60_000, "fallback", ended.signal);
+	ended.abort();
+	assert.equal(await answered, "fallback");
+	assert.ok(Date.now() - started < 5_000, "the request's end answered without waiting for the deadline");
+	assert.equal(onRequestEnd.signal?.aborted, true, "the request's end aborted the work");
+});
+
+test("a sample turn cancelled at its deadline stops its model call and starts no retry, and a turn cancelled before it starts reserves nothing", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-cancel-"));
+	try {
+		const log = join(root, "log.jsonl");
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		let modelCalls = 0;
+		// The model answers a provider error only once its signal aborts: the cancel is what ends it.
+		const model = async (_prompt: string, signal?: AbortSignal): Promise<AskModelResult> => {
+			modelCalls += 1;
+			await new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener("abort", () => resolve(), { once: true }); });
+			return { ok: false, reason: "PROVIDER_ERROR", detail: "the request was aborted" };
+		};
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 30);
+		const outcome = await askLedgerTurn({ model, callLog: modelCallLog(log), caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
+			{ messages, tools: sampleAskToolList(), scope: "SAMPLE", signal: controller.signal });
+		clearTimeout(timer);
+		assert.equal(outcome.ok, false, "a cancelled turn is not an answer");
+		assert.equal(modelCalls, 1, "the cancelled call is the only model call: the one retry never starts");
+		const phases = (await readFile(log, "utf8")).split("\n").filter(Boolean).map(line => (JSON.parse(line) as { phase: string }).phase);
+		assert.deepEqual(phases, ["START", "END"], "one reservation and its end, nothing after the cancel");
+
+		const cancelled = await askLedgerTurn({ model, callLog: modelCallLog(log), caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
+			{ messages, tools: sampleAskToolList(), scope: "SAMPLE", signal: controller.signal });
+		assert.equal(cancelled.ok, false);
+		assert.equal(modelCalls, 1, "a turn cancelled before it starts runs no model call");
+		assert.equal((await readFile(log, "utf8")).split("\n").filter(Boolean).length, 2, "and reserves nothing");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the sample's ceiling inside the shared budget refuses a sample turn while the platform keeps its capacity", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-ceiling-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		// Six sample calls in the last minute fill the sample's per-minute ceiling.
+		for (let call = 0; call < 6; call += 1) {
+			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
+		};
+		const sample = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.deepEqual(sample, { ok: false, reason: "MODEL_BUDGET", detail: "the sample allowance inside the shared model budget is spent for now" });
+		assert.equal(modelCalls, 0, "a refused sample turn runs no model call");
+		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
+		assert.equal(platform.ok, true, "the platform's turn still runs while the sample is at its ceiling");
+		assert.equal(modelCalls, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a sample retry that would pass the sample's ceiling is refused, so a provider error cannot spend past it", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-retry-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		// Five sample calls in the minute leave one: the first call takes it, and the retry finds the ceiling full.
+		for (let call = 0; call < 5; call += 1) {
+			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: false, reason: "PROVIDER_ERROR", detail: "the provider failed" };
+		};
+		const outcome = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.equal(outcome.ok, false);
+		assert.equal(outcome.ok === false ? outcome.reason : "", "MODEL_BUDGET", "the retry is refused by the sample's ceiling");
+		assert.equal(modelCalls, 1, "the refused retry runs no model call");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the sample's daily ceiling refuses sample calls for the rest of the day, and a platform call still runs", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-day-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		// Two hundred sample calls earlier in the day, none in the last minute: the day is what is full.
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perDay; call += 1) {
+			await callLog.append({ at: new Date(now - 120_000 - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
+		};
+		const sample = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.equal(sample.ok, false, "the sample's day is spent");
+		assert.equal(modelCalls, 0);
+		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
+		assert.equal(platform.ok, true, "the platform's day is not the sample's");
+		assert.equal(modelCalls, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the sample's in-flight gate runs at most its slots at once, a release frees its slot once, and the route holds a slot for each turn", () => {
+	const acquire = sampleInFlightGate(2);
+	const first = acquire();
+	const second = acquire();
+	assert.ok(first !== null && second !== null, "two turns get their slots");
+	assert.equal(acquire(), null, "a third turn finds both slots running and is refused");
+	first?.();
+	first?.();
+	const third = acquire();
+	assert.ok(third !== null, "the freed slot admits the next turn");
+	assert.equal(acquire(), null, "a second release of the same slot frees nothing more");
+	second?.();
+	third?.();
+	assert.ok(acquire() !== null, "every slot is free again once its turn ends");
+	const server = readFileSync(join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
+	assert.match(server, /const releaseSlot = acquireSampleSlot\(\);/, "the sample route takes a slot before it admits the turn");
+	assert.match(server, /\} finally \{\s*releaseSlot\(\);\s*\}/, "the sample route returns its slot in a finally");
+	assert.ok(SAMPLE_MAX_IN_FLIGHT >= 1 && SAMPLE_MAX_IN_FLIGHT <= 6, "the in-flight cap is a small number of turns");
+});
+
+test("every sample answer carries the sample label, whatever the model wrote, and an empty answer stays empty", () => {
+	assert.equal(labelSampleAnswer("Nothing is held."), `Nothing is held.\n\n${SAMPLE_LABEL}`);
+	assert.equal(labelSampleAnswer(`Held is 320.\n\n${SAMPLE_LABEL}`), `Held is 320.\n\n${SAMPLE_LABEL}`, "a label the model already wrote is not doubled");
+	assert.equal(labelSampleAnswer(null), null);
+	assert.equal(labelSampleAnswer("  "), "  ");
+	const server = readFileSync(join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
+	assert.match(server, /json\(res, 200, \{ \.\.\.outcome, message: labelSampleAnswer\(outcome\.message\) \}\)/, "the sample route labels the answer it sends");
+	assert.match(server, /scope: "SAMPLE", signal \}/, "the sample turn passes its signal to the model");
 });

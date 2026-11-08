@@ -48,7 +48,7 @@ import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 import { traceFigure } from "./figure-trace.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
-import { sampleAskToolExecutor, sampleAskToolList, sampleTurnLimiter, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
+import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_CALLER, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
 
@@ -215,6 +215,7 @@ const admitOperatorTurn = operatorTurnLimiter();
 const sampleExecutor = sampleAskToolExecutor();
 const sampleAskTools = sampleAskToolList();
 const admitSampleTurn = sampleTurnLimiter();
+const acquireSampleSlot = sampleInFlightGate();
 const admitRestore = attemptLimiter(RESTORE_ATTEMPTS, RESTORE_WINDOW_MS);
 /** An operator's ask executor, built for one request from its session actor: its own jobs, receipts, and payouts, read under that actor. The platform's executor is never reused for an operator. */
 function askOperatorExecutorFor(actor: Extract<Actor, { role: "OPERATOR" }>): AskToolExecutor {
@@ -839,21 +840,33 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		let relayed: ReturnType<typeof readSampleTurn>;
 		try { relayed = readSampleTurn(raw); }
 		catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
-		// The turn is admitted by its account and by its address before the shared budget reserves, so a refused turn reserves nothing.
-		if (!admitSampleTurn([`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`])) {
-			json(res, 429, { error: "MODEL_BUDGET", detail: `A sample turn is limited to ${OPERATOR_TURNS_PER_MINUTE} a minute and ${OPERATOR_TURNS_PER_DAY} a day for each account and each address.` });
+		// At most SAMPLE_MAX_IN_FLIGHT sample turns run their model work at once. A turn refused for want of a slot is refused
+		// before it is admitted, so it charges no key.
+		const releaseSlot = acquireSampleSlot();
+		if (releaseSlot === null) { json(res, 429, { error: "MODEL_BUDGET", detail: "Sample Ask is busy with other turns. Try again in a moment." }); return; }
+		try {
+			// The turn is admitted by its account and by its address before the shared budget reserves, so a refused turn reserves nothing.
+			if (!admitSampleTurn([`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`])) {
+				json(res, 429, { error: "MODEL_BUDGET", detail: `A sample turn is limited to ${OPERATOR_TURNS_PER_MINUTE} a minute and ${OPERATOR_TURNS_PER_DAY} a day for each account and each address.` });
+				return;
+			}
+			const timedOut: AskTurnOutcome = { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: "the model did not answer in time" };
+			// A client that leaves before the answer ends the turn too: no retry starts for a response nobody reads.
+			const clientGone = new AbortController();
+			res.once("close", () => { if (!res.writableFinished) clientGone.abort(); });
+			const outcome = await withDeadline(signal => askLedgerTurn({ model: askModel, callLog: askCallLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
+				{ ...relayed, scope: "SAMPLE", signal }), SAMPLE_TURN_DEADLINE_MS, timedOut, clientGone.signal);
+			if (!outcome.ok) {
+				json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
+					: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
+				return;
+			}
+			// Every sample answer carries the sample label, whatever the model wrote.
+			json(res, 200, { ...outcome, message: labelSampleAnswer(outcome.message) });
 			return;
+		} finally {
+			releaseSlot();
 		}
-		const timedOut: AskTurnOutcome = { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: "the model did not answer in time" };
-		const outcome = await withDeadline(askLedgerTurn({ model: askModel, callLog: askCallLog, caller: "sample-ask" }, { ...relayed, scope: "SAMPLE" }),
-			SAMPLE_TURN_DEADLINE_MS, timedOut);
-		if (!outcome.ok) {
-			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
-				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
-			return;
-		}
-		json(res, 200, outcome);
-		return;
 	}
 	if (url.pathname === "/api/sample/ask/tool" && method === "POST") {
 		let named: { name?: unknown; arguments?: unknown };
