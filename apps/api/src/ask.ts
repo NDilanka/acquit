@@ -565,6 +565,13 @@ export function openrouterAskPort(deps: { readonly fetch?: typeof fetch; readonl
 	};
 }
 
+/** Read-only autonomy still lets droid's native Read, Grep, Execute and FetchUrl reach host files, the
+ * child's environment and the network, so the turn is pinned to one inert tool: the ledger tools reach
+ * the model through the prompt, never as native capabilities. */
+export function droidAskArgv(file: string): readonly string[] {
+	return ["290", "droid", "exec", "-m", DROID_MODEL, "-o", "json", "--only-tools", "TodoWrite", "-f", file];
+}
+
 /** The droid ask port: one read-only `droid exec` turn, the prompt by file, the Factory key in the
  * child's environment built in process -- never in argv, never in a log. No --auto: nothing the
  * model asks to run can execute, so the port's only product is the answer text. */
@@ -580,7 +587,7 @@ export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): A
 		// and the working directory is the turn's own temp dir, never a job repo. The child runs
 		// under `timeout 290` too, so one whose parent dies mid-turn still ends itself instead of
 		// holding its connections forever.
-		const argv = ["290", "droid", "exec", "-m", DROID_MODEL, "-o", "json", "-f", file];
+		const argv = [...droidAskArgv(file)];
 		try {
 			const run = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
 				// stderr is ignored, not piped: nothing here reads it, and a chatty child would fill the

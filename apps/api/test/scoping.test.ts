@@ -199,9 +199,9 @@ test("the A1 scoping caller runs droid read-only: no --auto, json output, the pi
 		const argv = (await readFile(argvFile, "utf8")).split("\n").filter(line => line !== "");
 		// The shim sees the argv after "droid": exec, the pinned model, json output, the prompt by
 		// file. No --auto anywhere, and exactly one file argument — the port's own read-only shape.
-		assert.deepEqual(argv.slice(0, 6), ["exec", "-m", "glm-5.3-flash", "-o", "json", "-f"]);
-		assert.equal(argv.length, 7, "nothing but the read-only argv and the prompt file");
-		assert.match(argv[6]!, /ask-instruction\.txt$/);
+		assert.deepEqual(argv.slice(0, 8), ["exec", "-m", "glm-5.3-flash", "-o", "json", "--only-tools", "TodoWrite", "-f"]);
+		assert.equal(argv.length, 9, "nothing but the read-only argv, the one inert tool, and the prompt file");
+		assert.match(argv[8]!, /ask-instruction\.txt$/);
 		assert.ok(!argv.includes("--auto"), "no write-level autonomy flag: the scoping caller is read-only");
 		assert.ok(argv.includes("-o") && argv.includes("json"), "the result line is json");
 		assert.equal(await readFile(envFile, "utf8"), "test-key-in-process", "the Factory key rides in the child's environment");
