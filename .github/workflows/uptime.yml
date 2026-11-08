@@ -1,0 +1,30 @@
+name: Uptime
+
+# A separate workflow: it runs on a schedule and on demand only, never on push or pull_request,
+# so it cannot block CI or a deploy. It needs no secret and writes nothing to the repository.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime-check
+  cancel-in-progress: true
+
+jobs:
+  public-routes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check the hosted demo's public routes
+        run: node scripts/uptime-check.mjs
