@@ -19,6 +19,7 @@ import type { AskMessage, AskToolSchema, AskToolsResponse, AskTurnRequest, AskTu
 import { api, ApiError, type CallOptions } from "./api.ts";
 import type { DashboardId } from "./dashboard-widgets.ts";
 import { FIGURE_LABELS, isFigureId } from "../../../packages/core/src/explain.ts";
+import { answerEndsWithLabel } from "../../../packages/core/src/sample-label.ts";
 import { isFigureTrace } from "./figure-trace.ts";
 import { shortId, usd } from "./format.ts";
 
@@ -81,6 +82,7 @@ export const SAMPLE_ASK_INSTRUCTIONS = [
   "Check sample_totals for totals, list_sample_jobs for the list, get_sample_job for one job by its id, and explain_sample_figure to trace a figure to its ledger lines before you answer.",
   "Your tools reach only the sample book. If a question needs a real job, a real PayPal order, or the platform's money, say that you cannot see it here.",
   "Give amounts in dollars, name the sample jobs you checked, and say which sample money is still held and which has been paid.",
+  "Never print a status code such as IN_PROGRESS, or an id written in capitals or with underscores; use the plain words your tools return, and name a sample job by its title.",
   "You only read. You cannot capture, refund, release or pay out money, and you never claim to have done so.",
   "When the reader wants a widget or chart, delegate it to the widget agent with delegate_to rather than building it yourself.",
   "When the reader asks a question the sample tables answer across jobs, operators, bids, verdicts, or events, delegate it to the data agent with delegate_to.",
@@ -376,11 +378,12 @@ export const SAMPLE_ANSWER_LABEL = "Simulated sample data. Not checked against P
 
 /**
  * A sample turn as the page shows it. The server already appends the label to every sample answer; the page checks it too,
- * so no sample answer reaches the transcript without the label, whatever text the turn carried.
+ * so no sample answer reaches the transcript without the label, whatever text the turn carried. A label inside a code fence
+ * does not count, since it does not show as text.
  */
 export function labelledSampleTurn(turn: AskTurnResponse): AskTurnResponse {
   const message = turn.message;
-  if (message === null || message.trim() === "" || message.includes(SAMPLE_ANSWER_LABEL)) return turn;
+  if (message === null || message.trim() === "" || answerEndsWithLabel(message, SAMPLE_ANSWER_LABEL)) return turn;
   return { ...turn, message: `${message}\n\n${SAMPLE_ANSWER_LABEL}` };
 }
 
@@ -530,6 +533,7 @@ export const OPERATOR_ASK_INSTRUCTIONS = [
   "Your tools reach only this operator's own jobs. If a question needs anything else, say that you cannot see it.",
   "Check my_totals for totals, my_jobs for the list, my_job for one job by id, and my_payouts for payouts before you answer.",
   "Give amounts in dollars, name the jobs you checked, and say which money is still held and which has been paid.",
+  "Never print a status code such as IN_PROGRESS, or an id written in capitals or with underscores; use the plain words your tools return, and name a job by its title.",
   "You only read. You cannot release, refund, or pay out money, and you never claim to have done so.",
 ].join("\n");
 
