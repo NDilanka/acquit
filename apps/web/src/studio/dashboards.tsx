@@ -3,7 +3,7 @@ import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
 import type { ColDef, ICellRendererParams, RowClickedEvent, RowHeightParams } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformReconcileRow, PlatformReconciliation, ReceiptRow } from "../api-types";
+import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformReconcileRow, PlatformReconciliation, ReceiptRow, SampleBook } from "../api-types";
 import { acquitTheme } from "../grid";
 import { escrowWord } from "../job-status";
 import { dollars, shortId, utc } from "../format";
@@ -42,6 +42,8 @@ export const EarningsContext = createContext<EarningsData | null>(null);
 /** The PayPal card's own read: READING until the first answer, UNAVAILABLE when PayPal's read failed. */
 export type ReconcileView = PlatformReconciliation | "READING" | "UNAVAILABLE";
 export const ReconcileContext = createContext<ReconcileView>("READING");
+/** The sample book's own tie of its ledger lines to its sample PayPal references. Nothing here is read from PayPal. */
+export const SampleReconcileContext = createContext<SampleBook["reconciliation"] | null>(null);
 
 function useEscrow() {
   const jobs = useContext(EscrowContext);
@@ -189,6 +191,32 @@ function ReconciliationCard() {
       <small className="muted">
         Read {utc(recon.checkedAt)}. This card reads PayPal again every few minutes while it is on screen.
       </small>
+    </>
+  );
+}
+
+/** The sample book's tie of each ledger line to its sample PayPal reference. Sample labelled; PayPal is never read for it. */
+function SampleReconciliationCard() {
+  const recon = useContext(SampleReconcileContext);
+  if (recon === null) return <p className="muted">Loading the sample book…</p>;
+  const reconciled = recon.tied === recon.entries;
+  return (
+    <>
+      <span className={`pill ${reconciled ? "ok" : "break"}`}>
+        <span className="dot" />
+        {reconciled ? "Sample: reconciled" : "Sample: not every line tied"}
+      </span>
+      <div className="rows">
+        <div>
+          <span>Ledger lines</span>
+          <b className="num">{recon.entries}</b>
+        </div>
+        <div className="total">
+          <span>Tied to a sample PayPal reference</span>
+          <b className="num">{recon.tied}</b>
+        </div>
+      </div>
+      <small className="muted">{recon.note}</small>
     </>
   );
 }
@@ -606,6 +634,7 @@ const COMP = {
   "acquit-conserves": LedgerConserves,
   "acquit-verdict-grid": VerdictTimeline,
   "acquit-reconciliation": ReconciliationCard,
+  "acquit-sample-reconciliation": SampleReconciliationCard,
   "acquit-paid-out": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).paidOut), note: "Payouts on your job receipts" })),
   "acquit-fees-withheld": stat(useEarnings, (d) => ({ value: dollars(earnings(d.receipts).feesWithheld), note: "PayPal processing and Acquit" })),
   "acquit-jobs-paid": stat(useEarnings, (d) => ({ value: String(earnings(d.receipts).jobsPaid), note: "Verified, released, and paid" })),
@@ -622,6 +651,7 @@ const withComp = (rows: readonly (readonly SpecData[])[]): readonly (readonly Sp
 const DASHBOARDS: Record<DashboardId, readonly (readonly Spec[])[]> = {
   escrow: withComp(WIDGET_ROWS.escrow),
   earnings: withComp(WIDGET_ROWS.earnings),
+  sample: withComp(WIDGET_ROWS.sample),
 };
 
 /**
@@ -680,6 +710,7 @@ function buildRegistry(id: DashboardId): AgWidgetsConfig<AcquitRegistry> {
 export const WIDGETS: Record<DashboardId, AgWidgetsConfig<AcquitRegistry>> = {
   escrow: buildRegistry("escrow"),
   earnings: buildRegistry("earnings"),
+  sample: buildRegistry("sample"),
 };
 
 export function freshState(id: DashboardId): DashboardState {

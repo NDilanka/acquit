@@ -1,6 +1,6 @@
 // A traced figure, drawn once: the Ask chat's card and the Explain panel both show a FigureTrace through FigureTraceView.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { AgAiToolDetailParams } from "ag-studio";
 import { api } from "../api";
@@ -19,13 +19,13 @@ const LINE_WORDS: Record<FigureTraceLine["kind"], string> = {
 };
 
 /** One ledger line: its job, kind and amount, the PayPal object it names with PayPal's answer, and the receipt once the job is paid. */
-function FigureLineItem({ line }: { line: FigureTraceLine }) {
+function FigureLineItem({ line, links }: { line: FigureTraceLine; links: boolean }) {
   const status = paypalWords(line.paypal.status);
   const partial = checkedPart(line);
   return (
     <li className="explain-line">
       <div className="explain-line-head">
-        <Link className="mono" to={`/jobs/${encodeURIComponent(line.jobId)}`}>{line.jobId}</Link>
+        {links ? <Link className="mono" to={`/jobs/${encodeURIComponent(line.jobId)}`}>{line.jobId}</Link> : <span className="mono">{line.jobId}</span>}
         <span>{LINE_WORDS[line.kind]}</span>
         <b className="num">{dollars(line.cents)}</b>
       </div>
@@ -38,13 +38,16 @@ function FigureLineItem({ line }: { line: FigureTraceLine }) {
         <small className="muted">PayPal shows {dollars(line.paypal.observedCents)}.</small>
       )}
       {line.paypal.note !== null && <small className="muted">{line.paypal.note}</small>}
-      {line.receiptId !== null && <Link to={`/receipts/${encodeURIComponent(line.receiptId)}`}>Verifier receipt</Link>}
+      {line.receiptId !== null && (links ? <Link to={`/receipts/${encodeURIComponent(line.receiptId)}`}>Verifier receipt</Link> : <span className="mono">Receipt {line.receiptId}</span>)}
     </li>
   );
 }
 
-/** A traced figure: its total, its ledger lines with PayPal's status, and the sum check worked out from those lines. */
-export function FigureTraceView({ trace }: { trace: FigureTrace }) {
+/**
+ * A traced figure: its total, its ledger lines with PayPal's status, and the sum check worked out from those lines.
+ * `links` is off for the sample book: its job and receipt ids are not rows the live routes can open.
+ */
+export function FigureTraceView({ trace, links = true }: { trace: FigureTrace; links?: boolean }) {
   const { linesCents, holds } = figureCheck(trace);
   return (
     <div className="explain-body">
@@ -57,7 +60,7 @@ export function FigureTraceView({ trace }: { trace: FigureTrace }) {
       ) : (
         <ol className="explain-lines" aria-label={`Ledger lines for ${trace.label}`}>
           {trace.lines.map((line) => (
-            <FigureLineItem key={line.entryId} line={line} />
+            <FigureLineItem key={line.entryId} line={line} links={links} />
           ))}
         </ol>
       )}
@@ -76,6 +79,11 @@ export function FigureTraceView({ trace }: { trace: FigureTrace }) {
 
 type ExplainState = { readonly kind: "reading" } | { readonly kind: "ready"; readonly trace: FigureTrace } | { readonly kind: "failed"; readonly error: string };
 
+/** Where an Explain reads its figure from: the platform's live book, or the sample book, which is labelled as sample. */
+export type ExplainSource = { readonly read: (figure: FigureId) => Promise<FigureTrace>; readonly sample: boolean };
+const PLATFORM_EXPLAIN: ExplainSource = { read: (figure) => api.platformExplain(figure), sample: false };
+export const ExplainSourceContext = createContext<ExplainSource>(PLATFORM_EXPLAIN);
+
 /** The Explain button for one escrow figure. It opens the figure's lines in a modal dialog, read live each time it opens. */
 export function FigureExplain({ figure }: { figure: FigureId }) {
   const [open, setOpen] = useState(false);
@@ -93,6 +101,7 @@ export function FigureExplain({ figure }: { figure: FigureId }) {
 function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const source = useContext(ExplainSourceContext);
   const [state, setState] = useState<ExplainState>({ kind: "reading" });
   useEffect(() => {
     const el = dialog.current;
@@ -100,12 +109,12 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
   }, []);
   useEffect(() => {
     let current = true;
-    api.platformExplain(figure).then(
+    source.read(figure).then(
       (trace) => { if (current) setState({ kind: "ready", trace }); },
       (error: unknown) => { if (current) setState({ kind: "failed", error: readFailure(error) }); },
     );
     return () => { current = false; };
-  }, [figure]);
+  }, [figure, source]);
   // Portalled to body: inside a widget, row styles such as `.rows div` reach the dialog's own divs,
   // and the dashboard's key handling can swallow Escape before the dialog sees it.
   return createPortal(
@@ -127,9 +136,10 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
           Close
         </button>
       </div>
+      {source.sample && <p className="muted small">Sample data from the sample book. PayPal was not read for these lines.</p>}
       {state.kind === "reading" && <p className="muted small">Reading the ledger lines and PayPal's status for each one.</p>}
       {state.kind === "failed" && <div className="alert">The figure could not be traced just now because {state.error}.</div>}
-      {state.kind === "ready" && <FigureTraceView trace={state.trace} />}
+      {state.kind === "ready" && <FigureTraceView trace={state.trace} links={!source.sample} />}
     </dialog>,
     document.body,
   );

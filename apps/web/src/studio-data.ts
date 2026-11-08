@@ -250,6 +250,8 @@ const LEGACY_SEEDED: Record<DashboardId, readonly string[]> = {
     "escrow-treemap",
   ],
   earnings: ["acquit-paid-out", "acquit-fees-withheld", "acquit-jobs-paid", "acquit-receipt-card"],
+  // The sample book is new, so no saved sample layout predates any widget it seeds.
+  sample: [],
 };
 
 /** The JSON a Studio state saves as: the state, plus the seeded widget ids this build has seen. */

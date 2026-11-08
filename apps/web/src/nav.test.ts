@@ -8,19 +8,21 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
   assert.deepEqual(pairs(navFor("CLIENT")), [
     ["My jobs", "/"],
     ["Post a job", "/jobs/new"],
+    ["Sample book", "/studio/sample"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
   ]);
 });
 
-test("an operator's navigation is Find work, My bids, My work, Earnings, and Dashboards, then the two public pages", () => {
+test("an operator's navigation is Find work, My bids, My work, Earnings, Dashboards, and Sample book, then the two public pages", () => {
   assert.deepEqual(pairs(navFor("OPERATOR")), [
     ["Find work", "/operator"],
     ["My bids", "/operator/bids"],
     ["My work", "/operator/work"],
     ["Earnings", "/operator/earnings"],
     ["Dashboards", "/studio"],
+    ["Sample book", "/studio/sample"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
@@ -36,9 +38,10 @@ test("the public pages sit under the Public label, and CLI sign-in, Tutorials, a
   assert.equal(labels.includes("Agents"), false);
 });
 
-test("a platform user's navigation is Dashboards, then the two public pages", () => {
+test("a platform user's navigation is Dashboards and Sample book, then the two public pages", () => {
   assert.deepEqual(pairs(navFor("PLATFORM")), [
     ["Dashboards", "/studio"],
+    ["Sample book", "/studio/sample"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
   ]);
@@ -91,6 +94,7 @@ test("each route has one heading, and the eyebrow names the role", () => {
   assert.deepEqual(pageHeading({ name: "operatorWork" }, "OPERATOR"), { eyebrow: "Operator", title: "My work" });
   assert.deepEqual(pageHeading({ name: "operatorEarnings" }, "OPERATOR"), { eyebrow: "Operator", title: "Earnings" });
   assert.deepEqual(pageHeading({ name: "studio" }, "PLATFORM"), { eyebrow: "Platform", title: "Dashboards" });
+  assert.deepEqual(pageHeading({ name: "studioSample" }, "CLIENT"), { eyebrow: "Client", title: "Sample book" });
   assert.deepEqual(pageHeading({ name: "verifiers" }, null), { eyebrow: "Public", title: "Verifiers" });
   assert.deepEqual(pageHeading({ name: "print" }, null), { eyebrow: "Public", title: "Print verifier" });
   assert.deepEqual(pageHeading({ name: "tour" }, "OPERATOR"), { eyebrow: "Operator", title: "Scenarios" });

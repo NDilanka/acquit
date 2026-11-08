@@ -47,6 +47,7 @@ import { createPrintRuns, printRunReply, startPrintWorker } from "./print-demo.t
 import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 import { traceFigure } from "./figure-trace.ts";
+import { sampleBook, sampleExplain } from "./sample-book.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
 
@@ -792,6 +793,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const input = method === "POST" ? await body(req) : undefined;
 		const reply = printRunReply(printRuns, current.visitor.id, method, url.pathname.slice("/api/demo/print/runs".length), input);
 		json(res, reply.status, reply.body);
+		return;
+	}
+	// The sample book: a frozen, seeded escrow book that any signed-in account reads the same way. It touches no store row and
+	// no PayPal object, and it takes no id, so a forged real job, order, refund, or capture id is refused before any read.
+	if (url.pathname === "/api/sample/book" && method === "GET") {
+		if ([...url.searchParams.keys()].length > 0) { json(res, 400, { error: "BAD_REQUEST", detail: "The sample book takes no query" }); return; }
+		json(res, 200, sampleBook());
+		return;
+	}
+	if (url.pathname === "/api/sample/explain" && method === "GET") {
+		if ([...url.searchParams.keys()].some(key => key !== "figure")) { json(res, 400, { error: "BAD_REQUEST", detail: "The sample explain takes only a figure" }); return; }
+		const figure = url.searchParams.get("figure");
+		if (!isFigureId(figure)) { json(res, 400, { error: "UNKNOWN_FIGURE", figures: FIGURE_IDS }); return; }
+		json(res, 200, sampleExplain(figure));
 		return;
 	}
 	if (url.pathname === "/api/platform/ledger" && method === "GET") {

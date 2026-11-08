@@ -1,7 +1,7 @@
 import type { AgReportState, AgSortConfig, AgWidgetDataFormat } from "ag-studio";
 import type { AgRegistry, AgWidgetDefinition } from "ag-studio-react";
 
-export type DashboardId = "escrow" | "earnings";
+export type DashboardId = "escrow" | "earnings" | "sample";
 
 export const COLUMNS = 12;
 
@@ -171,6 +171,130 @@ export const WIDGET_ROWS = {
       },
     ],
   ],
+  // The sample book: the escrow book's widgets over one seeded, read-only set of jobs. Every label says Sample. Its PayPal
+  // card reads the sample's own references, never PayPal, so it is a card of its own.
+  sample: [
+    [
+      {
+        id: "acquit-held",
+        label: "Sample: held escrow",
+        kind: "stat",
+        xSpan: 3,
+        ySpan: 2,
+        ai: stat("One big dollar figure: the escrow held on sample jobs not yet released or refunded, from the sample book.", "Use when the reader wants to see how much sample money is in escrow."),
+      },
+      {
+        id: "acquit-released",
+        label: "Sample: released",
+        kind: "stat",
+        xSpan: 3,
+        ySpan: 2,
+        ai: stat("One big dollar figure: the sample escrow released to operators, from the sample book.", "Use when the reader wants to see how much sample money has been paid out."),
+      },
+      {
+        id: "acquit-refunded",
+        label: "Sample: refunded",
+        kind: "stat",
+        xSpan: 3,
+        ySpan: 2,
+        ai: stat("One big dollar figure: the sample escrow refunded to clients, from the sample book.", "Use when the reader wants to see how much sample money has gone back to clients."),
+      },
+      {
+        id: "acquit-fees",
+        label: "Sample: fees",
+        kind: "stat",
+        xSpan: 3,
+        ySpan: 2,
+        ai: stat("One big dollar figure: the sample fees taken, PayPal processing and Acquit's, from the sample book.", "Use when the reader wants to see what fees the sample jobs cost."),
+      },
+    ],
+    [
+      {
+        id: "acquit-pass-rate",
+        label: "Sample: verifier pass rate",
+        kind: "stat",
+        xSpan: 4,
+        ySpan: 2,
+        ai: stat("One big percentage: the share of sample verifier attempts that passed, with the attempt count beneath.", "Use when the reader asks how often sample work passes verification."),
+      },
+      {
+        id: "acquit-reject-rate",
+        label: "Sample: verifier reject rate",
+        kind: "stat",
+        xSpan: 4,
+        ySpan: 2,
+        ai: stat("One big percentage: the share of sample verifier attempts that were rejected, with the attempt count beneath.", "Use when the reader asks how often sample work fails verification."),
+      },
+      {
+        id: "acquit-tamper-caught",
+        label: "Sample: tamper attempts caught",
+        kind: "stat",
+        xSpan: 4,
+        ySpan: 2,
+        ai: stat("One big count: the sample verifier attempts rejected for editing the frozen tests.", "Use when the reader asks whether any sample attempt tried to cheat the verifier."),
+      },
+    ],
+    [
+      {
+        id: "acquit-conserves",
+        label: "Sample: ledger conserves",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 4,
+        ai: {
+          description:
+            "A check card over the sample's released jobs: payout to operators, fees, and paid by clients, with a pill saying whether payout plus fee equals what clients paid.",
+          usage: "Use when the reader wants proof the sample ledger balances.",
+          configuration: "Takes no data mapping, filters, or format; it reads the sample book itself. Give it the full 12 columns and at least 4 rows.",
+        },
+      },
+    ],
+    [
+      {
+        id: "acquit-verdict-grid",
+        label: "Sample: verdict timeline",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 9,
+        ai: {
+          description:
+            "A grid of the sample jobs grouped by where their money sits: held, released, refunded, or no escrow yet. Each job opens to its verifier attempts, with a sparkline of passing tests and the sample PayPal ids, and a pinned totals row that shows held + released + refunded + fees = funded, green when it holds.",
+          usage: "Use when the reader wants each sample job's verifier attempts, or to check the sample book job by job.",
+          configuration: "Takes no data mapping, filters, or format; it reads the sample book itself. Give it the full 12 columns and at least 9 rows.",
+        },
+      },
+    ],
+    [
+      {
+        id: "acquit-sample-reconciliation",
+        label: "Sample: reconciliation",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 4,
+        ai: {
+          description:
+            "A check card: each sample ledger line tied to a sample PayPal reference in the sample book. Nothing is read from PayPal, and the card says so.",
+          usage: "Use when the reader asks how the sample ledger lines tie to their PayPal references.",
+          configuration: "Takes no data mapping, filters, or format; it reads the sample book itself. Give it the full 12 columns and at least 4 rows.",
+        },
+      },
+    ],
+    [
+      {
+        id: "acquit-changes",
+        label: "Sample: changes",
+        kind: "card",
+        xSpan: 12,
+        ySpan: 6,
+        ai: {
+          description:
+            "A list of the changes made to this sample dashboard, newest first: who made each, the tool, what changed, and a short hash in a chain kept in this browser, with an Undo to here button on each change still undoable.",
+          usage: "Use when the reader asks what changed on the sample dashboard, or wants to undo back to an earlier change.",
+          configuration: "Takes no data mapping, filters, or format; it reads this dashboard's own change history. Give it the full 12 columns and at least 6 rows.",
+        },
+      },
+    ],
+  ],
   earnings: [
     [
       {
@@ -232,6 +356,7 @@ export type AcquitWidgetId = (typeof WIDGET_ROWS)[DashboardId][number][number]["
 export const WIDGET_IDS: Record<DashboardId, readonly AcquitWidgetId[]> = {
   escrow: WIDGET_ROWS.escrow.flat().map((w) => w.id),
   earnings: WIDGET_ROWS.earnings.flat().map((w) => w.id),
+  sample: WIDGET_ROWS.sample.flat().map((w) => w.id),
 };
 
 /**
@@ -284,18 +409,21 @@ export const NATIVE_WIDGETS = {
     ],
   ],
   earnings: [],
+  sample: [],
 } as const satisfies Record<DashboardId, readonly (readonly NativeWidgetSpec[])[]>;
 
 /** Each dashboard's native widget types, which the Ask agent may add beside its custom widget ids. */
 export const NATIVE_TYPES: Record<DashboardId, readonly NativeWidgetSpec["type"][]> = {
   escrow: NATIVE_WIDGETS.escrow.flat().map((widget) => widget.type),
   earnings: [],
+  sample: [],
 };
 
 /** Each dashboard's widget spans by widget type, the size a widget gets when it needs a fresh placement. */
 export const WIDGET_SPANS: Record<DashboardId, Readonly<Record<string, { readonly xSpan: number; readonly ySpan: number }>>> = {
   escrow: Object.fromEntries(WIDGET_ROWS.escrow.flat().map((w) => [w.id, { xSpan: w.xSpan, ySpan: w.ySpan }])),
   earnings: Object.fromEntries(WIDGET_ROWS.earnings.flat().map((w) => [w.id, { xSpan: w.xSpan, ySpan: w.ySpan }])),
+  sample: Object.fromEntries(WIDGET_ROWS.sample.flat().map((w) => [w.id, { xSpan: w.xSpan, ySpan: w.ySpan }])),
 };
 
 // The stacked narrow layout keeps each widget's wide-layout height, and a widget scrolls its own
