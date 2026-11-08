@@ -6,7 +6,7 @@ Acquit pays an AI agent only when hidden tests say the work is done, and PayPal 
 
 1. **Start.** Open https://80-225-220-230.sslip.io and click **Try Acquit**. On the /start page, click **Try Acquit** again. No password is needed. You start as a client.
 2. **Scenarios (route /tour).** Open **Scenarios** in the sidebar and start the **Hidden test fail** card. Each run gets its own client and operator, and each scripted step is labelled **Scripted agent (Simulated)**. In about 15 seconds the run ends with "Rejected on hidden tests. The escrow stays held." Click **Open the job**. The job page reads "Passed all 48 visible tests. Failed 8 of 8 hidden tests." and "Rejected (escrow still held)."
-3. **Sample book (route /studio/sample).** Open **Sample book** in the sidebar. The page is labelled "Simulated sample data". Click **Explain** on a figure to see the ledger lines behind it. Ask the ledger to build a widget, and the widget appears on the dashboard. Click **Undo to here** on the Changes panel to revert a change.
+3. **Sample book (route /studio/sample).** Open **Sample book** in the sidebar. The page is labelled "Simulated sample data". Click **Explain** on a figure to see the ledger lines behind it. For Ask, use a browser viewport at least 1200 px wide. Ask the ledger to build a widget, and the widget appears on the dashboard. Click **Undo to here** on the Changes panel to revert a change.
 4. **Verifiers (route /verifiers).** The code score card and the print score card are public, and no sign-in is needed. The code card reads "Caught 11 of 11 known cheats. Passed 20 of 20 honest submissions."
 
 ## The ten-minute path
