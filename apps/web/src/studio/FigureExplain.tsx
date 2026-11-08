@@ -136,8 +136,8 @@ function ExplainDialog({ figure, onClose }: { figure: FigureId; onClose: () => v
           Close
         </button>
       </div>
-      {source.sample && <p className="muted small">Sample data from the sample book. PayPal was not read for these lines.</p>}
-      {state.kind === "reading" && <p className="muted small">Reading the ledger lines and PayPal's status for each one.</p>}
+      {source.sample && <p className="muted small">Simulated sample data from the sample book. PayPal was not read for these lines.</p>}
+      {state.kind === "reading" && <p className="muted small">{source.sample ? "Reading the sample ledger lines." : "Reading the ledger lines and PayPal's status for each one."}</p>}
       {state.kind === "failed" && <div className="alert">The figure could not be traced just now because {state.error}.</div>}
       {state.kind === "ready" && <FigureTraceView trace={state.trace} links={!source.sample} />}
     </dialog>,

@@ -304,7 +304,7 @@ function SampleDashboard() {
     <Dashboard
       id="sample"
       title="Sample book"
-      lead="Sample data: a seeded set of escrow jobs that every signed-in account sees the same way. Each figure and PayPal reference here is labelled sample, and nothing on this page reads a real account or PayPal."
+      lead="Simulated sample data: a seeded set of escrow jobs that every signed-in account sees the same way. Each figure and PayPal reference here is labelled sample, and nothing on this page reads a real account or PayPal."
       load={load}
       source={escrowSource}
     >

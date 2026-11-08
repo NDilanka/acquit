@@ -73,6 +73,7 @@ function stat<D>(useData: () => D, read: (data: D) => { value: string; note: str
 
 function LedgerConserves() {
   const { payout, fee, paid, holds } = conserves(useEscrow());
+  const sample = useContext(SampleReconcileContext) !== null;
   return (
     <>
       <span className={`pill ${holds ? "ok" : "break"}`}>
@@ -96,7 +97,7 @@ function LedgerConserves() {
         </div>
       </div>
       <small className="muted">
-        Over released jobs, payout + fee = paid: {dollars(payout)} + {dollars(fee)} {holds ? "=" : "≠"} {dollars(paid)}. Updates as the ledger changes.
+        Over released jobs, payout + fee = paid: {dollars(payout)} + {dollars(fee)} {holds ? "=" : "≠"} {dollars(paid)}. {sample ? "Simulated: a fixed sample book that does not change." : "Updates as the ledger changes."}
       </small>
     </>
   );
