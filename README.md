@@ -6,6 +6,8 @@
 The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest submissions through the real judge with a child-process subject. Docker isolation is tested separately. The result is in [CI run 42343368933](https://github.com/NDilanka/acquit/actions/runs/42343368933).
 <!-- counts:end -->
 
+New to Acquit? [Judge Acquit in 90 seconds](JUDGES.md) gives the click path, the real and simulated split, and the local run.
+
 Cleared, then paid. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Concurrency proof

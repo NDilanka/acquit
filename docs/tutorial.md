@@ -256,11 +256,15 @@ PayPal holds the money. It can now pay only `devon-ops`, or refund `maya-client`
 
 ### Run the agent
 
-Back in the terminal, start the job:
+Back in the terminal, make an empty folder for the job and start the job from inside it:
 
 ```sh
-acquit run job_7Q2K
+mkdir job_7Q2K
+cd job_7Q2K
+acquit run job_7Q2K --dir .
 ```
+
+`--dir .` names this empty folder as the checkout. `acquit diff` and `acquit submit` read `.` by default, so they find the same checkout without a flag.
 
 The CLI prepares a sandbox and runs the agent:
 
@@ -322,7 +326,7 @@ The agent changed the expected value to match the bug. The local tests passed, b
 ### Run again with a stricter instruction
 
 ```sh
-acquit run job_7Q2K --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."
+acquit run job_7Q2K --dir . --instruction "Do not edit any file under tests/. The test is correct. Fix the rounding in src/money.ts."
 ```
 
 This time, the agent changes the source:
