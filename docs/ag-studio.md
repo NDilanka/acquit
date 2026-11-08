@@ -38,7 +38,7 @@ If the browser gives up on the stream, the page falls back to a 30-second poll a
 
 ## The Studio agent framework
 
-- **The ledger agent.** `ASK_AGENT_NAME` is "Ask the ledger" (`apps/web/src/ask-ledger.ts` line 26). Its tools are read-only: the platform's closed set is served by `GET /api/ask-ledger/tools` (`apps/api/src/server.ts` lines 936 to 942).
+- **The ledger agent.** `ASK_AGENT_NAME` is "Ask the ledger" (`apps/web/src/ask-ledger.ts` line 27). Its tools are read-only: the platform's closed set is served by `GET /api/ask-ledger/tools` (`apps/api/src/server.ts` lines 936 to 942).
 - **The harness.** `createAskLedgerHarness` in `apps/web/src/ask-harness.ts` (lines 269 to 324) builds the dashboard's agents. The ledger agent is the primary agent. It holds the ledger reads and a `delegate_to` tool for Studio's three built-in agents: widget, data, and page (line 291). The widget agent's `add_widget` goes through a dashboard guard, `dashboardAdd` (lines 298 and 313 to 315), and the data agent is Studio's own (line 307).
 - **The change log.** The harness's observers include `changes.observer` (line 321), so each agent edit lands in the change chain below.
 - **One harness per Studio instance.** `useAskLedger` in `apps/web/src/studio/AskLedger.tsx` (lines 55 to 83) builds it once for each Studio instance.
@@ -57,7 +57,7 @@ The Held escrow, Released, Refunded, and Fees money tiles have an **Explain** bu
 
 ## The undoable change chain
 
-`apps/web/src/change-chain.ts` (lines 1 to 4) keeps a record of the edits made to a dashboard, by the assistant or by the user. Each link carries the hash of the link before it, so an edited, dropped, or reordered link breaks the chain. The chain lives in the browser for the session, and no server reads it.
+`apps/web/src/change-chain.ts` records the dashboard edits made by the assistant and the user. Each link stores its sequence, its own hash, and the previous link's hash. The browser checks those fields for internal consistency: it detects edits, internal deletions, or reordering that leave them inconsistent, but not tail truncation or a recomputed chain. The history stays in the browser for the session; no server reads or anchors it.
 
 The Changes widget (`ChangesWidget`, `apps/web/src/studio/dashboards.tsx` lines 615 to 618) lists each change, newest first, with an **Undo to here** button on each change still on the undo stack (`UndoCell`, lines 549 to 553). An undo does not rewrite history. It appends an undo link (`change-chain.ts`, the undo function's comment near line 253).
 

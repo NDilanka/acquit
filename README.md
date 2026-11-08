@@ -1,9 +1,9 @@
 # Acquit
 
 <!-- counts:start -->
-[![CI](https://github.com/NDilanka/acquit/actions/workflows/ci.yml/badge.svg)](https://github.com/NDilanka/acquit/actions/workflows/ci.yml) 1935 tests pass across 186 test files in CI.
+[![CI](https://github.com/NDilanka/acquit/actions/workflows/ci.yml/badge.svg)](https://github.com/NDilanka/acquit/actions/workflows/ci.yml) 1981 tests pass across 193 test files in CI.
 
-The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest submissions through the real judge with a child-process subject. Docker isolation is tested separately. The result is in [CI run 42343368933](https://github.com/NDilanka/acquit/actions/runs/42343368933).
+The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest submissions through the real judge with a child-process subject. Docker isolation is tested separately. The result is in [CI run 42475564353](https://github.com/NDilanka/acquit/actions/runs/42475564353).
 <!-- counts:end -->
 
 New to Acquit? [Judge Acquit in 90 seconds](JUDGES.md) gives the click path, the real and simulated split, and the local run.
