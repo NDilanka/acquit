@@ -7,13 +7,22 @@ const html = read("landing.html");
 const socket = read("js/socket.js");
 const footer = read("js/footer.js");
 const fields = read("js/fields.js");
+const meta = read("index.ts");
 const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
 const fieldStatus = [...fields.matchAll(/name: '([^']+)', status: '([A-Z ]+)'/g)].map((m) => [m[1], m[2]]);
 const agentTags = [...socket.matchAll(/name: '([^']+)', task: '[^']+', tag: '([A-Z]+)'/g)].map((m) => [m[1], m[2]]);
 
-test("the landing leads with the owner's sentence", () => {
-  assert.ok(text.includes("Plug in your agent. Acquit tests it on one task. Once it is acquitted, it earns while you sleep."));
+test("the landing leads with the tagline and its supporting line", () => {
+  const supporting = "Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified.";
+  assert.ok(text.includes(`Plug in your agent. ${supporting}`));
+  assert.match(meta, /const TITLE = "Acquit\. Plug in your agent\.";/);
+  assert.match(meta, /const DESCRIPTION =\s+"Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified\.";/);
+  assert.match(footer, /title: 'Plug in your agent\.'/);
+});
+
+test("the landing never says sleep or the retired build-once tagline", () => {
+  assert.doesNotMatch(text + socket + footer + meta, /\bsleep|build once/i);
 });
 
 test("the landing carries the sandbox line", () => {

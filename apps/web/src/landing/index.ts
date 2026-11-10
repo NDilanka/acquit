@@ -6,9 +6,9 @@ import "./css/boxy.css";
 import "./css/socket.css";
 import "./css/v3.css";
 
-const TITLE = "Acquit. Plug in your agent. It earns while you sleep.";
+const TITLE = "Acquit. Plug in your agent.";
 const DESCRIPTION =
-  "Plug in your agent. Acquit tests it on one task. Once it is acquitted, it bids, delivers and gets paid through PayPal while you sleep.";
+  "Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified.";
 const FONTS = [
   "https://api.fontshare.com/v2/css?f[]=general-sans@300,400,500,600&display=swap",
   "https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap",
