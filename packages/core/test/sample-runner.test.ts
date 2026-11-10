@@ -27,7 +27,7 @@ function bid(status: string, placedAt = minutesAgo(1), fields: Partial<SampleBid
 }
 
 function run(jobId: string, fields: Partial<SampleRun> = {}): SampleRun {
-	return { jobId, agentId: agent, phase: "BID", placedAt: minutesAgo(1), commit: null, outcome: null, ...fields };
+	return { jobId, agentId: agent, phase: "BID", placedAt: minutesAgo(1), commit: null, outcome: null, closedReason: null, ...fields };
 }
 
 function facts(fields: Partial<SampleFacts> = {}): SampleFacts {
@@ -298,6 +298,42 @@ test("a run closes once its verifier runs have all ended with no verdict", () =>
 		globalActive: 1,
 	}));
 	assert.deepEqual(exhausted.actions, [{ kind: "finish", jobId: "job_a", outcome: "CLOSED", reason: "verifier gave no verdict in 3 runs" }]);
+});
+
+test("a run that closes while the House holds the money stops delivery, and nothing new is bid in that tick", () => {
+	const exhausted = decideSampleTick(facts({
+		jobs: [job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsRunsStarted: 3, bids: [bid("ACCEPTED")] }), job("job_next")],
+		runs: [run("job_a", { phase: "SUBMITTED", commit })],
+		globalActive: 1,
+	}));
+	assert.deepEqual(exhausted.actions, [{ kind: "finish", jobId: "job_a", outcome: "CLOSED", reason: "verifier gave no verdict in 3 runs" }]);
+	assert.equal(exhausted.status, "REFUSED");
+	assert.equal(exhausted.reason, "DELIVERY_STOPPED");
+});
+
+test("a closed run whose job still holds the money keeps refusing with DELIVERY_STOPPED, even with autopilot off", () => {
+	const closed = run("job_a", { phase: "DONE", outcome: "CLOSED", commit, closedReason: "verifier gave no verdict in 3 runs" });
+	const held = job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsRunsStarted: 3, bids: [bid("ACCEPTED")] });
+	const delivering = decideSampleTick(facts({ jobs: [held, job("job_next")], runs: [closed] }));
+	assert.deepEqual(delivering.actions, []);
+	assert.equal(delivering.status, "REFUSED");
+	assert.equal(delivering.reason, "DELIVERY_STOPPED");
+
+	const paused = decideSampleTick(facts({
+		orders: { autopilot: false, runsOn: "acquit", priceFloorCents: floor },
+		jobs: [held, job("job_next")],
+		runs: [closed],
+	}));
+	assert.deepEqual(paused.actions, []);
+	assert.equal(paused.status, "REFUSED");
+	assert.equal(paused.reason, "DELIVERY_STOPPED");
+});
+
+test("the runner bids again once the House no longer holds the closed job's money", () => {
+	const closed = run("job_a", { phase: "DONE", outcome: "CLOSED", commit, closedReason: "verifier gave no verdict in 3 runs" });
+	const refunded = decideSampleTick(facts({ jobs: [job("job_a", { status: "REFUNDED", bids: [bid("ACCEPTED")] }), job("job_next")], runs: [closed] }));
+	assert.equal(refunded.status, "RUNNING");
+	assert.deepEqual(refunded.actions, [{ kind: "bid", jobId: "job_next", priceCents: floor, etaHours: 48 }]);
 });
 
 test("a verdict that arrives after failed verifier runs still ends the run as the verdict says", () => {

@@ -42,7 +42,8 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS sample_runner_runs (
 	placed_at TEXT NOT NULL,
 	commit_sha TEXT,
 	outcome TEXT,
-	failures INTEGER NOT NULL DEFAULT 0
+	failures INTEGER NOT NULL DEFAULT 0,
+	closed_reason TEXT
 )`;
 
 const LEASE_SCHEMA = `CREATE TABLE IF NOT EXISTS sample_runner_lease (
@@ -103,6 +104,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 } {
 	const log = ports.log ?? ((line: string) => console.log(line));
 	ports.db.exec(SCHEMA);
+	addClosedReason(ports.db);
 	ports.db.exec(LEASE_SCHEMA);
 	// This process's identity on the lease.
 	const holder = randomUUID();
@@ -232,7 +234,8 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		const operator: Actor = { role: "OPERATOR", operatorId: visitor.operatorHandle as OperatorId, tenant: visitor.id };
 		const step = (name: string) => stepKey(`sample:${action.jobId}`, name);
 		if (action.kind === "finish") {
-			ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = ? WHERE job_id = ?").run(action.outcome, action.jobId);
+			ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = ?, closed_reason = ? WHERE job_id = ?")
+				.run(action.outcome, action.outcome === "CLOSED" ? action.reason : null, action.jobId);
 			log(`sample runner: ${action.jobId} ${action.outcome}: ${action.reason}`);
 			return;
 		}
@@ -300,7 +303,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		ports.db.prepare("UPDATE sample_runner_runs SET failures = failures + 1 WHERE job_id = ?").run(jobId);
 		const row = ports.db.prepare("SELECT failures FROM sample_runner_runs WHERE job_id = ?").get(jobId) as { readonly failures: number } | undefined;
 		if (row !== undefined && Number(row.failures) >= MAX_FAILURES) {
-			ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = 'CLOSED' WHERE job_id = ?").run(jobId);
+			ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = 'CLOSED', closed_reason = ? WHERE job_id = ?").run(reason, jobId);
 			log(`sample runner: ${jobId} closed after ${MAX_FAILURES} failures: ${reason}`);
 			return;
 		}
@@ -308,10 +311,10 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 	}
 
 	function runsOf(operatorId: string): SampleRun[] {
-		const rows = ports.db.prepare("SELECT job_id, agent_id, phase, placed_at, commit_sha, outcome FROM sample_runner_runs WHERE operator_id = ? ORDER BY placed_at")
+		const rows = ports.db.prepare("SELECT job_id, agent_id, phase, placed_at, commit_sha, outcome, closed_reason FROM sample_runner_runs WHERE operator_id = ? ORDER BY placed_at")
 			.all(operatorId) as unknown as readonly RunRecord[];
 		return rows.map(row => ({ jobId: row.job_id, agentId: row.agent_id, phase: row.phase as SampleRun["phase"], placedAt: row.placed_at,
-			commit: row.commit_sha, outcome: row.outcome as SampleRun["outcome"] }));
+			commit: row.commit_sha, outcome: row.outcome as SampleRun["outcome"], closedReason: row.closed_reason }));
 	}
 
 	function globalActive(): number {
@@ -322,7 +325,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 	return { kick, drain, statusOf };
 }
 
-type RunRecord = { readonly job_id: string; readonly agent_id: string; readonly phase: string; readonly placed_at: string; readonly commit_sha: string | null; readonly outcome: string | null };
+type RunRecord = { readonly job_id: string; readonly agent_id: string; readonly phase: string; readonly placed_at: string; readonly commit_sha: string | null; readonly outcome: string | null; readonly closed_reason: string | null };
 
 function idle(note: string): SampleDecision {
 	return { status: "IDLE", reason: null, actions: [], note };
@@ -361,10 +364,20 @@ function sampleJobOf(row: JobRow, fixtureMatched: boolean): SampleJob {
 	};
 }
 
-/** The job ids one operator's runner holds a record for. Such a job is the hosted sample agent's work; no other path writes a record. */
-export function sampleRunJobIds(db: DatabaseSync, operatorId: string): ReadonlySet<string> {
-	const rows = db.prepare("SELECT job_id FROM sample_runner_runs WHERE operator_id = ?").all(operatorId) as unknown as readonly { readonly job_id: string }[];
-	return new Set(rows.map(row => String(row.job_id)));
+/**
+ * The jobs one operator's runner holds a record for, each with the reason the runner closed its run on it, or null
+ * while the run is open. Such a job is the hosted sample agent's work; no other path writes a record.
+ */
+export function sampleRunJobs(db: DatabaseSync, operatorId: string): ReadonlyMap<string, string | null> {
+	const rows = db.prepare("SELECT job_id, closed_reason FROM sample_runner_runs WHERE operator_id = ?")
+		.all(operatorId) as unknown as readonly { readonly job_id: string; readonly closed_reason: string | null }[];
+	return new Map(rows.map(row => [String(row.job_id), row.closed_reason === null ? null : String(row.closed_reason)] as const));
+}
+
+/** A database made before closed_reason existed gets the column once. */
+function addClosedReason(db: DatabaseSync): void {
+	const columns = db.prepare("PRAGMA table_info(sample_runner_runs)").all() as unknown as readonly { readonly name: string }[];
+	if (!columns.some(column => column.name === "closed_reason")) db.exec("ALTER TABLE sample_runner_runs ADD COLUMN closed_reason TEXT");
 }
 
 /** A name for a failure, never its message: a git or PayPal message can carry a credential. */

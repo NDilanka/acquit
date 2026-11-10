@@ -55,6 +55,8 @@ export type ActivityRow = {
 	readonly label: string | null;
 	readonly agentId: string | null;
 	readonly state: ActivityState;
+	/** Why the runner closed its run on this job, from the runner's own fixed reasons. Null when it did not close one. */
+	readonly closedReason: string | null;
 	readonly updatedAt: string;
 	readonly bid: { readonly id: string; readonly priceCents: number; readonly placedAt: string } | null;
 	readonly moneyHeld: { readonly heldCents: number; readonly heldAt: string } | null;
@@ -71,8 +73,8 @@ export type ActivityInput = {
 	 * picked here exactly, so the route only has to avoid reading the whole book.
 	 */
 	readonly rows: readonly JobRow[];
-	/** The job ids the operator's sample runner holds a record for. */
-	readonly sampleJobIds: ReadonlySet<string>;
+	/** The jobs the operator's sample runner holds a record for, each with the reason it closed the run, or null while open. */
+	readonly sampleJobs: ReadonlyMap<string, string | null>;
 	readonly enabled: boolean;
 	/** The runner's status for the operator's visitor, or null when the operator has no visitor. */
 	readonly runner: SampleRunnerStatus | null;
@@ -89,7 +91,7 @@ export function activityLimit(raw: string | null): number | null {
 export function activityJson(input: ActivityInput) {
 	const activity = input.rows
 		.filter(row => involved(row, input.operatorId))
-		.map(row => activityOf(row, input.operatorId, input.sampleJobIds.has(row.id)))
+		.map(row => activityOf(row, input.operatorId, input.sampleJobs.has(row.id), input.sampleJobs.get(row.id) ?? null))
 		.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.jobId.localeCompare(b.jobId))
 		.slice(0, input.limit);
 	return { sandbox: true, labels: ACTIVITY_LABELS, runner: runnerOf(input), activity };
@@ -101,7 +103,7 @@ function involved(row: JobRow, operatorId: OperatorId): boolean {
 		|| row.bids.some(bid => bid.operator === operatorId && ACTIVE_BIDS.has(bid.status));
 }
 
-function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean): ActivityRow {
+function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean, closedReason: string | null): ActivityRow {
 	const bid = bidOf(row, operatorId);
 	const held = heldLineOf(row.state);
 	const attempts = attemptsOf(row.state);
@@ -119,7 +121,8 @@ function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean): Acti
 		simulated: sampled,
 		label: sampled ? ACTIVITY_LABELS.sample : null,
 		agentId: bid === null ? null : bid.agent,
-		state: stateOf(row.state, bid),
+		state: stateOf(row.state, bid, closedReason),
+		closedReason,
 		updatedAt: latest(times) ?? row.openedAt,
 		bid: bid === null ? null : { id: bid.id, priceCents: bid.price, placedAt: bid.placedAt },
 		moneyHeld: held === null ? null : { heldCents: held.cents, heldAt: held.at },
@@ -141,13 +144,17 @@ function latest(times: readonly string[]): string | null {
 	return newest;
 }
 
-/** The job's state as the operator sees it. An open job reads FUNDING only when the operator's own bid was chosen. */
-function stateOf(state: JobState, bid: Bid | null): ActivityState {
+/**
+ * The job's state as the operator sees it. An open job reads FUNDING only when the operator's own bid was chosen. A job
+ * the runner closed reads CLOSED while the House still holds the money: no more delivery runs, and the held line stays.
+ */
+function stateOf(state: JobState, bid: Bid | null, closedReason: string | null): ActivityState {
 	switch (state.status) {
 		case "OPEN": return bid?.status === "CHOSEN" ? "FUNDING" : "BID_PLACED";
 		case "IN_PROGRESS": {
 			if (state.attempts.phase === "VERIFYING") return "VERIFYING";
 			if (state.attempts.phase === "REFUND_PENDING") return "REFUNDING";
+			if (closedReason !== null) return "CLOSED";
 			const history = attemptHistory(state);
 			const last = history[history.length - 1];
 			return last !== undefined && last.verdict.result === "REJECTED" ? "RETRYING" : "MONEY_HELD";

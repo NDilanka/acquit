@@ -43,6 +43,8 @@ export type SampleRun = {
 	readonly placedAt: string;
 	readonly commit: string | null;
 	readonly outcome: SampleOutcome | null;
+	/** Why the run closed, for a CLOSED outcome. Null otherwise. */
+	readonly closedReason: string | null;
 };
 
 /** A bid of the visitor's. `respondBy` is the House's own deadline for the bid, after which a PENDING bid is returned. */
@@ -105,7 +107,7 @@ export type SampleStatus = "OFF" | "IDLE" | "QUEUED" | "RUNNING" | "REFUSED";
 
 /** Why the runner cannot act for this visitor. The closed set the activity route shows. */
 export type SampleRefusal = "NO_FORK" | "DAILY_LIMIT" | "NO_ACQUITTAL" | "NO_STANDING_ORDERS" | "NOT_A_SAMPLE"
-	| "AUTOPILOT_OFF" | "NOT_HOSTED" | "BID_DENIED" | "PRICE_CANNOT_CARRY_FEE";
+	| "AUTOPILOT_OFF" | "NOT_HOSTED" | "BID_DENIED" | "PRICE_CANNOT_CARRY_FEE" | "DELIVERY_STOPPED";
 
 export type SampleDecision = {
 	readonly status: SampleStatus;
@@ -129,8 +131,9 @@ export function runsInWindow(runs: readonly SampleRun[], now: string): number {
  * it does not hold, a run may still finish from the real verdict or the House's bid outcome, but nothing is pushed
  * or submitted. A new bid starts only when consent holds, the visitor has no run in flight, the day's limit is not
  * reached, the House has not refused a bid in the last day, and a global slot is free. The standing-order floor must
- * also be a price the House can fund, or the status refuses with PRICE_CANNOT_CARRY_FEE and nothing is bid. Otherwise
- * the status says why the visitor waits or is refused.
+ * also be a price the House can fund, or the status refuses with PRICE_CANNOT_CARRY_FEE and nothing is bid. A run the
+ * runner closed while the House holds the visitor's money refuses with DELIVERY_STOPPED until that job leaves
+ * IN_PROGRESS. Otherwise the status says why the visitor waits or is refused.
  */
 export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	if (!facts.enabled) return decision("OFF", null, [], null);
@@ -145,12 +148,18 @@ export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	}
 	const finishes = actions.filter(action => action.kind === "finish").length;
 	const active = facts.runs.filter(run => run.phase !== "DONE").length - finishes;
+	// A run closed while the House holds the visitor's money has stopped its delivery. Nothing else is bid on until that
+	// job leaves IN_PROGRESS. A run that closes in this tick counts too, so the same tick never bids past it.
+	const stalled = facts.runs.some(run => run.closedReason !== null && holdsMoney(jobs.get(run.jobId), facts.operatorId))
+		|| actions.some(action => action.kind === "finish" && action.outcome === "CLOSED" && holdsMoney(jobs.get(action.jobId), facts.operatorId));
 	if (stop !== null) {
 		if (active >= SAMPLE_RUNS_IN_FLIGHT) return decision("REFUSED", stop.reason, actions, `${active} run paused: ${stop.note}`);
+		if (stalled) return decision("REFUSED", "DELIVERY_STOPPED", actions, STALLED_NOTE);
 		const idle = stop.reason === "AUTOPILOT_OFF" || stop.reason === "NOT_HOSTED";
 		return idle ? decision("IDLE", null, actions, stop.note) : decision("REFUSED", stop.reason, actions, stop.note);
 	}
 	if (active >= SAMPLE_RUNS_IN_FLIGHT) return decision("RUNNING", null, actions, `${active} run in flight`);
+	if (stalled) return decision("REFUSED", "DELIVERY_STOPPED", actions, STALLED_NOTE);
 
 	const orders = facts.orders;
 	if (orders === null) return decision("REFUSED", "NO_STANDING_ORDERS", actions, null);
@@ -181,6 +190,13 @@ function decision(status: SampleStatus, reason: SampleDecision["reason"], action
 
 /** The message paypal.ts's quote throws when a price's processing fee does not fit inside the fee the split keeps. */
 const CANNOT_CARRY_FEE = "Price cannot carry processing fee";
+
+const STALLED_NOTE = "a run closed while its job still holds the House's money, so delivery has stopped; no new bid until the job leaves IN_PROGRESS";
+
+/** The House holds the visitor's money on the job: it is IN_PROGRESS on the visitor's own accepted bid. */
+function holdsMoney(job: SampleJob | undefined, operatorId: string): boolean {
+	return job !== undefined && job.status === "IN_PROGRESS" && job.bids.some(bid => bid.operator === operatorId && bid.status === "ACCEPTED");
+}
 
 /**
  * Whether the House can accept a bid at this price: the same commercial split and the same quote AcceptBid runs. A

@@ -19,7 +19,7 @@ import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts"
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
 import { SAMPLE_RUNS_PER_DAY, SAMPLE_VERIFIER_RETRIES, type SampleOrders } from "../../../packages/core/src/sample-runner.ts";
 import { activityJson, activityLimit, ACTIVITY_LABELS } from "../src/sample-activity.ts";
-import { createSampleRunner, sampleRunJobIds, type SampleFixtureRule, type SampleRunnerAgent, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
+import { createSampleRunner, sampleRunJobs, type SampleFixtureRule, type SampleRunnerAgent, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
 
 const OPERATOR = "op_sample_visitor";
 /** The visitor's own fork, named the way the registry's `acquit-forks/` prefix names a visitor's workspace repository. */
@@ -33,6 +33,7 @@ const OTHER_ISSUE = jpyFixture();
 const FIXTURE_RULE: SampleFixtureRule = { fixtures: [SCENARIO, OTHER_ISSUE], upstream: SCENARIO.repository,
 	scenario: { repository: SCENARIO.repository, issueNumber: SCENARIO.issue.number } };
 const JOB_ID = "job_starter_1";
+const SECOND_JOB_ID = "job_starter_2";
 /** The House's fee model in the deployment's shape. AcceptBid quotes every accepted bid with it. */
 const FEE_MODEL: ProcessorFeeModel = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const BUDGET_CENTS = 5_000;
@@ -132,6 +133,9 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 		houseAccepts: () => patch({ bids: jobRow().bids.map(bid => ({ ...bid, status: "ACCEPTED" })), state: heldState(now()) }),
 		/** The verifier run ends with no verdict, as a publish or deadline failure does: the attempt is READY again, nothing is judged. */
 		verifierRunFails: () => patch({ state: heldState(now(), "READY", runsStarted()) }),
+		/** The House refunds the held job, as a delivery deadline does. The job is no longer IN_PROGRESS, so it holds no money. */
+		houseRefunds: () => patch({ state: { status: "REFUNDED", payee: { operator: OPERATOR }, book: [], reason: "DELIVERY_DEADLINE",
+			refund: { refundId: null, captureId: "CAPTURE_SAMPLE_1", refunded: BUDGET_CENTS, retainedProcessorFee: 0, at: now() }, history: [], treasury: [] } }),
 		/** The real verifier passes the commit. */
 		verifierPasses: (commit: CommitSha) => {
 			lastRecord = { ordinal: 1, verdict: { result: "VERIFIED", runId: "run_sample_1", sourceCommit: commit,
@@ -165,8 +169,8 @@ function portsOf(db: DatabaseSync, world: World, overrides: Partial<SampleRunner
 }
 
 function recordOf(db: DatabaseSync) {
-	return db.prepare("SELECT phase, commit_sha, outcome, failures FROM sample_runner_runs WHERE job_id = ?").get(JOB_ID) as
-		{ readonly phase: string; readonly commit_sha: string | null; readonly outcome: string | null; readonly failures: number } | undefined;
+	return db.prepare("SELECT phase, commit_sha, outcome, failures, closed_reason FROM sample_runner_runs WHERE job_id = ?").get(JOB_ID) as
+		{ readonly phase: string; readonly commit_sha: string | null; readonly outcome: string | null; readonly failures: number; readonly closed_reason: string | null } | undefined;
 }
 
 function placeBids(world: World): PlaceBid[] {
@@ -196,7 +200,7 @@ function ordersSwitch() {
 
 function activityFor(db: DatabaseSync, world: World, runner: ReturnType<typeof createSampleRunner>) {
 	return activityJson({
-		operatorId: OPERATOR as OperatorId, limit: 20, rows: world.rows(), sampleJobIds: sampleRunJobIds(db, OPERATOR), enabled: true,
+		operatorId: OPERATOR as OperatorId, limit: 20, rows: world.rows(), sampleJobs: sampleRunJobs(db, OPERATOR), enabled: true,
 		runner: runner.statusOf(VISITOR),
 	});
 }
@@ -218,7 +222,7 @@ test("a visitor's sample agent bids, is accepted, pushes, is verified and is pai
 	assert.equal(bid?.price, ORDERS.priceFloorCents);
 	assert.deepEqual(bid?.eta, hours(48));
 	assert.equal(bid?.agent, AGENT.id);
-	assert.deepEqual([...sampleRunJobIds(db, OPERATOR)], [JOB_ID]);
+	assert.deepEqual([...sampleRunJobs(db, OPERATOR).keys()], [JOB_ID]);
 	assert.deepEqual(stateList(db, world, runner), ["BID_PLACED"]);
 
 	world.advance(30_000);
@@ -274,7 +278,7 @@ test("with the flag off, no tick reads, sends or writes, and the status reads OF
 	const runner = createSampleRunner(portsOf(db, world, { enabled: false }));
 	await runner.kick();
 	assert.equal(world.commands.length, 0);
-	assert.equal(sampleRunJobIds(db, OPERATOR).size, 0);
+	assert.equal(sampleRunJobs(db, OPERATOR).size, 0);
 	assert.equal(runner.statusOf(VISITOR).decision.status, "OFF");
 });
 
@@ -357,6 +361,39 @@ test("a fork that keeps refusing the push closes the run after five failures, an
 	assert.ok(!world.logs.some(line => line.includes("FAKE-PUSH-TOKEN-FOR-TEST")), "the error message never reaches the log");
 });
 
+test("a push the fork keeps refusing closes the run with its reason stored: delivery stops until the House lets the job go", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld(new Error("push rejected, token FAKE-PUSH-TOKEN-FOR-TEST"));
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	world.houseAccepts();
+	for (let tick = 0; tick < 5; tick++) await runner.kick();
+	assert.equal(recordOf(db)?.outcome, "CLOSED");
+	assert.equal(recordOf(db)?.closed_reason, "push failed (Error)", "the stored reason names the failure, never its message");
+	assert.equal(sampleRunJobs(db, OPERATOR).get(JOB_ID), "push failed (Error)");
+	const stopped = runner.statusOf(VISITOR);
+	assert.equal(stopped.decision.status, "REFUSED");
+	assert.equal(stopped.decision.reason, "DELIVERY_STOPPED", "the House still holds the money, so delivery stays stopped");
+	assert.deepEqual(stateList(db, world, runner), ["CLOSED"]);
+
+	world.addStarter(SECOND_JOB_ID);
+	await runner.kick();
+	assert.equal(placeBids(world).length, 1, "no other starter is bid on while the House holds the money");
+
+	// A restart reads the stored reason from the record, so the stop survives it.
+	const restarted = createSampleRunner(portsOf(db, world));
+	await restarted.kick();
+	assert.equal(restarted.statusOf(VISITOR).decision.reason, "DELIVERY_STOPPED");
+	assert.equal(placeBids(world).length, 1, "a restart does not bid either");
+
+	// The House refunds the held job. It holds no money now, so the stop ends and the next starter is bid on.
+	world.houseRefunds();
+	await restarted.kick();
+	assert.deepEqual(placeBids(world).map(command => command.jobId), [JOB_ID, SECOND_JOB_ID],
+		"once the job leaves IN_PROGRESS, the next starter is bid on");
+	assert.equal(recordOf(db)?.closed_reason, "push failed (Error)", "the closed run keeps its reason");
+});
+
 test("a verifier run that ends with no verdict is resubmitted under a new key, and the run closes once its retries fail", async () => {
 	const db = new DatabaseSync(":memory:");
 	const world = fakeWorld();
@@ -380,6 +417,34 @@ test("a verifier run that ends with no verdict is resubmitted under a new key, a
 	assert.ok(world.logs.some(line => line.includes("verifier gave no verdict in 3 runs")));
 	await runner.kick();
 	assert.equal(submitsOf(world).length, submits.length, "a closed run is not submitted again");
+});
+
+test("a verifier chain that closes the run while the House holds the money stops delivery, and the activity says closed, not held", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	world.houseAccepts();
+	await runner.kick();
+	await runner.kick(); // submit, verifier run 1
+	for (let run = 1; run <= SAMPLE_VERIFIER_RETRIES + 1; run++) {
+		world.verifierRunFails();
+		await runner.kick();
+	}
+	assert.equal(recordOf(db)?.outcome, "CLOSED");
+	assert.equal(recordOf(db)?.closed_reason, "verifier gave no verdict in 3 runs");
+	const stopped = runner.statusOf(VISITOR);
+	assert.equal(stopped.decision.status, "REFUSED");
+	assert.equal(stopped.decision.reason, "DELIVERY_STOPPED", "not IDLE: the run ended, but the House still holds the money");
+	const [item] = activityFor(db, world, runner).activity;
+	assert.equal(item?.state, "CLOSED", "not MONEY_HELD: no more delivery runs go out on this job");
+	assert.equal(item?.closedReason, "verifier gave no verdict in 3 runs");
+	assert.equal(item?.moneyHeld?.heldCents, BUDGET_CENTS, "the held line stays until the job leaves IN_PROGRESS");
+
+	world.addStarter(SECOND_JOB_ID);
+	await runner.kick();
+	assert.equal(placeBids(world).length, 1, "no other starter is bid on while the House holds the money");
+	assert.equal(submitsOf(world).length, SAMPLE_VERIFIER_RETRIES + 1, "the closed run is not submitted again");
 });
 
 test("a retry the verifier judges is recorded as VERIFIED, like a first run", async () => {
@@ -464,7 +529,7 @@ test("the activity lists only the operator's own jobs, labels the runner's, and 
 	const returned = storedRow("job_returned", { client: "maya-client", tenant: null, state: openState,
 		bids: [{ id: "bid_returned", operator: OPERATOR, agent: "owner-agent", price: 1_000, placedAt: "2026-11-11T12:07:00.000Z", status: "RETURNED" }] });
 	const rows = [otherOperator, owned, sampled, returned];
-	const input = { operatorId: OPERATOR as OperatorId, limit: 20, rows, sampleJobIds: new Set([JOB_ID]), enabled: false, runner: null };
+	const input = { operatorId: OPERATOR as OperatorId, limit: 20, rows, sampleJobs: new Map([[JOB_ID, null]]), enabled: false, runner: null };
 
 	const json = activityJson(input);
 	assert.equal(json.sandbox, true);
@@ -492,14 +557,12 @@ test("an open job reads FUNDING only when this operator's own bid was chosen, ne
 			{ id: "bid_mine", operator: OPERATOR, agent: "owner-agent", price: 1_000, placedAt: "2026-11-11T11:00:00.000Z", status: "PENDING" },
 			{ id: "bid_theirs", operator: "op_other", agent: "other-agent", price: 900, placedAt: "2026-11-11T11:01:00.000Z", status: "CHOSEN" },
 		] });
-	const json = activityJson({ operatorId: OPERATOR as OperatorId, limit: 20, rows: [chosen, contested], sampleJobIds: new Set(), enabled: false, runner: null });
+	const json = activityJson({ operatorId: OPERATOR as OperatorId, limit: 20, rows: [chosen, contested], sampleJobs: new Map(), enabled: false, runner: null });
 	const states = new Map(json.activity.map(item => [item.jobId, item.state]));
 	assert.equal(states.get("job_own_chosen"), "FUNDING");
 	assert.equal(states.get("job_contested"), "BID_PLACED", "the other operator's chosen bid is not this operator's funding");
 	assert.doesNotMatch(JSON.stringify(json), /op_other/);
 });
-
-const SECOND_JOB_ID = "job_starter_2";
 
 test("a bid the House refuses holds the runner for a day, and the next starter is bid on after that", async () => {
 	const db = new DatabaseSync(":memory:");

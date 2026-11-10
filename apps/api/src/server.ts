@@ -55,7 +55,7 @@ import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationServ
 import { traceFigure } from "./figure-trace.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
 import { activityJson, activityLimit } from "./sample-activity.ts";
-import { createSampleRunner, sampleRunJobIds } from "./sample-runner.ts";
+import { createSampleRunner, sampleRunJobs } from "./sample-runner.ts";
 import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_CALLER, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
@@ -1466,7 +1466,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// Only the rows that name this operator are read and parsed; the activity filter then picks the exact set.
 		const rows = jobRowsNaming(db, current.actor.operatorId);
 		const runner = visitor === null ? null : sampleRunner.statusOf(visitor);
-		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobIds: sampleRunJobIds(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner }));
+		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobs: sampleRunJobs(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner }));
 		return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
