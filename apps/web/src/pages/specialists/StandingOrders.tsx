@@ -73,12 +73,11 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
             <select id={`${id}-cap`} className="sentence-control" value={form.preApproveCap} onChange={(e) => change({ ...form, preApproveCap: Number(e.target.value) })}>
               <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
             </select><SelectChevron /></span>
-          <p>Daily limit for automatic submits.</p>
         </details>
         {touched && problems?.priceUsd && <p className="field-error" role="alert" data-tone="fail">{problems.priceUsd}</p>}
         <p className="orders-echo" id={`${id}-echo`}>{cents !== null ? "Pending until accepted · PayPal sandbox." : "Example: 40 or 40.00."}</p>
         {(dirty || !saved?.autopilot) && <div className="orders-master">
-          <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving. Bids and delivers within your limits." : "Off. Each submit needs your confirmation."}</p>
+          <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving. Bids and submits follow your limits." : "Off. Confirm each submit."}</p>
             {!autopilotSupported(agent.runner) && <p>Autopilot runs Claude Code agents only.</p>}</div>
           <button type="button" className="orders-switch" role="switch" aria-label="Autopilot" aria-checked={form.autopilot}
             disabled={!autopilotSupported(agent.runner)} onClick={() => change({ ...form, autopilot: !form.autopilot })}>

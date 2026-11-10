@@ -81,13 +81,13 @@ function LegacyActivity() {
         : !report.data ? <WorkSkeleton count={5} label="Loading activity." />
         : <div className="work-split"><ol className="work-timeline" aria-label="Activity, newest first">
           <TimelineMark title={active ? "Watching for work within your orders" : "Autopilot off"}>
-            <p className="work-status">{events.length ? "Latest recorded events below." : "No activity recorded in this window."}</p></TimelineMark>
+            <p className="work-status">{events.length ? "Latest recorded events below." : "No work recorded. Check your orders or explore the example."}</p></TimelineMark>
           {events.map((event, i) => <EventMark key={event.id} event={event} index={i + 1} />)}
         </ol><aside className="work-side" aria-label="Activity summary">
-          <JobStrip lanes={jobLanes(events)} through={readAt} />
+          {!!events.length && <JobStrip lanes={jobLanes(events)} through={readAt} />}
           <dl className="work-facts"><div><dt>Since <WorkTime at={report.data.since} full /></dt>
             <dd>{jobs.size} jobs · {events.filter((event) => event.kind === "bid").length} bids recorded</dd></div></dl>
-          <p className="muted">Held money above is workspace-wide. Verification alone does not release payment.</p>
+          <p className="muted">Held money is workspace-wide. Verified is not paid.</p>
         </aside></div>}
       {agent?.task === "code" && <Link className="work-replay-link" to={`/specialists/activity${suffix}?replay=1`}>View an example run</Link>}
     </section>
@@ -107,16 +107,16 @@ function ReplayActivity({ agent }: { agent: SpecialistAgent }) {
   return <SpecialistPage step={4} lead="" provenance={provenance}>
     <section className="work-page"><header className="work-heading"><h1>{recording?.source === "recorded" ? "A recorded run" : "An example run"}</h1>
       <p className="spec-lead">{provenance}. This is not {agent.name}’s live activity.</p></header>
+      <div className="owner-actions"><Link className="btn" to={`/specialists/activity/${encodeURIComponent(agent.id)}`}>Run it live</Link></div>
       {!replay.data ? <WorkSkeleton count={5} label="Loading example activity." /> : !recording
         ? <p>No activity replay is available for this task.</p>
         : <div className="work-split"><ol className="work-timeline" aria-label="Example activity, newest first">
           {[...recording.events].reverse().map((event, i) => <TimelineMark key={`${event.at}:${i}`} at={event.at} index={i}
             title={event.kind === "verdict" ? "Example verdict" : event.kind === "bid" ? `${event.title} · pending · PayPal sandbox` : event.title}>
             <p className="work-status">{event.kind === "verdict" ? "Verification is separate from payment release."
-              : event.kind === "money-held" ? "Example held money · PayPal sandbox" : "Example event · not live"}</p>
+              : event.kind === "money-held" ? "Example money · PayPal sandbox" : "Example · not live"}</p>
           </TimelineMark>)}
-        </ol><aside className="work-side"><JobStrip lanes={lanes} /><p className="muted">Example timestamps, not current work. Release requires client approval, the release timer or an arbiter.</p></aside></div>}
-      <div className="owner-actions"><Link className="btn" to={`/specialists/activity/${encodeURIComponent(agent.id)}`}>Run it live</Link></div>
+        </ol><aside className="work-side"><JobStrip lanes={lanes} /><p className="muted">Example, not live. Release needs client approval, the release timer or an arbiter.</p></aside></div>}
     </section>
   </SpecialistPage>;
 }

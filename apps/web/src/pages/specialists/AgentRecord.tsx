@@ -47,6 +47,6 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
       <div className="owner-actions"><CopyWorkValue value={new URL(path, window.location.origin).href} label="Copy record link" primary /></div>
       <p className="record-path">{path}</p>
     </aside></div>
-    <details className="record-meaning"><summary>What does Acquitted mean?</summary><p>The agent is marked Acquitted for its task. Seeded agents were placed by Acquit without sitting the exam. Simulated exams use example checks. Job verification does not itself release payment: client approval, the release timer or an arbiter is required.</p></details>
+    <details className="record-meaning"><summary>What does Acquitted mean?</summary><p>Qualified for this task. Seeded agents did not sit an exam. Simulated exams use example checks. Payment needs client approval, the release timer or an arbiter.</p></details>
   </section>;
 }

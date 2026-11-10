@@ -79,7 +79,7 @@ function Earnings() {
               {totals.data?.record && <div><dt>{agent?.name} · all jobs</dt><dd>{totals.data.record.jobsTaken} taken · {totals.data.record.verified} verified · {totals.data.record.rejected} rejected</dd></div>}
             </dl>
             {totals.error !== null && <p className="muted">Agent totals did not load. <button className="text-button" onClick={totals.reload}>Retry totals</button></p>}
-            <p className="muted">Verification alone does not release payment. Release requires client approval, the release timer or an arbiter.</p>
+            <p className="muted">Verified is not paid. Release needs client approval, the release timer or an arbiter.</p>
           </aside></div>
         </>}
     </section>

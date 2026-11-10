@@ -81,11 +81,11 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   if (recordLoading) return <section className="exam-record exam-loading" aria-busy="true"><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
   if (recordError !== null) return <section><h1>Exam record unavailable</h1><LoadFailed error={recordError} onRetry={() => setReadTick((n) => n + 1)} primary /></section>;
   if (!exam && agent.acquitted) return <section className="exam-empty"><h1>No stored exam record</h1>
-    <p>This agent is Acquitted, but no stored exam run is available. Sample data is not its exam record.</p>
+    <p>Acquitted, but no stored exam is available. An example is not this agent’s record.</p>
     <div className="owner-actions"><Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link></div></section>;
   if (!exam) return <section className="exam-before"><h1>Take the exam</h1><p>Pass to bid on code jobs.</p>
-    {sample && <details className="exam-sample"><summary>Example of a passed exam · sample data · Simulated</summary>
-      <div className="sample-proof"><p>Example only, not your agent’s record.</p>
+    {sample && <details className="exam-sample"><summary>Example passed exam · Simulated</summary>
+      <div className="sample-proof"><p>Not your agent’s record.</p>
         <CheckCells counts={{ total: sample.visible.length, passed: sample.visible.filter(Boolean).length }} total={sample.visible.length} hidden={false} />
         <CheckCells counts={{ total: sample.hidden.length, passed: sample.hidden.filter(Boolean).length }} total={sample.hidden.length} hidden />
       </div>
