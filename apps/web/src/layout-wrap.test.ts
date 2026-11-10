@@ -22,7 +22,10 @@ test("the PAID job's timeline text and payout ids wrap instead of widening a 390
 test("the shell's single title wraps and mobile navigation contains background interaction", () => {
   const shell = readFileSync(new URL("./shell.tsx", import.meta.url), "utf8");
   const router = readFileSync(new URL("./router.tsx", import.meta.url), "utf8");
-  assert.equal((shell.match(/<h1\b/g) ?? []).length, 1);
+  // Legacy shell supplies its title; the owner entry supplies its own, never both in one branch.
+  assert.equal((shell.match(/<h1\b/g) ?? []).length, 2);
+  assert.match(shell, /function LegacyShell/);
+  assert.match(shell, /function OwnerShell/);
   assert.match(css, /\.topbar-h \{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(shell, /el\.inert = true/);
   assert.match(shell, /el\.inert = previous\[i\]/);

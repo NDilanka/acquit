@@ -105,6 +105,8 @@ export type ExamReplay = {
   readonly hidden: readonly boolean[];
   readonly outcome: ExamStatus;
   readonly reasons: readonly string[];
+  readonly recordedAt?: string | null;
+  readonly endedAt?: string | null;
 };
 
 export type NightEvent = {
@@ -141,8 +143,8 @@ export type SpecialistsApi = {
   agent(id: string): Promise<SpecialistAgent>;
   plugSample(sampleId: string): Promise<SpecialistAgent>;
   startExam(agentId: string): Promise<Exam>;
-  /** Null when the agent has no run with that id: the run was never started, so there is nothing to read. */
-  exam(agentId: string, examId: string): Promise<ExamRead | null>;
+  /** Read the named run, or the newest run when no id is supplied. Null means no stored run. */
+  exam(agentId: string, examId?: string): Promise<ExamRead | null>;
   standingOrders(agentId: string): Promise<StandingOrders | null>;
   saveStandingOrders(agentId: string, input: StandingOrdersInput): Promise<StandingOrders>;
   floor(): Promise<readonly FloorEntry[]>;

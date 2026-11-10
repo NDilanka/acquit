@@ -185,6 +185,8 @@ export function examReplayOf(raw: RawExamReplay): ExamReplay {
     hidden: exam.hidden ? flagsFrom(exam.hidden) : [],
     outcome: exam.status,
     reasons: exam.reasons,
+    recordedAt: raw.recordedAt,
+    endedAt: exam.endedAt,
   };
 }
 

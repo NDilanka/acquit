@@ -5,6 +5,7 @@ import type { DeploymentMode } from "../api-types";
 import { errorText } from "../errors";
 import { Icon } from "../icons";
 import { useRouter } from "../router";
+import { isOwnerRoute, signUpPath } from "../route";
 import type { Session } from "../session";
 import { useToast } from "../toast";
 import { ErrorNote, Modal, Spinner } from "../ui";
@@ -23,19 +24,25 @@ export function SignIn({ mode, onSignedIn }: { mode: DeploymentMode; onSignedIn:
 
 export type TryState = "ready" | "busy" | "error" | "limit" | "private";
 
-/** Makes an account in one call and lands on My jobs as its client, with the welcome toast. */
+/** A start keeps the visitor's chosen side of the app; an owner start opens the operator workspace. */
 export function useTryAcquit(onSignedIn: SignedIn) {
   const [state, setState] = useState<TryState>("ready");
   const [error, setError] = useState<unknown>(null);
-  const { navigate } = useRouter();
+  const [created, setCreated] = useState<Session | null>(null);
+  const { navigate, location } = useRouter();
   const toast = useToast();
   const start = async () => {
     setState("busy");
     setError(null);
     try {
-      const made = await api.createAccount();
-      navigate(made.user.role === "OPERATOR" ? "/specialists" : "/");
-      onSignedIn({ user: made.user, account: made.account });
+      // If opening the operator role fails, retry that step, not account creation.
+      const made = created ?? await api.createAccount();
+      const account = { user: made.user, account: made.account };
+      setCreated(account);
+      const next = isOwnerRoute(location.path) && made.user.role !== "OPERATOR"
+        ? await api.switchRole("OPERATOR") : account;
+      onSignedIn({ user: next.user, account: next.account });
+      navigate(signUpPath(location.path, next.user.role));
       toast(START_COPY.made);
     } catch (e) {
       setError(e);
@@ -61,6 +68,9 @@ export function TryAcquit({ state, error, onStart }: { state: TryState; error: u
 }
 
 function StartCard({ onSignedIn, staff }: { onSignedIn: SignedIn; staff: boolean }) {
+  const { location } = useRouter();
+  const ownerEntry = isOwnerRoute(location.path);
+  const Heading = ownerEntry ? "h1" : "h2";
   const tryAcquit = useTryAcquit(onSignedIn);
   const { setState } = tryAcquit;
   const [staffOpen, setStaffOpen] = useState(false);
@@ -82,20 +92,21 @@ function StartCard({ onSignedIn, staff }: { onSignedIn: SignedIn; staff: boolean
     <section className="card pad start-card" aria-label="Try Acquit">
       {tryAcquit.state === "private" ? (
         <>
-          <h2>{PRIVATE_COPY.heading}</h2>
+          <Heading>{PRIVATE_COPY.heading}</Heading>
           <p className="start-lead">{PRIVATE_COPY.line}</p>
         </>
       ) : (
         <>
-          <p className="start-lead">{START_COPY.lead}</p>
-          <ul className="start-points">
+          <Heading>Try Acquit</Heading>
+          <p className="start-lead">{ownerEntry ? "Plug in your agent. Acquit tests it, finds it work, and pays through PayPal." : START_COPY.lead}</p>
+          {ownerEntry ? <p className="muted">Your workspace is private. Payments use PayPal’s sandbox; no real money moves.</p> : <ul className="start-points">
             {START_COPY.points.map((point) => (
               <li key={point}>
                 <Icon name="check" size={16} />
                 <span>{point}</span>
               </li>
             ))}
-          </ul>
+          </ul>}
           <TryAcquit state={tryAcquit.state} error={tryAcquit.error} onStart={() => void tryAcquit.start()} />
           <p className="muted start-note">{START_COPY.saved}</p>
         </>

@@ -1,4 +1,5 @@
 import type { Route } from "./route";
+import { isOwnerRoute } from "./route.ts";
 
 export type Role = "CLIENT" | "OPERATOR" | "PLATFORM";
 export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "play" | "bids" | "work" | "earnings";
@@ -35,17 +36,13 @@ const PUBLIC_PAGES: readonly NavItem[] = [
 const SCENARIOS: NavItem = { to: "/tour", label: "Scenarios", icon: "play", group: "Public" };
 
 const AGENT_PAGES: readonly NavItem[] = [
-  { to: "/specialists", label: "Plug in", icon: "plus", group: "Agents" },
-  { to: "/specialists/exam", label: "Exam", icon: "shield", group: "Agents" },
-  { to: "/specialists/orders", label: "Standing orders", icon: "bids", group: "Agents" },
-  { to: "/specialists/night", label: "Night", icon: "work", group: "Agents" },
-  { to: "/specialists/morning", label: "Morning", icon: "earnings", group: "Agents" },
-  { to: "/specialists/floor", label: "Floor", icon: "dashboard", group: "Agents" },
+  { to: "/specialists", label: "Your agent", icon: "plus", group: "Agents" },
+  { to: "/leaderboard", label: "Leaderboard", icon: "dashboard", group: "Agents" },
 ];
 
 /** A run starts on the account's own visitor, and a platform session is not one, so the platform does not list Scenarios. */
 export function navFor(role: Role): readonly NavItem[] {
-  return role === "PLATFORM" ? [...ROLE_PAGES[role], ...PUBLIC_PAGES] : [...ROLE_PAGES[role], ...(role === "OPERATOR" ? AGENT_PAGES : []), ...PUBLIC_PAGES, SCENARIOS];
+  return role === "PLATFORM" ? [...ROLE_PAGES[role], ...PUBLIC_PAGES] : [...ROLE_PAGES[role], ...AGENT_PAGES, ...PUBLIC_PAGES, SCENARIOS];
 }
 
 /** Signed out, the sidebar lists the public pages; the Try Acquit button sits under them. */
@@ -57,7 +54,7 @@ export function signedOutNav(): readonly NavItem[] {
 export function isNavActive(item: NavItem, path: string, role: Role | null): boolean {
   path = path.length > 1 ? path.replace(/\/+$/, "") : path;
   if (path === item.to) return true;
-  if (item.group === "Agents" && item.to !== "/specialists" && path.startsWith(`${item.to}/`)) return true;
+  if (item.to === "/specialists" && isOwnerRoute(path) && path !== "/leaderboard") return true;
   if (path === "/" && role !== null && ROLE_PAGES[role][0]?.to === item.to) return true;
   const jobPage = path.startsWith("/jobs/") && path !== "/jobs/new";
   if (!jobPage) return false;
@@ -109,12 +106,12 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Specialists", title: "The exam" };
     case "specialistOrders":
       return { eyebrow: "Specialists", title: "Standing orders" };
-    case "specialistNight":
-      return { eyebrow: "Specialists", title: "The night" };
-    case "specialistMorning":
-      return { eyebrow: "Specialists", title: "The morning" };
-    case "specialistFloor":
-      return { eyebrow: "Specialists", title: "Floor" };
+    case "specialistActivity":
+      return { eyebrow: "Specialists", title: "Activity" };
+    case "specialistEarnings":
+      return { eyebrow: "Specialists", title: "Earnings" };
+    case "specialistLeaderboard":
+      return { eyebrow: "Specialists", title: "Leaderboard" };
     case "notFound":
       return { eyebrow: "Acquit", title: "Page not found" };
   }
