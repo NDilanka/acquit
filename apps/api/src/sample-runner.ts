@@ -12,6 +12,7 @@ import type { AgentId, CommitSha, JobId, OperatorId, RequestKey, VisitorId } fro
 import { hours } from "../../../packages/core/src/ids.ts";
 import { isStarterJob } from "../../../packages/core/src/house-client.ts";
 import type { UsdCents } from "../../../packages/core/src/ledger.ts";
+import type { ProcessorFeeModel } from "../../../packages/core/src/paypal.ts";
 import { attemptHistory } from "../../../packages/core/src/exam.ts";
 import { matchFixture, type FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { storedDefinitionOfDone, storedVertical, type JobRow } from "../../../packages/core/src/job.ts";
@@ -69,6 +70,8 @@ export type SampleRunnerPorts = {
 	readonly ordersOf: (agentId: string) => SampleOrders | null;
 	/** The registry, the upstream its forks come from, and the scenario fixture the scripted tree passes. */
 	readonly fixtureRule: SampleFixtureRule;
+	/** The fee model the House quotes its accepts with. The runner never bids a price this model cannot carry. */
+	readonly feeModel: ProcessorFeeModel;
 	/** The command edge, as the API's request path runs it. */
 	readonly execute: (actor: Actor, key: RequestKey, command: UserCommand) => Promise<CommandOutcome>;
 	/** Pushes the scripted tree to the job's own fork and answers with the commit. */
@@ -213,6 +216,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 			jobs,
 			runs: runsOf(visitor.operatorHandle),
 			globalActive: globalActive(),
+			feeModel: ports.feeModel,
 		};
 		return decideSampleTick(facts);
 	}

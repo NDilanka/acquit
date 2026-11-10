@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { SAMPLE_RUNS_PER_DAY, decideSampleTick, runsInWindow } from "../src/sample-runner.ts";
 import type { SampleBid, SampleFacts, SampleJob, SampleRun } from "../src/sample-runner.ts";
+import { commercialSplit, usd } from "../src/ledger.ts";
+import { quote } from "../src/paypal.ts";
+import type { Bps, ProcessorFeeModel } from "../src/paypal.ts";
 
 const operator = "op_visitor";
 const agent = "code-sample-visitor";
@@ -9,6 +12,8 @@ const now = "2026-11-11T12:00:00.000Z";
 const minutesAgo = (minutes: number) => new Date(Date.parse(now) - minutes * 60_000).toISOString();
 const floor = 1000;
 const commit = "a".repeat(40);
+/** The deployment's fee model, as config.ts sets it. */
+const feeModel: ProcessorFeeModel = { version: "sandbox-349bps-plus-49-v1", rateBps: 349 as Bps, fixed: usd("0.49") };
 
 function job(id: string, fields: Partial<SampleJob> = {}): SampleJob {
 	return { id, status: "OPEN", vertical: "code", budgetCents: 5000, starter: true, fixtureMatched: true, attemptsPhase: null, attemptsRunsStarted: null, bids: [], history: [], ...fields };
@@ -36,6 +41,7 @@ function facts(fields: Partial<SampleFacts> = {}): SampleFacts {
 		jobs: [job("job_a")],
 		runs: [],
 		globalActive: 0,
+		feeModel,
 		...fields,
 	};
 }
@@ -151,6 +157,45 @@ test("a job another agent of this visitor already ran is not bid on again", () =
 test("no candidate is idle, and never queued", () => {
 	const decision = decideSampleTick(facts({ jobs: [job("job_closed", { status: "CLOSED" })], globalActive: 2 }));
 	assert.equal(decision.status, "IDLE");
+	assert.equal(decision.reason, null);
+	assert.deepEqual(decision.actions, []);
+});
+
+test("a price floor the House cannot fund is refused before any bid, and is never IDLE", () => {
+	// AcceptBid quotes the bid price with the fee model and throws when the fee does not fit. No bid goes out at one.
+	for (const priceFloorCents of [0, 1, 429]) {
+		const decision = decideSampleTick(facts({ orders: { autopilot: true, runsOn: "acquit", priceFloorCents } }));
+		assert.equal(decision.status, "REFUSED", `floor ${priceFloorCents}`);
+		assert.equal(decision.reason, "PRICE_CANNOT_CARRY_FEE", `floor ${priceFloorCents}`);
+		assert.deepEqual(decision.actions, [], `floor ${priceFloorCents}`);
+	}
+	const noStarters = decideSampleTick(facts({ jobs: [], orders: { autopilot: true, runsOn: "acquit", priceFloorCents: 1 } }));
+	assert.equal(noStarters.reason, "PRICE_CANNOT_CARRY_FEE");
+});
+
+test("the floor is refused exactly where the House's own quote fails, and bid where it passes", () => {
+	assert.throws(() => quote(commercialSplit(usd("4.29")), feeModel), /Price cannot carry processing fee/);
+	assert.doesNotThrow(() => quote(commercialSplit(usd("4.30")), feeModel));
+
+	const refused = decideSampleTick(facts({ orders: { autopilot: true, runsOn: "acquit", priceFloorCents: 429 } }));
+	assert.equal(refused.reason, "PRICE_CANNOT_CARRY_FEE");
+	const funded = decideSampleTick(facts({ orders: { autopilot: true, runsOn: "acquit", priceFloorCents: 430 } }));
+	assert.deepEqual(funded.actions, [{ kind: "bid", jobId: "job_a", priceCents: 430, etaHours: 48 }]);
+});
+
+test("a broken fee model is not read as an unfundable price, so it throws out of the tick", () => {
+	const broken: ProcessorFeeModel = { version: "broken", rateBps: -1 as Bps, fixed: usd("0.49") };
+	assert.throws(() => decideSampleTick(facts({ feeModel: broken })), /Invalid fee model/);
+});
+
+test("an unfundable floor does not stop a run already in flight, which keeps its own price", () => {
+	const decision = decideSampleTick(facts({
+		orders: { autopilot: true, runsOn: "acquit", priceFloorCents: 1 },
+		jobs: [job("job_a", { bids: [bid("PENDING")] })],
+		runs: [run("job_a")],
+		globalActive: 1,
+	}));
+	assert.equal(decision.status, "RUNNING");
 	assert.equal(decision.reason, null);
 	assert.deepEqual(decision.actions, []);
 });

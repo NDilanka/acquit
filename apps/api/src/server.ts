@@ -1610,6 +1610,7 @@ const sampleRunner = createSampleRunner({
 	},
 	// Only the scenario fixture's starters are bid on, because its scripted tree is the only one the runner pushes.
 	fixtureRule: { fixtures, upstream: clientRepository, scenario: sampleFixture },
+	feeModel: settings.paypal.feeModel,
 	execute: (actor, key, command) => acquit.execute(actor, key, command),
 	workspace: scriptedWorkspace({ work: sampleWork, readJob: id => scenarioStore.readJob(id) }),
 });

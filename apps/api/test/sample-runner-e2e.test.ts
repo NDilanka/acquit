@@ -12,6 +12,8 @@ import { HOUSE_CLIENT_ID } from "../../../packages/core/src/house-client.ts";
 import type { DefinitionOfDone } from "../../../packages/core/src/verifier.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import { manifestOf } from "../../../packages/core/src/fixtures.ts";
+import { commercialSplit, usd, type UsdCents } from "../../../packages/core/src/ledger.ts";
+import { quote, type Bps, type ProcessorFeeModel } from "../../../packages/core/src/paypal.ts";
 import { demoFixture, jpyFixture } from "../../../packages/core/test/hidden-fixture.ts";
 import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
@@ -31,6 +33,8 @@ const OTHER_ISSUE = jpyFixture();
 const FIXTURE_RULE: SampleFixtureRule = { fixtures: [SCENARIO, OTHER_ISSUE], upstream: SCENARIO.repository,
 	scenario: { repository: SCENARIO.repository, issueNumber: SCENARIO.issue.number } };
 const JOB_ID = "job_starter_1";
+/** The House's fee model in the deployment's shape. AcceptBid quotes every accepted bid with it. */
+const FEE_MODEL: ProcessorFeeModel = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
 const BUDGET_CENTS = 5_000;
 const PAID_CENTS = 4_750;
 const START = Date.parse("2026-11-11T12:00:00.000Z");
@@ -153,6 +157,7 @@ function portsOf(db: DatabaseSync, world: World, overrides: Partial<SampleRunner
 		agentsOf: handle => (handle === OPERATOR ? [AGENT] : []),
 		ordersOf: () => ORDERS,
 		fixtureRule: FIXTURE_RULE,
+		feeModel: FEE_MODEL,
 		execute: world.execute,
 		workspace: world.workspace,
 		...overrides,
@@ -616,4 +621,103 @@ test("a run keeps its own agent until it finishes, even once that agent is no lo
 	assert.equal(recordOf(db)?.outcome, "VERIFIED", "the run still takes its verdict");
 	assert.equal(submitsOf(world).length, 1, "no further submit once consent is gone");
 	assert.equal(runner.statusOf(VISITOR).decision.status, "IDLE", "the sample agent listed now has no starter to bid on");
+});
+
+const OLD_OPERATOR = "op_old_visitor";
+const OLD_FORK = "acquit-forks/ws-010203040506";
+const OLD_VISITOR: SampleRunnerVisitor = { id: "v_old" as VisitorId, operatorHandle: OLD_OPERATOR, repository: OLD_FORK };
+const OLD_AGENT = { id: "code-sample-old", task: "code", sample: true, acquitted: true };
+const OLD_JOB_ID = "job_old_starter";
+/** The older visitor's standing orders: a one-cent floor, which the House cannot fund. */
+const ONE_CENT_ORDERS: SampleOrders = { autopilot: true, runsOn: "acquit", priceFloorCents: 1 };
+
+/** The fields of an OPEN job the House accepts into: funded, with the operator's own payee, and its first run ready. */
+function fundedFor(operator: string, at: string) {
+	return { status: "IN_PROGRESS", escrow: { payee: { operator }, book: [{ kind: "HELD", cents: BUDGET_CENTS, at }] },
+		attempts: { phase: "READY", history: [], runsStarted: 0, failure: null } };
+}
+
+test("a price floor the House cannot fund is never bid, so it cannot stop the House's accept pass for another visitor's starter", async () => {
+	assert.throws(() => quote(commercialSplit(usd("0.01")), FEE_MODEL), /Price cannot carry processing fee/,
+		"the House's own quote fails at one cent, so an accept at that price would throw");
+
+	const db = new DatabaseSync(":memory:");
+	let at = START;
+	const now = () => new Date(at).toISOString();
+	// The older visitor's starter comes first, since the House's pass reads its jobs oldest first.
+	let rows: JobRow[] = [
+		storedRow(OLD_JOB_ID, { client: HOUSE_CLIENT_ID, tenant: OLD_VISITOR.id, state: openState, bids: [], definition: manifestOf(SCENARIO, OLD_FORK) }),
+		storedRow(JOB_ID, { client: HOUSE_CLIENT_ID, tenant: VISITOR.id, state: openState, bids: [], definition: starterManifest() }),
+	];
+	const patchRow = (jobId: string, fields: Record<string, unknown>) => {
+		rows = rows.map(row => (row.id === jobId ? ({ ...row, ...fields } as unknown as JobRow) : row));
+	};
+	const statusOfRow = (jobId: string): string | undefined =>
+		(rows.find(row => row.id === jobId)?.state as { readonly status: string } | undefined)?.status;
+	const commands: UserCommand[] = [];
+	const pushes: CommitSha[] = [];
+	const logs: string[] = [];
+
+	const execute = async (actor: Actor, _key: RequestKey, command: UserCommand): Promise<CommandOutcome> => {
+		commands.push(command);
+		if (command.type === "Submit") return { kind: "COMMITTED", result: { kind: "JOB", job: { id: command.jobId } } } as unknown as CommandOutcome;
+		if (command.type !== "PlaceBid" || actor.role !== "OPERATOR") throw new Error(`the fake has no ${command.type}`);
+		const bid = { id: `bid_${commands.length}`, operator: actor.operatorId, agent: command.agent, price: command.price,
+			eta: command.eta, pitch: command.pitch, placedAt: now(), respondBy: new Date(at + 72 * 60 * 60_000).toISOString(), status: "PENDING" };
+		patchRow(command.jobId, { bids: [bid] });
+		return { kind: "COMMITTED", result: { kind: "BID", job: { id: command.jobId }, bid, creditsLeft: 4 } } as unknown as CommandOutcome;
+	};
+
+	/**
+	 * The House's accept pass, as the core runs it: each job oldest first, each pending bid past its 30-second window
+	 * accepted and funded. The accept quotes the bid's price with the House's fee model, and a quote that throws stops
+	 * the whole pass, so every visitor's job waits behind it.
+	 */
+	const houseAcceptPass = () => {
+		for (const row of rows) {
+			for (const bid of row.bids) {
+				if (bid.status !== "PENDING" || at - Date.parse(bid.placedAt) < 30_000) continue;
+				quote(commercialSplit(bid.price), FEE_MODEL);
+				patchRow(row.id, { bids: [{ ...bid, status: "ACCEPTED" }], state: fundedFor(bid.operator, now()) });
+			}
+		}
+	};
+
+	const runner = createSampleRunner({
+		db, enabled: true, now, log: line => { logs.push(line); },
+		visitors: () => [OLD_VISITOR, VISITOR],
+		jobsOf: () => rows,
+		agentsOf: handle => (handle === OLD_OPERATOR ? [OLD_AGENT] : handle === OPERATOR ? [AGENT] : []),
+		ordersOf: agentId => (agentId === OLD_AGENT.id ? ONE_CENT_ORDERS : ORDERS),
+		fixtureRule: FIXTURE_RULE,
+		feeModel: FEE_MODEL,
+		execute,
+		workspace: { push: async () => {
+			const commit = String(pushes.length + 1).padStart(40, "0") as CommitSha;
+			pushes.push(commit);
+			return commit;
+		} },
+	});
+
+	await runner.kick();
+	assert.deepEqual(commands.map(command => (command.type === "PlaceBid" ? command.jobId : command.type)), [JOB_ID],
+		"the one-cent floor places no bid, and the other visitor's starter is bid on");
+	assert.equal(runner.statusOf(OLD_VISITOR).decision.reason, "PRICE_CANNOT_CARRY_FEE", "the status says why the older visitor waits");
+	assert.ok(logs.some(line => line.includes("the price floor of 1 cents cannot carry the processing fee")), "the log says why nothing is bid");
+
+	at += 31_000;
+	assert.doesNotThrow(houseAcceptPass, "the accept pass runs through, so the other visitor's bid is accepted");
+	assert.equal(statusOfRow(JOB_ID), "IN_PROGRESS", "the other visitor's starter is funded");
+	assert.equal(statusOfRow(OLD_JOB_ID), "OPEN", "the older visitor's starter stays open, with no bid on it");
+
+	await runner.kick();
+	assert.equal(pushes.length, 1, "the other visitor's run pushes its commit");
+	assert.equal(runner.statusOf(VISITOR).decision.status, "RUNNING");
+
+	at += 31_000;
+	assert.doesNotThrow(houseAcceptPass, "later passes still run through");
+	await runner.kick();
+	assert.equal(commands.filter(command => command.type === "PlaceBid").length, 1, "no further bid from either visitor");
+	assert.equal(runner.statusOf(OLD_VISITOR).decision.reason, "PRICE_CANNOT_CARRY_FEE", "the refusal holds while the floor stays unfundable");
+	assert.equal(runner.statusOf(VISITOR).decision.status, "RUNNING", "the other visitor's run is submitted and waits on its verdict");
 });

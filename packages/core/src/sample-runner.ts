@@ -4,6 +4,11 @@
 // The House client accepts, funds and approves. The real verifier decides every submit. The rules for when a run may
 // start, how many run at once, and when a run is finished live here, so they are tested without a server.
 
+import { commercialSplit } from "./ledger.ts";
+import type { UsdCents } from "./ledger.ts";
+import { quote } from "./paypal.ts";
+import type { ProcessorFeeModel } from "./paypal.ts";
+
 /** Runs one visitor may start in any 24 hours. */
 export const SAMPLE_RUNS_PER_DAY = 3;
 /** Runs one visitor may have in flight at once. */
@@ -81,6 +86,8 @@ export type SampleFacts = {
 	readonly runs: readonly SampleRun[];
 	/** Runs in flight across every visitor, this visitor's included, as they stand before this tick. */
 	readonly globalActive: number;
+	/** The fee model AcceptBid quotes with. A bid at a price this model cannot carry fails the House's accept. */
+	readonly feeModel: ProcessorFeeModel;
 };
 
 /** What consent needs: the standing orders, the agent, and the visitor's fork. */
@@ -98,7 +105,7 @@ export type SampleStatus = "OFF" | "IDLE" | "QUEUED" | "RUNNING" | "REFUSED";
 
 /** Why the runner cannot act for this visitor. The closed set the activity route shows. */
 export type SampleRefusal = "NO_FORK" | "DAILY_LIMIT" | "NO_ACQUITTAL" | "NO_STANDING_ORDERS" | "NOT_A_SAMPLE"
-	| "AUTOPILOT_OFF" | "NOT_HOSTED" | "BID_DENIED";
+	| "AUTOPILOT_OFF" | "NOT_HOSTED" | "BID_DENIED" | "PRICE_CANNOT_CARRY_FEE";
 
 export type SampleDecision = {
 	readonly status: SampleStatus;
@@ -121,8 +128,9 @@ export function runsInWindow(runs: readonly SampleRun[], now: string): number {
  * to submit, submit to verdict. A run that finishes frees its slot in the same tick. Consent is checked first: while
  * it does not hold, a run may still finish from the real verdict or the House's bid outcome, but nothing is pushed
  * or submitted. A new bid starts only when consent holds, the visitor has no run in flight, the day's limit is not
- * reached, the House has not refused a bid in the last day, and a global slot is free. Otherwise the status says why
- * the visitor waits or is refused.
+ * reached, the House has not refused a bid in the last day, and a global slot is free. The standing-order floor must
+ * also be a price the House can fund, or the status refuses with PRICE_CANNOT_CARRY_FEE and nothing is bid. Otherwise
+ * the status says why the visitor waits or is refused.
  */
 export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	if (!facts.enabled) return decision("OFF", null, [], null);
@@ -146,6 +154,11 @@ export function decideSampleTick(facts: SampleFacts): SampleDecision {
 
 	const orders = facts.orders;
 	if (orders === null) return decision("REFUSED", "NO_STANDING_ORDERS", actions, null);
+	// The floor is the bid price, and the House quotes that price with the same fee model at accept. An unfundable
+	// floor would fail the House's accept, so no bid is placed at all.
+	if (!fundable(orders.priceFloorCents, facts.feeModel)) {
+		return decision("REFUSED", "PRICE_CANNOT_CARRY_FEE", actions, `the price floor of ${orders.priceFloorCents} cents cannot carry the processing fee; no bid is placed`);
+	}
 	if (runsInWindow(facts.runs, facts.now) >= SAMPLE_RUNS_PER_DAY) return decision("REFUSED", "DAILY_LIMIT", actions, null);
 	// The House refused a bid recently, so the next bid waits a day. The status shows the refusal until then.
 	if (facts.runs.some(run => run.outcome === "BID_DENIED" && now - Date.parse(run.placedAt) < DAY_MS)) {
@@ -164,6 +177,25 @@ export function decideSampleTick(facts: SampleFacts): SampleDecision {
 
 function decision(status: SampleStatus, reason: SampleDecision["reason"], actions: readonly SampleAction[], note: string | null): SampleDecision {
 	return { status, reason, actions, note };
+}
+
+/** The message paypal.ts's quote throws when a price's processing fee does not fit inside the fee the split keeps. */
+const CANNOT_CARRY_FEE = "Price cannot carry processing fee";
+
+/**
+ * Whether the House can accept a bid at this price: the same commercial split and the same quote AcceptBid runs. A
+ * price that fails here throws at accept, so the runner never bids one. A broken fee model is not a price problem,
+ * so it throws out of the tick rather than refusing every visitor silently.
+ */
+function fundable(priceCents: number, feeModel: ProcessorFeeModel): boolean {
+	if (!Number.isSafeInteger(priceCents) || priceCents <= 0) return false;
+	try {
+		quote(commercialSplit(priceCents as UsdCents), feeModel);
+		return true;
+	} catch (error) {
+		if (error instanceof Error && error.message === CANNOT_CARRY_FEE) return false;
+		throw error;
+	}
 }
 
 /** A starter the runner may bid on: open, the agent's task, on the scripted fixture, budget at or above the floor, and not yet this operator's. */
