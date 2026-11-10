@@ -2,7 +2,16 @@
 // sample is given. Connectivity is geometric: a track joins a pad only where the copper touches, and the
 // file's net labels on tracks are never used for it.
 
-import { readBoard, type Board, type CopperLayer, type Footprint, type Hole, type PadInst, type Via } from "./board.ts";
+import {
+	BOARD_THICKNESS,
+	readBoard,
+	type Board,
+	type CopperLayer,
+	type Footprint,
+	type Hole,
+	type PadInst,
+	type Via,
+} from "./board.ts";
 import {
 	circleError,
 	circlePolygon,
@@ -19,7 +28,8 @@ import type { Finding, HiddenSample, PadSpec, PartSpec, ScenePath, Scene, Spec, 
 
 /** Tolerance for comparing a measured value to a limit, so float noise never fails a clean board. */
 const EPS = 1e-4;
-const TOP_Z = 1.6;
+// The top surface height. readBoard admits only a BOARD_THICKNESS board, so the drawn and checked boards agree.
+const TOP_Z = BOARD_THICKNESS;
 const DRILL_TOL = 0.01;
 const MAX_MEASURE = 1;
 

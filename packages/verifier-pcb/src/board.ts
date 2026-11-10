@@ -652,6 +652,61 @@ function boardProblem(root: readonly SExpr[]): string | undefined {
 	return undefined;
 }
 
+/** The board thickness the checker models, in millimetres: the KiCad default and the FR4 core the rules assume. */
+export const BOARD_THICKNESS = 1.6;
+
+/** The fields a general record may hold. Thickness sets the board; the others are counts and flags KiCad writes. */
+const GENERAL_FIELDS = new Set(["thickness", "legacy_teardrops", "drawings", "tracks", "zones", "modules", "nets"]);
+
+/**
+ * The first problem in the substrate declarations, or undefined. A repeated general record, a general field the
+ * checker does not read, a repeated field, and a thickness that is not one finite positive number are malformed. A
+ * positive thickness other than BOARD_THICKNESS, and any custom stackup in setup, are unsupported: the checker models
+ * one 1.6 mm board, so it refuses the file rather than draw a different board as 1.6 mm. A board with no general
+ * record declares no thickness and takes KiCad's default, BOARD_THICKNESS.
+ */
+function substrateProblem(root: readonly SExpr[]): string | undefined {
+	const generals = recordsOf(root, "general");
+	if (generals.length > 1) return "malformed record: (general) repeated in (kicad_pcb)";
+	const general = generals[0];
+	if (general) {
+		const problem = generalProblem(general);
+		if (problem) return problem;
+	}
+	for (const setup of recordsOf(root, "setup")) {
+		if (recordsOf(setup, "stackup").length > 0) {
+			return "unsupported construct: (stackup) in (setup); the checker models one 1.6 mm board without a stackup";
+		}
+	}
+	return undefined;
+}
+
+/** The first problem in one general record, or undefined. */
+function generalProblem(general: readonly SExpr[]): string | undefined {
+	const seen = new Set<string>();
+	for (const item of general.slice(1)) {
+		const field = listOf(item);
+		if (!field) return "malformed record: an unnamed value sits in (general)";
+		const head = field[0];
+		if (typeof head !== "string" || !GENERAL_FIELDS.has(head)) {
+			return `malformed record: (${typeof head === "string" ? head : "?"}) is not a general field`;
+		}
+		if (seen.has(head)) return `malformed record: (${head}) repeated in (general)`;
+		seen.add(head);
+		if (field.length !== 2 || typeof field[1] !== "string") {
+			return `malformed record: (${head}) in (general) must hold one value`;
+		}
+	}
+	const thickness = fieldOf(general, "thickness");
+	if (!thickness) return undefined;
+	const value = typeof thickness[1] === "string" && NUMBER.test(thickness[1]) ? Number(thickness[1]) : Number.NaN;
+	if (!Number.isFinite(value) || value <= 0) return "malformed record: (thickness) must be one finite positive number";
+	if (value !== BOARD_THICKNESS) {
+		return `unsupported construct: board thickness ${value} mm; the checker models only a ${BOARD_THICKNESS} mm board`;
+	}
+	return undefined;
+}
+
 /** True when a zone appears anywhere in the tree, at any depth. */
 function containsZone(root: readonly SExpr[]): boolean {
 	const stack: (readonly SExpr[])[] = [root];
@@ -708,6 +763,8 @@ export function readBoard(text: string): Board {
 	// The record layer runs first: a field held twice must fail as a repeat, not as whichever copy a reader sees.
 	const record = recordProblem(root);
 	if (record) return { ...EMPTY, hasZones, error: `malformed record: ${record}` };
+	const substrate = substrateProblem(root);
+	if (substrate) return { ...EMPTY, hasZones, error: substrate };
 	const problem = boardProblem(root);
 	if (problem) return { ...EMPTY, hasZones, error: `unsupported construct: ${problem}` };
 	const limit = admissionProblem(root);
