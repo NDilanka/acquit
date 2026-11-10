@@ -1,0 +1,71 @@
+/* boxy.css: the Figma "Investment breakdown dashboard" control language, applied on top of every
+   section's own styles (loaded last, same specificity wins by order).
+   Track = recessed pill; chip = raised surface with a white 1.5px rim; box = flat grey panel, r36.
+   The emerald metal is reserved for the one primary action and the "on" marks. */
+
+/* ---- segmented switchers (variant switchers, board tabs) ---- */
+#pipeline-root .wf-vswitch,
+#fields-root .wf-vswitch,
+#footer-root .wf-vswitch,
+.money-root .wf-vswitch {
+  gap: 4px; padding: 5px; border: 0; border-radius: var(--r-pill);
+  background: var(--track); box-shadow: var(--sh-track);
+}
+#pipeline-root .wf-vswitch button,
+#fields-root .wf-vswitch button,
+#footer-root .wf-vswitch button,
+.money-root .wf-vswitch button {
+  min-height: 40px; padding: 0 16px; border: 1.5px solid transparent; border-radius: var(--r-pill);
+  background: transparent; color: #8D9095;
+}
+#pipeline-root .wf-vswitch button:hover,
+#fields-root .wf-vswitch button:hover,
+#footer-root .wf-vswitch button:hover,
+.money-root .wf-vswitch button:hover { background: rgba(255, 255, 255, .45); color: var(--ink); }
+#pipeline-root .wf-vswitch button[aria-selected="true"],
+#fields-root .wf-vswitch button[aria-selected="true"],
+#footer-root .wf-vswitch button[aria-selected="true"],
+.money-root .wf-vswitch button[aria-selected="true"] {
+  background: var(--chip); color: var(--ink); border-color: #fff; box-shadow: var(--sh-chip);
+}
+
+.wf-side, .wf-tabs { gap: 4px; padding: 5px; width: max-content; max-width: 100%; border-radius: 26px; background: var(--track); box-shadow: var(--sh-track); }
+.wf-side button, .wf-tabs button { border: 1.5px solid transparent; background: transparent; color: #8D9095; }
+.wf-side button:hover, .wf-tabs button:hover { color: var(--ink); background: rgba(255, 255, 255, .45); }
+.wf-side button[aria-checked="true"],
+.wf-tabs button[aria-selected="true"] { background: var(--chip); color: var(--ink); border-color: #fff; box-shadow: var(--sh-chip); }
+
+/* ---- doors: the big segmented control (Figma "Dashboard tabs": 90 px track, 23 px labels) ---- */
+.door-panel { background: var(--panel); border: 2px solid #fff; border-radius: 56px; }
+.tablist {
+  gap: 10px; width: min(640px, 100%); padding: 8px;
+  background: var(--track); box-shadow: var(--sh-track);
+}
+.tab {
+  flex: 1 1 0; min-height: 64px; padding: 0 24px; border: 2px solid transparent;
+  font-size: 19px; font-weight: 400; color: #8D9095;
+}
+.tab[aria-selected="true"] { background: var(--chip); color: var(--ink); font-weight: 500; border-color: #fff; box-shadow: var(--sh-chip); }
+
+/* ---- cards ---- */
+.pipeline-a-card {
+  background: var(--chip); border: var(--rim); border-radius: var(--r-tile); box-shadow: var(--sh-chip);
+}
+.pipeline-a-card.is-hot { border-color: #fff; box-shadow: 0 0 0 2px var(--em-500), var(--sh-chip); }
+#fields-root .fields-placeholder { background: var(--panel); border-radius: var(--r-box); }
+#footer-root .ftr-b-card { background: var(--panel); border-radius: var(--r-box); box-shadow: none; }
+#footer-root .ftr-b-card.is-side { background: var(--chip); border: 2px solid #fff; box-shadow: 0 9px 15px rgba(36, 39, 51, .05), inset 0 2px 3px #fff; }
+
+/* ---- metal buttons: one texture everywhere ---- */
+.btn-metal, .pill-btn, #footer-root .ftr-btn.ftr-metal { background: var(--em-metal-btn); }
+
+/* ---- buttons in the section builders ---- */
+#footer-root .ftr-btn { min-height: 48px; padding: 0 22px; }
+#footer-root .ftr-btn.ftr-metal { border: 1.5px solid rgba(255, 255, 255, .55); box-shadow: var(--sh-metal); }
+#footer-root .ftr-btn-sm { min-height: 40px; padding: 0 16px; }
+
+/* ---- list rows: dashed dividers, as the Figma fund rows ---- */
+.steps { border-top: 1px dashed #CDD2CF; }
+.steps li { border-bottom: 1px dashed #CDD2CF; }
+.faq-item { border-top: 1px dashed #CDD2CF; }
+.faq-item:last-child { border-bottom: 1px dashed #CDD2CF; }

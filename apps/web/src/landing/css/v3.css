@@ -1,0 +1,108 @@
+/* v3.css: hero adjustments, the agent plate, the clients block. Loaded last. */
+
+/* prototype-only switchers stay out of the page */
+.wf-ho-dock, .wf-vswitch, .notes-toggle, .wf-note { display: none !important; }
+.hf-end { margin-right: 0; }
+a.h-n2, a.h-n3 { color: var(--ink-2); }
+a.h-n3 { color: var(--mute); }
+.h-lede p { max-width: 17.5em; }
+
+/* ---------- 3. your agent ---------- */
+.agent-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: clamp(40px, 7vw, 120px); align-items: center; }
+.agent .kicker { justify-content: flex-start; }
+.agent .disp { font-size: clamp(48px, 6.6vw, 112px); }
+.agent-rules { margin-top: clamp(40px, 5vw, 72px); border-top: 1px dashed #CDD2CF; max-width: 620px; }
+.agent-rules li { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 24px; padding: 20px 0; border-bottom: 1px dashed #CDD2CF; }
+.agent-rules b { font-size: 17px; font-weight: 500; letter-spacing: -.01em; line-height: 1.3; }
+.agent-rules span { color: var(--mute); font-size: 16px; line-height: 1.5; }
+
+.plate {
+  position: relative; margin: 0; justify-self: end; width: min(100%, 440px); padding: 26px 28px 22px;
+  background: var(--chip); border: 2px solid #fff; border-radius: 36px;
+  box-shadow: 0 50px 80px -40px rgba(14, 17, 16, .32), 0 9px 15px rgba(36, 39, 51, .05), inset 0 2px 3px #fff;
+  transform: rotate(1.6deg); transition: transform 700ms var(--ease-out);
+}
+.plate:hover { transform: rotate(0deg) translateY(-4px); }
+.plate-top { display: flex; justify-content: space-between; align-items: center; color: var(--mute); }
+.plate-chip { padding: 3px 9px; border-radius: 999px; background: var(--track); box-shadow: var(--sh-track); color: var(--ink-2); }
+.plate-name { margin-top: 28px; font-size: clamp(34px, 3.4vw, 48px); font-weight: 500; letter-spacing: -.035em; line-height: 1; }
+.plate-task { margin-top: 8px; color: var(--mute); font-size: 17px; }
+.plate-seal {
+  display: inline-flex; margin-top: 22px; padding: 9px 18px 8px; border-radius: 999px; overflow: hidden;
+  border: 1.5px solid rgba(255, 255, 255, .55); box-shadow: var(--sh-metal);
+}
+.plate-seal span { color: #fff; font-size: 12px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; text-shadow: 0 1px 1px rgba(0, 0, 0, .35); }
+.plate-grade { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 24px; align-items: center; margin-top: 26px; padding: 18px; border-radius: 24px; background: var(--track); box-shadow: var(--sh-track); }
+.dial { position: relative; width: 132px; aspect-ratio: 1; }
+.dial svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.dial circle { fill: none; stroke-width: 9; stroke-linecap: round; }
+.dial-bg { stroke: #D6DBD8; }
+.dial-fg { stroke: var(--em-500); stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke-dashoffset 1600ms var(--ease-out) 300ms; }
+.plate.is-in .dial-fg { stroke-dashoffset: 7; }
+.dial p { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.dial b { font-size: 44px; font-weight: 500; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.dial span { font-family: var(--f-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
+.plate-rec { margin: 0; display: grid; }
+.plate-rec div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; border-bottom: 1px dashed #CDD2CF; }
+.plate-rec div:last-child { border-bottom: 0; }
+.plate-rec dt { font-size: 13px; color: var(--mute); }
+.plate-rec dd { margin: 0; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.plate-rec small { font-size: 10px; color: var(--mute); letter-spacing: .04em; }
+.plate-foot { margin-top: 16px; color: var(--faint); text-align: center; }
+
+/* ---------- 5. for clients (night) ---------- */
+.clients { background: var(--night); color: #fff; }
+.clients .kicker { justify-content: flex-start; color: var(--night-mute); }
+.clients .disp { font-size: clamp(44px, 6vw, 104px); }
+.clients .disp-faint { color: #5B6460; }
+.clients .disp-ink { color: #fff; }
+.cl-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: clamp(56px, 6vw, 96px); border-top: 1px solid var(--night-line); }
+.cl-steps li { padding: 28px clamp(20px, 2.6vw, 40px) 8px 0; }
+.cl-steps li + li { padding-left: clamp(20px, 2.6vw, 40px); border-left: 1px solid var(--night-line); }
+.cl-steps .mono { display: block; color: var(--em-300); margin-bottom: 40px; }
+.cl-steps b { display: block; font-size: clamp(22px, 2vw, 28px); font-weight: 500; letter-spacing: -.015em; line-height: 1.2; }
+.cl-steps p { margin-top: 10px; color: var(--night-mute); font-size: 16px; line-height: 1.5; max-width: 34ch; }
+.cl-cta { display: flex; align-items: center; gap: 24px; margin-top: clamp(40px, 5vw, 72px); }
+.cl-cta .mono { color: var(--night-mute); }
+
+@media (max-width: 899.98px) {
+  .agent-grid { grid-template-columns: 1fr; }
+  .plate { justify-self: start; transform: none; }
+  .agent-rules li { grid-template-columns: 1fr; gap: 6px; }
+  .cl-steps { grid-template-columns: 1fr; }
+  .cl-steps li, .cl-steps li + li { padding: 24px 0; border-left: 0; border-bottom: 1px solid var(--night-line); }
+  .cl-steps .mono { margin-bottom: 16px; }
+  .cl-cta { flex-direction: column; align-items: flex-start; }
+}
+@media (max-width: 819.98px) {
+  a.h-n2, a.h-n3, a.h-go { position: static; grid-column: 1 / -1; margin-left: var(--hpad); }
+  a.h-n2 { grid-row: 2; margin-top: 12px; }
+  a.h-n3 { display: none; }
+  a.h-go { grid-row: 2; justify-self: end; margin: 12px var(--hpad) 0 0; }
+}
+
+/* overflow-x: hidden on body would turn it into a scroll container and break the pinned board */
+body { overflow-x: clip; }
+
+/* ---------- the shift: one statement, lit word by word as it scrolls ---------- */
+.shift { position: relative; padding: clamp(140px, 20vw, 320px) var(--gutter); }
+.shift .kicker { justify-content: flex-start; margin-bottom: clamp(28px, 3vw, 48px); }
+.shift-text { max-width: 15em; font-size: clamp(40px, 6.4vw, 116px); font-weight: 300; letter-spacing: -.04em; line-height: 1.02; text-wrap: balance; }
+.shift-text em { font-style: normal; font-weight: 400; }
+.shift-text .w { color: #C9CECB; transition: color 500ms var(--ease-out); }
+.shift-text .w.is-on { color: var(--ink); }
+.shift-text em .w.is-on { color: var(--em-600, #066351); }
+
+.agent-line { margin-top: clamp(28px, 3vw, 44px); max-width: 30ch; color: var(--mute); font-size: clamp(17px, 1.4vw, 21px); line-height: 1.45; }
+.plate { transform-style: preserve-3d; will-change: transform; }
+.agent-grid { perspective: 1400px; }
+a.demo-closed { opacity: .55; cursor: default; }
+
+@media (prefers-reduced-motion: reduce) { .shift-text .w { color: var(--ink); transition: none; } .shift-text em .w { color: var(--em-600, #066351); } }
+/* the morning: the payout is the screen */
+.sk-paid { flex: 1; flex-direction: column; align-items: flex-start; justify-content: flex-end; gap: 6px; padding: 18px 20px; }
+.sk-paid b { order: -1; margin-top: auto; font-size: clamp(40px, 4.4vw, 68px); letter-spacing: -.035em; }
+.sk-pane[data-pane="3"] .sk-foot { margin-top: 0; }
+
+/* the pill nav steps aside while the board holds the screen */
+.pill-nav.is-tucked { opacity: 0; transform: translateY(-140%); pointer-events: none; }
