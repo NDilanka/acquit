@@ -1,0 +1,14 @@
+{
+  "recordedAt": null,
+  "simulated": true,
+  "task": "print-fdm",
+  "exam": {
+    "id": "sample-print-exam",
+    "status": "PASSED",
+    "visible": { "passed": 5, "total": 5 },
+    "hidden": { "passed": 1, "total": 1 },
+    "reasons": [],
+    "startedAt": "2026-11-09T21:40:00.000Z",
+    "endedAt": "2026-11-09T21:42:00.000Z"
+  }
+}

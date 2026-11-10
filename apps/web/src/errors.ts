@@ -8,6 +8,7 @@ const WORDS = new Map<string, string>(
   Object.entries({
     // The API's own refusals (apps/api/src/server.ts) and the domain's DENIED reasons (packages/core/src/job.ts).
     AGENT_EXISTS: "You already have an agent with that name.",
+    ALREADY_ACQUITTED: "This agent is already Acquitted.",
     ALREADY_BID: "You already placed a bid on this job.",
     ALREADY_FROZEN: "The job's tests are already frozen. Refresh the page to see them.",
     ARTIFACT_CHANGED: "The delivered artifact changed after verification.",
@@ -35,6 +36,10 @@ const WORDS = new Map<string, string>(
     DEMO_PRIVATE: "Acquit is private for now.",
     DEMO_REPOSITORY_FAILED: "GitHub could not create your workspace repository. Try again in a moment.",
     DEV_DISABLED: "Dev tools are off on this deployment.",
+    EXAM_LIMIT: "This agent has used its exam tries for today. Try again tomorrow.",
+    EXAM_NOT_BUILT: "Exams are not set up on this deployment yet.",
+    EXAM_NOT_RUNNING: "That exam is no longer running.",
+    EXAM_RUNNING: "An exam is already running for this agent.",
     FUNDING_BOUND: "The payment method was fixed when a bid was accepted.",
     GITHUB_NOT_CONFIGURED: "GitHub is not connected on this deployment yet.",
     HOUSE_ALREADY_BID: "The House has already bid on this job.",
@@ -47,6 +52,7 @@ const WORDS = new Map<string, string>(
     MODEL_KEY_MISSING: "The assistant has no model key on this deployment.",
     NO_DRAFT: "The hidden tests are not drafted yet.",
     NO_MANIFEST: "The job has no frozen test manifest yet.",
+    NOT_ACQUITTED: "This agent is not Acquitted yet, so it cannot do this.",
     NOT_AN_ACCOUNT: "Only a Try Acquit account can do this.",
     NOT_DEMO_VISITOR: "Only a Try Acquit account can switch between client and operator.",
     NOT_FOUND: "That job or bid no longer exists.",
@@ -65,6 +71,8 @@ const WORDS = new Map<string, string>(
     PRICE_OVER_BUDGET: "The price is higher than the job budget.",
     RESTORE_LIMITED: "Too many tries from this network. Wait 15 minutes, then open the link again.",
     REVIEW_CLOSED: "The review window is closed.",
+    RUNS_ON_NOT_ALLOWED: "This agent can only run on its owner's machine.",
+    TASK_NOT_EXAMINABLE: "This agent's task cannot be examined yet.",
     SEEDED_LOGIN_DISABLED: "Seeded sign-in is off on this deployment. Use Try Acquit instead.",
     SESSION_MINT_DISABLED: "Starting a session is off on this deployment.",
     TOOL_FAILED: "The assistant's tool failed. Try again in a moment.",
@@ -78,6 +86,7 @@ const WORDS = new Map<string, string>(
     WORK_REPO_NOT_READY: "The work repository is not ready yet. Try again in a moment.",
     WORK_REPO_TOKEN_FAILED: "The work repository could not be opened. Try again in a moment.",
     WRONG_STATE: "The job is not in a state that allows this action.",
+    WRONG_TASK: "This agent's task does not match the job.",
     BAD_RESPONSE: "The server sent a reply the page could not read. Try again.",
   }),
 );

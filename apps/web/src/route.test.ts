@@ -19,3 +19,37 @@ test("signed out, every operator page asks for a sign-in", () => {
     assert.equal(signedOutPage(match(path)), "signIn", path);
   }
 });
+
+test("each specialist step has its own path, and a bare step leaves the agent to the page", () => {
+  assert.deepEqual(match("/specialists"), { name: "specialists" });
+  assert.deepEqual(match("/specialists/"), { name: "specialists" });
+  assert.deepEqual(match("/specialists/exam"), { name: "specialistExam" });
+  assert.deepEqual(match("/specialists/orders"), { name: "specialistOrders" });
+  assert.deepEqual(match("/specialists/night"), { name: "specialistNight" });
+  assert.deepEqual(match("/specialists/morning"), { name: "specialistMorning" });
+  assert.deepEqual(match("/specialists/floor/"), { name: "specialistFloor" });
+});
+
+test("a specialist step may name its agent in the path", () => {
+  assert.deepEqual(match("/specialists/exam/agent_42"), { name: "specialistExam", agentId: "agent_42" });
+  assert.deepEqual(match("/specialists/orders/agent%20x/"), { name: "specialistOrders", agentId: "agent x" });
+  assert.deepEqual(match("/specialists/night/agent_42"), { name: "specialistNight", agentId: "agent_42" });
+});
+
+test("a path under /specialists that names no page is not found", () => {
+  assert.deepEqual(match("/specialists/agents"), { name: "notFound" });
+  assert.deepEqual(match("/specialists/exam/a/b"), { name: "notFound" });
+});
+
+test("signed out, every specialist page asks for a sign-in", () => {
+  for (const path of [
+    "/specialists",
+    "/specialists/exam/agent_42",
+    "/specialists/orders",
+    "/specialists/night",
+    "/specialists/morning",
+    "/specialists/floor",
+  ]) {
+    assert.equal(signedOutPage(match(path)), "signIn", path);
+  }
+});

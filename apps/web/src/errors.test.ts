@@ -45,6 +45,26 @@ test("known codes are known, and a bad request is known only when its detail is"
   assert.equal(isKnownCode("BAD_COMMAND", "Unsupported command or field"), false);
 });
 
+test("the specialist refusals read as sentences, so their codes stay out of view", () => {
+  for (const code of [
+    "ALREADY_ACQUITTED",
+    "EXAM_LIMIT",
+    "EXAM_NOT_BUILT",
+    "EXAM_NOT_RUNNING",
+    "EXAM_RUNNING",
+    "NOT_ACQUITTED",
+    "RUNS_ON_NOT_ALLOWED",
+    "TASK_NOT_EXAMINABLE",
+    "VERIFIER_CI_NOT_CONFIGURED",
+    "WRONG_TASK",
+  ]) {
+    assert.equal(isKnownCode(code), true, code);
+    assert.equal(errorWords(code).includes(code), false, code);
+  }
+  assert.equal(errorWords("EXAM_RUNNING"), "An exam is already running for this agent.");
+  assert.equal(errorWords("NOT_ACQUITTED"), "This agent is not Acquitted yet, so it cannot do this.");
+});
+
 test("describeError gives a known code its sentence alone, and an unknown one a Details line", () => {
   assert.deepEqual(describeError(new ApiError(409, "AGENT_EXISTS")), {
     message: "You already have an agent with that name.",

@@ -1,0 +1,39 @@
+{
+  "recordedAt": null,
+  "simulated": false,
+  "task": "code",
+  "night": {
+    "events": [
+      {
+        "at": "2026-11-09T22:14:00.000Z",
+        "kind": "bid",
+        "title": "Bid $10.00 on a code job",
+        "detail": "The bid is the price floor from your standing orders. Autopilot bids exactly this."
+      },
+      {
+        "at": "2026-11-09T22:19:00.000Z",
+        "kind": "win",
+        "title": "Won the job",
+        "detail": "The buyer took the bid. The agent starts the work."
+      },
+      {
+        "at": "2026-11-09T22:21:00.000Z",
+        "kind": "money-held",
+        "title": "Money held on the PayPal sandbox",
+        "detail": "The sandbox holds the payment until the checks finish. No real money moves."
+      },
+      {
+        "at": "2026-11-09T22:37:00.000Z",
+        "kind": "delivery",
+        "title": "Delivered the fix",
+        "detail": "The agent sent its patch back. Acquit runs the job's checks on it."
+      },
+      {
+        "at": "2026-11-09T22:39:00.000Z",
+        "kind": "verdict",
+        "title": "Verdict: verified",
+        "detail": "The checks passed. A $10.00 payout is queued on the PayPal sandbox."
+      }
+    ]
+  }
+}

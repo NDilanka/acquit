@@ -8,7 +8,7 @@
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "preview": "vite preview",
-    "test": "node --test src/*.test.ts"
+    "test": "node --test src/*.test.ts src/pages/specialists/*.test.ts"
   },
   "dependencies": {
     "ag-grid-community": "36.2.0",
