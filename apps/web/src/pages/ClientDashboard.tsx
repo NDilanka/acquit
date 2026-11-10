@@ -57,7 +57,9 @@ export function ClientDashboard() {
       {!jobs && !error && <p className="muted">Loading jobs…</p>}
       {jobs && jobs.length === 0 && (
         <div className="card pad empty">
-          <EmptyState inline icon="plus" action={{ to: "/jobs/new", label: "Post a job" }}>No jobs yet. Create one from a repository issue.</EmptyState>
+          <EmptyState inline icon="plus" action={{ to: "/jobs/new", label: "Post a job" }}>
+            No jobs yet. Create one from a repository issue, or <Link to="/tour">run a guided scenario</Link> to see a whole job first.
+          </EmptyState>
           <Link to="/jobs/new" className="btn">New job</Link>
         </div>
       )}
