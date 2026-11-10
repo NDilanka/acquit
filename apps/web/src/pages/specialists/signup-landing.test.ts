@@ -14,17 +14,21 @@ function useTryAcquitBody(): string {
 }
 
 describe("sign-up landing", () => {
-  it("sends a new account to the specialists page", () => {
-    assert.match(useTryAcquitBody(), /navigate\("\/specialists"\)/);
+  it("sends an operator sign-up to the specialists page", () => {
+    assert.match(useTryAcquitBody(), /navigate\(made\.user\.role === "OPERATOR" \? "\/specialists" : "\/"\)/);
   });
 
-  it("no longer sends a new account to the home page", () => {
-    assert.doesNotMatch(useTryAcquitBody(), /navigate\("\/"\)/);
-    assert.doesNotMatch(source, /navigate\("\/"\)/);
+  it("sends every other sign-up, a client's, to the home page where clients landed before", () => {
+    assert.match(useTryAcquitBody(), /: "\/"\)/);
   });
 
-  it("routes only the sign-up through the specialists page", () => {
-    const calls = source.match(/navigate\("\/specialists"\)/g) ?? [];
+  it("never sends a sign-up to the specialists page unconditionally", () => {
+    assert.doesNotMatch(useTryAcquitBody(), /navigate\("\/specialists"\)/);
+    assert.doesNotMatch(source, /navigate\("\/specialists"\)/);
+  });
+
+  it("navigates once in the sign-up", () => {
+    const calls = useTryAcquitBody().match(/navigate\(/g) ?? [];
     assert.equal(calls.length, 1);
   });
 });
