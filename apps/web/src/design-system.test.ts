@@ -14,36 +14,37 @@ for (const file of files) {
     const allowed = exceptions[file] ?? [];
     for (const match of css.matchAll(/#[\da-f]{3,8}\b/gi)) assert.ok(allowed.includes(match[0]), `${file}: raw colour ${match[0]}`);
     for (const match of css.matchAll(/font-size:\s*([^;{}]+)/g)) {
-      const value = match[1].trim();
+      const value = match[1]!.trim();
       const token = value.match(/^var\(--text-([\w]+)\)$/)?.[1];
       assert.ok((token && typeTokens.has(token)) || (/^\d+px$/.test(value) && sizes.has(Number.parseInt(value))), `${file}: off-scale font-size ${value}`);
     }
     for (const match of css.matchAll(/font:\s*([^;{}]+)/g)) {
-      if (match[1].trim() === "inherit") continue;
-      assert.match(match[1], /var\(--text-(xs|sm|ui|body|section|heading|display)\)/, `${file}: font shorthand must use a size token`);
+      if (match[1]!.trim() === "inherit") continue;
+      assert.match(match[1]!, /var\(--text-(xs|sm|ui|body|section|heading|display)\)/, `${file}: font shorthand must use a size token`);
     }
     for (const match of css.matchAll(/(?:width|height|padding|margin|gap|top|left|right|bottom):\s*([^;{}]+);/g)) {
-      assert.doesNotMatch(match[1], /(?:^|\s)(?:[1-9]\d*)(?=\s|$|\))/, `${file}: nonzero length without a unit: ${match[0]}`);
+      assert.doesNotMatch(match[1]!, /(?:^|\s)(?:[1-9]\d*)(?=\s|$|\))/, `${file}: nonzero length without a unit: ${match[0]}`);
     }
     for (const match of css.matchAll(/@media\s*\(([^)]+)\)/g)) {
-      if (match[1].includes("width")) assert.match(match[1], /\b(640|900|1200)px\b/, `${file}: off-scale breakpoint`);
+      if (match[1]!.includes("width")) assert.match(match[1]!, /\b(640|900|1200)px\b/, `${file}: off-scale breakpoint`);
     }
   });
 }
 
 const css = readFileSync(new URL("./tokens.css", import.meta.url), "utf8");
-const [light, dark] = css.split(':root[data-theme="dark"]');
+const [light = "", dark = ""] = css.split(':root[data-theme="dark"]');
 type Palette = Record<string, string>;
-const parse = (s: string): Palette => Object.fromEntries(Array.from(s.matchAll(/(--[\w-]+):\s*([^;]+);/g), (m) => [m[1], m[2].trim()]));
+const parse = (s: string): Palette => Object.fromEntries(Array.from(s.matchAll(/(--[\w-]+):\s*([^;]+);/g), (m) => [m[1]!, m[2]!.trim()]));
 const palettes = { light: parse(light), dark: { ...parse(light), ...parse(dark) } };
 function luminance(name: string, palette: Palette): number {
   const value = palette[name];
+  assert.ok(value, `Missing colour token ${name}`);
   const ref = value.match(/^var\((--[\w-]+)\)$/);
-  if (ref) return luminance(ref[1], palette);
+  if (ref) return luminance(ref[1]!, palette);
   assert.match(value, /^#[\da-f]{6}$/i);
   return [1, 3, 5].map((i) => Number.parseInt(value.slice(i, i + 2), 16) / 255)
     .map((v) => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
-    .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+    .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i]!, 0);
 }
 const surfaces = ["paper", "panel", "card", "surface", "surface-2"];
 for (const [theme, palette] of Object.entries(palettes)) {
