@@ -42,6 +42,7 @@
 .owner-app .earnings-key { font-size: var(--text-key); line-height: var(--leading-key); color: var(--green-text); letter-spacing: -.03em; }
 .earnings-refs { display: grid; gap: var(--space-4); font-size: var(--text-ui); line-height: var(--leading-ui); }
 .earnings-reference { display: grid; justify-items: start; gap: var(--space-1); }
+.earnings-page :is(.work-what,.work-status,.earnings-reference) a { display: inline-flex; align-items: center; min-height: 44px; }
 .earnings-reference code { color: var(--ink); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); overflow-wrap: anywhere; }
 .earnings-events { display: grid; gap: var(--space-1); padding-top: var(--space-2) !important; color: var(--muted); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
 .earnings-key-skeleton { height: var(--leading-key); width: 60%; background: var(--line); border-radius: var(--r); }

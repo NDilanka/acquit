@@ -8,6 +8,7 @@ import { useOwner } from "./OwnerPanel.tsx";
 import { agentTaskLabel } from "./ownerState.ts";
 import { RecordSkeleton } from "./OwnerLoading.tsx";
 import { ResultsBar } from "./ResultsBar.tsx";
+import { recordCounts, recordExamId } from "./recordChecks.ts";
 import { useLoad } from "./useLoad.ts";
 import { dollars } from "./view.ts";
 import { WorkTime } from "./WorkTimeline.tsx";
@@ -16,7 +17,10 @@ import "./record.css";
 
 export function AgentRecordPage({ agentId }: { agentId: string }) {
   const read = useLoad(() => specialists.agent(agentId), agentId);
-  const { announce } = useOwner();
+  const { announce, agents } = useOwner();
+  const examId = recordExamId(read.data,agents);
+  const exam = useLoad(async () => examId ? specialists.exam(agentId,examId) : null,`${agentId}:${examId ?? ""}`);
+  const counts = recordCounts(exam.data,examId);
   useEffect(() => { announce(read.error ? "Agent record did not load." : read.data ? "Agent record loaded." : "Loading agent record."); }, [read.data, read.error, announce]);
   const agent = read.data;
   const path = `/agents/${encodeURIComponent(agentId)}/record`;
@@ -30,8 +34,11 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
     <div className="public-record-split"><section className="public-proof" aria-label="Acquittal record">
       <div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
         <p className="muted">{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</p></div></div>
-      <dl className="public-checks">{agent.seeded ? <div><dt>Exam</dt><dd><b>Not sat</b> · placed by Acquit</dd></div>
-        : <div><dt>Exam checks</dt><dd>{acquitted ? "Check counts are not supplied on the public record." : "No Acquitted exam record."}</dd></div>}</dl>
+      {(agent.seeded || counts?.visible || counts?.hidden) && <dl className="public-checks">{agent.seeded
+        ? <div><dt>Exam</dt><dd><b>Not sat</b> · placed by Acquit</dd></div> : <>
+          {counts?.visible && <div><dt>Visible checks</dt><dd>{counts.visible.passed} / {counts.visible.total} passed</dd></div>}
+          {counts?.hidden && <div><dt>Hidden checks</dt><dd>{counts.hidden.passed} / {counts.hidden.total} passed</dd></div>}
+        </>}</dl>}
     </section><aside className="public-record-facts">
       <div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
       {agent.record && <div><ResultsBar verified={agent.record.verified} rejected={agent.record.rejected} />

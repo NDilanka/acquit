@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Link } from "../../router.tsx";
 import { specialists } from "./client.ts";
 import { useOwner } from "./OwnerPanel.tsx";
@@ -10,19 +10,19 @@ import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.t
 import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes } from "./work.ts";
 import { releasedWorkHref } from "./liveWork.ts";
 import { EarningsHeadingSkeleton } from "./OwnerLoading.tsx";
+import { REPORT_WINDOW_RULE } from "./reportWindow.ts";
 
 export function AgentEarningsPage() {
   const { agent, agents, selectionPending } = useOwner();
-  // Do not advance the workspace cursor before the owner has finished loading.
+  // Wait for the saved agent selection; a page view never advances the report window.
   if (agents === null || selectionPending) return <SpecialistPage step={5} lead="">{null}</SpecialistPage>;
   return <Earnings key={agent?.id ?? "workspace"} />;
 }
 
 function Earnings() {
   const { agent, announce, activity } = useOwner();
-  const report = useReport(true);
+  const report = useReport();
   const totals = useLoad(async () => agent ? specialists.agent(agent.id) : null, agent?.id ?? "");
-  const [readAt] = useState(() => new Date().toISOString());
   useEffect(() => { announce(report.error ? "Earnings did not load." : report.data ? "Earnings loaded." : "Loading earnings."); }, [report.data, report.error, announce]);
   const data = report.data;
   const events = data ? earningsEvents(data) : [];
@@ -43,21 +43,15 @@ function Earnings() {
           {actions}
           <WorkSkeleton count={3} label="Loading earnings." /></>
         : <>
-          <header className="earnings-head"><div className="work-heading">
-            <h1 className={quiet ? "" : "earnings-key"}>{quiet ? "Nothing new since you last looked." : paid ? `${dollars(paid)} released` : "Nothing released yet."}</h1>
-            <p className="spec-lead">Workspace report since <WorkTime at={data.since} full />. {quiet ? "No work was recorded." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${data.bids.length} bids recorded.`}</p>
-          </div><div className="earnings-refs"><p>PayPal sandbox · workspace earnings</p>
-            {data.payouts.map((payout) => <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
-              <p><Link to={releasedWorkHref(payout.jobId,activity.data?.activity)}>{dollars(payout.amountCents)} released · {jobLabel(payout.jobId)}</Link></p>
-              <p className="muted">Reference <code>{payout.reference.match(/.{1,4}/g)?.join(" ")}</code></p>
-              <CopyWorkValue value={payout.reference} label="Copy reference" />
-            </div>)}
-            {!quiet && <p className="muted">Payouts are workspace-wide, not attributed to the selected agent.</p>}
-          </div></header>
+          <header className="work-heading">
+            <h1 className="earnings-key">{dollars(paid)} released</h1>
+            <p className="spec-lead">PayPal sandbox · workspace earnings</p>
+            <p>{quiet ? "No work recorded in this report." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${data.bids.length} bids recorded.`}</p>
+          </header>
           {actions}
-          <div className="work-split"><ol className="work-timeline" aria-label="Earnings by job, newest first">
-            {quiet ? <TimelineMark title="No new work recorded"><p className="work-status">Nothing released in this report · PayPal sandbox</p></TimelineMark>
-              : groupJobs(events).map(({ id, entries }, index) => {
+          <div className="work-split"><div>
+            {!quiet && <ol className="work-timeline" aria-label="Earnings by job, newest first">
+            {groupJobs(events).map(({ id, entries }, index) => {
                 const latest = entries[0]!;
                 return <TimelineMark key={id} at={latest.at} index={index} tone={latest.kind === "rejected" ? "fail" : ""}
                   title={latest.jobId ? <Link to={`/jobs/${encodeURIComponent(latest.jobId)}`}>{jobLabel(latest.jobId)}</Link> : "Workspace activity"}>
@@ -66,13 +60,21 @@ function Earnings() {
                   <ul className="earnings-events">{entries.slice(1).map((entry) => <li key={entry.id}>{entry.status} · <WorkTime at={entry.at} /></li>)}</ul>
                 </TimelineMark>;
               })}
-            {!quiet && !events.length && <TimelineMark title="Grade updated"><p className="work-status">No job events supplied in this report.</p></TimelineMark>}
-          </ol><aside className="work-side" aria-label="Earnings summary">
-            {!quiet && <JobStrip lanes={jobLanes(events)} through={readAt} />}
+            {!events.length && <TimelineMark title="Grade updated"><p className="work-status">No job events supplied in this report.</p></TimelineMark>}
+          </ol>}
+            <section className="report-window" aria-label="Report window">
+              <p>From <WorkTime at={data.since} full />{report.through && <> to <WorkTime at={report.through} full /></>}</p>
+              <details className="record-meaning"><summary>How this window is chosen</summary><p>{REPORT_WINDOW_RULE}</p></details>
+            </section>
+          </div><aside className="work-side" aria-label="Earnings summary">
+            {!quiet && <JobStrip lanes={jobLanes(events)} through={report.through} />}
+            {data.payouts.map((payout) => <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
+              <p><Link to={releasedWorkHref(payout.jobId,activity.data?.activity)}>{dollars(payout.amountCents)} released · {jobLabel(payout.jobId)} · PayPal sandbox</Link></p>
+              <p className="muted">Reference <code>{payout.reference.match(/.{1,4}/g)?.join(" ")}</code></p>
+              <CopyWorkValue value={payout.reference} label="Copy reference" />
+            </div>)}
             <dl className="work-facts">
-              <div><dt>Workspace report</dt><dd>{dollars(paid)} released · PayPal sandbox</dd></div>
               {totals.data?.record && <div><dt>{agent?.name} · all jobs</dt><dd>{totals.data.record.jobsTaken} taken · {totals.data.record.verified} verified · {totals.data.record.rejected} rejected</dd></div>}
-              {totals.data?.earnedCents !== undefined && <div><dt>{agent?.name} · total earned</dt><dd>{dollars(totals.data.earnedCents)} released · PayPal sandbox</dd></div>}
             </dl>
             {totals.error !== null && <p className="muted">Agent totals did not load. <button className="text-button" onClick={totals.reload}>Retry totals</button></p>}
             <p className="muted">Verification alone does not release payment. Release requires client approval, the release timer or an arbiter.</p>

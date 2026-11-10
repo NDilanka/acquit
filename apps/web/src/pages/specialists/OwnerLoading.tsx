@@ -39,9 +39,9 @@ export function OwnerBodySkeleton({ step }: { step: number }) {
 }
 
 export function EarningsHeadingSkeleton() {
-  return <header className="earnings-head"><div className="work-heading">
-    <h1>Earnings</h1><span className="work-skeleton-line" /><span className="work-skeleton-line short" />
-  </div><div className="earnings-refs"><p>PayPal sandbox · workspace earnings</p></div></header>;
+  return <header className="work-heading">
+    <h1>Earnings</h1><p className="spec-lead">PayPal sandbox · workspace earnings</p><span className="work-skeleton-line short" />
+  </header>;
 }
 
 export function RecordSkeleton() {

@@ -1,25 +1,13 @@
-import { useEffect, useState } from "react";
 import { useSession } from "../../session.tsx";
 import { specialists } from "./client.ts";
-import { sinceIso } from "./view.ts";
 import { useLoad } from "./useLoad.ts";
+import { quietReportEnd, windowedReport } from "./reportWindow.ts";
 
-export function useReport(markRead = false) {
+export function useReport() {
   const { user } = useSession();
-  const [cursor] = useState(() => {
-    const openedAt = new Date().toISOString();
-    const key = `acquit.earningsRead:${user.handle}`;
-    let since = sinceIso(Date.now());
-    try {
-      const previous = localStorage.getItem(key);
-      if (previous && Number.isFinite(Date.parse(previous)) && previous <= openedAt) since = previous;
-    } catch { /* Storage is optional. */ }
-    return { key, openedAt, since };
-  });
-  const report = useLoad(() => specialists.morningReport(cursor.since), cursor.since);
-  useEffect(() => {
-    if (!markRead || !report.data) return;
-    try { localStorage.setItem(cursor.key, cursor.openedAt); } catch { /* Storage is optional. */ }
-  }, [markRead, report.data, cursor]);
-  return { ...report, cursor };
+  const report = useLoad(async () => {
+    const through = quietReportEnd(localStorage,user.handle,new Date().toISOString());
+    return windowedReport(await specialists.morningReport("1970-01-01T00:00:00.000Z"),through);
+  },user.handle);
+  return { data:report.data?.data ?? null,through:report.data?.through,error:report.error,reload:report.reload };
 }
