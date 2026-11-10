@@ -13,7 +13,7 @@ export function AgentCard({ agent, children }: { readonly agent: SpecialistAgent
     <article className="card pad spec-agent">
       <div className="spec-agent-head">
         <div>
-          <h3 className="spec-agent-name">{agent.name}</h3>
+          <h2 className="spec-agent-name">{agent.name}</h2>
           <p className="muted">{taskLabel(agent.task)}</p>
           {note && <p className="muted spec-agent-note">{note}</p>}
         </div>
@@ -25,7 +25,7 @@ export function AgentCard({ agent, children }: { readonly agent: SpecialistAgent
       <dl className="spec-agent-facts">
         <div>
           <dt>Grade</dt>
-          <dd>{gradeWords(agent.grade)}</dd>
+          <dd className="num">{gradeWords(agent.grade)}</dd>
         </div>
         {agent.gate && (
           <div>

@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { JobView, UserCommand } from "../api-types";
 import { api, type Repo, type RepoIssue } from "../api";
@@ -67,7 +68,7 @@ export function NewJob() {
       <div className="crumbs">
         <Link to="/">Jobs</Link> / <b>New job</b>
       </div>
-      <h2 className="page-title">New job</h2>
+      <PageTitle>New job</PageTitle>
       {loadError && <div className="alert">{loadError}</div>}
       <form className="card pad form" onSubmit={(e) => void submit(e)}>
         <label>

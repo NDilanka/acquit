@@ -1,12 +1,12 @@
 /*
  * First-night specialist screens: the step indicator, sample and agent cards, the exam board,
  * standing orders, the night replay and the morning report. Colours and radii come from the
- * shared tokens in styles.css, so light and dark mode follow the rest of the app.
+ * shared tokens in tokens.css, so light and dark mode follow the rest of the app.
  */
 
 .spec {
   display: grid;
-  gap: 18px;
+  gap: 20px;
   max-width: 980px;
 }
 
@@ -29,21 +29,23 @@
 
 .spec-lead {
   color: var(--muted);
-  font-size: 15px;
-  line-height: 1.5;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   max-width: 62ch;
 }
 
 .spec-h2 {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--text-section);
+  line-height: var(--leading-section);
   font-weight: 600;
   color: var(--ink);
 }
 
 .spec-h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   font-weight: 600;
   color: var(--ink);
 }
@@ -55,7 +57,7 @@
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .spec-steps li {
@@ -66,13 +68,14 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 36px;
+  min-height: var(--control);
   padding: 4px 12px 4px 4px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--card);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
   text-decoration: none;
   white-space: nowrap;
 }
@@ -85,12 +88,13 @@
 .spec-step-num {
   display: inline-grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-pill);
   background: var(--surface-2);
   color: var(--ink-2);
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
 }
 
 .spec-step.done a {
@@ -105,13 +109,13 @@
 .spec-step.current a {
   color: var(--ink);
   font-weight: 600;
-  border-color: var(--blue-line);
-  background: var(--blue-bg);
+  border-color: var(--green-line);
+  background: var(--green-bg);
 }
 
 .spec-step.current .spec-step-num {
-  background: var(--blue);
-  color: var(--card);
+  background: var(--green);
+  color: var(--white);
 }
 
 .spec-section {
@@ -135,12 +139,12 @@
 .spec-samples {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .spec-sample {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   align-content: start;
 }
 
@@ -150,7 +154,7 @@
 
 .spec-own {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   justify-items: start;
 }
 
@@ -167,13 +171,13 @@
 .spec-agents {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 /* Agent card, used on the plug-in, exam and morning screens. */
 .spec-agent {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   align-content: start;
   min-width: 0;
 }
@@ -183,19 +187,20 @@
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px 12px;
+  gap: 12px 12px;
 }
 
 .spec-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   justify-content: flex-end;
 }
 
 .spec-agent-name {
-  margin: 0 0 2px;
-  font-size: 17px;
+  margin: 0 0 4px;
+  font-size: var(--text-section);
+  line-height: var(--leading-section);
   font-weight: 600;
   color: var(--ink);
   overflow-wrap: anywhere;
@@ -203,11 +208,13 @@
 
 .spec-agent-head .muted,
 .spec-sample .muted {
-  font-size: 13.5px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
 }
 
 .spec-agent-note {
-  font-size: 13px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
 }
 
 .spec-agent-facts {
@@ -219,19 +226,21 @@
 
 .spec-agent-facts > div {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
 }
 
 .spec-agent-facts dt {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   color: var(--muted);
 }
 
 .spec-agent-facts dd {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   color: var(--ink);
   overflow-wrap: anywhere;
 }
@@ -256,25 +265,27 @@
   align-items: center;
   gap: 8px;
   color: var(--ink-2);
-  font-size: 14px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
 }
 
 .spec-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 12px;
+  gap: 12px 12px;
 }
 
 .spec-actions > p {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
 }
 
 .spec-board {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: 14px;
+  gap: 16px;
   align-items: start;
 }
 
@@ -283,7 +294,7 @@
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 6px;
+  gap: 8px;
   align-content: start;
   min-width: 0;
 }
@@ -292,9 +303,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--r);
   background: var(--surface);
@@ -302,7 +313,8 @@
 
 .spec-check-name {
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
@@ -311,8 +323,9 @@
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: 8px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
   font-weight: 600;
   color: var(--muted);
   white-space: nowrap;
@@ -323,12 +336,12 @@
 }
 
 .spec-check.checking {
-  border-color: var(--blue-line);
-  background: var(--blue-bg);
+  border-color: var(--green-line);
+  background: var(--green-bg);
 }
 
 .spec-check.checking .spec-check-state {
-  color: var(--blue);
+  color: var(--green-text);
 }
 
 .spec-check.passed {
@@ -371,13 +384,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .spec-grade {
   font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
 
@@ -388,13 +403,14 @@
   display: grid;
   gap: 4px;
   color: var(--ink-2);
-  font-size: 14px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
 }
 
 /* Standing orders: the gate, the form and the autopilot switch. */
 .spec-gate {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   justify-items: start;
   border-color: var(--amber-line);
   background: var(--amber-bg);
@@ -411,25 +427,22 @@
 
 .spec-form {
   max-width: 560px;
-  gap: 18px;
-}
-
-.spec-form:disabled {
-  opacity: 0.55;
+  gap: var(--form-gap);
 }
 
 .spec-cap-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
 }
 
 .spec-autopilot {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   max-width: 560px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
@@ -437,7 +450,8 @@
 
 .spec-autopilot > p {
   color: var(--ink-2);
-  font-size: 14px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
 }
 
 .spec-switch-row {
@@ -450,7 +464,7 @@
 
 .spec-switch-row:has(.spec-switch:disabled) {
   cursor: not-allowed;
-  opacity: 0.6;
+
 }
 
 .spec-switch {
@@ -461,27 +475,29 @@
   width: 44px;
   height: 24px;
   margin: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
   background: var(--line-2);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background var(--duration) var(--ease-out);
 }
 
 .spec-switch::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
+  top: 2px;
+  left: 2px;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  transition: transform 0.15s ease;
+  background: var(--white);
+  box-shadow: var(--shadow);
+  transition: transform var(--duration) var(--ease-out);
 }
 
 .spec-switch:checked {
   background: var(--green);
+  border-color: var(--primary-line);
 }
 
 .spec-switch:checked::after {
@@ -493,7 +509,8 @@
 }
 
 .spec-switch-label {
-  font-size: 15px;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
   font-weight: 600;
   color: var(--ink);
 }
@@ -506,26 +523,27 @@
 /* Night: the replay card and its timeline. */
 .spec-night {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   min-width: 0;
 }
 
 .spec-kind {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .spec-timeline {
-  padding-top: 6px;
+  padding-top: 8px;
 }
 
 /* Morning: the report headline, the totals and the lists. */
 .spec-report {
   display: grid;
-  gap: 18px;
+  gap: 20px;
 }
 
 .spec-stats {
@@ -536,7 +554,7 @@
 
 .spec-report-sec {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   align-content: start;
   min-width: 0;
 }
@@ -554,9 +572,10 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 4px 12px;
-  padding: 9px 0;
+  padding: 8px 0;
   border-top: 1px solid var(--line);
-  font-size: 14px;
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
   color: var(--ink-2);
   min-width: 0;
   overflow-wrap: anywhere;
@@ -574,7 +593,7 @@
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .spec-floor > li {
@@ -585,9 +604,9 @@
   height: 100%;
 }
 
-@media (max-width: 480px) {
+@media (max-width: 640px) {
   .spec-step a {
-    padding-right: 10px;
+    padding-right: 12px;
   }
 
   .spec-next {

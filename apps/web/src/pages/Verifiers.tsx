@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { Link } from "../router";
 import { milestoneLine, PAGE_INTRO, scoreLines, VERIFIER_ROWS, type VerifierRow } from "../verifiers-view";
 
@@ -13,7 +14,7 @@ export function VerifiersPage() {
     <>
       <div className="head">
         <div>
-          <h2 className="page-title">Verifiers</h2>
+          <PageTitle>Verifiers</PageTitle>
           <p className="muted">{PAGE_INTRO}</p>
         </div>
       </div>

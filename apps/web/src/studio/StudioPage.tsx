@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AgStudioAiModule,
@@ -362,7 +363,7 @@ function Dashboard<T>({
       <div className="head">
         <div>
           <div className="eyebrow">Dashboards</div>
-          <h2 className="page-title">{title}</h2>
+          <PageTitle>{title}</PageTitle>
           <p className="muted">{lead}</p>
         </div>
         <div className="head-actions">
@@ -522,7 +523,8 @@ function acquitStudioTheme() {
   // Starts from Studio's own theme: its icon sets are parts of that theme, and createStudioTheme() leaves them out, so the icons draw blank.
   return studioTheme.withParams({
     fontFamily: sans,
-    accentColor: green,
+    fontSize: 14,
+    accentColor: token("--green-text"),
     textColor: token("--ink"),
     borderColor: token("--line"),
     backgroundColor: token("--card"),
@@ -533,7 +535,7 @@ function acquitStudioTheme() {
     studioPanelHeaderFontFamily: sans,
     studioToggleButtonActiveBackgroundColor: green,
     studioToggleButtonActiveBorderColor: green,
-    studioToggleButtonActiveColor: green,
+    studioToggleButtonActiveColor: token("--white"),
     studioCanvasBackgroundColor: token("--paper"),
     studioMinWidth: 0,
     studioCanvasMinWidth: PAGE_LAYOUT.minWidth ?? 300,

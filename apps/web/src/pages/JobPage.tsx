@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColDef, GetRowIdFunc } from "ag-grid-community";
 import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, ScopingCase, UserCommand } from "../api-types";
@@ -173,7 +174,7 @@ export function JobPage({ id }: { id: string }) {
       </div>
       <div className="head">
         <div>
-          <h2 className="page-title">{job.title}</h2>
+          <PageTitle>{job.title}</PageTitle>
           <div className="meta">
             <IdChip value={job.id} />
           </div>

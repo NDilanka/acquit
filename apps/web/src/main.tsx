@@ -18,6 +18,8 @@ if (location.pathname === "/" && !(await signedIn())) {
   const { mountLanding } = await import("./landing");
   await mountLanding(root);
 } else {
+  const { loadProductFonts } = await import("./product-fonts");
+  loadProductFonts();
   const [{ StrictMode }, { createRoot }, { App }, { Router }, { ThemeProvider }, { ToastProvider }] = await Promise.all([
     import("react"),
     import("react-dom/client"),
@@ -25,7 +27,7 @@ if (location.pathname === "/" && !(await signedIn())) {
     import("./router"),
     import("./theme-context"),
     import("./toast"),
-    import("./styles.css"),
+    import("./product.css"),
   ]);
   createRoot(root).render(
     <StrictMode>

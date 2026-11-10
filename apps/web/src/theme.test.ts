@@ -35,4 +35,14 @@ test("the first-paint script in index.html reads the same key and the same value
   assert.match(html, /localStorage\.getItem\("acquit\.theme"\)/);
   assert.match(html, /s === "dark" \|\| \(s === "system"/);
   assert.match(html, /prefers-color-scheme: dark/);
+  const tokens = readFileSync(new URL("./tokens.css", import.meta.url), "utf8");
+  const pageColours = Array.from(tokens.matchAll(/--paper:\s*(#[\da-f]{6})/gi), (m) => m[1]);
+  assert.deepEqual(pageColours, ["#EEF0EF", "#0F1211"]);
+  for (const colour of pageColours) assert.ok(html.includes(`background: ${colour}`));
+});
+
+test("the product loads tokens before styles without importing landing CSS", () => {
+  const product = readFileSync(new URL("./product.css", import.meta.url), "utf8");
+  assert.ok(product.indexOf('"./tokens.css"') < product.indexOf('"./styles.css"'));
+  assert.doesNotMatch(product, /landing/);
 });

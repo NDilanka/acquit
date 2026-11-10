@@ -3,20 +3,23 @@ import { AgGridReact } from "ag-grid-react";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
-// AG Grid writes each value into a CSS custom property, so var() references resolve to styles.css's palette.
+// AG Grid writes each value into a CSS custom property, so var() references resolve to tokens.css's palette.
 export const acquitTheme = themeQuartz.withParams({
   fontFamily: "var(--sans)",
-  fontSize: 13,
-  dataFontSize: 13,
+  fontSize: 14,
+  dataFontSize: 14,
   foregroundColor: "var(--ink)",
   textColor: "var(--ink)",
   cellTextColor: "var(--ink)",
   backgroundColor: "var(--card)",
-  accentColor: "var(--green)",
+  accentColor: "var(--focus)",
   borderColor: "var(--line)",
+  inputBorder: { color: "var(--line-2)", width: 1 },
+  inputBorderRadius: 12,
+  buttonBorderRadius: 12,
   headerTextColor: "var(--muted)",
   headerBackgroundColor: "var(--surface)",
-  headerFontSize: 11,
+  headerFontSize: 13,
   headerFontWeight: 600,
   oddRowBackgroundColor: "var(--card)",
   rowHoverColor: "var(--surface)",
@@ -24,8 +27,8 @@ export const acquitTheme = themeQuartz.withParams({
   wrapperBorder: false,
   wrapperBorderRadius: 0,
   columnBorder: false,
-  spacing: 6,
-  cellHorizontalPadding: 10,
+  spacing: 4,
+  cellHorizontalPadding: 12,
 });
 
 const defaultColDef: ColDef = {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { canSwitchRole, cardName, initials, linkSaved, ROLE_CAPTION } from "./account";
 import { RoleSwitch, SaveAccountModal, SignOutDialog } from "./account-ui";
@@ -11,6 +11,7 @@ import type { Session } from "./session";
 import { useTheme } from "./theme-context";
 import { Segmented } from "./ui";
 import type { ThemeChoice } from "./theme";
+import { PageTitleContext } from "./page-title";
 
 const HELP_URL = "https://github.com/NDilanka/acquit#readme";
 
@@ -43,6 +44,10 @@ export function Shell({
   const { location } = useRouter();
   const path = location.path;
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const sidebar = useRef<HTMLElement>(null);
+  const [pageTitle, setPageTitle] = useState<{ path: string; title: string | null } | null>(null);
+  const supplyTitle = useCallback((title: string | null) => setPageTitle({ path, title }), [path]);
   const signedIn = session === undefined ? undefined : session !== null;
   const role: Role | null = session ? session.user.role : null;
   const items: readonly NavItem[] = session ? navFor(session.user.role) : signedIn === false ? signedOutNav() : [];
@@ -53,16 +58,48 @@ export function Shell({
   useEffect(() => setMenuOpen(false), [path]);
   useEffect(() => {
     if (!menuOpen) return;
+    const openedPath = window.location.pathname;
+    const backgrounds = document.querySelectorAll<HTMLElement>(".stage, .mbar, .skip-link");
+    const previous = Array.from(backgrounds, (el) => el.inert);
+    backgrounds.forEach((el) => { el.inert = true; });
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    sidebar.current?.querySelector<HTMLButtonElement>(".side-close")?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
+      // A portalled account dialog owns its own keyboard lifecycle.
+      if (document.querySelector(".dialog, dialog[open]")) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMenuOpen(false);
+      }
+      if (e.key !== "Tab") return;
+      const targets = Array.from(sidebar.current?.querySelectorAll<HTMLElement>('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]') ?? [])
+        .filter((el) => el.getClientRects().length > 0);
+      const first = targets[0];
+      const last = targets.at(-1);
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last?.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first?.focus();
+      }
     };
+    const desktop = window.matchMedia("(min-width: 901px)");
+    const onResize = () => { if (desktop.matches) setMenuOpen(false); };
+    desktop.addEventListener("change", onResize);
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      desktop.removeEventListener("change", onResize);
+      document.removeEventListener("keydown", onKey);
+      backgrounds.forEach((el, i) => { el.inert = previous[i] ?? false; });
+      document.body.style.overflow = overflow;
+      if (openedPath === window.location.pathname && menuButton.current?.getClientRects().length) menuButton.current.focus();
+    };
   }, [menuOpen]);
 
   const today = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
   return (
+    <PageTitleContext.Provider value={supplyTitle}>
     <div className="app">
       <a href="#content" className="skip-link" onClick={skipToContent}>
         Skip to content
@@ -72,12 +109,12 @@ export function Shell({
           <span className="side-mark">A</span>
           <span>Acquit</span>
         </Link>
-        <button type="button" className="mbar-menu" aria-label="Open the menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
+        <button ref={menuButton} type="button" className="mbar-menu" aria-label="Open the menu" aria-controls="sidebar" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
           <Icon name="menu" />
         </button>
       </header>
       <div className="frame">
-        <aside className={`side${menuOpen ? " open" : ""}`} aria-label="Sidebar">
+        <aside id="sidebar" ref={sidebar} className={`side${menuOpen ? " open" : ""}`} aria-label="Sidebar" role={menuOpen ? "dialog" : undefined} aria-modal={menuOpen || undefined}>
           <div className="side-top">
             <Link to="/" className="side-brand">
               <span className="side-mark">A</span>
@@ -89,6 +126,9 @@ export function Shell({
           </div>
           {session && canSwitchRole(session.user, session.account) && <RoleSwitch user={session.user} onSwitched={onSession} />}
           <nav className="side-nav" aria-label="Pages" onClick={() => setMenuOpen(false)}>
+            {items.some((item) => item.group === "Agents") && <p className="side-label mono">Agents</p>}
+            {items.filter((item) => item.group === "Agents").map((item) => navLink(item, path, role))}
+            {items.some((item) => item.group === "Agents") && <p className="side-label mono">Work</p>}
             {items.filter((item) => !item.group).map((item) => navLink(item, path, role, badges[item.to] ?? 0))}
             {items.some((item) => item.group === "Public") && <p className="side-label mono">Public</p>}
             {items.filter((item) => item.group === "Public").map((item) => navLink(item, path, role))}
@@ -110,7 +150,7 @@ export function Shell({
           <header className="topbar">
             <div className="topbar-title">
               <p className="eyebrow mono">{heading.eyebrow}</p>
-              <h1 className="topbar-h">{heading.title}</h1>
+              <h1 className="topbar-h" tabIndex={-1}>{pageTitle?.path === path && pageTitle.title ? pageTitle.title : heading.title}</h1>
             </div>
             <div className="topbar-right">
               <span className="topbar-date">{today}</span>
@@ -122,6 +162,7 @@ export function Shell({
       </div>
       {menuOpen && <div className="side-scrim" aria-hidden="true" onClick={() => setMenuOpen(false)} />}
     </div>
+    </PageTitleContext.Provider>
   );
 }
 
@@ -135,7 +176,7 @@ function skipToContent(e: ReactMouseEvent<HTMLAnchorElement>) {
 
 function navLink(item: NavItem, path: string, role: Role | null, badge = 0) {
   return (
-    <Link key={item.to} to={item.to} tour={NAV_TOUR[item.to]} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
+    <Link key={item.to} to={item.to} tour={NAV_TOUR[item.to]} aria-current={isNavActive(item, path, role) ? "page" : undefined} className={`side-item${isNavActive(item, path, role) ? " on" : ""}`}>
       <Icon name={item.icon} />
       <span>{item.label}</span>
       {badge > 0 && (

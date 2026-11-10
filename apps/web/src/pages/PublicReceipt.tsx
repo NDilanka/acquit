@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { errorText } from "../errors";
@@ -71,7 +72,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
       <div className="crumbs">Receipt</div>
       <div className="head">
         <div>
-          <h2 className="page-title">{r.title ?? "Paid job"}</h2>
+          <PageTitle>{r.title ?? "Paid job"}</PageTitle>
           <div className="meta">
             <IdChip value={r.id} />
             {r.issue !== null && <span>Issue #{r.issue}</span>}

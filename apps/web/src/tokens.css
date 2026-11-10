@@ -1,0 +1,53 @@
+/* Product design system. Landing has an isolated entry; do not import its CSS.
+   Breakpoints: 640 (compact), 900 (shell), 1200 (wide).
+   --line is a decorative divider; --line-2 identifies controls (>= 3:1). */
+:root {
+  color-scheme: light;
+  --em-900: #01302E; --em-800: #024A40; --em-700: #03594A; --em-600: #066351;
+  --em-500: #056D5B; --em-400: #0CAB75; --em-300: #3BD9A1; --em-100: #CCFAE9;
+  --paper: #EEF0EF; --panel: #FFFFFF; --card: #FFFFFF;
+  --surface: #F6F7F6; --surface-2: #E6E9E7;
+  --ink: #0E1110; --ink-2: #2A2F2D; --muted: #5F6662; --faint: var(--muted);
+  --line: rgb(14 17 16 / 12%); --line-2: #77827B; --raised-edge: var(--line);
+  --white: #FFFFFF;
+  --green: var(--em-500); --green-2: var(--em-700); --green-text: var(--em-700);
+  --green-bg: var(--em-100); --green-line: #588274; --primary-line: var(--green);
+  --amber: #79500B; --amber-bg: #FAF0DC; --amber-line: #957338;
+  --blue: #285A78; --blue-bg: #EAF2F7; --blue-line: #648299;
+  --red: #A0352C; --red-bg: #FBECE9; --red-line: #B76D64;
+  --focus: var(--em-700); --scrim: rgb(14 17 16 / 48%);
+  --sans: "General Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 12px; --leading-xs: 16px;
+  --text-sm: 13px; --leading-sm: 20px;
+  --text-ui: 14px; --leading-ui: 20px;
+  --text-body: 16px; --leading-body: 24px;
+  --text-section: 20px; --leading-section: 28px;
+  --text-heading: 24px; --leading-heading: 32px;
+  --text-display: 32px; --leading-display: 40px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+  --space-12: 48px; --space-16: 64px;
+  --card-inset: var(--space-6); --label-gap: 6px; --form-gap: var(--space-4);
+  --control-sm: 32px; --control: 40px; --control-lg: 48px;
+  --r-sm: 8px; --r: 12px; --r-card: 20px; --r-panel: 28px; --r-pill: 999px;
+  --shadow: 0 0 0 1px rgb(14 17 16 / 4%);
+  --shadow-raised: 0 8px 24px rgb(14 17 16 / 8%);
+  --duration-fast: 120ms; --duration: 180ms; --duration-slow: 240ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0F1211; --panel: #161A19; --card: #161A19;
+  --surface: #1F2623; --surface-2: #29322D;
+  --ink: #F2F5F3; --ink-2: #D0D8D3; --muted: #AFBAB3;
+  --line: rgb(242 245 243 / 14%); --line-2: #89988F;
+  --green-text: var(--em-300); --green-bg: #12392E; --green-line: #699D87;
+  --primary-line: var(--em-300);
+  --amber: #F0C77B; --amber-bg: #352A16; --amber-line: #BC9758;
+  --blue: #A3CBE4; --blue-bg: #1B303C; --blue-line: #7BA1B9;
+  --red: #FFB0A6; --red-bg: #3E211E; --red-line: #D18D83;
+  --focus: var(--em-300); --scrim: rgb(0 0 0 / 64%);
+  --shadow: 0 0 0 1px rgb(242 245 243 / 4%);
+  --shadow-raised: 0 8px 24px rgb(0 0 0 / 24%);
+}
