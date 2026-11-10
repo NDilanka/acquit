@@ -25,18 +25,22 @@ function vec2(v: unknown): Vec2 | undefined {
 
 function padSpec(v: unknown): PadSpec | string {
 	if (!isObj(v)) return "a pad is not an object";
-	const name = typeof v.name === "string" ? v.name : undefined;
+	const name = typeof v.name === "string" && v.name !== "" ? v.name : undefined;
 	const offset = vec2(v.offset);
 	const size = vec2(v.size);
 	const shape = v.shape;
 	const type = v.type;
 	if (name === undefined || !offset || !size) return "a pad needs a name, offset and size";
+	if (size[0] <= 0 || size[1] <= 0) return `pad ${name} needs a positive size`;
 	if (shape !== "rect" && shape !== "circle" && shape !== "oval") {
 		return `pad ${name} has an unsupported shape ${String(shape)}; only rect, circle and oval are modelled`;
 	}
 	if (type !== "smd" && type !== "thru_hole" && type !== "np_thru_hole") return `pad ${name} has an unknown type`;
 	const drill = v.drill === undefined ? undefined : num(v.drill);
 	if (v.drill !== undefined && drill === undefined) return `pad ${name} has a bad drill`;
+	if (drill !== undefined && drill <= 0) return `pad ${name} needs a positive drill`;
+	if (type === "smd" && drill !== undefined) return `pad ${name} is an SMD pad and cannot have a drill`;
+	if (type !== "smd" && drill === undefined) return `pad ${name} is a ${type} pad and needs a drill`;
 	const rotation = v.rotation === undefined ? undefined : num(v.rotation);
 	if (v.rotation !== undefined && rotation === undefined) return `pad ${name} has a bad rotation`;
 	return { name, offset, size, shape, type, drill, rotation };
@@ -44,16 +48,21 @@ function padSpec(v: unknown): PadSpec | string {
 
 function partSpec(v: unknown): PartSpec | string {
 	if (!isObj(v)) return "a part is not an object";
-	if (typeof v.ref !== "string" || typeof v.footprint !== "string") return "a part needs a ref and footprint";
+	if (typeof v.ref !== "string" || v.ref === "" || typeof v.footprint !== "string") {
+		return "a part needs a ref and footprint";
+	}
 	const at = vec2(v.at);
 	if (!at) return `part ${v.ref} needs an at position`;
 	const rotation = v.rotation === undefined ? undefined : num(v.rotation);
 	if (v.rotation !== undefined && rotation === undefined) return `part ${v.ref} has a bad rotation`;
 	if (!Array.isArray(v.pads)) return `part ${v.ref} needs a pad list`;
 	const pads: PadSpec[] = [];
+	const names = new Set<string>();
 	for (const p of v.pads) {
 		const r = padSpec(p);
 		if (typeof r === "string") return `part ${v.ref}: ${r}`;
+		if (names.has(r.name)) return `part ${v.ref} has two pads named ${r.name}`;
+		names.add(r.name);
 		pads.push(r);
 	}
 	return { ref: v.ref, footprint: v.footprint, at, rotation, pads };
@@ -68,6 +77,8 @@ export function validateSpec(value: unknown): SpecResult {
 	const size = vec2(board.size);
 	const tolerance = num(board.tolerance);
 	if (!size || tolerance === undefined) return { ok: false, error: "the board needs a size and tolerance" };
+	if (size[0] <= 0 || size[1] <= 0) return { ok: false, error: "the board needs a positive width and height" };
+	if (tolerance < 0) return { ok: false, error: "the board tolerance cannot be negative" };
 
 	if (!Array.isArray(value.parts)) return { ok: false, error: "the spec needs a parts list" };
 	const parts: PartSpec[] = [];
@@ -84,11 +95,22 @@ export function validateSpec(value: unknown): SpecResult {
 	for (const part of parts) for (const p of part.pads) padIds.add(`${part.ref}.${p.name}`);
 
 	if (!isObj(value.netlist)) return { ok: false, error: "the spec needs a netlist" };
-	const netlist: Record<string, readonly PadRef[]> = {};
+	// Null-prototype maps: a net named __proto__ or constructor is an ordinary name, not an inherited property.
+	const netlist = Object.create(null) as Record<string, readonly PadRef[]>;
+	// Each pad belongs to at most one net, so the net of a pad is never a first-wins choice.
+	const netOf = new Map<string, string>();
 	for (const [net, list] of Object.entries(value.netlist)) {
-		if (!Array.isArray(list) || !list.every(x => typeof x === "string")) return { ok: false, error: `net ${net} needs a list of pads` };
+		if (!Array.isArray(list) || !list.every(x => typeof x === "string")) {
+			return { ok: false, error: `net ${net} needs a list of pads` };
+		}
 		for (const pad of list as string[]) {
 			if (!padIds.has(pad)) return { ok: false, error: `net ${net} names pad ${pad}, which the parts do not define` };
+			const other = netOf.get(pad);
+			if (other === net) return { ok: false, error: `net ${net} lists pad ${pad} twice` };
+			if (other !== undefined) {
+				return { ok: false, error: `pad ${pad} is in both net ${other} and net ${net}; a pad belongs to one net` };
+			}
+			netOf.set(pad, net);
 		}
 		netlist[net] = list as string[];
 	}
@@ -109,11 +131,21 @@ export function validateSpec(value: unknown): SpecResult {
 	) {
 		return { ok: false, error: "rules need minTrackWidth, minClearance, minViaDrill, minAnnularRing and edgeClearance" };
 	}
+	// A negative limit would silently disable its check, so every limit must be zero or more.
+	const limits = { minTrackWidth, minClearance, minViaDrill, minAnnularRing, edgeClearance };
+	for (const [key, limit] of Object.entries(limits)) {
+		if (limit < 0) return { ok: false, error: `rule ${key} cannot be negative` };
+	}
 	if (!isObj(r.powerNets)) return { ok: false, error: "rules.powerNets must be an object" };
-	const powerNets: Record<string, number> = {};
+	const powerNets = Object.create(null) as Record<string, number>;
 	for (const [net, w] of Object.entries(r.powerNets)) {
 		const n = num(w);
-		if (n === undefined) return { ok: false, error: `power net ${net} needs a width` };
+		if (n === undefined || n < 0) return { ok: false, error: `power net ${net} needs a width of zero or more` };
+		// A power net must name a net that has pads, or its width check would silently find nothing to test.
+		const members = net in netlist ? netlist[net] : undefined;
+		if (!members || members.length === 0) {
+			return { ok: false, error: `power net ${net} is not a net with pads in the netlist` };
+		}
 		powerNets[net] = n;
 	}
 
@@ -125,6 +157,9 @@ export function validateSpec(value: unknown): SpecResult {
 			const min = vec2(k.min);
 			const max = vec2(k.max);
 			if (!min || !max) return { ok: false, error: `keepout ${k.name} needs min and max` };
+			if (!(min[0] < max[0] && min[1] < max[1])) {
+				return { ok: false, error: `keepout ${k.name} needs min below max on both axes` };
+			}
 			keepouts.push({ name: k.name, min, max });
 		}
 	}
@@ -135,7 +170,9 @@ export function validateSpec(value: unknown): SpecResult {
 		for (const h of value.mountingHoles) {
 			const at = isObj(h) ? vec2(h.at) : undefined;
 			const drill = isObj(h) ? num(h.drill) : undefined;
-			if (!at || drill === undefined) return { ok: false, error: "a mounting hole needs at and drill" };
+			if (!at || drill === undefined || drill <= 0) {
+				return { ok: false, error: "a mounting hole needs at and a positive drill" };
+			}
 			mountingHoles.push({ at, drill });
 		}
 	}
