@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "../../router";
 import type { Counts, ExamStatus, Task } from "./types";
-import { localTime, taskLabel, isOpenExam, SIMULATED_WORD } from "./view";
+import { checkLayout, localTime, taskLabel, isOpenExam, SIMULATED_WORD } from "./view";
 
 export function Envelope({ opened, failed = false }: { opened: boolean; failed?: boolean }) {
   return <svg className={`record-envelope ${opened ? "open" : "sealed"}`} viewBox="0 0 24 28" aria-hidden="true">
@@ -22,26 +22,41 @@ export function Seal({ passed }: { passed: boolean }) {
 /** Aggregate, anonymous results only: API counts do not identify individual tests. */
 export function CheckCells({ counts, total, hidden }: { counts: Counts | null; total: number; hidden: boolean }) {
   const failed = counts ? counts.total - counts.passed : 0;
-  return <section className={`record-check-group ${hidden ? "hidden-group" : ""}`} aria-label={hidden ? "Hidden checks" : "Visible checks"}>
-    <p className="check-group-label">{hidden ? "Hidden checks" : "Visible checks"}{counts && <span>{counts.passed} / {counts.total} passed</span>}</p>
-    <ol className="record-cells" style={{ gridTemplateColumns: `repeat(${Math.max(total, 1)}, minmax(0, 1fr))` }}>
-      {Array.from({ length: total }, (_, i) => {
+  const layout = checkLayout(total, hidden);
+  const rows: ReactNode[] = [];
+  for (const indices of layout.rows) {
+    rows.push(<ol key={indices[0]} className="record-cells" style={{ gridTemplateColumns: `repeat(${indices.length}, minmax(0, 1fr))` }}>
+      {indices.map((i) => {
         const fail = !!counts && i >= total - failed;
         const state = counts ? fail ? "Failed" : "Passed" : hidden ? "Sealed" : "Waiting";
         return <li key={i} className="record-check-cell" data-tone={fail ? "fail" : undefined}>
           {hidden ? <Envelope opened={counts !== null} failed={fail} /> : <span className="check-symbol" aria-hidden="true">{counts ? fail ? "×" : "✓" : "—"}</span>}
-          <span>{state}</span>
+          <span className={hidden ? "sr-only" : undefined}>{state}</span>
         </li>;
       })}
-    </ol>
+    </ol>);
+  }
+  return <section className={`record-check-group ${hidden ? "hidden-group" : ""}`} aria-label={hidden ? "Hidden checks" : "Visible checks"}>
+    <p className="check-group-label">{hidden ? "Hidden checks" : "Visible checks"}{counts && <span>{counts.passed} / {counts.total} passed</span>}</p>
+    {layout.segmented ? <div className="record-check-bar" role="img" aria-label={counts ? `${counts.passed} / ${counts.total} passed` : `${total} checks waiting`}
+      style={{ "--segments": Math.min(total, 48), "--passed": `${counts && total ? counts.passed / total * 100 : 0}%`,
+        "--bar-rest": counts && failed ? "var(--red)" : "var(--surface-2)" } as CSSProperties} />
+      : <CheckRowGroups rows={rows} />}
   </section>;
 }
 
+/** Bound every visual group, including unusually large hidden-check counts. */
+function CheckRowGroups({ rows }: { rows: ReactNode[] }): ReactNode {
+  if (rows.length <= 7) return <div className="record-cell-rows">{rows}</div>;
+  return <CheckRowGroups rows={Array.from({ length: Math.ceil(rows.length / 7) }, (_, i) =>
+    <div key={i} className="record-cell-rows">{rows.slice(i * 7, i * 7 + 7)}</div>)} />;
+}
+
 /** Reusable proof object. No hidden test identifiers or reason payloads enter the DOM. */
-export function ExamRecord({ status, simulated, task, grade, date, visible, hidden, shape, recordPath, provenance }: {
+export function ExamRecord({ status, simulated, task, grade, date, visible, hidden, recordPath, action }: {
   status: ExamStatus; simulated: boolean; task: Task; grade: number | null; date: string | null;
-  visible: Counts | null; hidden: Counts | null; shape: { visible: number; hidden: number };
-  recordPath: string; provenance: ReactNode;
+  visible: Counts | null; hidden: Counts | null;
+  recordPath: string; action: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
@@ -54,23 +69,25 @@ export function ExamRecord({ status, simulated, task, grade, date, visible, hidd
   return <section className="exam-record" aria-label="Exam record">
     <header className="record-heading" aria-live="polite">
       <Seal passed={passed} />
-      <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}
-        {passed && simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</h1>
-        <div className="record-origin">{provenance}</div>
+      <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}</h1>
+        <div className="record-origin">{simulated ? <span className="sandbox">{SIMULATED_WORD}</span> : "Live run"}</div>
       </div>
     </header>
     <div className="record-meta"><span>{taskLabel(task)}</span>{grade !== null && <span>Grade {grade}</span>}
       {date && <time dateTime={date} title={date}>{localTime(date)}</time>}</div>
-    <p className="record-running" role="status">{open ? "Running. Results arrive together, not as live progress." : "Aggregate results · identities stay private."}</p>
     <div className="record-check-bed">
-      <CheckCells counts={visible} total={visible?.total ?? shape.visible} hidden={false} />
-      <CheckCells counts={hidden} total={hidden?.total ?? shape.hidden} hidden />
+      {open ? <div className="record-check-waiting" role="status"><p>Results arrive together.</p><p>Visible checks · waiting</p><p>Hidden checks · sealed</p></div> : <>
+        <CheckCells counts={visible} total={visible?.total ?? 0} hidden={false} />
+        <CheckCells counts={hidden} total={hidden?.total ?? 0} hidden />
+      </>}
     </div>
-    <div className="record-foot">
-      <details><summary>Why hidden checks?</summary><p>The agent never sees these tests. Only pass or fail is shown.</p></details>
-      {!open && <div className="record-ref" data-chunked><Link to={recordPath}>Record link</Link>
+    <footer className="record-foot">
+      <div className="record-tools"><details><summary>Why hidden checks?</summary><p>The agent never sees these tests. Only pass or fail is shown.</p></details>
+      {!open && <div className="record-ref"><Link to={recordPath}>Record link</Link>
         <button type="button" className="text-button" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</button></div>}
-    </div>
+      </div>
+      <div className="owner-actions record-action">{action}</div>
+    </footer>
     {copyError && <p role="status">Copy failed. Open Record link and copy the address.</p>}
   </section>;
 }
