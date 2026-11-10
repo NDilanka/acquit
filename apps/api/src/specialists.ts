@@ -6,8 +6,9 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
-import { bidGate, captureAt, countedAttempts, GRADE_PER_REJECTED, GRADE_PER_VERIFIED, gradeOf, heldPayee, LASER_VERTICAL, recordOf, sampleOf, SAMPLES } from "../../../packages/core/src/exam.ts";
-import type { StandingOrders } from "../../../packages/core/src/exam.ts";
+import type { Vertical } from "../../../packages/core/src/code-manifest.ts";
+import { bidGate, captureAt, countedAttempts, examRefusal, GRADE_PER_REJECTED, GRADE_PER_VERIFIED, gradeOf, heldPayee, LASER_VERTICAL, PRINT_VERTICAL, recordOf, sampleOf, SAMPLES, settledSimulated, simulatedAcquittal, startedRun } from "../../../packages/core/src/exam.ts";
+import type { ExamCount, ExamRefusal, ExamRun, ExamStart, ExamStatus, StandingOrders } from "../../../packages/core/src/exam.ts";
 import { captureOf, payeeMerchantOf } from "../../../packages/core/src/job.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import type { Acquittal, Agent } from "../../../packages/core/src/operator.ts";
@@ -17,6 +18,7 @@ import type { ObjectFact } from "../../../packages/core/src/reconcile.ts";
 import { storedJob } from "../../../packages/core/src/store.ts";
 import { operatorPayouts } from "./payouts.ts";
 import type { ObjectRead } from "./reconciliation.ts";
+import { transaction } from "./transaction.ts";
 
 /** The gate result the API reports on every agent object. Computed against the code vertical even while ACQUIT_EXAM_GATE is off. */
 export type GateReport = "OPEN" | "NOT_ACQUITTED" | "WRONG_TASK";
@@ -25,9 +27,12 @@ export function gateReport(agent: Agent): GateReport {
 	return bidGate(agent, CODE_VERTICAL) ?? "OPEN";
 }
 
-/** The API's acquittal shape: the stored value plus the seeded flag, true only for the seed write. */
-export function acquittalJson(acquittal: Acquittal | null): { readonly examId: string; readonly at: string; readonly seeded: boolean } | null {
-	return acquittal === null ? null : { examId: acquittal.examId, at: acquittal.at, seeded: acquittal.examId === "seed" };
+/**
+ * The API's acquittal shape: the stored value plus two flags. `seeded` is true only for the seed write; `simulated` is
+ * true only for a labelled simulated code exam. Every older acquittal reads both as false.
+ */
+export function acquittalJson(acquittal: Acquittal | null): { readonly examId: string; readonly at: string; readonly seeded: boolean; readonly simulated: boolean } | null {
+	return acquittal === null ? null : { examId: acquittal.examId, at: acquittal.at, seeded: acquittal.examId === "seed", simulated: acquittal.simulated === true };
 }
 
 /** One agent row, with the defaults an old row reads through. Null when the id names no agent. */
@@ -118,7 +123,7 @@ export function floorJson(db: DatabaseSync) {
 		.map(agent => {
 			const { grade, record } = gradeAndRecord(db, agent);
 			return { agentId: agent.id, name: agent.name, task: agent.task, grade, record, earnedCents: record.earnedCents,
-				seeded: agent.acquittal?.examId === "seed", gate: gateReport(agent) };
+				seeded: agent.acquittal?.examId === "seed", simulated: agent.acquittal?.simulated === true, gate: gateReport(agent) };
 		})
 		.sort((a, b) => (b.grade ?? 0) - (a.grade ?? 0));
 	return { specialists };
@@ -151,6 +156,89 @@ export function plugSample(db: DatabaseSync, owner: string, sampleId: string): P
 		promptDigest: sampleDigest(sample.id), tools: [], task: sample.task, acquittal: null, sample: sample.id };
 	db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
 	return { ok: true, agent };
+}
+
+function countOf(passed: unknown, total: unknown): ExamCount | null {
+	return passed === null || total === null ? null : { passed: Number(passed), total: Number(total) };
+}
+
+/** One exam_runs row, read whole. A row from before the simulated column reads as live (its default is 0). */
+function examRunOf(row: Record<string, unknown>): ExamRun {
+	return { id: String(row.id), agentId: String(row.agent_id), task: String(row.task) as Vertical, status: String(row.status) as ExamStatus,
+		visible: countOf(row.visible_passed, row.visible_total), hidden: countOf(row.hidden_passed, row.hidden_total),
+		reasons: JSON.parse(String(row.reasons)) as string[], startedAt: String(row.started_at) as Instant,
+		endedAt: row.ended_at === null ? null : String(row.ended_at) as Instant, simulated: Number(row.simulated) === 1 };
+}
+
+/** The start guard's view of an agent's runs: each run's status and start time. */
+function examStartsOf(db: DatabaseSync, agentId: string): ExamStart[] {
+	return db.prepare("SELECT status, started_at FROM exam_runs WHERE agent_id = ?").all(agentId)
+		.map(row => ({ status: String(row.status), startedAt: String(row.started_at) as Instant }));
+}
+
+/** One of an agent's runs by id. Null when the id names no run of that agent. */
+export function examRunById(db: DatabaseSync, agentId: string, examId: string): ExamRun | null {
+	const row = db.prepare("SELECT * FROM exam_runs WHERE id = ? AND agent_id = ?").get(examId, agentId);
+	return row === undefined ? null : examRunOf(row);
+}
+
+/** An agent's newest run, the default for row 6. Null when the agent never started an exam. */
+export function latestExamRun(db: DatabaseSync, agentId: string): ExamRun | null {
+	const row = db.prepare("SELECT * FROM exam_runs WHERE agent_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1").get(agentId);
+	return row === undefined ? null : examRunOf(row);
+}
+
+function insertExamRun(db: DatabaseSync, run: ExamRun): void {
+	db.prepare(`INSERT INTO exam_runs (id, agent_id, task, status, visible_passed, visible_total, hidden_passed, hidden_total, reasons, started_at, ended_at, simulated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		.run(run.id, run.agentId, run.task, run.status, run.visible?.passed ?? null, run.visible?.total ?? null,
+			run.hidden?.passed ?? null, run.hidden?.total ?? null, JSON.stringify(run.reasons), run.startedAt, run.endedAt, run.simulated ? 1 : 0);
+}
+
+function settleExamRun(db: DatabaseSync, run: ExamRun): void {
+	db.prepare(`UPDATE exam_runs SET status = ?, visible_passed = ?, visible_total = ?, hidden_passed = ?, hidden_total = ?, reasons = ?, ended_at = ?
+		WHERE id = ?`)
+		.run(run.status, run.visible?.passed ?? null, run.visible?.total ?? null, run.hidden?.passed ?? null, run.hidden?.total ?? null,
+			JSON.stringify(run.reasons), run.endedAt, run.id);
+}
+
+/** Stores the acquittal on the agent row. The caller holds the transaction that makes it part of the exam's write. */
+function writeAcquittal(db: DatabaseSync, agent: Agent, acquittal: Acquittal): void {
+	db.prepare("UPDATE agents SET json = ? WHERE id = ?").run(JSON.stringify({ ...agent, acquittal }), agent.id);
+}
+
+export type ExamStartOutcome =
+	| { readonly ok: true; readonly run: ExamRun }
+	| { readonly ok: false; readonly error: ExamRefusal | "EXAM_NOT_BUILT" };
+
+/**
+ * Row 4. The guard and the write share one unit of work, so two starts cannot both pass it. A print-fdm agent answers
+ * EXAM_NOT_BUILT and writes nothing. A code agent gets the labelled simulated run: the row is inserted RUNNING, settled
+ * PASSED with the example fixture's counts, and the simulated acquittal is written, all before the answer.
+ */
+export function startExam(db: DatabaseSync, agent: Agent, id: string, now: Instant): ExamStartOutcome {
+	return transaction<ExamStartOutcome>(db, () => {
+		const refusal = examRefusal(agent, examStartsOf(db, agent.id), now);
+		if (refusal !== null) return { ok: false, error: refusal };
+		if (agent.task === PRINT_VERTICAL) return { ok: false, error: "EXAM_NOT_BUILT" };
+		const started = startedRun(id, agent, now);
+		insertExamRun(db, started);
+		const settled = settledSimulated(started, now);
+		settleExamRun(db, settled);
+		writeAcquittal(db, agent, simulatedAcquittal(settled, now));
+		return { ok: true, run: started };
+	});
+}
+
+/** Row 4's exam object: the run as the start answers it. */
+export function startJson(run: ExamRun) {
+	return { id: run.id, agentId: run.agentId, task: run.task, status: run.status, startedAt: run.startedAt, simulated: run.simulated };
+}
+
+/** Row 6's exam object. The counts stay null until the run settles. */
+export function examJson(run: ExamRun) {
+	return { id: run.id, status: run.status, visible: run.visible, hidden: run.hidden, reasons: run.reasons,
+		startedAt: run.startedAt, endedAt: run.endedAt, simulated: run.simulated };
 }
 
 /**

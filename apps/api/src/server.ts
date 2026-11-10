@@ -39,9 +39,10 @@ import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts
 import { matchFixture } from "../../../packages/core/src/fixtures.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { isTask, parseStandingOrders, standingOrdersRefusal } from "../../../packages/core/src/exam.ts";
+import type { ExamRefusal } from "../../../packages/core/src/exam.ts";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Agent } from "../../../packages/core/src/operator.ts";
-import { agentListJson, agentViewJson, floorJson, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, writeStandingOrders } from "./specialists.ts";
+import { acquittalJson, agentListJson, agentViewJson, examJson, examRunById, floorJson, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -487,6 +488,13 @@ function integer(value: unknown, label: string, max = 10_000_000): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > max) throw new BadBody(`Invalid ${label}`);
 	return value;
 }
+/** The detail a row 4 refusal carries, one line per exam refusal code. */
+const EXAM_REFUSAL_DETAIL: Record<ExamRefusal, string> = {
+	ALREADY_ACQUITTED: "This agent is already acquitted.",
+	EXAM_RUNNING: "An exam for this agent is already running.",
+	EXAM_LIMIT: "This agent has used its exam starts for the last 24 hours.",
+	TASK_NOT_EXAMINABLE: "This task has no exam.",
+};
 // The smallest budget a job opens with. The web form refuses below the same amount (apps/web/src/format.ts),
 // so the two must move together. The floor refuses zero and trivial amounts; the visitor caps bind above it.
 const MIN_BUDGET_CENTS = 1_000;
@@ -1350,6 +1358,42 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		}
 		writeStandingOrders(db, owned.id, parsed.value, clock.now());
 		json(res, 200, { standingOrders: standingOrdersOf(db, owned.id) }); return;
+	}
+	const examMatch = url.pathname.match(/^\/api\/me\/agents\/([^/]+)\/exam$/);
+	if (examMatch && (method === "POST" || method === "GET")) {
+		// Rows 4 and 6: an owner starts a simulated exam on one of their own agents and reads its run. A caller who does
+		// not own the agent gets 404, as the standing orders read does. The start reads no body: the web sends {}.
+		let agentId: string | null = null;
+		try { agentId = decodeURIComponent(examMatch[1] ?? ""); } catch { agentId = null; }
+		const owned = agentId === null ? null : readAgentRow(db, agentId);
+		if (owned === null || current.actor.role !== "OPERATOR" || owned.owner !== current.actor.operatorId) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		if (method === "POST") {
+			const started = startExam(db, owned, `exam_${randomUUID()}`, clock.now());
+			if (started.ok) { json(res, 202, { exam: startJson(started.run) }); return; }
+			if (started.error === "EXAM_NOT_BUILT") { json(res, 503, { error: "EXAM_NOT_BUILT", detail: "This task has no exam in this build." }); return; }
+			json(res, 409, { error: started.error, detail: EXAM_REFUSAL_DETAIL[started.error] }); return;
+		}
+		// Row 6: the run named by examId, or the agent's newest run. An agent with no run answers 404.
+		const examId = url.searchParams.get("examId");
+		const run = examId === null ? latestExamRun(db, owned.id) : examRunById(db, owned.id, examId);
+		if (run === null) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		json(res, 200, { exam: examJson(run), agent: { acquittal: acquittalJson(owned.acquittal) } }); return;
+	}
+	const examSubmitMatch = url.pathname.match(/^\/api\/me\/agents\/([^/]+)\/exam\/submit$/);
+	if (examSubmitMatch && method === "POST") {
+		// Row 5: an owner submits a commit for a running exam. This build never leaves a run RUNNING, so a submit of an
+		// existing run answers 409 EXAM_NOT_RUNNING. The live path is not built.
+		let agentId: string | null = null;
+		try { agentId = decodeURIComponent(examSubmitMatch[1] ?? ""); } catch { agentId = null; }
+		const owned = agentId === null ? null : readAgentRow(db, agentId);
+		if (owned === null || current.actor.role !== "OPERATOR" || owned.owner !== current.actor.operatorId) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		const input = object(await body(req));
+		if (Object.keys(input).some(key => key !== "examId" && key !== "commit")) throw new BadBody("Unsupported field");
+		const examId = text(input.examId, "examId", 80);
+		if (typeof input.commit !== "string" || !/^[0-9a-f]{40}$/.test(input.commit)) throw new BadBody("commit must be a full 40-character lowercase git sha");
+		const run = examRunById(db, owned.id, examId);
+		if (run === null) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		json(res, 409, { error: "EXAM_NOT_RUNNING", detail: "This build runs only simulated exams, so a submit has no live run to score." }); return;
 	}
 	if (url.pathname === "/api/me/morning-report" && method === "GET") {
 		// Row 11: the operator's own report since a time. A missing or malformed since is refused, never defaulted.
