@@ -18,6 +18,9 @@ verdict.findings; // one finding per rule in RULES order; a single parse finding
 A hidden sample has `keepMaterialMm` (points that must be finished material), optionally `voidMm` (points that must be
 finished void) and `clearanceMm` (a minimum distance from each keep point to any finished edge).
 
+A hidden-material finding never prints the hidden data. Its message is fixed text that names no sample, count,
+clearance or coordinate, and `measured` carries no hidden figure.
+
 ## Resolution
 
 The reader flattens every curve (paths, arcs, circles, ellipses and rounded rectangles) into straight chords. The

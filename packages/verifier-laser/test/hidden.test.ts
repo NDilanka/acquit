@@ -91,10 +91,49 @@ test("a keep-material probe closer to a finished edge than the clearance fails h
 	assert.deepEqual(failed(verify(specWith(), honest, { keepMaterialMm: [[1.5, 40]], clearanceMm: 1 })), []);
 });
 
-test("a hidden clearance failure does not leak the probe coordinates", () => {
-	const verdict = verify(specWith(), honest, { keepMaterialMm: [[1.537, 40]], clearanceMm: 2 });
+const hiddenFinding = (verdict: Verdict): Verdict["findings"][number] | undefined =>
+	verdict.findings.find(finding => finding.rule === "hidden-material");
+
+test("a hidden finding does not leak the probe coordinates, the clearance or any count", () => {
+	const verdict = verify(specWith(), honest, { keepMaterialMm: [[1.537, 40]], voidMm: [[60, 40]], clearanceMm: 2.345678 });
 	assert.deepEqual(failed(verdict), ["hidden-material"]);
-	assert.ok(!JSON.stringify(verdict.findings).includes("1.537"));
+	const message = hiddenFinding(verdict)?.message;
+	assert.ok(message !== undefined);
+	assert.doesNotMatch(message, /\d/);
+	assert.equal("hiddenSamples" in verdict.measured, false);
+	assert.ok(!JSON.stringify(verdict).includes("1.537"));
+	assert.ok(!JSON.stringify(verdict).includes("2.345678"));
+});
+
+/** The distinct hidden-material messages over some samples, each of which must pass or fail as the caller says. */
+function hiddenMessages(cases: readonly HiddenSample[], ok: boolean): string[] {
+	const messages = cases.map(hidden => {
+		const finding = hiddenFinding(verify(specWith(), honest, hidden));
+		assert.equal(finding?.ok, ok, JSON.stringify(hidden));
+		return finding?.message ?? "";
+	});
+	return [...new Set(messages)];
+}
+
+test("hidden messages are the same fixed text whatever the samples, clearance and voids are", () => {
+	const passing: HiddenSample[] = [
+		{ keepMaterialMm: [[44.95, 40], [75.05, 40]] },
+		{ keepMaterialMm: [[1.5, 40]], clearanceMm: 1 },
+		{ keepMaterialMm: [[30, 20]], voidMm: [[60, 40]] },
+	];
+	const failing: HiddenSample[] = [
+		{ keepMaterialMm: [[1.537, 40]], clearanceMm: 2.345678 },
+		{ keepMaterialMm: [[1.5, 40], [2.25, 40], [1.75, 40]], clearanceMm: 2 },
+		{ keepMaterialMm: [[30, 20]], voidMm: [[30, 20]] },
+		{ keepMaterialMm: [[60, 40]], voidMm: [[1, 1], [2, 2]], clearanceMm: 0.5 },
+	];
+	const passText = hiddenMessages(passing, true);
+	const failText = hiddenMessages(failing, false);
+	assert.equal(passText.length, 1);
+	assert.equal(failText.length, 1);
+	assert.notEqual(passText[0], failText[0]);
+	assert.doesNotMatch(failText[0] ?? "", /\d/);
+	assert.doesNotMatch(passText[0] ?? "", /\d/);
 });
 
 test("a non-finite expected-void probe or a negative clearance fails parse", () => {

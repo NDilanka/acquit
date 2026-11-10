@@ -47,6 +47,14 @@ function check(rule: Rule, ok: boolean, passed: string, failed: string, refs: re
 	};
 }
 
+/**
+ * Fixed hidden-material messages. A hidden finding names no sample, count, clearance or coordinate, so the verdict
+ * never reveals the points the agent cannot see.
+ */
+const HIDDEN_PASSED = "every hidden keep-material sample is material clear of the finished edges, and every hidden expected void is cut";
+const HIDDEN_FAILED = "a hidden keep-material sample is cut away or too close to a finished edge, or a hidden expected void is material";
+const HIDDEN_NO_OUTER = "no outer cut to place the hidden samples against";
+
 /** The outer cut is the cut path with the largest bounding box. Ties go to the first one drawn. */
 function outlineOf(cut: readonly SvgPath[]): Outline | null {
 	let best: Outline | null = null;
@@ -526,30 +534,15 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	);
 
 	if (hidden !== undefined) {
-		measured.hiddenSamples = hidden.keepMaterialMm.length;
 		if (part === null) {
-			findings.push(check("hidden-material", false, "", "no outer cut to place the hidden samples against"));
+			findings.push(check("hidden-material", false, "", HIDDEN_NO_OUTER));
 		} else {
-			// Counts only: a finding never carries the hidden coordinates.
 			const clearance = hidden.clearanceMm ?? 0;
 			const voids = hidden.voidMm ?? [];
-			const lost = hidden.keepMaterialMm.filter(point => !keepsClearance(part, toDrawing(part, point), clearance)).length;
-			const unvoided = voids.filter(point => !isVoidPoint(part, toDrawing(part, point))).length;
-			const problems: string[] = [];
-			if (lost > 0) {
-				problems.push(`${lost} hidden keep-material sample(s) fall inside a cut, outside the finished part, or within ${clearance} mm of a finished edge`);
-			}
-			if (unvoided > 0) problems.push(`${unvoided} hidden expected-void sample(s) fall in material`);
-			const clearText = clearance > 0 ? ` and at least ${clearance} mm from every finished edge` : "";
-			const voidText = voids.length > 0 ? `; all ${voids.length} expected void(s) are cut` : "";
-			findings.push(
-				check(
-					"hidden-material",
-					problems.length === 0,
-					`all ${hidden.keepMaterialMm.length} hidden keep-material samples stay material${clearText}${voidText}`,
-					problems.join("; "),
-				),
-			);
+			const holds =
+				hidden.keepMaterialMm.every(point => keepsClearance(part, toDrawing(part, point), clearance)) &&
+				voids.every(point => isVoidPoint(part, toDrawing(part, point)));
+			findings.push(check("hidden-material", holds, HIDDEN_PASSED, HIDDEN_FAILED));
 		}
 	}
 
