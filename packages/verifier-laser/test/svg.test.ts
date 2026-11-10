@@ -350,6 +350,14 @@ test("a viewBox that is offset or narrower than the page is centred on it", () =
 	assertBox(tall.paths[0]!.points, { minX: 75, minY: 0, maxX: 225, maxY: 100 });
 });
 
+test("a transform on the root svg is refused, since it would act on the wrong side of the viewBox mapping", () => {
+	const rootMoved = root(`<g transform="scale(10)">${RECT}</g>`, 'width="300mm" height="200mm" viewBox="0 0 3000 2000" transform="translate(1000 0)"');
+	const result = parseSvg(rootMoved);
+	if (result.ok) assert.fail("a root transform must be refused");
+	assert.match(result.errors[0]!.message, /transform/);
+	assert.equal(parseSvg(root(RECT, `${DEFAULT_ROOT} transform=""`)).ok, false, "an empty root transform is refused too");
+});
+
 test("a preserveAspectRatio other than the default is refused", () => {
 	for (const value of ["none", "xMinYMin meet", "xMidYMid slice"]) {
 		assert.equal(parseSvg(root(RECT, `${DEFAULT_ROOT} preserveAspectRatio="${value}"`)).ok, false, value);

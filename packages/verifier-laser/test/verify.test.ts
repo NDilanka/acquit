@@ -83,3 +83,15 @@ test("a panel without a viewBox fails parse and reports nothing else", () => {
 	assert.deepEqual(verdict.measured, {});
 	assert.equal(verdict.scene.paths.length, 0);
 });
+
+test("a root transform fails parse alone, and no scene places the panel where the transform would move it", () => {
+	const text = sample("honest.svg")
+		.replace('viewBox="0 0 300 200"', 'viewBox="0 0 3000 2000" transform="translate(1000 0)"')
+		.replace("<circle", '<g transform="scale(10)"><circle')
+		.replace("</svg>", "</g></svg>");
+	const verdict = verify(loadSpec(), text, hidden);
+	assert.equal(verdict.pass, false);
+	assert.deepEqual(verdict.findings.map(finding => finding.rule), ["parse"]);
+	assert.deepEqual(verdict.measured, {});
+	assert.equal(verdict.scene.paths.length, 0);
+});

@@ -808,9 +808,8 @@ function rootFrame(root: Element): { unit: string; widthMm: number; heightMm: nu
 	if (aspect !== "xMidYMid meet") throw new SvgError("only the default preserveAspectRatio, xMidYMid meet, is supported");
 	const [vx, vy, vw, vh] = parts;
 	const scale = Math.min(width.mm / vw!, height.mm / vh!);
-	let ctm: Matrix = [scale, 0, 0, scale, (width.mm - vw! * scale) / 2 - vx! * scale, (height.mm - vh! * scale) / 2 - vy! * scale];
-	const transform = root.attrs.get("transform");
-	if (transform !== undefined) ctm = multiply(ctm, parseTransform(transform));
+	const ctm: Matrix = [scale, 0, 0, scale, (width.mm - vw! * scale) / 2 - vx! * scale, (height.mm - vh! * scale) / 2 - vy! * scale];
+	if (root.attrs.has("transform")) throw new SvgError("a transform on the root svg is not supported: put it on a group inside the viewBox");
 	if (!ctm.every(Number.isFinite)) throw new SvgError("the root size is too large");
 	return { unit: width.unit === height.unit ? width.unit : `${width.unit}/${height.unit}`, widthMm: width.mm, heightMm: height.mm, ctm };
 }
