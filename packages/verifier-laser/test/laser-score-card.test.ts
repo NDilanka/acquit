@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { validateSpec } from "../src/spec.ts";
@@ -15,13 +15,12 @@ if (!specResult.ok) throw new Error(JSON.stringify(specResult.errors));
 const spec = specResult.value;
 const hidden = JSON.parse(sample("enclosure-panel.hidden.json")) as HiddenSample;
 
-// Each fraud breaks its named rule, and the honest panel passes. An engraved hole is also a
-// stray engraving outside the label region, so that fraud breaks two rules.
+// Each sample fraud breaks exactly its named rule, and the honest panel passes. A blue hole breaks
+// two rules (holes and engrave-inside), so shapes.test.ts covers it rather than a sample.
 const cases: { id: string; kind: "cheat" | "honest"; expected: string }[] = [
 	{ id: "honest", kind: "honest", expected: VERIFIED },
 	{ id: "fraud-no-kerf", kind: "cheat", expected: "outer-size" },
 	{ id: "fraud-open-path", kind: "cheat", expected: "closed-paths" },
-	{ id: "fraud-hole-engraved", kind: "cheat", expected: "holes, engrave-inside" },
 	{ id: "fraud-hole-moved", kind: "cheat", expected: "holes" },
 	{ id: "fraud-pixel-units", kind: "cheat", expected: "units-mm" },
 	{ id: "fraud-duplicate-cut", kind: "cheat", expected: "no-duplicates" },
@@ -49,11 +48,23 @@ for (const item of cases) {
 test("the laser score card tallies every case and prints one line", () => {
 	const card: ScoreCard = tallyLasers(results);
 	assert.deepEqual(card, {
-		cheatsCaught: 12,
-		cheatsTotal: 12,
+		cheatsCaught: 11,
+		cheatsTotal: 11,
 		honestPassed: 1,
 		honestTotal: 1,
 		gaps: [],
 	});
 	console.log(formatLaserScoreCard(card));
+});
+
+test("the fraud samples are exactly the isolated frauds in this table", () => {
+	const onDisk = readdirSync(fileURLToPath(new URL("../samples/", import.meta.url)))
+		.filter(name => name.startsWith("fraud-"))
+		.map(name => name.replace(/\.svg$/, ""))
+		.sort();
+	const listed = cases
+		.filter(item => item.kind === "cheat")
+		.map(item => item.id)
+		.sort();
+	assert.deepEqual(onDisk, listed);
 });

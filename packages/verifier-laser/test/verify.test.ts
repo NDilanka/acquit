@@ -17,6 +17,8 @@ function loadSpec(): Spec {
 
 const hidden = JSON.parse(sample("enclosure-panel.hidden.json")) as HiddenSample;
 
+const near = (actual: number, expected: number): void => assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} is not ${expected}`);
+
 test("garbage input gives one failed parse finding and never throws", () => {
 	const spec = loadSpec();
 	for (const text of ["", "not an svg", "<svg"]) {
@@ -52,4 +54,32 @@ test("without hidden samples the hidden-material rule is not run", () => {
 test("every finding names a rule the contract lists", () => {
 	const verdict = verify(loadSpec(), sample("fraud-no-kerf.svg"), hidden);
 	for (const finding of verdict.findings) assert.ok((RULES as readonly string[]).includes(finding.rule), finding.rule);
+});
+
+test("a viewBox whose aspect ratio stretches the panel fails outer-size, and the scene keeps the mapped outline", () => {
+	const stretched = sample("honest.svg")
+		.replace('viewBox="0 0 300 200"', 'viewBox="0 0 600 200"')
+		.replace(/<svg[^>]*>/, match => `${match}\n  <g transform="scale(2 1)">`)
+		.replace("</svg>", "</g>\n</svg>");
+	const verdict = verify(loadSpec(), stretched, hidden);
+	assert.equal(verdict.pass, false);
+	assert.ok(verdict.findings.some(finding => finding.rule === "outer-size" && !finding.ok));
+	const outline = verdict.scene.paths.find(path => path.id === "outline");
+	assert.ok(outline);
+	const xs = outline.points.map(point => point[0]);
+	const ys = outline.points.map(point => point[1]);
+	near(Math.min(...xs), 10);
+	near(Math.max(...xs), 130.2);
+	near(Math.min(...ys), 55);
+	near(Math.max(...ys), 95.1);
+	near(verdict.measured.outlineHeightMm ?? Number.NaN, 40.1);
+});
+
+test("a panel without a viewBox fails parse and reports nothing else", () => {
+	const text = sample("honest.svg").replace(/ viewBox="[^"]*"/, "");
+	const verdict = verify(loadSpec(), text, hidden);
+	assert.equal(verdict.pass, false);
+	assert.deepEqual(verdict.findings.map(finding => finding.rule), ["parse"]);
+	assert.deepEqual(verdict.measured, {});
+	assert.equal(verdict.scene.paths.length, 0);
 });
