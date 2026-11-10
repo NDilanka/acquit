@@ -17,7 +17,7 @@ import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName }
 import { chooseJobFunding, defaultJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
-import { mayControlJob } from "../../../packages/core/src/job.ts";
+import { mayControlJob, setExamGateEnforced } from "../../../packages/core/src/job.ts";
 import { HOUSE_CLIENT_ID } from "../../../packages/core/src/house-client.ts";
 import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
 import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
@@ -26,7 +26,7 @@ import { accountForRecoveryToken, makeRecoveryToken, recoveryLinkMade } from "..
 import { attemptLimiter, RESTORE_ATTEMPTS, RESTORE_WINDOW_MS } from "./attempts.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, demoAllowlist, devEnabled, fixtures, fixturesByManifest, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, demoAllowlist, devEnabled, examGateEnforced, fixtures, fixturesByManifest, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { demoOpenTo } from "./demo-access.ts";
 import { operatorReceipts, publicReceipt } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
@@ -36,7 +36,12 @@ import { transaction } from "./transaction.ts";
 import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, OPERATOR_ASK_TOOL_NAMES, OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
 import type { AskMessage, AskToolExecutor, AskToolSchema, AskTurnOutcome } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
+import { matchFixture } from "../../../packages/core/src/fixtures.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
+import { isTask } from "../../../packages/core/src/exam.ts";
+import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
+import type { Agent } from "../../../packages/core/src/operator.ts";
+import { agentListJson, agentViewJson, floorJson, listAgentRows, plugSample, readAgentRow, sampleCatalog } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -75,6 +80,7 @@ const clock = { now: () => instant(new Date(Date.now() + clockOffset).toISOStrin
 const baseSettings = config();
 const settings = { ...baseSettings, clock, verifierPort: verifierEnv.ciUrl ? createRemoteVerifier(verifierEnv) : undefined,
 	paypal: { ...baseSettings.paypal, fundingMode: () => devEnabled ? fundingMode : "checkout" as const } };
+setExamGateEnforced(examGateEnforced);
 // The runner's own App client. The core holds one for its outbox; this one mints the per-run
 // credential the operator CLI asks for, and it keeps the same bounded, redacted calls.
 const githubApp = createGitHubApp(githubEnv);
@@ -1231,7 +1237,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (match && method === "GET") {
 		const jobId = validJobId(decodeURIComponent(match[1]));
 		const result = await acquit.query(current.actor, { type: "Job", jobId });
-		if (result.kind === "JOB") json(res, 200, { job: result.job, handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now() });
+		if (result.kind === "JOB") {
+			// Derived, never stored: whether the deployment's registry holds the fixture this job froze.
+			const contract = result.job.contract;
+			const fixtureMatched = contract !== null
+				&& matchFixture(fixtures, contract.repository, contract.issue, contract.repository, clientRepository) !== null;
+			json(res, 200, { job: result.job, handles: jobHandles(result.job), diff: houseDiff(jobId), now: clock.now(), fixtureMatched });
+		}
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
@@ -1247,12 +1259,28 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			credits: credits.kind === "CREDITS" ? { ...credits.credits, paidReceipts: result.operator.paidReceipts } : null } }); return;
 	}
 	if (url.pathname === "/api/me/agents" && method === "POST") {
-		// The prompt itself never leaves the operator's machine: the row keeps only its digest.
+		// The prompt itself never leaves the operator's machine: the row keeps only its digest. A body
+		// naming only `sample` instead plugs one of Acquit's own samples under `<sample>-<handle>`.
 		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
-		let agent: { name: string; runner: "claude-code" | "codex"; promptDigest: string; tools: readonly string[] };
+		let agent: { name: string; runner: "claude-code" | "codex"; promptDigest: string; tools: readonly string[]; task: Agent["task"] };
 		try {
 			const input = object(await body(req));
-			if (Object.keys(input).some(key => !["name", "runner", "promptDigest", "tools"].includes(key))) throw new BadBody("Unsupported field");
+			if (Object.keys(input).includes("sample")) {
+				if (Object.keys(input).length !== 1) throw new BadBody("A sample plug names only sample");
+				const sampleId = text(input.sample, "sample", 40);
+				const plugged = plugSample(db, current.actor.operatorId, sampleId);
+				if (!plugged.ok) {
+					if (plugged.error === "AGENT_EXISTS") json(res, 409, { error: "AGENT_EXISTS", detail: `Agent ${sampleId}-${current.handle} is already registered.` });
+					else if (plugged.error === "TASK_NOT_EXAMINABLE") json(res, 409, { error: "TASK_NOT_EXAMINABLE", detail: `Sample ${sampleId} is design only: it has no exam and cannot be plugged.` });
+					else throw new BadBody(`Unknown sample ${sampleId}`);
+					return;
+				}
+				const pluggedAgent = plugged.agent;
+				json(res, 201, { agent: { id: pluggedAgent.id, name: pluggedAgent.name, runner: pluggedAgent.runner, tools: pluggedAgent.tools,
+					task: pluggedAgent.task, acquittal: null, sample: pluggedAgent.sample } });
+				return;
+			}
+			if (Object.keys(input).some(key => !["name", "runner", "promptDigest", "tools", "task"].includes(key))) throw new BadBody("Unsupported field");
 			const name = text(input.name, "agent name", 40);
 			if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new BadBody("Agent names are lowercase letters, digits, and dashes");
 			const runner = text(input.runner, "runner", 20);
@@ -1260,15 +1288,42 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			const promptDigest = text(input.promptDigest, "prompt digest", 64);
 			if (!/^[0-9a-f]{64}$/.test(promptDigest)) throw new BadBody("Prompt digest must be a SHA-256 hex digest");
 			if (!Array.isArray(input.tools) || input.tools.length > 16) throw new BadBody("Tools must be a list of at most 16 names");
-			agent = { name, runner, promptDigest, tools: input.tools.map(tool => text(tool, "tool", 40)) };
+			let task: Agent["task"] = CODE_VERTICAL;
+			if (input.task !== undefined) {
+				const named = text(input.task, "task", 20);
+				if (!isTask(named)) throw new BadBody("Task must be one of code, print-fdm, laser-cut");
+				task = named;
+			}
+			agent = { name, runner, promptDigest, tools: input.tools.map(tool => text(tool, "tool", 40)), task };
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
 		if (db.prepare("SELECT owner FROM agents WHERE id = ?").get(agent.name)) {
 			json(res, 409, { error: "AGENT_EXISTS", detail: `Agent ${agent.name} is already registered.` }); return;
 		}
+		// The three exam fields are written explicitly: readAgent's defaults are for rows from before them.
 		db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.name, current.handle,
 			JSON.stringify({ id: agent.name, owner: current.handle, name: agent.name, runner: agent.runner,
-				promptDigest: agent.promptDigest, tools: agent.tools }));
-		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools } }); return;
+				promptDigest: agent.promptDigest, tools: agent.tools, task: agent.task, acquittal: null, sample: null }));
+		json(res, 201, { agent: { id: agent.name, name: agent.name, runner: agent.runner, tools: agent.tools,
+			task: agent.task, acquittal: null, sample: null } }); return;
+	}
+	if (url.pathname === "/api/me/agents" && method === "GET") {
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { agents: listAgentRows(db, current.actor.operatorId).map(owned => agentListJson(db, owned)) }); return;
+	}
+	if (url.pathname === "/api/specialists/samples" && method === "GET") {
+		const viewerAgents = current.actor.role === "OPERATOR" ? listAgentRows(db, current.actor.operatorId) : [];
+		json(res, 200, sampleCatalog(viewerAgents)); return;
+	}
+	const agentViewMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
+	if (agentViewMatch && method === "GET") {
+		let agentId: string | null = null;
+		try { agentId = decodeURIComponent(agentViewMatch[1] ?? ""); } catch { agentId = null; }
+		const viewed = agentId === null ? null : readAgentRow(db, agentId);
+		if (viewed === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, { agent: agentViewJson(db, viewed) });
+		return;
+	}
+	if (url.pathname === "/api/floor" && method === "GET") {
+		json(res, 200, floorJson(db)); return;
 	}
 	if (url.pathname === "/api/studio/layout" && method === "PUT") {
 		// The signed-in user's own layout for one named dashboard. The body holds the Studio state
@@ -1356,10 +1411,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/me/operator" && method === "GET") {
 		const result = await acquit.query(current.actor, { type: "Operator" });
 		if (result.kind !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
-		const agents = db.prepare("SELECT json FROM agents WHERE owner = ?").all(result.operator.id).map(row => {
-			const agent = JSON.parse(String(row.json)) as { id: string; name: string; runner: string };
-			return { id: agent.id, name: agent.name, runner: agent.runner };
-		});
+		// The same entry shape /api/me/agents serves, so the studio page reads one agent object everywhere.
+		const agents = listAgentRows(db, result.operator.id).map(owned => agentListJson(db, owned));
 		json(res, 200, { operator: result.operator, agents }); return;
 	}
 	if (url.pathname === "/api/me/credits" && method === "GET") {

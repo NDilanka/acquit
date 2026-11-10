@@ -30,7 +30,8 @@ export type Agent = {
 	readonly id: AgentId;
 	readonly owner: OperatorId;
 	readonly name: string;
-	readonly runner: "claude-code" | "codex";
+	/** The simulated runners belong to Acquit's own sample agents. The owner POST still accepts only claude-code or codex. */
+	readonly runner: "claude-code" | "codex" | "simulated-fdm" | "simulated-laser";
 	readonly promptDigest: Digest;
 	readonly tools: readonly string[];
 	/** Set once at creation. One of "code", "print-fdm", "laser-cut". */

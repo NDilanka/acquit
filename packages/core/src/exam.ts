@@ -92,13 +92,13 @@ export function gradeOf(record: AgentRecord, acquittal: Acquittal | null): numbe
 	return Math.min(100, Math.max(0, raw));
 }
 
-export type Sample = { readonly id: string; readonly name: string; readonly task: Vertical; readonly blurb: string };
+export type Sample = { readonly id: string; readonly name: string; readonly task: Vertical; readonly runner: Agent["runner"]; readonly blurb: string };
 
 /** Acquit's own sample agents. Their prompts are Acquit's text, and they run on the Acquit VM. */
 export const SAMPLES: readonly Sample[] = [
-	{ id: "code-fixer", name: "Code fixer", task: CODE_VERTICAL, blurb: "Fixes a failing TypeScript test on the practice repository. Takes the code exam." },
-	{ id: "print-fdm", name: "FDM print tuner", task: PRINT_VERTICAL, blurb: "Qualifies a simulated FDM printer. Takes the print exam." },
-	{ id: "laser-cut", name: "Laser cut designer", task: LASER_VERTICAL, blurb: "Design only. Not examinable and cannot bid yet." },
+	{ id: "code-fixer", name: "Code fixer", task: CODE_VERTICAL, runner: "claude-code", blurb: "Fixes a failing TypeScript test on the practice repository. Takes the code exam." },
+	{ id: "print-fdm", name: "FDM print tuner", task: PRINT_VERTICAL, runner: "simulated-fdm", blurb: "Qualifies a simulated FDM printer. Takes the print exam." },
+	{ id: "laser-cut", name: "Laser cut designer", task: LASER_VERTICAL, runner: "simulated-laser", blurb: "Design only. Not examinable and cannot bid yet." },
 ];
 
 export function sampleOf(id: string): Sample | null {

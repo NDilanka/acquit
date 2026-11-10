@@ -54,6 +54,16 @@ export const TERMS = {
 	providerAutoDisburseDays: 28,
 } as const;
 
+let examGateEnforced = false;
+
+/**
+ * Whether PlaceBid refuses on the agent exam gate. Off by default: the gate still computes and the API still
+ * reports it. The API sets this once at boot from ACQUIT_EXAM_GATE (apps/api/src/config.ts).
+ */
+export function setExamGateEnforced(on: boolean): void {
+	examGateEnforced = on;
+}
+
 export type AcceptanceContract = {
 	/** OpenJob freezes one. A row stored before F3 has none, so every read goes through storedDefinitionOfDone. */
 	readonly definitionOfDone: DefinitionOfDone | null;
@@ -650,10 +660,10 @@ function transitionTable(): {
 			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
 			const { operator, agent, credits } = facts.loaded;
 			if (operator.id !== facts.actor.operatorId || agent.owner !== operator.id || agent.id !== command.agent) return "NOT_OWNER";
-			// House is exempt: placeHouseBid sends its bids through this same apply.
+			// House is exempt: placeHouseBid sends its bids through this same apply. The gate refuses only when enforced.
 			if (operator.kind !== "HOUSE") {
 				const gate = bidGate(agent, row.vertical ?? CODE_VERTICAL);
-				if (gate !== null) return gate;
+				if (gate !== null && examGateEnforced) return gate;
 			}
 			if (!readyToBid(operator)) return "ONBOARDING_REQUIRED";
 			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
