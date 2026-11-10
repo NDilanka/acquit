@@ -95,7 +95,7 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
   const coming = agent !== null && !hasLiveExam(agent.task);
   // Plug In starts a new agent: the panel introduces that agent instead of naming an existing one.
   const fresh = step === 1;
-  const done = completedSetup(agent, orders);
+  const done = completedSetup(fresh ? null : agent, fresh ? null : orders);
   return <><aside className="owner-panel" data-owner-step={step} aria-label={fresh ? "New agent" : "Your agent"}>
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name" title={fresh ? undefined : agent?.name}>{fresh ? "New agent" : agent?.name ?? "No agent plugged in yet"}</p>
@@ -111,13 +111,13 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
         const to = s.step === 1 || s.step === 5 ? `${s.to}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}` : `${s.to}${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
         return <li key={s.step} className={[done.has(s.step) ? "done" : "", s.step === step ? "current" : ""].filter(Boolean).join(" ")}>
           <Link to={to} aria-current={s.step === step ? "step" : undefined}><span className="track-rail" aria-hidden="true" />
-            <span className="track-label"><span className="track-number" aria-hidden="true">{done.has(s.step) ? "✓" : s.step}</span><span>{s.label}{coming && s.step === 2 ? " · coming" : ""}</span></span></Link>
+            <span className="track-label"><span className="track-number" aria-hidden="true">{done.has(s.step) ? "✓" : s.step}</span><span>{s.label}{!fresh && coming && s.step === 2 ? " · coming" : ""}</span></span></Link>
         </li>;
       })}</ol></nav>
       <p className="owner-track-current">Step {step} of 5 · {STEPS.find(s => s.step === step)?.label}</p>
-      <p className="owner-provenance" aria-hidden={step === 2 || !provenance ? true : undefined}>{step !== 2 ? provenance : null}</p>
+      <p className="owner-provenance" aria-hidden={fresh || step === 2 || !provenance ? true : undefined}>{!fresh && step !== 2 ? provenance : null}</p>
     </div>
-    </aside><div className="owner-deck">{coming && agent && <p className="spec-lead machine-honesty">{agentTaskLabel(agent.task)} · No real hardware.</p>}{children}</div></>;
+    </aside><div className="owner-deck">{!fresh && coming && agent && <p className="spec-lead machine-honesty">{agentTaskLabel(agent.task)} · No real hardware.</p>}{children}</div></>;
 }
 
 export function AgentPicker({ agents, requestedId, base }: {
