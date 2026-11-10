@@ -64,8 +64,9 @@ function heldPayee(state: JobState): LockedBid | null {
 
 /**
  * Derived on read from the jobs table, never stored. A job counts when its escrow payee names this agent.
- * Verified counts VERIFIED verdicts in attempt history, plus the current pass of a VERIFIED job. Rejected
- * counts REJECTED attempts in history. Earned sums the release paid on PAID jobs, in cents.
+ * Verified counts VERIFIED verdicts in the attempt history the job's state keeps, and a VERIFIED or PAID
+ * job keeps its pass there, so each pass counts once. Rejected counts REJECTED attempts in that history.
+ * Earned sums the release paid on PAID jobs, in cents.
  */
 export function recordOf(agentId: string, rows: readonly JobRow[]): AgentRecord {
 	let jobsTaken = 0;
@@ -79,7 +80,6 @@ export function recordOf(agentId: string, rows: readonly JobRow[]): AgentRecord 
 		const history: readonly AttemptRecord[] = row.state.status === "IN_PROGRESS" ? row.state.attempts.history : row.state.status === "OPEN" || row.state.status === "CLOSED" ? [] : row.state.history;
 		verified += history.filter(entry => entry.verdict.result === "VERIFIED").length;
 		rejected += history.filter(entry => entry.verdict.result === "REJECTED").length;
-		if (row.state.status === "VERIFIED") verified += 1;
 		if (row.state.status === "PAID") earnedCents += Number(row.state.release.paid);
 	}
 	return { jobsTaken, verified, rejected, earnedCents };
