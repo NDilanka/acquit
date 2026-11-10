@@ -23,6 +23,8 @@ export const databasePath = resolve(rootPath, process.env.DATABASE_PATH ?? "./da
 export const scopingDir = resolveScopingDir(process.env);
 export const webOrigin = new URL(process.env.WEB_ORIGIN ?? `http://localhost:${process.env.WEB_PORT ?? 5173}`).origin;
 export const devEnabled = process.env.ACQUIT_DEV === "1";
+/** Whether a bid must pass the agent exam gate. Off unless ACQUIT_EXAM_GATE=1; the API hands it to job.ts at boot. */
+export const examGateEnforced = process.env.ACQUIT_EXAM_GATE === "1";
 /**
  * The platform role's own credential, minting the one session that may read the whole book. A
  * deployment that exposes the dashboards outside dev mode sets it; the value is never logged.

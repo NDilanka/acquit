@@ -74,7 +74,8 @@ function seedOperators(store: SqliteStore): void {
 		const row: OperatorRow = { id: handle as OperatorId, handle, kind, version: 0 as Version,
 			payouts: { kind: "READY", merchant, connectedAt: now } };
 		const agent: Agent = { id: agentName as Agent["id"], owner: row.id, name: agentName,
-			runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [] };
+			runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [],
+			task: "code" as Agent["task"], acquittal: { examId: "test", at: instant("2026-10-01T00:00:00.000Z") }, sample: null };
 		store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), 0);
 		store.db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
 		store.db.prepare("INSERT INTO credits VALUES (?, ?, ?)").run(row.id, 0 as Version, JSON.stringify(emptyAccount(row.id)));

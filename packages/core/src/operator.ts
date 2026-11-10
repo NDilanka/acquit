@@ -2,6 +2,8 @@
 // job.ts reads an operator row at PlaceBid. Only this file writes one.
 
 import type { AgentId, Digest, Instant, MerchantId, OperatorId, Version } from "./ids.ts";
+import { CODE_VERTICAL } from "./code-manifest.ts";
+import type { Vertical } from "./code-manifest.ts";
 
 /**
  * Measured. Order create failed with "No permissions to set target_client_id" until the operator
@@ -28,10 +30,27 @@ export type Agent = {
 	readonly id: AgentId;
 	readonly owner: OperatorId;
 	readonly name: string;
-	readonly runner: "claude-code" | "codex";
+	/** The simulated runners belong to Acquit's own sample agents. The owner POST still accepts only claude-code or codex. */
+	readonly runner: "claude-code" | "codex" | "simulated-fdm" | "simulated-laser";
 	readonly promptDigest: Digest;
 	readonly tools: readonly string[];
+	/** Set once at creation. One of "code", "print-fdm", "laser-cut". */
+	readonly task: Vertical;
+	/** Null until the exam passes. Only the pass writes it. */
+	readonly acquittal: Acquittal | null;
+	/** Non-null only for a plugged sample. Its prompt is Acquit's own text. */
+	readonly sample: string | null;
 };
+
+export type Acquittal = { readonly examId: string; readonly at: Instant };
+
+/**
+ * Rows written before the exam carry none of the three new keys. An independent agent with no
+ * acquittal cannot bid on a code job until it passes. No SQL migration runs.
+ */
+export function withAgentDefaults(raw: Omit<Agent, "task" | "acquittal" | "sample"> & Partial<Pick<Agent, "task" | "acquittal" | "sample">>): Agent {
+	return { ...raw, task: raw.task ?? CODE_VERTICAL, acquittal: raw.acquittal ?? null, sample: raw.sample ?? null };
+}
 
 export type OperatorCommand =
 	| { readonly type: "InitializeOperator"; readonly handle: string }

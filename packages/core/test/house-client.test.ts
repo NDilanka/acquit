@@ -42,7 +42,8 @@ function seedOperators(h: Harness): void {
 		const row: OperatorRow = { id: handle as OperatorId, handle, kind, version: 0 as Version,
 			payouts: { kind: "READY", merchant, connectedAt: at(0) } };
 		const agent: Agent = { id: agentName as AgentId, owner: row.id, name: agentName,
-			runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [] };
+			runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [],
+			task: "code" as Agent["task"], acquittal: { examId: "test", at: instant("2026-10-01T00:00:00.000Z") }, sample: null };
 		const base: CreditAccount = { operator: row.id, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
 		const credits = kind === "HOUSE" ? base : reduceCredits(base, { kind: "Grant", week: creditWeek(at(0)), paidReceipts: 0, at: at(0) });
 		if (typeof credits === "string") throw new Error(credits);

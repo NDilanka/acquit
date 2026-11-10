@@ -13,6 +13,7 @@ import { parseVisitorId } from "./ids.ts";
 import type { AgentId, Instant, MerchantId, OperatorId, Version, VisitorId } from "./ids.ts";
 import type { UsdCents } from "./ledger.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
+import { CODE_VERTICAL } from "./code-manifest.ts";
 
 /** A scenario run's visitor lives a day. A Try Acquit account has no expiry at all. */
 export const SCENARIO_VISITOR_TTL_MS = 86_400_000;
@@ -252,7 +253,8 @@ export function reserveVisitor(db: DatabaseSync, input: NewVisitor): VisitorRese
 			version: 0 as Version, payouts: { kind: "READY", merchant: input.merchant, connectedAt: input.now } };
 		const agentId = `${name.operator}-agent`;
 		const agent: Agent = { id: agentId as AgentId, owner: operator.id, name: agentId, runner: "claude-code",
-			promptDigest: createHash("sha256").update(`account starter agent ${input.id}`).digest("hex") as Agent["promptDigest"], tools: [] };
+			promptDigest: createHash("sha256").update(`account starter agent ${input.id}`).digest("hex") as Agent["promptDigest"], tools: [],
+			task: CODE_VERTICAL, acquittal: { examId: "seed", at: input.now }, sample: null };
 		const empty: CreditAccount = { operator: operator.id, version: 0 as Version, balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
 		const account = reduceCredits(empty, { kind: "Grant", week: creditWeek(input.now), paidReceipts: 0, at: input.now });
 		if (account === "INSUFFICIENT_CREDITS") throw new Error("Visitor grant failed");

@@ -34,7 +34,8 @@ async function portsFor(trusted: CommitSha | null): Promise<Ports> {
 	const row: OperatorRow = { id: "house-ops" as OperatorId, handle: "house-ops", kind: "HOUSE", version: 0 as Version,
 		payouts: { kind: "READY", merchant, connectedAt: now } };
 	const agent: Agent = { id: "house-ts-fixer" as Agent["id"], owner: row.id, name: "house-ts-fixer",
-		runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [] };
+		runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [],
+		task: "code" as Agent["task"], acquittal: { examId: "test", at: instant("2026-10-01T00:00:00.000Z") }, sample: null };
 	store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), 0);
 	store.db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
 	const unimplemented = async (): Promise<never> => { throw new Error("not implemented"); };

@@ -90,7 +90,8 @@ function harness() {
 		const row: OperatorRow = { id: handle as OperatorId, handle, kind, version: 0 as Version,
 			payouts: { kind: "READY", merchant, connectedAt: now } };
 		const agent: Agent = { id: agentName as AgentId, owner: row.id, name: agentName,
-			runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [] };
+			runner: "claude-code", promptDigest: "digest" as Agent["promptDigest"], tools: [],
+			task: "code" as Agent["task"], acquittal: { examId: "test", at: instant("2026-10-01T00:00:00.000Z") }, sample: null };
 		const credits = kind === "HOUSE" ? emptyAccount(row.id) : grant(row.id);
 		store.db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(row.id, row.version, JSON.stringify(row), receipts);
 		store.db.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(agent.id, agent.owner, JSON.stringify(agent));
