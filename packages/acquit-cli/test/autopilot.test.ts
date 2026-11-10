@@ -353,6 +353,23 @@ test("a bid the record missed is recorded, not treated as a failure", async () =
 	assert.doesNotMatch(h.out.join(""), /stopped/);
 });
 
+test("a bid refused as NOT_ACQUITTED or WRONG_TASK is a permanent skip, not retried", async () => {
+	for (const code of ["NOT_ACQUITTED", "WRONG_TASK"] as const) {
+		const h = harness();
+		let attempts = 0;
+		h.actions = { ...h.actions, bid: async () => {
+			attempts += 1;
+			throw new CliError(code, "Acquit refused the bid.");
+		} };
+		h.jobs.set("job-1", job("job-1"));
+		assert.equal(await tick(h), 0);
+		assert.equal(await tick(h), 0);
+		assert.equal(attempts, 1);
+		assert.equal(readState(h).jobs["job-1"].phase, "DONE");
+		assert.match(h.out.join(""), new RegExp(`Job job-1 stopped: ${code}\\.`));
+	}
+});
+
 test("a failed run stops that job with its error code and leaves the worker running", async () => {
 	const h = harness();
 	track(h, { "job-1": { phase: "BID", commit: null } });
