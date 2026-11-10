@@ -75,11 +75,11 @@ export function App() {
   // The verifier registry and the print verifier are public for the same reason. A print run makes its own account.
   const route = match(location.path);
   const heading = pageHeading(route, session?.user.role ?? null);
-  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
+  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "specialistLeaderboard") {
     return (
       <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
         <main id="content" tabIndex={-1} className="wrap">
-          {route.name === "receipt" ? (
+          {route.name === "specialistLeaderboard" ? <LeaderboardPage /> : route.name === "receipt" ? (
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
             <VerifiersPage />
