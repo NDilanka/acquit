@@ -67,6 +67,7 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
   };
   const leaderboard = location.path.startsWith("/leaderboard");
   return <div className="owner-app">
+    <p id="live" role="status" className="sr-only">{owner.announcement}</p>
     <a href="#content" className="skip-link" onClick={skipToContent}>Skip to content</a>
     <header className="owner-bar">
       <Link to="/" className="owner-brand"><span aria-hidden="true">A</span><span>Acquit</span></Link>

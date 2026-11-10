@@ -72,8 +72,8 @@ export type RawFloor = {
   simulated?: boolean;
 };
 
-/** A morning entry. The API also sends amountCents, bidId and runId, which the screens do not read. */
-export type RawEntry = { at: string; jobId?: string | null; agentId?: string | null; title?: string | null };
+/** Preserve the supplied bid amount; never derive it from a title. */
+export type RawEntry = { at: string; jobId?: string | null; agentId?: string | null; title?: string | null; amountCents?: number };
 
 export type RawMorning = {
   since: string;
@@ -191,11 +191,12 @@ export function examReplayOf(raw: RawExamReplay): ExamReplay {
 }
 
 export function nightReplayOf(raw: RawNightReplay): NightReplay {
-  return { source: replaySource(raw), simulated: raw.simulated, task: raw.task, events: raw.night.events };
+  return { source: replaySource(raw), simulated: raw.simulated, task: raw.task, events: raw.night.events, recordedAt: raw.recordedAt };
 }
 
 export function entryOf(raw: RawEntry): ReportEntry {
-  return { at: raw.at, jobId: raw.jobId ?? null, agentId: raw.agentId ?? null, title: raw.title ?? null };
+  return { at: raw.at, jobId: raw.jobId ?? null, agentId: raw.agentId ?? null, title: raw.title ?? null,
+    ...(raw.amountCents === undefined ? {} : { amountCents: raw.amountCents }) };
 }
 
 export function floorOf(raw: RawFloor): FloorEntry {

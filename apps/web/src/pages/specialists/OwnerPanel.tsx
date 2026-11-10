@@ -6,7 +6,7 @@ import type { Session } from "../../session";
 import { specialists } from "./client";
 import type { SpecialistAgent, StandingOrders } from "./types";
 import { useLoad } from "./useLoad";
-import { dollars, hasLiveExam, ownerAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
+import { dollars, gradeChangeWords, hasLiveExam, ownerAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
 
 type OwnerState = {
   agents: readonly SpecialistAgent[] | null;
@@ -23,6 +23,8 @@ type OwnerState = {
   heldCents: number | null;
   moneyError: unknown;
   reloadMoney: () => void;
+  announcement: string;
+  announce: (message: string) => void;
 };
 const Context = createContext<OwnerState | null>(null);
 
@@ -44,11 +46,12 @@ export function OwnerProvider({ session, children }: { session: Session | null |
     try { localStorage.setItem(storageKey, agent.id); } catch { /* Storage is optional. */ }
   }, [agent?.id, storageKey]);
   const [provenance, setProvenance] = useState("");
+  const [announcement, announce] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [ack, setAck] = useState<{ id: string; orders: StandingOrders | null } | null>(null);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
   return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId,
-    provenance, setProvenance, orders, drafting, setDrafting,
+    provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
     heldCents: held.data === null ? null : held.data.escrow.reduce((sum, row) => sum + row.cents, 0),
     moneyError: held.error, reloadMoney: held.reload,
     setOrders: (next) => { if (agent) setAck({ id: agent.id, orders: next }); } }}>{children}</Context.Provider>;
@@ -70,17 +73,18 @@ export function MoneyLine() {
 }
 
 /** The same identity, money and weighted track coordinates on every owner screen. */
-export function AgentPanel({ agent, step, provenance, children }: {
-  agent: SpecialistAgent | null; step: number; provenance: string; children: ReactNode;
+export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
+  agent: SpecialistAgent | null; step: number; provenance: string; children: ReactNode; gradeDelta?: number;
 }) {
   const coming = agent !== null && !hasLiveExam(agent.task);
-  return <article className="owner-panel">
+  return <><aside className="owner-panel" aria-label="Your agent">
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name">{agent?.name ?? "No agent plugged in yet"}</p>
         {agent && <div className="owner-identity-meta"><p className="owner-task">{taskLabel(agent.task)}</p>
           {coming && step !== 2 ? <p className="owner-verdict">Exam coming</p> : !coming && <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
             {step !== 2 && agent.acquitted && agent.simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
-      {agent && !coming && <div className="owner-grade"><strong key={agent.grade}>{agent.grade ?? "—"}</strong><span>Grade</span></div>}
+      {agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
+        {gradeDelta !== undefined && <span className="owner-delta">{gradeDelta ? `${gradeChangeWords(gradeDelta)} since you last looked` : "No change since you last looked"}</span>}</div>}
     </header>
     {agent && <MoneyLine />}
     <div className="owner-track-row">
@@ -93,8 +97,7 @@ export function AgentPanel({ agent, step, provenance, children }: {
       })}</ol></nav>
       {step !== 2 && provenance && <p className="owner-provenance">{provenance}</p>}
     </div>
-    <div className="owner-deck">{children}</div>
-  </article>;
+    </aside><div className="owner-deck">{children}</div></>;
 }
 
 export function AgentPicker({ agents, requestedId, base }: {

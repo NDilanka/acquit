@@ -73,7 +73,7 @@ export type ExamRead = { readonly exam: Exam; readonly acquitted: boolean };
 
 export type Payout = { readonly reference: string; readonly amountCents: number; readonly jobId: string; readonly at: string };
 
-export type ReportEntry = { readonly at: string; readonly jobId: string | null; readonly agentId: string | null; readonly title: string | null };
+export type ReportEntry = { readonly at: string; readonly jobId: string | null; readonly agentId: string | null; readonly title: string | null; readonly amountCents?: number };
 
 /** One grade change. `delta` is the signed points added (verified) or taken away (rejected). */
 export type GradeChange = { readonly at: string; readonly agentId: string | null; readonly delta: number };
@@ -121,6 +121,7 @@ export type NightReplay = {
   readonly simulated: boolean;
   readonly task: Task;
   readonly events: readonly NightEvent[];
+  readonly recordedAt?: string | null;
 };
 
 export type FloorEntry = {

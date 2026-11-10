@@ -225,3 +225,33 @@
 @media (prefers-reduced-motion: reduce) {
   .owner-app *, .owner-app *::before, .owner-app *::after { animation: none !important; transition-duration: 0s !important; transition-delay: 0s !important; }
 }
+
+/* Shared panel is a region above the page, not a card around the entire workflow. */
+.owner-app { --owner-gutter: var(--space-12); --owner-bleed: var(--space-5); }
+.owner-workspace.wrap { max-width: 1440px; margin-inline: auto; padding: var(--space-12) var(--owner-gutter) var(--space-16); }
+.owner-panel { border-radius: var(--r-sm); margin-inline: calc(-1 * var(--owner-bleed)); }
+.owner-bridge { padding: var(--space-6) var(--owner-bleed) var(--space-4); min-height: 0; }
+.owner-name { font-size: var(--text-section); line-height: var(--leading-section); }
+.owner-identity-meta { gap: 0 var(--space-2); }
+.owner-grade { border: 0; padding: 0; gap: var(--space-2); flex-wrap: wrap; justify-content: end; max-width: 32ch; }
+.owner-grade strong { font: 500 var(--text-display)/var(--leading-display) var(--sans); }
+.owner-grade .owner-delta { color: var(--ink); font-family: var(--sans); }
+.owner-money { margin-inline: var(--owner-bleed); padding: var(--space-4) 0; background: transparent; font-size: var(--text-ui); line-height: var(--leading-ui); border-bottom: 0; }
+.owner-track-row { margin-inline: var(--owner-bleed); padding: var(--space-4) 0; border-top: 1px solid var(--line); }
+.owner-deck { padding: 0; margin-top: var(--space-12); }
+.owner-deck .spec { gap: var(--space-12); }
+.owner-app h1 { font-size: var(--text-display); line-height: var(--leading-display); }
+@media (max-width: 1199px) { .owner-app { --owner-gutter: var(--space-8); } }
+@media (max-width: 640px) {
+  .owner-app { --owner-gutter: var(--space-4); --owner-bleed: var(--space-4); }
+  .owner-workspace.wrap { margin: 0; padding: var(--space-8) var(--owner-gutter) 160px; }
+  .owner-panel { border-radius: 0; border-inline: 0; }
+  .owner-bridge { padding: var(--space-6) var(--owner-bleed) var(--space-4); gap: var(--space-4); }
+  .owner-grade { align-items: end; max-width: 14ch; }
+  .owner-grade .owner-delta { text-align: right; }
+  .owner-identity-meta :is(p,.sandbox) { font-size: var(--text-ui); line-height: var(--leading-ui); }
+  .owner-money { padding-block: var(--space-4); }
+  .owner-track-row { padding-block: var(--space-4); }
+  .owner-deck { margin-top: var(--space-12); padding: 0; }
+  .owner-deck .spec { gap: var(--space-8); }
+}
