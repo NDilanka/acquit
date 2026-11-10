@@ -702,9 +702,11 @@ export function readBoard(text: string): Board {
 			const offset = point(child(p, "at")) ?? [0, 0];
 			const size = point(child(p, "size"));
 			if (!size) continue;
+			// The offset is stored in the footprint's unrotated frame, so the footprint turn moves it. The stored pad angle
+			// is already the pad's absolute board orientation, so the footprint turn is not added to it again.
 			const padRot = num(child(p, "at"), 3) ?? 0;
 			const center = add(origin, rotate(offset, rot));
-			const angle = rot + padRot;
+			const angle = padRot;
 			const drillList = child(p, "drill");
 			const drill = num(drillList, 1);
 			const type: PadInst["type"] =
