@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Link, useRouter } from "../../router.tsx";
-import { activityDomId, activityEvents, activityLanes, activityStateWords, runnerAction, runnerStatusWords, sampleActivityLabel } from "./liveWork.ts";
+import { activityDomId, activityEvents, activityLanes, activityStateWords, closedMoneyWords, closedReasonWords, runnerAction, runnerStatusWords, sampleActivityLabel } from "./liveWork.ts";
 import { useOwner } from "./OwnerPanel.tsx";
 import type { OwnerActivity } from "./types.ts";
 import { JobStrip, TimelineMark, WorkTime } from "./WorkTimeline.tsx";
@@ -25,6 +25,8 @@ export function ActivityFeed({ feed }: { feed: OwnerActivity }) {
       {feed.activity.map((job,index) => <TimelineMark key={job.jobId} id={activityDomId(job.jobId)} at={job.updatedAt} index={index}
         tone={job.state === "RETRYING" ? "fail" : ""} title={<Link to={`/jobs/${encodeURIComponent(job.jobId)}`}>{job.title}</Link>}>
         <p className="work-status">{activityStateWords(job.state)}</p>
+        {job.state === "CLOSED" && closedReasonWords(job.closedReason) && <p className="work-status">{closedReasonWords(job.closedReason)}</p>}
+        {closedMoneyWords(job) && <p className="work-status">{closedMoneyWords(job)}</p>}
         <p className="work-status">{[sampleActivityLabel(job),feed.labels.verifier,feed.labels.money].filter(Boolean).join(" · ")}</p>
         <p className="work-status">Agent <Link to={`/agents/${encodeURIComponent(job.agentId)}/record`}>{job.agentId}</Link></p>
         <ol className="earnings-events" aria-label="Job events, oldest first">{activityEvents(job,feed.labels).map(event =>

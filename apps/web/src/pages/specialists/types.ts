@@ -153,6 +153,7 @@ export type ActivityJob = {
   readonly label: string | null;
   readonly agentId: string;
   readonly state: ActivityState;
+  readonly closedReason?: string | null;
   readonly updatedAt: string;
   readonly bid: { readonly id: string; readonly priceCents: number; readonly placedAt: string } | null;
   readonly moneyHeld: { readonly heldCents: number; readonly heldAt: string } | null;

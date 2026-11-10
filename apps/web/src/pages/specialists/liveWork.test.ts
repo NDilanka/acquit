@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityStateWords, closedMoneyWords, closedReasonWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
@@ -53,13 +53,38 @@ test("all stored release authorities remain separate from verification", () => {
 });
 
 test("queued, idle, running, off and refusal states have plain text, not fake job events", () => {
-  assert.equal(runnerStatusWords(example.runner),"Waiting for a free runner");
-  assert.equal(runnerStatusWords({...example.runner,status:"IDLE",reason:null}),"Nothing queued");
-  assert.equal(runnerStatusWords({...example.runner,status:"RUNNING",reason:null}),"Sample runner is running");
-  assert.equal(runnerStatusWords({...example.runner,status:"OFF",enabled:false,reason:null}),"Sample runner is off");
+  assert.equal(runnerStatusWords(example.runner),"The sample is waiting for a free runner.");
+  assert.equal(runnerStatusWords({...example.runner,status:"IDLE",reason:null}),"No sample run is queued.");
+  assert.equal(runnerStatusWords({...example.runner,status:"RUNNING",reason:null}),"The sample runner is running.");
+  assert.equal(runnerStatusWords({...example.runner,status:"OFF",enabled:false,reason:null}),"The sample runner is off.");
   for (const reason of ["NO_FORK","DAILY_LIMIT","NO_ACQUITTAL","NO_STANDING_ORDERS"] as const)
     assert.ok(runnerStatusWords({...example.runner,status:"REFUSED",reason}));
   assert.equal(activityLanes(example.activity,example.labels).length,2);
+});
+
+test("every refusal and unknown state has safe sentence copy", () => {
+  for (const reason of ["AUTOPILOT_OFF","NOT_HOSTED","NOT_A_SAMPLE","BID_DENIED","PRICE_CANNOT_CARRY_FEE","DELIVERY_STOPPED","NO_STANDING_ORDERS","NO_FORK","NO_ACQUITTAL","DAILY_LIMIT"]) {
+    const words=runnerStatusWords({...example.runner,status:"REFUSED",reason});
+    assert.ok(words.length>10);
+    assert.ok(!words.includes(reason));
+  }
+  for (const state of ["UNKNOWN","toString","__proto__"]) assert.equal(activityStateWords(state),"The current job state is unavailable.");
+  assert.equal(runnerStatusWords({...example.runner,status:"FUTURE" as OwnerActivity["runner"]["status"]}),"The sample runner's current state is unavailable.");
+});
+
+test("closed delivery preserves held money without promising a refund or inventing a deadline", () => {
+  const stopped={...held,state:"CLOSED" as const,closedReason:"verifier gave no verdict in 3 runs"};
+  assert.equal(closedReasonWords(stopped.closedReason),"The verifier returned no verdict for this delivery.");
+  assert.equal(closedReasonWords("job is IN_PROGRESS with no verdict for this commit"),"The verifier returned no verdict for this delivery.");
+  assert.match(closedMoneyWords(stopped)!,/Money is still held/);
+  assert.equal(activityEvents(stopped,example.labels).length,2);
+  assert.equal(closedMoneyWords({...stopped,moneyHeld:null}),null);
+  assert.equal(closedReasonWords(null),null);
+  for(const reason of ["job is CLOSED","job is no longer listed","run has no commit","push failed (PrivateError)","submit denied: NOT_OWNER","unknown private payload"]) {
+    const words=closedReasonWords(reason)!;
+    assert.ok(words.endsWith("."));
+    assert.ok(!words.includes("PrivateError")&&!words.includes("NOT_OWNER")&&!words.includes("private payload"));
+  }
 });
 
 test("earnings links a matching job back to the live entry, otherwise keeps the job link", () => {

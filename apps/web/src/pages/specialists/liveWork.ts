@@ -4,18 +4,18 @@ import { dollars, reasonSentences } from "./view.ts";
 import type { WorkLane } from "./work.ts";
 
 const STATES: Record<ActivityState, string> = {
-  BID_PLACED: "Bid placed · awaiting client acceptance",
-  FUNDING: "Chosen · waiting for client funding",
-  MONEY_HELD: "Money held · waiting for delivery",
-  RETRYING: "Rejected · waiting for another delivery",
-  VERIFYING: "Delivered · verifier running",
-  REFUNDING: "Refund pending",
-  AWAITING_APPROVAL: "Verified · awaiting client approval",
-  DISPUTED: "Verified · in dispute",
-  RELEASING: "Release in progress",
-  RELEASED: "Released",
-  REFUNDED: "Refunded",
-  CLOSED: "Closed without acceptance",
+  BID_PLACED: "The bid is awaiting client acceptance.",
+  FUNDING: "The client chose this bid and is funding it.",
+  MONEY_HELD: "Money is held, awaiting delivery.",
+  RETRYING: "The delivery was rejected; another attempt is available.",
+  VERIFYING: "The real verifier is checking the delivery.",
+  REFUNDING: "A refund is pending.",
+  AWAITING_APPROVAL: "The work is verified, awaiting client approval.",
+  DISPUTED: "The verified work is in dispute.",
+  RELEASING: "Payment release is in progress.",
+  RELEASED: "Payment was released.",
+  REFUNDED: "The payment was refunded.",
+  CLOSED: "This job or its sample run is closed.",
 };
 const AUTHORITIES: Record<ReleaseAuthority, string> = {
   CLIENT_APPROVAL: "Client approval",
@@ -25,7 +25,26 @@ const AUTHORITIES: Record<ReleaseAuthority, string> = {
   CAPTURE_CUTOFF: "Capture cutoff rule",
 };
 
-export function activityStateWords(state: ActivityState): string { return STATES[state]; }
+export function activityStateWords(state: string): string {
+  return Object.hasOwn(STATES,state) ? STATES[state as ActivityState] : "The current job state is unavailable.";
+}
+/** Translate only documented reason shapes. Never echo error names or refusal payloads. */
+export function closedReasonWords(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  if (/^verifier gave no verdict in \d+ runs$/.test(reason) || /^job is [A-Z_]+ with no verdict for this commit$/.test(reason))
+    return "The verifier returned no verdict for this delivery.";
+  if (reason === "job is no longer listed") return "The job is no longer available.";
+  if (reason === "run has no commit") return "The sample run has no delivery commit.";
+  if (/^push failed \([^)]+\)$/.test(reason)) return "The sample runner could not push the delivery.";
+  if (/^submit denied: [A-Z_]+$/.test(reason)) return "The delivery submission was declined.";
+  if (/^job is [A-Z_]+$/.test(reason)) return "The job left the state needed for this sample run.";
+  return "The sample run stopped; no further delivery is being made.";
+}
+export function closedMoneyWords(job: ActivityJob): string | null {
+  return job.state === "CLOSED" && job.moneyHeld
+    ? "Delivery has stopped. Money is still held; stopping the runner does not refund or release it."
+    : null;
+}
 export function sampleActivityLabel(job: ActivityJob): string | null {
   return job.source === "SAMPLE_RUNNER" && job.simulated ? job.label : null;
 }
@@ -34,10 +53,10 @@ export function tallyWords(label: string, tally: ActivityTally | null): string[]
 }
 export function runnerStatusWords(runner: OwnerActivity["runner"]): string {
   switch (runner.status) {
-    case "OFF": return "Sample runner is off";
-    case "IDLE": return "Nothing queued";
-    case "QUEUED": return "Waiting for a free runner";
-    case "RUNNING": return "Sample runner is running";
+    case "OFF": return "The sample runner is off.";
+    case "IDLE": return "No sample run is queued.";
+    case "QUEUED": return "The sample is waiting for a free runner.";
+    case "RUNNING": return "The sample runner is running.";
     case "REFUSED":
       switch (runner.reason) {
         case "NO_FORK": return "Connect a fork before running this sample.";
@@ -49,8 +68,10 @@ export function runnerStatusWords(runner: OwnerActivity["runner"]): string {
         case "NOT_A_SAMPLE": return "Hosted runs need a built-in sample agent.";
         case "BID_DENIED": return "The client declined this bid";
         case "PRICE_CANNOT_CARRY_FEE": return "Your price floor is too low to cover PayPal's fee. Raise it in Standing orders.";
+        case "DELIVERY_STOPPED": return "Delivery has stopped while money is still held. No new sample bid will be placed until the job leaves delivery.";
         default: return "The sample runner is unavailable for this agent.";
       }
+    default: return "The sample runner's current state is unavailable.";
   }
 }
 
@@ -63,6 +84,7 @@ export function runnerAction(runner: OwnerActivity["runner"], agentId?: string) 
       return { to:`/specialists/orders${suffix}`,label:"Open Standing orders" };
     case "PRICE_CANNOT_CARRY_FEE": return { to:`/specialists/orders${suffix}`,label:"Raise the price floor" };
     case "NOT_A_SAMPLE": return { to:"/specialists",label:"Choose a sample agent" };
+    case "DELIVERY_STOPPED": return { to:"/specialists/activity",label:"Review the stopped delivery" };
     default: return null;
   }
 }

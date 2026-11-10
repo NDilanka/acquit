@@ -51,7 +51,7 @@ function Earnings() {
             <p>{quiet ? "No work recorded in this report." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${data.bids.length} bids recorded.`}</p>
           </div><section className="report-window" aria-label="Report window">
             <p>From <WorkTime at={data.since} full />{report.through && <> to <WorkTime at={report.through} full /></>}</p>
-            <details className="record-meaning"><summary>How this window is chosen</summary><p>{REPORT_WINDOW_RULE}</p></details>
+            <WindowRule />
             {totals.data?.record && <p>{agent?.name} · all jobs<br />{totals.data.record.jobsTaken} taken · {totals.data.record.verified} verified · {totals.data.record.rejected} rejected</p>}
           </section></header>
           {actions}
@@ -81,6 +81,11 @@ function Earnings() {
         </>}
     </section>
   </SpecialistPage>;
+}
+
+function WindowRule() {
+  const [open,setOpen] = useState(false);
+  return <details className="record-meaning" onToggle={event => setOpen(event.currentTarget.open)}><summary>How this window is chosen</summary>{open && <p>{REPORT_WINDOW_RULE}</p>}</details>;
 }
 
 function EarlierEarnings({ entries }: { entries: readonly WorkEvent[] }) {
