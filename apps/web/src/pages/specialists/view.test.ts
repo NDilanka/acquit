@@ -13,6 +13,7 @@ import {
   gateWords,
   gradeChangeWords,
   isExaminable,
+  hasLiveExam,
   liveRunBlock,
   runnerWords,
   ordersDirty,
@@ -193,8 +194,15 @@ describe("exam reasons", () => {
 });
 
 describe("live run gate", () => {
-  it("blocks laser cut, acquitted agents and a missing verifier CI", () => {
-    assert.equal(liveRunBlock("laser-cut", false, null), "Exam coming.");
+  it("blocks print and laser before a start, even for a seeded acquittal", () => {
+    for (const task of ["print-fdm", "laser-cut"] as const) {
+      for (const acquitted of [false, true]) assert.equal(liveRunBlock(task, acquitted, null), "Exam coming.");
+      assert.equal(hasLiveExam(task), false);
+    }
+    assert.equal(hasLiveExam("code"), true);
+  });
+
+  it("blocks acquitted agents and a missing verifier CI", () => {
     assert.match(liveRunBlock("code", true, null) ?? "", /already Acquitted/);
     assert.match(liveRunBlock("code", false, "VERIFIER_CI_NOT_CONFIGURED") ?? "", /CI is not set up/);
   });
@@ -210,7 +218,6 @@ describe("live run gate", () => {
 
   it("allows a live run otherwise", () => {
     assert.equal(liveRunBlock("code", false, null), null);
-    assert.equal(liveRunBlock("print-fdm", false, null), null);
   });
 
   it("leaves other start refusals to show as errors, not as a block", () => {

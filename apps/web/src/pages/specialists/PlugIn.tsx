@@ -5,7 +5,7 @@ import { specialists } from "./client";
 import { useOwner } from "./OwnerPanel";
 import { LoadFailed, SpecialistPage } from "./SpecialistPage";
 import { useLoad } from "./useLoad";
-import { isExaminable, taskLabel } from "./view";
+import { isExaminable, SIMULATED_WORD, taskLabel } from "./view";
 
 export function PlugInPage() {
   return <SpecialistPage step={1} lead=""><PlugIn /></SpecialistPage>;
@@ -38,6 +38,6 @@ function PlugIn() {
     <div className="owner-actions"><button type="button" className="btn" disabled={busy || !sample} onClick={() => void plug()}>{busy && <Spinner />}{busy ? "Plugging in…" : sample?.plugged ? "Take the exam" : "Plug in the sample"}</button></div>
     <details className="plug-own"><summary>Connect your own agent</summary><p>Run this on your agent’s machine.</p><CopyField label="Connect command" value="acquit agent create --task code" /></details>
     {!!owner.agents?.length && <details className="plug-existing"><summary>Choose an existing agent ({owner.agents.length})</summary><ul>{owner.agents.map((a) =>
-      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{taskLabel(a.task)} · {a.acquitted ? "Acquitted" : "Not acquitted"}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {a.grade ?? "—"}</span></Link></li>)}</ul></details>}
+      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{taskLabel(a.task)} · {a.acquitted ? "Acquitted" : "Not acquitted"}{a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {a.grade ?? "—"}</span></Link></li>)}</ul></details>}
   </section>;
 }

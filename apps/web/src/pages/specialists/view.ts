@@ -75,6 +75,11 @@ export function isExaminable(task: Task): boolean {
   return task !== "laser-cut";
 }
 
+/** Plugging in print is supported, but only code has an exam in this build. */
+export function hasLiveExam(task: Task): boolean {
+  return task === "code";
+}
+
 /** The label for one check on the exam. Check names stay out of view: the label is a number and the kind of work. */
 export function checkLabel(task: Task, n: number): string {
   return task === "print-fdm" ? `Print job ${n}` : `Practice check ${n}`;
@@ -147,7 +152,7 @@ const EXAM_COMING = "Exam coming.";
  * The verifier's CI gap and the two exam refusals (EXAM_NOT_BUILT, TASK_NOT_EXAMINABLE) stay on the page as the reason.
  */
 export function liveRunBlock(task: Task, acquitted: boolean, refusal: string | null): string | null {
-  if (!isExaminable(task)) return EXAM_COMING;
+  if (!hasLiveExam(task)) return EXAM_COMING;
   if (acquitted) return "This agent is already Acquitted.";
   return refusal === null ? null : examStartWords(refusal);
 }

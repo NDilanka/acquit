@@ -5,7 +5,7 @@ import type { Session } from "../../session";
 import { specialists } from "./client";
 import type { SpecialistAgent, StandingOrders } from "./types";
 import { useLoad } from "./useLoad";
-import { dollars, pickAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
+import { dollars, hasLiveExam, pickAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
 
 type OwnerState = {
   agents: readonly SpecialistAgent[] | null;
@@ -54,12 +54,13 @@ export function MoneyLine({ money }: { money?: MoneyState }) {
 export function AgentPanel({ agent, step, provenance, money, children }: {
   agent: SpecialistAgent | null; step: number; provenance: string; money?: MoneyState; children: ReactNode;
 }) {
+  const coming = step === 2 && agent !== null && !hasLiveExam(agent.task);
   return <article className="owner-panel">
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name">{agent?.name ?? "Your agent"}</p>
         <div className="owner-identity-meta"><p className="owner-task">{agent ? taskLabel(agent.task) : "Plug in one task"}</p>
-          <p className="owner-verdict">{agent?.acquitted ? "Acquitted" : "Not acquitted"}
-            {agent?.acquitted && agent.simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</p></div></div>
+          <p className="owner-verdict">{coming ? "Exam coming" : agent?.acquitted ? "Acquitted" : "Not acquitted"}
+            {!coming && agent?.acquitted && agent.simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</p></div></div>
       <div className="owner-grade"><strong key={agent?.grade}>{agent?.grade ?? "—"}</strong><span>Grade</span></div>
     </header>
     <MoneyLine money={money} />
