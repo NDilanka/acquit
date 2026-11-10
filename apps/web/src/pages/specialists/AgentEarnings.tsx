@@ -1,26 +1,44 @@
+import { useEffect, useState } from "react";
 import { shortId } from "../../format.ts";
+import { useSession } from "../../session.tsx";
 import { EmptyState, SkeletonCard, StatTile } from "../../ui.tsx";
 import { specialists } from "./client.ts";
 import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
 import type { MorningReport, ReportEntry, SpecialistAgent } from "./types.ts";
 import { useLoad } from "./useLoad.ts";
+import { useOwner } from "./OwnerPanel.tsx";
 import { dollars as usd, entryTitle, gradeChangeWords, localTime, paidTotalCents, sinceIso } from "./view.ts";
 
-export function MorningPage() {
+export function AgentEarningsPage() {
   return (
     <SpecialistPage
       step={5}
-      lead="What your agents did in the last 24 hours. Payouts run on the PayPal sandbox, so the references are test references, not money."
+      lead="Your workspace earnings · PayPal sandbox."
     >
-      <MorningBody />
+      <EarningsBody />
     </SpecialistPage>
   );
 }
 
-function MorningBody() {
-  const report = useLoad(() => specialists.morningReport(sinceIso(Date.now())), "morning");
+function EarningsBody() {
+  const { user } = useSession();
+  const { agents } = useOwner();
+  const [window] = useState(() => {
+    const openedAt = new Date().toISOString();
+    const key = `acquit.earningsRead:${user.handle}`;
+    let since = sinceIso(Date.now());
+    try {
+      const previous = localStorage.getItem(key);
+      if (previous && Number.isFinite(Date.parse(previous)) && previous <= openedAt) since = previous;
+    } catch { /* Storage is optional. */ }
+    return { key, openedAt, since };
+  });
+  const report = useLoad(() => specialists.morningReport(window.since), window.since);
+  useEffect(() => {
+    if (report.data === null) return;
+    try { localStorage.setItem(window.key, window.openedAt); } catch { /* Storage is optional. */ }
+  }, [report.data, window]);
   // A null id is workspace activity, never silently assigned to the selected agent.
-  const agents = useLoad(() => specialists.agents(), "agents");
   if (report.data === null) {
     return report.error !== null ? (
       <LoadFailed error={report.error} onRetry={report.reload} />
@@ -28,7 +46,7 @@ function MorningBody() {
       <SkeletonCard lines={6} />
     );
   }
-  return <Report report={report.data} agents={agents.data ?? []} />;
+  return <Report report={report.data} agents={agents ?? []} />;
 }
 
 function Report({ report, agents }: { readonly report: MorningReport; readonly agents: readonly SpecialistAgent[] }) {
@@ -47,10 +65,10 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
   return (
     <section className="spec-report" aria-labelledby="spec-report-title">
       <div className="spec-exam-head">
-        <h1 id="spec-report-title">While you were away</h1>
+        <h1 id="spec-report-title">Since you last looked</h1>
         {report.sandbox && <span className="sandbox">PayPal sandbox</span>}
       </div>
-      <p className="muted">Account activity, not a recorded replay. Since <time dateTime={report.since} title={report.since}>{localTime(report.since)}</time></p>
+      <p className="muted">Since <time dateTime={report.since} title={report.since}>{localTime(report.since)}</time></p>
 
       <div className="spec-stats">
         <StatTile label="Bids" value={report.bids.length} />
@@ -62,7 +80,7 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
 
       {quiet ? (
         <EmptyState inline>
-          Nothing ran in the last 24 hours. Turn on autopilot on the standing orders step to let your agent work on its own.
+          Nothing new since you last looked.
         </EmptyState>
       ) : (
         <>

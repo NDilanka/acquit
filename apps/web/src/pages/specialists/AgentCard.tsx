@@ -1,13 +1,14 @@
 import type { ReactNode } from "react";
 import type { SpecialistAgent } from "./types.ts";
-import { dollars as usd, acquittedWords, gateWords, gradeWords, recordWords, SIMULATED_WORD, simulatedNote, taskLabel } from "./view.ts";
+import { dollars as usd, acquittedWords, gateWords, gradeWords, hasLiveExam, recordWords, SIMULATED_WORD, simulatedNote, taskLabel } from "./view.ts";
 
 /**
  * One agent: name, its one task, the Acquitted status, grade, track record and earnings.
- * Used on the plug-in, exam and morning screens. `children` holds the screen's own action, if any.
+ * Used on the plug-in, exam and earnings screens. `children` holds the screen's own action, if any.
  */
 export function AgentCard({ agent, children }: { readonly agent: SpecialistAgent; readonly children?: ReactNode }) {
   const note = simulatedNote(agent.task);
+  const acquitted = hasLiveExam(agent.task) && agent.acquitted;
   return (
     <article className="card pad spec-agent">
       <div className="spec-agent-head">
@@ -17,15 +18,15 @@ export function AgentCard({ agent, children }: { readonly agent: SpecialistAgent
           {note && <p className="muted spec-agent-note">{note}</p>}
         </div>
         <div className="spec-pills">
-          <span className={agent.acquitted ? "pill ok" : "pill new"}>{acquittedWords(agent.acquitted)}</span>
-          {agent.acquitted && agent.simulated && <span className="sandbox">{SIMULATED_WORD}</span>}
+          <span className={acquitted ? "pill ok" : "pill new"}>{hasLiveExam(agent.task) ? acquittedWords(acquitted) : "Exam coming"}</span>
+          {acquitted && agent.simulated && <span className="sandbox">{SIMULATED_WORD}</span>}
           {agent.seeded && <span className="pill">Seeded</span>}
         </div>
       </div>
       <dl className="spec-agent-facts">
         <div>
           <dt>Grade</dt>
-          <dd className="num">{gradeWords(agent.grade)}</dd>
+          <dd className="num">{gradeWords(hasLiveExam(agent.task) ? agent.grade : null)}</dd>
         </div>
         {agent.gate && (
           <div>

@@ -5,7 +5,7 @@ import { RoleSwitch, SaveAccountModal, SignOutDialog } from "./account-ui";
 import { Icon } from "./icons";
 import { isNavActive, navFor, signedOutNav, type NavItem, type Role } from "./nav";
 import { Link, useRouter } from "./router";
-import { match, showsTryCta } from "./route";
+import { isOwnerRoute, match, showsTryCta } from "./route";
 import { useOperatorWatch } from "./operator-watch";
 import type { Session } from "./session";
 import { useTheme } from "./theme-context";
@@ -16,11 +16,12 @@ import { api } from "./api";
 import { ErrorNote, Spinner } from "./ui";
 import { OwnerProvider, useOwner } from "./pages/specialists/OwnerPanel";
 import { specialists } from "./pages/specialists/client";
+import { hasLiveExam } from "./pages/specialists/view";
 import "./pages/specialists/owner.css";
 
 export function Shell(props: Parameters<typeof LegacyShell>[0]) {
   const { location } = useRouter();
-  return location.path.startsWith("/specialists")
+  return isOwnerRoute(location.path)
     ? <OwnerProvider key={props.session?.user.handle ?? "visitor"} session={props.session}><OwnerShell {...props} /></OwnerProvider>
     : <LegacyShell {...props} />;
 }
@@ -64,19 +65,19 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
     catch (e) { setError(e); }
     finally { setPending(false); }
   };
-  const floor = location.path.startsWith("/specialists/floor");
+  const leaderboard = location.path.startsWith("/leaderboard");
   return <div className="owner-app">
     <a href="#content" className="skip-link" onClick={skipToContent}>Skip to content</a>
     <header className="owner-bar">
       <Link to="/" className="owner-brand"><span aria-hidden="true">A</span><span>Acquit</span></Link>
       <nav className="owner-nav" aria-label="Main">
-        <Link to="/specialists" aria-current={!floor ? "page" : undefined}>Your agent</Link>
-        <Link to="/specialists/floor" aria-current={floor ? "page" : undefined}>Floor</Link>
+        <Link to="/specialists" aria-current={!leaderboard ? "page" : undefined}>Your agent</Link>
+        <Link to="/leaderboard" aria-current={leaderboard ? "page" : undefined}>Leaderboard</Link>
       </nav>
       <div className="owner-bar-end">
-        {session?.user.role === "OPERATOR" && <div className="owner-shell-state" aria-live="polite">
+        {session?.user.role === "OPERATOR" && owner.agent && hasLiveExam(owner.agent.task) && <div className="owner-shell-state" aria-live="polite">
           {owner.drafting ? "Orders not saved" : owner.orders ? owner.orders.autopilot
-            ? <button type="button" className="owner-pause" disabled={pending} onClick={() => void pause()}><span className="switch-track on" aria-hidden="true" />{pending ? "Pausing…" : "Autopilot on · Pause"}</button>
+            ? <button type="button" className="owner-pause" role="switch" aria-label="Autopilot" aria-checked="true" disabled={pending} onClick={() => void pause()}><span className="switch-track on" aria-hidden="true" />{pending ? "Pausing…" : "Autopilot on · Pause"}</button>
             : <span>Autopilot off · no new bids</span>
             : owner.agent?.acquitted ? "Orders not set" : "Not acquitted"}
         </div>}
@@ -89,8 +90,8 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
     </header>
     <div className="wrap owner-workspace">
       {error !== null && <ErrorNote error={error} />}
-      {session && session.user.role !== "OPERATOR" && !floor ? <main id="content" tabIndex={-1} className="owner-entry">
-        <h1>Give your agent a first night.</h1>
+      {session && session.user.role !== "OPERATOR" && !leaderboard ? <main id="content" tabIndex={-1} className="owner-entry">
+        <h1>Plug in your agent.</h1>
         <p>Your account is ready. Open the agent side to plug one in.</p>
         {canSwitchRole(session.user, session.account)
           ? <button type="button" className="btn" disabled={switching} onClick={() => void enter()}>{switching && <Spinner />}{switching ? "Opening…" : "Open your agent workspace"}</button>

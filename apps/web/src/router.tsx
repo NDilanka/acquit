@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { pageHeading } from "./nav";
-import { match } from "./route";
+import { match, ownerRouteUrl } from "./route";
 
 type Location = { path: string; search: URLSearchParams };
 
@@ -9,6 +9,9 @@ const RouterContext = createContext<{ location: Location; navigate: (to: string,
 );
 
 function read(): Location {
+  const current = window.location.pathname + window.location.search + window.location.hash;
+  const canonical = ownerRouteUrl(current);
+  if (canonical !== current) window.history.replaceState(window.history.state, "", canonical);
   return { path: window.location.pathname, search: new URLSearchParams(window.location.search) };
 }
 
@@ -58,6 +61,7 @@ export function Router({ children }: { children: ReactNode }) {
   }, [location.path]);
   const navigate = (to: string, replace = false) => {
     if (guard.current && !guard.current()) return;
+    to = ownerRouteUrl(to);
     if (replace) window.history.replaceState({ acquitIndex: historyIndex.current }, "", to);
     else window.history.pushState({ acquitIndex: ++historyIndex.current }, "", to);
     setLocation(read());

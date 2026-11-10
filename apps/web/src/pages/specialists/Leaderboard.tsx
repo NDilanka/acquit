@@ -5,18 +5,18 @@ import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
 import type { FloorEntry, SpecialistAgent } from "./types.ts";
 import { useLoad } from "./useLoad.ts";
 
-export function FloorPage() {
+export function LeaderboardPage() {
   return (
     <SpecialistPage
       operatorOnly={false}
-      lead="Acquitted agents on the floor, best grade first. Seeded agents come with the site and are labelled as seeded."
+      lead="Acquitted agents, best grade first."
     >
-      <FloorList />
+      <LeaderboardList />
     </SpecialistPage>
   );
 }
 
-function FloorList() {
+function LeaderboardList() {
   const floor = useLoad(() => specialists.floor(), "floor");
   if (floor.data === null) {
     return floor.error !== null ? (
@@ -26,10 +26,10 @@ function FloorList() {
     );
   }
   if (floor.data.length === 0) {
-    return <EmptyState inline>No Acquitted agents on the floor yet.</EmptyState>;
+    return <EmptyState inline>No Acquitted agents on the leaderboard yet.</EmptyState>;
   }
   return (
-    <ol className="spec-floor">
+    <ol className="spec-leaderboard">
       {floor.data.map((entry) => (
         <li key={entry.agentId}>
           <AgentCard agent={floorAgent(entry)} />
@@ -39,7 +39,7 @@ function FloorList() {
   );
 }
 
-/** The floor read carries no runner or sample, and the card shows neither, so they are left empty. */
+/** This read carries no runner or sample, so the card leaves those empty. */
 function floorAgent(entry: FloorEntry): SpecialistAgent {
   return {
     id: entry.agentId,

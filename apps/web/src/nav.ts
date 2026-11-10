@@ -1,4 +1,5 @@
 import type { Route } from "./route";
+import { isOwnerRoute } from "./route.ts";
 
 export type Role = "CLIENT" | "OPERATOR" | "PLATFORM";
 export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "play" | "bids" | "work" | "earnings";
@@ -36,7 +37,7 @@ const SCENARIOS: NavItem = { to: "/tour", label: "Scenarios", icon: "play", grou
 
 const AGENT_PAGES: readonly NavItem[] = [
   { to: "/specialists", label: "Your agent", icon: "plus", group: "Agents" },
-  { to: "/specialists/floor", label: "Floor", icon: "dashboard", group: "Agents" },
+  { to: "/leaderboard", label: "Leaderboard", icon: "dashboard", group: "Agents" },
 ];
 
 /** A run starts on the account's own visitor, and a platform session is not one, so the platform does not list Scenarios. */
@@ -53,7 +54,7 @@ export function signedOutNav(): readonly NavItem[] {
 export function isNavActive(item: NavItem, path: string, role: Role | null): boolean {
   path = path.length > 1 ? path.replace(/\/+$/, "") : path;
   if (path === item.to) return true;
-  if (item.to === "/specialists" && path.startsWith("/specialists/") && !path.startsWith("/specialists/floor")) return true;
+  if (item.to === "/specialists" && isOwnerRoute(path) && path !== "/leaderboard") return true;
   if (path === "/" && role !== null && ROLE_PAGES[role][0]?.to === item.to) return true;
   const jobPage = path.startsWith("/jobs/") && path !== "/jobs/new";
   if (!jobPage) return false;
@@ -105,12 +106,12 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Specialists", title: "The exam" };
     case "specialistOrders":
       return { eyebrow: "Specialists", title: "Standing orders" };
-    case "specialistNight":
-      return { eyebrow: "Specialists", title: "The night" };
-    case "specialistMorning":
-      return { eyebrow: "Specialists", title: "The morning" };
-    case "specialistFloor":
-      return { eyebrow: "Specialists", title: "Floor" };
+    case "specialistActivity":
+      return { eyebrow: "Specialists", title: "Activity" };
+    case "specialistEarnings":
+      return { eyebrow: "Specialists", title: "Earnings" };
+    case "specialistLeaderboard":
+      return { eyebrow: "Specialists", title: "Leaderboard" };
     case "notFound":
       return { eyebrow: "Acquit", title: "Page not found" };
   }

@@ -18,8 +18,8 @@ export const STEPS = [
   { step: 1, label: "Plug in", to: "/specialists" },
   { step: 2, label: "Exam", to: "/specialists/exam" },
   { step: 3, label: "Orders", to: "/specialists/orders" },
-  { step: 4, label: "Night", to: "/specialists/night" },
-  { step: 5, label: "Morning", to: "/specialists/morning" },
+  { step: 4, label: "Activity", to: "/specialists/activity" },
+  { step: 5, label: "Earnings", to: "/earnings" },
 ] as const;
 
 const TASK_LABEL: Record<Task, string> = { code: "Code", "print-fdm": "3D print", "laser-cut": "Laser cut" };
@@ -164,7 +164,7 @@ export function examStartWords(code: string): string | null {
   return null;
 }
 
-export const DEFAULT_PRICE_USD = "10.00";
+export const DEFAULT_PRICE_USD = "$40.00";
 
 /** The form the standing-orders screen edits. The price is text until it is parsed. */
 export type OrdersForm = {
@@ -179,7 +179,7 @@ export const DEFAULT_FORM: OrdersForm = { priceUsd: DEFAULT_PRICE_USD, maxConcur
 export function formFrom(orders: StandingOrders | null): OrdersForm {
   if (!orders) return DEFAULT_FORM;
   return {
-    priceUsd: (orders.priceFloorCents / 100).toFixed(2),
+    priceUsd: dollars(orders.priceFloorCents),
     maxConcurrent: orders.maxConcurrent,
     preApproveCap: orders.preApproveCap,
     autopilot: orders.autopilot,
@@ -231,7 +231,7 @@ export function autopilotCopy(autopilot: boolean, cap: number): readonly string[
   ];
 }
 
-/** Total of the payouts in cents, for the morning report's headline. */
+/** Total of the payouts in cents, for the earnings headline. */
 export function paidTotalCents(payouts: readonly { readonly amountCents: number }[]): number {
   return payouts.reduce((sum, p) => sum + p.amountCents, 0);
 }
@@ -244,7 +244,7 @@ export function gradeChangeWords(delta: number): string {
 
 export const SINCE_HOURS = 24;
 
-/** The "since" a morning report reads from: the last SINCE_HOURS before `now`. */
+/** The initial report window when the account has no saved read cursor. */
 export function sinceIso(now: number): string {
   return new Date(now - SINCE_HOURS * 60 * 60 * 1000).toISOString();
 }
@@ -262,6 +262,18 @@ export const EXAM_SHAPE: Record<Task, { readonly visible: number; readonly hidde
 /** An explicit id must match. Only an unambiguous, single-agent list may infer a choice. */
 export function pickAgent<T extends { readonly id: string }>(agents: readonly T[], id: string | undefined): T | null {
   return id !== undefined ? agents.find((a) => a.id === id) ?? null : agents.length === 1 ? agents[0]! : null;
+}
+
+/** Explicit choices must match; otherwise retain the last-used agent or the first available one. */
+export function ownerAgent<T extends { readonly id: string }>(agents: readonly T[], id?: string, lastId?: string | null): T | null {
+  return id !== undefined ? pickAgent(agents, id) : agents.find((a) => a.id === lastId) ?? agents[0] ?? null;
+}
+
+/** Large visible totals use one aggregate bar; icon rows stay readable at phone widths. */
+export function checkLayout(total: number, hidden: boolean): { segmented: boolean; rows: number[][] } {
+  const segmented = !hidden && total > 8;
+  return { segmented, rows: segmented ? [] : Array.from({ length: Math.ceil(total / 4) }, (_, row) =>
+    Array.from({ length: Math.min(4, total - row * 4) }, (_, i) => row * 4 + i)) };
 }
 
 export function provenanceWords(source: ReplaySource | null, simulated: boolean, seeded = false): string {
@@ -306,7 +318,7 @@ export function nightKindWords(kind: NightEvent["kind"]): string {
   }
 }
 
-/** The timeline tone for a night event: blue while work is open, amber while money is held, green once settled. */
+/** Timeline tone: blue while work is open, amber while money is held, green once settled. */
 export function nightTone(kind: NightEvent["kind"]): "open" | "held" | "ok" {
   switch (kind) {
     case "bid":

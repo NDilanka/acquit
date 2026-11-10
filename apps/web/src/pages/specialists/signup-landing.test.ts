@@ -14,17 +14,19 @@ function useTryAcquitBody(): string {
 }
 
 describe("sign-up landing", () => {
-  it("sends an operator sign-up to the specialists page", () => {
-    assert.match(useTryAcquitBody(), /navigate\(made\.user\.role === "OPERATOR" \? "\/specialists" : "\/"\)/);
+  it("opens the operator role only for an owner entry, before publishing the session", () => {
+    const body = useTryAcquitBody();
+    assert.match(body, /isOwnerRoute\(location\.path\) && made\.user\.role !== "OPERATOR"/);
+    assert.ok(body.indexOf('await api.switchRole("OPERATOR")') < body.indexOf("onSignedIn("));
   });
 
-  it("sends every other sign-up, a client's, to the home page where clients landed before", () => {
-    assert.match(useTryAcquitBody(), /: "\/"\)/);
+  it("chooses the landing from the entry route and acknowledged role", () => {
+    assert.match(useTryAcquitBody(), /navigate\(signUpPath\(location\.path, next\.user\.role\)\)/);
   });
 
-  it("never sends a sign-up to the specialists page unconditionally", () => {
-    assert.doesNotMatch(useTryAcquitBody(), /navigate\("\/specialists"\)/);
-    assert.doesNotMatch(source, /navigate\("\/specialists"\)/);
+  it("retries opening the role without creating a second visitor", () => {
+    assert.match(useTryAcquitBody(), /const made = created \?\? await api\.createAccount\(\)/);
+    assert.match(useTryAcquitBody(), /setCreated\(account\)/);
   });
 
   it("navigates once in the sign-up", () => {

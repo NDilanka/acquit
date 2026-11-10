@@ -10,14 +10,14 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
     ["Post a job", "/jobs/new"],
     ["Sample book", "/studio/sample"],
     ["Your agent", "/specialists"],
-    ["Floor", "/specialists/floor"],
+    ["Leaderboard", "/leaderboard"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
   ]);
 });
 
-test("an operator keeps the work pages and one agent entry plus Floor", () => {
+test("an operator keeps the work pages and one agent entry plus Leaderboard", () => {
   assert.deepEqual(pairs(navFor("OPERATOR")), [
     ["Find work", "/operator"],
     ["My bids", "/operator/bids"],
@@ -26,7 +26,7 @@ test("an operator keeps the work pages and one agent entry plus Floor", () => {
     ["Dashboards", "/studio"],
     ["Sample book", "/studio/sample"],
     ["Your agent", "/specialists"],
-    ["Floor", "/specialists/floor"],
+    ["Leaderboard", "/leaderboard"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
@@ -41,17 +41,25 @@ test("Public and Agents are separate groups, without inventing a CLI or Tutorial
   assert.equal(labels.includes("Tutorials"), false);
   assert.equal(labels.includes("Agents"), false);
   assert.deepEqual(pairs(navFor("OPERATOR").filter((item) => item.group === "Agents")), [
-    ["Your agent", "/specialists"], ["Floor", "/specialists/floor"],
+    ["Your agent", "/specialists"], ["Leaderboard", "/leaderboard"],
   ]);
   assert.equal(navFor("CLIENT").filter((item) => item.label === "Your agent").length, 1);
 });
 
 test("an agent-specific step and trailing slash light only their own Agents destination", () => {
-  for (const path of ["/specialists/exam/agent-one", "/specialists/orders/agent-one/", "/specialists/night/agent-one"]) {
+  for (const path of ["/specialists/exam/agent-one", "/specialists/orders/agent-one/", "/specialists/activity/agent-one", "/earnings/"]) {
     const lit = navFor("OPERATOR").filter((item) => isNavActive(item, path, "OPERATOR"));
     assert.equal(lit.length, 1);
     assert.equal(lit[0]?.to, "/specialists");
   }
+});
+
+test("the leaderboard lights only its own destination", () => {
+  const lit = navFor("OPERATOR").filter((item) => isNavActive(item, "/leaderboard/", "OPERATOR"));
+  assert.deepEqual(pairs(lit), [["Leaderboard", "/leaderboard"]]);
+  assert.deepEqual(pageHeading({ name: "specialistActivity" }, "OPERATOR"), { eyebrow: "Specialists", title: "Activity" });
+  assert.deepEqual(pageHeading({ name: "specialistEarnings" }, "OPERATOR"), { eyebrow: "Specialists", title: "Earnings" });
+  assert.deepEqual(pageHeading({ name: "specialistLeaderboard" }, "OPERATOR"), { eyebrow: "Specialists", title: "Leaderboard" });
 });
 
 test("a platform user's navigation is Dashboards and Sample book, then the two public pages", () => {

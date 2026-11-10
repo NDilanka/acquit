@@ -21,7 +21,7 @@ export function SpecialistPage({ step, lead, operatorOnly = true, children }: {
   if (owner.agents === null) return <section className="agent-picker"><h1>{owner.error !== null ? "Your agents are unavailable" : "Reading your agents"}</h1>
     {owner.error !== null ? <LoadFailed error={owner.error} onRetry={owner.reload} primary /> : <SkeletonCard lines={4} />}</section>;
   if (step && step > 1 && step < 5 && !owner.agent) return <AgentPicker agents={owner.agents} requestedId={owner.requestedId} base={location.path.replace(/\/[^/]+$/, "") === "/specialists" ? location.path : location.path.slice(0, location.path.lastIndexOf("/"))} />;
-  if (!step) return <div className="spec owner-floor"><h1>Floor</h1><p className="muted">{lead}</p>{children}</div>;
+  if (!step) return <div className="spec owner-leaderboard"><h1>Leaderboard</h1><p className="muted">{lead}</p>{children}</div>;
   return <AgentPanel agent={owner.agent} step={step}
     provenance={owner.provenance ? `${owner.agent?.seeded ? "Seeded · " : ""}${owner.provenance}` : provenanceWords(null, owner.agent?.task === "print-fdm" || owner.agent?.task === "laser-cut", owner.agent?.seeded) || (owner.agent?.sample ? "Sample agent" : "")}>
     <div className="spec">{children}</div>
