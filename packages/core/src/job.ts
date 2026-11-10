@@ -478,6 +478,7 @@ export type DomainFailure =
 	| "CONTRACT_NOT_FROZEN"
 	| "ONBOARDING_REQUIRED"
 	| "PRICE_OVER_BUDGET"
+	| "PRICE_CANNOT_FUND"
 	| "ALREADY_BID"
 	| "HOUSE_ALREADY_BID"
 	| "NOT_ACQUITTED"
@@ -495,8 +496,10 @@ export type DomainFailure =
 export type Loaded =
 	| { readonly kind: "NONE" }
 	| { readonly kind: "OPEN_JOB"; readonly contract: AcceptanceContract; readonly title: string }
-	| { readonly kind: "PLACE_BID"; readonly operator: OperatorRow; readonly agent: Agent; readonly credits: CreditAccount }
-	| { readonly kind: "ACCEPT_BID"; readonly quote: FeeQuote; readonly fundingMode?: "checkout" | "card" }
+	/** `fundable` is false when the House cannot fund the bid's price: PayPal's fee would not fit inside the split's fee. */
+	| { readonly kind: "PLACE_BID"; readonly operator: OperatorRow; readonly agent: Agent; readonly credits: CreditAccount; readonly fundable: boolean }
+	/** `quote` is null when the House cannot fund the bid's price, so the accept is refused rather than quoted. */
+	| { readonly kind: "ACCEPT_BID"; readonly quote: FeeQuote | null; readonly fundingMode?: "checkout" | "card" }
 	| { readonly kind: "BIDDER_CREDITS"; readonly accounts: ReadonlyMap<OperatorId, CreditAccount> };
 
 export type Facts = { readonly actor: TrustedActor; readonly now: Instant; readonly loaded: Loaded };
@@ -536,7 +539,7 @@ function artifactOf(command: JudgedArtifact): CommitSha {
 function transitionTable(): {
 	OpenJob: Edge<null, { readonly repository: string; readonly issueNumber: number; readonly budget: UsdCents; readonly deliveryEndsAt: Instant }, Open, "CLIENT">;
 	PlaceBid: Edge<Open, JobRef & { readonly price: UsdCents; readonly eta: Hours; readonly agent: AgentId; readonly pitch: string }, Open, "OPERATOR">;
-	// An accept with no bidId is the House client's starter accept: executeCommand names the lowest PENDING bid of the row it commits.
+	// An accept with no bidId is the House client's starter accept: executeCommand names the lowest PENDING bid it can fund of the row it commits.
 	AcceptBid: Edge<Open, JobRef & { readonly bidId?: BidId }, Open, "CLIENT">;
 	// A retire is the House client's own cancel of a starter it no longer needs; executeCommand grants it only on the row it commits.
 	CancelJob: Edge<Open, JobRef & { readonly retire?: true }, JobRow<ClosedState>, "CLIENT">;
@@ -578,7 +581,8 @@ function transitionTable(): {
 	//
 	// PlaceBid
 	// TODO Require OPEN. FUNDING still admits bids, because an abandoned checkout returns to BIDDING.
-	// TODO Require readyToBid(operator), else ONBOARDING_REQUIRED. Require price <= budget and one bid per operator.
+	// TODO Require readyToBid(operator), else ONBOARDING_REQUIRED. Require price <= budget, a price the House can fund
+	//      (PRICE_CANNOT_FUND), and one bid per operator.
 	// TODO HOUSE: at most one per job (HOUSE_ALREADY_BID) and no credit move.
 	// TODO INDEPENDENT: reduceCredits Spend keyed by the new bid id. The bid and the spend commit together.
 	//
@@ -658,7 +662,7 @@ function transitionTable(): {
 		} },
 		PlaceBid: { by: "OPERATOR", apply: (row, command, facts) => {
 			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
-			const { operator, agent, credits } = facts.loaded;
+			const { operator, agent, credits, fundable } = facts.loaded;
 			if (operator.id !== facts.actor.operatorId || agent.owner !== operator.id || agent.id !== command.agent) return "NOT_OWNER";
 			// House is exempt: placeHouseBid sends its bids through this same apply. The gate refuses only when enforced.
 			if (operator.kind !== "HOUSE") {
@@ -669,6 +673,7 @@ function transitionTable(): {
 			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
 			if (row.state.phase.kind === "FUNDING" && row.state.phase.checkout.phase === "REFUND_PENDING") return "WRONG_STATE";
 			if (command.price > row.contract.budget) return "PRICE_OVER_BUDGET";
+			if (!fundable) return "PRICE_CANNOT_FUND";
 			if (operator.kind === "HOUSE" && row.bids.some(bid => bid.kind === "HOUSE")) return "HOUSE_ALREADY_BID";
 			if (row.bids.some(bid => bid.operator === operator.id)) return "ALREADY_BID";
 			const bid: Bid = { id: parseBidId(`bid_${randomUUID()}`), operator: operator.id, handle: operator.handle,
@@ -690,6 +695,7 @@ function transitionTable(): {
 				agent: bid.agent, price: bid.price, eta: bid.eta };
 			const round = row.state.phase.fundingRounds + 1;
 			const quote = facts.loaded.quote;
+			if (quote === null) return "PRICE_CANNOT_FUND";
 			if (quote.split.price !== bid.price) return "WRONG_STATE";
 			return { next: { ...row, version: (row.version + 1) as Version,
 				bids: row.bids.map(b => b.id === bid.id ? { ...b, status: "CHOSEN" } : b),
