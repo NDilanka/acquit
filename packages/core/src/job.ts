@@ -1852,10 +1852,10 @@ export function attemptView(record: AttemptRecord): AttemptView {
 			sourceCommit: verdict.sourceCommit, at: verdict.at, frozen: verdict.tallies?.frozen ?? null, hidden: verdict.tallies?.hidden ?? null, pullRequest: null };
 }
 
-/** The judged attempts a projection serves: the open ones on an in-progress job, the kept ones on a verified or refunded job, none otherwise. */
+/** The judged attempts a projection serves: the open ones on an in-progress job, the kept ones on a verified, paid, or refunded job, none otherwise. */
 function historyOf(state: JobState): readonly AttemptRecord[] {
 	return state.status === "IN_PROGRESS" ? state.attempts.history
-		: state.status === "VERIFIED" || state.status === "REFUNDED" ? state.history : [];
+		: state.status === "VERIFIED" || state.status === "PAID" || state.status === "REFUNDED" ? state.history : [];
 }
 
 /**

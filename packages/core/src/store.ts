@@ -234,7 +234,7 @@ function storedPaid(state: JobState): JobState {
 	if (state.status !== "PAID") return state;
 	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
 	// A paid row stored before it kept its verdict history holds none: the read types that absence as
-	// the empty history, and the projection falls back to the receipt's own verified attempt.
+	// the empty history, so its projection lists no judged attempts. Its used count still reads the receipt.
 	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null,
 		history: Array.isArray(paid.history) ? paid.history : [] };
 }
