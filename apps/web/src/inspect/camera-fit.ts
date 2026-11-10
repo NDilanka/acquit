@@ -24,16 +24,19 @@ export function orbitPosition(o: Orbit): V3 {
 
 /**
  * The least distance at which every point lies inside the view, looking at `target` from the given angles.
- * `margin` is the share of the half-width and half-height the points may use. Exact for a pinhole camera: a point's
- * sideways and upward offsets do not change with distance, only its depth does.
+ * `margin` is the share of the half-width and half-height the points may use, or a [sideways, upward] pair. Exact for a
+ * pinhole camera: a point's sideways and upward offsets do not change with distance, only its depth does.
  */
-export function fitDistance(points: readonly V3[], target: V3, azimuth: number, polar: number, vfovDeg: number, aspect: number, margin = 0.88): number {
+export type Margin = number | readonly [number, number];
+
+export function fitDistance(points: readonly V3[], target: V3, azimuth: number, polar: number, vfovDeg: number, aspect: number, margin: Margin = 0.88): number {
+  const [mx, my] = typeof margin === "number" ? [margin, margin] : margin;
   const back = orbitDirection(azimuth, polar);
   const forward: V3 = [-back[0], -back[1], -back[2]];
   const right = norm(cross(forward, [0, 1, 0]));
   const up = cross(right, forward);
-  const tv = Math.tan((vfovDeg * Math.PI) / 360) * margin;
-  const th = tv * aspect;
+  const tv = Math.tan((vfovDeg * Math.PI) / 360) * my;
+  const th = Math.tan((vfovDeg * Math.PI) / 360) * mx * aspect;
   let need = 0;
   for (const p of points) {
     const q = sub(p, target);
@@ -48,7 +51,7 @@ export function fitDistance(points: readonly V3[], target: V3, azimuth: number, 
  * A target, on the plane y = start's y, from which the fitted view puts the points' bounds in the middle of the view.
  * Aiming at a point that is not the middle of the points leaves room unused on one side, so the fit is looser.
  */
-export function centredTarget(points: readonly V3[], start: V3, azimuth: number, polar: number, vfovDeg: number, aspect: number, margin = 0.88): V3 {
+export function centredTarget(points: readonly V3[], start: V3, azimuth: number, polar: number, vfovDeg: number, aspect: number, margin: Margin = 0.88): V3 {
   const back = orbitDirection(azimuth, polar);
   const forward: V3 = [-back[0], -back[1], -back[2]];
   const right = norm(cross(forward, [0, 1, 0]));

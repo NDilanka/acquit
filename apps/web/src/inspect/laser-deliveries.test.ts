@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { caughtOnlyBySealed, checklistOf, formatMeasured, measuredLabel } from "./checklist.ts";
 import { LASER_CHECKER, LASER_DELIVERIES, LASER_SAMPLE_FILES, laserJobSummary } from "./laser-deliveries.ts";
 import { checkerFor } from "./registry.ts";
+import { RULES } from "../../../../packages/verifier-laser/src/index.ts";
 import { placeOf, toDrawList } from "./scene-draw.ts";
 
 test("the picker offers every laser sample exactly once", () => {
@@ -69,6 +70,16 @@ test("every public rule the checker reports has a plain name, and no hidden rule
       if (finding.hidden) assert.equal(LASER_CHECKER.ruleNames[finding.rule], undefined, finding.rule);
       else assert.ok(LASER_CHECKER.ruleNames[finding.rule], `${finding.rule} has no plain name`);
     }
+});
+
+test("every rule the laser checker can emit has a plain name, except the sealed one", () => {
+  const sealed = new Set(LASER_DELIVERIES.flatMap((d) => d.run().findings.filter((f) => f.hidden).map((f) => f.rule)));
+  assert.deepEqual([...sealed], ["hidden-material"]);
+  for (const rule of RULES) {
+    if (sealed.has(rule)) continue;
+    assert.ok(LASER_CHECKER.ruleNames[rule], `${rule} has no plain name`);
+  }
+  for (const rule of Object.keys(LASER_CHECKER.ruleNames)) assert.ok((RULES as readonly string[]).includes(rule), `${rule} is not a checker rule`);
 });
 
 test("every failure caption is plain words and copies its numbers from the checker's message", () => {

@@ -27,7 +27,7 @@ A checker is one `CheckerEntry` in `CHECKERS` (`registry.ts`), keyed by the `wor
 | `specFileName`, `specText` | The job spec as the checker reads it, shown under "Show the file". |
 | `deliveries` | The files a visitor can pick. Each has an `id`, a `title`, a one-line `blurb`, `cheat`, the delivered `fileName` and `text`, and `run()`, which calls the real checker on `text` and returns its verdict. The honest file comes first. |
 | `featured` | Delivery ids shown before "More cheats", in order: the honest file, then three or four cheats a visitor understands at a glance. One should pass every public rule and fail a sealed check. |
-| `ruleNames` | A plain name for each public rule id, such as "Holes in the right place" for `holes`. The id is shown as small secondary text. |
+| `ruleNames` | A plain name for each public rule id, such as "Holes the right size, in the right place" for `holes`. Name what the rule tests, and give every public rule the checker can emit a name; the tests check this for the laser checker. The id is shown as small secondary text. |
 | `failCaption` | A plain caption for a failed public finding. Build it only from the finding's message: any number in the caption must appear in the message. Return `null` to show the message itself. |
 | `measured` | A label, unit and decimals for each key of `measured`. Mark an estimate as one in its label. |
 | `dressing` | `"laser"` draws a bed, gantry and head around the scene; `"none"` draws the scene on a plain floor. |

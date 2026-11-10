@@ -163,7 +163,8 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
 
   // The head on its gantry, the beam and the glow where it meets the sheet.
   const headMat = keep(new THREE.MeshStandardMaterial({ color: palette.head, roughness: 0.4, metalness: 0.3 }));
-  const gantryMat = keep(new THREE.MeshStandardMaterial({ color: palette.bedLine, roughness: 0.5, metalness: 0.2 }));
+  // See-through, because with the camera close on the part the beam crosses in front of it for much of the run.
+  const gantryMat = keep(new THREE.MeshStandardMaterial({ color: palette.bedLine, roughness: 0.5, metalness: 0.2, transparent: true, opacity: 0.4, depthWrite: false }));
   const gantry = new THREE.Mesh(keep(new THREE.BoxGeometry(sheetW + margin * 2, 2.5, 5)), gantryMat);
   gantry.visible = laser;
   scene.add(gantry);
@@ -193,23 +194,23 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
   marker.visible = false;
   scene.add(marker);
 
-  // Camera: an orbit around a target, eased toward a wanted orbit. The home view fits the whole sheet and everything
-  // drawn, whatever the stage's shape, with the part near the middle.
+  // Camera: an orbit around a target, eased toward a wanted orbit. The home view frames the part, about two thirds of
+  // the stage wide, and lets the sheet and bed run out of frame. While the head runs it is framed too; once the waste
+  // has dropped the view settles on the part alone.
   const [pminX, pminZ] = map(min);
   const [pmaxX, pmaxZ] = map(max);
   const partBox = boxCorners([pminX, 0, pminZ], [pmaxX, top, pmaxZ]);
-  const sheetBox = boxCorners([-sheetW / 2 - margin, -6, -sheetH / 2 - margin], [sheetW / 2 + margin, top, sheetH / 2 + margin]);
+  const headBox = boxCorners([pminX, top, pminZ], [pmaxX, top + HEAD_LIFT + 10, pmaxZ]);
   const partCentre: V3 = [(pminX + pmaxX) / 2, top, (pminZ + pmaxZ) / 2];
-  const HOME_AZIMUTH = -0.4;
-  const HOME_POLAR = 0.96;
-  const homePoints = [...sheetBox, ...partBox];
+  const HOME_AZIMUTH = -0.45;
+  const HOME_POLAR = 0.95;
+  const HOME_MARGIN = [0.62, 0.86] as const;
+  let settled = false;
   const homeOrbit = (): Orbit => {
     const aspect = camera.aspect || 1;
-    // Aimed at the middle of the sheet's image, nudged toward the part. Aiming at the part itself leaves the far side of a
-    // large sheet so much room that the part ends up small.
-    const centre = centredTarget(homePoints, partCentre, HOME_AZIMUTH, HOME_POLAR, FOV, aspect, 0.94);
-    const target: V3 = [centre[0] + (partCentre[0] - centre[0]) * 0.2, top, centre[2] + (partCentre[2] - centre[2]) * 0.2];
-    const distance = fitDistance(homePoints, target, HOME_AZIMUTH, HOME_POLAR, FOV, aspect, 0.94);
+    const points = settled || !laser ? partBox : [...partBox, ...headBox];
+    const target = centredTarget(points, partCentre, HOME_AZIMUTH, HOME_POLAR, FOV, aspect, HOME_MARGIN);
+    const distance = fitDistance(points, target, HOME_AZIMUTH, HOME_POLAR, FOV, aspect, HOME_MARGIN);
     return { azimuth: HOME_AZIMUTH, polar: HOME_POLAR, distance, target: new THREE.Vector3(...target) };
   };
   let want = homeOrbit();
@@ -317,14 +318,13 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
   host.addEventListener("keydown", onKey);
 
   let lastFocus: Place | null = null;
-  // A marked finding draws the camera halfway toward it, close enough to see the spot and far enough to keep the part.
+  // A marked finding draws the camera part of the way toward it, keeping the whole part and the marker's pin in view.
   const focusOrbit = (place: Place): Orbit => {
     const [x, z] = map([place.x, place.y]);
-    const home = homeOrbit();
-    const target: V3 = [(partCentre[0] + x) / 2, top, (partCentre[2] + z) / 2];
-    const azimuth = home.azimuth + 0.1;
+    const target: V3 = [partCentre[0] + (x - partCentre[0]) * 0.35, top, partCentre[2] + (z - partCentre[2]) * 0.35];
+    const azimuth = HOME_AZIMUTH + 0.1;
     const polar = HOME_POLAR - 0.06;
-    const distance = Math.min(home.distance, fitDistance([...partBox, [x, top, z]], target, azimuth, polar, FOV, camera.aspect || 1, 0.82));
+    const distance = fitDistance([...partBox, [x, top + 16, z]], target, azimuth, polar, FOV, camera.aspect || 1, [0.84, 0.88]);
     return { azimuth, polar, distance, target: new THREE.Vector3(...target) };
   };
 
@@ -367,6 +367,10 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
     }
     partMat.color.lerpColors(sheetColor, partColor, d);
     // Marker and camera.
+    if ((d >= 1) !== settled) {
+      settled = d >= 1;
+      if (!userMoved && focusKey === null) want = homeOrbit();
+    }
     const place = focus?.place ?? null;
     const key = place ? `${place.x},${place.y},${place.radius}` : null;
     if (key !== focusKey) {

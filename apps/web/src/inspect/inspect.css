@@ -30,7 +30,7 @@
 }
 .insp-stage-box { position: relative; min-width: 0; }
 /* Room the caption takes at the bottom of the stage; the 3D view frames the part above it. */
-.insp-stage { --stage-inset: 84px; }
+.insp-stage { --stage-inset: 96px; }
 .insp-stage.flat { cursor: default; }
 .insp-stage:active { cursor: grabbing; }
 .insp-canvas, .insp-flat { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -52,6 +52,8 @@
 }
 .insp-stage-verdict.pass { color: var(--green-text); background: var(--green-bg); border-color: var(--green-line); }
 .insp-stage-verdict.fail { color: var(--red); background: var(--red-bg); border-color: var(--red-line); }
+/* The verdict card sits right under the stage on wider screens, so the badge would say the same thing twice. */
+@media (min-width: 641px) { .insp-stage-verdict { display: none; } }
 .insp-note { margin: 0; font-size: var(--text-sm); color: var(--muted); }
 
 .insp-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
