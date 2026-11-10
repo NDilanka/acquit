@@ -52,7 +52,7 @@ test("the honest panel reports every rule in the standard order and passes", () 
 
 test("a red bow-tie fails no-self-intersection", () => {
 	const text = honest.replace('<path id="outline"', `<path id="bow" d="M95 35 L105 45 L95 45 L105 35 Z" stroke="#ff0000" fill="none"/>\n  <path id="outline"`);
-	assert.deepEqual(failedRules(text), ["no-self-intersection"]);
+	assert.deepEqual(failedRules(text), ["cutouts", "no-self-intersection"]);
 });
 
 test("a blue path outside the part fails engrave-inside", () => {

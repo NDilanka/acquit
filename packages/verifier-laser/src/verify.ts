@@ -9,13 +9,23 @@ import type { FinishedPart } from "./finished.ts";
 import { MAX_PAIR_TESTS } from "./limits.ts";
 import { validateSpec } from "./spec.ts";
 import { parseSvg } from "./svg.ts";
+import { fitTolerance, fitsRectangle, fitsRing, isRoundCut, RING_POINTS_MAX, roundedRectRing } from "./shapes.ts";
 import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
 import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SvgPath, Verdict, Vec2 } from "./types.ts";
 
 type Outline = { readonly path: SvgPath; readonly box: Bounds };
 
-/** A closed cut measured on the finished part: its finished size, and its centre in the part frame. */
-type Candidate = { readonly path: SvgPath; readonly width: number; readonly height: number; readonly centre: Vec2 };
+/**
+ * A cut measured on the finished part: its finished size, its centre in the part frame, and whether its finished
+ * extent lies wholly inside the part.
+ */
+type Candidate = {
+	readonly path: SvgPath;
+	readonly width: number;
+	readonly height: number;
+	readonly centre: Vec2;
+	readonly inside: boolean;
+};
 
 function check(rule: Rule, ok: boolean, passed: string, failed: string, refs: readonly string[] = []): Finding {
 	return {
@@ -46,12 +56,26 @@ function outlineOf(cut: readonly SvgPath[]): Outline | null {
 function candidateOf(path: SvgPath, part: FinishedPart): Candidate | null {
 	const own = boundsOf(path.points);
 	if (own === null) return null;
-	return {
-		path,
-		width: finishedInnerSize(part, widthOf(own)),
-		height: finishedInnerSize(part, heightOf(own)),
-		centre: toPart(part, centreOf(own)),
-	};
+	const width = finishedInnerSize(part, widthOf(own));
+	const height = finishedInnerSize(part, heightOf(own));
+	const centre = toPart(part, centreOf(own));
+	const [cx, cy] = centre;
+	const inside = cx - width / 2 >= 0 && cx + width / 2 <= part.widthMm && cy - height / 2 >= 0 && cy + height / 2 <= part.heightMm;
+	return { path, width, height, centre, inside };
+}
+
+/**
+ * The drawn corner radius of an outer corner. A sharp finished corner is drawn sharp. A rounded one is drawn kerf/2
+ * larger, because the cut runs kerf/2 outside the finished edge.
+ */
+const drawnCornerMm = (spec: Spec): number => (spec.cornerRadiusMm > 0 ? spec.cornerRadiusMm + spec.kerfMm / 2 : 0);
+
+/** The message for a feature rule: spec features not cut, and cuts that match no spec feature. */
+function missesText(misses: readonly string[], extras: readonly string[], extraWhat: string): string {
+	const parts: string[] = [];
+	if (misses.length > 0) parts.push(`not cut as specified: ${misses.join(", ")}`);
+	if (extras.length > 0) parts.push(`${extras.length} extra cut(s) ${extraWhat}`);
+	return parts.join("; ");
 }
 
 /** Takes the first candidate not yet claimed that fits. A duplicate drawing cannot satisfy two features. */
@@ -110,12 +134,14 @@ function sampleProblem(hidden: HiddenSample | null): string | null {
 
 /**
  * The pair and point tests the rules will run. Cut against cut costs at most the square of the cut edge count; each
- * engraving point and hidden sample costs one pass over the cut edges. Counted before any of them runs.
+ * engraving point and hidden sample costs one pass over the cut edges. Each spec feature, the outline and the extra
+ * cuts are fitted against an ideal shape of at most RING_POINTS_MAX points, one pass over the cut edges each. Counted
+ * before any of them runs.
  */
-function workOf(cut: readonly SvgPath[], engrave: readonly SvgPath[], samples: number): number {
+function workOf(cut: readonly SvgPath[], engrave: readonly SvgPath[], samples: number, features: number): number {
 	const edges = cut.reduce((sum, path) => sum + edgesOf(path.points, path.closed).length, 0);
 	const points = engrave.reduce((sum, path) => sum + path.points.length, 0);
-	return edges * edges + (points + samples) * edges;
+	return edges * edges + (points + samples) * edges + (features + 2) * edges * RING_POINTS_MAX * 2;
 }
 
 /**
@@ -149,7 +175,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	const doc = parsed.value;
 	const cut = doc.paths.filter(path => path.stroke === CUT_STROKE);
 	const engrave = doc.paths.filter(path => path.stroke === ENGRAVE_STROKE);
-	if (workOf(cut, engrave, hidden?.keepMaterialMm.length ?? 0) > MAX_PAIR_TESTS) {
+	if (workOf(cut, engrave, hidden?.keepMaterialMm.length ?? 0, spec.holes.length + spec.slots.length) > MAX_PAIR_TESTS) {
 		const size: Scene["size"] = [doc.widthMm, doc.heightMm, spec.thicknessMm];
 		return refused("the drawing has too many segments to check in one pass", sceneOf(doc.paths, size, spec));
 	}
@@ -190,7 +216,25 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	const open = cut.filter(path => !path.closed).map(path => path.id);
 	findings.push(check("closed-paths", open.length === 0, "every cut path is closed", `${open.length} cut path(s) are open`, open));
 
-	const candidates = part === null ? [] : cut.map(path => candidateOf(path, part)).filter((c): c is Candidate => c !== null);
+	const seen = new Map<string, string>();
+	const keys = new Map<SvgPath, string>();
+	const repeats = new Set<SvgPath>();
+	for (const path of cut) {
+		const key = shapeKey(path.points);
+		keys.set(path, key);
+		if (seen.has(key)) repeats.add(path);
+		else seen.set(key, path.id);
+	}
+	const duplicates = [...repeats].map(path => path.id);
+
+	// The outline is the part's edge, not a feature, so it is never a candidate for a hole or cutout.
+	const candidates =
+		part === null
+			? []
+			: cut
+					.filter(path => path !== outline?.path)
+					.map(path => candidateOf(path, part))
+					.filter((c): c is Candidate => c !== null);
 	const used = new Set<Candidate>();
 	const holeMisses: string[] = [];
 	for (const hole of spec.holes) {
@@ -200,7 +244,14 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		const found = claim(
 			candidates,
 			used,
-			c => c.path.closed && near(c.width, d, tol) && near(c.height, d, tol) && near(c.centre[0], cx, tol) && near(c.centre[1], cy, tol),
+			c =>
+				c.inside &&
+				c.path.closed &&
+				near(c.width, d, tol) &&
+				near(c.height, d, tol) &&
+				near(c.centre[0], cx, tol) &&
+				near(c.centre[1], cy, tol) &&
+				isRoundCut(c.path.points, c.path.closed, fitTolerance(tol)),
 		);
 		if (!found) holeMisses.push(`hole ${hole.id}`);
 	}
@@ -208,8 +259,29 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	for (const slot of spec.slots) {
 		const [sx, sy] = slot.sizeMm;
 		const tol = slot.toleranceMm;
-		const found = claim(candidates, used, c => c.path.closed && near(c.width, sx, tol) && near(c.height, sy, tol));
+		const found = claim(
+			candidates,
+			used,
+			c =>
+				c.inside &&
+				c.path.closed &&
+				near(c.width, sx, tol) &&
+				near(c.height, sy, tol) &&
+				fitsRectangle(c.path.points, c.path.closed, fitTolerance(tol)),
+		);
 		if (!found) cutoutMisses.push(`slot ${slot.id}`);
+	}
+	// A cut no feature claims is extra. A round one, or one where a hole belongs, is a hole fault; any other is a
+	// cutout fault. A repeat is left to no-duplicates and an open cut to closed-paths, so neither is counted again here.
+	const extraHoles: string[] = [];
+	const extraCutouts: string[] = [];
+	for (const c of candidates) {
+		if (used.has(c) || repeats.has(c.path) || !c.path.closed) continue;
+		const atHole = spec.holes.some(
+			hole => Math.hypot(c.centre[0] - hole.centreMm[0], c.centre[1] - hole.centreMm[1]) <= hole.diameterMm / 2 + hole.toleranceMm,
+		);
+		if (atHole || isRoundCut(c.path.points, c.path.closed, fitTolerance(spec.toleranceMm))) extraHoles.push(c.path.id);
+		else extraCutouts.push(c.path.id);
 	}
 	measured.holesMatched = spec.holes.length - holeMisses.length;
 	measured.holesExpected = spec.holes.length;
@@ -218,17 +290,19 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	findings.push(
 		check(
 			"holes",
-			holeMisses.length === 0,
+			holeMisses.length === 0 && extraHoles.length === 0,
 			`all ${spec.holes.length} holes are cut at their spec position and diameter`,
-			`not cut as specified: ${holeMisses.join(", ")}`,
+			missesText(holeMisses, extraHoles, "where no hole is specified"),
+			extraHoles,
 		),
 	);
 	findings.push(
 		check(
 			"cutouts",
-			cutoutMisses.length === 0,
+			cutoutMisses.length === 0 && extraCutouts.length === 0,
 			`all ${spec.slots.length} cutouts are cut at their spec size`,
-			`not cut as specified: ${cutoutMisses.join(", ")}`,
+			missesText(cutoutMisses, extraCutouts, "where no cutout is specified"),
+			extraCutouts,
 		),
 	);
 
@@ -252,12 +326,20 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		measured.outlineHeightMm = roundMm(heightOf(outline.box));
 		measured.finishedWidthMm = roundMm(part.widthMm);
 		measured.finishedHeightMm = roundMm(part.heightMm);
+		const sized = near(part.widthMm, px, spec.toleranceMm) && near(part.heightMm, py, spec.toleranceMm);
+		// The drawn outline must be the declared rectangle: every edge straight, every corner at the declared radius.
+		// A chamfer or a triangle keeps the box, so the size check alone would pass it.
+		const ideal = roundedRectRing(centreOf(outline.box), widthOf(outline.box), heightOf(outline.box), drawnCornerMm(spec));
+		const shaped = fitsRing(outline.path.points, outline.path.closed, ideal, fitTolerance(spec.toleranceMm));
+		const corners = spec.cornerRadiusMm > 0 ? `${spec.cornerRadiusMm} mm corners` : "square corners";
 		findings.push(
 			check(
 				"outer-size",
-				near(part.widthMm, px, spec.toleranceMm) && near(part.heightMm, py, spec.toleranceMm),
-				`the finished part is ${roundMm(part.widthMm)} x ${roundMm(part.heightMm)} mm, as specified`,
-				`the finished part is ${roundMm(part.widthMm)} x ${roundMm(part.heightMm)} mm; the spec part is ${px} x ${py} mm`,
+				sized && shaped,
+				`the finished part is ${roundMm(part.widthMm)} x ${roundMm(part.heightMm)} mm with ${corners}, as specified`,
+				sized
+					? `the outer cut is not a ${px} x ${py} mm outline with ${corners}`
+					: `the finished part is ${roundMm(part.widthMm)} x ${roundMm(part.heightMm)} mm; the spec part is ${px} x ${py} mm`,
 				[outline.path.id],
 			),
 		);
@@ -274,15 +356,6 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		);
 	}
 
-	const seen = new Map<string, string>();
-	const keys = new Map<SvgPath, string>();
-	const duplicates: string[] = [];
-	for (const path of cut) {
-		const key = shapeKey(path.points);
-		keys.set(path, key);
-		if (seen.has(key)) duplicates.push(path.id);
-		else seen.set(key, path.id);
-	}
 	findings.push(
 		check("no-duplicates", duplicates.length === 0, "no shape is cut twice", `${duplicates.length} cut(s) repeat an earlier cut`, duplicates),
 	);

@@ -15,8 +15,7 @@ if (!specResult.ok) throw new Error(JSON.stringify(specResult.errors));
 const spec = specResult.value;
 const hidden = JSON.parse(sample("enclosure-panel.hidden.json")) as HiddenSample;
 
-// Each fraud breaks exactly one named rule. The chamfered corner is the known gap: the spec defines a rectangular
-// part, so no rule sees the missing corner.
+// Each fraud breaks exactly one named rule, and the honest panel passes.
 const cases: { id: string; kind: "cheat" | "honest"; expected: string }[] = [
 	{ id: "honest", kind: "honest", expected: VERIFIED },
 	{ id: "fraud-no-kerf", kind: "cheat", expected: "outer-size" },
@@ -30,7 +29,7 @@ const cases: { id: string; kind: "cheat" | "honest"; expected: string }[] = [
 	{ id: "fraud-thin-web", kind: "cheat", expected: "min-web" },
 	{ id: "fraud-hidden-notch", kind: "cheat", expected: "hidden-material" },
 	{ id: "fraud-wrong-colour", kind: "cheat", expected: "colours" },
-	{ id: "fraud-chamfered-corner", kind: "cheat", expected: "ACCEPTED (gap)" },
+	{ id: "fraud-chamfered-corner", kind: "cheat", expected: "outer-size" },
 ];
 
 const results: CaseResult[] = [];
@@ -49,12 +48,11 @@ for (const item of cases) {
 test("the laser score card tallies every case and prints one line", () => {
 	const card: ScoreCard = tallyLasers(results);
 	assert.deepEqual(card, {
-		cheatsCaught: 11,
+		cheatsCaught: 12,
 		cheatsTotal: 12,
 		honestPassed: 1,
 		honestTotal: 1,
-		gaps: ["fraud-chamfered-corner"],
+		gaps: [],
 	});
 	console.log(formatLaserScoreCard(card));
-	for (const gap of card.gaps) console.log(`FINDING known gap: ${gap} passes the laser verifier`);
 });
