@@ -19,8 +19,8 @@ import { storedDefinitionOfDone, storedVertical, type JobRow } from "../../../pa
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
 import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import {
-	decideSampleTick, runsInWindow, sampleConsentStop, type SampleAction, type SampleDecision, type SampleFacts, type SampleJob,
-	type SampleOrders, type SampleRun,
+	decideSampleTick, isTransientBidRefusal, runsInWindow, sampleConsentStop, type SampleAction, type SampleDecision, type SampleFacts,
+	type SampleJob, type SampleOrders, type SampleRun,
 } from "../../../packages/core/src/sample-runner.ts";
 
 /** The scripted tree a sample run pushes. It passes the scenario fixture's frozen suite, so the verifier decides on real work. */
@@ -253,11 +253,12 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 			const outcome = await send(operator, step("place-bid"), { type: "PlaceBid", jobId: action.jobId as JobId,
 				price: action.priceCents as UsdCents, eta: hours(action.etaHours), agent: agentId as AgentId, pitch: BID_PITCH });
 			if (outcome.kind === "DENIED") {
-				// Busy means the House took no bid, so the record goes and the next tick bids again. Any other refusal is
-				// the run's outcome: the job is never bid on again, and the status shows the refusal for a day.
-				if (outcome.reason === "BUSY") {
+				// The House took no bid. A transient refusal (busy, short of credits, a state or onboarding step still
+				// open) clears by itself, so the record goes and the next tick bids again. Any other refusal is the run's
+				// outcome: the job is never bid on again, and the status shows the refusal for a day.
+				if (isTransientBidRefusal(outcome.reason)) {
 					ports.db.prepare("DELETE FROM sample_runner_runs WHERE job_id = ?").run(action.jobId);
-					log(`sample runner: ${action.jobId} bid not placed: the job is busy; the next tick retries`);
+					log(`sample runner: ${action.jobId} bid not placed: ${outcome.reason}; the next tick retries`);
 				} else {
 					ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = 'BID_DENIED' WHERE job_id = ?").run(action.jobId);
 					log(`sample runner: ${action.jobId} BID_DENIED: ${outcome.reason}`);

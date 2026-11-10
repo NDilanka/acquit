@@ -126,14 +126,25 @@ export function runsInWindow(runs: readonly SampleRun[], now: string): number {
 }
 
 /**
+ * The House's bid refusals that clear without the runner doing anything: the House was busy, the visitor's credits are
+ * granted or returned, the job leaves a transient state, the visitor finishes onboarding, or the exam is passed. The
+ * runner retries the same starter on the next tick and keeps no run for these. Every other refusal is the run's outcome.
+ */
+const TRANSIENT_BID_REFUSALS: ReadonlySet<string> = new Set(["BUSY", "INSUFFICIENT_CREDITS", "WRONG_STATE", "ONBOARDING_REQUIRED", "NOT_ACQUITTED"]);
+
+export function isTransientBidRefusal(reason: string): boolean {
+	return TRANSIENT_BID_REFUSALS.has(reason);
+}
+
+/**
  * What to do this tick for one hosted sample agent. The agent's own runs move one step at most: bid to push, push
  * to submit, submit to verdict. A run that finishes frees its slot in the same tick. Consent is checked first: while
  * it does not hold, a run may still finish from the real verdict or the House's bid outcome, but nothing is pushed
  * or submitted. A new bid starts only when consent holds, the visitor has no run in flight, the day's limit is not
- * reached, the House has not refused a bid in the last day, and a global slot is free. The standing-order floor must
- * also be a price the House can fund, or the status refuses with PRICE_CANNOT_CARRY_FEE and nothing is bid. A run the
- * runner closed while the House holds the visitor's money refuses with DELIVERY_STOPPED until that job leaves
- * IN_PROGRESS. Otherwise the status says why the visitor waits or is refused.
+ * reached, the House has not refused a bid for a reason that does not clear by itself in the last day, and a global
+ * slot is free. The standing-order floor must also be a price the House can fund, or the status refuses with
+ * PRICE_CANNOT_CARRY_FEE and nothing is bid. A run the runner closed while the House holds the visitor's money refuses
+ * with DELIVERY_STOPPED until that job leaves IN_PROGRESS. Otherwise the status says why the visitor waits or is refused.
  */
 export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	if (!facts.enabled) return decision("OFF", null, [], null);
@@ -169,7 +180,8 @@ export function decideSampleTick(facts: SampleFacts): SampleDecision {
 		return decision("REFUSED", "PRICE_CANNOT_CARRY_FEE", actions, `the price floor of ${orders.priceFloorCents} cents cannot carry the processing fee; no bid is placed`);
 	}
 	if (runsInWindow(facts.runs, facts.now) >= SAMPLE_RUNS_PER_DAY) return decision("REFUSED", "DAILY_LIMIT", actions, null);
-	// The House refused a bid recently, so the next bid waits a day. The status shows the refusal until then.
+	// The House refused a bid for a reason that does not clear by itself, so the next bid waits a day. A transient refusal
+	// keeps no run, so it never reaches this hold and the same starter is bid on the next tick.
 	if (facts.runs.some(run => run.outcome === "BID_DENIED" && now - Date.parse(run.placedAt) < DAY_MS)) {
 		return decision("REFUSED", "BID_DENIED", actions, "the House refused a sample bid in the last 24 hours; no new bid until then");
 	}

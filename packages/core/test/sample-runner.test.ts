@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SAMPLE_RUNS_PER_DAY, decideSampleTick, runsInWindow } from "../src/sample-runner.ts";
+import { SAMPLE_RUNS_PER_DAY, decideSampleTick, isTransientBidRefusal, runsInWindow } from "../src/sample-runner.ts";
 import type { SampleBid, SampleFacts, SampleJob, SampleRun } from "../src/sample-runner.ts";
 import { commercialSplit, usd } from "../src/ledger.ts";
 import { quote } from "../src/paypal.ts";
@@ -115,7 +115,7 @@ test("a run placed more than 24 hours ago no longer counts toward the limit", ()
 	assert.deepEqual(decision.actions, [{ kind: "bid", jobId: "job_a", priceCents: floor, etaHours: 48 }]);
 });
 
-test("a bid the House refused holds new bids for 24 hours, and counts toward no limit", () => {
+test("a bid the House refused for good holds new bids for 24 hours, and counts toward no limit", () => {
 	const runs = [run("job_denied", { phase: "DONE", outcome: "BID_DENIED", placedAt: minutesAgo(60) })];
 	assert.equal(runsInWindow(runs, now), 0);
 	const decision = decideSampleTick(facts({ jobs: [job("job_denied"), job("job_a")], runs }));
@@ -124,11 +124,24 @@ test("a bid the House refused holds new bids for 24 hours, and counts toward no 
 	assert.deepEqual(decision.actions, []);
 });
 
-test("the refusal hold ends 24 hours after the bid, and the refused job is never bid on again", () => {
+test("the hold for a refused bid ends 24 hours after the bid, and the refused job is never bid on again", () => {
 	const runs = [run("job_denied", { phase: "DONE", outcome: "BID_DENIED", placedAt: minutesAgo(25 * 60) })];
 	const decision = decideSampleTick(facts({ jobs: [job("job_denied"), job("job_a")], runs }));
 	assert.equal(decision.status, "RUNNING");
 	assert.deepEqual(decision.actions, [{ kind: "bid", jobId: "job_a", priceCents: floor, etaHours: 48 }]);
+});
+
+test("only a refusal that clears by itself is transient; a refusal of the job itself is for good", () => {
+	for (const reason of ["BUSY", "INSUFFICIENT_CREDITS", "WRONG_STATE", "ONBOARDING_REQUIRED", "NOT_ACQUITTED"]) {
+		assert.equal(isTransientBidRefusal(reason), true, `${reason} clears by itself`);
+	}
+	for (const reason of ["NOT_OWNER", "NOT_FOUND", "WRONG_TASK", "DEADLINE_PASSED", "PRICE_OVER_BUDGET", "ALREADY_BID", "HOUSE_ALREADY_BID"]) {
+		assert.equal(isTransientBidRefusal(reason), false, `${reason} stays refused`);
+	}
+	// A transient refusal stores no run, so the next tick sees no hold and bids the same starter again.
+	const decision = decideSampleTick(facts({ jobs: [job("job_denied"), job("job_a")], runs: [] }));
+	assert.equal(decision.status, "RUNNING");
+	assert.deepEqual(decision.actions, [{ kind: "bid", jobId: "job_denied", priceCents: floor, etaHours: 48 }]);
 });
 
 test("bids once, at the price floor, on an open starter of the agent's task on the scripted fixture", () => {

@@ -564,16 +564,16 @@ test("an open job reads FUNDING only when this operator's own bid was chosen, ne
 	assert.doesNotMatch(JSON.stringify(json), /op_other/);
 });
 
-test("a bid the House refuses holds the runner for a day, and the next starter is bid on after that", async () => {
+test("a bid the House refuses for good holds the runner for a day, and the next starter is bid on after that", async () => {
 	const db = new DatabaseSync(":memory:");
 	const world = fakeWorld();
-	world.refuseBids("INSUFFICIENT_CREDITS");
+	world.refuseBids("DEADLINE_PASSED");
 	const runner = createSampleRunner(portsOf(db, world));
 	await runner.kick();
 	assert.equal(placeBids(world).length, 1);
 	assert.equal(recordOf(db)?.phase, "DONE");
 	assert.equal(recordOf(db)?.outcome, "BID_DENIED");
-	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} BID_DENIED: INSUFFICIENT_CREDITS`)));
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} BID_DENIED: DEADLINE_PASSED`)));
 	const held = runner.statusOf(VISITOR);
 	assert.equal(held.decision.status, "REFUSED");
 	assert.equal(held.decision.reason, "BID_DENIED");
@@ -592,6 +592,26 @@ test("a bid the House refuses holds the runner for a day, and the next starter i
 		"the next starter is bid on once the hold lapses, and the refused job is not bid on again");
 });
 
+test("a transient bid refusal keeps no run, so the same starter is bid on the next tick, with no day's wait", async () => {
+	// The visitor has no credits yet: the House refuses with INSUFFICIENT_CREDITS, then the credits are granted.
+	for (const reason of ["INSUFFICIENT_CREDITS", "WRONG_STATE", "ONBOARDING_REQUIRED"]) {
+		const db = new DatabaseSync(":memory:");
+		const world = fakeWorld();
+		world.refuseBids(reason);
+		const runner = createSampleRunner(portsOf(db, world));
+		await runner.kick();
+		assert.equal(recordOf(db), undefined, `${reason} keeps no run record`);
+		assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: ${reason}; the next tick retries`)));
+		assert.notEqual(runner.statusOf(VISITOR).decision.reason, "BID_DENIED", `${reason} does not hold the runner for a day`);
+
+		world.refuseBids(null);
+		await runner.kick();
+		assert.deepEqual(placeBids(world).map(command => command.jobId), [JOB_ID, JOB_ID],
+			`after ${reason}, the same starter is bid on the next tick, without advancing the clock`);
+		assert.equal(recordOf(db)?.phase, "BID");
+	}
+});
+
 test("a bid the job is busy for leaves no run record, so the next tick bids again", async () => {
 	const db = new DatabaseSync(":memory:");
 	const world = fakeWorld();
@@ -600,7 +620,7 @@ test("a bid the job is busy for leaves no run record, so the next tick bids agai
 	await runner.kick();
 	assert.equal(placeBids(world).length, 4, "the bid is retried while the job is busy, then the tick gives up");
 	assert.equal(recordOf(db), undefined, "no record is kept for a bid the House never took");
-	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: the job is busy`)));
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: BUSY; the next tick retries`)));
 
 	world.refuseBids(null);
 	await runner.kick();
