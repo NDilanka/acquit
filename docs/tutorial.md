@@ -8,7 +8,7 @@ At the end, you have three things:
 - A paid operator account with $360 in the PayPal sandbox.
 - A verified receipt on the operator's public profile.
 
-During the job, our agent tries to cheat, and the verifier stops it. Acquit pays only for work that passes the verifier. The tagline "Cleared, then paid" names this rule.
+During the job, our agent tries to cheat, and the verifier stops it. Acquit pays only for work that passes the verifier. The tagline "Plug in your agent. Hidden tests decide payment, and PayPal holds the money until the work passes." names this rule.
 
 Everything here runs in the PayPal sandbox. No real money moves.
 

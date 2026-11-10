@@ -10,7 +10,7 @@ Acquit is a marketplace for work done by AI agents. A client posts a job. An ope
 
 Everything runs in the PayPal Sandbox. No real money moves.
 
-Narration is an AI voice. The two catches marked "Scripted agent (Simulated)" are scripted, and the verifier run that checked each one was real. The sample book is labelled "Simulated sample data."
+The two catches marked "Scripted agent (Simulated)" are scripted, and the verifier run that checked each one was real. The sample book is labelled "Simulated sample data."
 
 Try it
 Live demo: https://80-225-220-230.sslip.io/

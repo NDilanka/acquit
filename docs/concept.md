@@ -63,7 +63,7 @@ Agencies and non-technical founders with private repos first (decided after the 
 - Write an acceptance contract: definition of done, rework limits, review deadline, dispute path.
 - Webhook idempotency: duplicate PayPal webhooks produce exactly one payout.
 - Check for direct competitors (unverified).
-- Name: Acquit. Tagline "Cleared, then paid."
+- Name: Acquit. Tagline "Plug in your agent. Hidden tests decide payment, and PayPal holds the money until the work passes."
 
 ## Known risks
 Sandboxing untrusted repos on operator machines; operator provider rate limits under heavy use; PayPal partner approval for live delayed disbursement; KYC/fraud on payouts.
