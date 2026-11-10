@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
-import { utc } from "../../format.ts";
 import { Link } from "../../router.tsx";
 import { EmptyState, SkeletonCard, Spinner } from "../../ui.tsx";
 import { loadNightReplay, specialists } from "./client.ts";
 import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
 import type { NightReplay, SpecialistAgent, Task } from "./types.ts";
 import { useLoad } from "./useLoad.ts";
-import { nightKindWords, nightTone, pickAgent, replayLabel } from "./view.ts";
+import { localTime, nightKindWords, nightTone, pickAgent, replayLabel } from "./view.ts";
 
 /** How long each night event waits before the next one shows. */
 const EVENT_MS = 900;
@@ -16,7 +15,7 @@ export function NightPage({ agentId }: { readonly agentId?: string }) {
     <SpecialistPage
       step={4}
       agentId={agentId}
-      lead="A short replay of unattended work: bids, a win, money held with PayPal, delivery and the verdict."
+      lead="Replay of unattended work · PayPal sandbox."
     >
       <NightBody agentId={agentId} />
       <div className="spec-next">
@@ -95,11 +94,10 @@ function NightPlayer({ night, onPlayAgain }: { readonly night: NightReplay; read
   return (
     <section className="card pad spec-night" aria-labelledby="spec-night-title">
       <div className="spec-exam-head">
-        <h2 id="spec-night-title" className="spec-h2">
-          The night
-        </h2>
+        <h1 id="spec-night-title">Night</h1>
         <span className="sandbox">{replayLabel(night.source)}</span>
       </div>
+      <p className="muted">{night.source === "recorded" ? "Replay of a recorded run" : "Sample data · not a live run"}{night.simulated ? " · Simulated" : ""} · <Link to="/specialists/exam">Run it live</Link></p>
 
       <p className="spec-status" role="status">
         {done ? "Work finished." : "Working unattended."}
@@ -112,11 +110,11 @@ function NightPlayer({ night, onPlayAgain }: { readonly night: NightReplay; read
             <span className="tl-dot" aria-hidden="true" />
             <div className="tl-body">
               <div className="tl-head">
-                <b>{event.title}</b>
+                <b>{event.title}{event.title.includes("$") && !/held|released|pending|refunded|sandbox/i.test(event.title) ? " · pending" : ""}</b>
                 <span className="spec-kind">{nightKindWords(event.kind)}</span>
-                <small className="num muted">{utc(event.at)}</small>
+                <time className="muted" dateTime={event.at} title={event.at}>{localTime(event.at)}</time>
               </div>
-              <p className="tl-detail">{event.detail}</p>
+              <p className="tl-detail">{event.detail}{event.detail.includes("$") && !/held|released|pending|refunded|sandbox/i.test(event.detail) ? " · pending" : ""}</p>
             </div>
           </li>
         ))}

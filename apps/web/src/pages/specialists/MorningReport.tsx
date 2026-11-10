@@ -1,10 +1,10 @@
-import { shortId, usd, utc } from "../../format.ts";
+import { shortId } from "../../format.ts";
 import { EmptyState, SkeletonCard, StatTile } from "../../ui.tsx";
 import { specialists } from "./client.ts";
 import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
 import type { MorningReport, ReportEntry, SpecialistAgent } from "./types.ts";
 import { useLoad } from "./useLoad.ts";
-import { entryTitle, gradeChangeWords, paidTotalCents, sinceIso } from "./view.ts";
+import { dollars as usd, entryTitle, gradeChangeWords, localTime, paidTotalCents, sinceIso } from "./view.ts";
 
 export function MorningPage() {
   return (
@@ -19,7 +19,7 @@ export function MorningPage() {
 
 function MorningBody() {
   const report = useLoad(() => specialists.morningReport(sinceIso(Date.now())), "morning");
-  // Names come from the agent list. If that list cannot be read, entries fall back to "An agent".
+  // A null id is workspace activity, never silently assigned to the selected agent.
   const agents = useLoad(() => specialists.agents(), "agents");
   if (report.data === null) {
     return report.error !== null ? (
@@ -32,7 +32,7 @@ function MorningBody() {
 }
 
 function Report({ report, agents }: { readonly report: MorningReport; readonly agents: readonly SpecialistAgent[] }) {
-  const nameOf = (agentId: string | null): string => agents.find((a) => a.id === agentId)?.name ?? "An agent";
+  const nameOf = (agentId: string | null): string => agents.find((a) => a.id === agentId)?.name ?? "Workspace activity";
   const paid = paidTotalCents(report.payouts);
   // An empty window shows one empty state in place of the empty sections.
   const quiet =
@@ -47,19 +47,17 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
   return (
     <section className="spec-report" aria-labelledby="spec-report-title">
       <div className="spec-exam-head">
-        <h2 id="spec-report-title" className="spec-h2">
-          While you were away
-        </h2>
+        <h1 id="spec-report-title">While you were away</h1>
         {report.sandbox && <span className="sandbox">PayPal sandbox</span>}
       </div>
-      <p className="muted">Since {utc(report.since)}</p>
+      <p className="muted">Account activity, not a recorded replay. Since <time dateTime={report.since} title={report.since}>{localTime(report.since)}</time></p>
 
       <div className="spec-stats">
         <StatTile label="Bids" value={report.bids.length} />
         <StatTile label="Won" value={report.wins.length} />
         <StatTile label="Verified" value={report.verified.length} />
         <StatTile label="Rejected" value={report.rejected.length} />
-        <StatTile label="Paid out" value={usd(paid)} note={report.sandbox ? "Sandbox payouts" : undefined} />
+        <StatTile label="Released" value={`${usd(paid)} released`} note={report.sandbox ? "PayPal sandbox" : undefined} />
       </div>
 
       {quiet ? (
@@ -75,7 +73,7 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
 
           <section className="card pad spec-report-sec" aria-labelledby="spec-payouts-title">
             <h3 id="spec-payouts-title" className="spec-h3">
-              Paid out
+              Released
             </h3>
             {report.payouts.length === 0 ? (
               <p className="muted">No payouts in this window.</p>
@@ -84,9 +82,9 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
                 {report.payouts.map((p) => (
                   <li key={p.reference}>
                     <span className="mono">{p.reference}</span>
-                    <span className="num">{usd(p.amountCents)}</span>
+                    <span className="num">{usd(p.amountCents)} released</span>
                     <span className="muted">for job {shortId(p.jobId)}</span>
-                    <small className="num muted">{utc(p.at)}</small>
+                    <time className="muted" dateTime={p.at} title={p.at}>{localTime(p.at)}</time>
                   </li>
                 ))}
               </ul>
@@ -105,7 +103,7 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
                   <li key={`${g.at}-${g.agentId ?? ""}`}>
                     <span>{nameOf(g.agentId)}</span>
                     <span className="num">{gradeChangeWords(g.delta)}</span>
-                    <small className="num muted">{utc(g.at)}</small>
+                    <time className="muted" dateTime={g.at} title={g.at}>{localTime(g.at)}</time>
                   </li>
                 ))}
               </ul>
@@ -139,7 +137,7 @@ function EntryList({
             <li key={`${entry.at}-${entry.jobId ?? i}`}>
               <span>{entryTitle(entry, "Job")}</span>
               <span className="muted">{nameOf(entry.agentId)}</span>
-              <small className="num muted">{utc(entry.at)}</small>
+              <time className="muted" dateTime={entry.at} title={entry.at}>{localTime(entry.at)}</time>
             </li>
           ))}
         </ul>

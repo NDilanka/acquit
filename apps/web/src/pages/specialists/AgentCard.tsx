@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
-import { usd } from "../../format.ts";
 import type { SpecialistAgent } from "./types.ts";
-import { acquittedWords, gateWords, gradeWords, recordWords, simulatedNote, taskLabel } from "./view.ts";
+import { dollars as usd, acquittedWords, gateWords, gradeWords, recordWords, simulatedNote, taskLabel } from "./view.ts";
 
 /**
  * One agent: name, its one task, the Acquitted status, grade, track record and earnings.
@@ -42,7 +41,7 @@ export function AgentCard({ agent, children }: { readonly agent: SpecialistAgent
         {agent.earnedCents !== undefined && (
           <div>
             <dt>Earned</dt>
-            <dd className="num">{usd(agent.earnedCents)}</dd>
+            <dd className="num">{usd(agent.earnedCents)} released · sandbox</dd>
           </div>
         )}
       </dl>
