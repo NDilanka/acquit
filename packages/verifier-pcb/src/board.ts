@@ -1,7 +1,8 @@
 // Reads a KiCad 7/8 .kicad_pcb file into a plain board model. Only the copper that the rules need is kept:
 // F.Cu and B.Cu tracks, pads, and vias, plus the Edge.Cuts outline. Metadata layers (silkscreen, fab, courtyard)
-// are accepted and not modelled. Any construct outside the supported subset fails the parse with its name, and a
-// parse that cannot be read comes back with an error instead of a throw.
+// are accepted and not modelled. Any construct outside the supported subset fails the parse with its name. A
+// recognised record with a missing, non-finite, out-of-range, or non-positive mandatory field fails the parse too,
+// and a parse that cannot be read comes back with an error instead of a throw.
 
 import { arcPoints, add, circlePolygon, dist, ovalPolygon, rectPolygon, rotate } from "./geometry.ts";
 import { child, children, num, parseSexprs, type SExpr } from "./sexpr.ts";
@@ -247,6 +248,27 @@ const PAD_SHAPES = new Set(["rect", "circle", "oval", "roundrect"]);
 const PAD_LAYER = /^(F|B|\*)\.(Cu|Mask|Paste)$/;
 const EDGE_HEADS = new Set(["gr_line", "gr_rect", "gr_arc", "gr_circle"]);
 const METADATA_LAYER = /^(F|B)\.(SilkS|Fab|CrtYd)$|^(Dwgs|Cmts|Eco1|Eco2)\.User$|^User\.[1-9]$/;
+// A finite decimal written in plain notation. Longer forms such as 0x10 or NaN are rejected as malformed.
+const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+const MAX_COORD = 1_000_000; // millimetres; a coordinate or length beyond this is malformed
+const COORD_HEADS = new Set(["start", "mid", "end", "center", "at", "xy"]);
+const ARC_HEADS = new Set(["arc", "gr_arc", "fp_arc"]);
+/** The mandatory point fields of each record head. A record missing one fails the parse. */
+const REQUIRED_POINTS = new Map<string, readonly string[]>([
+	["segment", ["start", "end"]],
+	["arc", ["start", "mid", "end"]],
+	["via", ["at"]],
+	["footprint", ["at"]],
+	["pad", ["at"]],
+	["gr_line", ["start", "end"]],
+	["gr_rect", ["start", "end"]],
+	["gr_arc", ["start", "mid", "end"]],
+	["gr_circle", ["center", "end"]],
+	["fp_line", ["start", "end"]],
+	["fp_rect", ["start", "end"]],
+	["fp_arc", ["start", "mid", "end"]],
+	["fp_circle", ["center", "end"]],
+]);
 
 function listOf(item: SExpr | undefined): readonly SExpr[] | undefined {
 	return Array.isArray(item) ? (item as readonly SExpr[]) : undefined;
@@ -270,43 +292,133 @@ function unexpectedChild(list: readonly SExpr[], allowed: ReadonlySet<string>, a
 	return undefined;
 }
 
+function isCoordinate(v: SExpr | undefined): boolean {
+	return typeof v === "string" && NUMBER.test(v) && Math.abs(Number(v)) <= MAX_COORD;
+}
+
+/** A mandatory length: a finite, positive number within the cap. */
+function isLength(v: SExpr | undefined): boolean {
+	return isCoordinate(v) && Number(v) > 0;
+}
+
+function isAngle(v: SExpr | undefined): boolean {
+	return typeof v === "string" && NUMBER.test(v) && Number.isFinite(Number(v));
+}
+
+/** One coordinate field: two coordinates, and for `at` an optional third value that is a finite angle. */
+function coordinateFieldProblem(field: readonly SExpr[]): string | undefined {
+	const head = String(field[0]);
+	const atoms = field.slice(1);
+	const ok =
+		head === "at"
+			? (atoms.length === 2 || (atoms.length === 3 && isAngle(atoms[2]))) && isCoordinate(atoms[0]) && isCoordinate(atoms[1])
+			: atoms.length === 2 && isCoordinate(atoms[0]) && isCoordinate(atoms[1]);
+	return ok ? undefined : `malformed (${head}) coordinates`;
+}
+
+/** The first malformed coordinate field inside a record, at any depth. Zones are skipped. */
+function coordinateProblem(record: readonly SExpr[]): string | undefined {
+	const stack: (readonly SExpr[])[] = [record];
+	while (stack.length > 0) {
+		const list = stack.pop() as readonly SExpr[];
+		const head = list[0];
+		if (head === "zone") continue;
+		if (typeof head === "string" && COORD_HEADS.has(head)) {
+			const problem = coordinateFieldProblem(list);
+			if (problem) return problem;
+		}
+		for (const item of list) {
+			const sub = listOf(item);
+			if (sub) stack.push(sub);
+		}
+	}
+	return undefined;
+}
+
+function requiredProblem(record: readonly SExpr[], names: readonly string[] | undefined): string | undefined {
+	for (const name of names ?? []) {
+		if (!child(record, name)) return `(${name}) missing from (${String(record[0])})`;
+	}
+	return undefined;
+}
+
+/** A mandatory length field: exactly `count` positive lengths after its head. */
+function lengthsProblem(record: readonly SExpr[], name: string, count: number): string | undefined {
+	const owner = String(record[0]);
+	const field = child(record, name);
+	if (!field) return `(${name}) missing from (${owner})`;
+	const values = field.slice(1);
+	return values.length === count && values.every(v => isLength(v)) ? undefined : `invalid (${name}) in (${owner})`;
+}
+
+/** An arc whose three points are collinear is not an arc. */
+function arcProblem(arc: readonly SExpr[]): string | undefined {
+	return arcTrack(arc) ? undefined : `degenerate (${String(arc[0])}): its three points are collinear`;
+}
+
+/** The mandatory points, the coordinates, and the arc geometry of one record, or undefined when all are sound. */
+function numericProblem(record: readonly SExpr[]): string | undefined {
+	const head = String(record[0]);
+	const problem = requiredProblem(record, REQUIRED_POINTS.get(head)) ?? coordinateProblem(record);
+	if (problem) return problem;
+	return ARC_HEADS.has(head) ? arcProblem(record) : undefined;
+}
+
 function graphicProblem(g: readonly SExpr[], inFootprint: boolean): string | undefined {
 	const head = String(g[0]);
 	const layer = child(g, "layer")?.[1];
 	if (typeof layer !== "string") return `(${head}) without a layer`;
 	if (layer === "Edge.Cuts") {
-		return !inFootprint && EDGE_HEADS.has(head) ? undefined : `(${head}) on Edge.Cuts`;
+		if (inFootprint || !EDGE_HEADS.has(head)) return `(${head}) on Edge.Cuts`;
+	} else if (!METADATA_LAYER.test(layer)) {
+		return `(${head}) on layer ${layer}`;
 	}
-	if (METADATA_LAYER.test(layer)) return undefined;
-	return `(${head}) on layer ${layer}`;
+	return numericProblem(g);
 }
 
 function trackProblem(t: readonly SExpr[]): string | undefined {
 	const bad = unexpectedChild(t, TRACK_HEADS, 0);
 	if (bad) return bad;
 	const layer = child(t, "layer")?.[1];
-	return layer === "F.Cu" || layer === "B.Cu" ? undefined : `(${String(t[0])}) on layer ${String(layer)}`;
+	if (layer !== "F.Cu" && layer !== "B.Cu") return `(${String(t[0])}) on layer ${String(layer)}`;
+	return numericProblem(t) ?? lengthsProblem(t, "width", 1);
+}
+
+function viaProblem(v: readonly SExpr[]): string | undefined {
+	return (
+		unexpectedChild(v, VIA_HEADS, 0) ?? numericProblem(v) ?? lengthsProblem(v, "size", 1) ?? lengthsProblem(v, "drill", 1)
+	);
 }
 
 function padProblem(p: readonly SExpr[], ref: string): string | undefined {
 	const bad = unexpectedChild(p, PAD_HEADS, 3);
 	if (bad) return bad;
+	const name = p[1];
 	const type = p[2];
 	const shape = p[3];
+	if (typeof name !== "string") return `pad without a name on ${ref}`;
 	if (typeof type !== "string" || !PAD_TYPES.has(type)) return `pad type ${String(type)} on ${ref}`;
 	if (typeof shape !== "string" || !PAD_SHAPES.has(shape)) return `pad shape ${String(shape)} on ${ref}`;
-	for (const layer of (child(p, "layers") ?? []).slice(1)) {
+	const layers = child(p, "layers");
+	for (const layer of (layers ?? []).slice(1)) {
 		if (typeof layer !== "string" || !PAD_LAYER.test(layer)) return `pad layer ${String(layer)} on ${ref}`;
 	}
-	return undefined;
+	if (copperLayersOf(layers).length === 0) return `pad ${name} on ${ref} has no copper layer`;
+	// An SMD pad is a flat land and never carries a hole. A through-hole pad needs its drill.
+	const drill =
+		type === "smd" ? (child(p, "drill") ? `smd pad ${name} on ${ref} carries a drill` : undefined) : lengthsProblem(p, "drill", 1);
+	return numericProblem(p) ?? lengthsProblem(p, "size", 2) ?? drill;
 }
 
 function footprintProblem(fp: readonly SExpr[]): string | undefined {
 	const bad = unexpectedChild(fp, FOOTPRINT_HEADS, 1);
 	if (bad) return bad;
+	if (typeof fp[1] !== "string") return "footprint without a library name";
 	const layer = child(fp, "layer")?.[1];
 	if (layer !== "F.Cu") return `footprint on layer ${String(layer)}; only front-side footprints are supported`;
 	const ref = propertyReference(fp) || String(fp[1]);
+	const structural = numericProblem(fp);
+	if (structural) return structural;
 	for (const item of fp.slice(2)) {
 		const list = listOf(item);
 		const head = list?.[0];
@@ -329,7 +441,7 @@ function boardProblem(root: readonly SExpr[]): string | undefined {
 			head === "segment" || head === "arc"
 				? trackProblem(list)
 				: head === "via"
-					? unexpectedChild(list, VIA_HEADS, 0)
+					? viaProblem(list)
 					: head === "footprint"
 						? footprintProblem(list)
 						: head.startsWith("gr_")
