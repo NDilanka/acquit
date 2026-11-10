@@ -31,7 +31,9 @@ function padSpec(v: unknown): PadSpec | string {
 	const shape = v.shape;
 	const type = v.type;
 	if (name === undefined || !offset || !size) return "a pad needs a name, offset and size";
-	if (shape !== "rect" && shape !== "roundrect" && shape !== "circle" && shape !== "oval") return `pad ${name} has an unknown shape`;
+	if (shape !== "rect" && shape !== "circle" && shape !== "oval") {
+		return `pad ${name} has an unsupported shape ${String(shape)}; only rect, circle and oval are modelled`;
+	}
 	if (type !== "smd" && type !== "thru_hole" && type !== "np_thru_hole") return `pad ${name} has an unknown type`;
 	const drill = v.drill === undefined ? undefined : num(v.drill);
 	if (v.drill !== undefined && drill === undefined) return `pad ${name} has a bad drill`;

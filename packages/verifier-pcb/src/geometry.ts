@@ -142,23 +142,25 @@ export function rectPolygon(c: Vec2, size: Vec2, degrees: number): Vec2[] {
 	return corners.map(p => add(c, rotate(p, degrees)));
 }
 
-/** A stadium (capsule) of the given size, the long side along the pad's own x or y axis. */
+/**
+ * A stadium (capsule) of the given size. It is built horizontally, long side on x, and a pad taller than it is wide
+ * has that capsule turned 90 degrees first, so the long side follows the pad's longer size. Then the pad's
+ * orientation is applied to the whole capsule.
+ */
 export function ovalPolygon(c: Vec2, size: Vec2, degrees: number): Vec2[] {
+	const tall = size[1] > size[0];
 	const r = Math.min(size[0], size[1]) / 2;
 	const half = Math.max(size[0], size[1]) / 2 - r;
-	const along: Vec2 = size[0] >= size[1] ? [half, 0] : [0, half];
+	const place = (p: Vec2): Vec2 => add(c, rotate(tall ? rotate(p, 90) : p, degrees));
 	const out: Vec2[] = [];
-	const steps = OVAL_STEPS;
-	// Arc around the +along end, then around the -along end.
-	for (let i = 0; i <= steps; i++) {
-		const t = -Math.PI / 2 + (Math.PI * i) / steps;
-		const local = add(along, [r * Math.cos(t), r * Math.sin(t)]);
-		out.push(add(c, rotate(local, degrees)));
+	// Arc around the +x end, then around the -x end.
+	for (let i = 0; i <= OVAL_STEPS; i++) {
+		const t = -Math.PI / 2 + (Math.PI * i) / OVAL_STEPS;
+		out.push(place([half + r * Math.cos(t), r * Math.sin(t)]));
 	}
-	for (let i = 0; i <= steps; i++) {
-		const t = Math.PI / 2 + (Math.PI * i) / steps;
-		const local = add([-along[0], -along[1]], [r * Math.cos(t), r * Math.sin(t)]);
-		out.push(add(c, rotate(local, degrees)));
+	for (let i = 0; i <= OVAL_STEPS; i++) {
+		const t = Math.PI / 2 + (Math.PI * i) / OVAL_STEPS;
+		out.push(place([-half + r * Math.cos(t), r * Math.sin(t)]));
 	}
 	return out;
 }

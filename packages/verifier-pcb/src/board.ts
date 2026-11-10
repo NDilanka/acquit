@@ -293,7 +293,6 @@ const PAD_HEADS = new Set([
 	"tstamp",
 	"pinfunction",
 	"pintype",
-	"roundrect_rratio",
 	"solder_mask_margin",
 	"solder_paste_margin",
 	"solder_paste_ratio",
@@ -301,7 +300,8 @@ const PAD_HEADS = new Set([
 const TRACK_HEADS = new Set(["start", "mid", "end", "width", "layer", "net", "locked", "tstamp", "uuid", "status"]);
 const VIA_HEADS = new Set(["at", "size", "drill", "layers", "net", "free", "locked", "tenting", "uuid", "tstamp"]);
 const PAD_TYPES = new Set(["smd", "thru_hole", "np_thru_hole"]);
-const PAD_SHAPES = new Set(["rect", "circle", "oval", "roundrect"]);
+// A roundrect is not modelled: its corner ratio would change the copper, so it is refused rather than drawn square.
+const PAD_SHAPES = new Set(["rect", "circle", "oval"]);
 const PAD_LAYER = /^(F|B|\*)\.(Cu|Mask|Paste)$/;
 /** Two lengths within this of each other are the same length, mm. */
 const BORE_TOL = 0.001;
