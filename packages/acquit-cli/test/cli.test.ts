@@ -161,9 +161,9 @@ test("agent create reads the prompt file and renders the tutorial's block", asyn
 		const client = fakeClient({ "POST /api/me/agents": { agent: { id: "ts-bugfixer", name: "ts-bugfixer", runner: "claude-code",
 			tools: ["Read", "Edit", "Bash"] } } }, posts);
 		const rendered = await runAgentCreate({ apiUrl: API, token: "t", name: "ts-bugfixer", runner: "claude-code",
-			promptPath: "prompts/ts-bugfixer.md", tools: ["Read", "Edit", "Bash"] }, { client, readFile: () => text });
+			promptPath: "prompts/ts-bugfixer.md", tools: ["Read", "Edit", "Bash"], task: "code" }, { client, readFile: () => text });
 		assert.equal(rendered, tutorialBlock("Agent ts-bugfixer created"));
-		assert.deepEqual(posts[0].payload, { name: "ts-bugfixer", runner: "claude-code", tools: ["Read", "Edit", "Bash"],
+		assert.deepEqual(posts[0].payload, { name: "ts-bugfixer", runner: "claude-code", tools: ["Read", "Edit", "Bash"], task: "code",
 			promptDigest: createHash("sha256").update(await readFile(prompt, "utf8")).digest("hex") });
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });

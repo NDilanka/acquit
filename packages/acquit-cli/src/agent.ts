@@ -6,6 +6,10 @@ import { readFileSync } from "node:fs";
 import { CliError, apiFlag, readLogin, resolveToken } from "./client.ts";
 import type { ApiClient } from "./client.ts";
 
+/** The jobs an agent can take. `code` is the only task the verifier runs today; the others are simulated. */
+export const AGENT_TASKS = ["code", "print-fdm", "laser-cut"] as const;
+export type AgentTask = (typeof AGENT_TASKS)[number];
+
 export type AgentCreateOptions = {
 	readonly apiUrl: string;
 	readonly token: string;
@@ -13,9 +17,10 @@ export type AgentCreateOptions = {
 	readonly runner: "claude-code" | "codex";
 	readonly promptPath: string;
 	readonly tools: readonly string[];
+	readonly task: AgentTask;
 };
 
-const USAGE = "Usage: acquit agent create <name> --prompt <file> [--runner claude-code|codex] [--allow-tools Read,Edit,Bash] [--api <url>]";
+const USAGE = "Usage: acquit agent create <name> --prompt <file> [--runner claude-code|codex] [--task code|print-fdm|laser-cut] [--allow-tools Read,Edit,Bash] [--api <url>]";
 
 export function parseAgentArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): AgentCreateOptions {
 	const { apiUrl, rest } = apiFlag(argv, env);
@@ -24,6 +29,7 @@ export function parseAgentArgs(argv: readonly string[], env: NodeJS.ProcessEnv =
 	let runner: "claude-code" | "codex" = "claude-code";
 	let promptPath: string | null = null;
 	let tools: string[] = [];
+	let task: AgentTask = "code";
 	for (let index = 1; index < rest.length; index++) {
 		const flag = rest[index];
 		const value = (): string => {
@@ -37,13 +43,18 @@ export function parseAgentArgs(argv: readonly string[], env: NodeJS.ProcessEnv =
 			runner = next;
 		} else if (flag === "--prompt") promptPath = value();
 		else if (flag === "--allow-tools") tools = value().split(",").map(tool => tool.trim()).filter(tool => tool !== "");
+		else if (flag === "--task") {
+			const next = value();
+			if (!(AGENT_TASKS as readonly string[]).includes(next)) throw new CliError("USAGE", "--task takes code, print-fdm, or laser-cut.");
+			task = next as AgentTask;
+		}
 		else if (flag.startsWith("--")) throw new CliError("USAGE", `Unknown flag ${flag}.`);
 		else if (name === null) name = flag;
 		else throw new CliError("USAGE", `Unexpected argument ${flag}.`);
 	}
 	if (name === null || promptPath === null) throw new CliError("USAGE", USAGE);
 	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new CliError("USAGE", "Agent names are lowercase letters, digits, and dashes.");
-	return { apiUrl, token: resolveToken(undefined, env, () => readLogin(env)?.token ?? null), name, runner, promptPath, tools };
+	return { apiUrl, token: resolveToken(undefined, env, () => readLogin(env)?.token ?? null), name, runner, promptPath, tools, task };
 }
 
 /** The line count the block prints: the file's lines, with a trailing newline not counting as one. */
@@ -61,7 +72,8 @@ export async function runAgentCreate(options: AgentCreateOptions,
 	const lines = countLines(prompt);
 	if (lines === 0) throw new CliError("PROMPT_EMPTY", `${options.promptPath} is empty.`);
 	const promptDigest = createHash("sha256").update(prompt).digest("hex");
-	const answer = await deps.client.post("/api/me/agents", { name: options.name, runner: options.runner, promptDigest, tools: options.tools });
+	const answer = await deps.client.post("/api/me/agents", { name: options.name, runner: options.runner, promptDigest, tools: options.tools,
+		task: options.task });
 	if (answer.status === 409) throw new CliError("AGENT_EXISTS", `Agent ${options.name} is already registered.`);
 	if (answer.status !== 200 && answer.status !== 201) throw new CliError("AGENT_REFUSED", `The API refused the agent (HTTP ${answer.status}).`);
 	return [`Agent ${options.name} created`, `\tPrompt: ${options.promptPath} (${lines} lines)`, `\tRunner: ${options.runner}`,
