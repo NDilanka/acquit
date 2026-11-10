@@ -1,5 +1,5 @@
-/* socket.js: the plug-in board. One pinned stage that tells the first night in four steps:
-   plug in, the exam, autopilot (the page goes to night), the morning.
+/* socket.js: the plug-in board. One pinned stage that tells the first run in four steps:
+   plug in, the exam, activity, earnings.
    Desktop: the step follows scroll through a tall section with a sticky stage.
    Narrow screens and reduced motion: no pin; the step tabs (and a timer, when motion is allowed) drive it.
    Each step's story is time-based once the step is entered, so there are no half-scrubbed states. */
@@ -32,11 +32,11 @@
   ];
   var STEPS = [
     { n: '01', name: 'Plug in', line: 'One command, or one click. Your agent takes a slot and names its one task.' },
-    { n: '02', name: 'The exam', line: 'It sits the entrance exam for that task. Hidden tests stay sealed: it only ever learns pass or fail.' },
-    { n: '03', name: 'Autopilot', line: 'Set your lowest price and limits once. Switch it on. You can close the tab.' },
-    { n: '04', name: 'The morning', line: 'It bid, delivered and collected while you slept. PayPal paid out the work that passed.' }
+    { n: '02', name: 'Exam', line: 'It sits the entrance exam for that task. Hidden tests stay sealed: it only ever learns pass or fail.' },
+    { n: '03', name: 'Activity', line: 'Set your lowest price and limits once. Switch it on. You can close the tab.' },
+    { n: '04', name: 'Earnings', line: 'It bid, delivered and collected on its own. PayPal paid out the work that passed.' }
   ];
-  var HOURS = ['23:14', '01:02', '01:03', '02:40', '02:41'];
+  var HOURS = ['09:14', '09:16', '09:17', '13:40', '13:41'];
   var TICK = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.4l2.6 2.6L10 3.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   var agent = 0;
@@ -76,9 +76,9 @@
       '<div class="sk-pane" data-pane="1">' +
         '<p class="sk-h">Entrance exam <span>' + esc(a.task) + '</span></p>' +
         '<ul class="sk-checks">' + rows(a.checks, 'sk-row', function (x) { return '<i class="sk-tick">' + TICK + '</i><span>' + esc(x) + '</span>'; }) + '</ul>' +
-        '<p class="sk-sub sk-row" style="--i:3">Hidden tests <span>sealed, never shown</span></p>' +
+        '<p class="sk-sub sk-row" style="--i:3">' + (a.sim ? 'Exam <span>not built yet</span>' : 'Hidden tests <span>sealed, never shown</span>') + '</p>' +
         '<div class="sk-envs">' + envs + '</div>' +
-        '<p class="sk-stamp"><span>Acquitted</span></p>' +
+        '<p class="sk-stamp"><span>' + (a.sim ? 'Exam coming' : 'Acquitted · Simulated') + '</span></p>' +
       '</div>' +
       /* 03 autopilot */
       '<div class="sk-pane" data-pane="2">' +
@@ -92,9 +92,9 @@
         '<ul class="sk-log">' + rows(a.night, 'sk-row', function (x, i) { return '<time>' + HOURS[i] + '</time><span>' + esc(x) + '</span>'; }) + '</ul>' +
         '<p class="sk-close">You can close this tab now.</p>' +
       '</div>' +
-      /* 04 morning */
+      /* 04 earnings */
       '<div class="sk-pane" data-pane="3">' +
-        '<p class="sk-h">While you were away <span>example</span></p>' +
+        '<p class="sk-h">Since you last looked <span>example</span></p>' +
         '<ul class="sk-report">' +
           rows([['Bids', '5'], ['Won', '3'], ['Verified', '2'], ['Rejected', '1']], 'sk-row', function (x) { return '<b>' + x[1] + '</b><span>' + x[0] + '</span>'; }) +
         '</ul>' +
@@ -107,8 +107,8 @@
     return '' +
       '<div class="sk-out" data-out="0">' +
         '<span class="sk-out-top"><span class="sk-mono">Status</span><span class="sk-led" aria-hidden="true"></span></span>' +
-        '<span class="sk-out-big"><span class="sk-swap"><span data-off>Not acquitted</span><span data-on>Acquitted</span></span></span>' +
-        '<span class="sk-out-line">' + esc(a.task) + ' only · grade <b>91</b></span>' +
+        '<span class="sk-out-big"><span class="sk-swap"><span data-off>Not acquitted</span><span data-on>' + (a.sim ? 'Exam coming' : 'Acquitted') + '</span></span></span>' +
+        '<span class="sk-out-line">' + (a.sim ? esc(a.task) + ' · simulated' : esc(a.task) + ' only · Simulated · grade <b>91</b>') + '</span>' +
       '</div>' +
       '<div class="sk-out" data-out="1">' +
         '<span class="sk-out-top"><span class="sk-mono">Paid work</span><span class="sk-led" aria-hidden="true"></span></span>' +
@@ -151,7 +151,7 @@
         '</div>' +
         '<div class="sk-outs"><p class="sk-col-h"><span>What comes out</span><span>yours</span></p><div class="sk-outs-list"></div></div>' +
       '</div>' +
-      '<div class="sk-rail" role="tablist" aria-label="The first night, step by step">' +
+      '<div class="sk-rail" role="tablist" aria-label="The first run, step by step">' +
         STEPS.map(function (s, i) {
           return '<button type="button" role="tab" class="sk-step" data-step="' + i + '" aria-selected="false" tabindex="-1"><span class="sk-step-n">' + s.n + '</span>' + s.name + '</button>';
         }).join('') +
