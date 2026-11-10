@@ -8,7 +8,7 @@
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "preview": "vite preview",
-    "test": "node --test src/*.test.ts src/pages/specialists/*.test.ts"
+    "test": "node --test src/*.test.ts src/pages/specialists/*.test.ts src/inspect/*.test.ts"
   },
   "dependencies": {
     "ag-grid-community": "36.2.0",
@@ -18,7 +18,8 @@
     "gsap": "^3.15.0",
     "lenis": "^1.3.27",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "three": "0.187.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

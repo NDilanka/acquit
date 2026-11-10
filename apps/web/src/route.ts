@@ -8,6 +8,7 @@ export type Route =
   | { name: "receipt"; id: string }
   | { name: "verifiers" }
   | { name: "print" }
+  | { name: "inspect" }
   | { name: "tour" }
   | { name: "operator" }
   | { name: "operatorBids" }
@@ -46,6 +47,7 @@ export function match(path: string): Route {
   if (path === "/studio/sample" || path === "/studio/sample/") return { name: "studioSample" };
   if (path === "/verifiers" || path === "/verifiers/") return { name: "verifiers" };
   if (path === "/print" || path === "/print/") return { name: "print" };
+  if (path === "/inspect" || path === "/inspect/") return { name: "inspect" };
   if (path === "/tour" || path === "/tour/") return { name: "tour" };
   if (/^\/specialists\/?$/.test(path)) return { name: "specialists" };
   if (/^\/specialists\/morning\/?$/.test(path)) return { name: "specialistMorning" };
@@ -78,6 +80,7 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
     case "receipt":
     case "verifiers":
     case "print":
+    case "inspect":
     case "start":
     case "newJob":
     case "job":

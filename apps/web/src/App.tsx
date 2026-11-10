@@ -29,6 +29,8 @@ import { FloorPage } from "./pages/specialists/Floor";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
+// The inspector carries the laser checker and, behind it, three.js; neither loads until /inspect renders.
+const InspectPage = lazy(() => import("./inspect/InspectPage"));
 
 function Studio({ sample = false }: { sample?: boolean }) {
   return (
@@ -75,7 +77,7 @@ export function App() {
   // The verifier registry and the print verifier are public for the same reason. A print run makes its own account.
   const route = match(location.path);
   const heading = pageHeading(route, session?.user.role ?? null);
-  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
+  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "inspect") {
     return (
       <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
         <main id="content" tabIndex={-1} className="wrap">
@@ -83,6 +85,10 @@ export function App() {
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
             <VerifiersPage />
+          ) : route.name === "inspect" ? (
+            <Suspense fallback={<SkeletonCard lines={4} />}>
+              <InspectPage />
+            </Suspense>
           ) : (
             <PrintDemoPage session={session} onSignedIn={signedIn} />
           )}
