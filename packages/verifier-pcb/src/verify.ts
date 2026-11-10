@@ -17,6 +17,7 @@ import {
 	circlePolygon,
 	dist,
 	pointInPolygon,
+	pointSegmentDistance,
 	polygonDistance,
 	rectPolygon,
 	ROUNDOFF,
@@ -42,6 +43,7 @@ type TrackGeo = {
 	readonly a: Vec2;
 	readonly b: Vec2;
 	readonly width: number;
+	readonly net: string; // the net number as written: "" when absent, "0" when unconnected
 	readonly box: Box;
 	readonly length: number;
 	readonly slop: number;
@@ -242,12 +244,35 @@ function describeAt(p: Vec2): string {
 	return `(${fmt(p[0])}, ${fmt(p[1])})`;
 }
 
+/** A plated drill: its centre, diameter, net number, and whether it is a via's (a pad's is not). */
+type Plate = {
+	readonly center: Vec2;
+	readonly drill: number;
+	readonly name: string;
+	readonly net: string;
+	readonly via: boolean;
+};
+
 /** The drill a copper item carries: a via's bore, or a plated pad's. Undefined for any other item. */
-function plateDrillOf(g: Geo): { center: Vec2; drill: number; name: string } | undefined {
+function plateDrillOf(g: Geo): Plate | undefined {
 	if (g.kind !== "poly") return undefined;
-	if (g.via) return { center: g.via.at, drill: g.via.drill, name: `the via at ${describeAt(g.via.at)}` };
+	if (g.via) {
+		return {
+			center: g.via.at,
+			drill: g.via.drill,
+			name: `the via at ${describeAt(g.via.at)}`,
+			net: g.via.net,
+			via: true,
+		};
+	}
 	if (g.pad && g.pad.drill !== undefined) {
-		return { center: g.pad.center, drill: g.pad.drill, name: `the drill of pad ${g.pad.id}` };
+		return {
+			center: g.pad.center,
+			drill: g.pad.drill,
+			name: `the drill of pad ${g.pad.id}`,
+			net: g.pad.net,
+			via: false,
+		};
 	}
 	return undefined;
 }
@@ -265,10 +290,28 @@ function wiredThrough(t: TrackGeo, center: Vec2, radius: number): boolean {
 }
 
 /**
+ * A straight track of the via's own net that runs across the via's drill, with both ends outside it. The drill cuts the
+ * track in two, but each half still meets the via's copper round the bore, so the net stays whole. Only vias qualify:
+ * a pad's copper may be broken by its own drill, so nothing ensures each half still meets the pad. A net of "" or "0"
+ * is no net, so it never counts as the via's own.
+ */
+function crossesOwnVia(t: TrackGeo, plate: Plate): boolean {
+	if (!plate.via || t.slop > 0) return false;
+	if (plate.net === "" || plate.net === "0" || t.net !== plate.net) return false;
+	const radius = plate.drill / 2;
+	return (
+		dist(t.a, plate.center) > radius &&
+		dist(t.b, plate.center) > radius &&
+		pointSegmentDistance(plate.center, t.a, t.b) < radius
+	);
+}
+
+/**
  * The first plated drill that cuts another item, as a parse message, or undefined. A via's bore and a plated pad's
  * bore remove copper on every layer, so no other item may reach into one, whatever its net. The drilled item's own
- * copper is exempt, and so is a track wired through the drill's centre. Non-plated holes are clearance checks instead.
- * This runs before connectivity, so no contact is credited through copper a drill removes.
+ * copper is exempt, and so is a track wired through the drill's centre, and a same-net track crossing a via (see
+ * crossesOwnVia). Non-plated holes are clearance checks instead. This runs before connectivity, so no contact is
+ * credited through copper a drill removes.
  */
 function plateBoreCut(geos: readonly Geo[], budget: Budget): string | undefined {
 	for (const owner of geos) {
@@ -278,7 +321,7 @@ function plateBoreCut(geos: readonly Geo[], budget: Budget): string | undefined 
 		const bore = drillGeo(plate.center, plate.drill);
 		for (const g of geos) {
 			if (g === owner) continue;
-			if (g.kind === "track" && wiredThrough(g, plate.center, radius)) continue;
+			if (g.kind === "track" && (wiredThrough(g, plate.center, radius) || crossesOwnVia(g, plate))) continue;
 			if (boxGap(g.box, bore.box) > ROUNDOFF + g.slop + bore.slop) continue;
 			if (!take(budget, edgesOf(g) * edgesOf(bore))) return undefined;
 			if (gap(g, bore) - (g.slop + bore.slop) <= ROUNDOFF) {
@@ -447,6 +490,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			a: t.a,
 			b: t.b,
 			width: t.width,
+			net: t.net,
 			box: boxOf([t.a, t.b], t.width / 2),
 			length: dist(t.a, t.b),
 			slop: t.slop,

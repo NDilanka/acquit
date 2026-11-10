@@ -41,6 +41,7 @@ export type Track = {
 	readonly a: Vec2;
 	readonly b: Vec2;
 	readonly width: number;
+	readonly net: string; // the net number as the file writes it ("" when absent); "0" is no net
 	readonly netName: string; // the file's label; geometry never trusts it
 	readonly slop: number; // mm; how far the modelled copper may differ from the true copper (0 for a straight track)
 };
@@ -57,6 +58,7 @@ export type PadInst = {
 	readonly poly: readonly Vec2[];
 	readonly layers: readonly CopperLayer[];
 	readonly drill: number | undefined;
+	readonly net: string; // the net number as the file writes it ("" when absent); "0" is no net
 	readonly netName: string;
 	readonly footprintRot: number;
 	readonly footprintOrigin: Vec2;
@@ -69,6 +71,7 @@ export type Via = {
 	readonly at: Vec2;
 	readonly size: number;
 	readonly drill: number;
+	readonly net: string; // the net number as the file writes it ("" when absent); "0" is no net
 	readonly netName: string;
 	readonly poly: readonly Vec2[];
 	readonly slop: number; // mm; how far the modelled polygon may differ from the true via
@@ -137,6 +140,12 @@ function netNameOf(list: readonly SExpr[]): string {
 	if (!net) return "";
 	const v = net[2];
 	return typeof v === "string" ? v : "";
+}
+
+/** The bare net number a track, via or pad writes first. Quoted or malformed numbers are refused by the admission checks. */
+function netNumberOf(list: readonly SExpr[]): string {
+	const v = fieldOf(list, "net")?.[1];
+	return typeof v === "string" && /^\d+$/.test(v) ? v : "";
 }
 
 function copperLayersOf(list: readonly SExpr[] | undefined): CopperLayer[] {
@@ -820,7 +829,16 @@ export function readBoard(text: string): Board {
 		const b = point(fieldOf(seg, "end"));
 		const width = num(fieldOf(seg, "width"), 1);
 		if (!layer || !a || !b || width === undefined) continue;
-		tracks.push({ id: `track-${tracks.length}`, layer, a, b, width, netName: netNameOf(seg), slop: 0 });
+		tracks.push({
+			id: `track-${tracks.length}`,
+			layer,
+			a,
+			b,
+			width,
+			net: netNumberOf(seg),
+			netName: netNameOf(seg),
+			slop: 0,
+		});
 	}
 	for (const arc of recordsOf(root, "arc")) {
 		const layer = layerOf(fieldOf(arc, "layer"));
@@ -834,6 +852,7 @@ export function readBoard(text: string): Board {
 				a: pts[i] as Vec2,
 				b: pts[i + 1] as Vec2,
 				width,
+				net: netNumberOf(arc),
 				netName: netNameOf(arc),
 				// Each piece's chord lies within MAX_ARC_ERROR of the true arc (see planArc).
 				slop: MAX_ARC_ERROR,
@@ -853,6 +872,7 @@ export function readBoard(text: string): Board {
 			at,
 			size,
 			drill,
+			net: netNumberOf(v),
 			netName: netNameOf(v),
 			poly: circlePolygon(at, size / 2),
 			slop: circleError(size / 2),
@@ -896,6 +916,7 @@ export function readBoard(text: string): Board {
 				poly: padPolygon(center, shape, size, angle),
 				layers: copperLayersOf(fieldOf(p, "layers")),
 				drill,
+				net: netNumberOf(p),
 				netName: netNameOf(p),
 				footprintRot: rot,
 				footprintOrigin: origin,
