@@ -49,14 +49,21 @@ The chord count for a curve is bounded by the limits in `src/limits.ts`. A curve
 `MAX_CHORDS` fails the `parse` rule.
 
 A round hole is checked against its true circle, not a polygon. A closed cut fits the hole when its loop is simple, runs
-once round the centre and encloses an area the tolerance allows, every vertex and every edge midpoint lies within the
-tolerance of that circle, and no arc of the circle is left uncut for longer than twice the tolerance. A polygon with
-the right vertices but straight sides fails. A C-shaped loop whose arcs lie within the tolerance of the circle but do not
-run round the centre fails.
+once round the centre and encloses an area the tolerance allows, and every point of it lies within the tolerance of that
+circle. That part is exact for a polyline: distance from the centre is convex along each straight edge, so the vertices
+bound the outside and a centre-clear test bounds the inside. Running once round the centre inside that band also covers
+every direction of the circle within the tolerance, and an explicit guard refuses any arc of the circle left uncut for
+longer than twice the tolerance. A polygon with the right vertices but straight sides fails. A C-shaped loop whose arcs
+lie within the tolerance of the circle but do not run round the centre fails.
 
-The outer cut fits the declared rectangle when every vertex and every edge midpoint lies within the tolerance of the
-exact outline: straight sides and quarter-circle corners at the declared radius, measured on the box the cut spans.
-Straight chords standing off a true arc fail, and a rounded rectangle with the wrong radius fails.
+The outer cut and the slots fit the declared rounded rectangle by a two-way sampled distance check at a quarter of the
+tolerance. Every drawn edge is sampled, and each sample must lie within the tolerance of the exact outline: straight
+sides and quarter-circle corners at the declared radius, measured on the box the cut spans. The exact outline is
+sampled at the same spacing, each sample must lie within the tolerance of the drawn cut, and the cut must run once
+round the centre. Straight chords standing off a true arc fail, a rounded rectangle with the wrong radius fails, and a
+contour that stays within the tolerance band but leaves a stretch of the ideal outline uncut — a stepped or shortcut
+corner — fails too. The samples a fit needs are counted from the geometry before any is taken, and a shape too large
+to check at the requested tolerance fails the `parse` rule.
 
 ## Rules
 
