@@ -592,7 +592,7 @@ test("a bid the House refuses for good holds the runner for a day, and the next 
 		"the next starter is bid on once the hold lapses, and the refused job is not bid on again");
 });
 
-test("a transient bid refusal keeps no run, so the same starter is bid on the next tick, with no day's wait", async () => {
+test("a transient bid refusal keeps no run, and the same starter is bid again two minutes later, with no day's wait", async () => {
 	// The visitor has no credits yet: the House refuses with INSUFFICIENT_CREDITS, then the credits are granted.
 	for (const reason of ["INSUFFICIENT_CREDITS", "WRONG_STATE", "ONBOARDING_REQUIRED"]) {
 		const db = new DatabaseSync(":memory:");
@@ -601,18 +601,27 @@ test("a transient bid refusal keeps no run, so the same starter is bid on the ne
 		const runner = createSampleRunner(portsOf(db, world));
 		await runner.kick();
 		assert.equal(recordOf(db), undefined, `${reason} keeps no run record`);
-		assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: ${reason}; the next tick retries`)));
+		assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: ${reason}; the bid is retried in 2 minutes`)));
 		assert.notEqual(runner.statusOf(VISITOR).decision.reason, "BID_DENIED", `${reason} does not hold the runner for a day`);
 
 		world.refuseBids(null);
+		world.advance(30_000);
+		await runner.kick();
+		assert.equal(placeBids(world).length, 1, `after ${reason}, the visitor is not asked again within the retry window`);
+
+		world.advance(90_000 - 1);
+		await runner.kick();
+		assert.equal(placeBids(world).length, 1, `one millisecond short of two minutes after ${reason}, still no bid`);
+
+		world.advance(1);
 		await runner.kick();
 		assert.deepEqual(placeBids(world).map(command => command.jobId), [JOB_ID, JOB_ID],
-			`after ${reason}, the same starter is bid on the next tick, without advancing the clock`);
+			`two minutes after ${reason}, the same starter is bid on`);
 		assert.equal(recordOf(db)?.phase, "BID");
 	}
 });
 
-test("a bid the job is busy for leaves no run record, so the next tick bids again", async () => {
+test("a bid the job is busy for leaves no run record, and the bid is sent again once the retry window has passed", async () => {
 	const db = new DatabaseSync(":memory:");
 	const world = fakeWorld();
 	world.refuseBids("BUSY");
@@ -620,11 +629,15 @@ test("a bid the job is busy for leaves no run record, so the next tick bids agai
 	await runner.kick();
 	assert.equal(placeBids(world).length, 4, "the bid is retried while the job is busy, then the tick gives up");
 	assert.equal(recordOf(db), undefined, "no record is kept for a bid the House never took");
-	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: BUSY; the next tick retries`)));
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: BUSY; the bid is retried in 2 minutes`)));
 
 	world.refuseBids(null);
 	await runner.kick();
-	assert.equal(placeBids(world).length, 5, "the next tick bids again");
+	assert.equal(placeBids(world).length, 4, "no bid is sent while the visitor waits out the retry window");
+
+	world.advance(2 * 60_000);
+	await runner.kick();
+	assert.equal(placeBids(world).length, 5, "two minutes on, the bid is sent again");
 	assert.equal(recordOf(db)?.phase, "BID");
 });
 

@@ -128,7 +128,8 @@ export function runsInWindow(runs: readonly SampleRun[], now: string): number {
 /**
  * The House's bid refusals that clear without the runner doing anything: the House was busy, the visitor's credits are
  * granted or returned, the job leaves a transient state, the visitor finishes onboarding, or the exam is passed. The
- * runner retries the same starter on the next tick and keeps no run for these. Every other refusal is the run's outcome.
+ * runner keeps no run for these and bids the same starter again once its retry window passes. Every other refusal is
+ * the run's outcome.
  */
 const TRANSIENT_BID_REFUSALS: ReadonlySet<string> = new Set(["BUSY", "INSUFFICIENT_CREDITS", "WRONG_STATE", "ONBOARDING_REQUIRED", "NOT_ACQUITTED"]);
 
@@ -181,7 +182,7 @@ export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	}
 	if (runsInWindow(facts.runs, facts.now) >= SAMPLE_RUNS_PER_DAY) return decision("REFUSED", "DAILY_LIMIT", actions, null);
 	// The House refused a bid for a reason that does not clear by itself, so the next bid waits a day. A transient refusal
-	// keeps no run, so it never reaches this hold and the same starter is bid on the next tick.
+	// keeps no run, so it never reaches this hold and the same starter is bid on again once the retry window passes.
 	if (facts.runs.some(run => run.outcome === "BID_DENIED" && now - Date.parse(run.placedAt) < DAY_MS)) {
 		return decision("REFUSED", "BID_DENIED", actions, "the House refused a sample bid in the last 24 hours; no new bid until then");
 	}

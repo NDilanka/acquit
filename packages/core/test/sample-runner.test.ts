@@ -138,7 +138,7 @@ test("only a refusal that clears by itself is transient; a refusal of the job it
 	for (const reason of ["NOT_OWNER", "NOT_FOUND", "WRONG_TASK", "DEADLINE_PASSED", "PRICE_OVER_BUDGET", "ALREADY_BID", "HOUSE_ALREADY_BID"]) {
 		assert.equal(isTransientBidRefusal(reason), false, `${reason} stays refused`);
 	}
-	// A transient refusal stores no run, so the next tick sees no hold and bids the same starter again.
+	// A transient refusal stores no run, so no hold applies and the same starter is bid on again once the retry window passes.
 	const decision = decideSampleTick(facts({ jobs: [job("job_denied"), job("job_a")], runs: [] }));
 	assert.equal(decision.status, "RUNNING");
 	assert.deepEqual(decision.actions, [{ kind: "bid", jobId: "job_denied", priceCents: floor, etaHours: 48 }]);

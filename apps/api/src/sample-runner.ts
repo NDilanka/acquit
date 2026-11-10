@@ -33,6 +33,11 @@ const BID_PITCH = "Hosted sample bid at the price floor";
  * the lease within this time, and a second process on the same database waits.
  */
 const LEASE_MS = 2 * 60 * 1000;
+/**
+ * How long a visitor waits after a transient bid refusal before the runner bids for it again. The refusal clears by
+ * itself, so the wait only limits how often the House is asked while it lasts.
+ */
+const TRANSIENT_RETRY_MS = 2 * 60 * 1000;
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS sample_runner_runs (
 	job_id TEXT PRIMARY KEY,
@@ -114,6 +119,8 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 	const queuedSince = new Map<string, string>();
 	// The last idle or refused reason logged per visitor, so a quiet visitor logs once rather than every tick.
 	const lastNote = new Map<string, string>();
+	// When each visitor may be bid for again after a transient refusal. Process-local: a restart bids again at once.
+	const retryAt = new Map<string, number>();
 
 	function kick(): Promise<void> {
 		if (current === null) {
@@ -173,6 +180,12 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		const agent = sampleAgentOf(visitor);
 		// A visitor with no sample agent reads no job rows at all.
 		if (agent === undefined) return;
+		// After a transient refusal the visitor is left alone until its retry window has passed.
+		const resumeAt = retryAt.get(visitor.id);
+		if (resumeAt !== undefined) {
+			if (Date.parse(ports.now()) < resumeAt) return;
+			retryAt.delete(visitor.id);
+		}
 		const decision = decisionOf(visitor, agent);
 		if (decision.status === "QUEUED") {
 			if (!queuedSince.has(visitor.id)) queuedSince.set(visitor.id, ports.now());
@@ -254,11 +267,13 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 				price: action.priceCents as UsdCents, eta: hours(action.etaHours), agent: agentId as AgentId, pitch: BID_PITCH });
 			if (outcome.kind === "DENIED") {
 				// The House took no bid. A transient refusal (busy, short of credits, a state or onboarding step still
-				// open) clears by itself, so the record goes and the next tick bids again. Any other refusal is the run's
-				// outcome: the job is never bid on again, and the status shows the refusal for a day.
+				// open) clears by itself, so the record goes and the visitor waits out the retry window before the next
+				// bid. Any other refusal is the run's outcome: the job is never bid on again, and the status shows the
+				// refusal for a day.
 				if (isTransientBidRefusal(outcome.reason)) {
 					ports.db.prepare("DELETE FROM sample_runner_runs WHERE job_id = ?").run(action.jobId);
-					log(`sample runner: ${action.jobId} bid not placed: ${outcome.reason}; the next tick retries`);
+					retryAt.set(visitor.id, Date.parse(ports.now()) + TRANSIENT_RETRY_MS);
+					log(`sample runner: ${action.jobId} bid not placed: ${outcome.reason}; the bid is retried in 2 minutes`);
 				} else {
 					ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = 'BID_DENIED' WHERE job_id = ?").run(action.jobId);
 					log(`sample runner: ${action.jobId} BID_DENIED: ${outcome.reason}`);
