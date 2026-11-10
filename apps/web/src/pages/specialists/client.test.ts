@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, test } from "node:test";
 import { ApiError } from "../../api.ts";
 import { specialists } from "./client.ts";
@@ -14,6 +15,31 @@ function answer(status: number, body: unknown) {
   }) as typeof fetch;
   return calls;
 }
+
+test("owner activity reads the contract unchanged, with optional bounded limit and same-origin credentials", async () => {
+  const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8"));
+  const calls = answer(200,example);
+  assert.deepEqual(await specialists.activity(),example);
+  assert.equal(calls[0]?.path,"/api/me/activity");
+  assert.equal(calls[0]?.init?.method,"GET");
+  assert.equal(calls[0]?.init?.credentials,"same-origin");
+  assert.equal(calls[0]?.init?.body,undefined);
+  await specialists.activity(50);
+  assert.equal(calls[1]?.path,"/api/me/activity?limit=50");
+  for (const limit of [0,51,1.5,NaN]) await assert.rejects(specialists.activity(limit),RangeError);
+  assert.equal(calls.length,2);
+});
+
+test("only an activity 404 silently selects the legacy read path", async () => {
+  answer(404,{error:"NOT_FOUND"});
+  assert.equal(await specialists.activity(),null);
+  for (const status of [401,403,500,503]) {
+    answer(status,{error:status === 403 ? "NOT_OWNER" : "UNAVAILABLE"});
+    await assert.rejects(specialists.activity(),error => error instanceof ApiError && error.status === status);
+  }
+  globalThis.fetch = async () => { throw new TypeError("Network unavailable"); };
+  await assert.rejects(specialists.activity(),TypeError);
+});
 
 test("the on-load exam read requests the newest server record without an exam query", async () => {
   const calls = answer(200, {

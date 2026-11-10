@@ -27,11 +27,8 @@ const ROLE_PAGES: Record<Role, readonly NavItem[]> = {
   PLATFORM: [{ to: "/studio", label: "Dashboards", icon: "dashboard" }, SAMPLE_BOOK],
 };
 
-/** Every role also gets these two pages, under the Public label. /cli is reached from the link the terminal prints. */
-const PUBLIC_PAGES: readonly NavItem[] = [
-  { to: "/verifiers", label: "Verifiers", icon: "shield", group: "Public" },
-  { to: "/print", label: "Print verifier", icon: "printer", group: "Public" },
-];
+/** Checking belongs in the account menu and footer, not the work navigation. */
+const PUBLIC_PAGES: readonly NavItem[] = [];
 
 const SCENARIOS: NavItem = { to: "/tour", label: "Scenarios", icon: "play", group: "Public" };
 
@@ -84,6 +81,8 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Public", title: "Verifiers" };
     case "print":
       return { eyebrow: "Public", title: "Print verifier" };
+    case "howWorkIsChecked":
+      return { eyebrow: "Public", title: "How work is checked" };
     case "tour":
       return { eyebrow, title: "Scenarios" };
     case "operator":
@@ -112,6 +111,8 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Specialists", title: "Earnings" };
     case "specialistLeaderboard":
       return { eyebrow: "Specialists", title: "Leaderboard" };
+    case "agentRecord":
+      return { eyebrow: "Public", title: "Agent record" };
     case "notFound":
       return { eyebrow: "Acquit", title: "Page not found" };
   }

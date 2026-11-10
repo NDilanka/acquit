@@ -24,7 +24,7 @@ import {
   type RawPublicAgent,
   type RawSample,
 } from "./mapping.ts";
-import type { ExamReplay, NightReplay, SpecialistsApi, StandingOrders, StandingOrdersInput, Task } from "./types.ts";
+import type { ExamReplay, NightReplay, OwnerActivity, SpecialistsApi, StandingOrders, StandingOrdersInput, Task } from "./types.ts";
 
 type Method = "GET" | "POST" | "PUT";
 
@@ -111,6 +111,16 @@ export const specialists: SpecialistsApi = {
   async morningReport(since) {
     const r = await call<RawMorning>("GET", `/api/me/morning-report?since=${enc(since)}`);
     return reportOf(r);
+  },
+
+  async activity(limit) {
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) throw new RangeError("Activity limit must be 1–50.");
+    try {
+      return await call<OwnerActivity>("GET", `/api/me/activity${limit === undefined ? "" : `?limit=${limit}`}`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
   },
 };
 

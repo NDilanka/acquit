@@ -78,9 +78,9 @@ test("the pass rule is five parts and one trap, and a farm is headed Simulated",
   assert.equal(farmHeading("Orbit Farm"), "Orbit Farm (Simulated)");
 });
 
-test("/print opens the print demo, with or without a trailing slash", () => {
-  assert.deepEqual(match("/print"), { name: "print" });
-  assert.deepEqual(match("/print/"), { name: "print" });
+test("/print moves to how work is checked", () => {
+  assert.deepEqual(match("/print"), { name: "howWorkIsChecked" });
+  assert.deepEqual(match("/print/"), { name: "howWorkIsChecked" });
 });
 
 test("the page copy uses no em or en dashes, and the two honest lines are the brief's exact words", () => {

@@ -1,7 +1,9 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "../../router";
+import { useOwner } from "./OwnerPanel";
+import { WorkTime } from "./WorkTimeline";
 import type { Counts, ExamStatus, Task } from "./types";
-import { checkLayout, localTime, taskLabel, isOpenExam, SIMULATED_WORD } from "./view";
+import { checkLayout, isOpenExam, SIMULATED_WORD } from "./view";
 
 export function Envelope({ opened, failed = false }: { opened: boolean; failed?: boolean }) {
   return <svg className={`record-envelope ${opened ? "open" : "sealed"}`} viewBox="0 0 24 28" aria-hidden="true">
@@ -39,7 +41,7 @@ export function CheckCells({ counts, total, hidden }: { counts: Counts | null; t
   return <section className={`record-check-group ${hidden ? "hidden-group" : ""}`} aria-label={hidden ? "Hidden checks" : "Visible checks"}>
     <p className="check-group-label">{hidden ? "Hidden checks" : "Visible checks"}{counts && <span>{counts.passed} / {counts.total} passed</span>}</p>
     {layout.segmented ? <div className="record-check-bar" role="img" aria-label={counts ? `${counts.passed} / ${counts.total} passed` : `${total} checks waiting`}
-      style={{ "--segments": Math.min(total, 48), "--passed": `${counts && total ? counts.passed / total * 100 : 0}%`,
+      style={{ "--segments": Math.min(total, 12), "--passed": `${counts && total ? counts.passed / total * 100 : 0}%`,
         "--bar-rest": counts && failed ? "var(--red)" : "var(--surface-2)" } as CSSProperties} />
       : <CheckRowGroups rows={rows} />}
   </section>;
@@ -60,34 +62,34 @@ export function ExamRecord({ status, simulated, task, grade, date, visible, hidd
 }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState(false);
+  const { announce } = useOwner();
   const passed = status === "PASSED";
   const open = isOpenExam(status);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(new URL(recordPath, window.location.origin).href); setCopied(true); setCopyError(false); }
-    catch { setCopyError(true); }
+    try { await navigator.clipboard.writeText(new URL(recordPath, window.location.origin).href); setCopied(true); setCopyError(false); announce("Record link copied."); }
+    catch { setCopyError(true); announce("Copy failed. Open Record link and copy the address."); }
   };
-  return <section className="exam-record" aria-label="Exam record">
+  return <><section className="exam-record" aria-label="Exam record">
     <header className="record-heading" aria-live="polite">
       <Seal passed={passed} />
       <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}</h1>
-        <div className="record-origin">{simulated ? <span className="sandbox">{SIMULATED_WORD}</span> : "Live run"}</div>
+        <div className="record-origin">{simulated ? <span className="owner-honesty">{SIMULATED_WORD}</span> : "Live run"}</div>
       </div>
     </header>
-    <div className="record-meta"><span>{taskLabel(task)}</span>{grade !== null && <span>Grade {grade}</span>}
-      {date && <time dateTime={date} title={date}>{localTime(date)}</time>}</div>
+    <div className="record-meta">{grade !== null && <span>Grade {grade}</span>}
+      {date && <span>Examined <WorkTime at={date} full /></span>}</div>
     <div className="record-check-bed">
-      {open ? <div className="record-check-waiting" role="status"><p>Results arrive together.</p><p>Visible checks · waiting</p><p>Hidden checks · sealed</p></div> : <>
+      {open ? <div className="record-check-waiting"><p>Results arrive together.</p><p>Visible checks · waiting</p><p>Hidden checks · sealed</p></div> : <>
         <CheckCells counts={visible} total={visible?.total ?? 0} hidden={false} />
         <CheckCells counts={hidden} total={hidden?.total ?? 0} hidden />
       </>}
     </div>
     <footer className="record-foot">
-      <div className="record-tools"><details><summary>Why hidden checks?</summary><p>The agent never sees these tests. Only pass or fail is shown.</p></details>
-      {!open && <div className="record-ref"><Link to={recordPath}>Record link</Link>
+      <div className="record-tools"><details><summary>Why hidden checks?</summary><p>Unseen tests. Results only.</p></details>
+      {!open && <div className="record-ref"><Link to={recordPath}>Record</Link>
         <button type="button" className="text-button" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</button></div>}
       </div>
-      <div className="owner-actions record-action">{action}</div>
     </footer>
-    {copyError && <p role="status">Copy failed. Open Record link and copy the address.</p>}
-  </section>;
+    {copyError && <p>Copy failed. Open Record link and copy the address.</p>}
+  </section><div className="owner-actions record-action">{action}</div></>;
 }

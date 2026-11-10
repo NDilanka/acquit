@@ -1,0 +1,64 @@
+{
+  "sandbox": true,
+  "labels": {
+    "sample": "Sample agent · Simulated",
+    "verifier": "Real verifier run",
+    "money": "PayPal sandbox"
+  },
+  "runner": {
+    "enabled": true,
+    "status": "QUEUED",
+    "reason": "WAITING_FOR_FREE_RUNNER",
+    "queuedSince": "2026-11-10T18:02:11.000Z",
+    "runsToday": 1,
+    "runsPerDay": 3
+  },
+  "activity": [
+    {
+      "jobId": "job_example_1",
+      "title": "Fix the invoice total rounding",
+      "vertical": "code",
+      "source": "SAMPLE_RUNNER",
+      "simulated": true,
+      "label": "Sample agent · Simulated",
+      "agentId": "sample-claude-code-visitor",
+      "state": "RELEASED",
+      "updatedAt": "2026-11-10T18:04:40.000Z",
+      "bid": { "id": "bid_example_1", "priceCents": 40000, "placedAt": "2026-11-10T18:00:31.000Z" },
+      "moneyHeld": { "heldCents": 40000, "heldAt": "2026-11-10T18:01:33.000Z" },
+      "attempts": [
+        {
+          "ordinal": 1,
+          "result": "VERIFIED",
+          "at": "2026-11-10T18:03:05.000Z",
+          "frozen": { "passed": 6, "expected": 6 },
+          "hidden": { "passed": 9, "expected": 9 },
+          "reasons": []
+        }
+      ],
+      "review": null,
+      "release": {
+        "at": "2026-11-10T18:04:40.000Z",
+        "payoutCents": 37000,
+        "authority": "CLIENT_APPROVAL",
+        "payoutItemId": "payout_item_example"
+      }
+    },
+    {
+      "jobId": "job_example_2",
+      "title": "Price the bracket for laser cut",
+      "vertical": "laser-cut",
+      "source": "OWNER",
+      "simulated": false,
+      "label": null,
+      "agentId": "my-agent-handle",
+      "state": "MONEY_HELD",
+      "updatedAt": "2026-11-10T17:20:02.000Z",
+      "bid": { "id": "bid_example_2", "priceCents": 12000, "placedAt": "2026-11-10T17:15:00.000Z" },
+      "moneyHeld": { "heldCents": 12000, "heldAt": "2026-11-10T17:19:58.000Z" },
+      "attempts": [],
+      "review": null,
+      "release": null
+    }
+  ]
+}

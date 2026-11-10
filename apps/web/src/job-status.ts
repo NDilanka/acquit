@@ -5,6 +5,10 @@ export type StatusTone = "open" | "held" | "alert" | "ok" | "new";
 
 export type StatusLabel = { readonly label: string; readonly tone: StatusTone };
 
+export function operatorJobCrumb(status: JobView["status"]) {
+  return status === "OPEN" ? { to:"/operator",label:"Open jobs" } : { to:"/operator/work",label:"My work" };
+}
+
 /** The fields the vocabulary reads. The last verdict tells a rejected job, still holding escrow, from a fresh one. */
 export type StatusInput = Pick<JobView, "status" | "phase" | "checkoutPhase"> & {
   readonly attempts: Pick<JobView["attempts"], "last">;
