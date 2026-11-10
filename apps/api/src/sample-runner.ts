@@ -12,7 +12,8 @@ import { hours } from "../../../packages/core/src/ids.ts";
 import { isStarterJob } from "../../../packages/core/src/house-client.ts";
 import type { UsdCents } from "../../../packages/core/src/ledger.ts";
 import { attemptHistory } from "../../../packages/core/src/exam.ts";
-import { storedVertical, type JobRow } from "../../../packages/core/src/job.ts";
+import { matchFixture, type FixtureContract } from "../../../packages/core/src/fixtures.ts";
+import { storedDefinitionOfDone, storedVertical, type JobRow } from "../../../packages/core/src/job.ts";
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
 import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import {
@@ -54,13 +55,24 @@ export type SampleRunnerPorts = {
 	readonly agentsOf: (operatorHandle: string) => readonly SampleRunnerAgent[];
 	/** The standing orders of one agent, or null when it has none. */
 	readonly ordersOf: (agentId: string) => SampleOrders | null;
-	/** Whether a job's fixture is the scripted run's fixture. The job view's `fixtureMatched` answers the same question. */
-	readonly fixtureMatched: (row: JobRow) => boolean;
+	/** The registry, the upstream its forks come from, and the scenario fixture the scripted tree passes. */
+	readonly fixtureRule: SampleFixtureRule;
 	/** The command edge, as the API's request path runs it. */
 	readonly execute: (actor: Actor, key: RequestKey, command: UserCommand) => Promise<CommandOutcome>;
 	/** Pushes the scripted tree to the job's own fork and answers with the commit. */
 	readonly workspace: ScenarioWorkspace;
 	readonly log?: (line: string) => void;
+};
+
+/**
+ * The fixture rule a starter must pass before the runner bids on it. `fixtures` and `upstream` are the deployment's own
+ * registry and client repository, the ones the job view reads, and `scenario` is the one fixture whose scripted tree the
+ * runner pushes. A deployment with no scenario fixture runs no sample.
+ */
+export type SampleFixtureRule = {
+	readonly fixtures: readonly FixtureContract[];
+	readonly upstream: string | null;
+	readonly scenario: { readonly repository: string; readonly issueNumber: number } | null;
 };
 
 export type SampleRunnerStatus = { readonly decision: SampleDecision; readonly queuedSince: string | null; readonly runsToday: number };
@@ -133,7 +145,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 
 	/** One decision for one visitor's sample agent, from the stored rows and the run records as they stand. */
 	function decisionOf(visitor: SampleRunnerVisitor, agent: SampleRunnerAgent, rows: readonly JobRow[]): SampleDecision {
-		const jobs = rows.filter(row => row.tenant === visitor.id).map(row => sampleJobOf(row, ports.fixtureMatched(row)));
+		const jobs = rows.filter(row => row.tenant === visitor.id).map(row => sampleJobOf(row, isScenarioStarter(row, visitor, ports.fixtureRule)));
 		const facts: SampleFacts = {
 			enabled: ports.enabled,
 			now: ports.now(),
@@ -231,6 +243,20 @@ type RunRecord = { readonly job_id: string; readonly agent_id: string; readonly 
 
 function idle(note: string): SampleDecision {
 	return { status: "IDLE", reason: null, actions: [], note };
+}
+
+/**
+ * Whether a stored job is a starter on the scenario fixture, on the visitor's own fork. The fixture is matched by the
+ * same rule the job view uses (`matchFixture` with the job's own repository as the actor), then pinned to the scenario,
+ * so the runner pushes its scripted tree to a job on the fixture that tree was written for, and to no other.
+ */
+function isScenarioStarter(row: JobRow, visitor: SampleRunnerVisitor, rule: SampleFixtureRule): boolean {
+	const definition = storedDefinitionOfDone(row);
+	if (definition === null || rule.scenario === null || visitor.repository === null) return false;
+	const repository = definition.issue.repository;
+	if (repository !== visitor.repository) return false;
+	const matched = matchFixture(rule.fixtures, repository, definition.issue.number, repository, rule.upstream);
+	return matched !== null && matched.repository === rule.scenario.repository && matched.issue.number === rule.scenario.issueNumber;
 }
 
 /** The fields of a stored job the decision reads. */

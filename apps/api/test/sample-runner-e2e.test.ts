@@ -9,16 +9,26 @@ import type { Actor, CommandOutcome, UserCommand } from "../../../packages/core/
 import type { CommitSha, OperatorId, RequestKey, VisitorId } from "../../../packages/core/src/ids.ts";
 import { hours } from "../../../packages/core/src/ids.ts";
 import { HOUSE_CLIENT_ID } from "../../../packages/core/src/house-client.ts";
+import type { DefinitionOfDone } from "../../../packages/core/src/verifier.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
+import { manifestOf } from "../../../packages/core/src/fixtures.ts";
+import { demoFixture, jpyFixture } from "../../../packages/core/test/hidden-fixture.ts";
 import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import { SAMPLE_RUNS_PER_DAY, type SampleOrders } from "../../../packages/core/src/sample-runner.ts";
 import { activityJson, activityLimit, ACTIVITY_LABELS } from "../src/sample-activity.ts";
-import { createSampleRunner, sampleRunJobIds, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
+import { createSampleRunner, sampleRunJobIds, type SampleFixtureRule, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
 
 const OPERATOR = "op_sample_visitor";
-const VISITOR: SampleRunnerVisitor = { id: "v_sample" as VisitorId, operatorHandle: OPERATOR, repository: "acquit-forks/invoice-app-sample" };
+/** The visitor's own fork, named the way the registry's `acquit-forks/` prefix names a visitor's workspace repository. */
+const FORK = "acquit-forks/ws-aabbcc112233";
+const VISITOR: SampleRunnerVisitor = { id: "v_sample" as VisitorId, operatorHandle: OPERATOR, repository: FORK };
 const AGENT = { id: "code-sample-visitor", task: "code", sample: true, acquitted: true };
 const ORDERS: SampleOrders = { autopilot: true, runsOn: "acquit", priceFloorCents: 1_000 };
+/** The scenario fixture the registry carries: issue 12 on the client repository, whose forks the visitor opens. */
+const SCENARIO = demoFixture();
+const OTHER_ISSUE = jpyFixture();
+const FIXTURE_RULE: SampleFixtureRule = { fixtures: [SCENARIO, OTHER_ISSUE], upstream: SCENARIO.repository,
+	scenario: { repository: SCENARIO.repository, issueNumber: SCENARIO.issue.number } };
 const JOB_ID = "job_starter_1";
 const BUDGET_CENTS = 5_000;
 const PAID_CENTS = 4_750;
@@ -27,10 +37,10 @@ const START = Date.parse("2026-11-11T12:00:00.000Z");
 type PlaceBid = Extract<UserCommand, { type: "PlaceBid" }>;
 
 /** A stored job row, carrying the fields the runner and the activity read. */
-function storedRow(id: string, fields: { client: string; tenant: string | null; state: object; bids: object[] }): JobRow {
+function storedRow(id: string, fields: { client: string; tenant: string | null; state: object; bids: object[]; definition?: DefinitionOfDone | null }): JobRow {
 	return {
 		id, version: 1, client: fields.client, tenant: fields.tenant, title: `Job ${id}`, openedAt: "2026-11-11T10:00:00.000Z",
-		contract: { budget: BUDGET_CENTS, deliveryEndsAt: "2026-11-13T12:00:00.000Z", definitionOfDone: null },
+		contract: { budget: BUDGET_CENTS, deliveryEndsAt: "2026-11-13T12:00:00.000Z", definitionOfDone: fields.definition ?? null },
 		bids: fields.bids, state: fields.state,
 	} as unknown as JobRow;
 }
@@ -46,10 +56,15 @@ function heldState(at: string, phase: "READY" | "VERIFYING" = "READY") {
 }
 
 /** The fake world: one starter job on the House client, the command edge, the House client's steps, and the push. */
-function fakeWorld(pushError: Error | null = null) {
+/** The starter the House opens for the visitor: the scenario fixture's manifest, on the visitor's own fork. */
+function starterManifest(fixture = SCENARIO): DefinitionOfDone {
+	return manifestOf(fixture, FORK);
+}
+
+function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone | null = starterManifest()) {
 	let at = START;
 	let failure = pushError;
-	let rows: JobRow[] = [storedRow(JOB_ID, { client: HOUSE_CLIENT_ID, tenant: VISITOR.id, state: openState, bids: [] })];
+	let rows: JobRow[] = [storedRow(JOB_ID, { client: HOUSE_CLIENT_ID, tenant: VISITOR.id, state: openState, bids: [], definition })];
 	let lastRecord: object = {};
 	const actors: Actor[] = [];
 	const commands: UserCommand[] = [];
@@ -121,7 +136,7 @@ function portsOf(db: DatabaseSync, world: World, overrides: Partial<SampleRunner
 		jobs: world.rows,
 		agentsOf: handle => (handle === OPERATOR ? [AGENT] : []),
 		ordersOf: () => ORDERS,
-		fixtureMatched: () => true,
+		fixtureRule: FIXTURE_RULE,
 		execute: world.execute,
 		workspace: world.workspace,
 		...overrides,
@@ -230,6 +245,29 @@ test("a visitor with no fork is refused and nothing is bid, since a run never pu
 	const status = runner.statusOf({ ...VISITOR, repository: null }, world.rows());
 	assert.equal(status.decision.status, "REFUSED");
 	assert.equal(status.decision.reason, "NO_FORK");
+});
+
+test("the runner bids only on a starter the registry's own rule matches to the scenario fixture, on the visitor's own fork", async () => {
+	const bidsFor = async (definition: DefinitionOfDone | null, rule: SampleFixtureRule = FIXTURE_RULE): Promise<number> => {
+		const db = new DatabaseSync(":memory:");
+		const world = fakeWorld(null, definition);
+		const runner = createSampleRunner(portsOf(db, world, { fixtureRule: rule }));
+		await runner.kick();
+		return placeBids(world).length;
+	};
+	assert.equal(await bidsFor(starterManifest()), 1, "the scenario fixture's starter on the visitor's fork is bid on");
+	assert.equal(await bidsFor(starterManifest(OTHER_ISSUE)), 0, "another issue on the same upstream is not bid on");
+	assert.equal(await bidsFor(starterManifest(), { ...FIXTURE_RULE, upstream: null }), 0, "with no client repository, a fork names no fixture");
+	assert.equal(await bidsFor(starterManifest(), { ...FIXTURE_RULE, scenario: null }), 0, "a deployment with no scenario fixture runs no sample");
+	assert.equal(await bidsFor(manifestOf(SCENARIO, SCENARIO.repository)), 0, "a starter on the upstream itself is not bid on, since a run never pushes there");
+	assert.equal(await bidsFor(manifestOf(SCENARIO, "acquit-forks/ws-ffeeddcc1122")), 0, "a starter on another visitor's fork is not bid on");
+	assert.equal(await bidsFor(null), 0, "a job with no stored manifest is not bid on");
+
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld(null, starterManifest(OTHER_ISSUE));
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	assert.equal(runner.statusOf(VISITOR, world.rows()).decision.status, "IDLE", "no matching starter is an idle visitor, not a refusal");
 });
 
 test("the daily limit counts runs by bid time: three in 24 hours refuse a new bid, and an older run does not count", async () => {

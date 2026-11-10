@@ -17,7 +17,7 @@ import { createGitHubApp, GitHubAppError, GitHubAppNotConfigured, workRepoName }
 import { chooseJobFunding, defaultJobFunding } from "../../../packages/core/src/funding.ts";
 import type { JobFundingMode } from "../../../packages/core/src/funding.ts";
 import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
-import { mayControlJob, setExamGateEnforced, storedDefinitionOfDone } from "../../../packages/core/src/job.ts";
+import { mayControlJob, setExamGateEnforced } from "../../../packages/core/src/job.ts";
 import { HOUSE_CLIENT_ID } from "../../../packages/core/src/house-client.ts";
 import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
 import { lastingAccounts, newVisitorId, principalOf, readVisitor, visitorOfHandle, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
@@ -1608,11 +1608,7 @@ const sampleRunner = createSampleRunner({
 		return orders === null ? null : { autopilot: orders.autopilot, runsOn: orders.runsOn, priceFloorCents: orders.priceFloorCents };
 	},
 	// Only the scenario fixture's starters are bid on, because its scripted tree is the only one the runner pushes.
-	fixtureMatched: row => {
-		const definition = storedDefinitionOfDone(row);
-		return sampleFixture !== null && definition !== null
-			&& definition.issue.repository === sampleFixture.repository && definition.issue.number === sampleFixture.issueNumber;
-	},
+	fixtureRule: { fixtures, upstream: clientRepository, scenario: sampleFixture },
 	execute: (actor, key, command) => acquit.execute(actor, key, command),
 	workspace: scriptedWorkspace({ work: sampleWork, readJob: id => scenarioStore.readJob(id) }),
 });
