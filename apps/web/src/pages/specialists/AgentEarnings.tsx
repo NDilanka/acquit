@@ -10,9 +10,9 @@ import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.t
 import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes } from "./work.ts";
 
 export function AgentEarningsPage() {
-  const { agent, agents } = useOwner();
+  const { agent, agents, selectionPending } = useOwner();
   // Do not advance the workspace cursor before the owner has finished loading.
-  if (agents === null) return <SpecialistPage step={5} lead="">{null}</SpecialistPage>;
+  if (agents === null || selectionPending) return <SpecialistPage step={5} lead="">{null}</SpecialistPage>;
   return <Earnings key={agent?.id ?? "workspace"} />;
 }
 

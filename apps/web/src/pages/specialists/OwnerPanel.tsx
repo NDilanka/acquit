@@ -4,9 +4,10 @@ import { Link, useRouter } from "../../router";
 import { match } from "../../route";
 import type { Session } from "../../session";
 import { specialists } from "./client";
+import { agentTaskLabel, completedSetup, reportWorkDates, workAgent } from "./ownerState";
 import type { SpecialistAgent, StandingOrders } from "./types";
 import { useLoad } from "./useLoad";
-import { dollars, gradeChangeWords, hasLiveExam, ownerAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
+import { dollars, gradeChangeWords, hasLiveExam, ownerAgent, STEPS, SIMULATED_WORD } from "./view";
 
 type OwnerState = {
   agents: readonly SpecialistAgent[] | null;
@@ -14,6 +15,7 @@ type OwnerState = {
   reload: () => void;
   agent: SpecialistAgent | null;
   requestedId?: string;
+  selectionPending: boolean;
   provenance: string;
   setProvenance: (words: string) => void;
   orders: StandingOrders | null;
@@ -35,11 +37,16 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   const held = useLoad(async () => session?.user.role === "OPERATOR" ? api.escrow() : { escrow: [] }, `${session?.user.handle ?? ""}:${session?.user.role ?? ""}`);
   const route = match(location.path);
   const requestedId = ("agentId" in route ? route.agentId : undefined) ?? location.search.get("agent") ?? undefined;
+  const defaultWork = requestedId === undefined && (route.name === "specialistActivity" || route.name === "specialistEarnings");
+  const recent = useLoad(async () => ({ report: session?.user.role === "OPERATOR" && defaultWork
+    ? await specialists.morningReport("1970-01-01T00:00:00.000Z") : null }), `${session?.user.handle ?? ""}:${defaultWork}`);
+  const selectionPending = defaultWork && recent.data?.report == null && recent.error === null;
   const storageKey = `acquit.ownerAgent:${session?.user.handle ?? ""}`;
   const [lastId, setLastId] = useState(() => {
     try { return localStorage.getItem(storageKey); } catch { return null; }
   });
-  const agent = ownerAgent(load.data ?? [], requestedId, lastId);
+  const agent = defaultWork ? workAgent(load.data ?? [], reportWorkDates(recent.data?.report ?? null))
+    : ownerAgent(load.data ?? [], requestedId, lastId);
   useEffect(() => {
     if (!agent) return;
     setLastId(agent.id);
@@ -50,7 +57,7 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   const [drafting, setDrafting] = useState(false);
   const [ack, setAck] = useState<{ id: string; orders: StandingOrders | null } | null>(null);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
-  return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId,
+  return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId, selectionPending,
     provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
     heldCents: held.data === null ? null : held.data.escrow.reduce((sum, row) => sum + row.cents, 0),
     moneyError: held.error, reloadMoney: held.reload,
@@ -76,12 +83,14 @@ export function MoneyLine() {
 export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
   agent: SpecialistAgent | null; step: number; provenance: string; children: ReactNode; gradeDelta?: number;
 }) {
+  const { orders } = useOwner();
   const coming = agent !== null && !hasLiveExam(agent.task);
+  const done = completedSetup(agent, orders);
   return <><aside className="owner-panel" aria-label="Your agent">
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name">{agent?.name ?? "No agent plugged in yet"}</p>
-        {agent && <div className="owner-identity-meta"><p className="owner-task">{taskLabel(agent.task)}</p>
-          {coming && step !== 2 ? <p className="owner-verdict">Exam coming</p> : !coming && <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
+        {agent && <div className="owner-identity-meta"><p className="owner-task">{agentTaskLabel(agent.task)}</p>
+          {coming ? <p className="owner-verdict">Exam coming</p> : <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
             {step !== 2 && agent.acquitted && agent.simulated && <> · <span className="owner-honesty">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
       {agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
         {gradeDelta !== undefined && <span className="owner-delta">{gradeDelta ? `${gradeChangeWords(gradeDelta)} since you last looked` : "No change since you last looked"}</span>}</div>}
@@ -90,15 +99,15 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
     <div className="owner-track-row">
       <nav aria-label="Agent setup"><ol className="owner-track">{STEPS.map((s) => {
         const to = s.step === 1 || s.step === 5 ? `${s.to}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}` : `${s.to}${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
-        return <li key={s.step} className={s.step < step ? "done" : s.step === step ? "current" : ""}>
+        return <li key={s.step} className={[done.has(s.step) ? "done" : "", s.step === step ? "current" : ""].filter(Boolean).join(" ")}>
           <Link to={to} aria-current={s.step === step ? "step" : undefined}><span className="track-rail" aria-hidden="true" />
-            <span className="track-label"><span className="track-number" aria-hidden="true">{s.step < step ? "✓" : s.step}</span><span>{s.label}</span></span></Link>
+            <span className="track-label"><span className="track-number" aria-hidden="true">{done.has(s.step) ? "✓" : s.step}</span><span>{s.label}{coming && s.step === 2 ? " · coming" : ""}</span></span></Link>
         </li>;
       })}</ol></nav>
       <p className="owner-track-current">Step {step} of 5 · {STEPS.find(s => s.step === step)?.label}</p>
       {step !== 2 && provenance && <p className="owner-provenance">{provenance}</p>}
     </div>
-    </aside><div className="owner-deck">{children}</div></>;
+    </aside><div className="owner-deck">{coming && agent && <p className="spec-lead machine-honesty">{agentTaskLabel(agent.task)} · No real hardware.</p>}{children}</div></>;
 }
 
 export function AgentPicker({ agents, requestedId, base }: {
@@ -108,7 +117,7 @@ export function AgentPicker({ agents, requestedId, base }: {
     <h1>{requestedId ? "Agent not found" : agents.length ? "Choose your agent" : "Plug in your first agent"}</h1>
     <p className="muted">{requestedId ? "That agent is not in your workspace. Choose one below." : "Pick the agent for this run."}</p>
     <ul>{agents.map((agent) => <li key={agent.id}><Link className="agent-choice" to={`${base}/${encodeURIComponent(agent.id)}`}>
-      <span>{agent.name}<small>{taskLabel(agent.task)} · {!hasLiveExam(agent.task) ? "Exam coming" : agent.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(agent.task) && agent.acquitted && agent.simulated ? ` · ${SIMULATED_WORD}` : ""}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
+      <span>{agent.name}<small>{agentTaskLabel(agent.task)} · {!hasLiveExam(agent.task) ? "Exam coming" : agent.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(agent.task) && agent.acquitted && agent.simulated ? ` · ${SIMULATED_WORD}` : ""}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
       <span>Grade {hasLiveExam(agent.task) ? agent.grade ?? "—" : "—"}</span>
     </Link></li>)}</ul>
     <Link to="/specialists" className="btn secondary">Plug in an agent</Link>

@@ -4,9 +4,10 @@ import { ErrorNote, SkeletonCard, Spinner } from "../../ui";
 import { CopyWorkValue } from "./AgentEarnings";
 import { specialists } from "./client";
 import { useOwner } from "./OwnerPanel";
+import { agentTaskLabel } from "./ownerState";
 import { LoadFailed, SpecialistPage } from "./SpecialistPage";
 import { useLoad } from "./useLoad";
-import { hasLiveExam, isExaminable, SIMULATED_WORD, taskLabel } from "./view";
+import { hasLiveExam, isExaminable, SIMULATED_WORD } from "./view";
 
 export function PlugInPage() {
   return <SpecialistPage step={1} lead=""><PlugIn /></SpecialistPage>;
@@ -37,7 +38,7 @@ function PlugIn() {
     {error !== null && <ErrorNote error={error} />}
     <details className="plug-own"><summary>Use your own agent</summary><p>Run on your agent’s machine.</p><code className="plug-command">acquit agent create --task code</code><CopyWorkValue value="acquit agent create --task code" /></details>
     {!!owner.agents?.length && <details className="plug-existing"><summary>Existing agents ({owner.agents.length})</summary><ul>{owner.agents.map((a) =>
-      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{taskLabel(a.task)} · {!hasLiveExam(a.task) ? "Exam coming" : a.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(a.task) && a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {hasLiveExam(a.task) ? a.grade ?? "—" : "—"}</span></Link></li>)}</ul></details>}
+      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{agentTaskLabel(a.task)} · {!hasLiveExam(a.task) ? "Exam coming" : a.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(a.task) && a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {hasLiveExam(a.task) ? a.grade ?? "—" : "—"}</span></Link></li>)}</ul></details>}
     <div className="owner-actions"><button type="button" className="btn" aria-busy={busy} disabled={busy || !sample} onClick={() => void plug()}>{busy && <Spinner />}{busy ? "Plugging in…" : sample?.plugged ? "Take the exam" : `Plug in ${sample?.name ?? "agent"}`}</button></div>
   </section>;
 }

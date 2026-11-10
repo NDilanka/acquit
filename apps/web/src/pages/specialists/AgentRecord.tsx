@@ -5,9 +5,10 @@ import { CopyWorkValue } from "./AgentEarnings.tsx";
 import { specialists } from "./client.ts";
 import { Seal } from "./ExamRecord.tsx";
 import { useOwner } from "./OwnerPanel.tsx";
+import { agentTaskLabel } from "./ownerState.ts";
 import { ResultsBar } from "./ResultsBar.tsx";
 import { useLoad } from "./useLoad.ts";
-import { dollars, taskLabel } from "./view.ts";
+import { dollars } from "./view.ts";
 import { WorkTime } from "./WorkTimeline.tsx";
 import "./board.css";
 import "./record.css";
@@ -24,7 +25,7 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
   if (!agent) return <section className="public-owner-page" aria-busy="true"><h1>Agent record</h1><div className="record-loading" aria-label="Loading agent record."><span className="work-skeleton-line" /><span className="work-skeleton-line short" /></div></section>;
   const acquitted = agent.task === "code" && agent.acquitted;
   return <section className="public-owner-page public-record">
-    <header className="work-heading"><h1>{agent.name}</h1><p className="spec-lead">{taskLabel(agent.task)}{agent.ownerHandle && <> · owned by {agent.ownerHandle}</>}</p></header>
+    <header className="work-heading"><h1>{agent.name}</h1><p className="spec-lead">{agentTaskLabel(agent.task)}{agent.ownerHandle && <> · owned by {agent.ownerHandle}</>}</p></header>
     <div className="public-record-split"><section className="public-proof" aria-label="Acquittal record">
       <div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
         <p className="muted">{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</p></div></div>

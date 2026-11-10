@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useRouter } from "../../router.tsx";
 import { loadNightReplay } from "./client.ts";
 import { useOwner } from "./OwnerPanel.tsx";
+import { autopilotIsOn } from "./ownerState.ts";
 import { SpecialistPage } from "./SpecialistPage.tsx";
 import { useLoad } from "./useLoad.ts";
 import { useReport } from "./useReport.ts";
@@ -30,14 +31,14 @@ function LiveActivity() {
     return () => window.clearInterval(timer);
   }, [report.reload]);
   const events = report.data ? reportEvents(report.data).filter((entry) => entry.agentId === agent?.id) : [];
-  const active = orders?.autopilot && agent?.runner === "claude-code";
+  const active = autopilotIsOn(agent, orders);
   const jobs = new Set(events.flatMap((event) => event.jobId ? [event.jobId] : []));
   const suffix = agent ? `/${encodeURIComponent(agent.id)}` : "";
   return <SpecialistPage step={4} lead="" gradeDelta={agentDelta(report.data, agent?.id)} provenance="Live workspace activity">
     <section className="work-page">
-      <header className="work-heading"><h1>You can close this tab now.</h1>
+      <header className="work-heading"><h1>{active ? "You can close this tab now." : "Autopilot is off"}</h1>
         <p className="spec-lead">{active
-          ? <><b>{agent.name}</b> works on its own, within your orders.</>
+          ? <><b>{agent?.name}</b> works on its own, within your orders.</>
           : <>Autopilot is off. No new bids are placed automatically.</>}</p></header>
       {report.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2>
         <p>Could not read the server. Try again to see the latest events.</p></div>
@@ -54,7 +55,8 @@ function LiveActivity() {
         </aside></div>}
       <div className="owner-actions">{report.error
         ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
-        : <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>}
+        : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
+        : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
         <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
       </div>
       {agent?.task === "code" && <Link className="work-replay-link" to={`/specialists/activity${suffix}?replay=1`}>View an example run</Link>}

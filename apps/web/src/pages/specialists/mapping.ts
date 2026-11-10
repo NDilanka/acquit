@@ -105,6 +105,8 @@ export function agentOf(raw: RawAgent): SpecialistAgent {
     grade: raw.grade,
     seeded: raw.acquittal?.seeded === true,
     simulated: raw.acquittal?.simulated === true,
+    acquittedAt: raw.acquittal?.at ?? null,
+    examId: raw.acquittal?.examId,
     standingOrders: raw.standingOrders ?? null,
     gate: raw.gate ?? null,
   };

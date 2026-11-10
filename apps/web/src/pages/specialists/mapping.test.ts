@@ -44,6 +44,8 @@ describe("agent mapping", () => {
     assert.equal(acquitted.acquitted, true);
     assert.equal(acquitted.seeded, false);
     assert.equal(acquitted.simulated, false);
+    assert.equal(acquitted.acquittedAt, "2026-11-09T20:00:00.000Z");
+    assert.equal(acquitted.examId, "exam_9");
 
     const seeded = agentOf({ ...rawAgent, acquittal: { examId: "seed", at: "2026-11-09T20:00:00.000Z", seeded: true } });
     assert.equal(seeded.acquitted, true);
