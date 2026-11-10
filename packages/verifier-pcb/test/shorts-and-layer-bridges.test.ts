@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { okOf, part, run, segment, smdPad, thruPad, via } from "./synthetic-board.ts";
-import type { Fixture, Verdict } from "./synthetic-board.ts";
+import type { Fixture } from "./synthetic-board.ts";
+import type { Verdict } from "../src/types.ts";
 
 // Copper that joins two nets is a short, however it joins them: a collinear overlap, a track through a foreign pad,
 // a via on a foreign pad, or two foreign pads that overlap. Copper that joins one net through a plated through-hole
