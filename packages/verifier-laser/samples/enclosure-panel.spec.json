@@ -1,0 +1,19 @@
+{
+	"material": "acrylic",
+	"thicknessMm": 3,
+	"bedMm": [300, 200],
+	"partMm": [120, 80],
+	"kerfMm": 0.2,
+	"toleranceMm": 0.1,
+	"minWebMm": 3,
+	"cornerRadiusMm": 0,
+	"labelRegionMm": { "originMm": [8, 8], "sizeMm": [44, 6] },
+	"minEngraveLengthMm": 20,
+	"holes": [
+		{ "id": "mount-a", "centreMm": [6, 6], "diameterMm": 3.2 },
+		{ "id": "mount-b", "centreMm": [114, 6], "diameterMm": 3.2 },
+		{ "id": "mount-c", "centreMm": [6, 74], "diameterMm": 3.2 },
+		{ "id": "mount-d", "centreMm": [114, 74], "diameterMm": 3.2 }
+	],
+	"slots": [{ "id": "window", "sizeMm": [30, 12] }]
+}
