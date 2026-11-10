@@ -112,6 +112,12 @@ describe("exam mapping", () => {
     assert.deepEqual(exam.reasons, []);
     assert.equal(exam.endedAt, null);
     assert.equal(exam.startedAt, null);
+    assert.equal(exam.simulated, undefined);
+  });
+
+  it("preserves supplied simulation metadata without inferring it", () => {
+    assert.equal(examOf({ id: "sim", status: "PASSED", simulated: true }).simulated, true);
+    assert.equal(examOf({ id: "live", status: "PASSED", simulated: false }).simulated, false);
   });
 
   it("reads acquitted for the exam read from the agent's acquittal", () => {
@@ -139,12 +145,15 @@ describe("replay mapping", () => {
     assert.equal(mapped.simulated, false);
     assert.equal(mapped.task, "code");
     assert.equal(mapped.outcome, "PASSED");
+    assert.equal(mapped.recordedAt, null);
+    assert.equal(mapped.endedAt, exam.endedAt);
   });
 
   it("marks a replay with recordedAt as a recorded run", () => {
     const mapped = examReplayOf({ recordedAt: "2026-11-09T21:40:00.000Z", simulated: true, task: "print-fdm", exam });
     assert.equal(mapped.source, "recorded");
     assert.equal(mapped.simulated, true);
+    assert.equal(mapped.recordedAt, "2026-11-09T21:40:00.000Z");
   });
 
   it("turns visible and hidden counts into one pass flag per check, passed first", () => {

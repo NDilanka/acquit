@@ -69,7 +69,7 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
         </p>
         {touched && problems?.priceUsd && <p className="field-error" role="alert" data-tone="fail">{problems.priceUsd}</p>}
         <p className="orders-echo" id={`${id}-echo`}>{cents !== null ? <>Bids from {dollars(cents)} · pending, until a job is accepted.</> : "Example: 40, $40 or 40.00."}</p>
-        {dirty && <div className="orders-master">
+        {(dirty || !saved?.autopilot) && <div className="orders-master">
           <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving: bids and delivers within these limits." : "Off: no new bids. Each submit needs your confirmation."}</p>
             {!autopilotSupported(agent.runner) && <p>Autopilot runs Claude Code agents only.</p>}</div>
           <button type="button" className="orders-switch" role="switch" aria-label="Autopilot" aria-checked={form.autopilot}
@@ -80,7 +80,7 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
         {error !== null && <ErrorNote error={error} />}
         <div className="owner-actions">
           {dirty ? <><button type="submit" className="btn" disabled={saving}>{saving && <Spinner />}{saving ? "Saving…" : "Save standing orders"}</button><p role="status">Not saved yet.</p></>
-            : <><Link to={`/specialists/night/${agent.id}`} className="btn">Watch the night</Link><p role="status">Saved. You can close this tab now.</p></>}
+            : <><Link to={`/specialists/night/${agent.id}`} className="btn">Watch the night</Link><p role="status">{saved?.autopilot ? "Saved. You can close this tab now." : "Saved. Autopilot is off."}</p></>}
         </div>
       </form>}
   </section>;

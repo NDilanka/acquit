@@ -12,8 +12,9 @@ import { EXAM_SHAPE, isOpenExam, liveRunBlock, provenanceWords, localTime } from
 
 export function ExamPage({ agentId }: { agentId?: string }) {
   const owner = useOwner();
+  const { location } = useRouter();
   return <SpecialistPage step={2} agentId={agentId} lead="">
-    {owner.agent && <ExamForAgent key={owner.agent.id} agent={owner.agent} />}
+    {owner.agent && <ExamForAgent key={`${owner.agent.id}:${location.search.get("exam") ?? ""}`} agent={owner.agent} />}
   </SpecialistPage>;
 }
 
@@ -26,13 +27,18 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [pollTick, setPollTick] = useState(0);
+  const [readTick, setReadTick] = useState(0);
+  const [recordLoading, setRecordLoading] = useState(!!examId);
   const [refusal, setRefusal] = useState<string | null>(null);
   useEffect(() => {
     if (!examId) return;
     let cancelled = false;
-    specialists.exam(agent.id, examId).then((r) => { if (!cancelled) setExam(r.exam); }, (e) => { if (!cancelled) setError(e); });
+    setRecordLoading(true); setError(null);
+    specialists.exam(agent.id, examId).then((r) => {
+      if (!cancelled) { setExam(r.exam); setRecordLoading(false); }
+    }, (e) => { if (!cancelled) { setError(e); setRecordLoading(false); } });
     return () => { cancelled = true; };
-  }, [agent.id, examId]);
+  }, [agent.id, examId, readTick]);
   useEffect(() => {
     if (!exam || !isOpenExam(exam.status) || error) return;
     let cancelled = false;
@@ -46,7 +52,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [agent.id, exam, error, pollTick, reload]);
   const sample = replay.data?.replay ?? null;
-  const provenance = exam ? provenanceWords(null, exam.simulated === true) : sample ? provenanceWords(sample.source, sample.simulated) : "";
+  const provenance = exam ? provenanceWords(null, exam.simulated === true) || "Live run" : sample ? provenanceWords(sample.source, sample.simulated) : "";
   useEffect(() => { setProvenance(provenance); return () => setProvenance(""); }, [provenance, setProvenance]);
   const start = async () => {
     setStarting(true); setError(null);
@@ -62,7 +68,10 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const visible = exam !== null ? exam.visible : sample ? { total: sample.visible.length, passed: sample.visible.filter(Boolean).length } : null;
   const hidden = exam !== null ? exam.hidden : sample ? { total: sample.hidden.length, passed: sample.hidden.filter(Boolean).length } : null;
   const recordPath = `/specialists/exam/${encodeURIComponent(agent.id)}${exam ? `?exam=${encodeURIComponent(exam.id)}` : ""}`;
-  if (!exam && !sample && replay.data === null) return <SkeletonCard lines={5} />;
+  if (recordLoading) return <section><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
+  if (examId && !exam && error) return <section><h1>Exam record unavailable</h1><LoadFailed error={error} onRetry={() => setReadTick((n) => n + 1)} /></section>;
+  if (!exam && !sample && replay.error !== null) return <section><h1>Exam unavailable</h1><LoadFailed error={replay.error} onRetry={replay.reload} /></section>;
+  if (!exam && !sample && replay.data === null) return <section><h1>Reading the sample exam</h1><SkeletonCard lines={5} /></section>;
   if (!exam && !sample) return <section className="exam-empty"><h1>Take the exam</h1><p>No recorded exam is available. Run it to make a record.</p>
     {error !== null && <ErrorNote error={error} />}<div className="owner-actions"><button type="button" className="btn" disabled={starting || block !== null} onClick={() => void start()}>{starting ? "Starting…" : "Take the exam"}</button></div>{block && <p>{block}</p>}</section>;
   return <>

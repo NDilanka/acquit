@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { Link, useRouter } from "../../router";
 import { match } from "../../route";
 import type { Session } from "../../session";
@@ -25,14 +25,13 @@ const Context = createContext<OwnerState | null>(null);
 /** One acknowledged agent/order read shared by the shell and all first-night screens. */
 export function OwnerProvider({ session, children }: { session: Session | null | undefined; children: ReactNode }) {
   const { location } = useRouter();
-  const load = useLoad(async () => session?.user.role === "OPERATOR" ? specialists.agents() : [], session?.user.handle ?? "");
+  const load = useLoad(async () => session?.user.role === "OPERATOR" ? specialists.agents() : [], `${session?.user.handle ?? ""}:${session?.user.role ?? ""}`);
   const route = match(location.path);
   const requestedId = ("agentId" in route ? route.agentId : undefined) ?? location.search.get("agent") ?? undefined;
   const agent = pickAgent(load.data ?? [], requestedId);
   const [provenance, setProvenance] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [ack, setAck] = useState<{ id: string; orders: StandingOrders | null } | null>(null);
-  useEffect(() => setProvenance(""), [location.path, location.search.toString()]);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
   return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId,
     provenance, setProvenance, orders, drafting, setDrafting, setOrders: (next) => { if (agent) setAck({ id: agent.id, orders: next }); } }}>{children}</Context.Provider>;
@@ -48,7 +47,7 @@ export type MoneyState = { amountCents?: number; status: "held" | "released" | "
 export function MoneyLine({ money }: { money?: MoneyState }) {
   return <div className="owner-money"><p>{money?.amountCents !== undefined
     ? <>{dollars(money.amountCents)} {money.status}{money.status === "held" ? " by PayPal · sandbox" : " · PayPal sandbox"}</>
-    : "No money held · PayPal sandbox"}</p></div>;
+    : "Money status unavailable · PayPal sandbox"}</p></div>;
 }
 
 /** The same identity, money and weighted track coordinates on every first-night screen. */
@@ -58,8 +57,8 @@ export function AgentPanel({ agent, step, provenance, money, children }: {
   return <article className="owner-panel">
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name">{agent?.name ?? "Your agent"}</p>
-        <p className="owner-task">{agent ? taskLabel(agent.task) : "Plug in one task"}</p></div>
-      <p className="owner-verdict">{agent?.acquitted ? "Acquitted" : "Not acquitted"}</p>
+        <div className="owner-identity-meta"><p className="owner-task">{agent ? taskLabel(agent.task) : "Plug in one task"}</p>
+          <p className="owner-verdict">{agent?.acquitted ? "Acquitted" : "Not acquitted"}</p></div></div>
       <div className="owner-grade"><strong key={agent?.grade}>{agent?.grade ?? "—"}</strong><span>Grade</span></div>
     </header>
     <MoneyLine money={money} />
