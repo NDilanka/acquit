@@ -68,3 +68,17 @@ test("the fraud samples are exactly the isolated frauds in this table", () => {
 		.sort();
 	assert.deepEqual(onDisk, listed);
 });
+
+test("the hidden-only fraud fails hidden-material and no other rule, with no extra holes", () => {
+	const fraud = verify(spec, sample("fraud-hidden-notch.svg"), hidden);
+	assert.deepEqual(fraud.findings.filter(finding => !finding.ok).map(finding => finding.rule), ["hidden-material"]);
+	assert.equal(fraud.measured.holeCount, spec.holes.length);
+	assert.equal(fraud.measured.holesMatched, 4);
+	assert.equal(fraud.measured.cutoutsMatched, 1);
+});
+
+test("the moved window covers the hidden keep-material point it hides", () => {
+	const probe: HiddenSample = { keepMaterialMm: [[30, 20]] };
+	assert.equal(verify(spec, sample("honest.svg"), probe).findings.find(finding => finding.rule === "hidden-material")?.ok, true);
+	assert.equal(verify(spec, sample("fraud-hidden-notch.svg"), probe).findings.find(finding => finding.rule === "hidden-material")?.ok, false);
+});
