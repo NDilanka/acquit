@@ -69,6 +69,15 @@ export function attemptHistory(state: JobState): readonly AttemptRecord[] {
 	return state.history;
 }
 
+/**
+ * The attempts that count toward the record. A REFUNDED job's VERIFIED verdicts do not count: the operator was
+ * refunded, so the pass earns no grade. Its REJECTED attempts still count.
+ */
+export function countedAttempts(state: JobState): readonly AttemptRecord[] {
+	const history = attemptHistory(state);
+	return state.status === "REFUNDED" ? history.filter(entry => entry.verdict.result !== "VERIFIED") : history;
+}
+
 /** The time the capture that opened a job's escrow landed: the HELD line every held or settled book starts with. Null before any capture. */
 export function captureAt(state: JobState): Instant | null {
 	switch (state.status) {
@@ -83,7 +92,8 @@ export function captureAt(state: JobState): Instant | null {
 /**
  * Derived on read from the jobs table, never stored. A job counts when its escrow payee names this agent.
  * Verified counts VERIFIED verdicts in the attempt history the job's state keeps, and a VERIFIED or PAID
- * job keeps its pass there, so each pass counts once. Rejected counts REJECTED attempts in that history.
+ * job keeps its pass there, so each pass counts once. A REFUNDED job's passes do not count (countedAttempts).
+ * Rejected counts REJECTED attempts in that history.
  * Earned sums the release paid on PAID jobs, in cents.
  */
 export function recordOf(agentId: string, rows: readonly JobRow[]): AgentRecord {
@@ -95,9 +105,9 @@ export function recordOf(agentId: string, rows: readonly JobRow[]): AgentRecord 
 		const payee = heldPayee(row.state);
 		if (payee === null || payee.agent !== agentId) continue;
 		jobsTaken += 1;
-		const history = attemptHistory(row.state);
-		verified += history.filter(entry => entry.verdict.result === "VERIFIED").length;
-		rejected += history.filter(entry => entry.verdict.result === "REJECTED").length;
+		const counted = countedAttempts(row.state);
+		verified += counted.filter(entry => entry.verdict.result === "VERIFIED").length;
+		rejected += counted.filter(entry => entry.verdict.result === "REJECTED").length;
 		if (row.state.status === "PAID") earnedCents += Number(row.state.release.paid);
 	}
 	return { jobsTaken, verified, rejected, earnedCents };
