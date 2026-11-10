@@ -244,6 +244,18 @@ function moveMid(move: Move): Vec3 {
 	return [(move.a.x + move.b.x) / 2, (move.a.y + move.b.y) / 2, (move.a.alt + move.b.alt) / 2];
 }
 
+/** The 3D length of a move: a climb or a descent counts as flight, not only ground distance. */
+function moveLength(move: Move): number {
+	return Math.hypot(move.b.x - move.a.x, move.b.y - move.a.y, move.b.alt - move.a.alt);
+}
+
+/** The route's still-air flight time: every move at the speed in force on it, takeoff and return included. */
+function flightSeconds(plan: Plan): number {
+	let seconds = 0;
+	for (const move of plan.moves) seconds += moveLength(move) / move.speedMs;
+	return seconds;
+}
+
 function worstGsdLeg(legs: readonly Leg[], camera: Camera): Leg | null {
 	let worst: Leg | null = null;
 	for (const leg of legs) if (worst === null || gsdCm(leg.alt, camera) > gsdCm(worst.alt, camera)) worst = leg;
@@ -375,11 +387,21 @@ const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
 		if (short.length === 0) return finding("hidden-checkpoint", true, true, `Every hidden checkpoint is in at least ${hidden.minPhotos} photographs.`);
 		return finding("hidden-checkpoint", false, true, `${short.length} hidden checkpoint${short.length === 1 ? " is" : "s are"} in fewer than ${hidden.minPhotos} photographs.`);
 	},
-	"hidden-wind": ({ plan, hidden }) => {
+	"hidden-wind": ({ spec, plan, hidden }) => {
 		if (hidden === undefined) return finding("hidden-wind", false, true, "The hidden wind was not supplied, so this check cannot pass.");
-		const needed = hidden.cruiseToWindRatio * hidden.windMs;
-		const ok = plan.cruiseMs >= needed;
-		return finding("hidden-wind", ok, true, ok ? "The cruise speed holds the route in the forecast wind." : `The cruise speed is too low to hold the route in the forecast wind; it needs at least ${needed.toFixed(1)} m/s.`);
+		// Every move is priced against the headwind: ground speed is the speed in force minus the wind. A route that
+		// cannot advance against the wind fails, and so does one whose windy duration outlasts the usable battery.
+		const usable = spec.enduranceS - spec.reserveS;
+		let seconds = 0;
+		for (const move of plan.moves) {
+			const groundSpeed = move.speedMs - hidden.windMs;
+			if (groundSpeed <= 0) return finding("hidden-wind", false, true, "The forecast wind stops forward progress on some of the route.");
+			seconds += moveLength(move) / groundSpeed;
+		}
+		const margin = hidden.cruiseToWindRatio * hidden.windMs;
+		if (plan.cruiseMs < margin) return finding("hidden-wind", false, true, `The cruise speed is too low to hold the route in the forecast wind; it needs at least ${margin.toFixed(1)} m/s.`);
+		if (seconds > usable) return finding("hidden-wind", false, true, `The route takes ${Math.round(seconds)} seconds in the forecast wind, longer than the ${Math.round(usable)} seconds usable after the reserve.`);
+		return finding("hidden-wind", true, true, `The route takes ${Math.round(seconds)} seconds in the forecast wind, within the ${Math.round(usable)} seconds usable after the reserve.`);
 	},
 };
 
@@ -481,7 +503,15 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		leaving === undefined
 			? finding("inside-area", true, false, "Every flight segment stays inside the survey area.")
 			: finding("inside-area", false, false, "A flight segment leaves the survey area.", moveMid(leaving));
-	const findings = [planFinding, unsupportedFinding, takeoffFinding, endFinding, areaFinding, ...publicFindings, ...hiddenFindings];
+	// Always run, like the other lifecycle findings: the battery is a safety limit the spec's rule list cannot
+	// switch off. The usable battery is the endurance with the reserve kept back.
+	const routeSeconds = flightSeconds(parsed);
+	const usableSeconds = spec.enduranceS - spec.reserveS;
+	const enduranceFinding =
+		routeSeconds <= usableSeconds
+			? finding("endurance", true, false, `The route takes ${Math.round(routeSeconds)} seconds of flight, within the ${usableSeconds} seconds usable after the reserve.`)
+			: finding("endurance", false, false, `The route takes ${Math.round(routeSeconds)} seconds of flight, longer than the ${usableSeconds} seconds usable after the reserve.`);
+	const findings = [planFinding, unsupportedFinding, takeoffFinding, endFinding, areaFinding, enduranceFinding, ...publicFindings, ...hiddenFindings];
 
 	const gsdWorst = worstGsdLeg(legs, spec.camera);
 	const frontWorst = worstFrontLeg(legs, spec.camera);
@@ -493,6 +523,7 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		minSpeedMs: parsed.minSpeedMs,
 		...(parsed.triggerM === null ? {} : { triggerM: parsed.triggerM }),
 		surveyLines: legs.length,
+		flightSeconds: routeSeconds,
 		maxAltitudeM: Math.max(...parsed.waypoints.map(w => w.alt)),
 		maxGsdCm: gsdWorst === null ? 0 : gsdCm(gsdWorst.alt, spec.camera),
 		frontOverlap: frontWorst === null ? 0 : frontOverlapOf(frontWorst, spec.camera),

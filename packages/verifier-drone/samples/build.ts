@@ -114,7 +114,9 @@ export const HIDDEN_EXAMPLE = {
 		[80, 20],
 		[50, 0],
 	],
-	windMs: 6,
+	// 8 m/s of wind: the honest 14 m/s cruise still makes progress and finishes inside the battery, while the
+	// hidden-wind fraud's 8 m/s cruise cannot advance against it at all.
+	windMs: 8,
 	cruiseToWindRatio: 1.5,
 	minPhotos: 1,
 };

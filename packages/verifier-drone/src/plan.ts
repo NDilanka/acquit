@@ -39,8 +39,11 @@ export type Waypoint = {
 	readonly triggerM: number | null;
 };
 
-/** A straight move of the aircraft from a to b. A climb or a descent keeps x and y. */
-export type Move = { readonly a: Point3; readonly b: Point3 };
+/**
+ * A straight move of the aircraft from a to b, flown at speedMs ground speed. A climb or a descent keeps x and y.
+ * The speed is the one in force on the move: a speed change (command 178) applies from the item after it executes.
+ */
+export type Move = { readonly a: Point3; readonly b: Point3; readonly speedMs: number };
 
 /** An ordered lifecycle event. A waypoint event names an index into Plan.waypoints. */
 export type MissionEvent =
@@ -134,26 +137,27 @@ function aboveHome(alt: number, frame: number, homeAltM: number): number {
  * line from wherever the aircraft is. A landing descends where it stands. A return to launch flies home at its current
  * height, then descends there.
  */
-function movesOf(events: readonly MissionEvent[], waypoints: readonly Waypoint[], home: Vec2): Move[] {
+function movesOf(events: readonly MissionEvent[], waypoints: readonly Waypoint[], home: Vec2, eventSpeeds: readonly number[]): Move[] {
 	const moves: Move[] = [];
 	let at: Point3 = { x: home[0], y: home[1], alt: 0 };
-	const fly = (to: Point3): void => {
-		moves.push({ a: at, b: to });
+	const fly = (to: Point3, speedMs: number): void => {
+		moves.push({ a: at, b: to, speedMs });
 		at = to;
 	};
-	for (const event of events) {
+	events.forEach((event, index) => {
+		const speedMs = eventSpeeds[index]!;
 		if (event.kind === "takeoff") {
-			fly({ x: home[0], y: home[1], alt: event.alt });
+			fly({ x: home[0], y: home[1], alt: event.alt }, speedMs);
 		} else if (event.kind === "waypoint") {
 			const waypoint = waypoints[event.index]!;
-			fly({ x: waypoint.x, y: waypoint.y, alt: waypoint.alt });
+			fly({ x: waypoint.x, y: waypoint.y, alt: waypoint.alt }, waypoint.speedMs);
 		} else if (event.kind === "land") {
-			fly({ x: at.x, y: at.y, alt: 0 });
+			fly({ x: at.x, y: at.y, alt: 0 }, speedMs);
 		} else {
-			fly({ x: home[0], y: home[1], alt: at.alt });
-			fly({ x: home[0], y: home[1], alt: 0 });
+			fly({ x: home[0], y: home[1], alt: at.alt }, speedMs);
+			fly({ x: home[0], y: home[1], alt: 0 }, speedMs);
 		}
-	}
+	});
 	return moves;
 }
 
@@ -184,6 +188,8 @@ export function parsePlan(text: string, origin: readonly [number, number]): Plan
 	let triggerAtLastWaypoint: number | null = null;
 	const waypoints: Waypoint[] = [];
 	const events: MissionEvent[] = [];
+	/** The ground speed in force at each event, in the same order. */
+	const eventSpeeds: number[] = [];
 	const unsupported: string[] = [];
 
 	for (let index = 0; index < items.length; index++) {
@@ -246,6 +252,7 @@ export function parsePlan(text: string, origin: readonly [number, number]): Plan
 			waypoints.push({ x: local[0], y: local[1], alt: aboveHome(alt, frame, homeAt.alt), speedMs, triggerM: airborne ? triggerM : null });
 			triggerAtLastWaypoint = triggerM;
 			events.push({ kind: "waypoint", index: waypoints.length - 1 });
+			eventSpeeds.push(speedMs);
 		} else if (command === CMD_TAKEOFF) {
 			if (frame !== FRAME_ABSOLUTE && frame !== FRAME_RELATIVE) {
 				unsupported.push(`${where} is a takeoff in coordinate frame ${frame}; the checker models frames 0 and 3.`);
@@ -256,12 +263,15 @@ export function parsePlan(text: string, origin: readonly [number, number]): Plan
 			if (airborne && lifecycleProblem === null) lifecycleProblem = `${where} takes off while the aircraft is already in the air.`;
 			airborne = true;
 			events.push({ kind: "takeoff", alt: aboveHome(alt, frame, homeAt.alt) });
+			eventSpeeds.push(speedMs);
 		} else if (command === CMD_LAND) {
 			airborne = false;
 			events.push({ kind: "land" });
+			eventSpeeds.push(speedMs);
 		} else if (command === CMD_RETURN_TO_LAUNCH) {
 			airborne = false;
 			events.push({ kind: "rtl" });
+			eventSpeeds.push(speedMs);
 		} else {
 			unsupported.push(`${where} is command ${command}, which the checker does not model.`);
 		}
@@ -284,7 +294,7 @@ export function parsePlan(text: string, origin: readonly [number, number]): Plan
 		home: homeAt.home,
 		waypoints,
 		events,
-		moves: movesOf(events, waypoints, homeAt.home),
+		moves: movesOf(events, waypoints, homeAt.home, eventSpeeds),
 		lifecycleProblem,
 		endsSafely,
 		unsupported,

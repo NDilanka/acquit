@@ -13,7 +13,7 @@
       0
     ]
   ],
-  "windMs": 6,
+  "windMs": 8,
   "cruiseToWindRatio": 1.5,
   "minPhotos": 1
 }
