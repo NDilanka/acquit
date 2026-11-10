@@ -1,0 +1,19 @@
+{
+  "checkpoints": [
+    [
+      20,
+      95
+    ],
+    [
+      80,
+      20
+    ],
+    [
+      50,
+      1
+    ]
+  ],
+  "windMs": 6,
+  "cruiseToWindRatio": 1.5,
+  "minPhotos": 1
+}
