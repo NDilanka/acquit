@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, releasedWorkHref, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityStateWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
@@ -66,6 +66,20 @@ test("earnings links a matching job back to the live entry, otherwise keeps the 
   assert.equal(releasedWorkHref(released.jobId,example),activityJobHref(released.jobId));
   assert.equal(releasedWorkHref(released.jobId,null),`/jobs/${released.jobId}`);
   assert.equal(releasedWorkHref("missing",example),"/jobs/missing");
+});
+
+test("refusals name the owner action without treating a declined bid as an agent failure", () => {
+  const refused = (reason: string) => ({...example.runner,status:"REFUSED" as const,reason});
+  assert.equal(runnerStatusWords(refused("BID_DENIED")),"The client declined this bid.");
+  assert.equal(runnerAction(refused("BID_DENIED")),null);
+  assert.equal(runnerStatusWords(refused("PRICE_CANNOT_CARRY_FEE")),"Your price floor is too low to cover PayPal's fee. Raise it in Standing orders.");
+  for (const reason of ["NO_STANDING_ORDERS","AUTOPILOT_OFF","NOT_HOSTED","PRICE_CANNOT_CARRY_FEE"])
+    assert.equal(runnerAction(refused(reason),"agent / code")?.to,"/specialists/orders/agent%20%2F%20code");
+  assert.equal(runnerAction(refused("NO_ACQUITTAL"))?.to,"/specialists/exam");
+  assert.equal(runnerAction(refused("NOT_A_SAMPLE"))?.to,"/specialists");
+  assert.equal(runnerStatusWords(refused("NEW_REASON")),"The sample runner is unavailable for this agent.");
+  assert.equal(runnerAction(refused("NEW_REASON")),null);
+  assert.equal(runnerAction(example.runner),null);
 });
 
 test("reason summaries never expose a hidden test suffix", () => {

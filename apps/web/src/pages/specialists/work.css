@@ -53,6 +53,9 @@
 .runner-count { font-size: var(--text-key); line-height: var(--leading-key); font-variant-numeric: tabular-nums; }
 .runner-count span { font-size: var(--text-section); color: var(--muted); }
 .earnings-history summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.runner-action { display: inline-flex; align-items: center; min-height: 48px; text-underline-offset: 4px; }
+.owner-app .orders-limits select.sentence-control { min-height: 48px; font: 500 var(--text-section)/var(--leading-section) var(--sans); padding: var(--space-2); border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.orders-run-location { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-4); }
 @keyframes work-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @keyframes work-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (max-width: 640px) {

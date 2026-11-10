@@ -40,12 +40,30 @@ export function runnerStatusWords(runner: OwnerActivity["runner"]): string {
     case "RUNNING": return "Sample runner is running";
     case "REFUSED":
       switch (runner.reason) {
-        case "NO_FORK": return "Connect a fork to use the sample runner";
-        case "DAILY_LIMIT": return "Hosted run limit reached";
-        case "NO_ACQUITTAL": return "Pass a code exam to use the sample runner";
-        case "NO_STANDING_ORDERS": return "Save standing orders to use the sample runner";
-        default: return "Sample runner cannot start";
+        case "NO_FORK": return "Connect a fork before running this sample.";
+        case "DAILY_LIMIT": return "This agent has used its hosted run allowance.";
+        case "NO_ACQUITTAL": return "Pass the code exam before running this sample.";
+        case "NO_STANDING_ORDERS": return "Set Standing orders before running this sample.";
+        case "AUTOPILOT_OFF": return "Turn on autopilot in Standing orders to run this sample.";
+        case "NOT_HOSTED": return "Choose Acquit under Change limits in Standing orders.";
+        case "NOT_A_SAMPLE": return "Hosted runs need a built-in sample agent.";
+        case "BID_DENIED": return "The client declined this bid.";
+        case "PRICE_CANNOT_CARRY_FEE": return "Your price floor is too low to cover PayPal's fee. Raise it in Standing orders.";
+        default: return "The sample runner is unavailable for this agent.";
       }
+  }
+}
+
+export function runnerAction(runner: OwnerActivity["runner"], agentId?: string) {
+  if (runner.status !== "REFUSED") return null;
+  const suffix = agentId ? `/${encodeURIComponent(agentId)}` : "";
+  switch (runner.reason) {
+    case "NO_ACQUITTAL": return { to:`/specialists/exam${suffix}`,label:"Take the exam" };
+    case "NO_STANDING_ORDERS": case "AUTOPILOT_OFF": case "NOT_HOSTED":
+      return { to:`/specialists/orders${suffix}`,label:"Open Standing orders" };
+    case "PRICE_CANNOT_CARRY_FEE": return { to:`/specialists/orders${suffix}`,label:"Raise the price floor" };
+    case "NOT_A_SAMPLE": return { to:"/specialists",label:"Choose a sample agent" };
+    default: return null;
   }
 }
 

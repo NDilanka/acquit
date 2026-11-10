@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Link, useRouter } from "../../router.tsx";
-import { activityDomId, activityEvents, activityLanes, activityStateWords, runnerStatusWords, sampleActivityLabel } from "./liveWork.ts";
+import { activityDomId, activityEvents, activityLanes, activityStateWords, runnerAction, runnerStatusWords, sampleActivityLabel } from "./liveWork.ts";
+import { useOwner } from "./OwnerPanel.tsx";
 import type { OwnerActivity } from "./types.ts";
 import { JobStrip, TimelineMark, WorkTime } from "./WorkTimeline.tsx";
 
@@ -8,6 +9,8 @@ export function ActivityFeed({ feed }: { feed: OwnerActivity }) {
   const { location } = useRouter();
   const selected = location.search.get("job");
   const focused = useRef<string | null>(null);
+  const { agent } = useOwner();
+  const action = runnerAction(feed.runner,agent?.id);
   useEffect(() => {
     if (!selected) { focused.current = null; return; }
     if (focused.current === selected) return;
@@ -35,6 +38,7 @@ export function ActivityFeed({ feed }: { feed: OwnerActivity }) {
     </ol>
     <aside className="work-side" aria-label="Runner and activity summary">
       <section className="runner-status" aria-label="Sample runner"><h2>Sample runner</h2><p>{runnerStatusWords(feed.runner)}</p>
+        {action && <Link className="runner-action" to={action.to}>{action.label}</Link>}
         {feed.runner.status === "QUEUED" && feed.runner.queuedSince && <p className="muted">Queued <WorkTime at={feed.runner.queuedSince} full /></p>}
         <p className="runner-count">{feed.runner.runsToday} <span>/ {feed.runner.runsPerDay}</span></p><p className="muted">Hosted runs used</p></section>
       {!!feed.activity.length && <JobStrip lanes={activityLanes(feed.activity,feed.labels)} />}

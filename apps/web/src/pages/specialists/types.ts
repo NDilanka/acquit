@@ -172,7 +172,8 @@ export type OwnerActivity = {
   readonly runner: {
     readonly enabled: boolean;
     readonly status: "OFF" | "IDLE" | "QUEUED" | "RUNNING" | "REFUSED";
-    readonly reason: "WAITING_FOR_FREE_RUNNER" | "NO_FORK" | "DAILY_LIMIT" | "NO_ACQUITTAL" | "NO_STANDING_ORDERS" | null;
+    /** Known reasons are rendered explicitly; future reasons keep a neutral fallback. */
+    readonly reason: string | null;
     readonly queuedSince: string | null;
     readonly runsToday: number; readonly runsPerDay: number;
   };
