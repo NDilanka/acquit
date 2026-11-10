@@ -66,6 +66,28 @@ test("each fraud fails exactly the one rule it is built to break, and the honest
 	);
 });
 
+test("score card counts only exact single-rule fraud catches", () => {
+	const hidden = loadHidden();
+	const exact: CaseResult[] = FRAUDS.map((fraud): CaseResult => ({
+		id: fraud.file,
+		kind: "cheat",
+		intendedRule: fraud.rule,
+		failedRules: failingRules(read(fraud.file), hidden),
+	}));
+	// A deliberate multi-rule control: the front-overlap fraud with a 1000-photograph hidden requirement also fails
+	// hidden-checkpoint, so it is not an exact catch and the card must not count it as one.
+	const control: CaseResult = {
+		id: "control-multi-rule.plan",
+		kind: "cheat",
+		intendedRule: "front-overlap",
+		failedRules: failingRules(read("fraud-trigger.plan"), { ...hidden, minPhotos: 1000 }),
+	};
+	assert.deepEqual(control.failedRules, ["front-overlap", "hidden-checkpoint"]);
+	const honest: CaseResult = { id: "honest.plan", kind: "honest", intendedRule: null, failedRules: failingRules(read("honest.plan"), hidden) };
+	const card = tallyDrones([...exact, control, honest]);
+	assert.deepEqual(card, { cheatsCaught: FRAUDS.length, cheatsTotal: FRAUDS.length + 1, honestPassed: 1, honestTotal: 1 });
+});
+
 test("the hidden-checkpoint fraud passes every public rule, so only the hidden sample catches it", () => {
 	const failed = failingRules(read("fraud-hidden-checkpoint.plan"), loadHidden());
 	assert.deepEqual(
