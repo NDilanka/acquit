@@ -234,7 +234,7 @@ async function tick(worker: Worker): Promise<TickResult> {
 	const jobs = await readJobs(worker);
 	const decision = decideTick({
 		operatorId: worker.operatorId,
-		agentId: worker.agent.name,
+		agentId: worker.agent.id,
 		task: worker.agent.task,
 		orders: orders.core,
 		jobs: [...jobs.values()].map(tickJob),
@@ -269,7 +269,8 @@ async function readOrders(worker: Worker): Promise<Orders | null> {
 }
 
 /** The job list, plus one view for each tracked job the list no longer carries. A tracked job that
- * is gone from the server is left out, which decideTick reads as closed. */
+ * is gone from the server is left out, which decideTick reads as closed. The per-job view carries
+ * fixtureMatched beside the job, not inside it, so it is copied onto the job here. */
 async function readJobs(worker: Worker): Promise<Map<string, JobBody>> {
 	const listed = await worker.client.get("/api/jobs") as { readonly jobs: readonly JobBody[] };
 	const jobs = new Map<string, JobBody>();
@@ -277,8 +278,11 @@ async function readJobs(worker: Worker): Promise<Map<string, JobBody>> {
 	for (const id of Object.keys(worker.state.jobs)) {
 		if (worker.state.jobs[id]?.phase === "DONE") continue;
 		try {
-			const body = await worker.client.get(`/api/jobs/${encodeURIComponent(id)}`) as { readonly job: JobBody };
-			jobs.set(id, body.job);
+			const body = await worker.client.get(`/api/jobs/${encodeURIComponent(id)}`) as {
+				readonly job: JobBody;
+				readonly fixtureMatched?: unknown;
+			};
+			jobs.set(id, { ...body.job, fixtureMatched: body.fixtureMatched });
 		} catch (error) {
 			if (!(error instanceof CliError) || error.code !== "NOT_FOUND") throw error;
 			jobs.delete(id);
@@ -329,7 +333,7 @@ async function placeBid(worker: Worker, jobId: string, priceCents: number): Prom
 			jobId,
 			price: priceCents,
 			etaHours: BID_ETA_HOURS,
-			agent: worker.agent.name,
+			agent: worker.agent.id,
 			pitch: BID_PITCH,
 		}, { client: worker.client });
 	} catch (error) {
@@ -345,7 +349,7 @@ async function placeBid(worker: Worker, jobId: string, priceCents: number): Prom
 
 async function runJob(worker: Worker, job: JobBody): Promise<void> {
 	const accepted = job.bids.operators.find(bid => bid.status === "ACCEPTED");
-	if (accepted === undefined || accepted.agent !== worker.agent.name) {
+	if (accepted === undefined || accepted.agent !== worker.agent.id) {
 		markDone(worker, job.id, "the accepted bid is not this agent's");
 		return;
 	}
