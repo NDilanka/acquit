@@ -2,18 +2,20 @@
 // Findings come back in RULES order. The verdict passes only when every finding is ok. The hidden-material rule
 // runs only when the verifier holds samples, so a verdict without them carries no hidden finding.
 
-import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, roundMm, selfCrosses, shapeKey, widthOf } from "./geometry.ts";
+import { boundsOf, centreOf, edgeListDistance, edgeListsOverlap, edgesOf, heightOf, pointInPolygon, roundMm, selfCrosses, selfOverlaps, widthOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { finishedInnerSize, finishedPart, isMaterial, toDrawing, toPart } from "./finished.ts";
 import type { FinishedPart } from "./finished.ts";
 import { MAX_PAIR_TESTS } from "./limits.ts";
 import { validateSpec } from "./spec.ts";
-import { parseSvg } from "./svg.ts";
+import { FLATTEN_TOL_MM, parseSvg } from "./svg.ts";
 import { fitTolerance, fitsRectangle, fitsRing, isRoundCut, RING_POINTS_MAX, roundedRectRing } from "./shapes.ts";
 import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
 import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SvgPath, Verdict, Vec2 } from "./types.ts";
 
 type Outline = { readonly path: SvgPath; readonly box: Bounds };
+
+type Edges = readonly (readonly [Vec2, Vec2])[];
 
 /**
  * A cut measured on the finished part: its finished size, its centre in the part frame, and whether its finished
@@ -88,6 +90,50 @@ function claim(candidates: readonly Candidate[], used: Set<Candidate>, fits: (ca
 
 const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol;
 
+/** True when every vertex of the inner closed cut lies inside the outer one. */
+const encloses = (outer: SvgPath, inner: SvgPath): boolean => inner.points.every(point => pointInPolygon(point, outer.points));
+
+/**
+ * A cut is a repeat when it doubles back on itself or shares a stretch with a cut drawn before it. The first drawing of
+ * a stretch is the cut; each later drawing is a repeat.
+ */
+function repeatsOf(cut: readonly SvgPath[], edges: readonly Edges[]): Set<SvgPath> {
+	const repeats = new Set<SvgPath>();
+	cut.forEach((path, k) => {
+		const sharesStretch = edges.slice(0, k).some(earlier => edgeListsOverlap(edges[k]!, earlier));
+		if (sharesStretch || selfOverlaps(path.points, path.closed)) repeats.add(path);
+	});
+	return repeats;
+}
+
+type PairChecks = { readonly minWebMm: number; readonly thin: readonly string[]; readonly misordered: ReadonlySet<SvgPath> };
+
+/**
+ * Each pair of cuts that do not share a stretch, checked once: the finished web between them, and any closed cut lying
+ * inside another that is drawn after it. A pair that shares a stretch is a repeat, which no-duplicates reports.
+ */
+function pairChecks(cut: readonly SvgPath[], edges: readonly Edges[], spec: Spec): PairChecks {
+	let minWeb = Infinity;
+	const thin: string[] = [];
+	const misordered = new Set<SvgPath>();
+	for (let i = 0; i < cut.length; i++) {
+		for (let j = i + 1; j < cut.length; j++) {
+			const a = cut[i]!;
+			const b = cut[j]!;
+			if (edgeListsOverlap(edges[i]!, edges[j]!)) continue;
+			// Each finished edge sits kerf/2 from its drawn line, toward the web, so the web loses one kerf. Flattening can
+			// move each drawn line by up to FLATTEN_TOL_MM, so the web allows that on both sides.
+			const web = edgeListDistance(edges[i]!, edges[j]!) - spec.kerfMm - 2 * FLATTEN_TOL_MM;
+			if (web < minWeb) minWeb = web;
+			if (web < spec.minWebMm) thin.push(a.id, b.id);
+			if (!a.closed || !b.closed) continue;
+			if (b.order > a.order && encloses(a, b)) misordered.add(b);
+			if (a.order > b.order && encloses(b, a)) misordered.add(a);
+		}
+	}
+	return { minWebMm: minWeb, thin, misordered };
+}
+
 function sceneOf(paths: readonly SvgPath[], size: Scene["size"], spec: Spec): Scene {
 	const scenePaths: ScenePath[] = paths.map(path => ({
 		id: path.id,
@@ -133,15 +179,15 @@ function sampleProblem(hidden: HiddenSample | null): string | null {
 }
 
 /**
- * The pair and point tests the rules will run. Cut against cut costs at most the square of the cut edge count; each
- * engraving point and hidden sample costs one pass over the cut edges. Each spec feature, the outline and the extra
- * cuts are fitted against an ideal shape of at most RING_POINTS_MAX points, one pass over the cut edges each. Counted
- * before any of them runs.
+ * The pair and point tests the rules will run. Cut against cut costs about three times the square of the cut edge
+ * count: the repeat, web and enclosure tests each visit the pairs of cut edges. Each engraving point and hidden sample
+ * costs one pass over the cut edges. Each spec feature, the outline and the extra cuts are fitted against an ideal
+ * shape of at most RING_POINTS_MAX points, one pass over the cut edges each. Counted before any of them runs.
  */
 function workOf(cut: readonly SvgPath[], engrave: readonly SvgPath[], samples: number, features: number): number {
 	const edges = cut.reduce((sum, path) => sum + edgesOf(path.points, path.closed).length, 0);
 	const points = engrave.reduce((sum, path) => sum + path.points.length, 0);
-	return edges * edges + (points + samples) * edges + (features + 2) * edges * RING_POINTS_MAX * 2;
+	return 3 * edges * edges + (points + samples) * edges + (features + 2) * edges * RING_POINTS_MAX * 2;
 }
 
 /**
@@ -216,16 +262,10 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	const open = cut.filter(path => !path.closed).map(path => path.id);
 	findings.push(check("closed-paths", open.length === 0, "every cut path is closed", `${open.length} cut path(s) are open`, open));
 
-	const seen = new Map<string, string>();
-	const keys = new Map<SvgPath, string>();
-	const repeats = new Set<SvgPath>();
-	for (const path of cut) {
-		const key = shapeKey(path.points);
-		keys.set(path, key);
-		if (seen.has(key)) repeats.add(path);
-		else seen.set(key, path.id);
-	}
-	const duplicates = [...repeats].map(path => path.id);
+	const cutEdges = cut.map(path => edgesOf(path.points, path.closed));
+	const repeats = repeatsOf(cut, cutEdges);
+	const duplicates = cut.filter(path => repeats.has(path)).map(path => path.id);
+	const pairs = pairChecks(cut, cutEdges, spec);
 
 	// The outline is the part's edge, not a feature, so it is never a candidate for a hole or cutout.
 	const candidates =
@@ -344,20 +384,29 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 			),
 		);
 
-		const late = cut.filter(path => path !== outline.path && path.order > outline.path.order).map(path => path.id);
+		// The outer cut is drawn last, and every cut is drawn before any cut that encloses it.
+		const outOfOrder = cut
+			.filter(path => path !== outline.path && (path.order > outline.path.order || pairs.misordered.has(path)))
+			.map(path => path.id);
 		findings.push(
 			check(
 				"cut-order",
-				late.length === 0,
-				"the outer cut is the last cut",
-				`${late.length} cut(s) are drawn after the outer cut`,
-				late,
+				outOfOrder.length === 0,
+				"the outer cut is the last cut, and every cut is drawn before the cut that encloses it",
+				`${outOfOrder.length} cut(s) are drawn after the outer cut or after a cut that encloses them`,
+				outOfOrder,
 			),
 		);
 	}
 
 	findings.push(
-		check("no-duplicates", duplicates.length === 0, "no shape is cut twice", `${duplicates.length} cut(s) repeat an earlier cut`, duplicates),
+		check(
+			"no-duplicates",
+			duplicates.length === 0,
+			"no stretch is cut twice",
+			`${duplicates.length} cut(s) cut a stretch that is already cut, or double back on themselves`,
+			duplicates,
+		),
 	);
 
 	const [bedX, bedY] = spec.bedMm;
@@ -369,28 +418,14 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		check("fits-bed", offBed.length === 0, `every cut and engrave lies on the ${bedX} x ${bedY} mm bed`, `${offBed.length} path(s) run off the bed`, offBed),
 	);
 
-	let minWeb = Infinity;
-	const thinPairs: string[] = [];
-	for (let i = 0; i < cut.length; i++) {
-		for (let j = i + 1; j < cut.length; j++) {
-			const a = cut[i]!;
-			const b = cut[j]!;
-			// Identical shapes are a duplicate, and the duplicate rule reports them, not the web rule.
-			if (keys.get(a) === keys.get(b)) continue;
-			// Each cut's finished edge sits kerf/2 from its drawn line, toward the web, so the web loses one kerf.
-			const web = edgeListDistance(edgesOf(a.points, a.closed), edgesOf(b.points, b.closed)) - spec.kerfMm;
-			if (web < minWeb) minWeb = web;
-			if (web < spec.minWebMm) thinPairs.push(a.id, b.id);
-		}
-	}
-	if (Number.isFinite(minWeb)) measured.minWebMm = roundMm(minWeb);
+	if (Number.isFinite(pairs.minWebMm)) measured.minWebMm = roundMm(pairs.minWebMm);
 	findings.push(
 		check(
 			"min-web",
-			thinPairs.length === 0,
+			pairs.thin.length === 0,
 			`every web between cuts is at least ${spec.minWebMm} mm`,
-			`${thinPairs.length / 2} pair(s) of cuts leave a web under ${spec.minWebMm} mm`,
-			[...new Set(thinPairs)],
+			`${pairs.thin.length / 2} pair(s) of cuts leave a web under ${spec.minWebMm} mm`,
+			[...new Set(pairs.thin)],
 		),
 	);
 

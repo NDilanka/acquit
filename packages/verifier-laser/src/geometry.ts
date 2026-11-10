@@ -130,13 +130,51 @@ export function selfCrosses(points: readonly Vec2[], closed: boolean): boolean {
 	return false;
 }
 
+/** Two stretches this close, in mm, along and across, count as one cut. Matches the flattening tolerance. */
+export const STRETCH_TOL_MM = 0.02;
+
 /**
- * A key that ignores start point, direction and rounding noise, so a path cut twice is found whatever its
- * starting corner. Two paths with the same key draw the same shape.
+ * True when two edges run along one line, each end of the second within STRETCH_TOL_MM of the first, and overlap for
+ * more than STRETCH_TOL_MM. Such edges cut the same stretch twice, whatever their start points or directions. A
+ * zero-length edge overlaps nothing.
  */
-export function shapeKey(points: readonly Vec2[]): string {
-	const keys = points.map(([x, y]) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`);
-	return keys.sort().join(";");
+export function edgesOverlap(a: Vec2, b: Vec2, c: Vec2, d: Vec2): boolean {
+	const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+	if (length <= STRETCH_TOL_MM || Math.hypot(d[0] - c[0], d[1] - c[1]) <= STRETCH_TOL_MM) return false;
+	const ux = (b[0] - a[0]) / length;
+	const uy = (b[1] - a[1]) / length;
+	const across = (p: Vec2): number => (p[0] - a[0]) * uy - (p[1] - a[1]) * ux;
+	const along = (p: Vec2): number => (p[0] - a[0]) * ux + (p[1] - a[1]) * uy;
+	if (Math.abs(across(c)) > STRETCH_TOL_MM || Math.abs(across(d)) > STRETCH_TOL_MM) return false;
+	const lo = Math.max(0, Math.min(along(c), along(d)));
+	const hi = Math.min(length, Math.max(along(c), along(d)));
+	return hi - lo > STRETCH_TOL_MM;
+}
+
+/** True when some edge of one list cuts a stretch that some edge of the other list cuts too. */
+export function edgeListsOverlap(first: readonly (readonly [Vec2, Vec2])[], second: readonly (readonly [Vec2, Vec2])[]): boolean {
+	for (const [a, b] of first) {
+		for (const [c, d] of second) {
+			if (edgesOverlap(a, b, c, d)) return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * True when a path cuts one stretch twice, so it doubles back on itself. Adjacent edges count, so a spike or a
+ * retraced run is caught. Two edges that only meet at a shared corner are not an overlap.
+ */
+export function selfOverlaps(points: readonly Vec2[], closed: boolean): boolean {
+	const edges = edgesOf(points, closed);
+	for (let i = 0; i < edges.length; i++) {
+		for (let j = i + 1; j < edges.length; j++) {
+			const [a, b] = edges[i]!;
+			const [c, d] = edges[j]!;
+			if (edgesOverlap(a, b, c, d)) return true;
+		}
+	}
+	return false;
 }
 
 export const roundMm = (value: number): number => Math.round(value * 1000) / 1000;

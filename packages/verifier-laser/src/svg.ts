@@ -769,14 +769,14 @@ function visit(element: Element, parentCtm: Matrix, inherited: string | null, st
 		refuseChildren(child);
 	}
 	const subpaths = shapeSubpaths(local, element.attrs, FLATTEN_TOL_MM / stretch(ctm), state.budget);
-	const order = state.order++;
-	const id = element.attrs.get("id") ?? `${local}-${order}`;
+	const id = element.attrs.get("id") ?? `${local}-${state.order}`;
+	// Each subpath takes its own order, so a compound path cut outer-first is told apart from one cut inner-first.
 	subpaths.forEach((subpath, k) => {
 		state.paths.push({
 			id: subpaths.length > 1 ? `${id}.${k}` : id,
 			stroke,
 			closed: subpath.closed,
-			order,
+			order: state.order++,
 			points: subpath.points.map(point => placed(ctm, point)),
 		});
 	});

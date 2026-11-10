@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, pointInPolygon, roundMm, segmentDistance, shapeKey, widthOf } from "../src/geometry.ts";
+import { boundsOf, centreOf, edgeListDistance, edgesOf, edgesOverlap, heightOf, pointInPolygon, roundMm, segmentDistance, selfOverlaps, widthOf } from "../src/geometry.ts";
 
 const square: [number, number][] = [[0, 0], [4, 0], [4, 2], [0, 2]];
 
@@ -30,12 +30,26 @@ test("the distance between two edge lists is the nearest gap between them", () =
 	assert.equal(edgeListDistance(left, right), 2);
 });
 
-test("a shape key is the same for the same outline from any start point or direction", () => {
-	const a = shapeKey([[0, 0], [1, 0], [1, 1], [0, 1]]);
-	const b = shapeKey([[1, 1], [0, 1], [0, 0], [1, 0]]);
-	const c = shapeKey([[0, 0], [2, 0], [2, 1], [0, 1]]);
-	assert.equal(a, b);
-	assert.notEqual(a, c);
+test("two edges along one line overlap whatever their direction and start", () => {
+	assert.equal(edgesOverlap([0, 0], [10, 0], [2, 0], [8, 0]), true);
+	assert.equal(edgesOverlap([0, 0], [10, 0], [8, 0], [2, 0]), true);
+	assert.equal(edgesOverlap([0, 0], [10, 0], [8, 0], [14, 0]), true);
+});
+
+test("edges that only meet at a corner, or lie apart, do not overlap", () => {
+	assert.equal(edgesOverlap([0, 0], [10, 0], [10, 0], [10, 5]), false);
+	assert.equal(edgesOverlap([0, 0], [10, 0], [10, 0], [20, 0]), false);
+	assert.equal(edgesOverlap([0, 0], [10, 0], [0, 0.5], [10, 0.5]), false);
+});
+
+test("an edge 0.01 mm off the line still overlaps it", () => {
+	assert.equal(edgesOverlap([0, 0], [10, 0], [0, 0.01], [10, 0.01]), true);
+});
+
+test("a path that doubles back on itself overlaps itself, a plain square and a corner do not", () => {
+	assert.equal(selfOverlaps([[10, 10], [90, 10], [50, 10], [130, 10], [130, 90], [10, 90]], true), true);
+	assert.equal(selfOverlaps([[0, 0], [10, 0], [5, 0]], false), true);
+	assert.equal(selfOverlaps(square, true), false);
 });
 
 test("rounding keeps three decimal places of mm", () => {

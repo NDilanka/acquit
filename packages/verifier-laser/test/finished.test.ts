@@ -77,9 +77,10 @@ test("a keep-material sample exactly on a finished edge fails hidden-material, o
 	assert.equal(onVoid.findings.find(item => item.rule === "hidden-material")?.ok, false);
 });
 
-test("a cut 3.1 mm from the outer drawing leaves 2.9 mm of finished web and fails min-web", () => {
+test("a cut 3.1 mm from the outer drawing leaves 2.86 mm of finished web and fails min-web", () => {
+	// Step 7 subtracts 2 x 0.02 mm of flattening allowance from the web, so the 2.9 mm of step 5 becomes 2.86 mm.
 	const withCircle = COMPENSATED.replace("</svg>", '  <circle id="web" cx="126.1" cy="40" r="1" stroke="#ff0000" fill="none"/>\n</svg>');
 	const verdict = verify(spec, withCircle);
 	assert.equal(verdict.findings.find(item => item.rule === "min-web")?.ok, false);
-	assert.equal(verdict.measured.minWebMm, 2.9);
+	assert.equal(verdict.measured.minWebMm, 2.86);
 });

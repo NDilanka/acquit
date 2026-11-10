@@ -120,8 +120,8 @@ test("an open window fails closed-paths and cutouts", () => {
 });
 
 test("a rectangle inside the window fails cutouts", () => {
-	// Inside the window with every web at least 3.6 mm, so only the cutout rule can fail.
+	// Inside the window with every web at least 3.6 mm, and drawn before the window, so only the cutout rule can fail.
 	const stray = `<rect id="stray" x="62" y="48" width="10" height="4" stroke="#ff0000" fill="none"/>`;
-	const text = edit(honest, OUTLINE, `${stray}\n${OUTLINE}`);
+	const text = edit(honest, WINDOW, `${stray}\n${WINDOW}`);
 	assert.deepEqual(failed(verify(specWith(), text)), ["cutouts"]);
 });
