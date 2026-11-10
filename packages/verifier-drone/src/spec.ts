@@ -9,7 +9,10 @@ export const PUBLIC_RULES = ["altitude-limits", "ground-resolution", "front-over
 /** Rules that need the hidden sample. They always run; without the sample they fail. */
 export const HIDDEN_RULES = ["hidden-checkpoint", "hidden-wind"] as const;
 
-/** Limits that keep verification bounded. Inputs above them are refused by the parsers. */
+/**
+ * Limits that keep verification bounded. Inputs above them are refused by the parsers; `exposures` bounds the
+ * photographs a mission may take, counting transits, and a mission above it is refused before any photograph list is built.
+ */
 export const LIMITS = {
 	missionItems: 2000,
 	areaPoints: 500,
@@ -19,6 +22,7 @@ export const LIMITS = {
 	pixels: 100000,
 	minPhotos: 1000,
 	localExtentM: 20000,
+	exposures: 10000,
 } as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

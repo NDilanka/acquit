@@ -5,13 +5,17 @@ import { centroid, fromFrame, frameFrom, pointInPolygon, segmentHitsPolygon, toF
 import type { Frame } from "./geo.ts";
 import { parsePlan } from "./plan.ts";
 import type { Plan, Waypoint } from "./plan.ts";
-import { HIDDEN_RULES, PUBLIC_RULES, parseHiddenSample, parseSpec } from "./spec.ts";
+import { photographs } from "./photos.ts";
+import type { Flight, Shot } from "./photos.ts";
+import { HIDDEN_RULES, LIMITS, PUBLIC_RULES, parseHiddenSample, parseSpec } from "./spec.ts";
 import type { Camera, Finding, HiddenSample, Scene, ScenePath, Spec, Vec2, Vec3, Verdict } from "./types.ts";
 
 /** Metres. Positions this close count as equal, so plan rounding does not split a survey line. */
 const TOL = 0.05;
 /** Metres of altitude. Altitudes this close count as level, so float noise cannot split a survey line. */
 const ALT_TOL = 1e-6;
+/** The most photograph footprints the scene carries. A longer flight is sampled evenly down to this many. */
+const SCENE_FOOTPRINTS = 200;
 
 type Segment = { readonly index: number; readonly a: Waypoint; readonly b: Waypoint };
 /**
@@ -39,6 +43,8 @@ type Context = {
 	/** The survey heading, or null when the plan has no level segment long enough to define one. */
 	readonly frame: Frame | null;
 	readonly legs: readonly Leg[];
+	/** Every photograph taken on the survey flights, in flight order. */
+	readonly shots: readonly Shot[];
 	readonly hidden: HiddenSample | undefined;
 };
 
@@ -120,16 +126,49 @@ function legsOf(segments: readonly Segment[], frame: Frame | null): Leg[] {
 	return out;
 }
 
-/** Whether a point lies in the footprint of a photographed leg. A leg with triggering off photographs nothing. */
-function covered(p: Vec2, legs: readonly Leg[], camera: Camera, frame: Frame | null): boolean {
-	if (frame === null) return false;
+/**
+ * How many survey photographs hold a point. Each photograph covers the camera footprint centred on its exposure:
+ * alongM split either side of the exposure along the heading, and acrossM split either side across it.
+ */
+function holding(p: Vec2, shots: readonly Shot[], camera: Camera, frame: Frame | null): number {
+	if (frame === null) return 0;
 	const [s, t] = toFrame(frame, p);
-	return legs.some(leg => {
-		if (leg.triggerM === null) return false;
-		const half = acrossM(leg.alt, camera) / 2;
-		const reach = alongM(leg.alt, camera) / 2;
-		return Math.abs(t - leg.t) <= half + TOL && s >= Math.min(leg.s0, leg.s1) - reach - TOL && s <= Math.max(leg.s0, leg.s1) + reach + TOL;
+	let count = 0;
+	for (const shot of shots) {
+		const half = acrossM(shot.alt, camera) / 2;
+		const reach = alongM(shot.alt, camera) / 2;
+		if (Math.abs(t - shot.t) <= half + TOL && Math.abs(s - shot.s) <= reach + TOL) count++;
+	}
+	return count;
+}
+
+/**
+ * One stretch of flight per segment, in mission order: its ground length, the trigger distance in force, and the
+ * survey line it flies, or null for a transit. The index of each flight is its segment index.
+ */
+function flightsOf(segments: readonly Segment[], legs: readonly Leg[]): Flight[] {
+	const byIndex = new Map<number, Leg>();
+	for (const leg of legs) byIndex.set(leg.index, leg);
+	return segments.map(segment => {
+		const { a, b } = segment;
+		const leg = byIndex.get(segment.index);
+		return {
+			length: Math.hypot(b.x - a.x, b.y - a.y),
+			trigger: legTrigger(a, b),
+			survey: leg === undefined ? null : { s0: leg.s0, s1: leg.s1, t: leg.t, alt: leg.alt },
+		};
 	});
+}
+
+/** Up to `cap` photographs spread evenly through the flight, each with its index in the full list. */
+function sampleShots(shots: readonly Shot[], cap: number): { index: number; shot: Shot }[] {
+	if (shots.length <= cap) return shots.map((shot, index) => ({ index, shot }));
+	const out: { index: number; shot: Shot }[] = [];
+	for (let k = 0; k < cap; k++) {
+		const index = Math.floor((k * shots.length) / cap);
+		out.push({ index, shot: shots[index]! });
+	}
+	return out;
 }
 
 /** Along-track overlap of a leg's photographs. With triggering off, or no height above the ground, there is none. */
@@ -154,8 +193,9 @@ function sampleGrid(area: readonly Vec2[], gridM: number): Vec2[] {
 	return out;
 }
 
+/** A finding. Optional `at` and `refs` are left out entirely when absent, so a hidden finding carries no such keys. */
 function finding(rule: string, ok: boolean, hidden: boolean, message: string, at?: Vec3, refs?: readonly string[]): Finding {
-	return { rule, ok, hidden, message, at, refs };
+	return { rule, ok, hidden, message, ...(at === undefined ? {} : { at }), ...(refs === undefined ? {} : { refs }) };
 }
 
 function percent(value: number): string {
@@ -242,9 +282,9 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		}
 		return finding("no-fly", true, false, "No part of the route crosses a no-fly zone.");
 	},
-	coverage: ({ spec, geometry, legs, frame }) => {
+	coverage: ({ spec, geometry, shots, frame }) => {
 		const samples = sampleGrid(geometry.area, spec.gridM);
-		const missed = samples.filter(p => !covered(p, legs, spec.camera, frame));
+		const missed = samples.filter(p => holding(p, shots, spec.camera, frame) === 0);
 		if (missed.length === 0) return finding("coverage", true, false, `All ${samples.length} sample points on the survey area are photographed.`);
 		const first = missed[0]!;
 		return finding("coverage", false, false, `${missed.length} of ${samples.length} sample points on the survey area are not photographed.`, [first[0], first[1], 0]);
@@ -262,11 +302,11 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 };
 
 const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
-	"hidden-checkpoint": ({ spec, legs, frame, hidden }) => {
+	"hidden-checkpoint": ({ spec, shots, frame, hidden }) => {
 		if (hidden === undefined) return finding("hidden-checkpoint", false, true, "The hidden checkpoints were not supplied, so this check cannot pass.");
-		const missed = hidden.checkpoints.filter(p => !covered(p, legs, spec.camera, frame));
-		if (missed.length === 0) return finding("hidden-checkpoint", true, true, "All hidden checkpoints are photographed.");
-		return finding("hidden-checkpoint", false, true, `${missed.length} hidden checkpoint${missed.length === 1 ? " is" : "s are"} not photographed.`);
+		const short = hidden.checkpoints.filter(p => holding(p, shots, spec.camera, frame) < hidden.minPhotos);
+		if (short.length === 0) return finding("hidden-checkpoint", true, true, `Every hidden checkpoint is in at least ${hidden.minPhotos} photographs.`);
+		return finding("hidden-checkpoint", false, true, `${short.length} hidden checkpoint${short.length === 1 ? " is" : "s are"} in fewer than ${hidden.minPhotos} photographs.`);
 	},
 	"hidden-wind": ({ plan, hidden }) => {
 		if (hidden === undefined) return finding("hidden-wind", false, true, "The hidden wind was not supplied, so this check cannot pass.");
@@ -276,34 +316,38 @@ const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
 	},
 };
 
-function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], camera: Camera, frame: Frame | null): Scene {
+function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], shots: readonly Shot[], camera: Camera, frame: Frame | null): Scene {
 	const xs = geometry.area.map(p => p[0]);
 	const ys = geometry.area.map(p => p[1]);
 	const paths: ScenePath[] = [{ id: "area", kind: "area", layer: "survey", z: 0, closed: true, points: geometry.area }];
 	for (const zone of geometry.zones) paths.push({ id: `zone-${zone.id}`, kind: "zone", layer: "no-fly", z: 0, closed: true, points: zone.polygon });
 	let maxAlt = 0;
+	const byIndex = new Map<number, Leg>();
+	for (const leg of legs) byIndex.set(leg.index, leg);
 	for (const segment of segments ?? []) {
 		const z = Math.max(segment.a.alt, segment.b.alt);
 		maxAlt = Math.max(maxAlt, z);
 		const points: Vec2[] = [[segment.a.x, segment.a.y], [segment.b.x, segment.b.y]];
-		const leg = legs.find(item => item.index === segment.index);
+		const leg = byIndex.get(segment.index);
 		if (leg === undefined) {
 			paths.push({ id: `transit-${segment.index}`, kind: "travel", layer: "transit", z, closed: false, order: segment.index, points });
-			continue;
+		} else {
+			paths.push({ id: `leg-${leg.index}`, kind: "flight", layer: "survey", z: leg.alt, closed: false, order: leg.index, points });
 		}
-		paths.push({ id: `leg-${leg.index}`, kind: "flight", layer: "survey", z: leg.alt, closed: false, order: leg.index, points });
-		if (frame === null) continue;
-		const reach = alongM(leg.alt, camera) / 2;
-		const half = acrossM(leg.alt, camera) / 2;
-		const s0 = Math.min(leg.s0, leg.s1) - reach;
-		const s1 = Math.max(leg.s0, leg.s1) + reach;
-		const corners: Vec2[] = [
-			fromFrame(frame, s0, leg.t - half),
-			fromFrame(frame, s1, leg.t - half),
-			fromFrame(frame, s1, leg.t + half),
-			fromFrame(frame, s0, leg.t + half),
-		];
-		paths.push({ id: `photo-${leg.index}`, kind: "footprint", layer: "photo", z: 0, closed: true, order: leg.index, points: corners });
+	}
+	// One footprint per sampled photograph: the camera's ground footprint around the exposure, not a whole strip.
+	if (frame !== null) {
+		for (const { index, shot } of sampleShots(shots, SCENE_FOOTPRINTS)) {
+			const reach = alongM(shot.alt, camera) / 2;
+			const half = acrossM(shot.alt, camera) / 2;
+			const corners: Vec2[] = [
+				fromFrame(frame, shot.s - reach, shot.t - half),
+				fromFrame(frame, shot.s + reach, shot.t - half),
+				fromFrame(frame, shot.s + reach, shot.t + half),
+				fromFrame(frame, shot.s - reach, shot.t + half),
+			];
+			paths.push({ id: `photo-${index}`, kind: "footprint", layer: "photo", z: 0, closed: true, order: index, points: corners });
+		}
 	}
 	return { units: "m", size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), maxAlt], paths };
 }
@@ -325,12 +369,19 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 	const hiddenError = typeof hiddenParsed === "string" ? hiddenParsed : null;
 	const hidden = typeof hiddenParsed === "string" ? undefined : hiddenParsed;
 	const parsed = parsePlan(artefact, spec.origin);
-	if (typeof parsed === "string") return refused(parsed, sceneFor(geometry, null, [], spec.camera, null));
+	if (typeof parsed === "string") return refused(parsed, sceneFor(geometry, null, [], [], spec.camera, null));
 
 	const segments = segmentsOf(parsed.waypoints);
 	const frame = surveyFrame(segments);
 	const legs = legsOf(segments, frame);
-	const ctx: Context = { spec, geometry, plan: parsed, segments, frame, legs, hidden };
+	const shots = photographs(flightsOf(segments, legs), LIMITS.exposures);
+	if (shots === null) {
+		return refused(
+			`The mission would take more than ${LIMITS.exposures} photographs, which is more than the checker verifies.`,
+			sceneFor(geometry, segments, legs, [], spec.camera, frame),
+		);
+	}
+	const ctx: Context = { spec, geometry, plan: parsed, segments, frame, legs, shots, hidden };
 	const publicFindings = PUBLIC_RULES.filter(rule => spec.rules.includes(rule)).map(rule => CHECKS[rule](ctx));
 	const hiddenFindings = HIDDEN_RULES.map(rule => HIDDEN_CHECKS[rule](ctx));
 	const planFinding =
@@ -359,7 +410,8 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		frontOverlap: frontWorst === null ? 0 : frontOverlapOf(frontWorst, spec.camera),
 		sideOverlap: sides.length === 0 ? 1 : Math.min(...sides.map(pair => pair.overlap)),
 		samplePoints: samples.length,
-		uncoveredSamples: samples.filter(p => !covered(p, legs, spec.camera, frame)).length,
+		photographs: shots.length,
+		uncoveredSamples: samples.filter(p => holding(p, shots, spec.camera, frame) === 0).length,
 	};
-	return { workflow: "drone-survey", pass: findings.every(item => item.ok), findings, measured, scene: sceneFor(geometry, segments, legs, spec.camera, frame) };
+	return { workflow: "drone-survey", pass: findings.every(item => item.ok), findings, measured, scene: sceneFor(geometry, segments, legs, shots, spec.camera, frame) };
 }
