@@ -1370,6 +1370,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (method === "POST") {
 			const started = startExam(db, owned, `exam_${randomUUID()}`, clock.now());
 			if (started.ok) { json(res, 202, { exam: startJson(started.run) }); return; }
+			if (started.error === "NOT_FOUND") { json(res, 404, { error: "NOT_FOUND" }); return; }
 			if (started.error === "EXAM_NOT_BUILT") { json(res, 503, { error: "EXAM_NOT_BUILT", detail: "This task has no exam in this build." }); return; }
 			json(res, 409, { error: started.error, detail: EXAM_REFUSAL_DETAIL[started.error] }); return;
 		}
