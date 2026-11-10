@@ -83,7 +83,7 @@ export function AgentPicker({ agents, requestedId, base }: {
     <h1>{requestedId ? "Agent not found" : agents.length ? "Choose your agent" : "Plug in your first agent"}</h1>
     <p className="muted">{requestedId ? "That agent is not in your workspace. Choose one below." : "Pick the agent for this run."}</p>
     <ul>{agents.map((agent) => <li key={agent.id}><Link className="agent-choice" to={`${base}/${encodeURIComponent(agent.id)}`}>
-      <span>{agent.name}<small>{taskLabel(agent.task)} · {agent.acquitted ? "Acquitted" : "Not acquitted"}</small></span>
+      <span>{agent.name}<small>{taskLabel(agent.task)} · {agent.acquitted ? "Acquitted" : "Not acquitted"}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
       <span>Grade {agent.grade ?? "—"}</span>
     </Link></li>)}</ul>
     <Link to="/specialists" className="btn secondary">Plug in an agent</Link>

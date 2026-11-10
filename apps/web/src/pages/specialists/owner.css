@@ -5,6 +5,7 @@
 .owner-app :is(h1,h2,h3,b,strong,.btn) { font-weight: 500; }
 .owner-app :is(ol,ul) { list-style: none; padding: 0; }
 .owner-app h1:focus { outline: none; }
+.owner-app .alert { color: var(--ink); background: var(--surface); border-color: var(--line-2); }
 .owner-app .sandbox, .owner-app .pill.held, .owner-app .pill.open { color: var(--muted); background: var(--surface); border-color: var(--line-2); }
 .owner-app .acct-dot, .owner-app .tl-node.open .tl-dot, .owner-app .tl-node.held .tl-dot { background: var(--ink); border-color: var(--ink); }
 .owner-app .stat-value { font-family: var(--sans); font-variant-numeric: tabular-nums; font-size: var(--text-section); line-height: var(--leading-section); }
@@ -148,7 +149,7 @@
 @media (max-width: 640px) {
   html:has(.owner-app) { scroll-padding-block: 96px 144px; }
   .owner-app :is(a,button,input,select,summary) { scroll-margin-block: 96px 144px; }
-  .owner-bar { position: relative; grid-template-columns: auto minmax(0,1fr) auto; padding: 0 var(--space-3) var(--space-3); gap: var(--space-2); }
+  .owner-bar { position: relative; grid-template-columns: auto minmax(0,1fr) auto; padding: 0 var(--space-3) var(--space-5); gap: var(--space-2); }
   .owner-brand { gap: var(--space-1); font-size: var(--text-ui); }
   .owner-brand > span:first-child { width: 24px; height: 24px; }
   .owner-nav { gap: 0; justify-self: center; }
@@ -170,11 +171,11 @@
   .owner-grade strong { font-size: var(--text-heading); line-height: var(--leading-heading); }
   .owner-grade > span { font-size: var(--text-xs); }
   .owner-money { padding: var(--space-1) var(--space-4); font-size: var(--text-xs); line-height: var(--leading-xs); }
-  .owner-track-row { display: grid; gap: 0; padding: var(--space-2) var(--space-4) 0; }
+  .owner-track-row { display: grid; gap: 0; padding: var(--space-1) var(--space-4) 0; }
   .owner-track { grid-template-columns: 44px 3fr 2fr 2fr 1.5fr; }
   .owner-track a { min-height: var(--control-lg); gap: var(--space-1); white-space: nowrap; }
   .owner-provenance { max-width: none; font-family: var(--sans); font-size: var(--text-xs); line-height: var(--leading-xs); }
-  .owner-deck { padding: var(--space-2) var(--space-4) var(--space-6); }
+  .owner-deck { padding: var(--space-1) var(--space-4) var(--space-6); }
   .owner-deck .spec { gap: var(--space-4); }
   .owner-app h1 { font-size: var(--text-heading); line-height: var(--leading-heading); }
   .exam-record { padding: var(--space-4); }
