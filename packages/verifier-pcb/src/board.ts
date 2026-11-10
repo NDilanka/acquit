@@ -1,6 +1,7 @@
 // Reads a KiCad 7/8 .kicad_pcb file into a plain board model. Only the copper that the rules need is kept:
-// F.Cu and B.Cu tracks, pads, and vias, plus the Edge.Cuts outline. Anything else is ignored, and a parse that
-// cannot be read comes back with an error instead of a throw.
+// F.Cu and B.Cu tracks, pads, and vias, plus the Edge.Cuts outline. Metadata layers (silkscreen, fab, courtyard)
+// are accepted and not modelled. Any construct outside the supported subset fails the parse with its name, and a
+// parse that cannot be read comes back with an error instead of a throw.
 
 import { arcPoints, add, circlePolygon, dist, ovalPolygon, rectPolygon, rotate } from "./geometry.ts";
 import { child, children, num, parseSexprs, type SExpr } from "./sexpr.ts";
@@ -174,13 +175,195 @@ function chainLoops(edges: readonly (readonly [Vec2, Vec2])[]): { loops: Vec2[][
 	return { loops, open };
 }
 
+// The supported subset. A construct outside these lists fails the parse with its name, so it is never silently
+// ignored. A zone is the one exception: it is recognised at any depth and reported by the no-zones rule.
+const ROOT_HEADS = new Set([
+	"version",
+	"generator",
+	"generator_version",
+	"general",
+	"paper",
+	"title_block",
+	"layers",
+	"setup",
+	"net",
+	"footprint",
+	"segment",
+	"arc",
+	"via",
+	"gr_line",
+	"gr_rect",
+	"gr_arc",
+	"gr_circle",
+	"gr_text",
+	"gr_poly",
+	"gr_curve",
+]);
+const FOOTPRINT_HEADS = new Set([
+	"layer",
+	"at",
+	"uuid",
+	"tstamp",
+	"tedit",
+	"locked",
+	"placed",
+	"descr",
+	"tags",
+	"path",
+	"attr",
+	"property",
+	"fp_text",
+	"fp_line",
+	"fp_rect",
+	"fp_circle",
+	"fp_arc",
+	"fp_poly",
+	"fp_curve",
+	"pad",
+	"model",
+	"solder_mask_margin",
+	"solder_paste_margin",
+	"solder_paste_ratio",
+]);
+const PAD_HEADS = new Set([
+	"at",
+	"size",
+	"drill",
+	"layers",
+	"net",
+	"uuid",
+	"tstamp",
+	"pinfunction",
+	"pintype",
+	"roundrect_rratio",
+	"solder_mask_margin",
+	"solder_paste_margin",
+	"solder_paste_ratio",
+]);
+const TRACK_HEADS = new Set(["start", "mid", "end", "width", "layer", "net", "locked", "tstamp", "uuid", "status"]);
+const VIA_HEADS = new Set(["at", "size", "drill", "layers", "net", "free", "locked", "tenting", "uuid", "tstamp"]);
+const PAD_TYPES = new Set(["smd", "thru_hole", "np_thru_hole"]);
+const PAD_SHAPES = new Set(["rect", "circle", "oval", "roundrect"]);
+const PAD_LAYER = /^(F|B|\*)\.(Cu|Mask|Paste)$/;
+const EDGE_HEADS = new Set(["gr_line", "gr_rect", "gr_arc", "gr_circle"]);
+const METADATA_LAYER = /^(F|B)\.(SilkS|Fab|CrtYd)$|^(Dwgs|Cmts|Eco1|Eco2)\.User$|^User\.[1-9]$/;
+
+function listOf(item: SExpr | undefined): readonly SExpr[] | undefined {
+	return Array.isArray(item) ? (item as readonly SExpr[]) : undefined;
+}
+
+/** The first child of a list that is outside its allowlist, named for the error, or undefined. Zones are skipped. */
+function unexpectedChild(list: readonly SExpr[], allowed: ReadonlySet<string>, atoms: number): string | undefined {
+	const owner = String(list[0]);
+	for (let i = 1; i < list.length; i++) {
+		const item = list[i] as SExpr;
+		if (typeof item === "string") {
+			if (i > atoms) return `unexpected "${item}" in (${owner})`;
+			continue;
+		}
+		const head = item[0];
+		if (head === "zone") continue;
+		if (typeof head !== "string" || !allowed.has(head)) {
+			return `unsupported (${typeof head === "string" ? head : "?"}) in (${owner})`;
+		}
+	}
+	return undefined;
+}
+
+function graphicProblem(g: readonly SExpr[], inFootprint: boolean): string | undefined {
+	const head = String(g[0]);
+	const layer = child(g, "layer")?.[1];
+	if (typeof layer !== "string") return `(${head}) without a layer`;
+	if (layer === "Edge.Cuts") {
+		return !inFootprint && EDGE_HEADS.has(head) ? undefined : `(${head}) on Edge.Cuts`;
+	}
+	if (METADATA_LAYER.test(layer)) return undefined;
+	return `(${head}) on layer ${layer}`;
+}
+
+function trackProblem(t: readonly SExpr[]): string | undefined {
+	const bad = unexpectedChild(t, TRACK_HEADS, 0);
+	if (bad) return bad;
+	const layer = child(t, "layer")?.[1];
+	return layer === "F.Cu" || layer === "B.Cu" ? undefined : `(${String(t[0])}) on layer ${String(layer)}`;
+}
+
+function padProblem(p: readonly SExpr[], ref: string): string | undefined {
+	const bad = unexpectedChild(p, PAD_HEADS, 3);
+	if (bad) return bad;
+	const type = p[2];
+	const shape = p[3];
+	if (typeof type !== "string" || !PAD_TYPES.has(type)) return `pad type ${String(type)} on ${ref}`;
+	if (typeof shape !== "string" || !PAD_SHAPES.has(shape)) return `pad shape ${String(shape)} on ${ref}`;
+	for (const layer of (child(p, "layers") ?? []).slice(1)) {
+		if (typeof layer !== "string" || !PAD_LAYER.test(layer)) return `pad layer ${String(layer)} on ${ref}`;
+	}
+	return undefined;
+}
+
+function footprintProblem(fp: readonly SExpr[]): string | undefined {
+	const bad = unexpectedChild(fp, FOOTPRINT_HEADS, 1);
+	if (bad) return bad;
+	const layer = child(fp, "layer")?.[1];
+	if (layer !== "F.Cu") return `footprint on layer ${String(layer)}; only front-side footprints are supported`;
+	const ref = propertyReference(fp) || String(fp[1]);
+	for (const item of fp.slice(2)) {
+		const list = listOf(item);
+		const head = list?.[0];
+		if (!list || typeof head !== "string") continue;
+		const problem = head === "pad" ? padProblem(list, ref) : head.startsWith("fp_") ? graphicProblem(list, true) : undefined;
+		if (problem) return problem;
+	}
+	return undefined;
+}
+
+/** The first construct in the board that is outside the supported subset, or undefined. */
+function boardProblem(root: readonly SExpr[]): string | undefined {
+	const bad = unexpectedChild(root, ROOT_HEADS, 0);
+	if (bad) return bad;
+	for (const item of root.slice(1)) {
+		const list = listOf(item);
+		const head = list?.[0];
+		if (!list || typeof head !== "string") continue;
+		const problem =
+			head === "segment" || head === "arc"
+				? trackProblem(list)
+				: head === "via"
+					? unexpectedChild(list, VIA_HEADS, 0)
+					: head === "footprint"
+						? footprintProblem(list)
+						: head.startsWith("gr_")
+							? graphicProblem(list, false)
+							: undefined;
+		if (problem) return problem;
+	}
+	return undefined;
+}
+
+/** True when a zone appears anywhere in the tree, at any depth. */
+function containsZone(root: readonly SExpr[]): boolean {
+	const stack: (readonly SExpr[])[] = [root];
+	while (stack.length > 0) {
+		const list = stack.pop() as readonly SExpr[];
+		if (list[0] === "zone") return true;
+		for (const item of list) {
+			const sub = listOf(item);
+			if (sub) stack.push(sub);
+		}
+	}
+	return false;
+}
+
 export function readBoard(text: string): Board {
 	const parsed = parseSexprs(text);
 	if (!parsed.ok) return { ...EMPTY, error: parsed.error };
-	const root = parsed.value.find(item => Array.isArray(item) && item[0] === "kicad_pcb") as readonly SExpr[] | undefined;
-	if (!root) return { ...EMPTY, error: "not a kicad_pcb file" };
+	const top = parsed.value;
+	const root = top.length === 1 ? listOf(top[0]) : undefined;
+	if (!root || root[0] !== "kicad_pcb") return { ...EMPTY, error: "not a single kicad_pcb board" };
 
-	const hasZones = children(root, "zone").length > 0;
+	const hasZones = containsZone(root);
+	const problem = boardProblem(root);
+	if (problem) return { ...EMPTY, hasZones, error: `unsupported construct: ${problem}` };
 
 	const edges: [Vec2, Vec2][] = [];
 	const loops: Vec2[][] = [];
