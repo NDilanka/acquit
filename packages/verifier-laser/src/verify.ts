@@ -114,16 +114,23 @@ function repeatsOf(cut: readonly SvgPath[], edges: readonly Edges[]): Set<SvgPat
 	return repeats;
 }
 
-type PairChecks = { readonly minWebMm: number; readonly thin: readonly string[]; readonly misordered: ReadonlySet<SvgPath> };
+type PairChecks = {
+	readonly minWebMm: number;
+	readonly thin: readonly string[];
+	readonly misordered: ReadonlySet<SvgPath>;
+	readonly wasted: ReadonlySet<SvgPath>;
+};
 
 /**
- * Each pair of cuts that do not share a stretch, checked once: the finished web between them, and any closed cut lying
- * inside another that is drawn after it. A pair that shares a stretch is a repeat, which no-duplicates reports.
+ * Each pair of cuts that do not share a stretch, checked once: the finished web between them, any closed cut lying
+ * inside another that is drawn after it, and any closed cut lying inside another closed cut. The last sits in that
+ * cut's waste, so no feature may claim it. A pair that shares a stretch is a repeat, which no-duplicates reports.
  */
-function pairChecks(cut: readonly SvgPath[], edges: readonly Edges[], spec: Spec): PairChecks {
+function pairChecks(cut: readonly SvgPath[], edges: readonly Edges[], spec: Spec, outline: SvgPath | undefined): PairChecks {
 	let minWeb = Infinity;
 	const thin: string[] = [];
 	const misordered = new Set<SvgPath>();
+	const wasted = new Set<SvgPath>();
 	for (let i = 0; i < cut.length; i++) {
 		for (let j = i + 1; j < cut.length; j++) {
 			const a = cut[i]!;
@@ -135,11 +142,16 @@ function pairChecks(cut: readonly SvgPath[], edges: readonly Edges[], spec: Spec
 			if (web < minWeb) minWeb = web;
 			if (web < spec.minWebMm) thin.push(a.id, b.id);
 			if (!a.closed || !b.closed) continue;
-			if (b.order > a.order && encloses(a, b)) misordered.add(b);
-			if (a.order > b.order && encloses(b, a)) misordered.add(a);
+			const aEncloses = encloses(a, b);
+			const bEncloses = encloses(b, a);
+			if (aEncloses && b.order > a.order) misordered.add(b);
+			if (bEncloses && a.order > b.order) misordered.add(a);
+			// The outline encloses every feature by design, so only a cut inside another inner cut counts as waste.
+			if (aEncloses && a !== outline) wasted.add(b);
+			if (bEncloses && b !== outline) wasted.add(a);
 		}
 	}
-	return { minWebMm: minWeb, thin, misordered };
+	return { minWebMm: minWeb, thin, misordered, wasted };
 }
 
 /**
@@ -315,9 +327,10 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	measured.estimatedCutSeconds = roundMm(cutLengthMm / CUT_MM_PER_S + engraveLengthMm / ENGRAVE_MM_PER_S + cut.length * PIERCE_S);
 	const repeats = repeatsOf(cut, cutEdges);
 	const duplicates = cut.filter(path => repeats.has(path)).map(path => path.id);
-	const pairs = pairChecks(cut, cutEdges, spec);
+	const pairs = pairChecks(cut, cutEdges, spec, outline?.path);
 
-	// The outline is the part's edge, not a feature, so it is never a candidate for a hole or cutout.
+	// The outline is the part's edge, not a feature, so it is never a candidate for a hole or cutout. A cut inside
+	// another cut's waste is not a feature either: that material falls out, so it cannot be the hole or cutout asked for.
 	const candidates =
 		part === null
 			? []
@@ -325,6 +338,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 					.filter(path => path !== outline?.path)
 					.map(path => candidateOf(path, part))
 					.filter((c): c is Candidate => c !== null);
+	const features = candidates.filter(c => !pairs.wasted.has(c.path));
 	const used = new Set<Candidate>();
 	const holeMisses: string[] = [];
 	for (const hole of spec.holes) {
@@ -332,7 +346,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		const d = hole.diameterMm;
 		const tol = hole.toleranceMm;
 		const found = claim(
-			candidates,
+			features,
 			used,
 			c =>
 				c.inside &&
@@ -350,7 +364,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		const [sx, sy] = slot.sizeMm;
 		const tol = slot.toleranceMm;
 		const found = claim(
-			candidates,
+			features,
 			used,
 			c =>
 				c.inside &&
@@ -362,11 +376,17 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		if (!found) cutoutMisses.push(`slot ${slot.id}`);
 	}
 	// A cut no feature claims is extra. A round one, or one where a hole belongs, is a hole fault; any other is a
-	// cutout fault. A repeat is left to no-duplicates and an open cut to closed-paths, so neither is counted again here.
+	// cutout fault. A cut inside another cut's waste is a cutout fault whatever its shape. A repeat is left to
+	// no-duplicates and an open cut to closed-paths, so neither is counted again here.
 	const extraHoles: string[] = [];
 	const extraCutouts: string[] = [];
+	const wastedCuts: string[] = [];
 	for (const c of candidates) {
 		if (used.has(c) || repeats.has(c.path) || !c.path.closed) continue;
+		if (pairs.wasted.has(c.path)) {
+			wastedCuts.push(c.path.id);
+			continue;
+		}
 		const atHole = spec.holes.some(
 			hole => Math.hypot(c.centre[0] - hole.centreMm[0], c.centre[1] - hole.centreMm[1]) <= hole.diameterMm / 2 + hole.toleranceMm,
 		);
@@ -387,13 +407,14 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 			extraHoles,
 		),
 	);
+	const wasteText = wastedCuts.length > 0 ? `${wastedCuts.length} cut(s) inside removed material` : "";
 	findings.push(
 		check(
 			"cutouts",
-			cutoutMisses.length === 0 && extraCutouts.length === 0,
+			cutoutMisses.length === 0 && extraCutouts.length === 0 && wastedCuts.length === 0,
 			`all ${spec.slots.length} cutouts are cut at their spec size`,
-			missesText(cutoutMisses, extraCutouts, "where no cutout is specified"),
-			extraCutouts,
+			[missesText(cutoutMisses, extraCutouts, "where no cutout is specified"), wasteText].filter(text => text !== "").join("; "),
+			[...extraCutouts, ...wastedCuts],
 		),
 	);
 

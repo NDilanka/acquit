@@ -126,3 +126,23 @@ test("a rectangle inside the window fails cutouts", () => {
 	const text = edit(honest, WINDOW, `${stray}\n${WINDOW}`);
 	assert.deepEqual(failed(verify(specWith(), text)), ["cutouts"]);
 });
+
+/** The honest panel with its four mount circles removed, so a spec can name its own holes. */
+const withoutMounts = (): string => honest.replace(/<circle[^>]*\/>/g, "");
+
+test("a required hole cut inside the window's waste fails holes and cutouts, even drawn before the window", () => {
+	// The window's waste falls out, so a circle inside it is not the hole the spec asks for.
+	const central = `<circle id="central" cx="70.1" cy="50.1" r="1.5" stroke="#ff0000" fill="none"/>`;
+	const spec = specWith({ holes: [{ id: "central-hole", centreMm: [60, 40], diameterMm: 3.2 }] });
+	assert.deepEqual(failed(verify(spec, edit(withoutMounts(), WINDOW, `${central}\n${WINDOW}`))), ["holes", "cutouts"]);
+	// Drawn after the window, the same circle also fails cut-order, which is the control.
+	assert.ok(failed(verify(spec, edit(withoutMounts(), WINDOW, `${WINDOW}\n${central}`))).includes("cut-order"));
+});
+
+test("a required window cut inside a larger required window fails cutouts, drawn before the larger window", () => {
+	// Two slots with no holes: the small slot sits inside the large one's waste, so it is not matched to any cutout.
+	const small = `<rect id="small" x="60.1" y="48.1" width="19.8" height="3.8" stroke="#ff0000" fill="none"/>`;
+	const spec = specWith({ holes: [], slots: [{ id: "window", sizeMm: [30, 12] }, { id: "small", sizeMm: [20, 4] }] });
+	assert.deepEqual(failed(verify(spec, edit(withoutMounts(), WINDOW, `${small}\n${WINDOW}`))), ["cutouts"]);
+	assert.ok(failed(verify(spec, edit(withoutMounts(), WINDOW, `${WINDOW}\n${small}`))).includes("cut-order"), "outer-first is the control");
+});
