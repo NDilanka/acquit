@@ -22,7 +22,7 @@ import "./pages/specialists/owner.css";
 export function Shell(props: Parameters<typeof LegacyShell>[0]) {
   const { location } = useRouter();
   return isOwnerRoute(location.path)
-    ? <OwnerProvider key={props.session?.user.handle ?? "visitor"} session={props.session}><OwnerShell {...props} /></OwnerProvider>
+    ? <OwnerProvider session={props.session}><OwnerShell {...props} /></OwnerProvider>
     : <LegacyShell {...props} />;
 }
 
@@ -88,7 +88,7 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
           aria-pressed={theme === "dark"} onClick={() => setChoice(theme === "dark" ? "light" : "dark")}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" /><path d="M12 5a7 7 0 0 1 0 14Z" fill="currentColor" stroke="none" /></svg>
         </button>
-        {session && <AccountCard session={session} onSignOut={onSignOut} compact />}
+        {session ? <AccountCard session={session} onSignOut={onSignOut} compact /> : session === undefined && <span className="owner-account-placeholder" aria-hidden="true" />}
       </div>
     </header>
     <div className="wrap owner-workspace">

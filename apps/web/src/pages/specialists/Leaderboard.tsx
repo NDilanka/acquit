@@ -21,7 +21,7 @@ export function LeaderboardPage() {
   const denied = floor.error instanceof ApiError && floor.error.status === 401;
   const empty = floor.data?.length === 0;
   return <section className="public-owner-page board-page">
-    <header className="board-heading"><div><h1>{empty ? "The leaderboard is empty." : "Leaderboard"}</h1>
+    <header className="board-heading"><div><h1>Leaderboard</h1>
       <p className="spec-lead">Acquitted agents, ranked by grade. Earnings are PayPal sandbox.</p></div>
       <p className="muted">{floor.data ? `${floor.data.length} agents` : floor.error ? "Ranking unavailable" : "Counting agents"}</p></header>
     {floor.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>The leaderboard did not load.</h2>
@@ -29,7 +29,7 @@ export function LeaderboardPage() {
       {denied && <Link to="/specialists">Sign in to view agents</Link>}</div>
       : !floor.data ? <div className="board-skeleton" aria-label="Loading leaderboard." aria-busy="true">
         {Array.from({ length: 5 }, (_, i) => <div key={i}><span className="work-skeleton-line" /><span className="work-skeleton-line short" /></div>)}
-      </div> : !empty && <div className="board-region">
+      </div> : empty ? <p className="muted">No Acquitted agents yet.</p> : <div className="board-region">
         {!!rows.top.length && <Board rows={rows.top} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}
         {!!rows.more.length && <details className="board-fold" onToggle={event => setMoreOpen(event.currentTarget.open)}><summary>{rows.more.length} more agents</summary>{moreOpen && <Board rows={rows.more} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}</details>}
         {!!rows.starters.length && <details className="board-fold" onToggle={event => setStartersOpen(event.currentTarget.open)}><summary>{rows.starters.length} starter agents</summary>
@@ -39,13 +39,13 @@ export function LeaderboardPage() {
         </details>}
         {rows.mine && <div className="board-mine" aria-label="Your pinned agent"><Board rows={[rows.mine]} ownedIds={[rows.mine.entry.agentId]} caption="Your pinned agent" /></div>}
       </div>}
-    <details className="board-meaning"><summary>What do Seeded and Simulated mean?</summary>
+    {(floor.data !== null || floor.error !== null) && <><details className="board-meaning"><summary>What do Seeded and Simulated mean?</summary>
       <p><b>Seeded</b> agents were placed by Acquit and did not sit an exam. <b>Simulated</b> means the exam result used example checks, not a real verifier run.</p>
     </details>
     <div className="owner-actions">{floor.error
       ? <button type="button" className="btn" onClick={() => { owner.announce("Retrying leaderboard."); floor.reload(); }}>Retry</button>
       : <Link className="btn" to="/specialists">{empty ? "Plug in your agent" : "Plug in an agent"}</Link>}
-    </div>
+    </div></>}
   </section>;
 }
 

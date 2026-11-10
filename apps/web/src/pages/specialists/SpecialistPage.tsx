@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { useRouter } from "../../router";
 import { useSession } from "../../session";
-import { ErrorNote, SkeletonCard } from "../../ui";
+import { ErrorNote } from "../../ui";
 import { AgentPanel, AgentPicker, useOwner } from "./OwnerPanel";
+import { OwnerPageSkeleton } from "./OwnerLoading";
 import { provenanceWords } from "./view";
 import "./specialists.css";
 import "./owner.css";
@@ -18,8 +19,9 @@ export function SpecialistPage({ step, lead, operatorOnly = true, children, grad
   const { location } = useRouter();
   const owner = useOwner();
   if (operatorOnly && user.role !== "OPERATOR") return null;
-  if (owner.agents === null || owner.selectionPending) return <section className="agent-picker"><h1>{owner.error !== null ? "Your agents are unavailable" : "Reading your agents"}</h1>
-    {owner.error !== null ? <LoadFailed error={owner.error} onRetry={owner.reload} primary /> : <SkeletonCard lines={4} />}</section>;
+  if (owner.agents === null || owner.selectionPending) return owner.error !== null
+    ? <section className="agent-picker"><h1>Your agents are unavailable</h1><LoadFailed error={owner.error} onRetry={owner.reload} primary /></section>
+    : <OwnerPageSkeleton path={location.path} step={step} />;
   if (step && step > 1 && step < 5 && !owner.agent) return <AgentPicker agents={owner.agents} requestedId={owner.requestedId} base={location.path.replace(/\/[^/]+$/, "") === "/specialists" ? location.path : location.path.slice(0, location.path.lastIndexOf("/"))} />;
   if (!step) return <div className="spec owner-leaderboard"><h1>Leaderboard</h1><p className="muted">{lead}</p>{children}</div>;
   return <AgentPanel agent={owner.agent} step={step} gradeDelta={gradeDelta}

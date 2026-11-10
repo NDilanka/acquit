@@ -30,6 +30,9 @@ type OwnerState = {
   announce: (message: string) => void;
 };
 const Context = createContext<OwnerState | null>(null);
+function rememberedAgent(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
 
 /** One acknowledged agent/order read shared by the shell and all owner screens. */
 export function OwnerProvider({ session, children }: { session: Session | null | undefined; children: ReactNode }) {
@@ -46,21 +49,21 @@ export function OwnerProvider({ session, children }: { session: Session | null |
     ? await specialists.morningReport("1970-01-01T00:00:00.000Z") : null }), `${session?.user.handle ?? ""}:${defaultWork}`);
   const selectionPending = defaultWork && ((recent.data?.report == null && recent.error === null) || (activity.data === null && activity.error === null));
   const storageKey = `acquit.ownerAgent:${session?.user.handle ?? ""}`;
-  const [lastId, setLastId] = useState(() => {
-    try { return localStorage.getItem(storageKey); } catch { return null; }
-  });
+  const [remembered, setRemembered] = useState(() => ({ key:storageKey,id:rememberedAgent(storageKey) }));
+  const lastId = remembered.key === storageKey ? remembered.id : rememberedAgent(storageKey);
   const agent = defaultWork ? workAgent(load.data ?? [], [...reportWorkDates(recent.data?.report ?? null),
     ...(activity.data?.activity?.activity.map(job => ({ agentId:job.agentId,at:job.updatedAt })) ?? [])])
     : ownerAgent(load.data ?? [], requestedId, lastId);
   useEffect(() => {
     if (!agent) return;
-    setLastId(agent.id);
+    setRemembered({ key:storageKey,id:agent.id });
     try { localStorage.setItem(storageKey, agent.id); } catch { /* Storage is optional. */ }
   }, [agent?.id, storageKey]);
   const [provenance, setProvenance] = useState("");
   const [announcement, announce] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [ack, setAck] = useState<{ id: string; orders: StandingOrders | null } | null>(null);
+  useEffect(() => { setProvenance(""); setDrafting(false); setAck(null); announce(""); }, [storageKey]);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
   return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId, selectionPending, activity,
     provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
@@ -91,16 +94,16 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
   const { orders } = useOwner();
   const coming = agent !== null && !hasLiveExam(agent.task);
   const done = completedSetup(agent, orders);
-  return <><aside className="owner-panel" aria-label="Your agent">
+  return <><aside className="owner-panel" data-owner-step={step} aria-label="Your agent">
     <header className="owner-bridge">
-      <div className="owner-identity"><p className="owner-name">{agent?.name ?? "No agent plugged in yet"}</p>
+      <div className="owner-identity"><p className="owner-name" title={agent?.name}>{agent?.name ?? "No agent plugged in yet"}</p>
         {agent && <div className="owner-identity-meta"><p className="owner-task">{agentTaskLabel(agent.task)}</p>
           {coming ? <p className="owner-verdict">Exam coming</p> : <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
             {step !== 2 && agent.acquitted && agent.simulated && <> · <span className="owner-honesty">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
       {agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
-        {gradeDelta !== undefined && <span className="owner-delta">{gradeDelta ? `${gradeChangeWords(gradeDelta)} since you last looked` : "No change since you last looked"}</span>}</div>}
+        {(step === 4 || step === 5) && <span className="owner-delta">{gradeDelta === undefined ? null : gradeDelta ? `${gradeChangeWords(gradeDelta)} in this report` : "No change in this report"}</span>}</div>}
     </header>
-    {agent && <MoneyLine />}
+    <MoneyLine />
     <div className="owner-track-row">
       <nav aria-label="Agent setup"><ol className="owner-track">{STEPS.map((s) => {
         const to = s.step === 1 || s.step === 5 ? `${s.to}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}` : `${s.to}${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
@@ -110,7 +113,7 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
         </li>;
       })}</ol></nav>
       <p className="owner-track-current">Step {step} of 5 · {STEPS.find(s => s.step === step)?.label}</p>
-      {step !== 2 && provenance && <p className="owner-provenance">{provenance}</p>}
+      <p className="owner-provenance" aria-hidden={step === 2 || !provenance ? true : undefined}>{step !== 2 ? provenance : null}</p>
     </div>
     </aside><div className="owner-deck">{coming && agent && <p className="spec-lead machine-honesty">{agentTaskLabel(agent.task)} · No real hardware.</p>}{children}</div></>;
 }

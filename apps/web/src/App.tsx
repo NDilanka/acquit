@@ -5,7 +5,7 @@ import type { DeploymentMode, FundingMode } from "./api-types";
 import { errorText } from "./errors";
 import { pageHeading } from "./nav";
 import { useRouter } from "./router";
-import { match, signedOutPage } from "./route";
+import { isOwnerRoute, match, signedOutPage } from "./route";
 import { Shell } from "./shell";
 import { SessionContext, useSession, type Session } from "./session";
 import { NotFound, SkeletonCard } from "./ui";
@@ -26,6 +26,7 @@ import { ActivityPage } from "./pages/specialists/Activity";
 import { AgentEarningsPage } from "./pages/specialists/AgentEarnings";
 import { LeaderboardPage } from "./pages/specialists/Leaderboard";
 import { AgentRecordPage } from "./pages/specialists/AgentRecord";
+import { OwnerPageSkeleton } from "./pages/specialists/OwnerLoading";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -98,7 +99,7 @@ export function App() {
       {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
       <main id="content" tabIndex={-1} className={session && (route.name === "studio" || route.name === "studioSample") ? "wrap wrap-full" : "wrap"}>
         {session === undefined ? (
-          <SkeletonCard />
+          isOwnerRoute(location.path) ? <OwnerPageSkeleton path={location.path} /> : <SkeletonCard />
         ) : route.name === "welcomeBack" ? (
           <WelcomeBack session={session} onSignedIn={signedIn} />
         ) : session ? (

@@ -9,6 +9,7 @@ import { dollars, paidTotalCents } from "./view.ts";
 import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
 import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes } from "./work.ts";
 import { releasedWorkHref } from "./liveWork.ts";
+import { EarningsHeadingSkeleton } from "./OwnerLoading.tsx";
 
 export function AgentEarningsPage() {
   const { agent, agents, selectionPending } = useOwner();
@@ -33,7 +34,7 @@ function Earnings() {
     <section className="work-page earnings-page">
       {report.error ? <><h1>Earnings did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
         <p>Could not read the report. Retry to check recorded work and money.</p></div></>
-        : !data ? <><h1 className="sr-only">Earnings</h1><div className="earnings-key-skeleton" />
+        : !data ? <><EarningsHeadingSkeleton />
           <WorkSkeleton count={3} label="Loading earnings." /></>
         : <>
           <header className="earnings-head"><div className="work-heading">
