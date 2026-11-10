@@ -2,9 +2,8 @@
 // return to launch (20), change speed (178, ground speed only) and camera trigger distance (206). Items the checker
 // does not model are collected as unsupported; malformed items refuse the whole plan. Never throws.
 
-import { toLocal } from "./geo.ts";
+import { toLocal, withinLocal } from "./geo.ts";
 import { LIMITS } from "./spec.ts";
-import type { Vec2 } from "./types.ts";
 
 export const CMD_TAKEOFF = 22;
 export const CMD_WAYPOINT = 16;
@@ -98,8 +97,7 @@ function homeAltitude(value: unknown, origin: readonly [number, number]): number
 	const lon = home[1];
 	const alt = home[2];
 	if (!isLatitude(lat) || !isLongitude(lon) || !finite(alt)) return HOME_MESSAGE;
-	const [x, y] = toLocal(origin, lat, lon);
-	if (Math.abs(x) > LIMITS.localExtentM || Math.abs(y) > LIMITS.localExtentM) return "The planned home position is more than 20 km from the job origin.";
+	if (!withinLocal(toLocal(origin, lat, lon), LIMITS.localExtentM)) return "The planned home position is more than 20 km from the job origin.";
 	return alt;
 }
 
@@ -185,9 +183,9 @@ export function parsePlan(text: string, origin: readonly [number, number]): Plan
 			const lon = params[5];
 			const alt = params[6];
 			if (!isLatitude(lat) || !isLongitude(lon) || !finite(alt)) return `${where} needs a latitude, longitude and altitude.`;
-			const [x, y] = toLocal(origin, lat, lon);
-			if (Math.abs(x) > LIMITS.localExtentM || Math.abs(y) > LIMITS.localExtentM) return `${where} is more than 20 km from the job origin.`;
-			waypoints.push({ x, y, alt: aboveHome(alt, frame, homeAltM), speedMs, triggerM });
+			const local = toLocal(origin, lat, lon);
+			if (!withinLocal(local, LIMITS.localExtentM)) return `${where} is more than 20 km from the job origin.`;
+			waypoints.push({ x: local[0], y: local[1], alt: aboveHome(alt, frame, homeAltM), speedMs, triggerM });
 			events.push({ kind: "waypoint", index: waypoints.length - 1 });
 		} else if (command === CMD_TAKEOFF) {
 			if (frame !== FRAME_ABSOLUTE && frame !== FRAME_RELATIVE) {
@@ -215,14 +213,4 @@ export function parsePlan(text: string, origin: readonly [number, number]): Plan
 		minSpeedMs = Math.min(minSpeedMs, waypoint.speedMs);
 	}
 	return { cruiseMs, minSpeedMs, triggerM: waypoints[waypoints.length - 1]!.triggerM, waypoints, events, unsupported };
-}
-
-/** The ground-level corners of a survey leg's footprint, used for the scene and the coverage check. */
-export function rectangle(x0: number, x1: number, y0: number, y1: number): Vec2[] {
-	return [
-		[x0, y0],
-		[x1, y0],
-		[x1, y1],
-		[x0, y1],
-	];
 }

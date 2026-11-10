@@ -1,7 +1,7 @@
 // Reads the published job spec and the hidden sample. Each returns the parsed value, or a sentence saying why it is
 // not usable. Never throws. Geographic points are [latitude, longitude] in degrees; hidden points are local metres.
 
-import { toLocal } from "./geo.ts";
+import { toLocal, withinLocal } from "./geo.ts";
 import type { Camera, HiddenSample, LatLon, Spec, Vec2, Zone } from "./types.ts";
 
 /** Rules a spec must list, each exactly once. "parse" always runs and is not listed. */
@@ -54,8 +54,7 @@ function vec2(value: unknown): value is Vec2 {
 }
 
 function withinExtent(origin: LatLon, point: LatLon): boolean {
-	const [x, y] = toLocal(origin, point[0], point[1]);
-	return Math.abs(x) <= LIMITS.localExtentM && Math.abs(y) <= LIMITS.localExtentM;
+	return withinLocal(toLocal(origin, point[0], point[1]), LIMITS.localExtentM);
 }
 
 /** A list of geographic points: at least three, at most `max`, all in range and near the origin. */

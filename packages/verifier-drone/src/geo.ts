@@ -5,31 +5,32 @@ import type { Vec2 } from "./types.ts";
 const EARTH_RADIUS_M = 6371008.8;
 const DEG = Math.PI / 180;
 
-/** Local metres east (x) and north (y) of the origin, equirectangular around the origin latitude. */
+/** Brings a longitude into [-180, 180]. An in-range value is returned unchanged. */
+function wrapLongitude(lon: number): number {
+	if (lon >= -180 && lon <= 180) return lon;
+	return ((((lon + 180) % 360) + 360) % 360) - 180;
+}
+
+/**
+ * Local metres east (x) and north (y) of the origin, equirectangular around the origin latitude. The longitude
+ * difference is wrapped first, so a point across the antimeridian is measured the short way round.
+ */
 export function toLocal(origin: readonly [number, number], lat: number, lon: number): Vec2 {
-	const x = (lon - origin[1]) * DEG * EARTH_RADIUS_M * Math.cos(origin[0] * DEG);
+	const x = wrapLongitude(lon - origin[1]) * DEG * EARTH_RADIUS_M * Math.cos(origin[0] * DEG);
 	const y = (lat - origin[0]) * DEG * EARTH_RADIUS_M;
 	return [x, y];
 }
 
-/** The inverse of toLocal, so the generator and the checker share one projection. */
+/** The inverse of toLocal, so the generator and the checker share one projection. Longitudes come back in [-180, 180]. */
 export function toLatLon(origin: readonly [number, number], x: number, y: number): [number, number] {
 	const lat = origin[0] + y / (DEG * EARTH_RADIUS_M);
-	const lon = origin[1] + x / (DEG * EARTH_RADIUS_M * Math.cos(origin[0] * DEG));
+	const lon = wrapLongitude(origin[1] + x / (DEG * EARTH_RADIUS_M * Math.cos(origin[0] * DEG)));
 	return [lat, lon];
 }
 
-/** Ray-casting test. Points on the boundary may fall either way, so callers keep samples off edges. */
-export function pointInPolygon(p: Vec2, polygon: readonly Vec2[]): boolean {
-	let inside = false;
-	for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-		const a = polygon[i]!;
-		const b = polygon[j]!;
-		if (a[1] > p[1] !== b[1] > p[1] && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) {
-			inside = !inside;
-		}
-	}
-	return inside;
+/** True when a local point is finite and lies within `limitM` metres of the origin on both axes. */
+export function withinLocal(p: Vec2, limitM: number): boolean {
+	return Number.isFinite(p[0]) && Number.isFinite(p[1]) && Math.abs(p[0]) <= limitM && Math.abs(p[1]) <= limitM;
 }
 
 function orientation(a: Vec2, b: Vec2, c: Vec2): number {
@@ -39,6 +40,33 @@ function orientation(a: Vec2, b: Vec2, c: Vec2): number {
 
 function onSegment(a: Vec2, b: Vec2, p: Vec2): boolean {
 	return Math.min(a[0], b[0]) <= p[0] && p[0] <= Math.max(a[0], b[0]) && Math.min(a[1], b[1]) <= p[1] && p[1] <= Math.max(a[1], b[1]);
+}
+
+/** True when p lies on an edge or at a corner of the polygon. */
+function onBoundary(p: Vec2, polygon: readonly Vec2[]): boolean {
+	for (let i = 0; i < polygon.length; i++) {
+		const a = polygon[i]!;
+		const b = polygon[(i + 1) % polygon.length]!;
+		if (orientation(a, b, p) === 0 && onSegment(a, b, p)) return true;
+	}
+	return false;
+}
+
+/**
+ * Whether a point is inside the polygon. The boundary is inside: an edge or corner counts, whichever way the polygon
+ * is wound. Other points use a ray cast.
+ */
+export function pointInPolygon(p: Vec2, polygon: readonly Vec2[]): boolean {
+	if (onBoundary(p, polygon)) return true;
+	let inside = false;
+	for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+		const a = polygon[i]!;
+		const b = polygon[j]!;
+		if (a[1] > p[1] !== b[1] > p[1] && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) {
+			inside = !inside;
+		}
+	}
+	return inside;
 }
 
 /** True when segments ab and cd touch or cross. */
@@ -73,4 +101,27 @@ export function centroid(points: readonly Vec2[]): Vec2 {
 		sy += p[1];
 	}
 	return [sx / points.length, sy / points.length];
+}
+
+/**
+ * A survey heading: a unit vector (ux, uy) in local metres. The across axis is (-uy, ux), a quarter turn anticlockwise.
+ * Survey legs and their footprints are measured in this frame, so a survey flown at any heading is checked the same way.
+ */
+export type Frame = { readonly ux: number; readonly uy: number };
+
+/** The frame whose along axis runs from a towards b, or null when the two points coincide. */
+export function frameFrom(a: Vec2, b: Vec2): Frame | null {
+	const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+	if (!(length > 0) || !Number.isFinite(length)) return null;
+	return { ux: (b[0] - a[0]) / length, uy: (b[1] - a[1]) / length };
+}
+
+/** The along-heading position s and the across-heading position t of a local point. */
+export function toFrame(frame: Frame, p: Vec2): [number, number] {
+	return [p[0] * frame.ux + p[1] * frame.uy, -p[0] * frame.uy + p[1] * frame.ux];
+}
+
+/** The local point at along-heading position s and across-heading position t. The inverse of toFrame. */
+export function fromFrame(frame: Frame, s: number, t: number): Vec2 {
+	return [s * frame.ux - t * frame.uy, s * frame.uy + t * frame.ux];
 }

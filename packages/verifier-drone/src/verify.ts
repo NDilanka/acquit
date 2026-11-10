@@ -1,18 +1,34 @@
 // The drone survey checker. It reads a QGroundControl plan and the job spec, and returns a Verdict.
 // Pure TypeScript: no I/O, no clock, no randomness. Bad input becomes a failed "parse" finding.
 
-import { centroid, pointInPolygon, segmentHitsPolygon, toLocal } from "./geo.ts";
-import { parsePlan, rectangle } from "./plan.ts";
+import { centroid, fromFrame, frameFrom, pointInPolygon, segmentHitsPolygon, toFrame, toLocal } from "./geo.ts";
+import type { Frame } from "./geo.ts";
+import { parsePlan } from "./plan.ts";
 import type { Plan, Waypoint } from "./plan.ts";
 import { HIDDEN_RULES, PUBLIC_RULES, parseHiddenSample, parseSpec } from "./spec.ts";
 import type { Camera, Finding, HiddenSample, Scene, ScenePath, Spec, Vec2, Vec3, Verdict } from "./types.ts";
 
 /** Metres. Positions this close count as equal, so plan rounding does not split a survey line. */
 const TOL = 0.05;
+/** Metres of altitude. Altitudes this close count as level, so float noise cannot split a survey line. */
+const ALT_TOL = 1e-6;
 
 type Segment = { readonly index: number; readonly a: Waypoint; readonly b: Waypoint };
-/** A survey leg. triggerM is the distance it is photographed at, or null when triggering is off for any part of it. */
-type Leg = { readonly index: number; readonly y: number; readonly x0: number; readonly x1: number; readonly alt: number; readonly triggerM: number | null };
+/**
+ * A survey leg: a level run along the survey heading with both ends on one line. s0 and s1 are its ends' positions
+ * along the heading, t is the position of the line across it, and triggerM is the photograph spacing, or null when
+ * triggering is off for any part of it.
+ */
+type Leg = {
+	readonly index: number;
+	readonly a: Vec2;
+	readonly b: Vec2;
+	readonly s0: number;
+	readonly s1: number;
+	readonly t: number;
+	readonly alt: number;
+	readonly triggerM: number | null;
+};
 /** The spec's survey area and no-fly zones in local metres east and north of the origin. */
 type Geometry = { readonly area: readonly Vec2[]; readonly zones: readonly { readonly id: string; readonly polygon: readonly Vec2[] }[] };
 type Context = {
@@ -20,6 +36,8 @@ type Context = {
 	readonly geometry: Geometry;
 	readonly plan: Plan;
 	readonly segments: readonly Segment[];
+	/** The survey heading, or null when the plan has no level segment long enough to define one. */
+	readonly frame: Frame | null;
 	readonly legs: readonly Leg[];
 	readonly hidden: HiddenSample | undefined;
 };
@@ -62,22 +80,55 @@ function legTrigger(a: Waypoint, b: Waypoint): number | null {
 	return Math.max(a.triggerM, b.triggerM);
 }
 
-/** A survey leg is a straight run at one altitude along one line. Anything else is a transit. */
-function legOf(segment: Segment): Leg | null {
-	const { a, b } = segment;
-	const along = Math.abs(a.x - b.x);
-	const across = Math.abs(a.y - b.y);
-	if (across > TOL || along <= TOL || a.alt !== b.alt) return null;
-	return { index: segment.index, y: a.y, x0: a.x, x1: b.x, alt: a.alt, triggerM: legTrigger(a, b) };
+function level(segment: Segment): boolean {
+	return Math.abs(segment.a.alt - segment.b.alt) <= ALT_TOL;
+}
+
+/**
+ * The survey heading: the direction of the longest level segment. A survey is flown along one heading, and its
+ * connecting turns are shorter than its lines, so the longest run is a survey line.
+ */
+function surveyFrame(segments: readonly Segment[]): Frame | null {
+	let best: Segment | null = null;
+	let bestLength = TOL;
+	for (const segment of segments) {
+		if (!level(segment)) continue;
+		const length = Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y);
+		if (length > bestLength) {
+			best = segment;
+			bestLength = length;
+		}
+	}
+	return best === null ? null : frameFrom([best.a.x, best.a.y], [best.b.x, best.b.y]);
+}
+
+/**
+ * The survey legs: level segments whose two ends lie on one line along the survey heading, within TOL. Any other
+ * segment is a transit. The test is made in the survey frame, so a survey flown at any heading is found the same way.
+ */
+function legsOf(segments: readonly Segment[], frame: Frame | null): Leg[] {
+	if (frame === null) return [];
+	const out: Leg[] = [];
+	for (const segment of segments) {
+		if (!level(segment)) continue;
+		const { a, b } = segment;
+		const [s0, t0] = toFrame(frame, [a.x, a.y]);
+		const [s1, t1] = toFrame(frame, [b.x, b.y]);
+		if (Math.abs(s1 - s0) <= TOL || Math.abs(t1 - t0) > TOL) continue;
+		out.push({ index: segment.index, a: [a.x, a.y], b: [b.x, b.y], s0, s1, t: (t0 + t1) / 2, alt: a.alt, triggerM: legTrigger(a, b) });
+	}
+	return out;
 }
 
 /** Whether a point lies in the footprint of a photographed leg. A leg with triggering off photographs nothing. */
-function covered(p: Vec2, legs: readonly Leg[], camera: Camera): boolean {
+function covered(p: Vec2, legs: readonly Leg[], camera: Camera, frame: Frame | null): boolean {
+	if (frame === null) return false;
+	const [s, t] = toFrame(frame, p);
 	return legs.some(leg => {
 		if (leg.triggerM === null) return false;
 		const half = acrossM(leg.alt, camera) / 2;
 		const reach = alongM(leg.alt, camera) / 2;
-		return Math.abs(p[1] - leg.y) <= half + TOL && p[0] >= Math.min(leg.x0, leg.x1) - reach - TOL && p[0] <= Math.max(leg.x0, leg.x1) + reach + TOL;
+		return Math.abs(t - leg.t) <= half + TOL && s >= Math.min(leg.s0, leg.s1) - reach - TOL && s <= Math.max(leg.s0, leg.s1) + reach + TOL;
 	});
 }
 
@@ -111,8 +162,9 @@ function percent(value: number): string {
 	return `${Math.round(value * 100)}%`;
 }
 
+/** The midpoint of a leg, at the leg's altitude. */
 function legMid(leg: Leg): Vec3 {
-	return [(leg.x0 + leg.x1) / 2, leg.y, leg.alt];
+	return [(leg.a[0] + leg.b[0]) / 2, (leg.a[1] + leg.b[1]) / 2, leg.alt];
 }
 
 function worstGsdLeg(legs: readonly Leg[], camera: Camera): Leg | null {
@@ -127,14 +179,17 @@ function worstFrontLeg(legs: readonly Leg[], camera: Camera): Leg | null {
 	return worst;
 }
 
-/** Overlap between each pair of neighbouring survey lines, the lower of the two footprints counted. */
+/**
+ * Overlap between each pair of neighbouring survey lines, the lower of the two footprints counted. Lines are ordered
+ * across the survey heading, so the check follows the survey at any heading.
+ */
 function sideOverlaps(legs: readonly Leg[], camera: Camera): { overlap: number; a: Leg; b: Leg }[] {
-	const sorted = [...legs].sort((p, q) => p.y - q.y || p.index - q.index);
+	const sorted = [...legs].sort((p, q) => p.t - q.t || p.index - q.index);
 	const out: { overlap: number; a: Leg; b: Leg }[] = [];
 	for (let i = 1; i < sorted.length; i++) {
 		const a = sorted[i - 1]!;
 		const b = sorted[i]!;
-		const spacing = b.y - a.y;
+		const spacing = b.t - a.t;
 		if (spacing <= TOL) continue;
 		const width = Math.min(acrossM(a.alt, camera), acrossM(b.alt, camera));
 		out.push({ overlap: 1 - spacing / width, a, b });
@@ -171,7 +226,8 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		if (pairs.length === 0) return finding("side-overlap", false, false, "The survey has no two neighbouring lines, so side overlap cannot be checked.");
 		const worst = pairs.reduce((low, pair) => (pair.overlap < low.overlap ? pair : low));
 		const ok = worst.overlap >= spec.minSideOverlap;
-		const at: Vec3 = [(worst.a.x0 + worst.a.x1) / 2, (worst.a.y + worst.b.y) / 2, worst.a.alt];
+		const [ma, mb] = [legMid(worst.a), legMid(worst.b)];
+		const at: Vec3 = [(ma[0] + mb[0]) / 2, (ma[1] + mb[1]) / 2, worst.a.alt];
 		const refs = [`leg-${worst.a.index}`, `leg-${worst.b.index}`];
 		return finding("side-overlap", ok, false, ok ? `Neighbouring lines overlap ${percent(worst.overlap)} sideways, at least ${percent(spec.minSideOverlap)}.` : `Neighbouring lines overlap only ${percent(worst.overlap)} sideways; the minimum is ${percent(spec.minSideOverlap)}.`, at, refs);
 	},
@@ -186,9 +242,9 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		}
 		return finding("no-fly", true, false, "No part of the route crosses a no-fly zone.");
 	},
-	coverage: ({ spec, geometry, legs }) => {
+	coverage: ({ spec, geometry, legs, frame }) => {
 		const samples = sampleGrid(geometry.area, spec.gridM);
-		const missed = samples.filter(p => !covered(p, legs, spec.camera));
+		const missed = samples.filter(p => !covered(p, legs, spec.camera, frame));
 		if (missed.length === 0) return finding("coverage", true, false, `All ${samples.length} sample points on the survey area are photographed.`);
 		const first = missed[0]!;
 		return finding("coverage", false, false, `${missed.length} of ${samples.length} sample points on the survey area are not photographed.`, [first[0], first[1], 0]);
@@ -206,9 +262,9 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 };
 
 const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
-	"hidden-checkpoint": ({ spec, legs, hidden }) => {
+	"hidden-checkpoint": ({ spec, legs, frame, hidden }) => {
 		if (hidden === undefined) return finding("hidden-checkpoint", false, true, "The hidden checkpoints were not supplied, so this check cannot pass.");
-		const missed = hidden.checkpoints.filter(p => !covered(p, legs, spec.camera));
+		const missed = hidden.checkpoints.filter(p => !covered(p, legs, spec.camera, frame));
 		if (missed.length === 0) return finding("hidden-checkpoint", true, true, "All hidden checkpoints are photographed.");
 		return finding("hidden-checkpoint", false, true, `${missed.length} hidden checkpoint${missed.length === 1 ? " is" : "s are"} not photographed.`);
 	},
@@ -220,7 +276,7 @@ const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
 	},
 };
 
-function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], camera: Camera): Scene {
+function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], camera: Camera, frame: Frame | null): Scene {
 	const xs = geometry.area.map(p => p[0]);
 	const ys = geometry.area.map(p => p[1]);
 	const paths: ScenePath[] = [{ id: "area", kind: "area", layer: "survey", z: 0, closed: true, points: geometry.area }];
@@ -236,11 +292,18 @@ function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs:
 			continue;
 		}
 		paths.push({ id: `leg-${leg.index}`, kind: "flight", layer: "survey", z: leg.alt, closed: false, order: leg.index, points });
+		if (frame === null) continue;
 		const reach = alongM(leg.alt, camera) / 2;
 		const half = acrossM(leg.alt, camera) / 2;
-		const x0 = Math.min(leg.x0, leg.x1) - reach;
-		const x1 = Math.max(leg.x0, leg.x1) + reach;
-		paths.push({ id: `photo-${leg.index}`, kind: "footprint", layer: "photo", z: 0, closed: true, order: leg.index, points: rectangle(x0, x1, leg.y - half, leg.y + half) });
+		const s0 = Math.min(leg.s0, leg.s1) - reach;
+		const s1 = Math.max(leg.s0, leg.s1) + reach;
+		const corners: Vec2[] = [
+			fromFrame(frame, s0, leg.t - half),
+			fromFrame(frame, s1, leg.t - half),
+			fromFrame(frame, s1, leg.t + half),
+			fromFrame(frame, s0, leg.t + half),
+		];
+		paths.push({ id: `photo-${leg.index}`, kind: "footprint", layer: "photo", z: 0, closed: true, order: leg.index, points: corners });
 	}
 	return { units: "m", size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), maxAlt], paths };
 }
@@ -262,11 +325,12 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 	const hiddenError = typeof hiddenParsed === "string" ? hiddenParsed : null;
 	const hidden = typeof hiddenParsed === "string" ? undefined : hiddenParsed;
 	const parsed = parsePlan(artefact, spec.origin);
-	if (typeof parsed === "string") return refused(parsed, sceneFor(geometry, null, [], spec.camera));
+	if (typeof parsed === "string") return refused(parsed, sceneFor(geometry, null, [], spec.camera, null));
 
 	const segments = segmentsOf(parsed.waypoints);
-	const legs = segments.map(legOf).filter((leg): leg is Leg => leg !== null);
-	const ctx: Context = { spec, geometry, plan: parsed, segments, legs, hidden };
+	const frame = surveyFrame(segments);
+	const legs = legsOf(segments, frame);
+	const ctx: Context = { spec, geometry, plan: parsed, segments, frame, legs, hidden };
 	const publicFindings = PUBLIC_RULES.filter(rule => spec.rules.includes(rule)).map(rule => CHECKS[rule](ctx));
 	const hiddenFindings = HIDDEN_RULES.map(rule => HIDDEN_CHECKS[rule](ctx));
 	const planFinding =
@@ -295,7 +359,7 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		frontOverlap: frontWorst === null ? 0 : frontOverlapOf(frontWorst, spec.camera),
 		sideOverlap: sides.length === 0 ? 1 : Math.min(...sides.map(pair => pair.overlap)),
 		samplePoints: samples.length,
-		uncoveredSamples: samples.filter(p => !covered(p, legs, spec.camera)).length,
+		uncoveredSamples: samples.filter(p => !covered(p, legs, spec.camera, frame)).length,
 	};
-	return { workflow: "drone-survey", pass: findings.every(item => item.ok), findings, measured, scene: sceneFor(geometry, segments, legs, spec.camera) };
+	return { workflow: "drone-survey", pass: findings.every(item => item.ok), findings, measured, scene: sceneFor(geometry, segments, legs, spec.camera, frame) };
 }
