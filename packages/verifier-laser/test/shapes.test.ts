@@ -105,6 +105,58 @@ test("a hole with the wrong diameter fails holes", () => {
 	assert.deepEqual(failed(verify(specWith(), text)), ["holes"]);
 });
 
+/** A 300 mm part with one hole of the given finished diameter at the centre, and no slots. Outline and label are the honest panel's. */
+const largeHoleSpec = (diameterMm: number): Spec =>
+	specWith({ partMm: [300, 300], bedMm: [400, 400], holes: [{ id: "large", centreMm: [150, 150], diameterMm }], slots: [] });
+
+/** The large-hole panel with the given cut as its hole. */
+const largeHolePanel = (hole: string): string =>
+	`<svg xmlns="http://www.w3.org/2000/svg" width="400mm" height="400mm" viewBox="0 0 400 400">${hole}` +
+	`<path id="label" d="M20 300.2 H60" stroke="#0000ff" fill="none"/>` +
+	`<path id="outline" d="M10 10 H310.2 V310.2 H10 Z" stroke="#ff0000" fill="none"/></svg>`;
+
+test("a 200 mm hole drawn as a 64-sided polygon fails holes, while the same hole as a true circle passes", () => {
+	// Size and centre match the spec, so only the shape can fail. Each side of the polygon lies 0.12 mm inside its
+	// circle, which is more than the 0.1 mm tolerance.
+	const spec = largeHoleSpec(200.2);
+	const sides = Array.from({ length: 64 }, (_, i) => {
+		const a = (2 * Math.PI * i) / 64;
+		return `${160.1 + 100 * Math.cos(a)},${160.1 + 100 * Math.sin(a)}`;
+	}).join(" ");
+	assert.deepEqual(failed(verify(spec, largeHolePanel(`<polygon id="large" points="${sides}" stroke="#ff0000" fill="none"/>`))), ["holes"]);
+	const circle = `<circle id="large" cx="160.1" cy="160.1" r="100" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(spec, largeHolePanel(circle))), []);
+});
+
+test("a thin loop that runs round only three quarters of a circle fails holes", () => {
+	// Every point lies within 0.02 mm of a 10 mm circle, so the uncut quarter is the only fault.
+	const steps = 120;
+	const sweep = (3 * Math.PI) / 2;
+	const point = (radius: number, i: number): string => {
+		const a = sweep * (i / steps);
+		return `${160.1 + radius * Math.cos(a)},${160.1 + radius * Math.sin(a)}`;
+	};
+	const outer = Array.from({ length: steps + 1 }, (_, i) => point(10.02, i));
+	const inner = Array.from({ length: steps + 1 }, (_, i) => point(9.98, steps - i));
+	const loop = `<polygon id="large" points="${[...outer, ...inner].join(" ")}" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(largeHoleSpec(20.2), largeHolePanel(loop))), ["holes"]);
+});
+
+test("a loop with a 4 mm uncut bridge in a 200 mm hole fails holes", () => {
+	// The bridge is narrower than the spacing of an evenly sampled circle, so only an exact check on the cut's edges
+	// finds it. Every point lies within 0.02 mm of a 100 mm circle.
+	const steps = 720;
+	const sweep = 2 * Math.PI - 0.04; // 0.04 rad of a 100 mm circle is the 4 mm bridge
+	const point = (radius: number, i: number): string => {
+		const a = sweep * (i / steps);
+		return `${160.1 + radius * Math.cos(a)},${160.1 + radius * Math.sin(a)}`;
+	};
+	const outer = Array.from({ length: steps + 1 }, (_, i) => point(100.02, i));
+	const inner = Array.from({ length: steps + 1 }, (_, i) => point(99.98, steps - i));
+	const loop = `<polygon id="large" points="${[...outer, ...inner].join(" ")}" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(largeHoleSpec(200.2), largeHolePanel(loop))), ["holes"]);
+});
+
 test("a diamond where the window belongs fails cutouts", () => {
 	const text = edit(honest, WINDOW, `<path id="window" d="M70.1 44.2 L85 50.1 L70.1 56 L55.2 50.1 Z" stroke="#ff0000" fill="none"/>`);
 	assert.deepEqual(failed(verify(specWith(), text)), ["cutouts"]);

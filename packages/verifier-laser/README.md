@@ -43,6 +43,10 @@ the drawn line could sit up to 0.02 mm away from the chords the reader sees:
 The chord count for a curve is bounded by the limits in `src/limits.ts`. A curve that needs more chords than
 `MAX_CHORDS` fails the `parse` rule.
 
+A round hole is checked against its true circle, not a polygon. A closed cut fits the hole when every point of it lies
+within the tolerance of that circle, and no arc of the circle is left uncut for longer than twice the tolerance. A
+polygon with the right vertices but straight sides fails.
+
 ## Rules
 
 The verdict reports these rule ids, in this order (`RULES` in `src/types.ts`):
