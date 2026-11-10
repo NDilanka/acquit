@@ -66,6 +66,7 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
     finally { setPending(false); }
   };
   const leaderboard = location.path.startsWith("/leaderboard");
+  const publicRecord = match(location.path).name === "agentRecord";
   return <div className="owner-app">
     <p id="live" role="status" className="sr-only">{owner.announcement}</p>
     <a href="#content" className="skip-link" onClick={skipToContent}>Skip to content</a>
@@ -91,7 +92,7 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
     </header>
     <div className="wrap owner-workspace">
       {error !== null && <ErrorNote error={error} />}
-      {session && session.user.role !== "OPERATOR" && !leaderboard ? <main id="content" tabIndex={-1} className="owner-entry">
+      {session && session.user.role !== "OPERATOR" && !leaderboard && !publicRecord ? <main id="content" tabIndex={-1} className="owner-entry">
         <h1>Plug in your agent.</h1>
         <p>Your account is ready. Open the agent side to plug one in.</p>
         {canSwitchRole(session.user, session.account)

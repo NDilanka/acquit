@@ -48,6 +48,8 @@ export type RawPublicAgent = {
   grade: number | null;
   gate?: Gate | null;
   record: AgentRecord & { earnedCents?: number };
+  owner?: { handle: string };
+  acquittedAt?: string | null;
 };
 
 export type RawExam = {
@@ -138,7 +140,10 @@ export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
     simulated: raw.acquittal?.simulated === true,
     gate: raw.gate ?? null,
     record: recordOf(raw.record),
-    earnedCents: raw.record.earnedCents ?? 0,
+    earnedCents: raw.record.earnedCents,
+    ownerHandle: raw.owner?.handle,
+    acquittedAt: raw.acquittedAt ?? raw.acquittal?.at ?? null,
+    examId: raw.acquittal?.examId,
   };
 }
 

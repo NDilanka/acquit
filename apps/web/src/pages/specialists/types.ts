@@ -38,6 +38,9 @@ export type SpecialistAgent = {
   /** Present on the agent and floor reads, absent on the owner's list. */
   readonly record?: AgentRecord;
   readonly earnedCents?: number;
+  readonly ownerHandle?: string;
+  readonly acquittedAt?: string | null;
+  readonly examId?: string;
   readonly standingOrders?: StandingOrders | null;
   /** Sent on the owner's list and the agent read while the exam gate setting is off. Null or absent means no gate answer. */
   readonly gate?: Gate | null;

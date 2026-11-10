@@ -22,12 +22,13 @@ export type Route =
   | { name: "specialistActivity"; agentId?: string }
   | { name: "specialistEarnings" }
   | { name: "specialistLeaderboard" }
+  | { name: "agentRecord"; agentId: string }
   | { name: "notFound" };
 
 type AgentPage = "specialistExam" | "specialistOrders" | "specialistActivity";
 
 export function isOwnerRoute(path: string): boolean {
-  return /^\/specialists(?:\/|$)/.test(path) || /^\/(?:earnings|leaderboard)\/?$/.test(path);
+  return /^\/specialists(?:\/|$)/.test(path) || /^\/(?:earnings|leaderboard)\/?$/.test(path) || /^\/agents\/[^/]+\/record\/?$/.test(path);
 }
 
 /** Old bookmarks replace their address, preserving the selected agent and query. */
@@ -66,6 +67,8 @@ export function match(path: string): Route {
   if (/^\/specialists\/?$/.test(path)) return { name: "specialists" };
   if (/^\/earnings\/?$/.test(path)) return { name: "specialistEarnings" };
   if (/^\/leaderboard\/?$/.test(path)) return { name: "specialistLeaderboard" };
+  const record = /^\/agents\/([^/]+)\/record\/?$/.exec(path);
+  if (record?.[1]) return { name: "agentRecord", agentId: decodeURIComponent(record[1]) };
   const exam = /^\/specialists\/exam(?:\/([^/]+))?\/?$/.exec(path);
   if (exam) return agentPage("specialistExam", exam[1]);
   const orders = /^\/specialists\/orders(?:\/([^/]+))?\/?$/.exec(path);
@@ -80,7 +83,7 @@ export function match(path: string): Route {
 }
 
 /** What a signed-out browser sees on a route. `/demo` is the old address of `/start`, so it moves there, and so do the scenarios. */
-export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" | "toStart" | "welcomeBack" {
+export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" | "toStart" | "welcomeBack" | "public" {
   switch (route.name) {
     case "home":
       return "landing";
@@ -91,6 +94,9 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
       return "toStart";
     case "welcomeBack":
       return "welcomeBack";
+    case "agentRecord":
+    case "specialistLeaderboard":
+      return "public";
     case "receipt":
     case "verifiers":
     case "print":
@@ -109,7 +115,6 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
     case "specialistOrders":
     case "specialistActivity":
     case "specialistEarnings":
-    case "specialistLeaderboard":
       return "signIn";
   }
 }

@@ -26,6 +26,7 @@ import { StandingOrdersPage } from "./pages/specialists/StandingOrders";
 import { ActivityPage } from "./pages/specialists/Activity";
 import { AgentEarningsPage } from "./pages/specialists/AgentEarnings";
 import { LeaderboardPage } from "./pages/specialists/Leaderboard";
+import { AgentRecordPage } from "./pages/specialists/AgentRecord";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -75,11 +76,11 @@ export function App() {
   // The verifier registry and the print verifier are public for the same reason. A print run makes its own account.
   const route = match(location.path);
   const heading = pageHeading(route, session?.user.role ?? null);
-  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "specialistLeaderboard") {
+  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "specialistLeaderboard" || route.name === "agentRecord") {
     return (
       <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
         <main id="content" tabIndex={-1} className="wrap">
-          {route.name === "specialistLeaderboard" ? <LeaderboardPage /> : route.name === "receipt" ? (
+          {route.name === "agentRecord" ? <AgentRecordPage key={route.agentId} agentId={route.agentId} /> : route.name === "specialistLeaderboard" ? <LeaderboardPage /> : route.name === "receipt" ? (
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
           ) : route.name === "verifiers" ? (
             <VerifiersPage />
@@ -184,6 +185,8 @@ function Routes() {
       return <AgentEarningsPage />;
     case "specialistLeaderboard":
       return <LeaderboardPage />;
+    case "agentRecord":
+      return <AgentRecordPage key={route.agentId} agentId={route.agentId} />;
     case "welcomeBack":
     case "notFound":
       return <NotFound signedIn />;

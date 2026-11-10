@@ -112,6 +112,8 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Specialists", title: "Earnings" };
     case "specialistLeaderboard":
       return { eyebrow: "Specialists", title: "Leaderboard" };
+    case "agentRecord":
+      return { eyebrow: "Public", title: "Agent record" };
     case "notFound":
       return { eyebrow: "Acquit", title: "Page not found" };
   }

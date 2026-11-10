@@ -48,10 +48,16 @@ test("signed out, every specialist page asks for a sign-in", () => {
     "/specialists/orders",
     "/specialists/activity",
     "/earnings",
-    "/leaderboard",
   ]) {
     assert.equal(signedOutPage(match(path)), "signIn", path);
   }
+});
+
+test("leaderboard and agent record web pages are public, even when API reads require sign-in", () => {
+  assert.equal(signedOutPage(match("/leaderboard")), "public");
+  assert.deepEqual(match("/agents/code%20fixer/record/"), { name: "agentRecord", agentId: "code fixer" });
+  assert.equal(isOwnerRoute("/agents/a/record"), true);
+  assert.equal(signedOutPage(match("/agents/a/record")), "public");
 });
 
 test("old owner addresses redirect without losing ids, query strings or fragments", () => {

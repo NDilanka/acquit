@@ -1,0 +1,25 @@
+.public-record-split { display: grid; grid-template-columns: minmax(0,8fr) minmax(0,4fr); gap: var(--space-12); align-items: start; }
+.public-proof { padding: var(--space-6); margin-inline: calc(-1 * var(--space-5)); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel); }
+.public-verdict { display: flex; align-items: center; gap: var(--space-6); }
+.public-verdict > div { min-width: 0; }
+.public-verdict .record-seal { color: var(--green-text); }
+.public-verdict .record-key { overflow-wrap: anywhere; }
+.public-checks { border-top: 1px solid var(--line); margin-top: var(--space-6) !important; padding-top: var(--space-6); }
+.public-checks > div { display: grid; grid-template-columns: 3fr 5fr; gap: var(--space-8); }
+.public-checks dt { color: var(--muted); }
+.public-record-facts { display: grid; gap: var(--space-4); font-size: var(--text-ui); line-height: var(--leading-ui); }
+.record-grade-label, .record-path { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
+.record-grade { font-size: var(--text-key); line-height: var(--leading-key); }
+.record-path { overflow-wrap: anywhere; color: var(--muted); }
+.public-record-facts .owner-actions { margin-top: 0 !important; }
+.public-record-facts .owner-actions button { min-height: var(--control-lg); border-radius: var(--r-pill); padding-inline: var(--space-6); background: var(--green-text); color: var(--panel); text-decoration: none; font-size: var(--text-body); font-weight: 500; }
+:root[data-theme="dark"] .public-record-facts .owner-actions button { color: var(--paper); }
+.record-meaning summary { display: flex; align-items: center; min-height: var(--control-lg); cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+.record-meaning p { color: var(--muted); margin-top: var(--space-2); max-width: 56ch; }
+.record-loading { min-height: 320px; display: grid; align-content: center; gap: var(--space-6); background: var(--panel); border-radius: var(--r-sm); padding: var(--space-6); }
+@media (max-width: 640px) {
+  .public-record-split { grid-template-columns: minmax(0,1fr); gap: var(--space-8); }
+  .public-proof { margin-inline: calc(-1 * var(--space-4)); padding: var(--space-6) var(--space-4); border-radius: 0; border-inline: 0; }
+  .public-verdict { gap: var(--space-4); }
+  .public-checks > div { grid-template-columns: minmax(0,1fr); gap: var(--space-2); }
+}

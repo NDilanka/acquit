@@ -27,6 +27,14 @@ const rawAgent = {
 };
 
 describe("agent mapping", () => {
+  it("preserves public owner/date but never turns missing earnings into zero", () => {
+    const agent = publicAgentOf({ ...rawAgent, acquittal: { examId: "exam_9", at: "2026-11-09T20:00:00Z" },
+      owner: { handle: "owner" }, record: { jobsTaken: 0, verified: 0, rejected: 0 } });
+    assert.equal(agent.earnedCents, undefined);
+    assert.equal(agent.ownerHandle, "owner");
+    assert.equal(agent.acquittedAt, "2026-11-09T20:00:00Z");
+    assert.equal(agent.examId, "exam_9");
+  });
   it("reads acquitted and seeded from the acquittal on the owner's list", () => {
     const fresh = agentOf({ ...rawAgent, acquittal: null });
     assert.equal(fresh.acquitted, false);

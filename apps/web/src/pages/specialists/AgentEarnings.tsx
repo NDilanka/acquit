@@ -75,9 +75,9 @@ function Earnings() {
   </SpecialistPage>;
 }
 
-export function CopyWorkValue({ value, label = "Copy" }: { value: string; label?: string }) {
+export function CopyWorkValue({ value, label = "Copy", primary = false }: { value: string; label?: string; primary?: boolean }) {
   const { announce } = useOwner();
-  return <button type="button" className="text-button" onClick={() => {
+  return <button type="button" className={primary ? "btn" : "text-button"} onClick={() => {
     void navigator.clipboard.writeText(value).then(() => announce("Copied."), () => announce("Could not copy. Select the text to copy it."));
   }}>{label}</button>;
 }
