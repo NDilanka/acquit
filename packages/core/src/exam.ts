@@ -52,12 +52,30 @@ export type AgentRecord = {
 };
 
 /** The escrow payee of a job that holds money. OPEN and CLOSED rows never held escrow. */
-function heldPayee(state: JobState): LockedBid | null {
+export function heldPayee(state: JobState): LockedBid | null {
 	switch (state.status) {
 		case "IN_PROGRESS":
 		case "VERIFIED": return state.escrow.payee;
 		case "PAID":
 		case "REFUNDED": return state.payee;
+		default: return null;
+	}
+}
+
+/** The attempt history a job's state keeps: the attempts in flight, none once OPEN or CLOSED, the kept history after. */
+export function attemptHistory(state: JobState): readonly AttemptRecord[] {
+	if (state.status === "IN_PROGRESS") return state.attempts.history;
+	if (state.status === "OPEN" || state.status === "CLOSED") return [];
+	return state.history;
+}
+
+/** The time the capture that opened a job's escrow landed: the HELD line every held or settled book starts with. Null before any capture. */
+export function captureAt(state: JobState): Instant | null {
+	switch (state.status) {
+		case "IN_PROGRESS":
+		case "VERIFIED": return state.escrow.book[0].at;
+		case "PAID":
+		case "REFUNDED": return state.book[0].at;
 		default: return null;
 	}
 }
@@ -77,7 +95,7 @@ export function recordOf(agentId: string, rows: readonly JobRow[]): AgentRecord 
 		const payee = heldPayee(row.state);
 		if (payee === null || payee.agent !== agentId) continue;
 		jobsTaken += 1;
-		const history: readonly AttemptRecord[] = row.state.status === "IN_PROGRESS" ? row.state.attempts.history : row.state.status === "OPEN" || row.state.status === "CLOSED" ? [] : row.state.history;
+		const history = attemptHistory(row.state);
 		verified += history.filter(entry => entry.verdict.result === "VERIFIED").length;
 		rejected += history.filter(entry => entry.verdict.result === "REJECTED").length;
 		if (row.state.status === "PAID") earnedCents += Number(row.state.release.paid);
@@ -137,4 +155,16 @@ export function parseStandingOrders(body: unknown): Parsed<StandingOrders> {
 	if (typeof preApprove !== "boolean") return bad("preApprove must be true or false");
 	if (typeof preApproveCap !== "number" || !Number.isSafeInteger(preApproveCap) || preApproveCap < 1 || preApproveCap > 3) return bad("preApproveCap must be 1 to 3");
 	return { ok: true, value: { priceFloorCents, maxConcurrent, autopilot, runsOn, preApprove, preApproveCap } };
+}
+
+export type StandingOrdersRefusal = "NOT_ACQUITTED" | "RUNS_ON_NOT_ALLOWED";
+
+/**
+ * Autopilot needs an acquittal to bid on, and acquit hosting is for the plugged samples only: an owner's
+ * own agent runs on the owner's machine. Checked before any standing-orders row is written.
+ */
+export function standingOrdersRefusal(agent: Agent, orders: StandingOrders): StandingOrdersRefusal | null {
+	if (orders.autopilot && agent.acquittal === null) return "NOT_ACQUITTED";
+	if (orders.runsOn === "acquit" && agent.sample === null) return "RUNS_ON_NOT_ALLOWED";
+	return null;
 }

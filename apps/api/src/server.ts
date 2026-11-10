@@ -7,7 +7,7 @@ import { createAcquit, closeAcquit, provisionDemoVisitor, handlePayPalReturn, st
 import type { AcquitConfig } from "../../../packages/core/src/acquit.ts";
 import type { Actor, AgentId, ClientId, OperatorId, UserCommand, UsdCents, VisitorFork } from "../../../packages/core/src/acquit.ts";
 import type { CommitSha, JobId, StaffId, VisitorId } from "../../../packages/core/src/ids.ts";
-import { openDatabase, SqliteStore } from "../../../packages/core/src/store.ts";
+import { openDatabase, SqliteStore, storedJob } from "../../../packages/core/src/store.ts";
 import { coverageGate, parseScopingFile } from "../../../packages/core/src/scoping.ts";
 import { perJobCaseOf, sealHiddenCases } from "../../../packages/core/src/hidden-seal.ts";
 import type { PrivateCaseReader } from "../../../packages/core/src/hidden-seal.ts";
@@ -38,10 +38,10 @@ import type { AskMessage, AskToolExecutor, AskToolSchema, AskTurnOutcome } from 
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import { matchFixture } from "../../../packages/core/src/fixtures.ts";
 import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
-import { isTask } from "../../../packages/core/src/exam.ts";
+import { isTask, parseStandingOrders, standingOrdersRefusal } from "../../../packages/core/src/exam.ts";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Agent } from "../../../packages/core/src/operator.ts";
-import { agentListJson, agentViewJson, floorJson, listAgentRows, plugSample, readAgentRow, sampleCatalog } from "./specialists.ts";
+import { agentListJson, agentViewJson, floorJson, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, writeStandingOrders } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -180,6 +180,8 @@ const askPaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== 
 const reconcileConfig = { clientId: settings.paypal.clientId, clientSecret: settings.paypal.secret };
 const reconcilePaypal = settings.paypal.clientId !== "" && settings.paypal.secret !== ""
 	? coalesced(reconciliationService({ fetchPage: paypalTransactionFetch(reconcileConfig), readObject: paypalObjectRead(reconcileConfig) })) : null;
+// Row 12 reads a held job's capture through the same object reader. Null without PayPal credentials, so the escrow state answers.
+const moneyRead = settings.paypal.clientId !== "" && settings.paypal.secret !== "" ? paypalObjectRead(reconcileConfig) : null;
 // A figure traced to its ledger lines and their PayPal status. The route and the ask tool both trace through
 // this, so the Explain panel and the chat card read one answer. The reconciliation is the dashboard card's own.
 function traceFor(actor: Actor, figure: FigureId) {
@@ -1325,6 +1327,49 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/floor" && method === "GET") {
 		json(res, 200, floorJson(db)); return;
 	}
+	const standingOrdersMatch = url.pathname.match(/^\/api\/me\/agents\/([^/]+)\/standing-orders$/);
+	if (standingOrdersMatch && (method === "GET" || method === "PUT")) {
+		// Rows 9 and 10: an owner reads and sets the standing orders of one of their own agents. A read of an agent the
+		// caller does not own answers 404; a write by a caller who is not the owner answers 403 and writes nothing.
+		let agentId: string | null = null;
+		try { agentId = decodeURIComponent(standingOrdersMatch[1] ?? ""); } catch { agentId = null; }
+		const owned = agentId === null ? null : readAgentRow(db, agentId);
+		const ownsIt = current.actor.role === "OPERATOR" && owned !== null && owned.owner === current.actor.operatorId;
+		if (method === "GET") {
+			if (owned === null || !ownsIt) { json(res, 404, { error: "NOT_FOUND" }); return; }
+			json(res, 200, { standingOrders: standingOrdersOf(db, owned.id) }); return;
+		}
+		if (owned === null) { json(res, 404, { error: "NOT_FOUND" }); return; }
+		if (!ownsIt) { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const parsed = parseStandingOrders(await body(req));
+		if (!parsed.ok) { json(res, 400, { error: "BAD_REQUEST", detail: parsed.detail }); return; }
+		const refusal = standingOrdersRefusal(owned, parsed.value);
+		if (refusal !== null) {
+			json(res, 409, { error: refusal, detail: refusal === "NOT_ACQUITTED" ? "Autopilot needs an acquitted agent." : "Only a plugged sample runs on Acquit." });
+			return;
+		}
+		writeStandingOrders(db, owned.id, parsed.value, clock.now());
+		json(res, 200, { standingOrders: standingOrdersOf(db, owned.id) }); return;
+	}
+	if (url.pathname === "/api/me/morning-report" && method === "GET") {
+		// Row 11: the operator's own report since a time. A missing or malformed since is refused, never defaulted.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		let since: ReturnType<typeof instant>;
+		try { since = instant(url.searchParams.get("since") ?? ""); } catch { json(res, 400, { error: "BAD_REQUEST", detail: "since must be an ISO time" }); return; }
+		json(res, 200, morningReport(db, current.actor.operatorId, since, clientRepository)); return;
+	}
+	const moneyHeldMatch = url.pathname.match(/^\/api\/me\/jobs\/([^/]+)\/money-held$/);
+	if (moneyHeldMatch && method === "GET") {
+		// Row 12: whether a job's money is held now. Only the operator the job is locked to, or one that bid on it, reads it.
+		// PayPal is read only when its credentials are set; otherwise the escrow state answers.
+		let jobId: ReturnType<typeof parseJobId> | null = null;
+		try { jobId = parseJobId(decodeURIComponent(moneyHeldMatch[1] ?? "")); } catch { jobId = null; }
+		const row = jobId === null ? null : storedRow(jobId);
+		if (current.actor.role !== "OPERATOR" || row === null || !operatorHasJob(row, current.actor.operatorId)) {
+			json(res, 404, { error: "NOT_FOUND" }); return;
+		}
+		json(res, 200, await moneyHeldOf(row, moneyRead, clock.now())); return;
+	}
 	if (url.pathname === "/api/studio/layout" && method === "PUT") {
 		// The signed-in user's own layout for one named dashboard. The body holds the Studio state
 		// serialized by the page; the server never interprets it, only stores and returns it.
@@ -1434,7 +1479,7 @@ function validJobId(raw: string): ReturnType<typeof parseJobId> {
 /** The stored row as the domain typed it: enough to read an owner, a status, and a phase without a load. */
 function storedRow(jobId: ReturnType<typeof parseJobId>): JobRow | null {
 	const record = db.prepare("SELECT json FROM jobs WHERE id = ?").get(jobId);
-	return record ? JSON.parse(String(record.json)) as JobRow : null;
+	return record ? storedJob(JSON.parse(String(record.json)) as JobRow) : null;
 }
 /**
  * The handles one job's own view names: its bidders and the operator it is locked to, and nothing
