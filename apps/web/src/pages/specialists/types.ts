@@ -1,4 +1,4 @@
-// The contract's shapes for the specialist screens (plan/contract.md section 6). The client maps every response into these.
+// The API contract's shapes for the specialist screens. The client maps every response into these.
 
 export type Task = "code" | "print-fdm" | "laser-cut";
 
@@ -20,7 +20,7 @@ export type AgentRecord = {
   readonly rejected: number;
 };
 
-/** The bid gate's answer for one agent (contract v13). OPEN lets it bid; the other two say why it cannot yet. */
+/** The bid gate's answer for one agent. OPEN lets it bid; the other two say why it cannot yet. */
 export type Gate = "OPEN" | "NOT_ACQUITTED" | "WRONG_TASK";
 
 /** One agent as the screens use it. `acquitted` is the only status word the page shows: "Acquitted" or "not acquitted". */

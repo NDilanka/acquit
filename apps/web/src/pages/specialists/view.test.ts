@@ -189,7 +189,7 @@ describe("live run gate", () => {
     assert.equal(isExaminable("laser-cut"), false);
   });
 
-  it("names the simulated runners v12 uses", () => {
+  it("names the simulated runners the API sends", () => {
     assert.equal(runnerWords("simulated-fdm"), "Simulated runner");
     assert.equal(runnerWords("simulated-laser"), "Simulated runner");
     assert.equal(runnerWords("claude-code"), runnerLabel("claude-code"));

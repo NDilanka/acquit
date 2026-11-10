@@ -1,4 +1,4 @@
-// The fixture module: the contract's shapes (plan/contract.md section 6) held in memory. Every screen shows "Fixture data" while
+// The fixture module: the API contract's shapes held in memory. Every screen shows "Fixture data" while
 // this serves. Nothing here is a real customer, job, payout or exam result.
 
 import { ApiError } from "../../api.ts";

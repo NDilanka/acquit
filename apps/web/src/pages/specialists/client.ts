@@ -1,5 +1,5 @@
-// The one place the specialist screens reach the network. VITE_SPECIALISTS_SOURCE=api calls the routes in plan/contract.md
-// section 6. Any other value (the default until part A merges) serves the fixture module, which has the same shapes.
+// The one place the specialist screens reach the network. VITE_SPECIALISTS_SOURCE=api calls the API routes in the contract.
+// Any other value (the default) serves the fixture module, which has the same shapes.
 
 import { ApiError } from "../../api.ts";
 import { fixtureApi } from "./fixtures.ts";

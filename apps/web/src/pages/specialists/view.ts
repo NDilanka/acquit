@@ -105,7 +105,7 @@ export function isOpenExam(status: ExamStatus): boolean {
   return status === "RUNNING" || status === "VERIFYING";
 }
 
-/** The label on a replay. Until part A records a real run, a replay is sample data and says so. */
+/** The label on a replay. Until a real run is recorded, a replay is sample data and says so. */
 export function replayLabel(source: ReplaySource): string {
   return source === "recorded" ? "Replay of a recorded run" : "Sample data";
 }

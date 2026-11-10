@@ -1,4 +1,4 @@
-// The contract's raw response shapes (plan/contract.md section 6) and the mappers that turn them into the screens' types.
+// The API contract's raw response shapes and the mappers that turn them into the screens' types.
 // Kept apart from client.ts so the mapping can be tested without the network or Vite's env.
 
 import type {
@@ -160,7 +160,7 @@ export function examReadOf(raw: RawExamRead): ExamRead {
   return { exam: examOf(raw.exam), acquitted: raw.agent.acquittal !== null };
 }
 
-/** A replay file under /replays (contract v12). `recordedAt` null means the file is sample data, not a recorded run. */
+/** A replay file under /replays. `recordedAt` null means the file is sample data, not a recorded run. */
 export type RawReplayEnvelope = { recordedAt: string | null; simulated: boolean; task: Task };
 export type RawExamReplay = RawReplayEnvelope & { exam: RawExam };
 export type RawNightReplay = RawReplayEnvelope & { night: { events: NightEvent[] } };
