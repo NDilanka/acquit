@@ -54,8 +54,9 @@ export type PadSpec = {
 	readonly offset: Vec2; // relative to the footprint origin, before rotation
 	readonly size: Vec2;
 	readonly shape: "rect" | "roundrect" | "circle" | "oval";
-	readonly type: "smd" | "thru_hole";
+	readonly type: "smd" | "thru_hole" | "np_thru_hole"; // a non-plated hole is a bore, not a plated pad
 	readonly drill?: number;
+	readonly rotation?: number; // degrees; the pad's orientation within its footprint (default 0)
 };
 
 export type PartSpec = {

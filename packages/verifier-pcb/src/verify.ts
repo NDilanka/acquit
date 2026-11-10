@@ -2,7 +2,7 @@
 // sample is given. Connectivity is geometric: a track joins a pad only where the copper touches, and the
 // file's net labels on tracks are never used for it.
 
-import { readBoard, type Board, type CopperLayer, type Hole, type PadInst, type Via } from "./board.ts";
+import { readBoard, type Board, type CopperLayer, type Footprint, type Hole, type PadInst, type Via } from "./board.ts";
 import {
 	circlePolygon,
 	dist,
@@ -14,7 +14,7 @@ import {
 	segmentSegmentDistance,
 } from "./geometry.ts";
 import { MAX_SEGMENT_TESTS } from "./limits.ts";
-import type { Finding, HiddenSample, ScenePath, Scene, Spec, Verdict, Vec2 } from "./types.ts";
+import type { Finding, HiddenSample, PadSpec, PartSpec, ScenePath, Scene, Spec, Verdict, Vec2 } from "./types.ts";
 
 /** Tolerance for comparing a measured value to a limit, so float noise never fails a clean board. */
 const EPS = 1e-4;
@@ -256,6 +256,99 @@ function okFinding(rule: string, message: string, hidden = false): Finding {
 	return { rule, ok: true, hidden, message };
 }
 
+type Mismatch = { readonly message: string; readonly at?: Vec2 };
+
+/** The smallest difference between two angles in degrees, in [-180, 180). */
+function angleGap(a: number, b: number): number {
+	return ((((a - b) % 360) + 540) % 360) - 180;
+}
+
+/** Whether a pad's copper is the copper its spec type implies. A non-plated hole may carry no copper at all. */
+function copperMatches(pad: PadInst, type: PadSpec["type"]): boolean {
+	const copper = [...pad.layers].sort().join(",");
+	if (type === "smd") return copper === "F.Cu";
+	if (type === "thru_hole") return copper === "B.Cu,F.Cu";
+	return copper === "" || copper === "B.Cu,F.Cu";
+}
+
+/** A surface pad has no drill; every other pad has the spec's drill within tolerance. */
+function drillMatches(pad: PadInst, sp: PadSpec): boolean {
+	if (sp.type === "smd") return pad.drill === undefined;
+	return pad.drill !== undefined && sp.drill !== undefined && Math.abs(pad.drill - sp.drill) <= DRILL_TOL;
+}
+
+/** The first property of one pad that differs from its spec pad, or undefined when every property matches. */
+function padMismatch(part: PartSpec, sp: PadSpec, pad: PadInst): Mismatch | undefined {
+	const label = `Pad ${part.ref}.${sp.name}`;
+	const at = pad.center;
+	if (pad.type !== sp.type) return { message: `${label} has type ${pad.type}; the spec asks for ${sp.type}.`, at };
+	if (pad.shape !== sp.shape) return { message: `${label} has shape ${pad.shape}; the spec asks for ${sp.shape}.`, at };
+	if (!drillMatches(pad, sp)) return { message: `${label} has the wrong drill.`, at };
+	if (!copperMatches(pad, sp.type)) return { message: `${label} is on the wrong copper layers.`, at };
+	if (dist(pad.localOffset, sp.offset) > 0.01) {
+		return {
+			message: `${label} is ${fmt(dist(pad.localOffset, sp.offset))} mm from its footprint position; the limit is 0.01 mm.`,
+			at,
+		};
+	}
+	if (dist(pad.size, sp.size) > 0.01) return { message: `${label} has the wrong size.`, at };
+	const want = (part.rotation ?? 0) + (sp.rotation ?? 0);
+	if (Math.abs(angleGap(pad.angle, want)) > 0.01) {
+		return { message: `${label} is turned ${fmt(pad.angle)} degrees; the spec asks for ${fmt(want)}.`, at };
+	}
+	return undefined;
+}
+
+/** The first way one board footprint differs from its spec part, pads included, or undefined when they match. */
+function partMismatch(part: PartSpec, fp: Footprint): Mismatch | undefined {
+	if (fp.name !== part.footprint) {
+		return { message: `Part ${part.ref} uses footprint ${fp.name}; the spec asks for ${part.footprint}.`, at: fp.at };
+	}
+	if (dist(fp.at, part.at) > 0.01) {
+		return {
+			message: `Part ${part.ref} sits at (${fmt(fp.at[0])}, ${fmt(fp.at[1])}); the spec places it at (${fmt(part.at[0])}, ${fmt(part.at[1])}).`,
+			at: fp.at,
+		};
+	}
+	const turn = part.rotation ?? 0;
+	if (Math.abs(angleGap(fp.rotation, turn)) > 0.01) {
+		return { message: `Part ${part.ref} is turned ${fmt(fp.rotation)} degrees; the spec asks for ${fmt(turn)}.`, at: fp.at };
+	}
+	for (const pad of fp.pads) {
+		if (!part.pads.some(sp => sp.name === pad.name)) {
+			return { message: `Pad ${part.ref}.${pad.name} is not in the spec.`, at: pad.center };
+		}
+	}
+	for (const sp of part.pads) {
+		const [pad, ...more] = fp.pads.filter(p => p.name === sp.name);
+		if (!pad) return { message: `Pad ${part.ref}.${sp.name} is missing from the board.`, at: fp.at };
+		if (more.length > 0) {
+			return { message: `Pad ${part.ref}.${sp.name} is on the board ${more.length + 1} times.`, at: pad.center };
+		}
+		const bad = padMismatch(part, sp, pad);
+		if (bad) return bad;
+	}
+	return undefined;
+}
+
+/** The first way the board's parts and pads differ from the spec, or undefined when they match one to one. */
+function placementMismatch(board: Board, spec: Spec): Mismatch | undefined {
+	const refs = new Set(spec.parts.map(p => p.ref));
+	for (const fp of board.footprints) {
+		if (!refs.has(fp.ref)) return { message: `Footprint ${fp.ref || "with no reference"} is not in the spec.`, at: fp.at };
+	}
+	for (const part of spec.parts) {
+		const [fp, ...more] = board.footprints.filter(f => f.ref === part.ref);
+		if (!fp) return { message: `Part ${part.ref} is missing from the board.` };
+		if (more.length > 0) {
+			return { message: `Part ${part.ref} is on the board ${more.length + 1} times.`, at: more[0]?.at };
+		}
+		const bad = partMismatch(part, fp);
+		if (bad) return bad;
+	}
+	return undefined;
+}
+
 function failedParse(spec: Spec, error: string): Verdict {
 	return {
 		workflow: "pcb",
@@ -357,45 +450,13 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		}
 	}
 
-	// parts-placed
+	// parts-placed: the board's parts and pads are exactly the spec's, one to one, with every stated property.
 	{
-		let bad: string | undefined;
-		let at: Vec2 | undefined;
-		for (const part of spec.parts) {
-			const fp = board.footprints.find(f => f.ref === part.ref);
-			if (!fp) {
-				bad = `Part ${part.ref} is missing from the board.`;
-				break;
-			}
-			if (dist(fp.at, part.at) > 0.01) {
-				bad = `Part ${part.ref} sits at (${fmt(fp.at[0])}, ${fmt(fp.at[1])}); the spec places it at (${fmt(part.at[0])}, ${fmt(part.at[1])}).`;
-				at = fp.at;
-				break;
-			}
-			for (const sp of part.pads) {
-				const pad = fp.pads.find(p => p.name === sp.name);
-				if (!pad) {
-					bad = `Pad ${part.ref}.${sp.name} is missing from the board.`;
-					at = fp.at;
-					break;
-				}
-				if (dist(pad.localOffset, sp.offset) > 0.01) {
-					bad = `Pad ${part.ref}.${sp.name} is ${fmt(dist(pad.localOffset, sp.offset))} mm from its footprint position; the limit is 0.01 mm.`;
-					at = pad.center;
-					break;
-				}
-				if (dist(pad.size, sp.size) > 0.01) {
-					bad = `Pad ${part.ref}.${sp.name} has the wrong size.`;
-					at = pad.center;
-					break;
-				}
-			}
-			if (bad) break;
-		}
+		const bad = placementMismatch(board, spec);
 		findings.push(
 			bad
-				? missingFinding("parts-placed", bad, at, 1.6)
-				: okFinding("parts-placed", "Every pad sits where the footprint puts it."),
+				? missingFinding("parts-placed", bad.message, bad.at, 1.6)
+				: okFinding("parts-placed", "Every part and pad is the spec's, once each, with the spec's placement."),
 		);
 	}
 

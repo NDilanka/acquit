@@ -324,7 +324,7 @@
 						3.2
 					],
 					"shape": "circle",
-					"type": "thru_hole",
+					"type": "np_thru_hole",
 					"drill": 3.2
 				}
 			]
@@ -348,7 +348,7 @@
 						3.2
 					],
 					"shape": "circle",
-					"type": "thru_hole",
+					"type": "np_thru_hole",
 					"drill": 3.2
 				}
 			]
@@ -372,7 +372,7 @@
 						3.2
 					],
 					"shape": "circle",
-					"type": "thru_hole",
+					"type": "np_thru_hole",
 					"drill": 3.2
 				}
 			]
@@ -396,7 +396,7 @@
 						3.2
 					],
 					"shape": "circle",
-					"type": "thru_hole",
+					"type": "np_thru_hole",
 					"drill": 3.2
 				}
 			]

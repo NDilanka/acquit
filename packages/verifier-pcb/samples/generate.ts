@@ -246,7 +246,7 @@ export const SPEC = {
 			offset: pad.off,
 			size: pad.size,
 			shape: pad.shape === "circle" ? "circle" : "rect",
-			type: pad.kind === "smd" ? "smd" : "thru_hole",
+			type: pad.kind === "smd" ? "smd" : pad.kind === "np" ? "np_thru_hole" : "thru_hole",
 			...(pad.drill !== undefined ? { drill: pad.drill } : {}),
 		})),
 	})),
