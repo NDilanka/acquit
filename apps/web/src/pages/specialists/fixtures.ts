@@ -9,6 +9,7 @@ import type {
   ExamRead,
   ExamStatus,
   FloorEntry,
+  Gate,
   MorningReport,
   ReportEntry,
   Sample,
@@ -113,6 +114,12 @@ function resultFor(task: Task): { visible: Counts; hidden: Counts } {
 
 const isOpen = (status: ExamStatus) => status === "RUNNING" || status === "VERIFYING";
 
+/** The same gate answer the server gives: only code work counts, and only an acquitted agent may bid. */
+function gateOf(a: Stored): Gate {
+  if (a.task !== "code") return "WRONG_TASK";
+  return a.acquittedAt === null ? "NOT_ACQUITTED" : "OPEN";
+}
+
 function viewOf(a: Stored): SpecialistAgent {
   return {
     id: a.id,
@@ -124,6 +131,7 @@ function viewOf(a: Stored): SpecialistAgent {
     grade: a.grade,
     seeded: false,
     standingOrders: a.standingOrders,
+    gate: gateOf(a),
   };
 }
 

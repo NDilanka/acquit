@@ -45,6 +45,36 @@ describe("agent mapping", () => {
     assert.equal(agentOf({ ...rawAgent, acquittal: null }).standingOrders, null);
   });
 
+  it("carries the bid gate from the list and the agent read, and nulls it when absent", () => {
+    assert.equal(agentOf({ ...rawAgent, acquittal: null, gate: "NOT_ACQUITTED" }).gate, "NOT_ACQUITTED");
+    assert.equal(agentOf({ ...rawAgent, acquittal: null }).gate, null);
+
+    const record = { jobsTaken: 0, verified: 0, rejected: 0, earnedCents: 0 };
+    const open = publicAgentOf({
+      id: "agt_5",
+      name: "C",
+      task: "code",
+      runner: "claude-code",
+      acquittedAt: "2026-11-09T20:00:00.000Z",
+      grade: 50,
+      gate: "OPEN",
+      record,
+    });
+    assert.equal(open.gate, "OPEN");
+    const printer = publicAgentOf({
+      id: "agt_6",
+      name: "D",
+      task: "print-fdm",
+      runner: "simulated-fdm",
+      acquittedAt: null,
+      grade: null,
+      gate: "WRONG_TASK",
+      record,
+    });
+    assert.equal(printer.gate, "WRONG_TASK");
+    assert.equal(publicAgentOf({ id: "agt_7", name: "E", task: "code", runner: "claude-code", acquittedAt: null, grade: null, record }).gate, null);
+  });
+
   it("is never acquitted or seeded when plugged in", () => {
     const plugged = plugOf({ id: "agt_2", name: "Printer", task: "print-fdm", runner: "simulated-fdm", sample: "print-fdm" });
     assert.equal(plugged.acquitted, false);

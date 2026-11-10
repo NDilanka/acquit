@@ -1,7 +1,18 @@
 // Pure copy and state for the specialist screens. Nothing here reads the network or the DOM, so the wording is tested on its own.
 
 import { parseUsd, runnerLabel, shortId } from "../../format.ts";
-import type { AgentRecord, Counts, ExamStatus, NightEvent, ReplaySource, ReportEntry, StandingOrders, StandingOrdersInput, Task } from "./types.ts";
+import type {
+  AgentRecord,
+  Counts,
+  ExamStatus,
+  Gate,
+  NightEvent,
+  ReplaySource,
+  ReportEntry,
+  StandingOrders,
+  StandingOrdersInput,
+  Task,
+} from "./types.ts";
 
 export const STEPS = [
   { step: 1, label: "Plug in", to: "/specialists" },
@@ -31,6 +42,17 @@ export function acquittedWords(acquitted: boolean): string {
 
 export function gradeWords(grade: number | null): string {
   return grade === null ? "No grade yet" : `Grade ${grade}`;
+}
+
+/** The bid gate in plain words. The two closed reasons name what the agent still lacks. */
+const GATE_WORDS: Record<Gate, string> = {
+  OPEN: "Open",
+  NOT_ACQUITTED: "Closed: not acquitted",
+  WRONG_TASK: "Closed: only code work passes",
+};
+
+export function gateWords(gate: Gate): string {
+  return GATE_WORDS[gate];
 }
 
 /** The simulated machines' runners have no product name, so they read as a neutral "Simulated runner". */

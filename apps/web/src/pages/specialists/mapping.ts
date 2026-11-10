@@ -8,6 +8,7 @@ import type {
   ExamReplay,
   ExamStatus,
   FloorEntry,
+  Gate,
   MorningReport,
   NightEvent,
   NightReplay,
@@ -33,6 +34,7 @@ export type RawAgent = {
   acquittal: RawAcquittal;
   grade: number | null;
   standingOrders?: StandingOrders | null;
+  gate?: Gate | null;
 };
 
 export type RawPlugged = { id: string; name: string; task: Task; runner: string; sample: string | null };
@@ -45,6 +47,7 @@ export type RawPublicAgent = {
   acquittedAt: string | null;
   grade: number | null;
   seeded?: boolean;
+  gate?: Gate | null;
   record: AgentRecord & { earnedCents?: number };
 };
 
@@ -98,6 +101,7 @@ export function agentOf(raw: RawAgent): SpecialistAgent {
     grade: raw.grade,
     seeded: raw.acquittal?.seeded === true,
     standingOrders: raw.standingOrders ?? null,
+    gate: raw.gate ?? null,
   };
 }
 
@@ -127,6 +131,7 @@ export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
     acquitted: raw.acquittedAt !== null,
     grade: raw.grade,
     seeded: raw.seeded === true,
+    gate: raw.gate ?? null,
     record: recordOf(raw.record),
     earnedCents: raw.record.earnedCents ?? 0,
   };

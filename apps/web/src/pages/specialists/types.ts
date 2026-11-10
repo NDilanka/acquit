@@ -20,6 +20,9 @@ export type AgentRecord = {
   readonly rejected: number;
 };
 
+/** The bid gate's answer for one agent (contract v13). OPEN lets it bid; the other two say why it cannot yet. */
+export type Gate = "OPEN" | "NOT_ACQUITTED" | "WRONG_TASK";
+
 /** One agent as the screens use it. `acquitted` is the only status word the page shows: "Acquitted" or "not acquitted". */
 export type SpecialistAgent = {
   readonly id: string;
@@ -34,6 +37,8 @@ export type SpecialistAgent = {
   readonly record?: AgentRecord;
   readonly earnedCents?: number;
   readonly standingOrders?: StandingOrders | null;
+  /** Sent on the owner's list and the agent read while the exam gate setting is off. Null or absent means no gate answer. */
+  readonly gate?: Gate | null;
 };
 
 export type Sample = {

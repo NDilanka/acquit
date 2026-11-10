@@ -10,6 +10,7 @@ import {
   examStatusWords,
   formFrom,
   formProblems,
+  gateWords,
   gradeChangeWords,
   isExaminable,
   liveRunBlock,
@@ -125,6 +126,22 @@ describe("honest labels", () => {
     assert.equal(examStatusWords("PASSED"), "Acquitted");
     assert.equal(examStatusWords("FAILED"), "not acquitted");
     assert.equal(examStatusWords("RUNNING"), "Running");
+  });
+});
+
+describe("bid gate words", () => {
+  it("says open, or names why the gate is closed", () => {
+    assert.equal(gateWords("OPEN"), "Open");
+    assert.equal(gateWords("NOT_ACQUITTED"), "Closed: not acquitted");
+    assert.equal(gateWords("WRONG_TASK"), "Closed: only code work passes");
+  });
+
+  it("keeps the banned words out of the gate copy", () => {
+    for (const gate of ["OPEN", "NOT_ACQUITTED", "WRONG_TASK"] as const) {
+      for (const word of ["cleared", "licensed", "certified"]) {
+        assert.equal(gateWords(gate).toLowerCase().includes(word), false, `${word} in ${gate}`);
+      }
+    }
   });
 });
 
