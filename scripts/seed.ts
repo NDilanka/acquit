@@ -6,6 +6,7 @@ import { instant } from "../packages/core/src/ids.ts";
 import type { AgentId, Digest, MerchantId, OperatorId, Version } from "../packages/core/src/ids.ts";
 import type { Agent, OperatorRow } from "../packages/core/src/operator.ts";
 import { digest } from "../packages/core/src/effects.ts";
+import { CODE_VERTICAL } from "../packages/core/src/code-manifest.ts";
 
 /** Reads one required name and answers with a named refusal when it is absent. The value is never printed. */
 function seedRequired(name: string, why: string): string {
@@ -42,8 +43,10 @@ try {
 	]) {
 		const operator: OperatorRow = { id: seed.handle as OperatorId, handle: seed.handle, kind: seed.kind,
 			version: 0 as Version, payouts: { kind: "READY", merchant: seed.merchant, connectedAt: now } };
+		// devon-ops is a seeded independent agent: it carries the seed acquittal, not an exam row. House is exempt from the gate.
 		const agent: Agent = { id: seed.agent as AgentId, owner: operator.id, name: seed.agent, runner: "claude-code",
-			promptDigest: digest("TypeScript bug fixes; source edits only; frozen tests") as Digest, tools: ["Read", "Edit", "Bash"] };
+			promptDigest: digest("TypeScript bug fixes; source edits only; frozen tests") as Digest, tools: ["Read", "Edit", "Bash"],
+			task: CODE_VERTICAL, acquittal: seed.kind === "HOUSE" ? null : { examId: "seed", at: now }, sample: null };
 		const empty: CreditAccount = { operator: operator.id, version: 0 as Version,
 			balance: { allowance: 0 as Credits, purchased: 0 as Credits }, lines: [] };
 		const account = seed.kind === "HOUSE" ? empty : reduceCredits(empty, { kind: "Grant", week: creditWeek(now), paidReceipts: 0, at: now });

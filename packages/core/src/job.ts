@@ -29,6 +29,7 @@ import type { EmptyBook, HeldBook, LedgerLine, PaidBook, RefundedBook, TreasuryE
 import type { JobFundingMode } from "./funding.ts";
 import { readyToBid } from "./operator.ts";
 import type { Agent, OperatorRow } from "./operator.ts";
+import { bidGate } from "./exam.ts";
 import type { CaptureEvidence, DisputeId, DisputeOffer, EvidenceType, FeeQuote, RefundEvidence, ReimbursementEvidence, ReleaseEvidence } from "./paypal.ts";
 import { DISPUTE_ACCESS_REFUSED, EVIDENCE_TYPE_REFUSALS, evidenceTypeFor, NO_HONEST_EVIDENCE_TYPE, refusalWording } from "./paypal.ts";
 import { CODE_VERTICAL } from "./outcome.ts";
@@ -469,6 +470,8 @@ export type DomainFailure =
 	| "PRICE_OVER_BUDGET"
 	| "ALREADY_BID"
 	| "HOUSE_ALREADY_BID"
+	| "NOT_ACQUITTED"
+	| "WRONG_TASK"
 	| "INSUFFICIENT_CREDITS"
 	| "DEADLINE_TOO_FAR"
 	| "DEADLINE_PASSED"
@@ -647,6 +650,11 @@ function transitionTable(): {
 			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
 			const { operator, agent, credits } = facts.loaded;
 			if (operator.id !== facts.actor.operatorId || agent.owner !== operator.id || agent.id !== command.agent) return "NOT_OWNER";
+			// House is exempt: placeHouseBid sends its bids through this same apply.
+			if (operator.kind !== "HOUSE") {
+				const gate = bidGate(agent, row.vertical ?? CODE_VERTICAL);
+				if (gate !== null) return gate;
+			}
 			if (!readyToBid(operator)) return "ONBOARDING_REQUIRED";
 			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
 			if (row.state.phase.kind === "FUNDING" && row.state.phase.checkout.phase === "REFUND_PENDING") return "WRONG_STATE";

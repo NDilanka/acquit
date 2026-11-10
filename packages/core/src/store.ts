@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Store, AtomicCommit, CommitResult, OutboxRow, OutboxState, OperationKey, ReceiptRowCounts, RecordedRequest, WorkRepoRecord } from "./effects.ts";
 import type { Agent } from "./operator.ts";
+import { withAgentDefaults } from "./operator.ts";
 import type { CreditAccount } from "./credits.ts";
 import { storedDefinitionOfDone } from "./job.ts";
 import type { JobRow, JobState, PaidState, ReceiptSource, RefundReason, ReleaseIntent } from "./job.ts";
@@ -126,6 +127,20 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [],
 		-- The work repository a job's CREATE_WORK_REPO effect made: its full name, GitHub's own id for it, and the
 		-- fork it was made from. The cleanup deletes only the repository this row names.
 		CREATE TABLE IF NOT EXISTS work_repos (job_id TEXT PRIMARY KEY, repository TEXT NOT NULL, repository_id INTEGER, source TEXT NOT NULL);
+		-- One row per exam attempt. The id is the verifier run id too. Counts only, never test names or contents.
+		CREATE TABLE IF NOT EXISTS exam_runs (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, task TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('RUNNING','VERIFYING','PASSED','FAILED','ERROR')),
+			visible_passed INTEGER, visible_total INTEGER, hidden_passed INTEGER, hidden_total INTEGER,
+			reasons TEXT NOT NULL DEFAULT '[]', started_at TEXT NOT NULL, ended_at TEXT);
+		CREATE INDEX IF NOT EXISTS exam_runs_agent ON exam_runs(agent_id, started_at);
+		-- The owner's standing orders for one agent. Written only by PUT standing-orders.
+		CREATE TABLE IF NOT EXISTS standing_orders (agent_id TEXT PRIMARY KEY, price_floor_cents INTEGER NOT NULL,
+			max_concurrent INTEGER NOT NULL CHECK (max_concurrent BETWEEN 1 AND 3),
+			autopilot INTEGER NOT NULL DEFAULT 0 CHECK (autopilot IN (0,1)),
+			runs_on TEXT NOT NULL DEFAULT 'owner' CHECK (runs_on IN ('owner','acquit')),
+			pre_approve INTEGER NOT NULL DEFAULT 0 CHECK (pre_approve IN (0,1)),
+			pre_approve_cap INTEGER NOT NULL DEFAULT 3 CHECK (pre_approve_cap BETWEEN 1 AND 3),
+			updated_at TEXT NOT NULL);
 	`);
 	// The M1 backfill: a database from before per-job manifests holds each job's frozen contract only
 	// inside the job row. One manifest row per such job, carrying exactly the contract it was frozen
@@ -342,7 +357,10 @@ export class SqliteStore implements Store {
 		} catch (error) { this.db.exec("ROLLBACK"); throw error; }
 	}
 	async readOperator(id: OperatorId): Promise<OperatorRow | null> { return parsed(this.db.prepare("SELECT json FROM operators WHERE id = ?").get(id)); }
-	async readAgent(id: AgentId): Promise<Agent | null> { return parsed(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id)); }
+	async readAgent(id: AgentId): Promise<Agent | null> {
+		const raw = parsed<Parameters<typeof withAgentDefaults>[0]>(this.db.prepare("SELECT json FROM agents WHERE id = ?").get(id));
+		return raw ? withAgentDefaults(raw) : null;
+	}
 	async readCredits(id: OperatorId): Promise<CreditAccount> {
 		const account = parsed<CreditAccount>(this.db.prepare("SELECT json FROM credits WHERE id = ?").get(id));
 		if (!account) throw new Error("Credit account missing");
