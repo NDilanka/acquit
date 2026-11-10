@@ -91,9 +91,11 @@ test("a zero-length track is a parse failure, not a copper dot", () => {
 });
 
 test("curved copper that only nearly touches other copper fails closed as a parse failure", () => {
-	// The GND via sits at (126.05, 108.5) with radius 0.3 mm. This stub ends 0.425 mm from its centre, so its cap is
-	// exactly tangent to the true via edge. The checker cannot decide that contact within the via's approximation.
-	const stub = '(segment (start 125.625 108.5) (end 124.5 108.5) (width 0.25) (layer "F.Cu") (net 4))';
+	// The GND via sits at (126.05, 108.5) with radius 0.3 mm, and its 64-sided polygon has a flat side centred on the
+	// direction 182.8 degrees. This stub's cap reaches 0.2998 mm from the via centre in that direction. The polygon lies
+	// 0.2996 mm from the centre there, so the gap is 0.00017 mm: inside the via's 0.00036 mm approximation error, and
+	// the true gap may be anywhere from zero to that value.
+	const stub = '(segment (start 125.6257 108.4792) (end 125.0512 108.4509) (width 0.25) (layer "F.Cu") (net 4))';
 	assert.equal(parseFailed(edit(LED_RUN, `${LED_RUN} ${stub}`)), true);
 });
 

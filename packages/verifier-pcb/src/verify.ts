@@ -145,10 +145,19 @@ function fmt(n: number): string {
 }
 
 /**
+ * How far an item's true copper may fall short of its modelled copper. A pad or via polygon lies inside its true
+ * outline, so it never falls short. A straight track is exact. Only an arc's chord may lie on either side of the arc.
+ */
+function shortfallOf(g: Geo): number {
+	return g.kind === "track" ? g.slop : 0;
+}
+
+/**
  * The disjoint-set root of each item, and the first pair whose contact cannot be decided. Items touch only when the
- * true gap is within float roundoff. The true gap lies within slop of the modelled gap, so a pair is joined when its
- * modelled gap is within roundoff even after allowing for slop, and is open when its modelled gap exceeds slop plus
- * roundoff. A pair in between could go either way, so it is reported rather than guessed.
+ * true gap is within float roundoff. The true gap is at most the modelled gap plus each item's shortfall, and at least
+ * the modelled gap minus each item's slop. So a pair is joined when its modelled gap is within roundoff even after
+ * allowing for shortfall, and is open when its modelled gap exceeds slop plus roundoff. A pair in between could go
+ * either way, so it is reported rather than guessed. Overlapping pads and vias therefore join outright.
  */
 function connectedComponents(geos: readonly Geo[], budget: Budget): { comp: number[]; ambiguous: Pair | undefined } {
 	const parent = geos.map((_, i) => i);
@@ -165,9 +174,11 @@ function connectedComponents(geos: readonly Geo[], budget: Budget): { comp: numb
 	};
 	let ambiguous: Pair | undefined;
 	forEachNearPair(geos, ROUNDOFF, budget, (i, j, g) => {
-		const s = (geos[i] as Geo).slop + (geos[j] as Geo).slop;
-		if (g + s <= ROUNDOFF) parent[find(i)] = find(j);
-		else if (g - s <= ROUNDOFF && !ambiguous) ambiguous = { i, j, g };
+		const x = geos[i] as Geo;
+		const y = geos[j] as Geo;
+		const short = shortfallOf(x) + shortfallOf(y);
+		if (g + short <= ROUNDOFF) parent[find(i)] = find(j);
+		else if (g - (x.slop + y.slop) <= ROUNDOFF && !ambiguous) ambiguous = { i, j, g };
 	});
 	return { comp: geos.map((_, i) => find(i)), ambiguous };
 }
