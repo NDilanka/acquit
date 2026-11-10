@@ -300,7 +300,7 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
   const focusOrbit = (place: Place): Orbit => {
     const [x, z] = map([place.x, place.y]);
     const home = homeOrbit();
-    return { azimuth: home.azimuth + 0.12, polar: 0.82, distance: Math.max(home.distance * 0.7, place.radius * 9), target: new THREE.Vector3(x, top, z) };
+    return { azimuth: home.azimuth + 0.12, polar: 0.82, distance: Math.min(home.distance, Math.max(home.distance * 0.7, place.radius * 4)), target: new THREE.Vector3(x, top, z) };
   };
 
   let last: StageInput | null = null;
