@@ -1,0 +1,491 @@
+{
+	"name": "status-light",
+	"board": {
+		"size": [
+			40,
+			25
+		],
+		"tolerance": 0.05
+	},
+	"parts": [
+		{
+			"ref": "J1",
+			"footprint": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+			"at": [
+				102,
+				106
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						0,
+						0
+					],
+					"size": [
+						1.7,
+						1.7
+					],
+					"shape": "circle",
+					"type": "thru_hole",
+					"drill": 1
+				},
+				{
+					"name": "2",
+					"offset": [
+						0,
+						2.54
+					],
+					"size": [
+						1.7,
+						1.7
+					],
+					"shape": "circle",
+					"type": "thru_hole",
+					"drill": 1
+				}
+			]
+		},
+		{
+			"ref": "U1",
+			"footprint": "Package_TO_SOT_SMD:SOT-23",
+			"at": [
+				112,
+				106
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						-1,
+						-0.95
+					],
+					"size": [
+						0.6,
+						0.7
+					],
+					"shape": "rect",
+					"type": "smd"
+				},
+				{
+					"name": "2",
+					"offset": [
+						-1,
+						0.95
+					],
+					"size": [
+						0.6,
+						0.7
+					],
+					"shape": "rect",
+					"type": "smd"
+				},
+				{
+					"name": "3",
+					"offset": [
+						1,
+						0
+					],
+					"size": [
+						0.6,
+						0.7
+					],
+					"shape": "rect",
+					"type": "smd"
+				}
+			]
+		},
+		{
+			"ref": "C1",
+			"footprint": "Capacitor_SMD:C_0805_2012Metric",
+			"at": [
+				108,
+				112
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						-0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				},
+				{
+					"name": "2",
+					"offset": [
+						0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				}
+			]
+		},
+		{
+			"ref": "C2",
+			"footprint": "Capacitor_SMD:C_0805_2012Metric",
+			"at": [
+				118,
+				112
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						-0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				},
+				{
+					"name": "2",
+					"offset": [
+						0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				}
+			]
+		},
+		{
+			"ref": "R1",
+			"footprint": "Resistor_SMD:R_0805_2012Metric",
+			"at": [
+				122,
+				106
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						-0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				},
+				{
+					"name": "2",
+					"offset": [
+						0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				}
+			]
+		},
+		{
+			"ref": "D1",
+			"footprint": "LED_SMD:LED_0805_2012Metric",
+			"at": [
+				127,
+				106
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						-0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				},
+				{
+					"name": "2",
+					"offset": [
+						0.95,
+						0
+					],
+					"size": [
+						1,
+						1.3
+					],
+					"shape": "rect",
+					"type": "smd"
+				}
+			]
+		},
+		{
+			"ref": "J2",
+			"footprint": "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
+			"at": [
+				128,
+				118
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						0,
+						0
+					],
+					"size": [
+						1.7,
+						1.7
+					],
+					"shape": "circle",
+					"type": "thru_hole",
+					"drill": 1
+				},
+				{
+					"name": "2",
+					"offset": [
+						2.54,
+						0
+					],
+					"size": [
+						1.7,
+						1.7
+					],
+					"shape": "circle",
+					"type": "thru_hole",
+					"drill": 1
+				},
+				{
+					"name": "3",
+					"offset": [
+						5.08,
+						0
+					],
+					"size": [
+						1.7,
+						1.7
+					],
+					"shape": "circle",
+					"type": "thru_hole",
+					"drill": 1
+				},
+				{
+					"name": "4",
+					"offset": [
+						7.62,
+						0
+					],
+					"size": [
+						1.7,
+						1.7
+					],
+					"shape": "circle",
+					"type": "thru_hole",
+					"drill": 1
+				}
+			]
+		},
+		{
+			"ref": "H1",
+			"footprint": "MountingHole:MountingHole_3.2mm",
+			"at": [
+				102,
+				102
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						0,
+						0
+					],
+					"size": [
+						3.2,
+						3.2
+					],
+					"shape": "circle",
+					"type": "np_thru_hole",
+					"drill": 3.2
+				}
+			]
+		},
+		{
+			"ref": "H2",
+			"footprint": "MountingHole:MountingHole_3.2mm",
+			"at": [
+				138,
+				102
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						0,
+						0
+					],
+					"size": [
+						3.2,
+						3.2
+					],
+					"shape": "circle",
+					"type": "np_thru_hole",
+					"drill": 3.2
+				}
+			]
+		},
+		{
+			"ref": "H3",
+			"footprint": "MountingHole:MountingHole_3.2mm",
+			"at": [
+				102,
+				123
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						0,
+						0
+					],
+					"size": [
+						3.2,
+						3.2
+					],
+					"shape": "circle",
+					"type": "np_thru_hole",
+					"drill": 3.2
+				}
+			]
+		},
+		{
+			"ref": "H4",
+			"footprint": "MountingHole:MountingHole_3.2mm",
+			"at": [
+				138,
+				123
+			],
+			"pads": [
+				{
+					"name": "1",
+					"offset": [
+						0,
+						0
+					],
+					"size": [
+						3.2,
+						3.2
+					],
+					"shape": "circle",
+					"type": "np_thru_hole",
+					"drill": 3.2
+				}
+			]
+		}
+	],
+	"netlist": {
+		"VIN": [
+			"J1.1",
+			"U1.1",
+			"C1.1"
+		],
+		"GND": [
+			"J1.2",
+			"U1.2",
+			"C1.2",
+			"C2.2",
+			"D1.1",
+			"J2.2"
+		],
+		"3V3": [
+			"U1.3",
+			"C2.1",
+			"R1.1",
+			"J2.1"
+		],
+		"LED_A": [
+			"R1.2",
+			"D1.2"
+		],
+		"SIG1": [
+			"J2.3"
+		],
+		"SIG2": [
+			"J2.4"
+		]
+	},
+	"rules": {
+		"minTrackWidth": 0.2,
+		"minClearance": 0.2,
+		"minViaDrill": 0.3,
+		"minAnnularRing": 0.15,
+		"edgeClearance": 0.3,
+		"powerNets": {
+			"VIN": 0.5,
+			"3V3": 0.5,
+			"GND": 0.5
+		}
+	},
+	"keepouts": [
+		{
+			"name": "antenna-zone",
+			"min": [
+				112,
+				114
+			],
+			"max": [
+				116,
+				116.5
+			]
+		}
+	],
+	"mountingHoles": [
+		{
+			"at": [
+				102,
+				102
+			],
+			"drill": 3.2
+		},
+		{
+			"at": [
+				138,
+				102
+			],
+			"drill": 3.2
+		},
+		{
+			"at": [
+				102,
+				123
+			],
+			"drill": 3.2
+		},
+		{
+			"at": [
+				138,
+				123
+			],
+			"drill": 3.2
+		}
+	]
+}

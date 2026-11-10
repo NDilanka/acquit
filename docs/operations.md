@@ -6,7 +6,7 @@ This page covers how the hosted demo at https://80-225-220-230.sslip.io is watch
 
 `.github/workflows/uptime.yml` runs `scripts/uptime-check.mjs` every 30 minutes and on manual dispatch. GitHub can start a scheduled run late. The script sends GET requests to:
 
-- `/`, `/tour`, `/verifiers`, and `/print`. Each must return 200 and the app shell (`<div id="root"` and `<title>Acquit</title>`). Every page route is served the same shell, so this confirms the web build is served; it does not check a page's content.
+- `/`, `/tour`, and `/how-work-is-checked`. Each must return 200 and the app shell (`<div id="root"` and `<title>Acquit</title>`). Every page route is served the same shell, so this confirms the web build is served; it does not check a page's content. The old `/verifiers` and `/print` addresses are not checked: the browser redirects them to `/how-work-is-checked` in the app, and the script reads only the shell, so it cannot see that redirect.
 - `/api/session`. It must return 200 and JSON whose `mode` is `public` or `dev`.
 
 Each request times out after 15 seconds, and the job after 5 minutes. The script uses Node's built-in `fetch`, so it needs no dependency and no secret, and it makes no request that writes state. The workflow has `permissions: contents: read`, runs only on schedule and manual dispatch, and never runs on push or pull request, so it cannot block CI or a deploy.

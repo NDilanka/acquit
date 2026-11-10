@@ -19,6 +19,24 @@ import type { Instant, JobId, VisitorId } from "./ids.ts";
 import type { UsdCents } from "./ledger.ts";
 import { releaseHeld, TERMS } from "./job.ts";
 import type { JobRow } from "./job.ts";
+import { isStoreBusy } from "./store.ts";
+import { boundedDetail } from "./verifier.ts";
+
+/**
+ * The failures a House act may raise that the pass waits out: the transients the next tick retries (a locked
+ * database, a provider call without an answer, a contended system commit) and the fee family's price refusals, which
+ * a bid stored before the fundable rule can still raise. Anything else is a fault: a programming error, a corrupt row,
+ * a missing or malformed fee model. The pass stops on a fault, so a person looks, instead of the same warning once a
+ * tick forever.
+ */
+function isTransientPassError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (isStoreBusy(error)) return true;
+	if (error.name === "TimeoutError" || error.name === "AbortError") return true;
+	const message = error.message;
+	return message.startsWith("PayPal HTTP ") || message === "fetch failed" || message === "System command busy"
+		|| message === "Invalid price" || message === "Unsafe total" || message === "Price cannot carry processing fee";
+}
 
 /** How many starter jobs an account's workspace opens with. */
 export const STARTER_OPENING_COUNT = 2;
@@ -48,7 +66,15 @@ const sinceMs = (at: Instant, now: Instant) => Date.parse(now) - Date.parse(at);
 /** One pass over every account. Returns how many commands committed. */
 export async function runHouseClients(ports: HouseClientPorts, accounts: readonly HouseAccount[]): Promise<number> {
 	let acted = 0;
-	for (const account of accounts) acted += await runHouseClient(ports, account);
+	for (const account of accounts) {
+		// One account's ordinary failure waits for the next tick: it must not skip the other accounts or the outbox drain
+		// after the pass. A fault is not waited out: it stops the pass, and the tick with it, so a person looks.
+		try { acted += await runHouseClient(ports, account); }
+		catch (error) {
+			if (!isTransientPassError(error)) throw error;
+			console.warn(`Acquit: the House client's pass for ${account.id} waits for the next tick: ${boundedDetail(error instanceof Error ? error.message : String(error))}`);
+		}
+	}
 	return acted;
 }
 
@@ -87,27 +113,34 @@ export async function runHouseClient(ports: HouseClientPorts, account: HouseAcco
 	}
 	for (const row of starters) {
 		if (retired.has(row.id)) continue;
-		const now = ports.clock.now();
-		if (row.state.status === "OPEN" && row.state.phase.kind === "BIDDING" && row.state.phase.fundingRounds < HOUSE_ACCEPT_ROUNDS) {
-			const pending = row.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING");
-			if (pending.length === 0) continue;
-			const first = pending.map(bid => bid.placedAt).toSorted()[0]!;
-			if (sinceMs(first, now) < HOUSE_ACCEPT_DELAY_MS) continue;
-			// The card is the starter's funding. defaultJobFunding inserts it only where the job has no choice yet, so a
-			// process that stopped between the open and that write still accepts by card, and a stored choice is kept.
-			ports.fundWithCard(row.id, now);
-			// No bid is named here. The command takes the lowest PENDING bid of the row it commits, so a bid that
-			// arrived after this pass read the snapshot is still compared.
-			const outcome = await send(`accept:${row.id}:${row.state.phase.fundingRounds}`, { type: "AcceptBid", jobId: row.id });
-			if (outcome.kind === "COMMITTED") acted++;
-		} else if (row.state.status === "VERIFIED" && row.state.review.phase === "AWAITING_CLIENT") {
-			// A PayPal buyer dispute holds the release; the House client waits it out like a person would.
-			if (releaseHeld(row)) continue;
-			const verifiedAt = instant(new Date(Date.parse(row.state.review.endsAt) - TERMS.clientReviewHours * 3_600_000).toISOString());
-			if (sinceMs(verifiedAt, now) < HOUSE_APPROVE_DELAY_MS) continue;
-			const mergeCommit = row.state.passed.verdict.mergeCommit;
-			const outcome = await send(`approve:${row.id}:${mergeCommit}`, { type: "Approve", jobId: row.id, mergeCommit });
-			if (outcome.kind === "COMMITTED") acted++;
+		// A starter whose act fails waits for the next tick, so the account's other starters still move.
+		try {
+			const now = ports.clock.now();
+			if (row.state.status === "OPEN" && row.state.phase.kind === "BIDDING" && row.state.phase.fundingRounds < HOUSE_ACCEPT_ROUNDS) {
+				const pending = row.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING");
+				if (pending.length === 0) continue;
+				const first = pending.map(bid => bid.placedAt).toSorted()[0]!;
+				if (sinceMs(first, now) < HOUSE_ACCEPT_DELAY_MS) continue;
+				// The card is the starter's funding. defaultJobFunding inserts it only where the job has no choice yet, so a
+				// process that stopped between the open and that write still accepts by card, and a stored choice is kept.
+				ports.fundWithCard(row.id, now);
+				// No bid is named here. The command takes the lowest PENDING bid it can fund of the row it commits, so a bid that
+				// arrived after this pass read the snapshot is still compared.
+				const outcome = await send(`accept:${row.id}:${row.state.phase.fundingRounds}`, { type: "AcceptBid", jobId: row.id });
+				if (outcome.kind === "COMMITTED") acted++;
+			} else if (row.state.status === "VERIFIED" && row.state.review.phase === "AWAITING_CLIENT") {
+				// A PayPal buyer dispute holds the release; the House client waits it out like a person would.
+				if (releaseHeld(row)) continue;
+				const verifiedAt = instant(new Date(Date.parse(row.state.review.endsAt) - TERMS.clientReviewHours * 3_600_000).toISOString());
+				if (sinceMs(verifiedAt, now) < HOUSE_APPROVE_DELAY_MS) continue;
+				const mergeCommit = row.state.passed.verdict.mergeCommit;
+				const outcome = await send(`approve:${row.id}:${mergeCommit}`, { type: "Approve", jobId: row.id, mergeCommit });
+				if (outcome.kind === "COMMITTED") acted++;
+			}
+		} catch (error) {
+			// A starter's ordinary failure waits for the next tick, so the account's other starters still move. A fault stops the pass.
+			if (!isTransientPassError(error)) throw error;
+			console.warn(`Acquit: the starter job ${row.id} waits for the next tick: ${boundedDetail(error instanceof Error ? error.message : String(error))}`);
 		}
 	}
 	return acted;

@@ -4,7 +4,7 @@
 const BASE_URL = "https://80-225-220-230.sslip.io";
 const TIMEOUT_MS = 15_000;
 // Every page route is served the same app shell (try_files falls back to index.html), so the shell is the marker.
-const PAGE_PATHS = ["/", "/tour", "/verifiers", "/print"];
+const PAGE_PATHS = ["/", "/tour", "/how-work-is-checked"];
 const SHELL_MARKERS = ['<div id="root"', "<title>Acquit</title>"];
 const SESSION_PATH = "/api/session";
 
