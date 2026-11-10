@@ -4,14 +4,14 @@
 
 import { boundsOf, centreOf, edgeListDistance, edgeListsOverlap, edgesOf, heightOf, pointInPolygon, roundMm, selfCrosses, selfOverlaps, widthOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
-import { finishedInnerSize, finishedPart, isMaterial, toDrawing, toPart } from "./finished.ts";
+import { finishedInnerSize, finishedPart, isMaterial, isMaterialSegment, isVoidPoint, keepsClearance, toDrawing, toPart } from "./finished.ts";
 import type { FinishedPart } from "./finished.ts";
 import { MAX_PAIR_TESTS } from "./limits.ts";
 import { validateSpec } from "./spec.ts";
 import { FLATTEN_TOL_MM, parseSvg } from "./svg.ts";
 import { fitTolerance, fitsRectangle, fitsRing, isRoundCut, RING_POINTS_MAX, roundedRectRing } from "./shapes.ts";
 import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
-import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SvgPath, Verdict, Vec2 } from "./types.ts";
+import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SpecRect, SvgPath, Verdict, Vec2 } from "./types.ts";
 
 type Outline = { readonly path: SvgPath; readonly box: Bounds };
 
@@ -171,11 +171,41 @@ const isFinitePoint = (value: unknown): boolean => {
 	return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y);
 };
 
-/** The hidden samples must be a list of finite [x, y] points in mm. Returns the problem, or null when they are sound. */
+/**
+ * The hidden samples must be finite points in mm, and the clearance a finite, non-negative distance. Returns the
+ * problem, or null when they are sound.
+ */
 function sampleProblem(hidden: HiddenSample | null): string | null {
 	const points: unknown = hidden?.keepMaterialMm;
 	if (!Array.isArray(points)) return "the hidden samples must list keepMaterialMm points";
-	return points.every(isFinitePoint) ? null : "each hidden sample must be two finite numbers in mm";
+	if (!points.every(isFinitePoint)) return "each hidden sample must be two finite numbers in mm";
+	const voids: unknown = hidden?.voidMm;
+	if (voids !== undefined && (!Array.isArray(voids) || !voids.every(isFinitePoint))) return "each expected-void sample must be two finite numbers in mm";
+	const clearance: unknown = hidden?.clearanceMm;
+	if (clearance !== undefined && (typeof clearance !== "number" || !Number.isFinite(clearance) || clearance < 0)) {
+		return "the hidden clearance must be a finite, non-negative number of mm";
+	}
+	return null;
+}
+
+/** Tolerance on the label region's edges, so a label drawn exactly on its boundary is not refused by float noise. */
+const REGION_EPS = 1e-6;
+
+const inRegion = (part: FinishedPart, region: SpecRect, point: Vec2): boolean => {
+	const [px, py] = toPart(part, point);
+	const [ox, oy] = region.originMm;
+	const [sx, sy] = region.sizeMm;
+	return px >= ox - REGION_EPS && px <= ox + sx + REGION_EPS && py >= oy - REGION_EPS && py <= oy + sy + REGION_EPS;
+};
+
+/**
+ * An engraving holds when every point and every whole segment lies in the label region and in finished material.
+ * Segments are checked, not only their ends: a segment can leave the material between two ends that are both inside.
+ */
+function engravingHolds(part: FinishedPart, region: SpecRect, path: SvgPath): boolean {
+	const inside = (point: Vec2): boolean => inRegion(part, region, point) && isMaterial(part, point);
+	if (!path.points.every(inside)) return false;
+	return edgesOf(path.points, path.closed).every(([a, b]) => inRegion(part, region, a) && inRegion(part, region, b) && isMaterialSegment(part, a, b));
 }
 
 /**
@@ -221,7 +251,8 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	const doc = parsed.value;
 	const cut = doc.paths.filter(path => path.stroke === CUT_STROKE);
 	const engrave = doc.paths.filter(path => path.stroke === ENGRAVE_STROKE);
-	if (workOf(cut, engrave, hidden?.keepMaterialMm.length ?? 0, spec.holes.length + spec.slots.length) > MAX_PAIR_TESTS) {
+	const probes = (hidden?.keepMaterialMm.length ?? 0) + (hidden?.voidMm?.length ?? 0);
+	if (workOf(cut, engrave, probes, spec.holes.length + spec.slots.length) > MAX_PAIR_TESTS) {
 		const size: Scene["size"] = [doc.widthMm, doc.heightMm, spec.thicknessMm];
 		return refused("the drawing has too many segments to check in one pass", sceneOf(doc.paths, size, spec));
 	}
@@ -346,13 +377,16 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		),
 	);
 
-	const stray = engrave.filter(path => part === null || !path.points.every(point => isMaterial(part, point))).map(path => path.id);
+	// The label is required, so an empty drawing fails. Each engraving must hold along its whole length.
+	const stray = engrave.filter(path => part === null || !engravingHolds(part, spec.labelRegionMm, path)).map(path => path.id);
 	findings.push(
 		check(
 			"engrave-inside",
-			stray.length === 0,
-			"every engraving lies inside the part and clear of the cuts",
-			`${stray.length} engraving(s) lie outside the part or inside a cut`,
+			engrave.length > 0 && stray.length === 0,
+			"the label is engraved in its region, inside the finished material and clear of the cuts",
+			engrave.length === 0
+				? "no label is engraved in the label region"
+				: `${stray.length} engraving(s) leave the label region, leave the finished material, or cross a cut`,
 			stray,
 		),
 	);
@@ -445,13 +479,24 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		if (part === null) {
 			findings.push(check("hidden-material", false, "", "no outer cut to place the hidden samples against"));
 		} else {
-			const lost = hidden.keepMaterialMm.filter(point => !isMaterial(part, toDrawing(part, point))).length;
+			// Counts only: a finding never carries the hidden coordinates.
+			const clearance = hidden.clearanceMm ?? 0;
+			const voids = hidden.voidMm ?? [];
+			const lost = hidden.keepMaterialMm.filter(point => !keepsClearance(part, toDrawing(part, point), clearance)).length;
+			const unvoided = voids.filter(point => !isVoidPoint(part, toDrawing(part, point))).length;
+			const problems: string[] = [];
+			if (lost > 0) {
+				problems.push(`${lost} hidden keep-material sample(s) fall inside a cut, outside the finished part, or within ${clearance} mm of a finished edge`);
+			}
+			if (unvoided > 0) problems.push(`${unvoided} hidden expected-void sample(s) fall in material`);
+			const clearText = clearance > 0 ? ` and at least ${clearance} mm from every finished edge` : "";
+			const voidText = voids.length > 0 ? `; all ${voids.length} expected void(s) are cut` : "";
 			findings.push(
 				check(
 					"hidden-material",
-					lost === 0,
-					`all ${hidden.keepMaterialMm.length} hidden keep-material samples stay material`,
-					`${lost} hidden keep-material sample(s) fall inside a cut or outside the finished part`,
+					problems.length === 0,
+					`all ${hidden.keepMaterialMm.length} hidden keep-material samples stay material${clearText}${voidText}`,
+					problems.join("; "),
 				),
 			);
 		}

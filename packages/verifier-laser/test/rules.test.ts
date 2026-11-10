@@ -65,7 +65,12 @@ test("a blue path inside the window fails engrave-inside", () => {
 	assert.deepEqual(failedRules(text), ["engrave-inside"]);
 });
 
-test("a drawing in the wrong colour fails colours", () => {
-	const text = honest.replace('d="M20 80.2 H60" stroke="#0000ff"', 'd="M20 80.2 H60" stroke="#00ff00"');
+test("a stray guide line in the wrong colour fails colours only", () => {
+	const text = honest.replace('<path id="outline"', `<path id="guide" d="M30 30 H40" stroke="#00aa00" fill="none"/>\n  <path id="outline"`);
 	assert.deepEqual(failedRules(text), ["colours"]);
+});
+
+test("a label engraved in the wrong colour fails colours and engrave-inside", () => {
+	const text = honest.replace('d="M20 80.2 H60" stroke="#0000ff"', 'd="M20 80.2 H60" stroke="#00ff00"');
+	assert.deepEqual(failedRules(text), ["colours", "engrave-inside"]);
 });

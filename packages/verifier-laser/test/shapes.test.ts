@@ -80,9 +80,10 @@ test("a zero-area hole where the round hole belongs fails holes", () => {
 	assert.ok(failed(verify(specWith(), text)).includes("holes"));
 });
 
-test("a blue circle where the required hole belongs fails holes", () => {
+test("a blue circle where the required hole belongs fails holes and engrave-inside", () => {
+	// The engraved circle is both a missing cut and an engraving outside the label region.
 	const text = edit(honest, MOUNT_A, `<circle id="mount-a" cx="16.1" cy="84.1" r="1.5" stroke="#0000ff" fill="none"/>`);
-	assert.deepEqual(failed(verify(specWith(), text)), ["holes"]);
+	assert.deepEqual(failed(verify(specWith(), text)), ["holes", "engrave-inside"]);
 });
 
 test("an extra round cut at a new position fails holes", () => {

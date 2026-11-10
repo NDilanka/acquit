@@ -15,12 +15,13 @@ if (!specResult.ok) throw new Error(JSON.stringify(specResult.errors));
 const spec = specResult.value;
 const hidden = JSON.parse(sample("enclosure-panel.hidden.json")) as HiddenSample;
 
-// Each fraud breaks exactly one named rule, and the honest panel passes.
+// Each fraud breaks its named rule, and the honest panel passes. An engraved hole is also a
+// stray engraving outside the label region, so that fraud breaks two rules.
 const cases: { id: string; kind: "cheat" | "honest"; expected: string }[] = [
 	{ id: "honest", kind: "honest", expected: VERIFIED },
 	{ id: "fraud-no-kerf", kind: "cheat", expected: "outer-size" },
 	{ id: "fraud-open-path", kind: "cheat", expected: "closed-paths" },
-	{ id: "fraud-hole-engraved", kind: "cheat", expected: "holes" },
+	{ id: "fraud-hole-engraved", kind: "cheat", expected: "holes, engrave-inside" },
 	{ id: "fraud-hole-moved", kind: "cheat", expected: "holes" },
 	{ id: "fraud-pixel-units", kind: "cheat", expected: "units-mm" },
 	{ id: "fraud-duplicate-cut", kind: "cheat", expected: "no-duplicates" },

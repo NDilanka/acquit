@@ -3,7 +3,7 @@
 // is the drawn outer shrunk by kerf/2, and each finished void is the drawn inner grown by kerf/2. Every rule reads
 // geometry through this module, so the holes, cutouts, outer size, webs, engravings and hidden samples agree.
 
-import { boundsOf, edgesOf, heightOf, pointEdgeDistance, pointInPolygon, widthOf } from "./geometry.ts";
+import { boundsOf, edgesOf, heightOf, pointEdgeDistance, pointInPolygon, segmentDistance, widthOf } from "./geometry.ts";
 import type { Vec2 } from "./types.ts";
 
 type Ring = { readonly points: readonly Vec2[]; readonly edges: readonly (readonly [Vec2, Vec2])[] };
@@ -66,4 +66,40 @@ export function isMaterial(part: FinishedPart, point: Vec2): boolean {
 	if (!pointInPolygon(point, part.outer.points)) return false;
 	if (pointEdgeDistance(point, part.outer.edges) <= half + EDGE_EPS) return false;
 	return !part.voids.some(ring => inVoid(ring, point, half));
+}
+
+/**
+ * Distance from a material point to the nearest finished edge, outer or void. The finished edge lies kerf/2 from
+ * each drawn line, so the drawn distance less kerf/2 is exact. Meaningful only for a point that isMaterial.
+ */
+export function clearanceOf(part: FinishedPart, point: Vec2): number {
+	const half = part.kerfMm / 2;
+	let nearest = pointEdgeDistance(point, part.outer.edges) - half;
+	for (const ring of part.voids) nearest = Math.min(nearest, pointEdgeDistance(point, ring.edges) - half);
+	return nearest;
+}
+
+/** True when a material point keeps at least clearanceMm from every finished edge. */
+export function keepsClearance(part: FinishedPart, point: Vec2, clearanceMm: number): boolean {
+	return isMaterial(part, point) && clearanceOf(part, point) >= clearanceMm - EDGE_EPS;
+}
+
+/**
+ * True when a drawn point lies strictly inside a finished void: inside a drawn inner cut, or less than kerf/2 from its
+ * line. A point on the finished boundary is not in the void, so it fails an expected-void probe.
+ */
+export function isVoidPoint(part: FinishedPart, point: Vec2): boolean {
+	const half = part.kerfMm / 2;
+	return part.voids.some(ring => pointInPolygon(point, ring.points) || pointEdgeDistance(point, ring.edges) < half - EDGE_EPS);
+}
+
+/**
+ * True when the whole segment from a to b is finished material. Both ends must be material, and no outer or void edge
+ * may come within kerf/2 of the segment. Then no point of the segment reaches a finished edge.
+ */
+export function isMaterialSegment(part: FinishedPart, a: Vec2, b: Vec2): boolean {
+	const half = part.kerfMm / 2;
+	if (!isMaterial(part, a) || !isMaterial(part, b)) return false;
+	const rings = [part.outer, ...part.voids];
+	return rings.every(ring => ring.edges.every(([c, d]) => segmentDistance(a, b, c, d) > half + EDGE_EPS));
 }

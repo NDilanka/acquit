@@ -76,8 +76,16 @@ export type Spec = {
 	readonly slots: readonly SpecSlot[];
 };
 
-/** Part-frame points the agent cannot see. Each must stay material: no cut may enclose it. */
-export type HiddenSample = { readonly keepMaterialMm: readonly Vec2[] };
+/**
+ * Part-frame points the agent cannot see. Each keep-material point must stay material, at least clearanceMm from every
+ * finished edge. Each void point must lie inside a finished void. A failure is reported as a count, never as coordinates.
+ */
+export type HiddenSample = {
+	readonly keepMaterialMm: readonly Vec2[];
+	readonly voidMm?: readonly Vec2[];
+	/** Minimum distance in mm from a keep-material point to any finished edge. Zero when omitted. */
+	readonly clearanceMm?: number;
+};
 
 /** Every rule id this package can emit. A finding carries one of these. */
 export const RULES = [
