@@ -4,6 +4,8 @@
 
 import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, pointInPolygon, roundMm, selfCrosses, shapeKey, widthOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
+import { MAX_PAIR_TESTS } from "./limits.ts";
+import { validateSpec } from "./spec.ts";
 import { parseSvg } from "./svg.ts";
 import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
 import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SvgPath, Verdict, Vec2 } from "./types.ts";
@@ -84,18 +86,71 @@ function verdictOf(findings: readonly Finding[], measured: Verdict["measured"], 
 	return { workflow: "laser-cut", pass: ordered.every(finding => finding.ok), findings: ordered, measured, scene };
 }
 
-/** Checks a laser cut panel file against the spec. Never throws: an unreadable file fails the parse rule. */
+/** A verdict that fails the parse rule alone. Used when the file, the spec or the samples cannot be checked at all. */
+function refused(message: string, scene: Scene): Verdict {
+	return verdictOf([{ rule: "parse", ok: false, hidden: false, message }], {}, scene);
+}
+
+const emptyScene = (): Scene => ({ units: "mm", size: [0, 0, 0], paths: [] });
+
+const isFinitePoint = (value: unknown): boolean => {
+	if (!Array.isArray(value) || value.length !== 2) return false;
+	const [x, y] = value as readonly unknown[];
+	return typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y);
+};
+
+/** The hidden samples must be a list of finite [x, y] points in mm. Returns the problem, or null when they are sound. */
+function sampleProblem(hidden: HiddenSample | null): string | null {
+	const points: unknown = hidden?.keepMaterialMm;
+	if (!Array.isArray(points)) return "the hidden samples must list keepMaterialMm points";
+	return points.every(isFinitePoint) ? null : "each hidden sample must be two finite numbers in mm";
+}
+
+/**
+ * The pair and point tests the rules will run. Cut against cut costs at most the square of the cut edge count; each
+ * engraving point and hidden sample costs one pass over the cut edges. Counted before any of them runs.
+ */
+function workOf(cut: readonly SvgPath[], engrave: readonly SvgPath[], samples: number): number {
+	const edges = cut.reduce((sum, path) => sum + edgesOf(path.points, path.closed).length, 0);
+	const points = engrave.reduce((sum, path) => sum + path.points.length, 0);
+	return edges * edges + (points + samples) * edges;
+}
+
+/**
+ * Checks a laser cut panel file against the spec. Never throws: an input that cannot be checked fails the parse rule
+ * with a plain message, and so does a drawing over the limits in limits.ts.
+ */
 export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Verdict {
+	try {
+		return checkPanel(spec, artefact, hidden);
+	} catch {
+		return refused("the drawing could not be checked", emptyScene());
+	}
+}
+
+function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefined): Verdict {
+	const checked = validateSpec(input);
+	if (!checked.ok) return refused(`the spec is not valid: ${checked.errors[0]?.message ?? "unreadable"}`, emptyScene());
+	const spec = checked.value;
+	if (hidden !== undefined) {
+		const problem = sampleProblem(hidden);
+		if (problem !== null) return refused(problem, sceneOf([], [spec.partMm[0], spec.partMm[1], spec.thicknessMm], spec));
+	}
+
 	const parsed = parseSvg(artefact);
 	if (!parsed.ok) {
 		const message = parsed.errors[0]?.message ?? "the file could not be read";
 		const size: Scene["size"] = [spec.partMm[0], spec.partMm[1], spec.thicknessMm];
-		return verdictOf([{ rule: "parse", ok: false, hidden: false, message }], {}, sceneOf([], size, spec));
+		return refused(message, sceneOf([], size, spec));
 	}
 
 	const doc = parsed.value;
 	const cut = doc.paths.filter(path => path.stroke === CUT_STROKE);
 	const engrave = doc.paths.filter(path => path.stroke === ENGRAVE_STROKE);
+	if (workOf(cut, engrave, hidden?.keepMaterialMm.length ?? 0) > MAX_PAIR_TESTS) {
+		const size: Scene["size"] = [doc.widthMm, doc.heightMm, spec.thicknessMm];
+		return refused("the drawing has too many segments to check in one pass", sceneOf(doc.paths, size, spec));
+	}
 	const outline = outlineOf(cut);
 	const tol = spec.toleranceMm;
 	const findings: Finding[] = [];
