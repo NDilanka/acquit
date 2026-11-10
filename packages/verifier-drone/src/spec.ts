@@ -23,6 +23,8 @@ export const LIMITS = {
 	minPhotos: 1000,
 	localExtentM: 20000,
 	exposures: 10000,
+	/** The most 2 m coverage cells an area's bounding box may span; larger areas are refused before any sampling. */
+	coverageCells: 100000,
 } as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,8 +119,6 @@ export function parseSpec(value: unknown): Spec | string {
 	if (!positive(minAltitudeM) || minAltitudeM >= maxAltitudeM) return "minAltitudeM must be positive and below maxAltitudeM.";
 	const maxGsdCm = value.maxGsdCm;
 	if (!positive(maxGsdCm)) return "maxGsdCm must be a positive number of centimetres.";
-	const gridM = value.gridM;
-	if (!positive(gridM)) return "gridM must be a positive number of metres.";
 	const minFrontOverlap = value.minFrontOverlap;
 	const minSideOverlap = value.minSideOverlap;
 	if (!unitInterval(minFrontOverlap) || !unitInterval(minSideOverlap)) return "minFrontOverlap and minSideOverlap must be fractions from 0 to 1.";
@@ -154,7 +154,6 @@ export function parseSpec(value: unknown): Spec | string {
 		enduranceS,
 		reserveS,
 		geofenceMarginM,
-		gridM,
 		rules: ruleList,
 	};
 }

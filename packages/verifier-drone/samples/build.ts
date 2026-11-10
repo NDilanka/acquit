@@ -49,7 +49,6 @@ export const SPEC = {
 	enduranceS: 1800,
 	reserveS: 300,
 	geofenceMarginM: 5,
-	gridM: 10,
 	rules: ["altitude-limits", "ground-resolution", "front-overlap", "side-overlap", "no-fly", "coverage", "cruise-speed"],
 };
 
@@ -108,10 +107,12 @@ function with_(base: readonly Wp[], edit: (wps: Wp[]) => void): Wp[] {
 }
 
 export const HIDDEN_EXAMPLE = {
+	// [50, 0] lies on the area's south edge, 30 m below the bottom survey line: inside its 30.05 m footprint reach,
+	// so the honest survey photographs it, but a line lifted even slightly off y = 30 loses it.
 	checkpoints: [
 		[20, 95],
 		[80, 20],
-		[50, 1],
+		[50, 0],
 	],
 	windMs: 6,
 	cruiseToWindRatio: 1.5,
@@ -157,7 +158,9 @@ export const FRAUDS: readonly { file: string; rule: string; text: string }[] = [
 	{
 		file: "fraud-hidden-checkpoint.plan",
 		rule: "hidden-checkpoint",
-		text: plan(14, 10, lines([32, 50, 70, 90, 110], 40)),
+		// The bottom line is lifted 20 cm to y = 30.2: the checkpoint at [50, 0] falls 30.2 m off track, beyond the
+		// 30.05 m footprint reach, while every 2 m cell of the area stays photographed and side overlap stays legal.
+		text: plan(14, 10, lines([30.2, 50, 70, 90, 110], 40)),
 	},
 ];
 

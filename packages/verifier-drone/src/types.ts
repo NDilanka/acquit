@@ -86,7 +86,6 @@ export type Spec = {
 	readonly enduranceS: number;
 	readonly reserveS: number;
 	readonly geofenceMarginM: number;
-	readonly gridM: number;
 	readonly rules: readonly string[];
 };
 

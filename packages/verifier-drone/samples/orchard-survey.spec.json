@@ -65,7 +65,6 @@
   "enduranceS": 1800,
   "reserveS": 300,
   "geofenceMarginM": 5,
-  "gridM": 10,
   "rules": [
     "altitude-limits",
     "ground-resolution",

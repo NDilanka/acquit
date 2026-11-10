@@ -182,16 +182,43 @@ function frontOverlapOf(leg: Leg, camera: Camera): number {
 	return 1 - leg.triggerM / alongM(leg.alt, camera);
 }
 
-function sampleGrid(area: readonly Vec2[], gridM: number): Vec2[] {
-	const xs = area.map(p => p[0]);
-	const ys = area.map(p => p[1]);
-	const minX = Math.min(...xs);
-	const maxX = Math.max(...xs);
-	const minY = Math.min(...ys);
-	const maxY = Math.max(...ys);
+/** The coverage cell size: the area is judged at the centre of every 2 m square cell, not on a caller-chosen grid. */
+const COVERAGE_CELL_M = 2;
+/** The fraction of sampled cell centres that must be photographed for coverage to pass. */
+const COVERAGE_MIN = 0.99;
+
+/** The bounding box of the area, found iteratively so a long point list cannot overflow the stack. */
+function bounds(area: readonly Vec2[]): { minX: number; maxX: number; minY: number; maxY: number } {
+	let minX = Infinity;
+	let maxX = -Infinity;
+	let minY = Infinity;
+	let maxY = -Infinity;
+	for (const point of area) {
+		if (point[0] < minX) minX = point[0];
+		if (point[0] > maxX) maxX = point[0];
+		if (point[1] < minY) minY = point[1];
+		if (point[1] > maxY) maxY = point[1];
+	}
+	return { minX, maxX, minY, maxY };
+}
+
+/** How many cell centres one axis holds: the first centre is one half-cell above the minimum, strictly below the maximum. */
+function axisCells(min: number, max: number): number {
+	return Math.max(0, Math.ceil((max - min - COVERAGE_CELL_M / 2) / COVERAGE_CELL_M));
+}
+
+/** The 2 m coverage cells an area's bounding box spans; areas above the limit are refused before any sampling. */
+function coverageCells(area: readonly Vec2[]): number {
+	const box = bounds(area);
+	return axisCells(box.minX, box.maxX) * axisCells(box.minY, box.maxY);
+}
+
+/** The centre of every 2 m cell whose centre lies inside the survey area, in x-then-y order. */
+function sampleGrid(area: readonly Vec2[]): Vec2[] {
+	const box = bounds(area);
 	const out: Vec2[] = [];
-	for (let x = minX + gridM / 2; x < maxX; x += gridM) {
-		for (let y = minY + gridM / 2; y < maxY; y += gridM) {
+	for (let x = box.minX + COVERAGE_CELL_M / 2; x < box.maxX; x += COVERAGE_CELL_M) {
+		for (let y = box.minY + COVERAGE_CELL_M / 2; y < box.maxY; y += COVERAGE_CELL_M) {
 			if (pointInPolygon([x, y], area)) out.push([x, y]);
 		}
 	}
@@ -230,19 +257,32 @@ function worstFrontLeg(legs: readonly Leg[], camera: Camera): Leg | null {
 }
 
 /**
- * Overlap between each pair of neighbouring survey lines, the lower of the two footprints counted. Lines are ordered
- * across the survey heading, so the check follows the survey at any heading.
+ * Overlap between each survey line and its genuine neighbour on the upper side. The neighbour is the line across
+ * from it that shares the most of its along-track extent, not merely the closest line across: a short or disjoint
+ * leg cannot stand in for a neighbour along parts of the survey it does not photograph. Ties on shared extent take
+ * the closer line, then the earlier one, so the pairing is deterministic. The lower of the two footprints counts.
  */
 function sideOverlaps(legs: readonly Leg[], camera: Camera): { overlap: number; a: Leg; b: Leg }[] {
-	const sorted = [...legs].sort((p, q) => p.t - q.t || p.index - q.index);
 	const out: { overlap: number; a: Leg; b: Leg }[] = [];
-	for (let i = 1; i < sorted.length; i++) {
-		const a = sorted[i - 1]!;
-		const b = sorted[i]!;
-		const spacing = b.t - a.t;
-		if (spacing <= TOL) continue;
-		const width = Math.min(acrossM(a.alt, camera), acrossM(b.alt, camera));
-		out.push({ overlap: 1 - spacing / width, a, b });
+	for (const a of legs) {
+		const aLo = Math.min(a.s0, a.s1);
+		const aHi = Math.max(a.s0, a.s1);
+		let best: Leg | null = null;
+		let bestCommon = TOL;
+		let bestSpacing = Infinity;
+		for (const b of legs) {
+			const spacing = b.t - a.t;
+			if (spacing <= TOL) continue;
+			const common = Math.min(aHi, Math.max(b.s0, b.s1)) - Math.max(aLo, Math.min(b.s0, b.s1));
+			if (common > bestCommon + TOL || (common > TOL && common >= bestCommon - TOL && spacing < bestSpacing)) {
+				best = b;
+				bestCommon = common;
+				bestSpacing = spacing;
+			}
+		}
+		if (best === null) continue;
+		const width = Math.min(acrossM(a.alt, camera), acrossM(best.alt, camera));
+		out.push({ overlap: 1 - bestSpacing / width, a, b: best });
 	}
 	return out;
 }
@@ -305,9 +345,14 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		return finding("no-fly", true, false, "No part of the route comes within the no-fly clearance of any zone.");
 	},
 	coverage: ({ spec, geometry, shots, frame }) => {
-		const samples = sampleGrid(geometry.area, spec.gridM);
+		const samples = sampleGrid(geometry.area);
+		if (samples.length === 0) return finding("coverage", false, false, "The survey area holds no 2 m sample cell, so coverage cannot be shown.");
 		const missed = samples.filter(p => holding(p, shots, spec.camera, frame) === 0);
 		if (missed.length === 0) return finding("coverage", true, false, `All ${samples.length} sample points on the survey area are photographed.`);
+		const covered = samples.length - missed.length;
+		if (covered / samples.length >= COVERAGE_MIN) {
+			return finding("coverage", true, false, `${covered} of ${samples.length} sample points on the survey area are photographed, at least ${percent(COVERAGE_MIN)}.`);
+		}
 		const first = missed[0]!;
 		return finding("coverage", false, false, `${missed.length} of ${samples.length} sample points on the survey area are not photographed.`, [first[0], first[1], 0]);
 	},
@@ -387,6 +432,13 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 	const spec = parseSpec(specInput);
 	if (typeof spec === "string") return refused(spec, EMPTY_SCENE);
 	const geometry = projectGeometry(spec);
+	const cells = coverageCells(geometry.area);
+	if (cells > LIMITS.coverageCells) {
+		return refused(
+			`The survey area spans about ${cells} 2 m coverage cells, more than the ${LIMITS.coverageCells} the checker samples.`,
+			sceneFor(geometry, null, [], [], spec.camera, null),
+		);
+	}
 	const hiddenParsed = hiddenInput === undefined ? undefined : parseHiddenSample(hiddenInput);
 	const hiddenError = typeof hiddenParsed === "string" ? hiddenParsed : null;
 	const hidden = typeof hiddenParsed === "string" ? undefined : hiddenParsed;
@@ -434,7 +486,7 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 	const gsdWorst = worstGsdLeg(legs, spec.camera);
 	const frontWorst = worstFrontLeg(legs, spec.camera);
 	const sides = sideOverlaps(legs, spec.camera);
-	const samples = sampleGrid(geometry.area, spec.gridM);
+	const samples = sampleGrid(geometry.area);
 	const measured: Record<string, number | string> = {
 		sceneUnit: "m",
 		cruiseMs: parsed.cruiseMs,
