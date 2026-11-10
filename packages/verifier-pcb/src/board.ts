@@ -456,9 +456,27 @@ function trackProblem(t: readonly SExpr[]): string | undefined {
 	return numericProblem(t) ?? lengthsProblem(t, "width", 1) ?? zeroLengthProblem(t);
 }
 
+/**
+ * The only via span the checker models is an ordinary through via: exactly one layer list naming F.Cu and B.Cu, in
+ * either order. Every other span (same layer, inner, three layers, missing, repeated) is refused, not bridged to B.Cu.
+ */
+function viaSpanProblem(v: readonly SExpr[]): string | undefined {
+	const lists = children(v, "layers");
+	if (lists.length === 0) return "(via) without a layer span";
+	if (lists.length > 1) return "(via) with a repeated layer span";
+	const span = lists[0]?.slice(1).map(x => String(x)) ?? [];
+	const through = span.length === 2 && span.includes("F.Cu") && span.includes("B.Cu");
+	const shown = span.join(" ") || "no layers";
+	return through ? undefined : `(via) spans ${shown}; only F.Cu to B.Cu through vias are modelled`;
+}
+
 function viaProblem(v: readonly SExpr[]): string | undefined {
 	return (
-		unexpectedChild(v, VIA_HEADS, 0) ?? numericProblem(v) ?? lengthsProblem(v, "size", 1) ?? lengthsProblem(v, "drill", 1)
+		unexpectedChild(v, VIA_HEADS, 0) ??
+		viaSpanProblem(v) ??
+		numericProblem(v) ??
+		lengthsProblem(v, "size", 1) ??
+		lengthsProblem(v, "drill", 1)
 	);
 }
 
@@ -669,6 +687,7 @@ export function readBoard(text: string): Board {
 		}
 	}
 
+	// Every via kept here is an F.Cu to B.Cu through via: viaSpanProblem refuses any other span before this runs.
 	const vias: Via[] = [];
 	for (const v of children(root, "via")) {
 		const at = point(child(v, "at"));
