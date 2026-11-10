@@ -1,7 +1,7 @@
 /* v3.css: hero adjustments, the agent plate, the clients block. Loaded last. */
 
-/* prototype-only switchers stay out of the page */
-.wf-ho-dock, .wf-vswitch, .notes-toggle, .wf-note { display: none !important; }
+/* prototype-only switchers and design notes stay out of the page */
+.wf-ho-dock, .wf-vswitch, .notes-toggle, .wf-note, .ftr-switchbar { display: none !important; }
 .hf-end { margin-right: 0; }
 a.h-n2, a.h-n3 { color: var(--ink-2); }
 a.h-n3 { color: var(--mute); }

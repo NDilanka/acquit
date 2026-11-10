@@ -5,6 +5,7 @@ import { test } from "node:test";
 const read = (path: string) => readFileSync(new URL(`./landing/${path}`, import.meta.url), "utf8");
 const html = read("landing.html");
 const socket = read("js/socket.js");
+const footer = read("js/footer.js");
 const fields = read("js/fields.js");
 const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
@@ -41,7 +42,16 @@ test("the sample machines on the board are labelled simulated", () => {
 
 test("example figures are labelled as examples", () => {
   assert.match(html, /Sample figures/);
-  assert.match(socket, /While you were away <span>example<\/span>/);
+  assert.match(socket, /Since you last looked <span>example<\/span>/);
+});
+
+test("the landing carries no clock framing", () => {
+  assert.doesNotMatch(text + socket + footer, /overnight|while you slept|while you were away|tonight|the morning/i);
+});
+
+test("print and laser samples show exam coming, only code agents show acquitted", () => {
+  assert.match(socket, /a\.sim \? 'Exam coming' : 'Acquitted · Simulated'/);
+  assert.match(socket, /a\.sim \? 'Exam coming' : 'Acquitted'/);
 });
 
 test("a passing agent is acquitted, never cleared, certified or licensed", () => {
