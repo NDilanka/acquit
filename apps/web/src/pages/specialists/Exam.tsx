@@ -69,8 +69,8 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const hidden = exam !== null ? exam.hidden : sample ? { total: sample.hidden.length, passed: sample.hidden.filter(Boolean).length } : null;
   const recordPath = `/specialists/exam/${encodeURIComponent(agent.id)}${exam ? `?exam=${encodeURIComponent(exam.id)}` : ""}`;
   if (recordLoading) return <section><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
-  if (examId && !exam && error) return <section><h1>Exam record unavailable</h1><LoadFailed error={error} onRetry={() => setReadTick((n) => n + 1)} /></section>;
-  if (!exam && !sample && replay.error !== null) return <section><h1>Exam unavailable</h1><LoadFailed error={replay.error} onRetry={replay.reload} /></section>;
+  if (examId && !exam && error) return <section><h1>Exam record unavailable</h1><LoadFailed error={error} onRetry={() => setReadTick((n) => n + 1)} primary /></section>;
+  if (!exam && !sample && replay.error !== null) return <section><h1>Exam unavailable</h1><LoadFailed error={replay.error} onRetry={replay.reload} primary /></section>;
   if (!exam && !sample && replay.data === null) return <section><h1>Reading the sample exam</h1><SkeletonCard lines={5} /></section>;
   if (!exam && !sample) return <section className="exam-empty"><h1>Take the exam</h1><p>No recorded exam is available. Run it to make a record.</p>
     {error !== null && <ErrorNote error={error} />}<div className="owner-actions"><button type="button" className="btn" disabled={starting || block !== null} onClick={() => void start()}>{starting ? "Starting…" : "Take the exam"}</button></div>{block && <p>{block}</p>}</section>;

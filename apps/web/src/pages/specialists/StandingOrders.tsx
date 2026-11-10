@@ -14,7 +14,7 @@ export function StandingOrdersPage({ agentId }: { agentId?: string }) {
 }
 function OrdersForAgent({ agent }: { agent: SpecialistAgent }) {
   const load = useLoad(async () => ({ orders: await specialists.standingOrders(agent.id) }), agent.id);
-  return load.data === null ? load.error !== null ? <LoadFailed error={load.error} onRetry={load.reload} /> : <SkeletonCard lines={4} />
+  return load.data === null ? <section><h1>Standing orders</h1>{load.error !== null ? <LoadFailed error={load.error} onRetry={load.reload} primary /> : <SkeletonCard lines={4} />}</section>
     : <OrdersEditor agent={agent} initial={load.data.orders} />;
 }
 function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: StandingOrders | null }) {
