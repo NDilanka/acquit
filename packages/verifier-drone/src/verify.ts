@@ -437,8 +437,12 @@ const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
 function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], shots: readonly Shot[], camera: Camera, frame: Frame | null): Scene {
 	const box = bounds(geometry.area);
 	const paths: ScenePath[] = [{ id: "area", kind: "area", layer: "survey", z: 0, closed: true, points: geometry.area }];
-	for (const zone of geometry.zones) paths.push({ id: `zone-${zone.id}`, kind: "zone", layer: "no-fly", z: 0, closed: true, points: zone.polygon });
+	// A zone's height is its volume's top: carried in z for the inspector and in width as the explicit height.
 	let maxAlt = 0;
+	for (const zone of geometry.zones) {
+		if (zone.heightM > maxAlt) maxAlt = zone.heightM;
+		paths.push({ id: `zone-${zone.id}`, kind: "zone", layer: "no-fly", z: zone.heightM, width: zone.heightM, closed: true, points: zone.polygon });
+	}
 	const byIndex = new Map<number, Leg>();
 	for (const leg of legs) byIndex.set(leg.index, leg);
 	for (const segment of segments ?? []) {
