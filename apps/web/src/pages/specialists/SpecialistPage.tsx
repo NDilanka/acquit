@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { Link } from "../../router.tsx";
 import { useSession } from "../../session.tsx";
 import { ErrorNote, NotFound } from "../../ui.tsx";
-import { FIXTURE_DATA } from "./client.ts";
 import { STEPS } from "./view.ts";
 import "./specialists.css";
 
@@ -41,18 +40,8 @@ export function StepIndicator({ current, agentId }: { readonly current: number; 
   );
 }
 
-/** Shown on every specialist screen while the screens read built-in sample data, not the live API. */
-export function FixtureBadge() {
-  if (!FIXTURE_DATA) return null;
-  return (
-    <span className="sandbox" title="The screens show built-in sample data until the live API is connected.">
-      Fixture data
-    </span>
-  );
-}
-
 /**
- * The frame for every specialist screen: the step indicator, the fixture badge and one lead sentence.
+ * The frame for every specialist screen: the step indicator and one lead sentence.
  * The shell already shows the page heading. Operator-only pages send other roles to the same notice the operator pages use.
  */
 export function SpecialistPage({
@@ -76,7 +65,6 @@ export function SpecialistPage({
     <div className="spec">
       <div className="spec-top">
         {step !== undefined && <StepIndicator current={step} agentId={agentId} />}
-        <FixtureBadge />
       </div>
       <p className="spec-lead">{lead}</p>
       {children}

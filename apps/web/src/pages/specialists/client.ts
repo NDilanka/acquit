@@ -1,8 +1,7 @@
-// The one place the specialist screens reach the network. VITE_SPECIALISTS_SOURCE=api calls the API routes in the contract.
-// Any other value (the default) serves the fixture module, which has the same shapes.
+// The one place the specialist screens reach the network. Every read and write goes to the API routes.
+// The only built-in data is the replays under /replays, read by loadExamReplay and loadNightReplay. They are labelled on screen.
 
 import { ApiError } from "../../api.ts";
-import { fixtureApi } from "./fixtures.ts";
 import {
   agentOf,
   examOf,
@@ -25,23 +24,7 @@ import {
   type RawPublicAgent,
   type RawSample,
 } from "./mapping.ts";
-import type {
-  ExamRead,
-  Exam,
-  ExamReplay,
-  FloorEntry,
-  MorningReport,
-  NightReplay,
-  Sample,
-  SpecialistAgent,
-  SpecialistsApi,
-  StandingOrders,
-  StandingOrdersInput,
-  Task,
-} from "./types.ts";
-
-/** True when the screens show fixture data. Read here only; every screen goes through `specialists`. */
-export const FIXTURE_DATA = import.meta.env.VITE_SPECIALISTS_SOURCE !== "api";
+import type { ExamReplay, NightReplay, SpecialistsApi, StandingOrders, StandingOrdersInput, Task } from "./types.ts";
 
 type Method = "GET" | "POST" | "PUT";
 
@@ -68,9 +51,22 @@ async function call<T>(method: Method, path: string, body?: unknown): Promise<T>
   return data as T;
 }
 
+/**
+ * The exam routes answer 404 NOT_FOUND until the server serves them. The screens read that as exams not built,
+ * the same as the EXAM_NOT_BUILT code the server gives once it refuses live runs.
+ */
+async function examCall<T>(method: Method, path: string, body?: unknown): Promise<T> {
+  try {
+    return await call<T>(method, path, body);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404 && e.code === "NOT_FOUND") throw new ApiError(e.status, "EXAM_NOT_BUILT");
+    throw e;
+  }
+}
+
 const enc = encodeURIComponent;
 
-const live: SpecialistsApi = {
+export const specialists: SpecialistsApi = {
   async samples() {
     const r = await call<{ samples: RawSample[] }>("GET", "/api/specialists/samples");
     return r.samples.map(sampleOf);
@@ -92,12 +88,12 @@ const live: SpecialistsApi = {
   },
 
   async startExam(agentId) {
-    const r = await call<{ exam: RawExam }>("POST", `/api/me/agents/${enc(agentId)}/exam`, {});
+    const r = await examCall<{ exam: RawExam }>("POST", `/api/me/agents/${enc(agentId)}/exam`, {});
     return examOf(r.exam);
   },
 
   async exam(agentId, examId) {
-    const r = await call<RawExamRead>("GET", `/api/me/agents/${enc(agentId)}/exam?examId=${enc(examId)}`);
+    const r = await examCall<RawExamRead>("GET", `/api/me/agents/${enc(agentId)}/exam?examId=${enc(examId)}`);
     return examReadOf(r);
   },
 
@@ -121,9 +117,6 @@ const live: SpecialistsApi = {
     return reportOf(r);
   },
 };
-
-/** The screens' one data source. */
-export const specialists: SpecialistsApi = FIXTURE_DATA ? fixtureApi : live;
 
 /** A replay file from /replays. Null when the file is missing or is not JSON (a dev server's fallback page is not JSON), so the screen can say so. */
 async function replay<T>(name: string): Promise<T | null> {

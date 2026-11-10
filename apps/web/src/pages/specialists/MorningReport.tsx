@@ -34,13 +34,15 @@ function MorningBody() {
 function Report({ report, agents }: { readonly report: MorningReport; readonly agents: readonly SpecialistAgent[] }) {
   const nameOf = (agentId: string | null): string => agents.find((a) => a.id === agentId)?.name ?? "An agent";
   const paid = paidTotalCents(report.payouts);
+  // An empty window shows one empty state in place of the empty sections.
   const quiet =
     report.bids.length === 0 &&
     report.wins.length === 0 &&
     report.verified.length === 0 &&
     report.rejected.length === 0 &&
     report.payouts.length === 0 &&
-    report.gradeChanges.length === 0;
+    report.gradeChanges.length === 0 &&
+    report.preApprovals.length === 0;
 
   return (
     <section className="spec-report" aria-labelledby="spec-report-title">
@@ -60,57 +62,59 @@ function Report({ report, agents }: { readonly report: MorningReport; readonly a
         <StatTile label="Paid out" value={usd(paid)} note={report.sandbox ? "Sandbox payouts" : undefined} />
       </div>
 
-      {quiet && (
+      {quiet ? (
         <EmptyState inline>
           Nothing ran in the last 24 hours. Turn on autopilot on the standing orders step to let your agent work on its own.
         </EmptyState>
+      ) : (
+        <>
+          <EntryList title="Bids" entries={report.bids} nameOf={nameOf} />
+          <EntryList title="Won" entries={report.wins} nameOf={nameOf} />
+          <EntryList title="Verified" entries={report.verified} nameOf={nameOf} />
+          <EntryList title="Rejected" entries={report.rejected} nameOf={nameOf} />
+
+          <section className="card pad spec-report-sec" aria-labelledby="spec-payouts-title">
+            <h3 id="spec-payouts-title" className="spec-h3">
+              Paid out
+            </h3>
+            {report.payouts.length === 0 ? (
+              <p className="muted">No payouts in this window.</p>
+            ) : (
+              <ul className="spec-list">
+                {report.payouts.map((p) => (
+                  <li key={p.reference}>
+                    <span className="mono">{p.reference}</span>
+                    <span className="num">{usd(p.amountCents)}</span>
+                    <span className="muted">for job {shortId(p.jobId)}</span>
+                    <small className="num muted">{utc(p.at)}</small>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="card pad spec-report-sec" aria-labelledby="spec-grades-title">
+            <h3 id="spec-grades-title" className="spec-h3">
+              Grade changes
+            </h3>
+            {report.gradeChanges.length === 0 ? (
+              <p className="muted">No grade changes in this window.</p>
+            ) : (
+              <ul className="spec-list">
+                {report.gradeChanges.map((g) => (
+                  <li key={`${g.at}-${g.agentId ?? ""}`}>
+                    <span>{nameOf(g.agentId)}</span>
+                    <span className="num">{gradeChangeWords(g.delta)}</span>
+                    <small className="num muted">{utc(g.at)}</small>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <EntryList title="Pre-approved submits" entries={report.preApprovals} nameOf={nameOf} />
+        </>
       )}
-
-      <EntryList title="Bids" entries={report.bids} nameOf={nameOf} />
-      <EntryList title="Won" entries={report.wins} nameOf={nameOf} />
-      <EntryList title="Verified" entries={report.verified} nameOf={nameOf} />
-      <EntryList title="Rejected" entries={report.rejected} nameOf={nameOf} />
-
-      <section className="card pad spec-report-sec" aria-labelledby="spec-payouts-title">
-        <h3 id="spec-payouts-title" className="spec-h3">
-          Paid out
-        </h3>
-        {report.payouts.length === 0 ? (
-          <p className="muted">No payouts in this window.</p>
-        ) : (
-          <ul className="spec-list">
-            {report.payouts.map((p) => (
-              <li key={p.reference}>
-                <span className="mono">{p.reference}</span>
-                <span className="num">{usd(p.amountCents)}</span>
-                <span className="muted">for job {shortId(p.jobId)}</span>
-                <small className="num muted">{utc(p.at)}</small>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="card pad spec-report-sec" aria-labelledby="spec-grades-title">
-        <h3 id="spec-grades-title" className="spec-h3">
-          Grade changes
-        </h3>
-        {report.gradeChanges.length === 0 ? (
-          <p className="muted">No grade changes in this window.</p>
-        ) : (
-          <ul className="spec-list">
-            {report.gradeChanges.map((g) => (
-              <li key={`${g.at}-${g.agentId ?? ""}`}>
-                <span>{nameOf(g.agentId)}</span>
-                <span className="num">{gradeChangeWords(g.from, g.to)}</span>
-                <small className="num muted">{utc(g.at)}</small>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <EntryList title="Pre-approved submits" entries={report.preApprovals} nameOf={nameOf} />
     </section>
   );
 }

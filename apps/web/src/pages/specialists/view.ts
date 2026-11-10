@@ -220,9 +220,10 @@ export function paidTotalCents(payouts: readonly { readonly amountCents: number 
   return payouts.reduce((sum, p) => sum + p.amountCents, 0);
 }
 
-/** A grade change as "50 → 55". */
-export function gradeChangeWords(from: number, to: number): string {
-  return `${from} → ${to}`;
+/** A grade change as a signed step: "+5" or "−5". Zero reads "0". */
+export function gradeChangeWords(delta: number): string {
+  if (delta === 0) return "0";
+  return delta > 0 ? `+${delta}` : `−${Math.abs(delta)}`;
 }
 
 export const SINCE_HOURS = 24;

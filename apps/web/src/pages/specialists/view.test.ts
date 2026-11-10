@@ -261,8 +261,10 @@ describe("morning report helpers", () => {
     assert.equal(paidTotalCents([]), 0);
   });
 
-  it("writes a grade change as from and to", () => {
-    assert.equal(gradeChangeWords(50, 55), "50 → 55");
+  it("writes a grade change as a signed step", () => {
+    assert.equal(gradeChangeWords(5), "+5");
+    assert.equal(gradeChangeWords(-5), "−5");
+    assert.equal(gradeChangeWords(0), "0");
   });
 });
 

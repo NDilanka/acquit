@@ -64,14 +64,15 @@ export type Exam = {
   readonly startedAt: string | null;
 };
 
-/** The exam read. The API's agent part carries the acquittal only, so the page reads the grade from the agent list. */
+/** The exam read. The agent in the response carries only the acquittal, so the page reads the grade from the agent list. */
 export type ExamRead = { readonly exam: Exam; readonly acquitted: boolean };
 
 export type Payout = { readonly reference: string; readonly amountCents: number; readonly jobId: string; readonly at: string };
 
 export type ReportEntry = { readonly at: string; readonly jobId: string | null; readonly agentId: string | null; readonly title: string | null };
 
-export type GradeChange = { readonly at: string; readonly agentId: string | null; readonly from: number; readonly to: number };
+/** One grade change. `delta` is the signed points added (verified) or taken away (rejected). */
+export type GradeChange = { readonly at: string; readonly agentId: string | null; readonly delta: number };
 
 export type MorningReport = {
   readonly since: string;
@@ -85,7 +86,7 @@ export type MorningReport = {
   readonly preApprovals: readonly ReportEntry[];
 };
 
-/** A recorded or fixture run, read from /replays. `source` says which: "fixture" (sample data) until a real run is recorded. */
+/** A replay file under /replays. `source` is "fixture" (shown as sample data) until a real run is recorded. */
 export type ReplaySource = "fixture" | "recorded";
 
 /**
@@ -128,7 +129,7 @@ export type FloorEntry = {
 
 export type StandingOrdersInput = Omit<StandingOrders, "updatedAt">;
 
-/** Every call a specialist screen makes. The live client and the fixture module both implement it. */
+/** Every call a specialist screen makes, all answered by the API. */
 export type SpecialistsApi = {
   samples(): Promise<readonly Sample[]>;
   agents(): Promise<readonly SpecialistAgent[]>;
