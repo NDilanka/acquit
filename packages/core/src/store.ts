@@ -177,6 +177,18 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [],
 	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
 	if (!visitorColumns.has("repository_id")) db.exec("ALTER TABLE visitors ADD COLUMN repository_id INTEGER");
 	migrateLastingAccounts(db);
+	// The seed acquittal (contract section 3.6): a pre-exam visitor starter (`<handle>-agent`, owned by that visitor's
+	// operator) takes the seed acquittal dated at the visitor's creation. A row that already has an acquittal or a sample
+	// is never written, so a second run changes nothing. House agents and plugged samples match neither statement.
+	db.exec(`UPDATE agents SET json = json_set(json, '$.acquittal', json_object('examId', 'seed', 'at',
+			(SELECT v.created_at FROM visitors v WHERE v.operator_handle = agents.owner AND agents.id = v.operator_handle || '-agent'
+				ORDER BY v.created_at LIMIT 1)))
+		WHERE json_extract(json, '$.acquittal') IS NULL AND json_extract(json, '$.sample') IS NULL
+			AND EXISTS (SELECT 1 FROM visitors v WHERE v.operator_handle = agents.owner AND agents.id = v.operator_handle || '-agent')`);
+	// The seeded devon-ops agent ts-bugfixer takes the seed acquittal dated at the migration.
+	db.prepare(`UPDATE agents SET json = json_set(json, '$.acquittal', json_object('examId', 'seed', 'at', ?))
+		WHERE id = 'ts-bugfixer' AND owner = 'devon-ops' AND json_extract(json, '$.acquittal') IS NULL AND json_extract(json, '$.sample') IS NULL`)
+		.run(new Date().toISOString());
 	// The seeded handles are principals with no visitor: the rows every session resolves through, so
 	// the SEEDED_USERS constant is a seed, never an authentication source. The platform principal is
 	// the third such row: the deployment's own reader of the whole book, held by no picker.
@@ -198,7 +210,7 @@ export function isStoreBusy(error: unknown): boolean {
 	return /database is locked|database table is locked/i.test(error.message);
 }
 /** A row stored before F3 carries a contract without a definition of done. Parse that absence to the typed null at the boundary. */
-function storedJob(row: JobRow): JobRow {
+export function storedJob(row: JobRow): JobRow {
 	const parsed = { ...row, tenant: row.tenant ?? null, contract: { ...row.contract, definitionOfDone: storedDefinitionOfDone(row) },
 		state: storedRefund(storedPaid(storedMerge(row.state))) };
 	if (parsed.state.status !== "IN_PROGRESS" || parsed.state.attempts.phase === "REFUND_PENDING") return parsed;
@@ -234,7 +246,7 @@ function storedPaid(state: JobState): JobState {
 	if (state.status !== "PAID") return state;
 	const paid = state as PaidState & { readonly releaseAuthority?: unknown };
 	// A paid row stored before it kept its verdict history holds none: the read types that absence as
-	// the empty history, and the projection falls back to the receipt's own verified attempt.
+	// the empty history, so its projection lists no judged attempts. Its used count still reads the receipt.
 	return { ...paid, releaseAuthority: isReleaseAuthority(paid.releaseAuthority) ? paid.releaseAuthority : null,
 		history: Array.isArray(paid.history) ? paid.history : [] };
 }

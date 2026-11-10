@@ -275,12 +275,18 @@ test("the job view's receipt carries the receipts-table source", async () => {
 	try {
 		await store.commit({ job: { expectedVersion: null, row: row as unknown as JobRow, wakeAt: null },
 			operator: null, credits: [], paidReceipt: payee, outbox: [], settlement: null, request: null, delivery: null });
-		const view = projectJob(row as unknown as JobRow, maya, new Map(), undefined, await store.receiptSources());
+		// The view reads the row back through the store, the boundary that types a stored PAID row's fields.
+		const read = async () => {
+			const stored = await store.readJob("job_paid_src" as JobId);
+			if (stored === null) throw new Error("Stored job missing");
+			return stored;
+		};
+		const view = projectJob(await read(), maya, new Map(), undefined, await store.receiptSources());
 		assert.equal(view.receipt?.source, "JOB", "the settlement's own receipt row reads JOB");
 		// The F6 backfill marked every pre-existing PAID job's receipt row SEED, so a migrated job's
 		// own receipt carries that provenance and the pages label it Seeded.
 		store.db.prepare("UPDATE receipts SET source = 'SEED' WHERE id = ?").run("rcpt_job_paid_src");
-		const migrated = projectJob(row as unknown as JobRow, maya, new Map(), undefined, await store.receiptSources());
+		const migrated = projectJob(await read(), maya, new Map(), undefined, await store.receiptSources());
 		assert.equal(migrated.receipt?.source, "SEED", "a migrated row reads SEED on the job view");
 	} finally { store.close(); }
 });

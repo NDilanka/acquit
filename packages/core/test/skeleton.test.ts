@@ -6,6 +6,7 @@ import { creditWeek, reduceCredits } from "../src/credits.ts";
 import type { CreditAccount, Credits } from "../src/credits.ts";
 import { executeCommand, applySystemCommand, confirmFunding, ingestPayPalWebhook, ingestVerifierCallback, operationKey, runDueTimers, runOutboxOnce } from "../src/effects.ts";
 import type { OperationKey, OutboxState, Ports } from "../src/effects.ts";
+import { gradeOf, recordOf } from "../src/exam.ts";
 import { applyJobCommand, effectWanted, projectJob, storedDefinitionOfDone, TERMS, wakeAt } from "../src/job.ts";
 import type { JobEffect, JobRow } from "../src/job.ts";
 import { instant, hours, parseBidId, parseJobId, parseRequestKey } from "../src/ids.ts";
@@ -1177,6 +1178,12 @@ test("ReleaseSettled builds the receipt, the paid book, and the merge from the o
 	// A paid job serves the attempts its receipt used, not zero.
 	assert.equal(view.attempts.used, 1);
 	assert.equal(view.attempts.left, 2);
+	// A paid job keeps the judged attempts it was settled on, so the public projection shows the pass.
+	assert.deepEqual(view.attempts.history.map(attempt => [attempt.ordinal, attempt.result]), [[1, "VERIFIED"]]);
+	// The agent record reads the same history, so the paid pass counts once and the release counts as earned.
+	const record = recordOf("ts-bugfixer", [plan.next]);
+	assert.deepEqual(record, { jobsTaken: 1, verified: 1, rejected: 0, earnedCents: 36000 });
+	assert.equal(gradeOf(record, { examId: "seed", at: now }), 55);
 	assert.equal(view.attempts.last, "VERIFIED");
 });
 
