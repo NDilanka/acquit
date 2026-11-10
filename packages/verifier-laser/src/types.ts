@@ -72,6 +72,8 @@ export type Spec = {
 	readonly cornerRadiusMm: number;
 	/** Where the engraved label must sit, in the part frame. */
 	readonly labelRegionMm: SpecRect;
+	/** The least total length of engraved line in mm. A label shorter than this fails, so a token mark cannot pass. */
+	readonly minEngraveLengthMm: number;
 	readonly holes: readonly SpecHole[];
 	readonly slots: readonly SpecSlot[];
 };

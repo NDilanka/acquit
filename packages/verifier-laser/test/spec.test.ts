@@ -12,6 +12,7 @@ const validSpec = (): Record<string, unknown> => ({
 	minWebMm: 3,
 	cornerRadiusMm: 0,
 	labelRegionMm: { originMm: [8, 8], sizeMm: [44, 6] },
+	minEngraveLengthMm: 20,
 	holes: [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2 }],
 	slots: [{ id: "window", sizeMm: [30, 12] }],
 });
@@ -25,6 +26,7 @@ test("a complete spec reads into typed mm values", () => {
 	assert.equal(result.value.kerfMm, 0.2);
 	assert.equal(result.value.cornerRadiusMm, 0);
 	assert.deepEqual(result.value.labelRegionMm, { originMm: [8, 8], sizeMm: [44, 6] });
+	assert.equal(result.value.minEngraveLengthMm, 20);
 	assert.deepEqual(result.value.holes, [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2, toleranceMm: 0.1 }]);
 	assert.deepEqual(result.value.slots, [{ id: "window", sizeMm: [30, 12], toleranceMm: 0.1 }]);
 });
@@ -140,6 +142,19 @@ test("the engraving label region is required and must lie inside the part", () =
 		const result = validateSpec({ ...validSpec(), labelRegionMm: region });
 		assert.equal(result.ok, false, name);
 		if (!result.ok) assert.ok(result.errors.some(error => error.path.startsWith("labelRegionMm")), name);
+	}
+});
+
+test("the minimum engraved length is required and must be greater than 0 mm", () => {
+	const absent = { ...validSpec() };
+	delete absent.minEngraveLengthMm;
+	const missing = validateSpec(absent);
+	assert.equal(missing.ok, false);
+	if (!missing.ok) assert.ok(missing.errors.some(error => error.path === "minEngraveLengthMm"));
+	for (const length of [0, -5, Number.NaN, "20"]) {
+		const result = validateSpec({ ...validSpec(), minEngraveLengthMm: length });
+		assert.equal(result.ok, false, String(length));
+		if (!result.ok) assert.ok(result.errors.some(error => error.path === "minEngraveLengthMm"), String(length));
 	}
 });
 

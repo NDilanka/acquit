@@ -228,11 +228,14 @@ const inRegion = (part: FinishedPart, region: SpecRect, point: Vec2): boolean =>
 /**
  * An engraving holds when every point and every whole segment lies in the label region and in finished material.
  * Segments are checked, not only their ends: a segment can leave the material between two ends that are both inside.
+ * A path with no length to speak of engraves nothing, so it does not hold: a zero-length line, or a path scaled to a point.
  */
 function engravingHolds(part: FinishedPart, region: SpecRect, path: SvgPath): boolean {
 	const inside = (point: Vec2): boolean => inRegion(part, region, point) && isMaterial(part, point);
 	if (!path.points.every(inside)) return false;
-	return edgesOf(path.points, path.closed).every(([a, b]) => inRegion(part, region, a) && inRegion(part, region, b) && isMaterialSegment(part, a, b));
+	const edges = edgesOf(path.points, path.closed);
+	if (lengthOfEdges(edges) <= FLATTEN_TOL_MM) return false;
+	return edges.every(([a, b]) => inRegion(part, region, a) && inRegion(part, region, b) && isMaterialSegment(part, a, b));
 }
 
 /**
@@ -419,16 +422,22 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		),
 	);
 
-	// The label is required, so an empty drawing fails. Each engraving must hold along its whole length.
+	// The label is required, so an empty drawing fails. Each engraving must hold along its whole length, and the
+	// engraved length in total must reach the spec's minimum, so a token mark cannot stand in for the label.
 	const stray = engrave.filter(path => part === null || !engravingHolds(part, spec.labelRegionMm, path)).map(path => path.id);
+	const short = engraveLengthMm < spec.minEngraveLengthMm;
+	const engraveProblem =
+		engrave.length === 0
+			? "no label is engraved in the label region"
+			: stray.length > 0
+				? `${stray.length} engraving(s) leave the label region, leave the finished material, cross a cut, or have no length`
+				: `the engraved label is ${roundMm(engraveLengthMm)} mm long, under the ${spec.minEngraveLengthMm} mm minimum`;
 	findings.push(
 		check(
 			"engrave-inside",
-			engrave.length > 0 && stray.length === 0,
-			"the label is engraved in its region, inside the finished material and clear of the cuts",
-			engrave.length === 0
-				? "no label is engraved in the label region"
-				: `${stray.length} engraving(s) leave the label region, leave the finished material, or cross a cut`,
+			engrave.length > 0 && stray.length === 0 && !short,
+			`the label is engraved in its region, inside the finished material, clear of the cuts, and at least ${spec.minEngraveLengthMm} mm long`,
+			engraveProblem,
 			stray,
 		),
 	);

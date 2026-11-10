@@ -11,6 +11,7 @@ const SPEC_FIELDS = [
 	"minWebMm",
 	"cornerRadiusMm",
 	"labelRegionMm",
+	"minEngraveLengthMm",
 	"holes",
 	"slots",
 ];
@@ -102,6 +103,8 @@ export function validateSpec(input: unknown): Checked<Spec> {
 	else if (part !== null && cornerRadiusMm * 2 >= Math.min(part[0], part[1]))
 		refuse("cornerRadiusMm", "corner radius must be less than half the smaller part side");
 	const label = labelOf(input.labelRegionMm, part, refuse);
+	const { minEngraveLengthMm } = input;
+	if (!isPositive(minEngraveLengthMm)) refuse("minEngraveLengthMm", "minimum engraved length must be greater than 0 mm");
 
 	const globalTolerance = isSupportedTolerance(toleranceMm) ? toleranceMm : 0;
 	const seen = new Set<string>();
@@ -154,6 +157,7 @@ export function validateSpec(input: unknown): Checked<Spec> {
 			minWebMm: minWebMm as number,
 			cornerRadiusMm: cornerRadiusMm as number,
 			labelRegionMm: label,
+			minEngraveLengthMm: minEngraveLengthMm as number,
 			holes,
 			slots,
 		},

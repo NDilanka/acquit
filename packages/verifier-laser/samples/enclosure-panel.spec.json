@@ -8,6 +8,7 @@
 	"minWebMm": 3,
 	"cornerRadiusMm": 0,
 	"labelRegionMm": { "originMm": [8, 8], "sizeMm": [44, 6] },
+	"minEngraveLengthMm": 20,
 	"holes": [
 		{ "id": "mount-a", "centreMm": [6, 6], "diameterMm": 3.2 },
 		{ "id": "mount-b", "centreMm": [114, 6], "diameterMm": 3.2 },

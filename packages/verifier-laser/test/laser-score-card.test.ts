@@ -30,6 +30,7 @@ const cases: { id: string; kind: "cheat" | "honest"; expected: string }[] = [
 	{ id: "fraud-hidden-notch", kind: "cheat", expected: "hidden-material" },
 	{ id: "fraud-wrong-colour", kind: "cheat", expected: "colours" },
 	{ id: "fraud-chamfered-corner", kind: "cheat", expected: "outer-size" },
+	{ id: "fraud-zero-label", kind: "cheat", expected: "engrave-inside" },
 ];
 
 const results: CaseResult[] = [];
@@ -48,8 +49,8 @@ for (const item of cases) {
 test("the laser score card tallies every case and prints one line", () => {
 	const card: ScoreCard = tallyLasers(results);
 	assert.deepEqual(card, {
-		cheatsCaught: 11,
-		cheatsTotal: 11,
+		cheatsCaught: 12,
+		cheatsTotal: 12,
 		honestPassed: 1,
 		honestTotal: 1,
 		gaps: [],

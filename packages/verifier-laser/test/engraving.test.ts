@@ -60,3 +60,36 @@ test("a label whose ends are clear but whose middle crosses a cut fails engrave-
 	const text = edit(honest, LABEL, `${LABEL}\n  ${crossing}`);
 	assert.ok(failed(verify(specWith(), text)).includes("engrave-inside"));
 });
+
+test("a zero-length label path fails engrave-inside", () => {
+	const text = edit(honest, LABEL, `<path id="label" d="M20 80.2 L20 80.2" stroke="#0000ff" fill="none"/>`);
+	assert.deepEqual(failed(verify(specWith(), text)), ["engrave-inside"]);
+});
+
+test("a zero-length label line fails engrave-inside", () => {
+	const text = edit(honest, LABEL, `<line id="label" x1="20" y1="80.2" x2="20" y2="80.2" stroke="#0000ff"/>`);
+	assert.deepEqual(failed(verify(specWith(), text)), ["engrave-inside"]);
+});
+
+test("a label scaled to a point fails engrave-inside", () => {
+	// Every point of the path lands on (20, 80.2) after the scale, so the drawn length is zero.
+	const text = edit(honest, LABEL, `<path id="label" transform="translate(20 80.2) scale(0)" d="M0 0 H40" stroke="#0000ff" fill="none"/>`);
+	assert.deepEqual(failed(verify(specWith(), text)), ["engrave-inside"]);
+});
+
+test("a label shorter than the minimum engraved length fails engrave-inside", () => {
+	// A 2 mm mark sits inside the label region, but the spec asks for at least 20 mm of engraving.
+	const text = edit(honest, LABEL, `<path id="label" d="M20 80.2 H22" stroke="#0000ff" fill="none"/>`);
+	assert.deepEqual(failed(verify(specWith(), text)), ["engrave-inside"]);
+});
+
+test("the minimum engraved length comes from the spec, so the honest 40 mm label fails a 50 mm minimum", () => {
+	assert.deepEqual(failed(verify(specWith(), honest)), []);
+	assert.deepEqual(failed(verify(specWith({ minEngraveLengthMm: 50 }), honest)), ["engrave-inside"]);
+});
+
+test("strokes that each fall short of the minimum pass when together they reach it", () => {
+	// 10 mm and 15 mm: each is under 20 mm, but the engraved length in total is 25 mm.
+	const text = edit(honest, LABEL, `<path d="M20 80.2 H30" stroke="#0000ff" fill="none"/>\n  <path d="M30 80.2 H45" stroke="#0000ff" fill="none"/>`);
+	assert.deepEqual(failed(verify(specWith(), text)), []);
+});

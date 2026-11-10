@@ -35,7 +35,9 @@ the drawn line could sit up to 0.02 mm away from the chords the reader sees:
   clearance for a hidden keep point to pass.
 - **Expected voids** need the point more than 0.02 mm inside an inner cut, or within kerf/2 − 0.02 mm of its line.
 - **Engraving** must lie inside the label region by more than 0.02 mm on each side, and every engraved segment must
-  stay more than kerf/2 + 0.04 mm from every outer and inner edge.
+  stay more than kerf/2 + 0.04 mm from every outer and inner edge. A path that measures 0.02 mm or less, such as a
+  zero-length line or a path scaled to a point, engraves nothing and does not hold. The engraved length in total,
+  summed over the paths, must reach the spec's `minEngraveLengthMm`.
 - **Minimum web** subtracts 2 × 0.02 mm from the drawn gap, so the reported web is a lower bound too.
 - **Tolerance** must be at least 0.04 mm, twice the flattening error. A smaller tolerance, on the spec or on a hole or
   slot, fails `parse`. The checker never raises a tolerance to a floor.
