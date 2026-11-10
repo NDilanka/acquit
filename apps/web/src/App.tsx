@@ -20,6 +20,12 @@ import { PrintDemoPage } from "./pages/PrintDemo";
 import { EarningsPage, FindWorkPage, MyBidsPage, MyWorkPage } from "./pages/operator/OperatorRoutes";
 import { CliLogin } from "./pages/CliLogin";
 import { JudgeScenarios } from "./pages/JudgeScenarios";
+import { PlugInPage } from "./pages/specialists/PlugIn";
+import { ExamPage } from "./pages/specialists/Exam";
+import { StandingOrdersPage } from "./pages/specialists/StandingOrders";
+import { NightPage } from "./pages/specialists/Night";
+import { MorningPage } from "./pages/specialists/MorningReport";
+import { FloorPage } from "./pages/specialists/Floor";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -166,6 +172,18 @@ function Routes() {
       return <Studio />;
     case "studioSample":
       return <Studio sample />;
+    case "specialists":
+      return <PlugInPage />;
+    case "specialistExam":
+      return <ExamPage agentId={route.agentId} />;
+    case "specialistOrders":
+      return <StandingOrdersPage agentId={route.agentId} />;
+    case "specialistNight":
+      return <NightPage agentId={route.agentId} />;
+    case "specialistMorning":
+      return <MorningPage />;
+    case "specialistFloor":
+      return <FloorPage />;
     case "welcomeBack":
     case "notFound":
       return <NotFound signedIn />;

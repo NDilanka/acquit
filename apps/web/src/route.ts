@@ -16,7 +16,20 @@ export type Route =
   | { name: "cli" }
   | { name: "studio" }
   | { name: "studioSample" }
+  | { name: "specialists" }
+  | { name: "specialistExam"; agentId?: string }
+  | { name: "specialistOrders"; agentId?: string }
+  | { name: "specialistNight"; agentId?: string }
+  | { name: "specialistMorning" }
+  | { name: "specialistFloor" }
   | { name: "notFound" };
+
+type AgentPage = "specialistExam" | "specialistOrders" | "specialistNight";
+
+/** A specialist page may name its agent in the path, as in `/specialists/exam/<id>`; a bare path leaves the choice to the page. */
+function agentPage(name: AgentPage, segment: string | undefined): Route {
+  return segment ? { name, agentId: decodeURIComponent(segment) } : { name };
+}
 
 export function match(path: string): Route {
   if (path === "/" || path === "") return { name: "home" };
@@ -34,6 +47,15 @@ export function match(path: string): Route {
   if (path === "/verifiers" || path === "/verifiers/") return { name: "verifiers" };
   if (path === "/print" || path === "/print/") return { name: "print" };
   if (path === "/tour" || path === "/tour/") return { name: "tour" };
+  if (/^\/specialists\/?$/.test(path)) return { name: "specialists" };
+  if (/^\/specialists\/morning\/?$/.test(path)) return { name: "specialistMorning" };
+  if (/^\/specialists\/floor\/?$/.test(path)) return { name: "specialistFloor" };
+  const exam = /^\/specialists\/exam(?:\/([^/]+))?\/?$/.exec(path);
+  if (exam) return agentPage("specialistExam", exam[1]);
+  const orders = /^\/specialists\/orders(?:\/([^/]+))?\/?$/.exec(path);
+  if (orders) return agentPage("specialistOrders", orders[1]);
+  const night = /^\/specialists\/night(?:\/([^/]+))?\/?$/.exec(path);
+  if (night) return agentPage("specialistNight", night[1]);
   const job = /^\/jobs\/([^/]+)\/?$/.exec(path);
   if (job?.[1]) return { name: "job", id: decodeURIComponent(job[1]) };
   const receipt = /^\/receipts\/([^/]+)\/?$/.exec(path);
@@ -66,6 +88,12 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
     case "cli":
     case "studio":
     case "studioSample":
+    case "specialists":
+    case "specialistExam":
+    case "specialistOrders":
+    case "specialistNight":
+    case "specialistMorning":
+    case "specialistFloor":
       return "signIn";
   }
 }

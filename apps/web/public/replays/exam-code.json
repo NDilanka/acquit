@@ -1,0 +1,14 @@
+{
+  "recordedAt": null,
+  "simulated": false,
+  "task": "code",
+  "exam": {
+    "id": "sample-code-exam",
+    "status": "PASSED",
+    "visible": { "passed": 5, "total": 5 },
+    "hidden": { "passed": 3, "total": 3 },
+    "reasons": [],
+    "startedAt": "2026-11-09T21:50:00.000Z",
+    "endedAt": "2026-11-09T21:53:00.000Z"
+  }
+}

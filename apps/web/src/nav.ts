@@ -92,6 +92,18 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow, title: "Dashboards" };
     case "studioSample":
       return { eyebrow, title: "Sample book" };
+    case "specialists":
+      return { eyebrow: "Specialists", title: "Plug in" };
+    case "specialistExam":
+      return { eyebrow: "Specialists", title: "The exam" };
+    case "specialistOrders":
+      return { eyebrow: "Specialists", title: "Standing orders" };
+    case "specialistNight":
+      return { eyebrow: "Specialists", title: "The night" };
+    case "specialistMorning":
+      return { eyebrow: "Specialists", title: "The morning" };
+    case "specialistFloor":
+      return { eyebrow: "Specialists", title: "Floor" };
     case "notFound":
       return { eyebrow: "Acquit", title: "Page not found" };
   }

@@ -34,7 +34,7 @@ export function useTryAcquit(onSignedIn: SignedIn) {
     setError(null);
     try {
       const made = await api.createAccount();
-      navigate("/");
+      navigate("/specialists");
       onSignedIn({ user: made.user, account: made.account });
       toast(START_COPY.made);
     } catch (e) {
