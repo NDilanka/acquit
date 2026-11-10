@@ -199,7 +199,10 @@ export function placeOf(list: DrawList, finding: InspectFinding): Place | null {
   if (finding.at) return { x: finding.at[0], y: finding.at[1], radius: 4, source: "at" };
   const refs = new Set(finding.refs ?? []);
   if (refs.size === 0) return null;
-  const box = boundsOf(list.items.filter((i) => !i.synthetic && refs.has(i.id)).map((i) => i.points));
+  const named = list.items.filter((i) => !i.synthetic && refs.has(i.id));
+  // The outline spans the whole part, so next to a smaller path it would only widen the mark to everything.
+  const inner = named.filter((i) => i.kind !== "outline");
+  const box = boundsOf((inner.length > 0 ? inner : named).map((i) => i.points));
   if (!box) return null;
   const w = box.max[0] - box.min[0];
   const h = box.max[1] - box.min[1];

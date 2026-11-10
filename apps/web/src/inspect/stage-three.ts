@@ -111,6 +111,7 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
   const slugMat = keep(new THREE.MeshStandardMaterial({ color: palette.sheet, roughness: 0.55, metalness: 0, transparent: true, opacity: 1 }));
   const sheetColor = new THREE.Color(palette.sheet);
   const partColor = new THREE.Color(palette.part);
+  const bedColor = new THREE.Color(palette.bed);
   const outline = list.pieces.outline;
   const outlineOnSheet = outline !== null && stock !== null && outline.every(([x, y]) => x >= 0 && y >= 0 && x <= stock.size[0] && y <= stock.size[1]);
   let slugs: THREE.Mesh[] = [];
@@ -157,7 +158,8 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
 
   // The head on its gantry, the beam and the glow where it meets the sheet.
   const headMat = keep(new THREE.MeshStandardMaterial({ color: palette.head, roughness: 0.4, metalness: 0.3 }));
-  const gantry = new THREE.Mesh(keep(new THREE.BoxGeometry(sheetW + margin * 2, 5, 9)), headMat);
+  const gantryMat = keep(new THREE.MeshStandardMaterial({ color: palette.bedLine, roughness: 0.5, metalness: 0.2 }));
+  const gantry = new THREE.Mesh(keep(new THREE.BoxGeometry(sheetW + margin * 2, 2.5, 5)), gantryMat);
   scene.add(gantry);
   const head = new THREE.Group();
   const carriage = new THREE.Mesh(keep(new THREE.BoxGeometry(14, 10, 14)), headMat);
@@ -193,7 +195,7 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
     const vHalf = (FOV * Math.PI) / 360;
     const hHalf = Math.atan(Math.tan(vHalf) * aspect);
     const fit = Math.max((partW * 0.62) / Math.tan(hHalf), (partH * 0.8) / Math.tan(vHalf));
-    return { azimuth: -0.42, polar: 0.92, distance: fit * 1.25 + 40, target: new THREE.Vector3(bcx, top, bcz + partH * 0.04) };
+    return { azimuth: -0.38, polar: 0.86, distance: fit * 1.02 + 12, target: new THREE.Vector3(bcx, top, bcz + partH * 0.04) };
   };
   let want = homeOrbit();
   const now: Orbit = { ...want, target: want.target.clone() };
@@ -298,7 +300,7 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
   const focusOrbit = (place: Place): Orbit => {
     const [x, z] = map([place.x, place.y]);
     const home = homeOrbit();
-    return { azimuth: home.azimuth + 0.12, polar: 0.82, distance: Math.min(home.distance * 0.72, Math.max(90, place.radius * 9)), target: new THREE.Vector3(x, top, z) };
+    return { azimuth: home.azimuth + 0.12, polar: 0.82, distance: Math.max(home.distance * 0.7, place.radius * 9), target: new THREE.Vector3(x, top, z) };
   };
 
   let last: StageInput | null = null;
@@ -324,7 +326,7 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
     if (at) {
       const [hx, hz] = map(at);
       head.position.set(hx, top, hz);
-      gantry.position.set(0, top + HEAD_LIFT + 12, hz);
+      gantry.position.set(0, top + HEAD_LIFT + 11, hz);
     }
     beam.visible = frame.cutting;
     glow.visible = frame.cutting;
@@ -333,7 +335,11 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
     const d = frame.drop;
     for (const s of slugs) { s.position.set(0, -d * 14, 0); s.visible = d < 1; }
     slugMat.opacity = 1 - d;
-    if (skeleton) sheetMat.opacity = outlineOnSheet ? 1 - d * 0.82 : 1;
+    // The skeleton sinks a little and greys toward the bed, so the part stands clear of it.
+    if (skeleton && outlineOnSheet) {
+      skeleton.position.set(0, -d * top * 0.9, 0);
+      sheetMat.color.lerpColors(sheetColor, bedColor, d * 0.45);
+    }
     partMat.color.lerpColors(sheetColor, partColor, d);
     // Marker and camera.
     const place = focus?.place ?? null;
@@ -393,6 +399,8 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
     slugMat.color.set(palette.sheet);
     sheetColor.set(palette.sheet);
     partColor.set(palette.part);
+    bedColor.set(palette.bed);
+    gantryMat.color.set(palette.bedLine);
     headMat.color.set(palette.head);
     beamMat.color.set(palette.beam);
     markerMat.color.set(palette.fail);

@@ -11,13 +11,12 @@ export default function InspectPage() {
       <PageTitle>Try to cheat the checker</PageTitle>
       <div className="head">
         <p className="muted insp-intro">
-          An agent was hired to draw the cut file for a laser-cut panel. Pick what it delivered and watch the checker decide.
-          One cheat passes every public rule, and only a sealed check catches it.
+          An agent was hired to draw the laser cut file for a panel. The job: {laserJobSummary()} Pick what it delivered and watch the
+          checker decide. One cheat passes every public rule, and only a sealed check catches it.
         </p>
       </div>
       <Inspector
         deliveries={LASER_DELIVERIES}
-        job={`The job: ${laserJobSummary()}`}
         flat={location.search.get("view") === "flat"}
         initialId={location.search.get("d") ?? undefined}
       />

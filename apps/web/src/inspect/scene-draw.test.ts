@@ -62,6 +62,9 @@ test("a finding is placed by at, then by its refs, and a hidden one never", () =
   assert.equal(byRefs?.y, 25);
   assert.equal(byRefs?.source, "refs");
   assert.equal(placeOf(list, { rule: "r", ok: false, hidden: false, message: "" }), null);
+  const withOutline = placeOf(list, { rule: "r", ok: false, hidden: false, message: "", refs: ["hole", "outline"] });
+  assert.equal(withOutline?.x, 25, "the outline does not widen the mark when a smaller path is named");
+  assert.equal(placeOf(list, { rule: "r", ok: false, hidden: false, message: "", refs: ["outline"] })?.x, 35);
   assert.equal(placeOf(list, { rule: "r", ok: false, hidden: true, message: "", at: [1, 1, 1], refs: ["hole"] }), null);
 });
 

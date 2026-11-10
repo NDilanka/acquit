@@ -1,10 +1,10 @@
 .inspector { display: grid; gap: var(--space-4); }
-.insp-intro { max-width: 68ch; margin: 0; }
+.insp-intro { max-width: 96ch; margin: 0; }
 .insp-job { margin: 0; color: var(--ink-2); font-size: var(--text-ui); line-height: var(--leading-ui); }
 
 .insp-picker { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .insp-chip {
-  display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--control-sm); padding: 4px 12px 4px 6px;
+  display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--control-sm); padding: 4px 14px;
   border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink);
   font: inherit; font-size: var(--text-sm); line-height: var(--leading-sm); cursor: pointer; text-align: left;
   transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
@@ -12,39 +12,44 @@
 .insp-chip:hover { background: var(--surface); }
 .insp-chip[aria-pressed="true"] { border-color: var(--primary-line); background: var(--green-bg); color: var(--green-text); font-weight: 600; }
 .insp-chip:focus-visible, .insp-stage:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.insp-chip-tag {
-  font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
-  padding: 2px 8px; border-radius: var(--r-pill); color: var(--green-text); background: var(--green-bg); border: 1px solid var(--green-line);
-}
-.insp-chip-tag.cheat { color: var(--muted); background: var(--surface); border-color: var(--line); }
-.insp-chip[aria-pressed="true"] .insp-chip-tag.cheat { color: var(--ink-2); background: var(--card); }
+.insp-picker-label { align-self: center; margin-left: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
 
 .insp-blurb { margin: 0; max-width: 80ch; color: var(--ink-2); }
 .insp-blurb b { color: var(--ink); font-weight: 600; }
 .insp-honest { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin: 0; font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--muted); }
 
-.insp-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, 1fr); gap: var(--space-4); align-items: start; }
+.insp-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr); gap: var(--space-4); align-items: stretch; }
+/* The side column takes the stage column's height and scrolls its list inside it, so the stage, the checks and the
+   verdict share one screen. */
+.insp-side { position: relative; min-width: 0; }
+.insp-side-inner { position: absolute; inset: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .insp-stage-col { display: grid; gap: var(--space-3); min-width: 0; }
 .insp-stage {
-  position: relative; aspect-ratio: 16 / 10; min-height: 300px; overflow: hidden; border-radius: var(--r-card);
+  position: relative; aspect-ratio: 16 / 9; min-height: 300px; overflow: hidden; border-radius: var(--r-card);
   background: var(--surface); border: 1px solid var(--line); touch-action: pan-y; cursor: grab;
 }
 .insp-stage.flat { cursor: default; }
 .insp-stage:active { cursor: grabbing; }
 .insp-canvas, .insp-flat { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .insp-caption {
-  position: absolute; left: var(--space-3); right: var(--space-3); bottom: var(--space-3); margin: 0; max-width: 60ch;
+  position: absolute; z-index: 1; left: var(--space-3); right: var(--space-3); bottom: var(--space-3); margin: 0; max-width: 60ch;
   padding: 8px 12px; border-radius: var(--r); background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-raised);
   font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-2); pointer-events: none; width: fit-content;
 }
 .insp-caption.moment { color: var(--red); border-color: var(--red-line); background: var(--red-bg); font-weight: 600; font-size: var(--text-ui); }
+.insp-stage-verdict {
+  position: absolute; z-index: 1; top: var(--space-3); left: var(--space-3); margin: 0; padding: 4px 12px; border-radius: var(--r-pill);
+  font-size: var(--text-ui); line-height: var(--leading-ui); font-weight: 600; border: 1px solid; pointer-events: none;
+}
+.insp-stage-verdict.pass { color: var(--green-text); background: var(--green-bg); border-color: var(--green-line); }
+.insp-stage-verdict.fail { color: var(--red); background: var(--red-bg); border-color: var(--red-line); }
 .insp-note { margin: 0; font-size: var(--text-sm); color: var(--muted); }
 
 .insp-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .insp-scrub { flex: 1 1 160px; min-width: 120px; accent-color: var(--green); height: var(--control-sm); }
 .insp-speed select { min-height: var(--control-sm) !important; padding: 0 8px; border-radius: var(--r-sm); }
 
-.insp-checks { padding: var(--space-5); margin: 0; }
+.insp-checks { padding: var(--space-5); margin: 0; flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .insp-h { margin: 0; font-size: var(--text-ui); line-height: var(--leading-ui); font-weight: 600; color: var(--ink); }
 .insp-sub { margin: 2px 0 var(--space-3); font-size: var(--text-xs); line-height: var(--leading-xs); }
 .insp-rules { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -72,14 +77,14 @@
 .insp-rule.sealed.fail { font-weight: 600; font-size: var(--text-ui); }
 .insp-rule.sealed.checking { background: var(--surface); }
 
-.insp-verdict { margin: 0; padding: var(--space-6); min-height: 112px; border-width: 1px; }
+.insp-verdict { margin: 0; padding: var(--space-5); flex: 0 0 auto; border-width: 1px; }
 .insp-verdict.pending { background: transparent; border-style: dashed; box-shadow: none; }
 .insp-verdict.pass { border-color: var(--green-line); background: var(--green-bg); }
 .insp-verdict.fail { border-color: var(--red-line); background: var(--red-bg); }
-.insp-verdict-line { margin: 0; font-size: var(--text-display); line-height: var(--leading-display); font-weight: 600; letter-spacing: -0.01em; }
+.insp-verdict-line { margin: 0; font-size: var(--text-heading); line-height: var(--leading-heading); font-weight: 600; letter-spacing: -0.01em; }
 .insp-verdict.pass .insp-verdict-line { color: var(--green-text); }
 .insp-verdict.fail .insp-verdict-line { color: var(--red); }
-.insp-verdict-detail { margin: var(--space-2) 0 0; color: var(--ink-2); max-width: 80ch; overflow-wrap: anywhere; }
+.insp-verdict-detail { margin: var(--space-1) 0 0; font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-2); max-width: 80ch; overflow-wrap: anywhere; }
 
 .insp-file, .insp-measured { margin: 0; padding: var(--space-5); }
 .insp-file pre {
@@ -90,8 +95,11 @@
 .insp-measured dt { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); }
 .insp-measured dd { margin: 2px 0 0; font-size: var(--text-ui); color: var(--ink); }
 
+.insp-verdict.pending .insp-verdict-detail { margin: 0; }
 @media (max-width: 900px) {
   .insp-grid { grid-template-columns: minmax(0, 1fr); }
+  .insp-side-inner { position: static; }
+  .insp-checks { overflow: visible; }
 }
 @media (max-width: 640px) {
   .insp-picker { flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity; padding-bottom: 4px; margin: 0 -16px; padding-inline: 16px; }
