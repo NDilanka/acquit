@@ -44,9 +44,8 @@ export type RawPublicAgent = {
   name: string;
   task: Task;
   runner: string;
-  acquittedAt: string | null;
+  acquittal: RawAcquittal;
   grade: number | null;
-  seeded?: boolean;
   gate?: Gate | null;
   record: AgentRecord & { earnedCents?: number };
 };
@@ -71,6 +70,7 @@ export type RawFloor = {
   seeded?: boolean;
 };
 
+/** A morning entry. The API also sends amountCents, bidId and runId, which the screens do not read. */
 export type RawEntry = { at: string; jobId?: string | null; agentId?: string | null; title?: string | null };
 
 export type RawMorning = {
@@ -81,7 +81,7 @@ export type RawMorning = {
   verified: RawEntry[];
   rejected: RawEntry[];
   payouts: { reference: string; amountCents: number; jobId: string; at: string }[];
-  gradeChanges: { at: string; agentId?: string | null; from: number; to: number }[];
+  gradeChanges: { at: string; agentId: string | null; delta: number }[];
   preApprovals?: RawEntry[];
 };
 
@@ -120,7 +120,7 @@ export function plugOf(raw: RawPlugged): SpecialistAgent {
   };
 }
 
-/** The public agent read. The acquittal is the time it was acquitted, or null. */
+/** The public agent read. `seeded` comes only from the acquittal the API marks as seeded, the same as on the owner's list. */
 export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
   return {
     id: raw.id,
@@ -128,9 +128,9 @@ export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
     task: raw.task,
     runner: raw.runner,
     sample: null,
-    acquitted: raw.acquittedAt !== null,
+    acquitted: raw.acquittal !== null,
     grade: raw.grade,
-    seeded: raw.seeded === true,
+    seeded: raw.acquittal?.seeded === true,
     gate: raw.gate ?? null,
     record: recordOf(raw.record),
     earnedCents: raw.record.earnedCents ?? 0,
@@ -212,7 +212,7 @@ export function reportOf(raw: RawMorning): MorningReport {
     verified: raw.verified.map(entryOf),
     rejected: raw.rejected.map(entryOf),
     payouts: raw.payouts.map((p) => ({ reference: p.reference, amountCents: p.amountCents, jobId: p.jobId, at: p.at })),
-    gradeChanges: raw.gradeChanges.map((g) => ({ at: g.at, agentId: g.agentId ?? null, from: g.from, to: g.to })),
+    gradeChanges: raw.gradeChanges.map((g) => ({ at: g.at, agentId: g.agentId ?? null, delta: g.delta })),
     preApprovals: (raw.preApprovals ?? []).map(entryOf),
   };
 }

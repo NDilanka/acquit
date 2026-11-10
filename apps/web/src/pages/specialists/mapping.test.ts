@@ -55,7 +55,7 @@ describe("agent mapping", () => {
       name: "C",
       task: "code",
       runner: "claude-code",
-      acquittedAt: "2026-11-09T20:00:00.000Z",
+      acquittal: { examId: "exam_3", at: "2026-11-09T20:00:00.000Z" },
       grade: 50,
       gate: "OPEN",
       record,
@@ -66,13 +66,13 @@ describe("agent mapping", () => {
       name: "D",
       task: "print-fdm",
       runner: "simulated-fdm",
-      acquittedAt: null,
+      acquittal: null,
       grade: null,
       gate: "WRONG_TASK",
       record,
     });
     assert.equal(printer.gate, "WRONG_TASK");
-    assert.equal(publicAgentOf({ id: "agt_7", name: "E", task: "code", runner: "claude-code", acquittedAt: null, grade: null, record }).gate, null);
+    assert.equal(publicAgentOf({ id: "agt_7", name: "E", task: "code", runner: "claude-code", acquittal: null, grade: null, record }).gate, null);
   });
 
   it("is never acquitted or seeded when plugged in", () => {
@@ -82,9 +82,9 @@ describe("agent mapping", () => {
     assert.equal(plugged.grade, null);
   });
 
-  it("reads the public agent's acquittal from acquittedAt and seeded from the top level", () => {
+  it("reads the public agent's acquittal and seeded from the acquittal", () => {
     const record = { jobsTaken: 2, verified: 1, rejected: 0, earnedCents: 1000 };
-    const open = publicAgentOf({ id: "agt_3", name: "A", task: "code", runner: "claude-code", acquittedAt: null, grade: null, record });
+    const open = publicAgentOf({ id: "agt_3", name: "A", task: "code", runner: "claude-code", acquittal: null, grade: null, record });
     assert.equal(open.acquitted, false);
     assert.equal(open.seeded, false);
     assert.equal(open.earnedCents, 1000);
@@ -94,9 +94,8 @@ describe("agent mapping", () => {
       name: "B",
       task: "code",
       runner: "claude-code",
-      acquittedAt: "2026-11-09T20:00:00.000Z",
+      acquittal: { examId: "seed", at: "2026-11-09T20:00:00.000Z", seeded: true },
       grade: 55,
-      seeded: true,
       record,
     });
     assert.equal(seeded.acquitted, true);
@@ -218,12 +217,12 @@ describe("floor and morning mapping", () => {
       verified: [],
       rejected: [],
       payouts: [payout],
-      gradeChanges: [{ at: "2026-11-09T22:39:00.000Z", agentId: "agt_1", from: 50, to: 55 }],
+      gradeChanges: [{ at: "2026-11-09T22:39:00.000Z", agentId: "agt_1", delta: 5 }],
     });
     assert.deepEqual(report.payouts, [
       { reference: "PAYOUT-SANDBOX-1", amountCents: 1000, jobId: "job_1", at: "2026-11-09T22:39:00.000Z" },
     ]);
-    assert.deepEqual(report.gradeChanges, [{ at: "2026-11-09T22:39:00.000Z", agentId: "agt_1", from: 50, to: 55 }]);
+    assert.deepEqual(report.gradeChanges, [{ at: "2026-11-09T22:39:00.000Z", agentId: "agt_1", delta: 5 }]);
     assert.deepEqual(report.preApprovals, []);
   });
 
@@ -236,11 +235,11 @@ describe("floor and morning mapping", () => {
       verified: [],
       rejected: [],
       payouts: [],
-      gradeChanges: [{ at: "2026-11-09T21:00:00.000Z", from: 50, to: 45 }],
+      gradeChanges: [{ at: "2026-11-09T21:00:00.000Z", agentId: null, delta: -5 }],
       preApprovals: [{ at: "2026-11-09T21:05:00.000Z", jobId: "job_2", agentId: "agt_1", title: "Pre-approved" }],
     });
     assert.deepEqual(report.bids, [{ at: "2026-11-09T21:00:00.000Z", jobId: null, agentId: null, title: null }]);
-    assert.equal(report.gradeChanges.at(0)?.agentId, null);
+    assert.deepEqual(report.gradeChanges, [{ at: "2026-11-09T21:00:00.000Z", agentId: null, delta: -5 }]);
     assert.deepEqual(report.preApprovals, [{ at: "2026-11-09T21:05:00.000Z", jobId: "job_2", agentId: "agt_1", title: "Pre-approved" }]);
   });
 });
