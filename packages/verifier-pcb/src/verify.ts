@@ -755,39 +755,51 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 	const probeEntries: { a: Vec2; b: Vec2; za: number; zb: number; expect: "continuity" | "isolation"; ok: boolean }[] = [];
 	if (hidden) {
 		let failed: { expect: "continuity" | "isolation" } | undefined;
+		let unusable = false;
 		for (const probe of hidden.probes) {
 			const ia = padGeo.get(probe.a);
 			const ib = padGeo.get(probe.b);
-			const connected = ia !== undefined && ib !== undefined && comp[ia] === comp[ib];
+			// A probe needs two different copper pads on the board. A missing pad, a non-plated hole or a repeated
+			// endpoint is a failed probe, never a vacuous pass. The message names nothing.
+			if (ia === undefined || ib === undefined || ia === ib || probe.a === probe.b) {
+				unusable = true;
+				continue;
+			}
+			const connected = comp[ia] === comp[ib];
 			const ok = (probe.expect === "continuity") === connected;
 			if (!ok && !failed) failed = { expect: probe.expect };
-			if (ia !== undefined && ib !== undefined) {
-				const ga = geos[ia];
-				const gb = geos[ib];
-				if (ga && gb && ga.kind === "poly" && gb.kind === "poly") {
-					probeEntries.push({
-						a: representative(ga),
-						b: representative(gb),
-						za: zOf(ga.layers.includes("F.Cu") ? "F.Cu" : ga.layers[0]),
-						zb: zOf(gb.layers.includes("F.Cu") ? "F.Cu" : gb.layers[0]),
-						expect: probe.expect,
-						ok,
-					});
-				}
+			const ga = geos[ia];
+			const gb = geos[ib];
+			if (ga && gb && ga.kind === "poly" && gb.kind === "poly") {
+				probeEntries.push({
+					a: representative(ga),
+					b: representative(gb),
+					za: zOf(ga.layers.includes("F.Cu") ? "F.Cu" : ga.layers[0]),
+					zb: zOf(gb.layers.includes("F.Cu") ? "F.Cu" : gb.layers[0]),
+					expect: probe.expect,
+					ok,
+				});
 			}
 		}
 		findings.push(
-			failed
+			unusable
 				? {
 						rule: "hidden-probe",
 						ok: false,
 						hidden: true,
-						message:
-							failed.expect === "isolation"
-								? "A hidden probe expected isolation and found a connection."
-								: "A hidden probe expected continuity and found none.",
+						message: "A hidden probe names a pad that is not a testable copper pad.",
 					}
-				: okFinding("hidden-probe", "Every hidden probe pair behaved as expected.", true),
+				: failed
+					? {
+							rule: "hidden-probe",
+							ok: false,
+							hidden: true,
+							message:
+								failed.expect === "isolation"
+									? "A hidden probe expected isolation and found a connection."
+									: "A hidden probe expected continuity and found none.",
+						}
+					: okFinding("hidden-probe", "Every hidden probe pair behaved as expected.", true),
 		);
 
 		if (hidden.minClearance !== undefined) {

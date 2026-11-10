@@ -194,13 +194,19 @@ export function validateSpec(value: unknown): SpecResult {
 /** The hidden sample's shape check. Its pad references must name pads in the spec. */
 export function validateHidden(value: unknown, spec: Spec): HiddenResult {
 	if (!isObj(value) || !Array.isArray(value.probes)) return { ok: false, error: "the hidden sample needs a probes list" };
-	const padIds = new Set<string>();
-	for (const part of spec.parts) for (const p of part.pads) padIds.add(`${part.ref}.${p.name}`);
+	const padTypes = new Map<string, PadSpec["type"]>();
+	for (const part of spec.parts) for (const p of part.pads) padTypes.set(`${part.ref}.${p.name}`, p.type);
 	const probes: HiddenSample["probes"][number][] = [];
 	for (const p of value.probes) {
 		if (!isObj(p) || typeof p.a !== "string" || typeof p.b !== "string") return { ok: false, error: "a probe needs pads a and b" };
 		if (p.expect !== "continuity" && p.expect !== "isolation") return { ok: false, error: "a probe expects continuity or isolation" };
-		if (!padIds.has(p.a) || !padIds.has(p.b)) return { ok: false, error: `probe ${p.a}-${p.b} names an unknown pad` };
+		const ta = padTypes.get(p.a);
+		const tb = padTypes.get(p.b);
+		if (ta === undefined || tb === undefined) return { ok: false, error: `probe ${p.a}-${p.b} names an unknown pad` };
+		if (p.a === p.b) return { ok: false, error: `probe ${p.a}-${p.b} repeats one pad` };
+		if (ta === "np_thru_hole" || tb === "np_thru_hole") {
+			return { ok: false, error: `probe ${p.a}-${p.b} names a non-plated hole, which has no copper to test` };
+		}
 		probes.push({ a: p.a, b: p.b, expect: p.expect });
 	}
 	const minClearance = value.minClearance === undefined ? undefined : num(value.minClearance);
