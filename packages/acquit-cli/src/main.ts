@@ -18,6 +18,7 @@ import { parseJobsArgs, runJobsList } from "./jobs.ts";
 import { parseBidArgs, runBid } from "./bid.ts";
 import { parseDiffArgs, runDiff } from "./diff.ts";
 import { parseReceiptsArgs, runReceipts } from "./receipts.ts";
+import { parseAutopilotArgs, runAutopilot } from "./autopilot.ts";
 
 const USAGE_HEADER = `acquit — work the job board from a terminal
 
@@ -32,7 +33,7 @@ Environment:
   ACQUIT_TOKEN  session token from \`acquit login\``;
 
 /** The table's order. */
-const ORDER = ["login", "operator", "agent", "jobs", "bid", "run", "diff", "receipts", "submit", "confirm-submit"];
+const ORDER = ["login", "operator", "agent", "jobs", "bid", "run", "diff", "receipts", "submit", "confirm-submit", "autopilot"];
 
 export type CommandContext = {
 	readonly env: NodeJS.ProcessEnv;
@@ -164,6 +165,16 @@ registerCommand({
 		await runRun(options, { client: apiClient({ baseUrl: options.apiUrl, token: options.token }),
 			provider: providerPort(platformKeychain()) });
 		return 0;
+	},
+});
+
+registerCommand({
+	name: "autopilot",
+	usage: "acquit autopilot <agent> [--once] [--every 15s] [--prompt <file>] [--dir <folder>] [--api <url>]",
+	async run(argv, context) {
+		const options = parseAutopilotArgs(argv, context.env, stored(context.env));
+		return runAutopilot(options, { client: apiClient({ baseUrl: options.apiUrl, token: options.token }),
+			provider: providerPort(platformKeychain()), env: context.env, write: context.write });
 	},
 });
 
