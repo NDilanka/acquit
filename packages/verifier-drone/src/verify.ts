@@ -23,7 +23,8 @@ type Segment = { readonly index: number; readonly a: Waypoint; readonly b: Waypo
 /**
  * A survey leg: a level run along the survey heading with both ends on one line. s0 and s1 are its ends' positions
  * along the heading, t is the position of the line across it, and triggerM is the photograph spacing, or null when
- * triggering is off for any part of it.
+ * triggering is off for any part of it. A retrace re-flies a line earlier legs already covered, so its photographs
+ * earn no credit.
  */
 type Leg = {
 	readonly index: number;
@@ -34,6 +35,7 @@ type Leg = {
 	readonly t: number;
 	readonly alt: number;
 	readonly triggerM: number | null;
+	readonly retrace: boolean;
 };
 /** The spec's survey area and no-fly zones in local metres east and north of the origin. */
 type Geometry = {
@@ -113,9 +115,27 @@ function surveyFrame(segments: readonly Segment[]): Frame | null {
 	return best === null ? null : frameFrom([best.a.x, best.a.y], [best.b.x, best.b.y]);
 }
 
+/** How much of the interval [lo, hi] the union of the given intervals covers, in metres. */
+function coveredLength(lo: number, hi: number, intervals: readonly (readonly [number, number])[]): number {
+	const sorted = [...intervals].sort((p, q) => p[0] - q[0]);
+	let covered = 0;
+	let at = lo;
+	for (const [a, b] of sorted) {
+		const start = Math.max(a, at);
+		const end = Math.min(b, hi);
+		if (end > start) {
+			covered += end - start;
+			at = end;
+		}
+		if (at >= hi) break;
+	}
+	return covered;
+}
+
 /**
  * The survey legs: level segments whose two ends lie on one line along the survey heading, within TOL. Any other
- * segment is a transit. The test is made in the survey frame, so a survey flown at any heading is found the same way.
+ * segment is a transit. The test is made in the survey frame, so a survey flown at any heading is found the same
+ * way. A leg is a retrace when the legs before it already cover its whole line, in either direction.
  */
 function legsOf(segments: readonly Segment[], frame: Frame | null): Leg[] {
 	if (frame === null) return [];
@@ -126,7 +146,15 @@ function legsOf(segments: readonly Segment[], frame: Frame | null): Leg[] {
 		const [s0, t0] = toFrame(frame, [a.x, a.y]);
 		const [s1, t1] = toFrame(frame, [b.x, b.y]);
 		if (Math.abs(s1 - s0) <= TOL || Math.abs(t1 - t0) > TOL) continue;
-		out.push({ index: segment.index, a: [a.x, a.y], b: [b.x, b.y], s0, s1, t: (t0 + t1) / 2, alt: a.alt, triggerM: legTrigger(a, b) });
+		const t = (t0 + t1) / 2;
+		const lo = Math.min(s0, s1);
+		const hi = Math.max(s0, s1);
+		const earlier: [number, number][] = [];
+		for (const leg of out) {
+			if (Math.abs(leg.t - t) <= TOL) earlier.push([Math.min(leg.s0, leg.s1), Math.max(leg.s0, leg.s1)]);
+		}
+		const retrace = hi - lo - coveredLength(lo, hi, earlier) <= TOL;
+		out.push({ index: segment.index, a: [a.x, a.y], b: [b.x, b.y], s0, s1, t, alt: a.alt, triggerM: legTrigger(a, b), retrace });
 	}
 	return out;
 }
@@ -160,7 +188,8 @@ function flightsOf(segments: readonly Segment[], legs: readonly Leg[]): Flight[]
 		return {
 			length: Math.hypot(b.x - a.x, b.y - a.y),
 			trigger: legTrigger(a, b),
-			survey: leg === undefined ? null : { s0: leg.s0, s1: leg.s1, t: leg.t, alt: leg.alt },
+			// A retraced leg still moves the exposure phase, but its photographs earn no credit.
+			survey: leg === undefined || leg.retrace ? null : { s0: leg.s0, s1: leg.s1, t: leg.t, alt: leg.alt },
 		};
 	});
 }
@@ -511,7 +540,15 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		routeSeconds <= usableSeconds
 			? finding("endurance", true, false, `The route takes ${Math.round(routeSeconds)} seconds of flight, within the ${usableSeconds} seconds usable after the reserve.`)
 			: finding("endurance", false, false, `The route takes ${Math.round(routeSeconds)} seconds of flight, longer than the ${usableSeconds} seconds usable after the reserve.`);
-	const findings = [planFinding, unsupportedFinding, takeoffFinding, endFinding, areaFinding, enduranceFinding, ...publicFindings, ...hiddenFindings];
+	// Always run: a padded or reversed re-flight of an earlier line is not a fresh survey, and a spec cannot switch
+	// the check off. Retraced legs earn no photograph credit anywhere.
+	const retraced = legs.filter(leg => leg.retrace);
+	const firstRetrace = retraced[0];
+	const orderFinding =
+		firstRetrace === undefined
+			? finding("leg-order", true, false, "No survey line is flown over a line an earlier leg already surveyed.")
+			: finding("leg-order", false, false, `${retraced.length} survey leg${retraced.length === 1 ? "" : "s"} re-fly lines already surveyed; the repeats earn no photograph credit.`, legMid(firstRetrace), [`leg-${firstRetrace.index}`]);
+	const findings = [planFinding, unsupportedFinding, takeoffFinding, endFinding, areaFinding, enduranceFinding, orderFinding, ...publicFindings, ...hiddenFindings];
 
 	const gsdWorst = worstGsdLeg(legs, spec.camera);
 	const frontWorst = worstFrontLeg(legs, spec.camera);
