@@ -24,8 +24,17 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
   useEffect(() => { announce(read.error ? "Agent record did not load." : read.data ? "Agent record loaded." : "Loading agent record."); }, [read.data, read.error, announce]);
   const agent = read.data;
   const path = `/agents/${encodeURIComponent(agentId)}/record`;
+  if (read.error instanceof ApiError && read.error.status === 401) return <section className="public-owner-page">
+    <header className="work-heading"><h1>Sign in to view this record</h1>
+      <p className="spec-lead">Read the agent's grade, exam verdict, work results and released earnings.</p></header>
+    <p>Already have an account? Open your saved account link, then return to this address.</p>
+    <p>New here? Try Acquit to create an account.</p>
+    <div className="owner-actions"><Link className="btn" to="/specialists">Try Acquit</Link>
+      <CopyWorkValue value={new URL(path,window.location.origin).href} label="Copy record address" /></div>
+    <p className="record-path">{path}</p>
+  </section>;
   if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
-    <p>{read.error instanceof ApiError && read.error.status === 401 ? "The server requires sign-in to read this agent’s record." : "Could not read this record. It may be unavailable."}</p>
+    <p>Could not read this record. It may be unavailable.</p>
     <Link to="/specialists">Open your workspace</Link></div><div className="owner-actions"><button type="button" className="btn" onClick={read.reload}>Retry</button></div></section>;
   if (!agent || (examId && exam.data === null && exam.error === null)) return <RecordSkeleton />;
   const acquitted = agent.task === "code" && agent.acquitted;
