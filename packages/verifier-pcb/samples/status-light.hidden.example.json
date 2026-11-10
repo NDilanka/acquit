@@ -1,0 +1,70 @@
+{
+	"probes": [
+		{
+			"a": "J1.1",
+			"b": "U1.1",
+			"expect": "continuity"
+		},
+		{
+			"a": "J1.2",
+			"b": "U1.2",
+			"expect": "continuity"
+		},
+		{
+			"a": "J2.1",
+			"b": "U1.3",
+			"expect": "continuity"
+		},
+		{
+			"a": "R1.2",
+			"b": "D1.2",
+			"expect": "continuity"
+		},
+		{
+			"a": "C1.2",
+			"b": "C2.2",
+			"expect": "continuity"
+		},
+		{
+			"a": "D1.1",
+			"b": "J2.2",
+			"expect": "continuity"
+		},
+		{
+			"a": "C2.1",
+			"b": "R1.1",
+			"expect": "continuity"
+		},
+		{
+			"a": "J1.1",
+			"b": "J1.2",
+			"expect": "isolation"
+		},
+		{
+			"a": "U1.3",
+			"b": "U1.2",
+			"expect": "isolation"
+		},
+		{
+			"a": "R1.1",
+			"b": "D1.2",
+			"expect": "isolation"
+		},
+		{
+			"a": "C1.1",
+			"b": "C2.2",
+			"expect": "isolation"
+		},
+		{
+			"a": "H4.1",
+			"b": "J2.4",
+			"expect": "isolation"
+		},
+		{
+			"a": "J2.3",
+			"b": "J2.4",
+			"expect": "isolation"
+		}
+	],
+	"minClearance": 0.25
+}
