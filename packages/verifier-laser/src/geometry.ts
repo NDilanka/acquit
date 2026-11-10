@@ -77,6 +77,16 @@ export function edgeListDistance(first: readonly (readonly [Vec2, Vec2])[], seco
 	return best;
 }
 
+/** Shortest distance from a point to a list of edges. Infinity when the list is empty. */
+export function pointEdgeDistance(point: Vec2, edges: readonly (readonly [Vec2, Vec2])[]): number {
+	let best = Infinity;
+	for (const [a, b] of edges) {
+		const distance = pointToSegment(point, a, b);
+		if (distance < best) best = distance;
+	}
+	return best;
+}
+
 /** Orientation noise below this, in mm squared, counts as collinear. */
 const TOUCH_EPS = 1e-9;
 

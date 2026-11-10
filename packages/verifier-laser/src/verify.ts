@@ -2,8 +2,10 @@
 // Findings come back in RULES order. The verdict passes only when every finding is ok. The hidden-material rule
 // runs only when the verifier holds samples, so a verdict without them carries no hidden finding.
 
-import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, pointInPolygon, roundMm, selfCrosses, shapeKey, widthOf } from "./geometry.ts";
+import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, roundMm, selfCrosses, shapeKey, widthOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
+import { finishedInnerSize, finishedPart, isMaterial, toDrawing, toPart } from "./finished.ts";
+import type { FinishedPart } from "./finished.ts";
 import { MAX_PAIR_TESTS } from "./limits.ts";
 import { validateSpec } from "./spec.ts";
 import { parseSvg } from "./svg.ts";
@@ -12,7 +14,7 @@ import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SvgPath, Verd
 
 type Outline = { readonly path: SvgPath; readonly box: Bounds };
 
-/** A cut path measured in the part frame: its bounding box size and centre. */
+/** A closed cut measured on the finished part: its finished size, and its centre in the part frame. */
 type Candidate = { readonly path: SvgPath; readonly width: number; readonly height: number; readonly centre: Vec2 };
 
 function check(rule: Rule, ok: boolean, passed: string, failed: string, refs: readonly string[] = []): Finding {
@@ -41,15 +43,15 @@ function outlineOf(cut: readonly SvgPath[]): Outline | null {
 	return best;
 }
 
-/** Part frame: origin at the outline's lower-left corner, y up. */
-const toPart = (box: Bounds, [x, y]: Vec2): Vec2 => [x - box.minX, box.maxY - y];
-const toDrawing = (box: Bounds, [px, py]: Vec2): Vec2 => [px + box.minX, box.maxY - py];
-
-function candidateOf(path: SvgPath, box: Bounds): Candidate | null {
+function candidateOf(path: SvgPath, part: FinishedPart): Candidate | null {
 	const own = boundsOf(path.points);
 	if (own === null) return null;
-	const [cx, cy] = centreOf(own);
-	return { path, width: widthOf(own), height: heightOf(own), centre: toPart(box, [cx, cy]) };
+	return {
+		path,
+		width: finishedInnerSize(part, widthOf(own)),
+		height: finishedInnerSize(part, heightOf(own)),
+		centre: toPart(part, centreOf(own)),
+	};
 }
 
 /** Takes the first candidate not yet claimed that fits. A duplicate drawing cannot satisfy two features. */
@@ -152,6 +154,8 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		return refused("the drawing has too many segments to check in one pass", sceneOf(doc.paths, size, spec));
 	}
 	const outline = outlineOf(cut);
+	const inner = cut.filter(path => path !== outline?.path && path.closed).map(path => path.points);
+	const part = outline === null ? null : finishedPart(outline.path.points, inner, spec.kerfMm);
 	const findings: Finding[] = [];
 	const measured: Record<string, number | string> = {
 		unit: doc.unit,
@@ -186,7 +190,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	const open = cut.filter(path => !path.closed).map(path => path.id);
 	findings.push(check("closed-paths", open.length === 0, "every cut path is closed", `${open.length} cut path(s) are open`, open));
 
-	const candidates = outline === null ? [] : cut.map(path => candidateOf(path, outline.box)).filter((c): c is Candidate => c !== null);
+	const candidates = part === null ? [] : cut.map(path => candidateOf(path, part)).filter((c): c is Candidate => c !== null);
 	const used = new Set<Candidate>();
 	const holeMisses: string[] = [];
 	for (const hole of spec.holes) {
@@ -228,14 +232,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		),
 	);
 
-	const outlineBox = outline?.box ?? null;
-	const insidePart = (point: Vec2): boolean => {
-		if (outline === null || outlineBox === null) return false;
-		const [x, y] = point;
-		if (x < outlineBox.minX || x > outlineBox.maxX || y < outlineBox.minY || y > outlineBox.maxY) return false;
-		return !cut.some(path => path !== outline.path && path.closed && pointInPolygon(point, path.points));
-	};
-	const stray = engrave.filter(path => !path.points.every(insidePart)).map(path => path.id);
+	const stray = engrave.filter(path => part === null || !path.points.every(point => isMaterial(part, point))).map(path => path.id);
 	findings.push(
 		check(
 			"engrave-inside",
@@ -246,25 +243,21 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		),
 	);
 
-	if (outline === null) {
+	if (outline === null || part === null) {
 		findings.push(check("outer-size", false, "", "no outer cut outline"));
 		findings.push(check("cut-order", false, "", "no outer cut outline to order against"));
 	} else {
 		const [px, py] = spec.partMm;
-		const width = widthOf(outline.box);
-		const height = heightOf(outline.box);
-		const expectWidth = px + spec.kerfMm;
-		const expectHeight = py + spec.kerfMm;
-		measured.outlineWidthMm = roundMm(width);
-		measured.outlineHeightMm = roundMm(height);
-		measured.kerfWidthMm = roundMm(width - px);
-		measured.kerfHeightMm = roundMm(height - py);
+		measured.outlineWidthMm = roundMm(widthOf(outline.box));
+		measured.outlineHeightMm = roundMm(heightOf(outline.box));
+		measured.finishedWidthMm = roundMm(part.widthMm);
+		measured.finishedHeightMm = roundMm(part.heightMm);
 		findings.push(
 			check(
 				"outer-size",
-				near(width, expectWidth, spec.toleranceMm) && near(height, expectHeight, spec.toleranceMm),
-				`the outer cut is ${roundMm(width)} x ${roundMm(height)} mm, the finished part plus kerf`,
-				`the outer cut is ${roundMm(width)} x ${roundMm(height)} mm; the finished part plus kerf is ${roundMm(expectWidth)} x ${roundMm(expectHeight)} mm`,
+				near(part.widthMm, px, spec.toleranceMm) && near(part.heightMm, py, spec.toleranceMm),
+				`the finished part is ${roundMm(part.widthMm)} x ${roundMm(part.heightMm)} mm, as specified`,
+				`the finished part is ${roundMm(part.widthMm)} x ${roundMm(part.heightMm)} mm; the spec part is ${px} x ${py} mm`,
 				[outline.path.id],
 			),
 		);
@@ -311,9 +304,10 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 			const b = cut[j]!;
 			// Identical shapes are a duplicate, and the duplicate rule reports them, not the web rule.
 			if (keys.get(a) === keys.get(b)) continue;
-			const gap = edgeListDistance(edgesOf(a.points, a.closed), edgesOf(b.points, b.closed));
-			if (gap < minWeb) minWeb = gap;
-			if (gap < spec.minWebMm) thinPairs.push(a.id, b.id);
+			// Each cut's finished edge sits kerf/2 from its drawn line, toward the web, so the web loses one kerf.
+			const web = edgeListDistance(edgesOf(a.points, a.closed), edgesOf(b.points, b.closed)) - spec.kerfMm;
+			if (web < minWeb) minWeb = web;
+			if (web < spec.minWebMm) thinPairs.push(a.id, b.id);
 		}
 	}
 	if (Number.isFinite(minWeb)) measured.minWebMm = roundMm(minWeb);
@@ -340,21 +334,16 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 
 	if (hidden !== undefined) {
 		measured.hiddenSamples = hidden.keepMaterialMm.length;
-		if (outline === null) {
+		if (part === null) {
 			findings.push(check("hidden-material", false, "", "no outer cut to place the hidden samples against"));
 		} else {
-			const enclosing = cut.filter(path => path !== outline.path && path.closed);
-			let cutAway = 0;
-			for (const point of hidden.keepMaterialMm) {
-				const drawn = toDrawing(outline.box, point);
-				if (enclosing.some(path => pointInPolygon(drawn, path.points))) cutAway++;
-			}
+			const lost = hidden.keepMaterialMm.filter(point => !isMaterial(part, toDrawing(part, point))).length;
 			findings.push(
 				check(
 					"hidden-material",
-					cutAway === 0,
+					lost === 0,
 					`all ${hidden.keepMaterialMm.length} hidden keep-material samples stay material`,
-					`${cutAway} hidden keep-material sample(s) fall inside a cut`,
+					`${lost} hidden keep-material sample(s) fall inside a cut or outside the finished part`,
 				),
 			);
 		}
