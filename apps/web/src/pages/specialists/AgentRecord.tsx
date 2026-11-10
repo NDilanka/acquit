@@ -3,7 +3,7 @@ import { ApiError } from "../../api.ts";
 import { Link } from "../../router.tsx";
 import { CopyWorkValue } from "./AgentEarnings.tsx";
 import { specialists } from "./client.ts";
-import { Seal } from "./ExamRecord.tsx";
+import { CheckCells, Seal } from "./ExamRecord.tsx";
 import { useOwner } from "./OwnerPanel.tsx";
 import { agentTaskLabel } from "./ownerState.ts";
 import { RecordSkeleton } from "./OwnerLoading.tsx";
@@ -19,28 +19,28 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
   const read = useLoad(() => specialists.agent(agentId), agentId);
   const { announce, agents } = useOwner();
   const examId = recordExamId(read.data,agents);
-  const exam = useLoad(async () => examId ? specialists.exam(agentId,examId) : null,`${agentId}:${examId ?? ""}`);
-  const counts = recordCounts(exam.data,examId);
+  const exam = useLoad(async () => ({ exam:examId ? await specialists.exam(agentId,examId) : null }),`${agentId}:${examId ?? ""}`);
+  const counts = recordCounts(exam.data?.exam ?? null,examId);
   useEffect(() => { announce(read.error ? "Agent record did not load." : read.data ? "Agent record loaded." : "Loading agent record."); }, [read.data, read.error, announce]);
   const agent = read.data;
   const path = `/agents/${encodeURIComponent(agentId)}/record`;
   if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
     <p>{read.error instanceof ApiError && read.error.status === 401 ? "The server requires sign-in to read this agent’s record." : "Could not read this record. It may be unavailable."}</p>
     <Link to="/specialists">Open your workspace</Link></div><div className="owner-actions"><button type="button" className="btn" onClick={read.reload}>Retry</button></div></section>;
-  if (!agent) return <RecordSkeleton />;
+  if (!agent || (examId && exam.data === null && exam.error === null)) return <RecordSkeleton />;
   const acquitted = agent.task === "code" && agent.acquitted;
   return <section className="public-owner-page public-record">
     <header className="work-heading"><h1>{agent.name}</h1><p className="spec-lead">{agentTaskLabel(agent.task)}{agent.ownerHandle && <> · owned by {agent.ownerHandle}</>}</p></header>
     <div className="public-record-split"><section className="public-proof" aria-label="Acquittal record">
       <div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
         <p className="muted">{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</p></div></div>
-      {(agent.seeded || counts?.visible || counts?.hidden) && <dl className="public-checks">{agent.seeded
-        ? <div><dt>Exam</dt><dd><b>Not sat</b> · placed by Acquit</dd></div> : <>
-          {counts?.visible && <div><dt>Visible checks</dt><dd>{counts.visible.passed} / {counts.visible.total} passed</dd></div>}
-          {counts?.hidden && <div><dt>Hidden checks</dt><dd>{counts.hidden.passed} / {counts.hidden.total} passed</dd></div>}
-        </>}</dl>}
+      <div className="public-score"><div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
+      {(agent.seeded || counts?.visible || counts?.hidden) && <div className="public-checks">{agent.seeded
+        ? <p><b>Exam not sat</b> · placed by Acquit</p> : <>
+          {counts?.visible && <CheckCells counts={counts.visible} total={counts.visible.total} hidden={false} />}
+          {counts?.hidden && <CheckCells counts={counts.hidden} total={counts.hidden.total} hidden />}
+        </>}</div>}</div>
     </section><aside className="public-record-facts">
-      <div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
       {agent.record && <div><ResultsBar verified={agent.record.verified} rejected={agent.record.rejected} />
         <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p></div>}
       {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}

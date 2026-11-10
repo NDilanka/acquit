@@ -340,6 +340,49 @@
 .record-loading { min-height: 240px; }
 .activity-feed .earnings-events [data-tone="fail"] { color: var(--red); }
 .owner-deck .spec:has(> .exam-record) { row-gap: var(--space-6); }
+.owner-app .owner-start { display: grid; grid-template-columns: minmax(0,5fr) minmax(0,7fr); gap: var(--space-16); max-width: none; margin-block: var(--space-12); align-items: center; }
+.owner-app .owner-start .start-card { max-width: none; width: 100%; margin: 0; padding: var(--space-8); background: transparent; border: 0; }
+.owner-start .start-step { margin-bottom: var(--space-6); color: var(--muted); }
+.owner-start-preview { margin: 0; padding: var(--space-8); border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--panel); }
+.owner-start-preview figcaption { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); color: var(--muted); }
+.preview-identity { display: flex; align-items: center; gap: var(--space-6); padding-block: var(--space-8); }
+.preview-name { font-size: var(--text-display); line-height: var(--leading-display); }
+.owner-start-preview ol { display: grid; gap: var(--space-2); margin-bottom: var(--space-6); }
+.owner-start-preview li { display: grid; grid-template-columns: 32px 1fr auto; gap: var(--space-4); align-items: center; min-height: 48px; border-bottom: 1px solid var(--line); }
+.preview-port { width: 12px; height: 12px; border: 1px solid var(--muted); border-radius: var(--r-pill); }
+.record-exam-grade { font-size: var(--text-ui); line-height: var(--leading-ui); }
+.record-exam-grade b { font-size: var(--text-section); }
+@media (min-width: 1200px) {
+  .owner-workspace > main.wrap:has(> .owner-panel), .owner-loading { display: grid; grid-template-columns: minmax(0,3fr) minmax(0,9fr); gap: var(--space-12); align-items: start; }
+  .owner-bridge { grid-template-columns: minmax(0,1fr); min-height: 0; gap: var(--space-4); padding: var(--space-6) 0; }
+  .owner-panel:is([data-owner-step="4"],[data-owner-step="5"]) .owner-bridge { min-height: 0; }
+  .owner-name { white-space: normal; overflow: visible; }
+  .owner-grade { display: flex; width: auto; justify-content: start; text-align: left; }
+  .owner-grade .owner-delta { min-height: 0; text-align: left; justify-self: start; }
+  .owner-money, .owner-track-row { margin-inline: 0; }
+  .owner-track-row { display: grid; gap: var(--space-2); min-height: 0; padding-block: var(--space-4); }
+  .owner-track, .owner-loading-track { grid-template-columns: minmax(0,1fr); }
+  .owner-track a { flex-direction: row; align-items: center; gap: var(--space-3); }
+  .owner-track .track-rail { width: 24px; flex: none; }
+  .owner-track .track-label { display: flex; }
+  .owner-provenance { width: auto; }
+  .owner-deck { margin-top: var(--space-6); }
+  .owner-deck .spec, .work-page { gap: var(--space-6); }
+  .work-heading, .owner-loading-heading { min-height: 0; }
+  .exam-record { display: grid; grid-template-columns: minmax(0,5fr) minmax(0,7fr); column-gap: var(--space-8); align-items: start; }
+  .exam-record .record-heading { align-items: start; gap: var(--space-4); }
+  .owner-app .exam-record .record-key { font-size: var(--text-display); line-height: var(--leading-display); }
+  .exam-record .record-meta { border: 0; margin-top: var(--space-4); padding: 0; }
+  .exam-record .record-foot { grid-column: 1 / -1; }
+  .record-overview { min-width: 0; }
+  .record-check-bed { grid-template-columns: minmax(0,1fr); gap: var(--space-6); padding: 0; }
+  .plug-in { grid-template-columns: minmax(0,1fr); }
+  .plug-in > * { grid-column: 1; }
+  .plug-extras { grid-column: 1; grid-row: auto; }
+}
+.plug-options > div { margin-top: var(--space-4); }
+.plug-options h2 { font-size: var(--text-ui); line-height: var(--leading-ui); }
+.plug-options > summary { display: flex; align-items: center; min-height: 48px; cursor: pointer; text-decoration: underline; }
 .app.hosted-owner main.wrap { min-height: calc(100dvh - 64px); }
 .app.hosted-owner .side-item.on { color: var(--ink); background: var(--surface); border-color: var(--line); }
 .app.hosted-owner :is(.sandbox, .pill.open, .pill.held) { color: var(--muted); background: var(--surface); border-color: var(--line); }
@@ -347,6 +390,9 @@
 .app.hosted-owner .work-next.turn { color: var(--ink); }
 .app.hosted-owner .k.held { color: var(--muted); }
 @media (max-width: 640px) {
+  .owner-app .owner-start { grid-template-columns: minmax(0,1fr); gap: var(--space-8); margin-block: var(--space-4); }
+  .owner-app .owner-start .start-card { padding: var(--space-4) 0; }
+  .owner-start-preview { padding: var(--space-6); }
   .owner-footer { padding-bottom: 160px; }
   .owner-bar-end { min-width: 108px; }
   .owner-account-placeholder { width: 44px; height: 44px; }

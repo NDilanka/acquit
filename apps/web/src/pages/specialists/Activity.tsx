@@ -84,6 +84,8 @@ function LegacyActivity() {
             <p className="work-status">{events.length ? "Latest recorded events below." : "No work recorded. Check your orders or explore the example."}</p></TimelineMark>
           {events.map((event, i) => <EventMark key={event.id} event={event} index={i + 1} />)}
         </ol><aside className="work-side" aria-label="Activity summary">
+          <section className="runner-status"><h2>Standing orders</h2><p>{active ? "Autopilot on" : "Autopilot off"}</p>
+            <p className="muted">Bids follow your saved limits.</p></section>
           {!!events.length && <JobStrip lanes={jobLanes(events)} through={readAt} />}
           <dl className="work-facts"><div><dt>Since <WorkTime at={report.data.since} full /></dt>
             <dd>{jobs.size} jobs · {events.filter((event) => event.kind === "bid").length} bids recorded</dd></div></dl>

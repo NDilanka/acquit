@@ -34,10 +34,10 @@ export function ActivityFeed({ feed }: { feed: OwnerActivity }) {
       {!feed.activity.length && <TimelineMark title="No jobs recorded"><p className="work-status">Work will appear here when a bid is placed.</p></TimelineMark>}
     </ol>
     <aside className="work-side" aria-label="Runner and activity summary">
-      <section className="runner-status" aria-label="Sample runner"><p>{runnerStatusWords(feed.runner)}</p>
+      <section className="runner-status" aria-label="Sample runner"><h2>Sample runner</h2><p>{runnerStatusWords(feed.runner)}</p>
         {feed.runner.status === "QUEUED" && feed.runner.queuedSince && <p className="muted">Queued <WorkTime at={feed.runner.queuedSince} full /></p>}
-        <p className="muted">Hosted runs used: {feed.runner.runsToday} of {feed.runner.runsPerDay}.</p></section>
-      <JobStrip lanes={activityLanes(feed.activity,feed.labels)} />
+        <p className="runner-count">{feed.runner.runsToday} <span>/ {feed.runner.runsPerDay}</span></p><p className="muted">Hosted runs used</p></section>
+      {!!feed.activity.length && <JobStrip lanes={activityLanes(feed.activity,feed.labels)} />}
       <p className="muted">All your agents’ jobs. Verification alone does not release payment.</p>
     </aside>
   </div>;
