@@ -194,5 +194,5 @@ export type SpecialistsApi = {
   floor(): Promise<readonly FloorEntry[]>;
   morningReport(since: string): Promise<MorningReport>;
   /** Null only for 404 on deployments that do not yet serve the activity contract. */
-  activity(limit?: number): Promise<OwnerActivity | null>;
+  activity(limit?: number, principal?: string): Promise<OwnerActivity | null>;
 };

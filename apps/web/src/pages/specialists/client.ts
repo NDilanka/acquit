@@ -2,6 +2,7 @@
 // The only built-in data is the replays under /replays, read by loadExamReplay and loadNightReplay. They are labelled on screen.
 
 import { ApiError } from "../../api.ts";
+import { activityReader } from "./activityRead.ts";
 import {
   agentOf,
   examOf,
@@ -52,6 +53,13 @@ async function call<T>(method: Method, path: string, body?: unknown): Promise<T>
 }
 
 const enc = encodeURIComponent;
+const readActivity = activityReader(async (limit?: number) => {
+  try { return await call<OwnerActivity>("GET", `/api/me/activity${limit === undefined ? "" : `?limit=${limit}`}`); }
+  catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+});
 
 export const specialists: SpecialistsApi = {
   async samples() {
@@ -113,14 +121,9 @@ export const specialists: SpecialistsApi = {
     return reportOf(r);
   },
 
-  async activity(limit) {
+  async activity(limit, principal) {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) throw new RangeError("Activity limit must be 1–50.");
-    try {
-      return await call<OwnerActivity>("GET", `/api/me/activity${limit === undefined ? "" : `?limit=${limit}`}`);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) return null;
-      throw error;
-    }
+    return readActivity(limit,principal);
   },
 };
 

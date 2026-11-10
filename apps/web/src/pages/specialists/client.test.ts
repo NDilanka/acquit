@@ -31,14 +31,17 @@ test("owner activity reads the contract unchanged, with optional bounded limit a
 });
 
 test("only an activity 404 silently selects the legacy read path", async () => {
-  answer(404,{error:"NOT_FOUND"});
-  assert.equal(await specialists.activity(),null);
   for (const status of [401,403,500,503]) {
     answer(status,{error:status === 403 ? "NOT_OWNER" : "UNAVAILABLE"});
     await assert.rejects(specialists.activity(),error => error instanceof ApiError && error.status === status);
   }
   globalThis.fetch = async () => { throw new TypeError("Network unavailable"); };
   await assert.rejects(specialists.activity(),TypeError);
+  const calls=answer(404,{error:"NOT_FOUND"});
+  assert.equal(await specialists.activity(),null);
+  assert.equal(await specialists.activity(50),null);
+  assert.equal(calls.length,1);
+  await assert.rejects(specialists.activity(0),RangeError);
 });
 
 test("the on-load exam read requests the newest server record without an exam query", async () => {

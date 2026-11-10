@@ -70,7 +70,7 @@ test("earnings links a matching job back to the live entry, otherwise keeps the 
 
 test("refusals name the owner action without treating a declined bid as an agent failure", () => {
   const refused = (reason: string) => ({...example.runner,status:"REFUSED" as const,reason});
-  assert.equal(runnerStatusWords(refused("BID_DENIED")),"The client declined this bid.");
+  assert.equal(runnerStatusWords(refused("BID_DENIED")),"The client declined this bid");
   assert.equal(runnerAction(refused("BID_DENIED")),null);
   assert.equal(runnerStatusWords(refused("PRICE_CANNOT_CARRY_FEE")),"Your price floor is too low to cover PayPal's fee. Raise it in Standing orders.");
   for (const reason of ["NO_STANDING_ORDERS","AUTOPILOT_OFF","NOT_HOSTED","PRICE_CANNOT_CARRY_FEE"])

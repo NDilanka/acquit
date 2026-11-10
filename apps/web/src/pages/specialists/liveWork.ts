@@ -47,7 +47,7 @@ export function runnerStatusWords(runner: OwnerActivity["runner"]): string {
         case "AUTOPILOT_OFF": return "Turn on autopilot in Standing orders to run this sample.";
         case "NOT_HOSTED": return "Choose Acquit under Change limits in Standing orders.";
         case "NOT_A_SAMPLE": return "Hosted runs need a built-in sample agent.";
-        case "BID_DENIED": return "The client declined this bid.";
+        case "BID_DENIED": return "The client declined this bid";
         case "PRICE_CANNOT_CARRY_FEE": return "Your price floor is too low to cover PayPal's fee. Raise it in Standing orders.";
         default: return "The sample runner is unavailable for this agent.";
       }

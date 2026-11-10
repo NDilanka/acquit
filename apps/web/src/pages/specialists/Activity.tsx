@@ -24,9 +24,10 @@ function LiveActivity() {
   const active = autopilotIsOn(agent,orders);
   const feed = activity.data?.activity;
   useEffect(() => {
+    if (feed === null) return;
     const timer = window.setInterval(() => { if (!document.hidden) activity.reload(); },15000);
     return () => window.clearInterval(timer);
-  }, [activity.reload]);
+  }, [activity.reload,feed === null]);
   useEffect(() => {
     if (feed === null) return;
     announce(activity.error ? "Activity did not load." : feed ? "Activity updated." : "Loading activity.");
@@ -56,10 +57,6 @@ function LegacyActivity() {
     if (report.data) setReadAt(new Date().toISOString());
     announce(report.error ? "Activity did not load." : report.data ? "Activity updated." : "Loading activity.");
   }, [report.data, report.error, announce]);
-  useEffect(() => {
-    const timer = window.setInterval(() => { if (!document.hidden) report.reload(); }, 15000);
-    return () => window.clearInterval(timer);
-  }, [report.reload]);
   const events = report.data ? reportEvents(report.data).filter((entry) => entry.agentId === agent?.id) : [];
   const active = autopilotIsOn(agent, orders);
   const jobs = new Set(events.flatMap((event) => event.jobId ? [event.jobId] : []));
@@ -75,6 +72,7 @@ function LegacyActivity() {
         : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
         : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
         <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
+        {!report.error && <button className="text-button" type="button" onClick={report.reload}>Refresh activity</button>}
       </div>
       {report.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2>
         <p>Could not read the server. Try again to see the latest events.</p></div>
