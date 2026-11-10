@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CheckoutPhase, JobPhase, JobStatus } from "./api-types.ts";
-import { bidStatusWord, draftFailureWord, escrowWord, ledgerKindWord, runFailureWord, statusLabel, verdictLabel, type StatusInput } from "./job-status.ts";
+import { bidStatusWord, draftFailureWord, escrowWord, ledgerKindWord, operatorJobCrumb, runFailureWord, statusLabel, verdictLabel, type StatusInput } from "./job-status.ts";
+
+test("an operator's breadcrumb leaves Open jobs once work starts", () => {
+  assert.deepEqual(operatorJobCrumb("OPEN"),{ to:"/operator",label:"Open jobs" });
+  for (const status of ["IN_PROGRESS","VERIFIED","PAID","REFUNDED","CLOSED"] as const)
+    assert.deepEqual(operatorJobCrumb(status),{ to:"/operator/work",label:"My work" });
+});
 
 function job(status: JobStatus, phase: JobPhase, checkoutPhase: CheckoutPhase | null = null, last: "VERIFIED" | "REJECTED" | null = null): StatusInput {
   return { status, phase, checkoutPhase, attempts: { last } };

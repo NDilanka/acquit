@@ -37,8 +37,10 @@ function Earnings() {
   </div>;
   return <SpecialistPage step={5} lead="" gradeDelta={agentDelta(data, agent?.id)} provenance="Live workspace report">
     <section className="work-page earnings-page">
-      {report.error ? <><h1>Earnings did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
-        <p>Could not read the report. Retry to check recorded work and money.</p></div>{actions}</>
+      {report.error ? <><header className="work-heading"><h1>Earnings</h1>
+        <p className="spec-lead">PayPal sandbox · workspace earnings</p><p>Earnings did not load.</p></header>
+        {actions}<div className="work-alert" role="alert" data-tone="fail">
+        <p>Could not read the report. Retry to check recorded work and money.</p></div></>
         : !data ? <><EarningsHeadingSkeleton />
           {actions}
           <WorkSkeleton count={3} label="Loading earnings." /></>

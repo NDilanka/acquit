@@ -119,7 +119,7 @@
 .record-ref { display: flex; align-items: center; flex: none; gap: var(--space-3); }
 .record-ref a { display: inline-flex; align-items: center; min-height: var(--control-lg); text-underline-offset: 3px; }
 .orders-sentence { margin-top: var(--space-8) !important; font-size: var(--text-heading); line-height: 48px; letter-spacing: -.01em; max-width: 54ch; }
-.owner-app .wrap .orders-sentence :is(input.sentence-control,select.sentence-control) { display: inline-block; height: var(--control-lg); font: inherit; font-weight: 500; background: transparent; border: 0; border-bottom: 2px solid var(--line-2); border-radius: var(--r) var(--r) 0 0; padding: 0 var(--space-2); cursor: pointer; }
+.owner-app .wrap .orders-sentence :is(input.sentence-control,select.sentence-control) { display: inline-block; height: var(--control-lg); font: 500 var(--text-section)/var(--leading-section) var(--sans); vertical-align: middle; background: transparent; border: 0; border-bottom: 2px solid var(--line-2); border-radius: var(--r) var(--r) 0 0; padding: 0 var(--space-2); cursor: pointer; }
 .owner-app .wrap .orders-sentence input.sentence-control { width: 5em; font-variant-numeric: tabular-nums; cursor: text; }
 .owner-app .wrap .orders-sentence select.sentence-control { appearance: none; padding-right: var(--space-8); }
 .sentence-select { position: relative; display: inline-block; }
@@ -340,6 +340,12 @@
 .record-loading { min-height: 240px; }
 .activity-feed .earnings-events [data-tone="fail"] { color: var(--red); }
 .owner-deck .spec:has(> .exam-record) { row-gap: var(--space-6); }
+.app.hosted-owner main.wrap { min-height: calc(100dvh - 64px); }
+.app.hosted-owner .side-item.on { color: var(--ink); background: var(--surface); border-color: var(--line); }
+.app.hosted-owner :is(.sandbox, .pill.open, .pill.held) { color: var(--muted); background: var(--surface); border-color: var(--line); }
+.app.hosted-owner .pill.open .dot { color: var(--muted); background: currentColor; }
+.app.hosted-owner .work-next.turn { color: var(--ink); }
+.app.hosted-owner .k.held { color: var(--muted); }
 @media (max-width: 640px) {
   .owner-footer { padding-bottom: 160px; }
   .owner-bar-end { min-width: 108px; }

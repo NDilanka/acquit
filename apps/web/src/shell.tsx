@@ -80,7 +80,7 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
       </nav>
       <div className="owner-bar-end">
         {session?.user.role === "OPERATOR" && owner.agent?.runner === "claude-code" && hasLiveExam(owner.agent.task) && <div className="owner-shell-state">
-          {owner.drafting ? <span className="owner-slot">Orders not saved</span> : owner.orders
+          {owner.drafting ? <span className="owner-slot">Orders not set</span> : owner.orders
             ? <button type="button" className="owner-pause" role="switch" aria-label="Autopilot" aria-checked={owner.orders.autopilot} disabled={pending} onClick={() => void toggleAutopilot()}><span className={`switch-track${owner.orders.autopilot ? " on" : ""}`} aria-hidden="true" /><span className="owner-auto-long">{pending ? "Saving…" : owner.orders.autopilot ? "Autopilot on · working on its own" : "Autopilot off · no new bids"}</span><span className="owner-auto-short" aria-hidden="true">{owner.orders.autopilot ? "on" : "off"}</span></button>
             : owner.agent?.acquitted ? "Orders not set" : "Not acquitted"}
         </div>}
@@ -192,7 +192,7 @@ function LegacyShell({
 
   return (
     <PageTitleContext.Provider value={supplyTitle}>
-    <div className="app">
+    <div className={`app${path === "/operator/work" || (path.startsWith("/jobs/") && path !== "/jobs/new") ? " hosted-owner" : ""}`}>
       <a href="#content" className="skip-link" onClick={skipToContent}>
         Skip to content
       </a>
@@ -293,6 +293,7 @@ function AccountCard({ session, onSignOut, compact = false }: { session: Session
   const [dialog, setDialog] = useState<"save" | "signOut" | null>(null);
   // Bumped when the saved flag changes, so the card reads storage again.
   const [, setSavedTick] = useState(0);
+  const [savedHere, setSavedHere] = useState<{ client: string; saved: boolean } | null>(null);
   const card = useRef<HTMLDivElement>(null);
   const cardButton = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -301,8 +302,14 @@ function AccountCard({ session, onSignOut, compact = false }: { session: Session
   const { theme, setChoice } = useTheme();
   const { location } = useRouter();
   useEffect(() => setOpen(false), [location.path]);
-  const saved = account ? linkSaved(localStorage, account.client) : true;
+  const saved = account ? savedHere?.client === account.client ? savedHere.saved : linkSaved(localStorage, account.client) : true;
   const name = cardName(user, account);
+  useEffect(() => {
+    const refresh = () => { setSavedHere(null); setSavedTick(n => n + 1); };
+    window.addEventListener("storage",refresh);
+    window.addEventListener("focus",refresh);
+    return () => { window.removeEventListener("storage",refresh); window.removeEventListener("focus",refresh); };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -390,7 +397,7 @@ function AccountCard({ session, onSignOut, compact = false }: { session: Session
       </button>
       {/* The sidebar is a transformed sheet at 390 px, which would trap a fixed dialog inside it. */}
       {dialog === "save" && account && createPortal(
-        <SaveAccountModal account={account} onClose={() => setDialog(null)} onSavedChange={() => setSavedTick((n) => n + 1)} />,
+        <SaveAccountModal account={account} onClose={() => setDialog(null)} onSavedChange={saved => setSavedHere({ client:account.client,saved })} />,
         document.body,
       )}
       {dialog === "signOut" && createPortal(
