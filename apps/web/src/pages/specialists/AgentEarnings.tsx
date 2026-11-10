@@ -1,165 +1,83 @@
 import { useEffect, useState } from "react";
-import { shortId } from "../../format.ts";
-import { useSession } from "../../session.tsx";
-import { EmptyState, SkeletonCard, StatTile } from "../../ui.tsx";
+import { Link } from "../../router.tsx";
 import { specialists } from "./client.ts";
-import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
-import type { MorningReport, ReportEntry, SpecialistAgent } from "./types.ts";
-import { useLoad } from "./useLoad.ts";
 import { useOwner } from "./OwnerPanel.tsx";
-import { dollars as usd, entryTitle, gradeChangeWords, localTime, paidTotalCents, sinceIso } from "./view.ts";
+import { SpecialistPage } from "./SpecialistPage.tsx";
+import { useLoad } from "./useLoad.ts";
+import { useReport } from "./useReport.ts";
+import { dollars, paidTotalCents } from "./view.ts";
+import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
+import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes } from "./work.ts";
 
 export function AgentEarningsPage() {
-  return (
-    <SpecialistPage
-      step={5}
-      lead="Your workspace earnings · PayPal sandbox."
-    >
-      <EarningsBody />
-    </SpecialistPage>
-  );
+  const { agent } = useOwner();
+  return <Earnings key={agent?.id ?? "workspace"} />;
 }
 
-function EarningsBody() {
-  const { user } = useSession();
-  const { agents } = useOwner();
-  const [window] = useState(() => {
-    const openedAt = new Date().toISOString();
-    const key = `acquit.earningsRead:${user.handle}`;
-    let since = sinceIso(Date.now());
-    try {
-      const previous = localStorage.getItem(key);
-      if (previous && Number.isFinite(Date.parse(previous)) && previous <= openedAt) since = previous;
-    } catch { /* Storage is optional. */ }
-    return { key, openedAt, since };
-  });
-  const report = useLoad(() => specialists.morningReport(window.since), window.since);
-  useEffect(() => {
-    if (report.data === null) return;
-    try { localStorage.setItem(window.key, window.openedAt); } catch { /* Storage is optional. */ }
-  }, [report.data, window]);
-  // A null id is workspace activity, never silently assigned to the selected agent.
-  if (report.data === null) {
-    return report.error !== null ? (
-      <LoadFailed error={report.error} onRetry={report.reload} />
-    ) : (
-      <SkeletonCard lines={6} />
-    );
-  }
-  return <Report report={report.data} agents={agents ?? []} />;
-}
-
-function Report({ report, agents }: { readonly report: MorningReport; readonly agents: readonly SpecialistAgent[] }) {
-  const nameOf = (agentId: string | null): string => agents.find((a) => a.id === agentId)?.name ?? "Workspace activity";
-  const paid = paidTotalCents(report.payouts);
-  // An empty window shows one empty state in place of the empty sections.
-  const quiet =
-    report.bids.length === 0 &&
-    report.wins.length === 0 &&
-    report.verified.length === 0 &&
-    report.rejected.length === 0 &&
-    report.payouts.length === 0 &&
-    report.gradeChanges.length === 0 &&
-    report.preApprovals.length === 0;
-
-  return (
-    <section className="spec-report" aria-labelledby="spec-report-title">
-      <div className="spec-exam-head">
-        <h1 id="spec-report-title">Since you last looked</h1>
-        {report.sandbox && <span className="sandbox">PayPal sandbox</span>}
+function Earnings() {
+  const { agent, announce } = useOwner();
+  const report = useReport(true);
+  const totals = useLoad(async () => agent ? specialists.agent(agent.id) : null, agent?.id ?? "");
+  const [readAt] = useState(() => new Date().toISOString());
+  useEffect(() => { announce(report.error ? "Earnings did not load." : report.data ? "Earnings loaded." : "Loading earnings."); }, [report.data, report.error, announce]);
+  const data = report.data;
+  const events = data ? earningsEvents(data) : [];
+  const quiet = data && !events.length && !data.gradeChanges.length;
+  const paid = data ? paidTotalCents(data.payouts) : 0;
+  const firstPaid = data?.payouts[0];
+  const ordersPath = `/specialists/orders${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
+  return <SpecialistPage step={5} lead="" gradeDelta={agentDelta(data, agent?.id)} provenance="Live workspace report">
+    <section className="work-page earnings-page">
+      {report.error ? <><h1>Earnings did not load.</h1><div className="work-alert" role="alert">
+        <p>Could not read the report. Retry to check recorded work and money.</p></div></>
+        : !data ? <><h1 className="sr-only">Earnings</h1><div className="earnings-key-skeleton" />
+          <WorkSkeleton count={3} label="Loading earnings." /></>
+        : <>
+          <header className="earnings-head"><div className="work-heading">
+            <h1 className={quiet ? "" : "earnings-key"}>{quiet ? "Nothing new since you last looked." : paid ? `${dollars(paid)} released` : "Nothing released yet."}</h1>
+            <p className="spec-lead">Workspace report since <WorkTime at={data.since} full />. {quiet ? "No work was recorded." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${data.bids.length} bids recorded.`}</p>
+          </div><div className="earnings-refs"><p>PayPal sandbox · workspace earnings</p>
+            {data.payouts.map((payout) => <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
+              <p>{dollars(payout.amountCents)} released · {jobLabel(payout.jobId)}</p>
+              <p className="muted">Reference <code>{payout.reference.match(/.{1,4}/g)?.join(" ")}</code></p>
+              <CopyWorkValue value={payout.reference} label="Copy reference" />
+            </div>)}
+            {!quiet && <p className="muted">Payouts are workspace-wide, not attributed to the selected agent.</p>}
+          </div></header>
+          <div className="work-split"><ol className="work-timeline" aria-label="Earnings by job, newest first">
+            {quiet ? <TimelineMark title="No new work recorded"><p className="work-status">Nothing released in this report · PayPal sandbox</p></TimelineMark>
+              : groupJobs(events).map(({ id, entries }, index) => {
+                const latest = entries[0]!;
+                return <TimelineMark key={id} at={latest.at} index={index} tone={latest.kind === "rejected" ? "fail" : ""}
+                  title={latest.jobId ? <Link to={`/jobs/${encodeURIComponent(latest.jobId)}`}>{jobLabel(latest.jobId)}</Link> : "Workspace activity"}>
+                  <p className="work-status">{latest.status}{latest.kind === "released" && " · PayPal sandbox"}</p>
+                  <ul className="earnings-events">{entries.slice(1).map((entry) => <li key={entry.id}>{entry.status} · <WorkTime at={entry.at} /></li>)}</ul>
+                </TimelineMark>;
+              })}
+            {!quiet && !events.length && <TimelineMark title="Grade updated"><p className="work-status">No job events supplied in this report.</p></TimelineMark>}
+          </ol><aside className="work-side" aria-label="Earnings summary">
+            {!quiet && <JobStrip lanes={jobLanes(events)} through={readAt} />}
+            <dl className="work-facts">
+              <div><dt>Workspace report</dt><dd>{dollars(paid)} released · PayPal sandbox</dd></div>
+              {totals.data?.record && <div><dt>{agent?.name} · all jobs</dt><dd>{totals.data.record.jobsTaken} taken · {totals.data.record.verified} verified · {totals.data.record.rejected} rejected</dd></div>}
+              {totals.data?.earnedCents !== undefined && <div><dt>{agent?.name} · total earned</dt><dd>{dollars(totals.data.earnedCents)} released · PayPal sandbox</dd></div>}
+            </dl>
+            {totals.error !== null && <p className="muted">Agent totals did not load. <button className="text-button" onClick={totals.reload}>Retry totals</button></p>}
+            <p className="muted">Verification alone does not release payment. Release requires client approval, the release timer or an arbiter.</p>
+          </aside></div>
+        </>}
+      <div className="owner-actions">{report.error
+        ? <button type="button" className="btn" onClick={() => { announce("Retrying earnings."); report.reload(); }}>Retry</button>
+        : firstPaid && !quiet ? <Link className="btn" to={`/jobs/${encodeURIComponent(firstPaid.jobId)}`}>See the paid work</Link>
+        : <Link className="btn" to={ordersPath}>Review standing orders</Link>}
       </div>
-      <p className="muted">Since <time dateTime={report.since} title={report.since}>{localTime(report.since)}</time></p>
-
-      <div className="spec-stats">
-        <StatTile label="Bids" value={report.bids.length} />
-        <StatTile label="Won" value={report.wins.length} />
-        <StatTile label="Verified" value={report.verified.length} />
-        <StatTile label="Rejected" value={report.rejected.length} />
-        <StatTile label="Released" value={`${usd(paid)} released`} note={report.sandbox ? "PayPal sandbox" : undefined} />
-      </div>
-
-      {quiet ? (
-        <EmptyState inline>
-          Nothing new since you last looked.
-        </EmptyState>
-      ) : (
-        <>
-          <EntryList title="Bids" entries={report.bids} nameOf={nameOf} />
-          <EntryList title="Won" entries={report.wins} nameOf={nameOf} />
-          <EntryList title="Verified" entries={report.verified} nameOf={nameOf} />
-          <EntryList title="Rejected" entries={report.rejected} nameOf={nameOf} />
-
-          <section className="card pad spec-report-sec" aria-labelledby="spec-payouts-title">
-            <h3 id="spec-payouts-title" className="spec-h3">
-              Released
-            </h3>
-            {report.payouts.length === 0 ? (
-              <p className="muted">No payouts in this window.</p>
-            ) : (
-              <ul className="spec-list">
-                {report.payouts.map((p) => (
-                  <li key={p.reference}>
-                    <span className="mono">{p.reference}</span>
-                    <span className="num">{usd(p.amountCents)} released</span>
-                    <span className="muted">for job {shortId(p.jobId)}</span>
-                    <time className="muted" dateTime={p.at} title={p.at}>{localTime(p.at)}</time>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="card pad spec-report-sec" aria-labelledby="spec-grades-title">
-            <h3 id="spec-grades-title" className="spec-h3">
-              Grade changes
-            </h3>
-            {report.gradeChanges.length === 0 ? (
-              <p className="muted">No grade changes in this window.</p>
-            ) : (
-              <ul className="spec-list">
-                {report.gradeChanges.map((g) => (
-                  <li key={`${g.at}-${g.agentId ?? ""}`}>
-                    <span>{nameOf(g.agentId)}</span>
-                    <span className="num">{gradeChangeWords(g.delta)}</span>
-                    <time className="muted" dateTime={g.at} title={g.at}>{localTime(g.at)}</time>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <EntryList title="Pre-approved submits" entries={report.preApprovals} nameOf={nameOf} />
-        </>
-      )}
     </section>
-  );
+  </SpecialistPage>;
 }
 
-function EntryList({
-  title,
-  entries,
-  nameOf,
-}: {
-  readonly title: string;
-  readonly entries: readonly ReportEntry[];
-  readonly nameOf: (agentId: string | null) => string;
-}) {
-  return (
-    <section className="card pad spec-report-sec">
-      <h3 className="spec-h3">{title}</h3>
-      {entries.length === 0 ? (
-        <p className="muted">None in this window.</p>
-      ) : (
-        <ul className="spec-list">
-          {entries.map((entry, i) => (
-            <li key={`${entry.at}-${entry.jobId ?? i}`}>
-              <span>{entryTitle(entry, "Job")}</span>
-              <span className="muted">{nameOf(entry.agentId)}</span>
-              <time className="muted" dateTime={entry.at} title={entry.at}>{localTime(entry.at)}</time>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
+export function CopyWorkValue({ value, label = "Copy" }: { value: string; label?: string }) {
+  const { announce } = useOwner();
+  return <button type="button" className="text-button" onClick={() => {
+    void navigator.clipboard.writeText(value).then(() => announce("Copied."), () => announce("Could not copy. Select the text to copy it."));
+  }}>{label}</button>;
 }

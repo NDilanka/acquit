@@ -26,6 +26,14 @@ export function jobLabel(id: string | null): string {
   return id ? `Job ${id.replace(/^job[_-]/, "").slice(0, 8)}` : "Workspace activity";
 }
 
+/** Workspace payouts have no agentId. They may join a job, never an agent. */
+export function earningsEvents(report: MorningReport): WorkEvent[] {
+  return [...reportEvents(report), ...report.payouts.map((payout, i): WorkEvent => ({
+    id: `payout:${payout.reference}:${i}`, at: payout.at, jobId: payout.jobId, agentId: null,
+    kind: "released", status: `${dollars(payout.amountCents)} released`,
+  }))].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
 export function groupJobs(events: readonly WorkEvent[]) {
   const jobs = new Map<string, WorkEvent[]>();
   for (const event of events) {
