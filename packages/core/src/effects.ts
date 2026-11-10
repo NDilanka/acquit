@@ -230,15 +230,22 @@ export type Ports = {
 	readonly clock: { now(): Instant };
 };
 
+/** The only errors a bid's own price raises from the split and the quote. Each one means the House cannot fund that price. */
+const PRICE_REFUSALS: ReadonlySet<string> = new Set(["Invalid price", "Unsafe total", "Price cannot carry processing fee"]);
+
 /**
  * The quote for a bid's price, or null when the House cannot fund it: the split holds no such price, or PayPal's fee
- * would not fit inside the split's fee. A malformed fee model is a deployment fault, not a bad bid, so it still throws.
+ * would not fit inside the split's fee. A missing or malformed fee model is a deployment fault, not a bad bid: it and
+ * any error the price itself cannot raise are thrown, so a fault fails loudly instead of reading as PRICE_CANNOT_FUND.
  */
 function fundableQuote(price: UsdCents, feeModel: ProcessorFeeModel): FeeQuote | null {
+	// A deployment can be wired with no fee model at all. That must never reach the quote's arithmetic, and never read as a bad bid.
+	const model = feeModel as ProcessorFeeModel | null | undefined;
+	if (model === null || model === undefined) throw new Error("Invalid fee model: none is configured");
 	try {
-		return quote(commercialSplit(price), feeModel);
+		return quote(commercialSplit(price), model);
 	} catch (error) {
-		if (error instanceof Error && error.message !== "Invalid fee model") return null;
+		if (error instanceof Error && PRICE_REFUSALS.has(error.message)) return null;
 		throw error;
 	}
 }
