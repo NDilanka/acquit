@@ -522,7 +522,8 @@ function acquitStudioTheme() {
   // Starts from Studio's own theme: its icon sets are parts of that theme, and createStudioTheme() leaves them out, so the icons draw blank.
   return studioTheme.withParams({
     fontFamily: sans,
-    accentColor: green,
+    fontSize: 14,
+    accentColor: token("--green-text"),
     textColor: token("--ink"),
     borderColor: token("--line"),
     backgroundColor: token("--card"),
@@ -533,7 +534,7 @@ function acquitStudioTheme() {
     studioPanelHeaderFontFamily: sans,
     studioToggleButtonActiveBackgroundColor: green,
     studioToggleButtonActiveBorderColor: green,
-    studioToggleButtonActiveColor: green,
+    studioToggleButtonActiveColor: token("--white"),
     studioCanvasBackgroundColor: token("--paper"),
     studioMinWidth: 0,
     studioCanvasMinWidth: PAGE_LAYOUT.minWidth ?? 300,
