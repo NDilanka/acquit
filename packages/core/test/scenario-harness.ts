@@ -257,11 +257,17 @@ export async function drive(h: Harness, name: ScenarioName): Promise<ScenarioRun
 	return (await start(h, name)).finished;
 }
 
-/** Each step's ms is its own span, and the steps sum to the run's span from its first start to its last end, within 100 ms. */
+/**
+ * Each step's ms is its own span, and each step starts where the one before it ended. So the steps sum exactly to the
+ * run's span from its first start to its last end. No time is left between steps for a slow disk to fill.
+ */
 export function assertTimings(run: ScenarioRun): void {
 	if (run.steps.length === 0) return;
 	for (const step of run.steps) assert.equal(step.ms, Date.parse(step.endedAt) - Date.parse(step.startedAt), `${step.name} ms`);
+	for (let i = 1; i < run.steps.length; i++) {
+		assert.equal(run.steps[i].startedAt, run.steps[i - 1].endedAt, `${run.steps[i].name} starts where ${run.steps[i - 1].name} ends`);
+	}
 	const total = Date.parse(run.steps.at(-1)!.endedAt) - Date.parse(run.steps[0].startedAt);
 	const sum = run.steps.reduce((acc, step) => acc + step.ms, 0);
-	assert.ok(Math.abs(total - sum) <= 100, `the steps sum to ${sum} ms, and the run spans ${total} ms`);
+	assert.equal(sum, total, `the steps sum to ${sum} ms, and the run spans ${total} ms`);
 }

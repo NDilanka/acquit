@@ -290,6 +290,24 @@ test("a tick that takes time is attributed to the step it runs in, and the steps
 	} finally { await h.dispose(); }
 });
 
+test("a slow progress write between two steps is part of the step it leads into, so the steps still sum to the run's total", async () => {
+	const h = await harness();
+	try {
+		// Each progress write blocks for 20 ms, as a slow disk does. The writes fall between steps, so a write that
+		// belonged to no step would leave its time out of the sum.
+		let writes = 0;
+		const runs = h.deps.runs;
+		const save = runs.save.bind(runs);
+		runs.save = run => { writes++; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); save(run); };
+		const run = await (await start(h, "verified-and-paid")).finished;
+		assert.equal(run.state, "DONE");
+		assertTimings(run);
+		// Two writes come after the last step ends: the one after its settle, and the final one. Every other write is inside a step.
+		const sum = run.steps.reduce((acc, step) => acc + step.ms, 0);
+		assert.ok(sum >= (writes - 2) * 20, `the steps sum to ${sum} ms, and ${writes} writes waited 20 ms each`);
+	} finally { await h.dispose(); }
+});
+
 test("a tick whose summary names only another job's effects adds no settle row to this run", async () => {
 	const h = await harness();
 	try {
