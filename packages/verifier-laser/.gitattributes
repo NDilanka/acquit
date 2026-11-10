@@ -1,0 +1,3 @@
+# Keep the sample bytes and the generated samples module identical on every checkout.
+samples/* -text
+src/samples.ts -text
