@@ -139,9 +139,12 @@ export function SaveAccountModal({
     };
   }, [state, account.client]);
 
-  const copied = () => {
+  const saved = () => {
     markLinkSaved(localStorage, account.client, true);
     onSavedChange(true);
+  };
+  const copied = () => {
+    saved();
     toast(SAVE_COPY.copied);
   };
 
@@ -188,6 +191,8 @@ export function SaveAccountModal({
           {error !== null && <ErrorNote error={error} />}
           <div className="alert warn">{SAVE_COPY.warning}</div>
           <div className="save-actions">
+            {state === "ready" && link && <a className="btn secondary sm" href={link} target="_blank" rel="noreferrer" onClick={saved}>Open your account link</a>}
+            {state === "earlier" && <button type="button" className="btn secondary sm" onClick={() => { saved(); onClose(); }}>I saved my link</button>}
             {state === "error" && (
               <button type="button" className="btn secondary sm" onClick={() => setState("making")}>
                 Try again

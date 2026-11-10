@@ -4,9 +4,10 @@ import { Link, useRouter } from "../../router";
 import { match } from "../../route";
 import type { Session } from "../../session";
 import { specialists } from "./client";
-import type { SpecialistAgent, StandingOrders } from "./types";
+import { agentTaskLabel, completedSetup, reportWorkDates, workAgent } from "./ownerState";
+import type { OwnerActivity, SpecialistAgent, StandingOrders } from "./types";
 import { useLoad } from "./useLoad";
-import { dollars, hasLiveExam, ownerAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
+import { dollars, gradeChangeWords, hasLiveExam, ownerAgent, STEPS, SIMULATED_WORD } from "./view";
 
 type OwnerState = {
   agents: readonly SpecialistAgent[] | null;
@@ -14,6 +15,8 @@ type OwnerState = {
   reload: () => void;
   agent: SpecialistAgent | null;
   requestedId?: string;
+  selectionPending: boolean;
+  activity: { data: { activity: OwnerActivity | null } | null; error: unknown; reload: () => void };
   provenance: string;
   setProvenance: (words: string) => void;
   orders: StandingOrders | null;
@@ -23,8 +26,13 @@ type OwnerState = {
   heldCents: number | null;
   moneyError: unknown;
   reloadMoney: () => void;
+  announcement: string;
+  announce: (message: string) => void;
 };
 const Context = createContext<OwnerState | null>(null);
+function rememberedAgent(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
 
 /** One acknowledged agent/order read shared by the shell and all owner screens. */
 export function OwnerProvider({ session, children }: { session: Session | null | undefined; children: ReactNode }) {
@@ -33,22 +41,32 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   const held = useLoad(async () => session?.user.role === "OPERATOR" ? api.escrow() : { escrow: [] }, `${session?.user.handle ?? ""}:${session?.user.role ?? ""}`);
   const route = match(location.path);
   const requestedId = ("agentId" in route ? route.agentId : undefined) ?? location.search.get("agent") ?? undefined;
+  const workScreen = route.name === "specialistActivity" || route.name === "specialistEarnings";
+  const activity = useLoad(async () => ({ activity: session?.user.role === "OPERATOR" && workScreen
+    ? await specialists.activity(50) : null }), `${session?.user.handle ?? ""}:${session?.user.role ?? ""}:${workScreen}`);
+  const defaultWork = requestedId === undefined && workScreen;
+  const recent = useLoad(async () => ({ report: session?.user.role === "OPERATOR" && defaultWork
+    ? await specialists.morningReport("1970-01-01T00:00:00.000Z") : null }), `${session?.user.handle ?? ""}:${defaultWork}`);
+  const selectionPending = defaultWork && ((recent.data?.report == null && recent.error === null) || (activity.data === null && activity.error === null));
   const storageKey = `acquit.ownerAgent:${session?.user.handle ?? ""}`;
-  const [lastId, setLastId] = useState(() => {
-    try { return localStorage.getItem(storageKey); } catch { return null; }
-  });
-  const agent = ownerAgent(load.data ?? [], requestedId, lastId);
+  const [remembered, setRemembered] = useState(() => ({ key:storageKey,id:rememberedAgent(storageKey) }));
+  const lastId = remembered.key === storageKey ? remembered.id : rememberedAgent(storageKey);
+  const agent = defaultWork ? workAgent(load.data ?? [], [...reportWorkDates(recent.data?.report ?? null),
+    ...(activity.data?.activity?.activity.map(job => ({ agentId:job.agentId,at:job.updatedAt })) ?? [])])
+    : ownerAgent(load.data ?? [], requestedId, lastId);
   useEffect(() => {
     if (!agent) return;
-    setLastId(agent.id);
+    setRemembered({ key:storageKey,id:agent.id });
     try { localStorage.setItem(storageKey, agent.id); } catch { /* Storage is optional. */ }
   }, [agent?.id, storageKey]);
   const [provenance, setProvenance] = useState("");
+  const [announcement, announce] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [ack, setAck] = useState<{ id: string; orders: StandingOrders | null } | null>(null);
+  useEffect(() => { setProvenance(""); setDrafting(false); setAck(null); announce(""); }, [storageKey]);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
-  return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId,
-    provenance, setProvenance, orders, drafting, setDrafting,
+  return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId, selectionPending, activity,
+    provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
     heldCents: held.data === null ? null : held.data.escrow.reduce((sum, row) => sum + row.cents, 0),
     moneyError: held.error, reloadMoney: held.reload,
     setOrders: (next) => { if (agent) setAck({ id: agent.id, orders: next }); } }}>{children}</Context.Provider>;
@@ -70,31 +88,34 @@ export function MoneyLine() {
 }
 
 /** The same identity, money and weighted track coordinates on every owner screen. */
-export function AgentPanel({ agent, step, provenance, children }: {
-  agent: SpecialistAgent | null; step: number; provenance: string; children: ReactNode;
+export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
+  agent: SpecialistAgent | null; step: number; provenance: string; children: ReactNode; gradeDelta?: number;
 }) {
+  const { orders } = useOwner();
   const coming = agent !== null && !hasLiveExam(agent.task);
-  return <article className="owner-panel">
+  const done = completedSetup(agent, orders);
+  return <><aside className="owner-panel" data-owner-step={step} aria-label="Your agent">
     <header className="owner-bridge">
-      <div className="owner-identity"><p className="owner-name">{agent?.name ?? "No agent plugged in yet"}</p>
-        {agent && <div className="owner-identity-meta"><p className="owner-task">{taskLabel(agent.task)}</p>
-          {coming && step !== 2 ? <p className="owner-verdict">Exam coming</p> : !coming && <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
-            {step !== 2 && agent.acquitted && agent.simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
-      {agent && !coming && <div className="owner-grade"><strong key={agent.grade}>{agent.grade ?? "—"}</strong><span>Grade</span></div>}
+      <div className="owner-identity"><p className="owner-name" title={agent?.name}>{agent?.name ?? "No agent plugged in yet"}</p>
+        {agent && <div className="owner-identity-meta"><p className="owner-task">{agentTaskLabel(agent.task)}</p>
+          {coming ? <p className="owner-verdict">Exam coming</p> : <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
+            {step !== 2 && agent.acquitted && agent.simulated && <> · <span className="owner-honesty">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
+      {agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
+        {(step === 4 || step === 5) && <span className="owner-delta">{gradeDelta === undefined ? null : gradeDelta ? `${gradeChangeWords(gradeDelta)} in this report` : "No change in this report"}</span>}</div>}
     </header>
-    {agent && <MoneyLine />}
+    <MoneyLine />
     <div className="owner-track-row">
       <nav aria-label="Agent setup"><ol className="owner-track">{STEPS.map((s) => {
         const to = s.step === 1 || s.step === 5 ? `${s.to}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}` : `${s.to}${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
-        return <li key={s.step} className={s.step < step ? "done" : s.step === step ? "current" : ""}>
-          <Link to={to}><span className="track-number" aria-hidden="true">{s.step < step ? "✓" : s.step}</span>
-            <span aria-current={s.step === step ? "step" : undefined}>{s.label}</span></Link>
+        return <li key={s.step} className={[done.has(s.step) ? "done" : "", s.step === step ? "current" : ""].filter(Boolean).join(" ")}>
+          <Link to={to} aria-current={s.step === step ? "step" : undefined}><span className="track-rail" aria-hidden="true" />
+            <span className="track-label"><span className="track-number" aria-hidden="true">{done.has(s.step) ? "✓" : s.step}</span><span>{s.label}{coming && s.step === 2 ? " · coming" : ""}</span></span></Link>
         </li>;
       })}</ol></nav>
-      {step !== 2 && provenance && <p className="owner-provenance">{provenance}</p>}
+      <p className="owner-track-current">Step {step} of 5 · {STEPS.find(s => s.step === step)?.label}</p>
+      <p className="owner-provenance" aria-hidden={step === 2 || !provenance ? true : undefined}>{step !== 2 ? provenance : null}</p>
     </div>
-    <div className="owner-deck">{children}</div>
-  </article>;
+    </aside><div className="owner-deck">{coming && agent && <p className="spec-lead machine-honesty">{agentTaskLabel(agent.task)} · No real hardware.</p>}{children}</div></>;
 }
 
 export function AgentPicker({ agents, requestedId, base }: {
@@ -104,7 +125,7 @@ export function AgentPicker({ agents, requestedId, base }: {
     <h1>{requestedId ? "Agent not found" : agents.length ? "Choose your agent" : "Plug in your first agent"}</h1>
     <p className="muted">{requestedId ? "That agent is not in your workspace. Choose one below." : "Pick the agent for this run."}</p>
     <ul>{agents.map((agent) => <li key={agent.id}><Link className="agent-choice" to={`${base}/${encodeURIComponent(agent.id)}`}>
-      <span>{agent.name}<small>{taskLabel(agent.task)} · {!hasLiveExam(agent.task) ? "Exam coming" : agent.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(agent.task) && agent.acquitted && agent.simulated ? ` · ${SIMULATED_WORD}` : ""}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
+      <span>{agent.name}<small>{agentTaskLabel(agent.task)} · {!hasLiveExam(agent.task) ? "Exam coming" : agent.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(agent.task) && agent.acquitted && agent.simulated ? ` · ${SIMULATED_WORD}` : ""}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
       <span>Grade {hasLiveExam(agent.task) ? agent.grade ?? "—" : "—"}</span>
     </Link></li>)}</ul>
     <Link to="/specialists" className="btn secondary">Plug in an agent</Link>

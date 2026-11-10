@@ -89,7 +89,7 @@ export function useRouter() {
   return ctx;
 }
 
-export function Link({ to, className, tour, children, "aria-current": current }: { to: string; className?: string; tour?: string; children: ReactNode; "aria-current"?: "page" }) {
+export function Link({ to, className, tour, children, "aria-current": current }: { to: string; className?: string; tour?: string; children: ReactNode; "aria-current"?: "page" | "step" }) {
   const { navigate } = useRouter();
   const onClick = (e: MouseEvent<HTMLAnchorElement>) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
