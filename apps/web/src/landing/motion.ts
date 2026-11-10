@@ -1,11 +1,4 @@
-import "./js/core.js";
-import "./js/preloader.js";
-import "./js/nav.js";
-import "./js/hero.js";
-import "./js/manifesto.js";
-import "./js/docket.js";
-import "./js/machine.js";
-import "./js/registry.js";
-import "./js/audiences.js";
-import "./js/reasons.js";
+import "./js/page.js";
+import "./js/socket.js";
+import "./js/fields.js";
 import "./js/footer.js";

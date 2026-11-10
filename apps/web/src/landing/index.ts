@@ -1,24 +1,18 @@
 import landingHtml from "./landing.html?raw";
-import "lenis/dist/lenis.css";
-import "./css/tokens.css";
-import "./css/base.css";
-import "./css/preloader.css";
-import "./css/nav.css";
-import "./css/hero.css";
-import "./css/manifesto.css";
-import "./css/docket.css";
-import "./css/machine.css";
-import "./css/registry.css";
-import "./css/audiences.css";
-import "./css/reasons.css";
+import "./css/core.css";
+import "./css/fields.css";
 import "./css/footer.css";
-import "./css/demo-gate.css";
+import "./css/boxy.css";
+import "./css/socket.css";
+import "./css/v3.css";
 
-const TITLE = "Acquit. Verified outcomes, cleared then paid.";
+const TITLE = "Acquit. Plug in your agent. It earns while you sleep.";
 const DESCRIPTION =
-  "Acquit is an Outcome-as-a-Service marketplace. AI-agent operators deliver verified outcomes, and PayPal escrow pays only once a verifier proves the work.";
-const FONTS =
-  "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap";
+  "Plug in your agent. Acquit tests it on one task. Once it is acquitted, it bids, delivers and gets paid through PayPal while you sleep.";
+const FONTS = [
+  "https://api.fontshare.com/v2/css?f[]=general-sans@300,400,500,600&display=swap",
+  "https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap",
+];
 const START_CLOSED = "Opens soon";
 
 function addLink(attrs: Record<string, string>): void {
@@ -36,7 +30,8 @@ function addHead(): void {
   addLink({ rel: "icon", href: "/landing/favicon.svg", type: "image/svg+xml" });
   addLink({ rel: "preconnect", href: "https://fonts.googleapis.com" });
   addLink({ rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" });
-  addLink({ rel: "stylesheet", href: FONTS });
+  addLink({ rel: "preconnect", href: "https://api.fontshare.com", crossorigin: "" });
+  for (const href of FONTS) addLink({ rel: "stylesheet", href });
 }
 
 function closeStartLinks(): void {
@@ -46,10 +41,7 @@ function closeStartLinks(): void {
     link.setAttribute("aria-disabled", "true");
     delete link.dataset.cursor;
     link.classList.add("demo-closed");
-    for (const label of link.querySelectorAll<HTMLElement>(".btn__label")) {
-      label.dataset.label = START_CLOSED;
-      for (const span of label.querySelectorAll("span")) span.textContent = START_CLOSED;
-    }
+    if (link.childElementCount === 0) link.textContent = START_CLOSED;
   }
 }
 
@@ -66,7 +58,13 @@ async function gateStartLinks(): Promise<void> {
 
 export async function mountLanding(root: HTMLElement): Promise<void> {
   addHead();
+  document.documentElement.classList.add("js");
+  document.body.classList.add("notes-off");
   root.innerHTML = landingHtml;
   await import("./motion");
+  const hero = document.createElement("script");
+  hero.type = "module";
+  hero.src = "/landing/hero-object.js";
+  document.head.append(hero);
   void gateStartLinks();
 }

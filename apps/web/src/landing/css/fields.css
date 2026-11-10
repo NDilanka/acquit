@@ -1,0 +1,195 @@
+/* Fields (orchestrator, round 5, concept 4 "inspect"): the field clip fills the section, checks are
+   pinned on the work as inspection callouts, a corner card names the field, tabs run along the bottom.
+   Round 4 layout: sections/_archive/fields-r4.css. */
+.sec.fields { padding: 0; }
+.fx {
+  --fx-glass: rgba(244, 246, 245, .86);
+  --fx-rim: rgba(255, 255, 255, .9);
+  --fx-mark: #fff;
+  position: relative; height: max(100svh, 760px); overflow: hidden;
+  background: var(--bg-2); color: var(--ink);
+}
+
+/* media: a 4:3 frame cover-fitted to the section, so callout anchors in frame units stay on the work */
+.fx-media { position: absolute; inset: 0; overflow: hidden; container-type: size; }
+.fx-frame {
+  position: absolute; left: 50%; top: 50%; width: max(100cqw, 133.333cqh); aspect-ratio: 4 / 3;
+  transform: translate(-50%, -50%);
+}
+.fx-frame video {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 0;
+  opacity: 0; transition: opacity 600ms var(--ease-ui);
+}
+.fx-frame video.is-on { opacity: 1; }
+.fx-marks { position: absolute; inset: 0; transition: opacity 200ms var(--ease-ui); }
+.fx.is-swapping .fx-marks, .fx.is-swapping .fx-card { opacity: 0; }
+
+/* the left scrim only lifts the title; the work stays readable */
+.fx-scrim {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(238, 240, 239, .95) 0, rgba(238, 240, 239, .86) 26%, rgba(238, 240, 239, .5) 38%, rgba(238, 240, 239, 0) 54%),
+    linear-gradient(180deg, rgba(238, 240, 239, .55) 0, rgba(238, 240, 239, 0) 22%);
+}
+
+.fx-head { position: absolute; left: var(--gutter); top: 96px; max-width: 40vw; }
+.fx-kicker { color: var(--mute); margin-bottom: 16px; }
+.fx-title { font-size: clamp(30px, 3.2vw, 54px); font-weight: 500; line-height: 1.04; letter-spacing: -.03em; }
+.fx-title span { display: block; white-space: nowrap; }
+.fx-t1 { color: var(--ink); }
+.fx-t2 { color: var(--mute); font-weight: 400; }
+.fx-sandbox { margin-top: 18px; color: var(--mute); }
+
+/* corner card: field no., status, name, what you get, when it pays */
+.fx-panel { outline: none; }
+.fx-card {
+  position: absolute; right: var(--gutter); top: 96px; width: min(340px, 30vw); padding: 20px 22px 22px;
+  background: var(--fx-glass); border: 1.5px solid var(--fx-rim); border-radius: var(--r-card);
+  box-shadow: 0 12px 30px rgba(14, 17, 16, .10);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1); backdrop-filter: blur(14px) saturate(1.1);
+  transition: opacity 200ms var(--ease-ui);
+}
+.fx-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.fx-no { color: var(--mute); }
+.fx-status {
+  display: inline-flex; align-items: center; min-height: 24px; padding: 0 10px; border-radius: var(--r-pill);
+  font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  background: var(--track); color: var(--mute); box-shadow: var(--sh-track);
+}
+.fx-status[data-status="live"] { background: var(--em-metal-btn); color: #fff; box-shadow: var(--sh-metal); text-shadow: 0 1px 1px rgba(0, 0, 0, .3); }
+.fx-status[data-status="open"] { background: none; box-shadow: none; border: 1px dashed var(--line-2); }
+.fx-name { margin-top: 14px; font-size: clamp(28px, 2.3vw, 38px); font-weight: 500; line-height: 1; letter-spacing: -.03em; }
+.fx-line { margin-top: 8px; font-size: 15px; line-height: 1.4; color: var(--mute); }
+.fx-spec { display: grid; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line-2); }
+.fx-spec div { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.fx-spec dt { font-size: 13px; color: var(--mute); }
+.fx-spec dd { font-size: 13px; line-height: 1.4; color: var(--ink); }
+.fx-note { margin-top: 12px; color: var(--mute); text-transform: none; letter-spacing: .01em; font-size: 10.5px; line-height: 1.5; }
+.fx-link { display: inline-flex; align-items: center; min-height: 40px; margin-top: 6px; font-size: 15px; font-weight: 500; text-underline-offset: 4px; }
+.fx-checks { display: none; }
+
+/* callouts: bracket on the spot, hairline leader, label box */
+.fx-leads { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 1.5px rgba(14, 17, 16, .45)); }
+.fx-lead { fill: none; stroke: var(--fx-mark); stroke-width: 1.25; vector-effect: non-scaling-stroke; stroke-dasharray: 1; stroke-dashoffset: 0; }
+.fx-pin {
+  position: absolute; width: 42px; height: 42px; transform: translate(-50%, -50%);
+  --b: 1.5px; --k: 11px;
+  background:
+    linear-gradient(var(--fx-mark), var(--fx-mark)) left top / var(--k) var(--b),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) left top / var(--b) var(--k),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) right top / var(--k) var(--b),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) right top / var(--b) var(--k),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) left bottom / var(--k) var(--b),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) left bottom / var(--b) var(--k),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) right bottom / var(--k) var(--b),
+    linear-gradient(var(--fx-mark), var(--fx-mark)) right bottom / var(--b) var(--k);
+  background-repeat: no-repeat;
+  filter: drop-shadow(0 0 1.5px rgba(14, 17, 16, .5));
+}
+.fx-pin::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%; background: var(--fx-mark);
+}
+.fx[data-status="live"] .fx-pin::after { background: var(--em-300); box-shadow: 0 0 0 2px rgba(255, 255, 255, .9), 0 0 10px rgba(59, 217, 161, .8); }
+.fx-pin-n { display: none; }
+
+.fx-lbl {
+  position: absolute; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center;
+  width: max-content; max-width: 250px; padding: 10px 14px 11px 11px; transform: translate(0, -50%);
+  background: var(--fx-glass); border: 1px solid var(--fx-rim); border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(14, 17, 16, .14);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+.fx-lbl[data-side="l"] { transform: translate(-100%, -50%); }
+.fx-lbl-t { grid-column: 2; font-size: 14.5px; font-weight: 500; line-height: 1.25; letter-spacing: -.005em; }
+.fx-lbl-s { grid-column: 2; margin-top: 2px; font-size: 12.5px; line-height: 1.35; color: var(--mute); }
+.fx-lbl-k { grid-column: 2; margin-bottom: 3px; color: var(--mute); font-size: 10px; }
+.fx-lbl .fx-tick { grid-row: 1 / span 2; }
+.fx[data-status="roadmap"] .fx-lbl, .fx[data-status="open"] .fx-lbl {
+  background: rgba(244, 246, 245, .74); border: 1px dashed rgba(14, 17, 16, .42); box-shadow: none; padding-left: 14px;
+}
+.fx[data-status="roadmap"] .fx-lead, .fx[data-status="open"] .fx-lead { stroke-dasharray: .012 .01; }
+.fx[data-status="roadmap"] .fx-pin, .fx[data-status="open"] .fx-pin { --k: 7px; opacity: .9; }
+
+.fx-tick {
+  width: 22px; height: 22px; flex: none; padding: 4px; border-radius: 50%;
+  background: var(--em-metal-btn); box-shadow: var(--sh-metal);
+  fill: none; stroke: #fff; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* draw in one by one; held fully drawn while motion is paused or reduced */
+.fx.is-draw .fx-pin { animation: fx-pin 520ms var(--ease-out) both; animation-delay: calc(var(--i) * var(--step) + 350ms); }
+.fx.is-draw .fx-lead { animation: fx-lead 480ms var(--ease-ui) both; animation-delay: calc(var(--i) * var(--step) + 520ms); }
+.fx.is-draw[data-status="roadmap"] .fx-lead, .fx.is-draw[data-status="open"] .fx-lead { animation-name: fx-fade; }
+.fx.is-draw .fx-lbl { animation: fx-lbl 460ms var(--ease-out) both; animation-delay: calc(var(--i) * var(--step) + 820ms); }
+.fx.is-draw .fx-lbl .fx-tick { animation: fx-tickpop 380ms var(--ease-out) both; animation-delay: calc(var(--i) * var(--step) + 1080ms); }
+@keyframes fx-pin { from { opacity: 0; transform: translate(-50%, -50%) scale(1.6); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+@keyframes fx-lead { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes fx-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fx-lbl { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
+@keyframes fx-tickpop { from { scale: .4; opacity: 0; } to { scale: 1; opacity: 1; } }
+
+.fx-stock { position: absolute; left: var(--gutter); bottom: 96px; color: var(--mute); font-size: 10px; }
+
+/* bottom: field tabs on a glass bar; the selected tab carries the auto-advance bar */
+.fx-tabs {
+  position: absolute; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  background: var(--fx-glass); border-top: 1px solid var(--fx-rim);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1); backdrop-filter: blur(16px) saturate(1.1);
+}
+.fx-tab {
+  position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  min-height: 76px; padding: 16px var(--gutter) 18px; text-align: left; color: var(--mute);
+  transition: color 240ms var(--ease-ui), background-color 240ms var(--ease-ui);
+}
+.fx-tab + .fx-tab { border-left: 1px solid var(--line); }
+.fx-tab:hover { color: var(--ink); background: rgba(255, 255, 255, .4); }
+.fx-tab[aria-selected="true"] { color: var(--ink); background: rgba(255, 255, 255, .5); }
+.fx-tab:focus-visible { outline-offset: -3px; }
+.fx-tn { display: inline-flex; align-items: center; gap: 8px; }
+.fx-tname { font-size: 16px; font-weight: 500; letter-spacing: -.01em; }
+.fx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); flex: none; }
+.fx-dot[data-status="live"] { background: var(--em-metal); box-shadow: 0 0 0 2px rgba(5, 109, 91, .14); }
+.fx-dot[data-status="open"] { background: none; border: 1px dashed var(--mute); }
+.fx-prog {
+  position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: var(--ink);
+  transform: scaleX(0); transform-origin: left center;
+}
+.fx-tab[aria-selected="true"] .fx-prog { transform: scaleX(1); }
+.fx.is-run .fx-tab[aria-selected="true"] .fx-prog { animation: fx-prog 7s linear both; }
+@keyframes fx-prog { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-frame video, .fx-marks, .fx-card { transition: none; }
+  .fx.is-run .fx-tab[aria-selected="true"] .fx-prog { animation: none; }
+}
+
+@media (max-width: 1099.98px) {
+  .fx-head { max-width: 46vw; }
+  .fx-card { width: 300px; }
+  .fx-lbl { max-width: 200px; }
+  .fx-lbl-s { display: none; }
+}
+
+/* mobile: the clip on top (4:3), numbered pins on the work, the checks as a numbered list under it */
+@media (max-width: 819.98px) {
+  .fx { height: auto; display: flex; flex-direction: column; background: var(--bg); padding-top: 72px; }
+  .fx-head { position: static; order: -1; max-width: none; padding: 0 var(--gutter) 22px; }
+  .fx-title span { white-space: normal; }
+  .fx-media { position: relative; inset: auto; width: 100%; aspect-ratio: 4 / 3; }
+  .fx-scrim, .fx-leads, .fx-lbl { display: none; }
+  .fx-pin { width: 30px; height: 30px; --k: 8px; }
+  .fx-pin::after { display: none; }
+  .fx-pin-n { display: grid; place-items: center; position: absolute; inset: 0; color: #fff; font-size: 12px; text-shadow: 0 0 3px rgba(0, 0, 0, .7); }
+  .fx-panel { display: grid; gap: 18px; padding: 20px var(--gutter) 24px; }
+  .fx-card { position: static; width: auto; padding: 0; background: none; border: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .fx-checks { display: block; }
+  .fx-list-k { color: var(--mute); margin-bottom: 10px; }
+  .fx-list { display: grid; gap: 0; border-top: 1px dashed var(--line-2); }
+  .fx-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px dashed var(--line-2); }
+  .fx-list-n { color: var(--mute); }
+  .fx-list-t { display: block; font-size: 15px; font-weight: 500; }
+  .fx-list-s { display: block; font-size: 13px; color: var(--mute); margin-top: 2px; }
+  .fx-stock { position: static; padding: 0 var(--gutter) 14px; }
+  .fx-tabs { position: static; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(140px, 1fr); overflow-x: auto; background: none; -webkit-backdrop-filter: none; backdrop-filter: none; border-top: 1px solid var(--line); }
+}
