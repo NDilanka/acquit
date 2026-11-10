@@ -12,6 +12,7 @@ import {
 	segmentPolygonDistance,
 	segmentSegmentDistance,
 } from "./geometry.ts";
+import { MAX_SEGMENT_TESTS } from "./limits.ts";
 import type { Finding, HiddenSample, ScenePath, Scene, Spec, Verdict, Vec2 } from "./types.ts";
 
 /** Two copper items closer than this touch. */
@@ -78,14 +79,42 @@ function gap(x: Geo, y: Geo): number {
 	return polygonDistance(x.poly, y.poly);
 }
 
-/** Calls cb for each pair of items that share a layer and whose boxes lie within limit of each other. */
-function forEachNearPair(geos: readonly Geo[], limit: number, cb: (i: number, j: number, g: number) => void): void {
+/**
+ * The segment-pair tests left for one verification. Every scan draws on the same budget, and once it is spent it
+ * stays spent, so no later scan does any work.
+ */
+type Budget = { left: number; spent: boolean };
+
+/** Takes tests from the budget. Returns false, and keeps returning false, once the budget is spent. */
+function take(budget: Budget, tests: number): boolean {
+	if (budget.spent) return false;
+	budget.left -= tests;
+	if (budget.left < 0) budget.spent = true;
+	return !budget.spent;
+}
+
+/** The straight edges a copper item costs in a distance test: one for a track, one per side for a polygon. */
+function edgesOf(g: Geo): number {
+	return g.kind === "track" ? 1 : g.poly.length;
+}
+
+/**
+ * Calls cb for each pair of items that share a layer and whose boxes lie within limit of each other. Each pair is
+ * charged its edge-pair count before it is measured, and the scan stops as soon as the budget is spent.
+ */
+function forEachNearPair(
+	geos: readonly Geo[],
+	limit: number,
+	budget: Budget,
+	cb: (i: number, j: number, g: number) => void,
+): void {
 	for (let i = 0; i < geos.length; i++) {
 		const x = geos[i] as Geo;
 		for (let j = i + 1; j < geos.length; j++) {
 			const y = geos[j] as Geo;
 			if (!sharedLayer(x, y)) continue;
 			if (boxGap(x.box, y.box) > limit) continue;
+			if (!take(budget, edgesOf(x) * edgesOf(y))) return;
 			cb(i, j, gap(x, y));
 		}
 	}
@@ -121,7 +150,7 @@ function shoelaceArea(poly: readonly Vec2[]): number {
 }
 
 /** The disjoint-set root of each item. Items that touch share a root. */
-function connectedComponents(geos: readonly Geo[]): number[] {
+function connectedComponents(geos: readonly Geo[], budget: Budget): number[] {
 	const parent = geos.map((_, i) => i);
 	const find = (i: number): number => {
 		let r = i;
@@ -134,7 +163,7 @@ function connectedComponents(geos: readonly Geo[]): number[] {
 		}
 		return r;
 	};
-	forEachNearPair(geos, CONTACT, (i, j, g) => {
+	forEachNearPair(geos, CONTACT, budget, (i, j, g) => {
 		if (g <= CONTACT) parent[find(i)] = find(j);
 	});
 	return geos.map((_, i) => find(i));
@@ -143,18 +172,18 @@ function connectedComponents(geos: readonly Geo[]): number[] {
 type Pair = { readonly i: number; readonly j: number; readonly g: number };
 
 /** The closest pair that breaks a clearance limit, scanned in item order so the choice is stable. */
-function worstClearance(geos: readonly Geo[], comp: readonly number[], limit: number): Pair | undefined {
+function worstClearance(geos: readonly Geo[], comp: readonly number[], limit: number, budget: Budget): Pair | undefined {
 	let worst: Pair | undefined;
-	forEachNearPair(geos, limit, (i, j, g) => {
+	forEachNearPair(geos, limit, budget, (i, j, g) => {
 		if (comp[i] === comp[j]) return;
 		if (g < limit - EPS && (!worst || g < worst.g)) worst = { i, j, g };
 	});
 	return worst;
 }
 
-function minClearanceFound(geos: readonly Geo[], comp: readonly number[]): number {
+function minClearanceFound(geos: readonly Geo[], comp: readonly number[], budget: Budget): number {
 	let best = MAX_MEASURE;
-	forEachNearPair(geos, MAX_MEASURE, (i, j, g) => {
+	forEachNearPair(geos, MAX_MEASURE, budget, (i, j, g) => {
 		if (comp[i] !== comp[j] && g < best) best = g;
 	});
 	return best;
@@ -221,7 +250,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 	for (const v of board.vias) {
 		geos.push({ kind: "poly", layers: ["F.Cu", "B.Cu"], poly: v.poly, box: boxOf(v.poly, 0), via: v });
 	}
-	const comp = connectedComponents(geos);
+	const budget: Budget = { left: MAX_SEGMENT_TESTS, spent: false };
+	const comp = connectedComponents(geos, budget);
 
 	const padGeo = new Map<string, number>();
 	geos.forEach((g, i) => {
@@ -325,6 +355,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			let worst: { g: number; at: Vec2; layer: CopperLayer | undefined; outside: boolean } | undefined;
 			geos.forEach(g => {
 				const pts = g.kind === "track" ? [g.a, g.b] : g.poly;
+				// Each item is tested against every outline edge, and each of its points against the whole outline.
+				if (!take(budget, (edgesOf(g) + pts.length) * edges.length)) return;
 				const outside = !pts.every(p => pointInPolygon(p, boardPoly));
 				let minEdge = Infinity;
 				for (const [e0, e1] of edges) {
@@ -442,7 +474,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 
 	// clearance
 	{
-		const worst = worstClearance(geos, comp, spec.rules.minClearance);
+		const worst = worstClearance(geos, comp, spec.rules.minClearance, budget);
 		if (!worst) {
 			findings.push(okFinding("clearance", `Copper of different nets keeps at least ${fmt(spec.rules.minClearance)} mm apart.`));
 		} else {
@@ -539,6 +571,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 				0,
 			);
 			for (const g of geos) {
+				// The keep-out rectangle has four sides.
+				if (!take(budget, edgesOf(g) * 4)) continue;
 				const d = g.kind === "track" ? segmentPolygonDistance(g.a, g.b, rect) - g.width / 2 : polygonDistance(g.poly, rect);
 				if (d < 0.001 && !bad) bad = { name: k.name, at: representative(g) };
 			}
@@ -612,7 +646,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 
 		if (hidden.minClearance !== undefined) {
 			const limit = hidden.minClearance;
-			const tighter = worstClearance(geos, comp, limit);
+			const tighter = worstClearance(geos, comp, limit, budget);
 			findings.push(
 				tighter
 					? { rule: "hidden-clearance", ok: false, hidden: true, message: "A copper gap is narrower than the hidden limit." }
@@ -633,7 +667,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		track_length_B_Cu: round(trackLen("B.Cu")),
 		via_count: board.vias.length,
 		min_track_width: Number.isFinite(minTrack) ? round(minTrack) : 0,
-		min_clearance: round(minClearanceFound(geos, comp)),
+		min_clearance: round(minClearanceFound(geos, comp, budget)),
 		part_count: board.footprints.length,
 		net_count: nets.size,
 	};
@@ -651,10 +685,18 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			points: boardPoly,
 		});
 	}
+	// The spec net of each component: the first pad in item order that carries one.
+	const netOfRoot = new Map<number, string>();
+	geos.forEach((g, i) => {
+		if (g.kind !== "poly" || !g.pad) return;
+		const net = expectedNet.get(g.pad.id);
+		const root = comp[i] as number;
+		if (net !== undefined && !netOfRoot.has(root)) netOfRoot.set(root, net);
+	});
 	geos.forEach((g, i) => {
 		if (g.kind === "track") {
 			const layer = g.layers[0] as CopperLayer;
-			const net = netForComponent(comp, geos, expectedNet, comp[i] as number);
+			const net = netOfRoot.get(comp[i] as number);
 			paths.push({
 				id: `track-${i}`,
 				kind: "copper",
@@ -673,7 +715,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 					layer,
 					z: zOf(layer),
 					closed: true,
-					net: netForComponent(comp, geos, expectedNet, comp[i] as number),
+					net: netOfRoot.get(comp[i] as number),
 					points: g.poly,
 				});
 			}
@@ -684,7 +726,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 				layer: "F.Cu",
 				z: TOP_Z,
 				closed: true,
-				net: netForComponent(comp, geos, expectedNet, comp[i] as number),
+				net: netOfRoot.get(comp[i] as number),
 				points: g.poly,
 			});
 		}
@@ -723,6 +765,9 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		probes: probeEntries.map(p => ({ a: [p.a[0], p.a[1], p.za], b: [p.b[0], p.b[1], p.zb], expect: p.expect, ok: p.ok })),
 	};
 
+	// A scan that ran out of budget saw only part of the board, so no verdict is given on it.
+	if (budget.spent) return failedParse(spec, `the board needs more than ${MAX_SEGMENT_TESTS} segment-pair tests to check`);
+
 	return {
 		workflow: "pcb",
 		pass: findings.every(f => f.ok),
@@ -734,18 +779,5 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 
 function round(n: number): number {
 	return Math.round(n * 1000) / 1000;
-}
-
-/** The spec net that a component carries, when it holds any spec pad. */
-function netForComponent(comp: readonly number[], geos: readonly Geo[], expectedNet: Map<string, string>, root: number): string | undefined {
-	for (let i = 0; i < geos.length; i++) {
-		if (comp[i] !== root) continue;
-		const g = geos[i];
-		if (g && g.kind === "poly" && g.pad) {
-			const n = expectedNet.get(g.pad.id);
-			if (n !== undefined) return n;
-		}
-	}
-	return undefined;
 }
 

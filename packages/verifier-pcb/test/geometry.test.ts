@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	arcPoints,
 	circlePolygon,
+	planArc,
 	pointInPolygon,
 	pointSegmentDistance,
 	polygonDistance,
@@ -65,8 +66,17 @@ test("a circle is a 64-gon with the given radius", () => {
 });
 
 test("arcs flatten within the error budget and reject collinear points", () => {
-	const pts = arcPoints([1, 0], [0, 1], [-1, 0], 0.01);
-	assert.ok(pts && pts.length > 4);
-	for (const p of pts ?? []) near(Math.hypot(p[0], p[1]), 1, 0.011);
-	assert.equal(arcPoints([0, 0], [1, 0], [2, 0], 0.01), undefined);
+	const plan = planArc([1, 0], [0, 1], [-1, 0], 0.01, 1024);
+	assert.ok(plan.ok);
+	const pts = plan.ok ? arcPoints([1, 0], [-1, 0], plan) : [];
+	assert.ok(pts.length > 4);
+	for (const p of pts) near(Math.hypot(p[0], p[1]), 1, 0.011);
+	assert.deepEqual(planArc([0, 0], [1, 0], [2, 0], 0.01, 1024), { ok: false, reason: "degenerate" });
+});
+
+test("arcs that need more pieces than the limit, or whose step rounds to zero, are reported as too many pieces", () => {
+	// A semicircle of radius 1,000,000 needs about 7,800 pieces at a 0.02 mm chord error.
+	assert.deepEqual(planArc([-1e6, 0], [0, 1e6], [1e6, 0], 0.02, 1024), { ok: false, reason: "too-many-pieces" });
+	// A nearly straight arc of radius about 5e17: the chord-error step rounds to zero.
+	assert.deepEqual(planArc([-1e6, 0], [0, 1e-6], [1e6, 0], 0.02, 1024), { ok: false, reason: "too-many-pieces" });
 });

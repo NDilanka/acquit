@@ -1,19 +1,26 @@
 // A small S-expression reader for KiCad files. Atoms and quoted strings both come back as strings; the reader
-// never throws, and malformed input comes back as an error value.
+// never throws, and malformed input comes back as an error value. Input size, nesting, and element count are
+// checked as the text is read, so an oversized file stops early and never builds the full tree.
+
+import { MAX_ELEMENTS, MAX_INPUT_CHARS, MAX_NESTING } from "./limits.ts";
 
 export type SExpr = string | readonly SExpr[];
 export type ParseResult = { readonly ok: true; readonly value: readonly SExpr[] } | { readonly ok: false; readonly error: string };
 
 export function parseSexprs(text: string): ParseResult {
+	if (text.length > MAX_INPUT_CHARS) return { ok: false, error: `input longer than ${MAX_INPUT_CHARS} characters` };
 	const stack: SExpr[][] = [[]];
+	let elements = 0;
 	let i = 0;
 	const n = text.length;
 	while (i < n) {
 		const c = text[i] as string;
 		if (c === "(") {
+			if (stack.length > MAX_NESTING) return { ok: false, error: `nesting deeper than ${MAX_NESTING} levels` };
 			const list: SExpr[] = [];
 			(stack[stack.length - 1] as SExpr[]).push(list);
 			stack.push(list);
+			elements++;
 			i++;
 		} else if (c === ")") {
 			if (stack.length === 1) return { ok: false, error: `unexpected ")" at offset ${i}` };
@@ -41,6 +48,7 @@ export function parseSexprs(text: string): ParseResult {
 			}
 			if (!closed) return { ok: false, error: "unterminated string" };
 			(stack[stack.length - 1] as SExpr[]).push(s);
+			elements++;
 		} else {
 			let s = "";
 			while (i < n) {
@@ -50,7 +58,9 @@ export function parseSexprs(text: string): ParseResult {
 				i++;
 			}
 			(stack[stack.length - 1] as SExpr[]).push(s);
+			elements++;
 		}
+		if (elements > MAX_ELEMENTS) return { ok: false, error: `more than ${MAX_ELEMENTS} elements` };
 	}
 	if (stack.length !== 1) return { ok: false, error: "unclosed \"(\"" };
 	return { ok: true, value: stack[0] as SExpr[] };

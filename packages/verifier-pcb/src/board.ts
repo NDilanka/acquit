@@ -4,7 +4,14 @@
 // recognised record with a missing, non-finite, out-of-range, or non-positive mandatory field fails the parse too,
 // and a parse that cannot be read comes back with an error instead of a throw.
 
-import { arcPoints, add, circlePolygon, dist, ovalPolygon, rectPolygon, rotate } from "./geometry.ts";
+import { add, arcPoints, circlePolygon, dist, ovalPolygon, planArc, rectPolygon, rotate, type ArcPlan } from "./geometry.ts";
+import {
+	CIRCLE_VERTICES,
+	MAX_ARC_PIECES,
+	MAX_COPPER_ITEMS,
+	MAX_OUTLINE_EDGES,
+	MAX_VERTICES,
+} from "./limits.ts";
 import { child, children, num, parseSexprs, type SExpr } from "./sexpr.ts";
 import type { Vec2 } from "./types.ts";
 
@@ -123,13 +130,26 @@ function padPolygon(center: Vec2, shape: string, size: Vec2, angle: number): Vec
 	return rectPolygon(center, size, angle);
 }
 
-/** Splits an arc into straight pieces within the chord-error budget. */
-function arcTrack(list: readonly SExpr[]): Vec2[] | undefined {
+/** An arc's end points and its plan, or undefined when a mandatory point is missing. */
+function arcOf(list: readonly SExpr[]): { readonly start: Vec2; readonly end: Vec2; readonly plan: ArcPlan } | undefined {
 	const s = point(child(list, "start"));
 	const m = point(child(list, "mid"));
 	const e = point(child(list, "end"));
 	if (!s || !m || !e) return undefined;
-	return arcPoints(s, m, e, MAX_ARC_ERROR);
+	return { start: s, end: e, plan: planArc(s, m, e, MAX_ARC_ERROR, MAX_ARC_PIECES) };
+}
+
+/** Splits an arc into straight pieces within the chord-error budget, or undefined when it cannot be flattened. */
+function arcTrack(list: readonly SExpr[]): Vec2[] | undefined {
+	const arc = arcOf(list);
+	if (!arc || !arc.plan.ok) return undefined;
+	return arcPoints(arc.start, arc.end, arc.plan);
+}
+
+/** The straight pieces an arc flattens to, counted without building them. Zero when it cannot be flattened. */
+function arcPieces(list: readonly SExpr[]): number {
+	const arc = arcOf(list);
+	return arc && arc.plan.ok ? arc.plan.pieces : 0;
 }
 
 function sameKey(a: Vec2, b: Vec2): boolean {
@@ -351,9 +371,14 @@ function lengthsProblem(record: readonly SExpr[], name: string, count: number): 
 	return values.length === count && values.every(v => isLength(v)) ? undefined : `invalid (${name}) in (${owner})`;
 }
 
-/** An arc whose three points are collinear is not an arc. */
+/** An arc that is collinear, or that needs more straight pieces than the budget allows, is not supported. */
 function arcProblem(arc: readonly SExpr[]): string | undefined {
-	return arcTrack(arc) ? undefined : `degenerate (${String(arc[0])}): its three points are collinear`;
+	const planned = arcOf(arc)?.plan;
+	if (!planned || planned.ok) return undefined;
+	const head = String(arc[0]);
+	return planned.reason === "degenerate"
+		? `degenerate (${head}): its three points are collinear`
+		: `(${head}) needs more than ${MAX_ARC_PIECES} straight pieces`;
 }
 
 /** The mandatory points, the coordinates, and the arc geometry of one record, or undefined when all are sound. */
@@ -466,6 +491,37 @@ function containsZone(root: readonly SExpr[]): boolean {
 	return false;
 }
 
+/**
+ * The work the board would cost, counted before any point or polygon is built: outline edges, flattened vertices,
+ * and copper items. Counts only over-estimate, so a board that passes is within every limit. The first limit
+ * exceeded is named.
+ */
+function admissionProblem(root: readonly SExpr[]): string | undefined {
+	const onEdge = (g: readonly SExpr[]): boolean => child(g, "layer")?.[1] === "Edge.Cuts";
+	let edges = 0;
+	let vertices = 0;
+	let copper = 0;
+	for (const g of children(root, "gr_line")) if (onEdge(g)) edges += 1;
+	for (const g of children(root, "gr_rect")) if (onEdge(g)) edges += 4;
+	for (const g of children(root, "gr_arc")) {
+		const pieces = arcPieces(g);
+		vertices += pieces;
+		if (onEdge(g)) edges += pieces;
+	}
+	for (const g of children(root, "gr_circle")) if (onEdge(g)) vertices += CIRCLE_VERTICES;
+	for (const a of children(root, "arc")) {
+		const pieces = arcPieces(a);
+		vertices += pieces;
+		copper += pieces;
+	}
+	copper += children(root, "segment").length + children(root, "via").length;
+	for (const fp of children(root, "footprint")) copper += children(fp, "pad").length;
+	if (edges > MAX_OUTLINE_EDGES) return `outline has more than ${MAX_OUTLINE_EDGES} edges`;
+	if (vertices > MAX_VERTICES) return `too many flattened vertices (more than ${MAX_VERTICES})`;
+	if (copper > MAX_COPPER_ITEMS) return `too many copper items (more than ${MAX_COPPER_ITEMS})`;
+	return undefined;
+}
+
 export function readBoard(text: string): Board {
 	const parsed = parseSexprs(text);
 	if (!parsed.ok) return { ...EMPTY, error: parsed.error };
@@ -476,6 +532,8 @@ export function readBoard(text: string): Board {
 	const hasZones = containsZone(root);
 	const problem = boardProblem(root);
 	if (problem) return { ...EMPTY, hasZones, error: `unsupported construct: ${problem}` };
+	const limit = admissionProblem(root);
+	if (limit) return { ...EMPTY, hasZones, error: limit };
 
 	const edges: [Vec2, Vec2][] = [];
 	const loops: Vec2[][] = [];
