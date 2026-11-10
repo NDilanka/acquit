@@ -2,7 +2,7 @@
 // Findings come back in RULES order. The verdict passes only when every finding is ok. The hidden-material rule
 // runs only when the verifier holds samples, so a verdict without them carries no hidden finding.
 
-import { boundsOf, centreOf, edgeListDistance, edgeListsOverlap, edgesOf, heightOf, pointInPolygon, roundMm, selfCrosses, selfOverlaps, widthOf } from "./geometry.ts";
+import { boundsOf, centreOf, edgeListDistance, edgeListsOverlap, edgesOf, heightOf, lengthOfEdges, pointInPolygon, roundMm, selfCrosses, selfOverlaps, widthOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { finishedInnerSize, finishedPart, isMaterial, isMaterialSegment, isVoidPoint, keepsClearance, toDrawing, toPart } from "./finished.ts";
 import type { FinishedPart } from "./finished.ts";
@@ -16,6 +16,14 @@ import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SpecRect, Svg
 type Outline = { readonly path: SvgPath; readonly box: Bounds };
 
 type Edges = readonly (readonly [Vec2, Vec2])[];
+
+/**
+ * Speeds behind the time estimate. The spec does not set them, so the estimate is a planning figure only: cutting at
+ * 10 mm/s, engraving at 100 mm/s, and 0.5 s to start each cut path.
+ */
+const CUT_MM_PER_S = 10;
+const ENGRAVE_MM_PER_S = 100;
+const PIERCE_S = 0.5;
 
 /**
  * A cut measured on the finished part: its finished size, its centre in the part frame, and whether its finished
@@ -134,12 +142,18 @@ function pairChecks(cut: readonly SvgPath[], edges: readonly Edges[], spec: Spec
 	return { minWebMm: minWeb, thin, misordered };
 }
 
+/**
+ * The scene the machine reads: every path at the top of the stock, the outer cut as the outline, and a path with no
+ * laser colour as travel, since the laser neither cuts nor engraves along it.
+ */
 function sceneOf(paths: readonly SvgPath[], size: Scene["size"], spec: Spec): Scene {
+	const outer = outlineOf(paths.filter(path => path.stroke === CUT_STROKE))?.path;
 	const scenePaths: ScenePath[] = paths.map(path => ({
 		id: path.id,
-		kind: path.stroke === CUT_STROKE ? "cut" : path.stroke === ENGRAVE_STROKE ? "engrave" : "outline",
+		kind:
+			path === outer ? "outline" : path.stroke === CUT_STROKE ? "cut" : path.stroke === ENGRAVE_STROKE ? "engrave" : "travel",
 		layer: path.stroke ?? "none",
-		z: 0,
+		z: spec.thicknessMm,
 		closed: path.closed,
 		order: path.order,
 		points: path.points,
@@ -294,6 +308,11 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	findings.push(check("closed-paths", open.length === 0, "every cut path is closed", `${open.length} cut path(s) are open`, open));
 
 	const cutEdges = cut.map(path => edgesOf(path.points, path.closed));
+	const cutLengthMm = cutEdges.reduce((sum, edges) => sum + lengthOfEdges(edges), 0);
+	const engraveLengthMm = engrave.reduce((sum, path) => sum + lengthOfEdges(edgesOf(path.points, path.closed)), 0);
+	measured.cutLengthMm = roundMm(cutLengthMm);
+	measured.engraveLengthMm = roundMm(engraveLengthMm);
+	measured.estimatedCutSeconds = roundMm(cutLengthMm / CUT_MM_PER_S + engraveLengthMm / ENGRAVE_MM_PER_S + cut.length * PIERCE_S);
 	const repeats = repeatsOf(cut, cutEdges);
 	const duplicates = cut.filter(path => repeats.has(path)).map(path => path.id);
 	const pairs = pairChecks(cut, cutEdges, spec);
@@ -356,6 +375,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	}
 	measured.holesMatched = spec.holes.length - holeMisses.length;
 	measured.holesExpected = spec.holes.length;
+	measured.holeCount = spec.holes.length - holeMisses.length + extraHoles.length;
 	measured.cutoutsMatched = spec.slots.length - cutoutMisses.length;
 	measured.cutoutsExpected = spec.slots.length;
 	findings.push(

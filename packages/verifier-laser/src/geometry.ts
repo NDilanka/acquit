@@ -31,6 +31,13 @@ export function edgesOf(points: readonly Vec2[], closed: boolean): readonly (rea
 	return edges;
 }
 
+/** Total length of a list of edges, in mm. */
+export function lengthOfEdges(edges: readonly (readonly [Vec2, Vec2])[]): number {
+	let total = 0;
+	for (const [[ax, ay], [bx, by]] of edges) total += Math.hypot(bx - ax, by - ay);
+	return total;
+}
+
 /** Even-odd crossing test. The polygon closes itself. Points exactly on an edge may fall either side. */
 export function pointInPolygon(point: Vec2, points: readonly Vec2[]): boolean {
 	const [px, py] = point;
