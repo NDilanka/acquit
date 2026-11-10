@@ -1,0 +1,72 @@
+{
+  "id": "orchard-survey",
+  "origin": [
+    51.5,
+    -0.12
+  ],
+  "area": [
+    [
+      0,
+      0
+    ],
+    [
+      100,
+      0
+    ],
+    [
+      100,
+      120
+    ],
+    [
+      0,
+      120
+    ]
+  ],
+  "zones": [
+    {
+      "id": "pump-house",
+      "polygon": [
+        [
+          60,
+          38
+        ],
+        [
+          70,
+          38
+        ],
+        [
+          70,
+          42
+        ],
+        [
+          60,
+          42
+        ]
+      ]
+    }
+  ],
+  "camera": {
+    "sensorWidthMm": 13.2,
+    "sensorHeightMm": 8.8,
+    "focalMm": 8.8,
+    "imageWidthPx": 5472
+  },
+  "maxAltitudeM": 120,
+  "maxGsdCm": 2.5,
+  "minFrontOverlap": 0.7,
+  "minSideOverlap": 0.6,
+  "cruiseMs": {
+    "min": 5,
+    "max": 20
+  },
+  "gridM": 10,
+  "rules": [
+    "altitude-ceiling",
+    "gsd",
+    "front-overlap",
+    "side-overlap",
+    "no-fly",
+    "coverage",
+    "cruise-speed"
+  ]
+}
