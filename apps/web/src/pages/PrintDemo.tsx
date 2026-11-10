@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { Fragment, useEffect, useId, useState } from "react";
 import { api, ApiError } from "../api";
 import type { PrintDemoRunView, PrintLayerView, PrintOutcomeView, PrintReceiptView, PrintRunView, PrintTimelineView } from "../api-types";
@@ -96,7 +97,7 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
       <div className="head">
         <div>
           <div className="eyebrow">Simulated farms</div>
-          <h2 className="page-title">{PRINT_TITLE}</h2>
+          <PageTitle>{PRINT_TITLE}</PageTitle>
           <p className="muted">{PRINT_INTRO}</p>
         </div>
       </div>

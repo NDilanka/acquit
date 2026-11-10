@@ -3,7 +3,7 @@ import type { Route } from "./route";
 export type Role = "CLIENT" | "OPERATOR" | "PLATFORM";
 export type NavIcon = "jobs" | "plus" | "search" | "dashboard" | "shield" | "printer" | "play" | "bids" | "work" | "earnings";
 /** A Public item sits under its own label in the sidebar. */
-export type NavItem = { readonly to: string; readonly label: string; readonly icon: NavIcon; readonly group?: "Public" };
+export type NavItem = { readonly to: string; readonly label: string; readonly icon: NavIcon; readonly group?: "Public" | "Agents" };
 
 /** The sample book is the same read-only dashboard for every signed-in role, so each role lists it after its own pages. */
 const SAMPLE_BOOK: NavItem = { to: "/studio/sample", label: "Sample book", icon: "dashboard" };
@@ -34,9 +34,18 @@ const PUBLIC_PAGES: readonly NavItem[] = [
 
 const SCENARIOS: NavItem = { to: "/tour", label: "Scenarios", icon: "play", group: "Public" };
 
+const AGENT_PAGES: readonly NavItem[] = [
+  { to: "/specialists", label: "Plug in", icon: "plus", group: "Agents" },
+  { to: "/specialists/exam", label: "Exam", icon: "shield", group: "Agents" },
+  { to: "/specialists/orders", label: "Standing orders", icon: "bids", group: "Agents" },
+  { to: "/specialists/night", label: "Night", icon: "work", group: "Agents" },
+  { to: "/specialists/morning", label: "Morning", icon: "earnings", group: "Agents" },
+  { to: "/specialists/floor", label: "Floor", icon: "dashboard", group: "Agents" },
+];
+
 /** A run starts on the account's own visitor, and a platform session is not one, so the platform does not list Scenarios. */
 export function navFor(role: Role): readonly NavItem[] {
-  return role === "PLATFORM" ? [...ROLE_PAGES[role], ...PUBLIC_PAGES] : [...ROLE_PAGES[role], ...PUBLIC_PAGES, SCENARIOS];
+  return role === "PLATFORM" ? [...ROLE_PAGES[role], ...PUBLIC_PAGES] : [...ROLE_PAGES[role], ...(role === "OPERATOR" ? AGENT_PAGES : []), ...PUBLIC_PAGES, SCENARIOS];
 }
 
 /** Signed out, the sidebar lists the public pages; the Try Acquit button sits under them. */
@@ -46,7 +55,9 @@ export function signedOutNav(): readonly NavItem[] {
 
 /** "/" is a role's first page, so that page stays lit there; a job page keeps My jobs lit for a client and Find work for an operator. */
 export function isNavActive(item: NavItem, path: string, role: Role | null): boolean {
+  path = path.length > 1 ? path.replace(/\/+$/, "") : path;
   if (path === item.to) return true;
+  if (item.group === "Agents" && item.to !== "/specialists" && path.startsWith(`${item.to}/`)) return true;
   if (path === "/" && role !== null && ROLE_PAGES[role][0]?.to === item.to) return true;
   const jobPage = path.startsWith("/jobs/") && path !== "/jobs/new";
   if (!jobPage) return false;

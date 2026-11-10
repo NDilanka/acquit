@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AgStudioAiModule,
@@ -362,7 +363,7 @@ function Dashboard<T>({
       <div className="head">
         <div>
           <div className="eyebrow">Dashboards</div>
-          <h2 className="page-title">{title}</h2>
+          <PageTitle>{title}</PageTitle>
           <p className="muted">{lead}</p>
         </div>
         <div className="head-actions">

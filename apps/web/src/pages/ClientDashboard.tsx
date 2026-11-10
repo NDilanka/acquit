@@ -1,3 +1,4 @@
+import { PageTitle } from "../page-title";
 import { useEffect, useState, type ReactNode } from "react";
 import type { JobView } from "../api-types";
 import { HouseNote } from "../account-ui";
@@ -44,7 +45,7 @@ export function ClientDashboard() {
       <div className="head">
         <div>
           <div className="eyebrow">Client</div>
-          <h2 className="page-title">Your jobs</h2>
+          <PageTitle>Your jobs</PageTitle>
         </div>
         <Link to="/jobs/new" className="btn">New job</Link>
       </div>
