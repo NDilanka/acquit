@@ -169,8 +169,8 @@
   .owner-bridge { gap: var(--space-6); }
 }
 @media (max-width: 640px) {
-  html:has(.owner-app) { scroll-padding-block: 96px 144px; }
-  .owner-app :is(a,button,input,select,summary) { scroll-margin-block: 96px 144px; }
+  html:has(.owner-app) { scroll-padding-block: 152px 144px; }
+  .owner-app :is(a,button,input,select,summary) { scroll-margin-block: 152px 144px; }
   .owner-bar { position: relative; grid-template-columns: auto minmax(0,1fr) auto; padding: var(--space-2) var(--space-3) var(--space-5); gap: var(--space-2); }
   .owner-brand { gap: var(--space-1); font-size: var(--text-ui); }
   .owner-brand > span:first-child { width: 24px; height: 24px; }
@@ -280,13 +280,10 @@
 @media (max-width: 1199px) { .owner-app { --owner-gutter: var(--space-8); } }
 @media (max-width: 640px) {
   .owner-app { --owner-gutter: var(--space-4); --owner-bleed: var(--space-4); }
-  .owner-bar { grid-template-columns: auto auto minmax(0,1fr); gap: var(--space-2); padding: var(--space-2) var(--space-4); }
-  .owner-brand > span:last-child { display: none; }
-  .owner-brand { width: 24px; }
-  .owner-nav { gap: 0; justify-self: start; }
+  .owner-bar { grid-template-columns: auto minmax(0,1fr) auto; gap: 0 var(--space-2); padding: var(--space-2) var(--space-4); }
+  .owner-nav { grid-column: 1 / -1; grid-row: 2; gap: var(--space-4); justify-self: start; }
   .owner-nav a { font-size: var(--text-ui); padding-inline: var(--space-1); }
   .owner-bar-end { gap: var(--space-2); }
-  .owner-bar .owner-icon { display: none; }
   .owner-shell-state { position: static; max-width: none; padding: 0; }
   .owner-auto-long, .owner-slot { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .owner-auto-short { display: inline; font-size: var(--text-ui); }

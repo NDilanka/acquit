@@ -17,6 +17,7 @@ function PlugIn() {
   const owner = useOwner();
   const { navigate } = useRouter();
   const [chosen, setChosen] = useState("code-fixer");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const sample = samples.data?.find((s) => s.id === chosen) ?? samples.data?.find((s) => isExaminable(s.task));
@@ -36,9 +37,9 @@ function PlugIn() {
         <span>{s.name}<small>{s.task === "code" ? "Sample · Code" : "Simulated · Exam coming"}</small></span>
       </label>)}</fieldset>}
     {error !== null && <ErrorNote error={error} />}
-    <div className="plug-extras"><details className="plug-options"><summary>More agent options</summary><div className="plug-own"><h2>Use your own agent</h2><code className="plug-command">acquit agent create --task code</code><CopyWorkValue value="acquit agent create --task code" /></div>
+    <div className="plug-extras"><details className="plug-options" onToggle={event => setOptionsOpen(event.currentTarget.open)}><summary>More agent options</summary>{optionsOpen && <><div className="plug-own"><h2>Use your own agent</h2><code className="plug-command">acquit agent create --task code</code><CopyWorkValue value="acquit agent create --task code" /></div>
     {!!owner.agents?.length && <div className="plug-existing"><h2>Existing agents ({owner.agents.length})</h2><ul>{owner.agents.map((a) =>
-      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{agentTaskLabel(a.task)} · {!hasLiveExam(a.task) ? "Exam coming" : a.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(a.task) && a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {hasLiveExam(a.task) ? a.grade ?? "—" : "—"}</span></Link></li>)}</ul></div>}</details></div>
+      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{agentTaskLabel(a.task)} · {!hasLiveExam(a.task) ? "Exam coming" : a.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(a.task) && a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {hasLiveExam(a.task) ? a.grade ?? "—" : "—"}</span></Link></li>)}</ul></div>}</>}</details></div>
     <div className="owner-actions"><button type="button" className="btn" aria-busy={busy} disabled={busy || !sample} onClick={() => void plug()}>{busy && <Spinner />}{busy ? "Plugging in…" : sample?.plugged ? "Take the exam" : `Plug in ${sample?.name ?? "agent"}`}</button></div>
   </section>;
 }

@@ -20,6 +20,7 @@ export function LeaderboardPage() {
   const denied = floor.error instanceof ApiError && floor.error.status === 401;
   const empty = floor.data?.length === 0;
   const ownAgent = owner.agent ?? owner.agents?.[0];
+  const moreCount = rows.more.reduce((count, row) => count + (row.members?.length ?? 1), 0);
   return <section className="public-owner-page board-page">
     <header className="board-heading"><div><h1>Leaderboard</h1>
       <p className="spec-lead">Ranked by grade · releases through PayPal sandbox.</p></div>
@@ -35,7 +36,7 @@ export function LeaderboardPage() {
         {Array.from({ length: 5 }, (_, i) => <div key={i}><span className="work-skeleton-line" /><span className="work-skeleton-line short" /></div>)}
       </div> : empty ? <p className="muted">No Acquitted agents yet.</p> : <div className="board-region">
         {!!rows.top.length && <Board rows={rows.top} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}
-        {!!rows.more.length && <details className="board-fold" onToggle={event => setMoreOpen(event.currentTarget.open)}><summary>{rows.more.length} more agents</summary>{moreOpen && <Board rows={rows.more} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}</details>}
+        {!!rows.more.length && <details className="board-fold" onToggle={event => setMoreOpen(event.currentTarget.open)}><summary>{moreCount} more agents</summary>{moreOpen && <Board rows={rows.more} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}</details>}
         {rows.mine && <div className="board-mine" aria-label="Your pinned agent"><Board rows={[rows.mine]} ownedIds={[rows.mine.entry.agentId]} caption="Your pinned agent" /></div>}
       </div>}
     {(floor.data !== null || floor.error !== null) && <><details className="board-meaning"><summary>What do Seeded and Simulated mean?</summary>

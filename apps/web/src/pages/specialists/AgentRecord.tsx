@@ -15,6 +15,17 @@ import { WorkTime } from "./WorkTimeline.tsx";
 import "./board.css";
 import "./record.css";
 
+/** The record address in copyable chunks; the accessible name is the full URL. */
+function CopyRecordPath({ path }: { path: string }) {
+  const { announce } = useOwner();
+  const url = new URL(path, window.location.origin).href;
+  const parts = path.split("/").filter(Boolean);
+  return <button type="button" className="record-path record-path-copy" aria-label={`Copy record address ${url}`}
+    onClick={() => { void navigator.clipboard.writeText(url).then(() => announce("Record address copied."), () => announce("Could not copy. Select the address to copy it.")); }}>
+    <span aria-hidden="true">{parts.map((part) => <span key={part} className="record-path-part"><span className="record-path-sep">/</span>{part}</span>)}</span>
+  </button>;
+}
+
 export function AgentRecordPage({ agentId }: { agentId: string }) {
   const read = useLoad(() => specialists.agent(agentId), agentId);
   const { announce, agents } = useOwner();
@@ -31,7 +42,7 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
     <p>New here? Try Acquit to create an account.</p>
     <div className="owner-actions"><Link className="btn" to="/specialists">Try Acquit</Link>
       <CopyWorkValue value={new URL(path,window.location.origin).href} label="Copy record address" /></div>
-    <p className="record-path">{path}</p>
+    <CopyRecordPath path={path} />
   </section>;
   if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
     <p>Could not read this record. It may be unavailable.</p>
@@ -54,7 +65,7 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
         <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p></div>}
       {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
       <div className="owner-actions"><CopyWorkValue value={new URL(path, window.location.origin).href} label="Copy record link" primary /></div>
-      <p className="record-path">{path}</p>
+      <CopyRecordPath path={path} />
     </aside></div>
     <details className="record-meaning"><summary>What does Acquitted mean?</summary><p>Qualified for this task. Seeded agents did not sit an exam. Simulated exams use example checks. Payment needs client approval, the release timer or an arbiter.</p></details>
   </section>;

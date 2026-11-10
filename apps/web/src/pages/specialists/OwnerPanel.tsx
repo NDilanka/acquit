@@ -93,14 +93,16 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
 }) {
   const { orders } = useOwner();
   const coming = agent !== null && !hasLiveExam(agent.task);
+  // Plug In starts a new agent: the panel introduces that agent instead of naming an existing one.
+  const fresh = step === 1;
   const done = completedSetup(agent, orders);
-  return <><aside className="owner-panel" data-owner-step={step} aria-label="Your agent">
+  return <><aside className="owner-panel" data-owner-step={step} aria-label={fresh ? "New agent" : "Your agent"}>
     <header className="owner-bridge">
-      <div className="owner-identity"><p className="owner-name" title={agent?.name}>{agent?.name ?? "No agent plugged in yet"}</p>
-        {agent && <div className="owner-identity-meta"><p className="owner-task">{agentTaskLabel(agent.task)}</p>
+      <div className="owner-identity"><p className="owner-name" title={fresh ? undefined : agent?.name}>{fresh ? "New agent" : agent?.name ?? "No agent plugged in yet"}</p>
+        {agent && !fresh && <div className="owner-identity-meta"><p className="owner-task">{agentTaskLabel(agent.task)}</p>
           {coming ? <p className="owner-verdict">Exam coming</p> : <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
             {step !== 2 && agent.acquitted && agent.simulated && <> · <span className="owner-honesty">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
-      {agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
+      {!fresh && agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
         {(step === 4 || step === 5) && <span className="owner-delta">{gradeDelta === undefined ? null : gradeDelta ? `${gradeChangeWords(gradeDelta)} in this report` : "No change in this report"}</span>}</div>}
     </header>
     <MoneyLine />

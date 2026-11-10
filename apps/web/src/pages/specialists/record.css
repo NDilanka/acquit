@@ -11,6 +11,10 @@
 .record-grade-label, .record-path { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
 .record-grade { font-size: var(--text-key); line-height: var(--leading-key); }
 .record-path { overflow-wrap: anywhere; color: var(--muted); }
+.record-path-copy { display: inline-flex; flex-wrap: wrap; align-items: baseline; row-gap: 2px; max-width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--r); background: transparent; cursor: pointer; text-align: left; }
+.record-path-copy:hover, .record-path-copy:focus-visible { border-color: var(--muted); }
+.record-path-part { white-space: nowrap; color: var(--ink); }
+.record-path-sep { color: var(--muted); }
 .public-record-facts .owner-actions { margin-top: 0 !important; }
 .public-record-facts .owner-actions button { min-height: var(--control-lg); border-radius: var(--r-pill); padding-inline: var(--space-6); background: var(--green-text); color: var(--panel); text-decoration: none; font-size: var(--text-body); font-weight: 500; }
 :root[data-theme="dark"] .public-record-facts .owner-actions button { color: var(--paper); }
