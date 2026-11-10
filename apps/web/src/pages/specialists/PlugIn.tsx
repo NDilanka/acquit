@@ -1,129 +1,44 @@
 import { useState } from "react";
-import { Link } from "../../router.tsx";
-import { CopyField, EmptyState, ErrorNote, Segmented, SkeletonCard, Spinner } from "../../ui.tsx";
-import { AgentCard } from "./AgentCard.tsx";
-import { specialists } from "./client.ts";
-import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
-import type { Sample, Task } from "./types.ts";
-import { useLoad } from "./useLoad.ts";
-import { isExaminable, pickAgent, runnerWords, simulatedNote, taskLabel } from "./view.ts";
-
-// Laser cut has no exam, so an agent for it could never be Acquitted. Only examinable tasks are offered here.
-const CONNECT_TASKS = ["code", "print-fdm"] as const satisfies readonly Task[];
+import { Link, useRouter } from "../../router";
+import { ErrorNote, SkeletonCard, Spinner } from "../../ui";
+import { CopyWorkValue } from "./AgentEarnings";
+import { specialists } from "./client";
+import { useOwner } from "./OwnerPanel";
+import { agentTaskLabel } from "./ownerState";
+import { LoadFailed, SpecialistPage } from "./SpecialistPage";
+import { useLoad } from "./useLoad";
+import { hasLiveExam, isExaminable, SIMULATED_WORD } from "./view";
 
 export function PlugInPage() {
-  return (
-    <SpecialistPage step={1} lead="Plug in a sample agent, or connect your own. Each agent takes one task.">
-      <PlugIn />
-    </SpecialistPage>
-  );
+  return <SpecialistPage step={1} lead=""><PlugIn /></SpecialistPage>;
 }
-
 function PlugIn() {
   const samples = useLoad(() => specialists.samples(), "samples");
-  const agents = useLoad(() => specialists.agents(), "agents");
-  const [pickedId, setPickedId] = useState<string | null>(null);
-  const [plugging, setPlugging] = useState<string | null>(null);
-  const [plugError, setPlugError] = useState<unknown>(null);
-  const [task, setTask] = useState<Task>("code");
-
-  const list = agents.data ?? [];
-  const picked = pickAgent(list, pickedId ?? undefined);
-
-  const plug = async (sample: Sample) => {
-    setPlugging(sample.id);
-    setPlugError(null);
+  const owner = useOwner();
+  const { navigate } = useRouter();
+  const [chosen, setChosen] = useState("code-fixer");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const sample = samples.data?.find((s) => s.id === chosen) ?? samples.data?.find((s) => isExaminable(s.task));
+  const plug = async () => {
+    if (!sample) return;
+    setBusy(true); setError(null);
     try {
-      const agent = await specialists.plugSample(sample.id);
-      setPickedId(agent.id);
-      agents.reload();
-      samples.reload();
-    } catch (e) {
-      setPlugError(e);
-    } finally {
-      setPlugging(null);
-    }
+      const agent = sample.plugged ? { id: sample.plugged } : await specialists.plugSample(sample.id);
+      owner.reload(); navigate(`/specialists/exam/${agent.id}`);
+    } catch (e) { setError(e); }
+    finally { setBusy(false); }
   };
-
-  return (
-    <>
-      <section className="spec-section" aria-labelledby="spec-samples-title">
-        <h2 id="spec-samples-title" className="spec-h2">
-          Sample agents
-        </h2>
-        {plugError !== null && <ErrorNote error={plugError} />}
-        {samples.data !== null ? (
-          <div className="spec-samples">
-            {samples.data.map((sample) => (
-              <SampleCard key={sample.id} sample={sample} busy={plugging === sample.id} onPlug={() => void plug(sample)} />
-            ))}
-          </div>
-        ) : samples.error !== null ? (
-          <LoadFailed error={samples.error} onRetry={samples.reload} />
-        ) : (
-          <SkeletonCard lines={3} />
-        )}
-      </section>
-
-      <section className="card pad spec-own" aria-labelledby="spec-own-title">
-        <h2 id="spec-own-title" className="spec-h2">
-          I have my own agent
-        </h2>
-        <p className="muted">Run this command on the machine where your agent lives. Pick the task it does first.</p>
-        <Segmented label="Task" options={CONNECT_TASKS.map((t) => ({ value: t, label: taskLabel(t) }))} value={task} onChange={setTask} />
-        <CopyField label="Connect command" value={`acquit agent create --task ${task}`} />
-      </section>
-
-      <section className="spec-section" aria-labelledby="spec-agents-title">
-        <h2 id="spec-agents-title" className="spec-h2">
-          Your agents
-        </h2>
-        {agents.data === null && agents.error !== null && <LoadFailed error={agents.error} onRetry={agents.reload} />}
-        {agents.data === null && agents.error === null && <SkeletonCard lines={3} />}
-        {agents.data !== null && list.length === 0 && (
-          <EmptyState inline>No agent yet. Plug in a sample above, or connect your own.</EmptyState>
-        )}
-        {list.length > 0 && (
-          <div className="spec-agents">
-            {list.map((agent) => (
-              <AgentCard key={agent.id} agent={agent} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <div className="spec-next">
-        {picked ? (
-          <Link to={`/specialists/exam/${picked.id}`} className="btn">
-            Next
-          </Link>
-        ) : (
-          <button type="button" className="btn" disabled>
-            Next
-          </button>
-        )}
-        {!picked && <p className="muted">Plug in an agent to continue.</p>}
-      </div>
-    </>
-  );
-}
-
-function SampleCard({ sample, busy, onPlug }: { readonly sample: Sample; readonly busy: boolean; readonly onPlug: () => void }) {
-  const note = simulatedNote(sample.task);
-  const plugged = sample.plugged !== null;
-  return (
-    <article className="card pad spec-sample">
-      <h3 className="spec-agent-name">{sample.name}</h3>
-      <p className="muted">{taskLabel(sample.task)}</p>
-      {note && <p className="muted spec-agent-note">{note}</p>}
-      <p>{sample.blurb}</p>
-      <p className="muted">{runnerWords(sample.runner)}</p>
-      {isExaminable(sample.task) && (
-        <button type="button" className="btn secondary sm spec-plug" disabled={plugged || busy} onClick={onPlug}>
-          {busy && <Spinner />}
-          {plugged ? "Plugged in" : busy ? "Plugging in" : "Plug in"}
-        </button>
-      )}
-    </article>
-  );
+  return <section className="plug-in"><h1>Plug in your agent.</h1><p className="muted">Pass its exam, then work within your orders.</p>
+    {samples.data === null ? samples.error ? <LoadFailed error={samples.error} onRetry={samples.reload} /> : <SkeletonCard lines={3} />
+      : <fieldset className="sample-choices"><legend className="sr-only">Sample agents</legend>{samples.data.map((s) => <label key={s.id} className="sample-choice">
+        <input type="radio" name="sample" value={s.id} checked={sample?.id === s.id} disabled={!isExaminable(s.task)} onChange={() => setChosen(s.id)} />
+        <span>{s.name}<small>{s.task === "code" ? "Sample · Code" : "Simulated · Exam coming"}</small></span>
+      </label>)}</fieldset>}
+    {error !== null && <ErrorNote error={error} />}
+    <div className="plug-extras"><details className="plug-own"><summary>Use your own agent</summary><p>Run on your agent’s machine.</p><code className="plug-command">acquit agent create --task code</code><CopyWorkValue value="acquit agent create --task code" /></details>
+    {!!owner.agents?.length && <details className="plug-existing"><summary>Existing agents ({owner.agents.length})</summary><ul>{owner.agents.map((a) =>
+      <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{agentTaskLabel(a.task)} · {!hasLiveExam(a.task) ? "Exam coming" : a.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(a.task) && a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {hasLiveExam(a.task) ? a.grade ?? "—" : "—"}</span></Link></li>)}</ul></details>}</div>
+    <div className="owner-actions"><button type="button" className="btn" aria-busy={busy} disabled={busy || !sample} onClick={() => void plug()}>{busy && <Spinner />}{busy ? "Plugging in…" : sample?.plugged ? "Take the exam" : `Plug in ${sample?.name ?? "agent"}`}</button></div>
+  </section>;
 }

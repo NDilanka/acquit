@@ -20,13 +20,13 @@ import { shiftJobClock } from "../../../packages/core/src/job-clock.ts";
 import { mayControlJob, setExamGateEnforced } from "../../../packages/core/src/job.ts";
 import { HOUSE_CLIENT_ID } from "../../../packages/core/src/house-client.ts";
 import type { JobProjection, JobRow } from "../../../packages/core/src/job.ts";
-import { newVisitorId, principalOf, readVisitor, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
+import { lastingAccounts, newVisitorId, principalOf, readVisitor, visitorOfHandle, visitorRepositoryName } from "../../../packages/core/src/visitors.ts";
 import type { VisitorRow } from "../../../packages/core/src/visitors.ts";
 import { accountForRecoveryToken, makeRecoveryToken, recoveryLinkMade } from "../../../packages/core/src/accounts.ts";
 import { attemptLimiter, RESTORE_ATTEMPTS, RESTORE_WINDOW_MS } from "./attempts.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, demoAllowlist, devEnabled, examGateEnforced, fixtures, fixturesByManifest, githubEnv, platformKey, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, demoAllowlist, devEnabled, examGateEnforced, fixtures, fixturesByManifest, githubEnv, platformKey, sampleRunnerEnabled, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { demoOpenTo } from "./demo-access.ts";
 import { operatorReceipts, publicReceipt } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
@@ -42,7 +42,7 @@ import { isTask, parseStandingOrders, standingOrdersRefusal } from "../../../pac
 import type { ExamRefusal } from "../../../packages/core/src/exam.ts";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Agent } from "../../../packages/core/src/operator.ts";
-import { acquittalJson, agentListJson, agentViewJson, examJson, examRunById, floorJson, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
+import { acquittalJson, agentListJson, agentViewJson, examJson, examRunById, floorJson, jobRowsNaming, jobRowsOfTenant, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -54,6 +54,8 @@ import { platformStream } from "./platform-stream.ts";
 import { coalesced, paypalObjectRead, paypalTransactionFetch, reconciliationService } from "./reconciliation.ts";
 import { traceFigure } from "./figure-trace.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
+import { activityJson, activityLimit } from "./sample-activity.ts";
+import { createSampleRunner, sampleRunJobs } from "./sample-runner.ts";
 import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_CALLER, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
@@ -1454,6 +1456,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (result.kind !== "JOBS") { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { escrow: operatorEscrow(result.jobs, current.actor.operatorId) }); return;
 	}
+	if (url.pathname === "/api/me/activity" && method === "GET") {
+		// The operator's activity: the jobs its agents hold or bid on, newest first, with the hosted sample runner's
+		// status for the operator's visitor. It reads stored rows only, so it sends no command and makes no PayPal call.
+		if (current.actor.role !== "OPERATOR") { json(res, 403, { error: "NOT_OWNER" }); return; }
+		const limit = activityLimit(url.searchParams.get("limit"));
+		if (limit === null) { json(res, 400, { error: "BAD_REQUEST" }); return; }
+		const visitor = visitorOfHandle(db, current.actor.operatorId);
+		// Only the rows that name this operator are read and parsed; the activity filter then picks the exact set.
+		const rows = jobRowsNaming(db, current.actor.operatorId);
+		const runner = visitor === null ? null : sampleRunner.statusOf(visitor);
+		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobs: sampleRunJobs(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner }));
+		return;
+	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
 	if (tokenMatch && method === "POST") {
 		// The operator's runner asks for one credential per run. Only the operator the job is locked to
@@ -1577,6 +1592,28 @@ scenarioSweepTimer.unref();
 // The print demo's runs live in memory and are bounded by print-demo.ts. Each one runs in its own worker thread, so
 // its CPU work never holds this event loop, and the run's deadline stops that thread. They never reach the core's store.
 const printRuns = createPrintRuns({ run: startPrintWorker, now: () => Date.now() });
+// The hosted sample runner: a visitor's own built-in sample agent takes one of the visitor's starter jobs on the scenario
+// fixture, driven by the visitor's standing orders. Off unless the deployment sets ACQUIT_SAMPLE_RUNNER=1. Its push goes
+// through the House's git port to the job's own work repo, and every command is sent as the visitor's own operator.
+const sampleState = join(resolve(databasePath, ".."), "sample-runner");
+mkdirSync(sampleState, { recursive: true, mode: 0o700 });
+const sampleWork = gitWorkPort({ stateRoot: join(sampleState, "checkouts"), workRoot: join(sampleState, "work"), mint: workMint, env: process.env });
+const sampleFixture = scenarioFixtureOf(fixtures, scenarioFixtureKey);
+const sampleRunner = createSampleRunner({
+	db, enabled: sampleRunnerEnabled, now: () => clock.now(),
+	visitors: () => lastingAccounts(db).map(visitor => ({ id: visitor.id, operatorHandle: visitor.operatorHandle, repository: visitor.repository })),
+	jobsOf: visitorId => jobRowsOfTenant(db, visitorId),
+	agentsOf: handle => listAgentRows(db, handle).map(agent => ({ id: agent.id, task: agent.task, sample: agent.sample !== null, acquitted: agent.acquittal !== null })),
+	ordersOf: agentId => {
+		const orders = standingOrdersOf(db, agentId);
+		return orders === null ? null : { autopilot: orders.autopilot, runsOn: orders.runsOn, priceFloorCents: orders.priceFloorCents };
+	},
+	// Only the scenario fixture's starters are bid on, because its scripted tree is the only one the runner pushes.
+	fixtureRule: { fixtures, upstream: clientRepository, scenario: sampleFixture },
+	feeModel: settings.paypal.feeModel,
+	execute: (actor, key, command) => acquit.execute(actor, key, command),
+	workspace: scriptedWorkspace({ work: sampleWork, readJob: id => scenarioStore.readJob(id) }),
+});
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
 		if (!res.headersSent) json(res, error instanceof BadBody ? 400 : 500, { error: error instanceof BadBody ? "BAD_REQUEST" : "INTERNAL_ERROR" });
@@ -1599,6 +1636,9 @@ const houseKick = createHouseDelivery({
 });
 const houseTimer = setInterval(() => { void houseKick.kick().catch(() => console.error("House delivery failed; the next tick retries.")); }, 30_000);
 houseTimer.unref();
+// The sample runner ticks on the House's cadence. It is a no-op unless the deployment turns it on.
+const sampleTimer = setInterval(() => { void sampleRunner.kick().catch(() => console.error("Sample runner failed; the next tick retries.")); }, 30_000);
+sampleTimer.unref();
 const timer = setInterval(() => { void acquit.tick().catch(() => console.error("Tick failed; retained durable outbox for retry.")); }, 30_000);
 timer.unref();
 let stopping = false;
@@ -1607,10 +1647,12 @@ function stop(): void {
 	stopping = true;
 	clearInterval(timer);
 	clearInterval(houseTimer);
+	clearInterval(sampleTimer);
 	clearInterval(scenarioSweepTimer);
 	// An open stream never ends on its own, and server.close waits for every connection.
 	platformLive.close();
-	server.close(() => { db.close(); closeAcquit(acquit); });
+	// A sample tick in flight finishes, or its lease lapses, before the database closes under it.
+	void sampleRunner.drain().then(() => server.close(() => { db.close(); closeAcquit(acquit); }));
 }
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);

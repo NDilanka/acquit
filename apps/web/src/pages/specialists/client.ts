@@ -24,7 +24,7 @@ import {
   type RawPublicAgent,
   type RawSample,
 } from "./mapping.ts";
-import type { ExamReplay, NightReplay, SpecialistsApi, StandingOrders, StandingOrdersInput, Task } from "./types.ts";
+import type { ExamReplay, NightReplay, OwnerActivity, SpecialistsApi, StandingOrders, StandingOrdersInput, Task } from "./types.ts";
 
 type Method = "GET" | "POST" | "PUT";
 
@@ -80,13 +80,14 @@ export const specialists: SpecialistsApi = {
     return examOf(r.exam);
   },
 
-  // The start answers the run as RUNNING. The settled counts and the acquittal show on the next read.
+  // With no id, read the newest stored run so the record survives a reload.
   async exam(agentId, examId) {
     try {
-      const r = await call<RawExamRead>("GET", `/api/me/agents/${enc(agentId)}/exam?examId=${enc(examId)}`);
+      const query = examId === undefined ? "" : `?examId=${enc(examId)}`;
+      const r = await call<RawExamRead>("GET", `/api/me/agents/${enc(agentId)}/exam${query}`);
       return examReadOf(r);
     } catch (e) {
-      // A 404 means no run with this id for this agent: the exam was never started, so there is no run to read.
+      // A 404 means there is no stored run for this read.
       if (e instanceof ApiError && e.status === 404) return null;
       throw e;
     }
@@ -110,6 +111,16 @@ export const specialists: SpecialistsApi = {
   async morningReport(since) {
     const r = await call<RawMorning>("GET", `/api/me/morning-report?since=${enc(since)}`);
     return reportOf(r);
+  },
+
+  async activity(limit) {
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) throw new RangeError("Activity limit must be 1–50.");
+    try {
+      return await call<OwnerActivity>("GET", `/api/me/activity${limit === undefined ? "" : `?limit=${limit}`}`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
   },
 };
 

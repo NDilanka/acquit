@@ -8,7 +8,7 @@ import { agentLine, allBids, bidder, houseName, lockedBid, payeeBid, proofLine }
 import { errorText } from "../errors";
 import { deadlineOutcome, escrowFee, eta, refundNote, usd, utc } from "../format";
 import { AcquitGrid } from "../grid";
-import { bidStatusWord, payoutHeldBy, runFailureWord } from "../job-status";
+import { bidStatusWord, operatorJobCrumb, payoutHeldBy, runFailureWord } from "../job-status";
 import { canDeliver, nextStep, timelineEvents, verifierLine, type TimelineJob, type Viewer } from "../job-timeline";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
@@ -170,7 +170,7 @@ export function JobPage({ id }: { id: string }) {
   return (
     <>
       <div className="crumbs">
-        <Link to={home}>{isClient ? "Jobs" : platform ? "Dashboards" : "Open jobs"}</Link> / <b>{job.title}</b>
+        <Link to={isClient || platform ? home : operatorJobCrumb(job.status).to}>{isClient ? "Jobs" : platform ? "Dashboards" : operatorJobCrumb(job.status).label}</Link> / <b>{job.title}</b>
       </div>
       <div className="head">
         <div>

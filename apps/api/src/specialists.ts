@@ -57,6 +57,21 @@ export function allJobRows(db: DatabaseSync): readonly JobRow[] {
 	return db.prepare("SELECT json FROM jobs").all().map(row => storedJob(JSON.parse(String(row.json)) as JobRow));
 }
 
+/** The jobs rows of one visitor's world. The tenant is a top-level field of a stored row, so the filter runs in SQL. */
+export function jobRowsOfTenant(db: DatabaseSync, tenant: string): readonly JobRow[] {
+	return db.prepare("SELECT json FROM jobs WHERE json_extract(json, '$.tenant') = ?").all(tenant)
+		.map(row => storedJob(JSON.parse(String(row.json)) as JobRow));
+}
+
+/**
+ * The jobs rows that name an operator anywhere in the stored row, a bid or a payee. The match is a plain substring,
+ * so a row can match without involving the operator; the caller filters exactly. Only these rows are parsed.
+ */
+export function jobRowsNaming(db: DatabaseSync, operatorId: string): readonly JobRow[] {
+	return db.prepare("SELECT json FROM jobs WHERE instr(json, ?) > 0").all(operatorId)
+		.map(row => storedJob(JSON.parse(String(row.json)) as JobRow));
+}
+
 /** The jobs rows a record derivation scans, cached 30 s per database so a page of agents scans once. */
 export function jobRowsOf(db: DatabaseSync, nowMs: number = Date.now()): readonly JobRow[] {
 	const hit = rowsCache.get(db);

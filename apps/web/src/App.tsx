@@ -5,7 +5,7 @@ import type { DeploymentMode, FundingMode } from "./api-types";
 import { errorText } from "./errors";
 import { pageHeading } from "./nav";
 import { useRouter } from "./router";
-import { match, signedOutPage } from "./route";
+import { isOwnerRoute, match, signedOutPage } from "./route";
 import { Shell } from "./shell";
 import { SessionContext, useSession, type Session } from "./session";
 import { NotFound, SkeletonCard } from "./ui";
@@ -15,17 +15,18 @@ import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
-import { VerifiersPage } from "./pages/Verifiers";
-import { PrintDemoPage } from "./pages/PrintDemo";
+import { HowWorkIsCheckedPage } from "./pages/HowWorkIsChecked";
 import { EarningsPage, FindWorkPage, MyBidsPage, MyWorkPage } from "./pages/operator/OperatorRoutes";
 import { CliLogin } from "./pages/CliLogin";
 import { JudgeScenarios } from "./pages/JudgeScenarios";
 import { PlugInPage } from "./pages/specialists/PlugIn";
 import { ExamPage } from "./pages/specialists/Exam";
 import { StandingOrdersPage } from "./pages/specialists/StandingOrders";
-import { NightPage } from "./pages/specialists/Night";
-import { MorningPage } from "./pages/specialists/MorningReport";
-import { FloorPage } from "./pages/specialists/Floor";
+import { ActivityPage } from "./pages/specialists/Activity";
+import { AgentEarningsPage } from "./pages/specialists/AgentEarnings";
+import { LeaderboardPage } from "./pages/specialists/Leaderboard";
+import { AgentRecordPage } from "./pages/specialists/AgentRecord";
+import { OwnerPageSkeleton } from "./pages/specialists/OwnerLoading";
 
 // AG Studio is one multi-megabyte entry, so it loads only when a dashboard route renders.
 const StudioPage = lazy(() => import("./studio/StudioPage"));
@@ -75,16 +76,14 @@ export function App() {
   // The verifier registry and the print verifier are public for the same reason. A print run makes its own account.
   const route = match(location.path);
   const heading = pageHeading(route, session?.user.role ?? null);
-  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print") {
+  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "howWorkIsChecked" || route.name === "specialistLeaderboard" || route.name === "agentRecord") {
     return (
       <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
         <main id="content" tabIndex={-1} className="wrap">
-          {route.name === "receipt" ? (
+          {route.name === "agentRecord" ? <AgentRecordPage key={route.agentId} agentId={route.agentId} /> : route.name === "specialistLeaderboard" ? <LeaderboardPage /> : route.name === "receipt" ? (
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
-          ) : route.name === "verifiers" ? (
-            <VerifiersPage />
           ) : (
-            <PrintDemoPage session={session} onSignedIn={signedIn} />
+            <HowWorkIsCheckedPage session={session} onSignedIn={signedIn} />
           )}
         </main>
       </Shell>
@@ -100,7 +99,7 @@ export function App() {
       {/* The dashboards take the viewport's full width; every other route keeps the reading column. */}
       <main id="content" tabIndex={-1} className={session && (route.name === "studio" || route.name === "studioSample") ? "wrap wrap-full" : "wrap"}>
         {session === undefined ? (
-          <SkeletonCard />
+          isOwnerRoute(location.path) ? <OwnerPageSkeleton path={location.path} /> : <SkeletonCard />
         ) : route.name === "welcomeBack" ? (
           <WelcomeBack session={session} onSignedIn={signedIn} />
         ) : session ? (
@@ -178,12 +177,16 @@ function Routes() {
       return <ExamPage agentId={route.agentId} />;
     case "specialistOrders":
       return <StandingOrdersPage agentId={route.agentId} />;
-    case "specialistNight":
-      return <NightPage agentId={route.agentId} />;
-    case "specialistMorning":
-      return <MorningPage />;
-    case "specialistFloor":
-      return <FloorPage />;
+    case "specialistActivity":
+      return <ActivityPage agentId={route.agentId} />;
+    case "specialistEarnings":
+      return <AgentEarningsPage />;
+    case "specialistLeaderboard":
+      return <LeaderboardPage />;
+    case "agentRecord":
+      return <AgentRecordPage key={route.agentId} agentId={route.agentId} />;
+    case "howWorkIsChecked":
+      return null;
     case "welcomeBack":
     case "notFound":
       return <NotFound signedIn />;

@@ -6,6 +6,8 @@ import { PITCH_MAX, pitchProblem } from "../bid-rules";
 import { eta as etaLabel, parseUsd, runnerLabel, usd } from "../format";
 import { useIntent } from "../intent";
 import { BID_COST_CREDITS } from "../operator-workspace";
+import { bidAgentsForTask } from "../bid-agents";
+import { specialists } from "./specialists/client";
 import { ErrorNote, Segmented } from "../ui";
 
 const ETAS = [24, 48, 72, 120] as const;
@@ -46,15 +48,22 @@ export function BidForm({
   const [pitch, setPitch] = useState(DEFAULT_PITCH);
   const [tried, setTried] = useState(false);
   const intent = useIntent();
+  const task = (job as JobView & { readonly vertical?: string }).vertical ?? "code";
 
   useEffect(() => {
-    api
-      .operator()
-      .then((r) => {
-        setAgents(r.agents);
-        if (r.agents[0]) setAgentId(r.agents[0].id);
+    let live = true;
+    setAgents(null); setAgentId(""); setLoadError(null);
+    specialists.agents()
+      .then((all) => {
+        if (!live) return;
+        const matching = bidAgentsForTask(all,task);
+        setAgents(matching);
+        setAgentId(matching[0]?.id ?? "");
       })
-      .catch((e: unknown) => setLoadError(e));
+      .catch((e: unknown) => { if (live) setLoadError(e); });
+    return () => { live = false; };
+  }, [task]);
+  useEffect(() => {
     api.credits().then((r) => setCredits(r.credits), () => undefined);
   }, []);
 
@@ -110,7 +119,7 @@ export function BidForm({
           <span>Agent</span>
           <select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
             {!agents && <option>Loading agents…</option>}
-            {agents?.length === 0 && <option value="">No agents yet</option>}
+            {agents?.length === 0 && <option value="">No matching agents</option>}
             {agents?.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}, {runnerLabel(a.runner)}

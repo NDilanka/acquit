@@ -48,6 +48,8 @@ export type RawPublicAgent = {
   grade: number | null;
   gate?: Gate | null;
   record: AgentRecord & { earnedCents?: number };
+  owner?: { handle: string };
+  acquittedAt?: string | null;
 };
 
 export type RawExam = {
@@ -72,8 +74,8 @@ export type RawFloor = {
   simulated?: boolean;
 };
 
-/** A morning entry. The API also sends amountCents, bidId and runId, which the screens do not read. */
-export type RawEntry = { at: string; jobId?: string | null; agentId?: string | null; title?: string | null };
+/** Preserve the supplied bid amount; never derive it from a title. */
+export type RawEntry = { at: string; jobId?: string | null; agentId?: string | null; title?: string | null; amountCents?: number };
 
 export type RawMorning = {
   since: string;
@@ -103,6 +105,8 @@ export function agentOf(raw: RawAgent): SpecialistAgent {
     grade: raw.grade,
     seeded: raw.acquittal?.seeded === true,
     simulated: raw.acquittal?.simulated === true,
+    acquittedAt: raw.acquittal?.at ?? null,
+    examId: raw.acquittal?.examId,
     standingOrders: raw.standingOrders ?? null,
     gate: raw.gate ?? null,
   };
@@ -138,7 +142,10 @@ export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
     simulated: raw.acquittal?.simulated === true,
     gate: raw.gate ?? null,
     record: recordOf(raw.record),
-    earnedCents: raw.record.earnedCents ?? 0,
+    earnedCents: raw.record.earnedCents,
+    ownerHandle: raw.owner?.handle,
+    acquittedAt: raw.acquittedAt ?? raw.acquittal?.at ?? null,
+    examId: raw.acquittal?.examId,
   };
 }
 
@@ -185,15 +192,18 @@ export function examReplayOf(raw: RawExamReplay): ExamReplay {
     hidden: exam.hidden ? flagsFrom(exam.hidden) : [],
     outcome: exam.status,
     reasons: exam.reasons,
+    recordedAt: raw.recordedAt,
+    endedAt: exam.endedAt,
   };
 }
 
 export function nightReplayOf(raw: RawNightReplay): NightReplay {
-  return { source: replaySource(raw), simulated: raw.simulated, task: raw.task, events: raw.night.events };
+  return { source: replaySource(raw), simulated: raw.simulated, task: raw.task, events: raw.night.events, recordedAt: raw.recordedAt };
 }
 
 export function entryOf(raw: RawEntry): ReportEntry {
-  return { at: raw.at, jobId: raw.jobId ?? null, agentId: raw.agentId ?? null, title: raw.title ?? null };
+  return { at: raw.at, jobId: raw.jobId ?? null, agentId: raw.agentId ?? null, title: raw.title ?? null,
+    ...(raw.amountCents === undefined ? {} : { amountCents: raw.amountCents }) };
 }
 
 export function floorOf(raw: RawFloor): FloorEntry {
