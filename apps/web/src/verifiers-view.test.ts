@@ -71,7 +71,7 @@ test("the page copy uses no em or en dashes and says each score card comes from 
   assert.match(PAGE_INTRO, /Each score card below comes from a CI test run\./);
 });
 
-test("/verifiers opens the registry, with or without a trailing slash", () => {
-  assert.deepEqual(match("/verifiers"), { name: "verifiers" });
-  assert.deepEqual(match("/verifiers/"), { name: "verifiers" });
+test("/verifiers moves to how work is checked", () => {
+  assert.deepEqual(match("/verifiers"), { name: "howWorkIsChecked" });
+  assert.deepEqual(match("/verifiers/"), { name: "howWorkIsChecked" });
 });

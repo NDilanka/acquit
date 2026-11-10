@@ -22,7 +22,7 @@ function OrdersForAgent({ agent }: { agent: SpecialistAgent }) {
     : <OrdersEditor agent={agent} initial={load.data.orders} />;
 }
 function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: StandingOrders | null }) {
-  const { orders: acknowledged, setOrders, setDrafting } = useOwner();
+  const { orders: acknowledged, setOrders, setDrafting, announce } = useOwner();
   const id = useId();
   const [saved, setSaved] = useState(initial);
   const [form, setForm] = useState<OrdersForm>(() => formFrom(initial));
@@ -48,6 +48,7 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
     try {
       const next = await specialists.saveStandingOrders(agent.id, toOrdersInput(form, saved?.runsOn ?? (agent.sample ? "acquit" : "owner")));
       setSaved(next); setOrders(next); setForm(formFrom(next)); setEdited(false);
+      announce(next.autopilot ? "Saved. You can close this tab now." : "Saved. Autopilot is off.");
     } catch (e) { setError(e); }
     finally { setSaving(false); }
   };
@@ -66,16 +67,18 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
             <select id={`${id}-jobs`} className="sentence-control" value={form.maxConcurrent} onChange={(e) => change({ ...form, maxConcurrent: Number(e.target.value) })}>
               <option value={1}>one</option><option value={2}>two</option><option value={3}>three</option>
             </select><SelectChevron /></span> at a time.
-          {" "}Approve up to <span className="sentence-select"><label className="sr-only" htmlFor={`${id}-cap`}>Daily pre-approval cap</label>
+        </p>
+        <details className="orders-help orders-limits"><summary>Change limits</summary>
+          <label htmlFor={`${id}-cap`}>Submits a day without asking </label><span className="sentence-select">
             <select id={`${id}-cap`} className="sentence-control" value={form.preApproveCap} onChange={(e) => change({ ...form, preApproveCap: Number(e.target.value) })}>
               <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
-            </select><SelectChevron /></span> submits a day without asking me.
-        </p>
+            </select><SelectChevron /></span>
+          <p>Daily limit for automatic submits.</p>
+        </details>
         {touched && problems?.priceUsd && <p className="field-error" role="alert" data-tone="fail">{problems.priceUsd}</p>}
-        <p className="orders-echo" id={`${id}-echo`}>{cents !== null ? <>Bids from {dollars(cents)} · pending until accepted.</> : "Example: 40, $40 or 40.00."}</p>
-        <details className="orders-help"><summary>What is the daily cap?</summary><p>Autopilot can submit up to this many deliveries a day without asking you.</p></details>
+        <p className="orders-echo" id={`${id}-echo`}>{cents !== null ? "Pending until accepted · PayPal sandbox." : "Example: 40 or 40.00."}</p>
         {(dirty || !saved?.autopilot) && <div className="orders-master">
-          <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving: bids and delivers within these limits." : "Off: no new bids. Each submit needs your confirmation."}</p>
+          <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving. Bids and delivers within your limits." : "Off. Each submit needs your confirmation."}</p>
             {!autopilotSupported(agent.runner) && <p>Autopilot runs Claude Code agents only.</p>}</div>
           <button type="button" className="orders-switch" role="switch" aria-label="Autopilot" aria-checked={form.autopilot}
             disabled={!autopilotSupported(agent.runner)} onClick={() => change({ ...form, autopilot: !form.autopilot })}>
@@ -84,8 +87,8 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
         </div>}
         {error !== null && <ErrorNote error={error} />}
         <div className="owner-actions">
-          {dirty ? <><button type="submit" className="btn" disabled={saving}>{saving && <Spinner />}{saving ? "Saving…" : "Save standing orders"}</button><p role="status">Not saved yet.</p></>
-            : <><Link to={`/specialists/activity/${agent.id}`} className="btn">Watch activity</Link><p role="status">{saved?.autopilot ? "Saved. You can close this tab now." : "Saved. Autopilot is off."}</p></>}
+          {dirty ? <><button type="submit" className="btn" disabled={saving}>{saving && <Spinner />}{saving ? "Saving…" : "Save standing orders"}</button><p>Unsaved.</p></>
+            : <><Link to={`/specialists/activity/${agent.id}`} className="btn">Watch activity</Link><p>{saved?.autopilot ? "Saved. You can close this tab now." : "Saved. Autopilot is off."}</p></>}
         </div>
       </form>}
   </section>;

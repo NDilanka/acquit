@@ -11,8 +11,6 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
     ["Sample book", "/studio/sample"],
     ["Your agent", "/specialists"],
     ["Leaderboard", "/leaderboard"],
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
   ]);
 });
@@ -27,15 +25,13 @@ test("an operator keeps the work pages and one agent entry plus Leaderboard", ()
     ["Sample book", "/studio/sample"],
     ["Your agent", "/specialists"],
     ["Leaderboard", "/leaderboard"],
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
   ]);
 });
 
 test("Public and Agents are separate groups, without inventing a CLI or Tutorials page", () => {
   const publicPages = navFor("OPERATOR").filter((item) => item.group === "Public").map((item) => item.label);
-  assert.deepEqual(publicPages, ["Verifiers", "Print verifier", "Scenarios"]);
+  assert.deepEqual(publicPages, ["Scenarios"]);
   const labels = navFor("OPERATOR").map((item) => item.label);
   assert.equal(labels.includes("CLI sign-in"), false);
   assert.equal(labels.includes("Tutorials"), false);
@@ -66,16 +62,14 @@ test("a platform user's navigation is Dashboards and Sample book, then the two p
   assert.deepEqual(pairs(navFor("PLATFORM")), [
     ["Dashboards", "/studio"],
     ["Sample book", "/studio/sample"],
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
   ]);
 });
 
-test("signed out, the sidebar lists Verifiers and Print verifier, and not Scenarios", () => {
-  assert.deepEqual(pairs(signedOutNav()), [
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
-  ]);
+test("checking is not a sidebar destination", () => {
+  assert.deepEqual(pairs(signedOutNav()), []);
+  for (const role of ["CLIENT", "OPERATOR", "PLATFORM"] as const) {
+    assert.ok(navFor(role).every(item => !["Verifiers", "Print verifier"].includes(item.label)));
+  }
 });
 
 test("a role's first page is lit on /, so an operator on / sees Find work lit and Dashboards dark", () => {

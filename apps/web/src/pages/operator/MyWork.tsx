@@ -27,6 +27,7 @@ export function MyWork({ data }: { data: OperatorData }) {
     <div className="work-page">
       <p className="work-held">
         Held for you: <b className="num">{usd(ws.earnings.heldCents)}</b>
+        <span className="muted"> · price less the 10% operator fee · PayPal sandbox</span>
       </p>
       <Segmented label="Work status" options={options} value={tab} onChange={setTab} round />
       {ws.mine.length === 0 ? (

@@ -20,7 +20,7 @@ export function ExamPage({ agentId }: { agentId?: string }) {
 
 function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const { location } = useRouter();
-  const { reload } = useOwner();
+  const { reload, announce } = useOwner();
   const available = hasLiveExam(agent.task);
   const replay = useLoad(async () => ({ replay: available ? await loadExamReplay(agent.task) : null }), agent.task);
   const examId = location.search.get("exam");
@@ -72,16 +72,19 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const block = liveRunBlock(agent.task, agent.acquitted, refusal);
   const date = exam?.endedAt ?? null;
   const pass = exam?.status === "PASSED";
+  useEffect(() => { announce(!available ? "Exam coming." : recordLoading ? "Loading exam record." : recordError ? "Exam record unavailable." : exam ? `Exam ${exam.status.toLowerCase()}.` : "Ready to take the exam."); }, [available, recordLoading, recordError, exam?.status, announce]);
   const recordPath = `/specialists/exam/${encodeURIComponent(agent.id)}${exam ? `?exam=${encodeURIComponent(exam.id)}` : ""}`;
-  if (!available) return <section className="exam-empty"><h1>Simulated {agent.task === "print-fdm" ? "3D printer" : "laser cutter"} · Exam coming</h1>
-    <p>This exam is not available in this build.</p></section>;
+  if (!available) return <section className="exam-before"><h1>Exam coming</h1>
+    <p>Use Code fixer to try the built exam.</p>
+    <ul className="record-origin"><li className="pill">Exam · Not built</li><li className="pill">Hardware connection · Not built</li></ul>
+    <div className="owner-actions"><Link className="btn" to="/specialists">Plug in Code fixer</Link></div></section>;
   if (recordLoading) return <section className="exam-record exam-loading" aria-busy="true"><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
   if (recordError !== null) return <section><h1>Exam record unavailable</h1><LoadFailed error={recordError} onRetry={() => setReadTick((n) => n + 1)} primary /></section>;
   if (!exam && agent.acquitted) return <section className="exam-empty"><h1>No stored exam record</h1>
     <p>This agent is Acquitted, but no stored exam run is available. Sample data is not its exam record.</p>
     <div className="owner-actions"><Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link></div></section>;
   if (!exam) return <section className="exam-before"><h1>Take the exam</h1><p>Pass to bid on code jobs.</p>
-    {sample && <details className="exam-sample"><summary>Example of a passed exam · sample data</summary>
+    {sample && <details className="exam-sample"><summary>Example of a passed exam · sample data · Simulated</summary>
       <div className="sample-proof"><p>Example only, not your agent’s record.</p>
         <CheckCells counts={{ total: sample.visible.length, passed: sample.visible.filter(Boolean).length }} total={sample.visible.length} hidden={false} />
         <CheckCells counts={{ total: sample.hidden.length, passed: sample.hidden.filter(Boolean).length }} total={sample.hidden.length} hidden />
