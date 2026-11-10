@@ -9,14 +9,13 @@ import {
 	pointInPolygon,
 	polygonDistance,
 	rectPolygon,
+	ROUNDOFF,
 	segmentPolygonDistance,
 	segmentSegmentDistance,
 } from "./geometry.ts";
 import { MAX_SEGMENT_TESTS } from "./limits.ts";
 import type { Finding, HiddenSample, ScenePath, Scene, Spec, Verdict, Vec2 } from "./types.ts";
 
-/** Two copper items closer than this touch. */
-const CONTACT = 0.01;
 /** Tolerance for comparing a measured value to a limit, so float noise never fails a clean board. */
 const EPS = 1e-4;
 const TOP_Z = 1.6;
@@ -25,6 +24,7 @@ const MAX_MEASURE = 1;
 
 type Box = readonly [number, number, number, number];
 
+// slop is how far the modelled copper may differ from the true copper, to either side (see board.ts).
 type TrackGeo = {
 	readonly kind: "track";
 	readonly layers: readonly CopperLayer[];
@@ -33,12 +33,14 @@ type TrackGeo = {
 	readonly width: number;
 	readonly box: Box;
 	readonly length: number;
+	readonly slop: number;
 };
 type PolyGeo = {
 	readonly kind: "poly";
 	readonly layers: readonly CopperLayer[];
 	readonly poly: readonly Vec2[];
 	readonly box: Box;
+	readonly slop: number;
 	readonly pad?: PadInst;
 	readonly via?: Via;
 };
@@ -99,8 +101,10 @@ function edgesOf(g: Geo): number {
 }
 
 /**
- * Calls cb for each pair of items that share a layer and whose boxes lie within limit of each other. Each pair is
- * charged its edge-pair count before it is measured, and the scan stops as soon as the budget is spent.
+ * Calls cb for each pair of items that share a layer and whose modelled gap may be within limit. A box lies around
+ * its copper, so the box gap is never more than the copper gap, and the limit is widened by both items' slop so no
+ * pair that could be within limit is skipped. Each pair is charged its edge-pair count before it is measured, and the
+ * scan stops as soon as the budget is spent.
  */
 function forEachNearPair(
 	geos: readonly Geo[],
@@ -113,7 +117,7 @@ function forEachNearPair(
 		for (let j = i + 1; j < geos.length; j++) {
 			const y = geos[j] as Geo;
 			if (!sharedLayer(x, y)) continue;
-			if (boxGap(x.box, y.box) > limit) continue;
+			if (boxGap(x.box, y.box) > limit + x.slop + y.slop) continue;
 			if (!take(budget, edgesOf(x) * edgesOf(y))) return;
 			cb(i, j, gap(x, y));
 		}
@@ -149,8 +153,13 @@ function shoelaceArea(poly: readonly Vec2[]): number {
 	return Math.abs(s) / 2;
 }
 
-/** The disjoint-set root of each item. Items that touch share a root. */
-function connectedComponents(geos: readonly Geo[], budget: Budget): number[] {
+/**
+ * The disjoint-set root of each item, and the first pair whose contact cannot be decided. Items touch only when the
+ * true gap is within float roundoff. The true gap lies within slop of the modelled gap, so a pair is joined when its
+ * modelled gap is within roundoff even after allowing for slop, and is open when its modelled gap exceeds slop plus
+ * roundoff. A pair in between could go either way, so it is reported rather than guessed.
+ */
+function connectedComponents(geos: readonly Geo[], budget: Budget): { comp: number[]; ambiguous: Pair | undefined } {
 	const parent = geos.map((_, i) => i);
 	const find = (i: number): number => {
 		let r = i;
@@ -163,22 +172,35 @@ function connectedComponents(geos: readonly Geo[], budget: Budget): number[] {
 		}
 		return r;
 	};
-	forEachNearPair(geos, CONTACT, budget, (i, j, g) => {
-		if (g <= CONTACT) parent[find(i)] = find(j);
+	let ambiguous: Pair | undefined;
+	forEachNearPair(geos, ROUNDOFF, budget, (i, j, g) => {
+		const s = (geos[i] as Geo).slop + (geos[j] as Geo).slop;
+		if (g + s <= ROUNDOFF) parent[find(i)] = find(j);
+		else if (g - s <= ROUNDOFF && !ambiguous) ambiguous = { i, j, g };
 	});
-	return geos.map((_, i) => find(i));
+	return { comp: geos.map((_, i) => find(i)), ambiguous };
 }
 
 type Pair = { readonly i: number; readonly j: number; readonly g: number };
 
-/** The closest pair that breaks a clearance limit, scanned in item order so the choice is stable. */
+/**
+ * The closest pair that breaks a clearance limit, scanned in item order so the choice is stable. A pair breaks the
+ * limit when its gap is short even after allowing for the slop of its curved items, since the true gap may be that short.
+ */
 function worstClearance(geos: readonly Geo[], comp: readonly number[], limit: number, budget: Budget): Pair | undefined {
 	let worst: Pair | undefined;
 	forEachNearPair(geos, limit, budget, (i, j, g) => {
 		if (comp[i] === comp[j]) return;
-		if (g < limit - EPS && (!worst || g < worst.g)) worst = { i, j, g };
+		const s = (geos[i] as Geo).slop + (geos[j] as Geo).slop;
+		if (g - s < limit - EPS && (!worst || g < worst.g)) worst = { i, j, g };
 	});
 	return worst;
+}
+
+/** Names the curved item of an undecidable contact, so the parse failure says what the checker cannot model. */
+function curvedName(g: Geo): string {
+	if (g.kind === "track") return "an arc";
+	return g.via ? "a via" : "a round or oval pad";
 }
 
 function minClearanceFound(geos: readonly Geo[], comp: readonly number[], budget: Budget): number {
@@ -242,16 +264,26 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			width: t.width,
 			box: boxOf([t.a, t.b], t.width / 2),
 			length: dist(t.a, t.b),
+			slop: t.slop,
 		});
 	}
 	for (const p of board.pads) {
-		geos.push({ kind: "poly", layers: p.layers, poly: p.poly, box: boxOf(p.poly, 0), pad: p });
+		geos.push({ kind: "poly", layers: p.layers, poly: p.poly, box: boxOf(p.poly, 0), slop: p.slop, pad: p });
 	}
 	for (const v of board.vias) {
-		geos.push({ kind: "poly", layers: ["F.Cu", "B.Cu"], poly: v.poly, box: boxOf(v.poly, 0), via: v });
+		geos.push({ kind: "poly", layers: ["F.Cu", "B.Cu"], poly: v.poly, box: boxOf(v.poly, 0), slop: v.slop, via: v });
 	}
 	const budget: Budget = { left: MAX_SEGMENT_TESTS, spent: false };
-	const comp = connectedComponents(geos, budget);
+	const { comp, ambiguous } = connectedComponents(geos, budget);
+	if (ambiguous) {
+		const x = geos[ambiguous.i] as Geo;
+		const y = geos[ambiguous.j] as Geo;
+		const curved = x.slop > 0 ? x : y;
+		return failedParse(
+			spec,
+			`a curved item (${curvedName(curved)}) lies within its approximation error of other copper, so its contact cannot be decided`,
+		);
+	}
 
 	const padGeo = new Map<string, number>();
 	geos.forEach((g, i) => {

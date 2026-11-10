@@ -4,7 +4,20 @@
 // recognised record with a missing, non-finite, out-of-range, or non-positive mandatory field fails the parse too,
 // and a parse that cannot be read comes back with an error instead of a throw.
 
-import { add, arcPoints, circlePolygon, dist, ovalPolygon, planArc, rectPolygon, rotate, type ArcPlan } from "./geometry.ts";
+import {
+	add,
+	arcPoints,
+	circleError,
+	circlePolygon,
+	dist,
+	ovalError,
+	ovalPolygon,
+	planArc,
+	rectPolygon,
+	ROUNDOFF,
+	rotate,
+	type ArcPlan,
+} from "./geometry.ts";
 import {
 	CIRCLE_VERTICES,
 	MAX_ARC_PIECES,
@@ -24,6 +37,7 @@ export type Track = {
 	readonly b: Vec2;
 	readonly width: number;
 	readonly netName: string; // the file's label; geometry never trusts it
+	readonly slop: number; // mm; how far the modelled copper may differ from the true copper (0 for a straight track)
 };
 
 export type PadInst = {
@@ -42,6 +56,7 @@ export type PadInst = {
 	readonly footprintRot: number;
 	readonly footprintOrigin: Vec2;
 	readonly localOffset: Vec2; // the pad's offset from its footprint origin in the file, unrotated
+	readonly slop: number; // mm; how far the modelled outline may differ from the true pad (0 for a rectangle)
 };
 
 export type Via = {
@@ -51,6 +66,7 @@ export type Via = {
 	readonly drill: number;
 	readonly netName: string;
 	readonly poly: readonly Vec2[];
+	readonly slop: number; // mm; how far the modelled polygon may differ from the true via
 };
 
 export type Footprint = {
@@ -128,6 +144,13 @@ function padPolygon(center: Vec2, shape: string, size: Vec2, angle: number): Vec
 	if (shape === "circle") return circlePolygon(center, size[0] / 2);
 	if (shape === "oval") return ovalPolygon(center, size, angle);
 	return rectPolygon(center, size, angle);
+}
+
+/** How far a pad's polygon may differ from its true outline. A rectangle is exact; a circle and an oval are not. */
+function padError(shape: string, size: Vec2): number {
+	if (shape === "circle") return circleError(size[0] / 2);
+	if (shape === "oval") return ovalError(size);
+	return 0;
 }
 
 /** An arc's end points and its plan, or undefined when a mandatory point is missing. */
@@ -401,12 +424,20 @@ function graphicProblem(g: readonly SExpr[], inFootprint: boolean): string | und
 	return numericProblem(g);
 }
 
+/** A straight track of no length has no direction, so the checker cannot place its copper. */
+function zeroLengthProblem(t: readonly SExpr[]): string | undefined {
+	if (t[0] !== "segment") return undefined;
+	const a = point(child(t, "start"));
+	const b = point(child(t, "end"));
+	return a && b && dist(a, b) <= ROUNDOFF ? "(segment) of zero length" : undefined;
+}
+
 function trackProblem(t: readonly SExpr[]): string | undefined {
 	const bad = unexpectedChild(t, TRACK_HEADS, 0);
 	if (bad) return bad;
 	const layer = child(t, "layer")?.[1];
 	if (layer !== "F.Cu" && layer !== "B.Cu") return `(${String(t[0])}) on layer ${String(layer)}`;
-	return numericProblem(t) ?? lengthsProblem(t, "width", 1);
+	return numericProblem(t) ?? lengthsProblem(t, "width", 1) ?? zeroLengthProblem(t);
 }
 
 function viaProblem(v: readonly SExpr[]): string | undefined {
@@ -574,7 +605,7 @@ export function readBoard(text: string): Board {
 		const b = point(child(seg, "end"));
 		const width = num(child(seg, "width"), 1);
 		if (!layer || !a || !b || width === undefined) continue;
-		tracks.push({ id: `track-${tracks.length}`, layer, a, b, width, netName: netNameOf(seg) });
+		tracks.push({ id: `track-${tracks.length}`, layer, a, b, width, netName: netNameOf(seg), slop: 0 });
 	}
 	for (const arc of children(root, "arc")) {
 		const layer = layerOf(child(arc, "layer"));
@@ -589,6 +620,8 @@ export function readBoard(text: string): Board {
 				b: pts[i + 1] as Vec2,
 				width,
 				netName: netNameOf(arc),
+				// Each piece's chord lies within MAX_ARC_ERROR of the true arc (see planArc).
+				slop: MAX_ARC_ERROR,
 			});
 		}
 	}
@@ -606,6 +639,7 @@ export function readBoard(text: string): Board {
 			drill,
 			netName: netNameOf(v),
 			poly: circlePolygon(at, size / 2),
+			slop: circleError(size / 2),
 		});
 	}
 
@@ -647,6 +681,7 @@ export function readBoard(text: string): Board {
 				footprintRot: rot,
 				footprintOrigin: origin,
 				localOffset: offset,
+				slop: padError(shape, size),
 			};
 			fpPads.push(inst);
 			if (inst.layers.length > 0) pads.push(inst);

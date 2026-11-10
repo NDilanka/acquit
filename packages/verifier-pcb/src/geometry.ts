@@ -98,11 +98,32 @@ export function polygonDistance(A: readonly Vec2[], B: readonly Vec2[]): number 
 	return best;
 }
 
-/** A circle as a 64-sided polygon. The error against the true circle is below 0.001 mm for radii under 5 mm. */
+/** Sides of the polygon that stands in for a circle. Its vertices lie on the circle, so it lies inside it. */
+const CIRCLE_SIDES = 64;
+/** Straight pieces in each half-turn of an oval's cap. The cap vertices lie on the cap's circle. */
+const OVAL_STEPS = 16;
+
+/**
+ * Two copper items whose gap is at or below this are touching. It is float roundoff. A KiCad file states positions
+ * to 1e-6 mm, so every positive gap it can express is far above this.
+ */
+export const ROUNDOFF = 1e-9;
+
+/** The largest distance between a circle of radius r and its polygon. The polygon lies inside the circle. */
+export function circleError(r: number): number {
+	return r * (1 - Math.cos(Math.PI / CIRCLE_SIDES));
+}
+
+/** The largest distance between an oval's outline and its polygon. The straight sides are exact; the caps are not. */
+export function ovalError(size: Vec2): number {
+	return (Math.min(size[0], size[1]) / 2) * (1 - Math.cos(Math.PI / (2 * OVAL_STEPS)));
+}
+
+/** A circle as a CIRCLE_SIDES-sided polygon. circleError gives how far it can fall short of the true circle. */
 export function circlePolygon(c: Vec2, r: number): Vec2[] {
 	const out: Vec2[] = [];
-	for (let i = 0; i < 64; i++) {
-		const t = (2 * Math.PI * i) / 64;
+	for (let i = 0; i < CIRCLE_SIDES; i++) {
+		const t = (2 * Math.PI * i) / CIRCLE_SIDES;
 		out.push([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)]);
 	}
 	return out;
@@ -127,7 +148,7 @@ export function ovalPolygon(c: Vec2, size: Vec2, degrees: number): Vec2[] {
 	const half = Math.max(size[0], size[1]) / 2 - r;
 	const along: Vec2 = size[0] >= size[1] ? [half, 0] : [0, half];
 	const out: Vec2[] = [];
-	const steps = 16;
+	const steps = OVAL_STEPS;
 	// Arc around the +along end, then around the -along end.
 	for (let i = 0; i <= steps; i++) {
 		const t = -Math.PI / 2 + (Math.PI * i) / steps;
