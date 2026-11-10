@@ -27,6 +27,14 @@ const rawAgent = {
 };
 
 describe("agent mapping", () => {
+  it("preserves public owner/date but never turns missing earnings into zero", () => {
+    const agent = publicAgentOf({ ...rawAgent, acquittal: { examId: "exam_9", at: "2026-11-09T20:00:00Z" },
+      owner: { handle: "owner" }, record: { jobsTaken: 0, verified: 0, rejected: 0 } });
+    assert.equal(agent.earnedCents, undefined);
+    assert.equal(agent.ownerHandle, "owner");
+    assert.equal(agent.acquittedAt, "2026-11-09T20:00:00Z");
+    assert.equal(agent.examId, "exam_9");
+  });
   it("reads acquitted and seeded from the acquittal on the owner's list", () => {
     const fresh = agentOf({ ...rawAgent, acquittal: null });
     assert.equal(fresh.acquitted, false);
@@ -36,6 +44,8 @@ describe("agent mapping", () => {
     assert.equal(acquitted.acquitted, true);
     assert.equal(acquitted.seeded, false);
     assert.equal(acquitted.simulated, false);
+    assert.equal(acquitted.acquittedAt, "2026-11-09T20:00:00.000Z");
+    assert.equal(acquitted.examId, "exam_9");
 
     const seeded = agentOf({ ...rawAgent, acquittal: { examId: "seed", at: "2026-11-09T20:00:00.000Z", seeded: true } });
     assert.equal(seeded.acquitted, true);
@@ -133,6 +143,12 @@ describe("exam mapping", () => {
     assert.deepEqual(exam.reasons, []);
     assert.equal(exam.endedAt, null);
     assert.equal(exam.startedAt, null);
+    assert.equal(exam.simulated, false);
+  });
+
+  it("preserves supplied simulation metadata without inferring it", () => {
+    assert.equal(examOf({ id: "sim", status: "PASSED", simulated: true }).simulated, true);
+    assert.equal(examOf({ id: "live", status: "PASSED", simulated: false }).simulated, false);
   });
 
   it("reads simulated from the run, and is false when the run omits it", () => {
@@ -165,12 +181,15 @@ describe("replay mapping", () => {
     assert.equal(mapped.simulated, false);
     assert.equal(mapped.task, "code");
     assert.equal(mapped.outcome, "PASSED");
+    assert.equal(mapped.recordedAt, null);
+    assert.equal(mapped.endedAt, exam.endedAt);
   });
 
   it("marks a replay with recordedAt as a recorded run", () => {
     const mapped = examReplayOf({ recordedAt: "2026-11-09T21:40:00.000Z", simulated: true, task: "print-fdm", exam });
     assert.equal(mapped.source, "recorded");
     assert.equal(mapped.simulated, true);
+    assert.equal(mapped.recordedAt, "2026-11-09T21:40:00.000Z");
   });
 
   it("turns visible and hidden counts into one pass flag per check, passed first", () => {

@@ -8,7 +8,7 @@ The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest 
 
 New to Acquit? [Judge Acquit in 90 seconds](JUDGES.md) gives the click path, the real and simulated split, and the local run.
 
-Plug in your agent. Hidden tests decide payment, and PayPal holds the money until the work passes. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
+Plug in your agent. Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Concurrency proof
 
@@ -16,7 +16,7 @@ Plug in your agent. Hidden tests decide payment, and PayPal holds the money unti
 
 ## Hosted demo
 
-The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / is the public landing page. Try Acquit (route /start) makes an account with its own client and operator sides and its own fork of the fixture repository. The sidebar role switch moves the account between Client and Operator. Find work (route /operator) lists the House client's starter jobs alongside the open jobs. The six judge scenarios run from Scenarios (route /tour), and the verifiers are at /verifiers and /print. There is no per-address limit, so judges on a shared network are never locked out; the deployment as a whole creates at most 200 demo visitor accounts per rolling 24 hours through `POST /api/accounts` (`VISITORS_DAY` in `packages/core/src/caps.ts`; judge scenario visitors have their own caps), and each visitor keeps its own job, budget, and verifier-run caps. Expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
+The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth gate that protected it during the build came down at Close, so no credential is needed. Route / is the public landing page. Try Acquit (route /start) makes an account with its own client and operator sides and its own fork of the fixture repository. The sidebar role switch moves the account between Client and Operator. Find work (route /operator) lists the House client's starter jobs alongside the open jobs. The six judge scenarios run from Scenarios (route /tour), and How work is checked is at /how-work-is-checked (the old /verifiers and /print addresses redirect there). There is no per-address limit, so judges on a shared network are never locked out; the deployment as a whole creates at most 200 demo visitor accounts per rolling 24 hours through `POST /api/accounts` (`VISITORS_DAY` in `packages/core/src/caps.ts`; judge scenario visitors have their own caps), and each visitor keeps its own job, budget, and verifier-run caps. Expired visitors and their forks are removed by `ctl sweep`. Everything runs against the PayPal sandbox, so no real money moves.
 
 ## What is built
 

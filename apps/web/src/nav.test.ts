@@ -9,13 +9,13 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
     ["My jobs", "/"],
     ["Post a job", "/jobs/new"],
     ["Sample book", "/studio/sample"],
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
+    ["Your agent", "/specialists"],
+    ["Leaderboard", "/leaderboard"],
     ["Scenarios", "/tour"],
   ]);
 });
 
-test("an operator keeps the work pages and gains the six durable Agents destinations", () => {
+test("an operator keeps the work pages and one agent entry plus Leaderboard", () => {
   assert.deepEqual(pairs(navFor("OPERATOR")), [
     ["Find work", "/operator"],
     ["My bids", "/operator/bids"],
@@ -23,54 +23,53 @@ test("an operator keeps the work pages and gains the six durable Agents destinat
     ["Earnings", "/operator/earnings"],
     ["Dashboards", "/studio"],
     ["Sample book", "/studio/sample"],
-    ["Plug in", "/specialists"],
-    ["Exam", "/specialists/exam"],
-    ["Standing orders", "/specialists/orders"],
-    ["Night", "/specialists/night"],
-    ["Morning", "/specialists/morning"],
-    ["Floor", "/specialists/floor"],
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
+    ["Your agent", "/specialists"],
+    ["Leaderboard", "/leaderboard"],
     ["Scenarios", "/tour"],
   ]);
 });
 
 test("Public and Agents are separate groups, without inventing a CLI or Tutorials page", () => {
   const publicPages = navFor("OPERATOR").filter((item) => item.group === "Public").map((item) => item.label);
-  assert.deepEqual(publicPages, ["Verifiers", "Print verifier", "Scenarios"]);
+  assert.deepEqual(publicPages, ["Scenarios"]);
   const labels = navFor("OPERATOR").map((item) => item.label);
   assert.equal(labels.includes("CLI sign-in"), false);
   assert.equal(labels.includes("Tutorials"), false);
   assert.equal(labels.includes("Agents"), false);
   assert.deepEqual(pairs(navFor("OPERATOR").filter((item) => item.group === "Agents")), [
-    ["Plug in", "/specialists"], ["Exam", "/specialists/exam"], ["Standing orders", "/specialists/orders"],
-    ["Night", "/specialists/night"], ["Morning", "/specialists/morning"], ["Floor", "/specialists/floor"],
+    ["Your agent", "/specialists"], ["Leaderboard", "/leaderboard"],
   ]);
-  assert.equal(navFor("CLIENT").some((item) => item.group === "Agents"), false);
+  assert.equal(navFor("CLIENT").filter((item) => item.label === "Your agent").length, 1);
 });
 
 test("an agent-specific step and trailing slash light only their own Agents destination", () => {
-  for (const path of ["/specialists/exam/agent-one", "/specialists/orders/agent-one/", "/specialists/night/agent-one"]) {
+  for (const path of ["/specialists/exam/agent-one", "/specialists/orders/agent-one/", "/specialists/activity/agent-one", "/earnings/"]) {
     const lit = navFor("OPERATOR").filter((item) => isNavActive(item, path, "OPERATOR"));
     assert.equal(lit.length, 1);
-    assert.equal(lit[0]?.to, path.split("/").slice(0, 3).join("/"));
+    assert.equal(lit[0]?.to, "/specialists");
   }
+});
+
+test("the leaderboard lights only its own destination", () => {
+  const lit = navFor("OPERATOR").filter((item) => isNavActive(item, "/leaderboard/", "OPERATOR"));
+  assert.deepEqual(pairs(lit), [["Leaderboard", "/leaderboard"]]);
+  assert.deepEqual(pageHeading({ name: "specialistActivity" }, "OPERATOR"), { eyebrow: "Specialists", title: "Activity" });
+  assert.deepEqual(pageHeading({ name: "specialistEarnings" }, "OPERATOR"), { eyebrow: "Specialists", title: "Earnings" });
+  assert.deepEqual(pageHeading({ name: "specialistLeaderboard" }, "OPERATOR"), { eyebrow: "Specialists", title: "Leaderboard" });
 });
 
 test("a platform user's navigation is Dashboards and Sample book, then the two public pages", () => {
   assert.deepEqual(pairs(navFor("PLATFORM")), [
     ["Dashboards", "/studio"],
     ["Sample book", "/studio/sample"],
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
   ]);
 });
 
-test("signed out, the sidebar lists Verifiers and Print verifier, and not Scenarios", () => {
-  assert.deepEqual(pairs(signedOutNav()), [
-    ["Verifiers", "/verifiers"],
-    ["Print verifier", "/print"],
-  ]);
+test("checking is not a sidebar destination", () => {
+  assert.deepEqual(pairs(signedOutNav()), []);
+  for (const role of ["CLIENT", "OPERATOR", "PLATFORM"] as const) {
+    assert.ok(navFor(role).every(item => !["Verifiers", "Print verifier"].includes(item.label)));
+  }
 });
 
 test("a role's first page is lit on /, so an operator on / sees Find work lit and Dashboards dark", () => {

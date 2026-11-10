@@ -1,383 +1,107 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { ApiError } from "../../api.ts";
-import { Icon } from "../../icons.tsx";
-import { Link } from "../../router.tsx";
-import { EmptyState, ErrorNote, SkeletonCard, Spinner } from "../../ui.tsx";
-import { AgentCard } from "./AgentCard.tsx";
-import { loadExamReplay, specialists } from "./client.ts";
-import { LoadFailed, SpecialistPage } from "./SpecialistPage.tsx";
-import type { Exam, ExamStatus, SpecialistAgent, Task } from "./types.ts";
-import { useLoad } from "./useLoad.ts";
-import {
-  EXAM_SHAPE,
-  SIMULATED_WORD,
-  START_GRADE,
-  checkLabel,
-  examStartWords,
-  examStatusWords,
-  flagsFrom,
-  gradeWords,
-  isOpenExam,
-  liveRunBlock,
-  reasonSentences,
-  replayLabel,
-} from "./view.ts";
+import { useEffect, useState } from "react";
+import { ApiError } from "../../api";
+import { Link, useRouter } from "../../router";
+import { ErrorNote, SkeletonCard, Spinner } from "../../ui";
+import { loadExamReplay, specialists } from "./client";
+import { useOwner } from "./OwnerPanel";
+import { CheckCells, ExamRecord } from "./ExamRecord";
+import { LoadFailed, SpecialistPage } from "./SpecialistPage";
+import type { Exam, SpecialistAgent } from "./types";
+import { useLoad } from "./useLoad";
+import { hasLiveExam, isOpenExam, liveRunBlock } from "./view";
 
-/** How fast a replay or a finished live run reveals its checks. */
-const TICK_MS = 600;
-/** How often a live run is read while it is open. */
-const POLL_MS = 1000;
-
-export function ExamPage({ agentId }: { readonly agentId?: string }) {
-  return (
-    <SpecialistPage
-      step={2}
-      agentId={agentId}
-      lead="Visible checks tick off one by one. Hidden checks stay sealed until they open, and show only pass or fail."
-    >
-      <ExamBody agentId={agentId} />
-    </SpecialistPage>
-  );
+export function ExamPage({ agentId }: { agentId?: string }) {
+  const owner = useOwner();
+  const { location } = useRouter();
+  return <SpecialistPage step={2} agentId={agentId} lead="">
+    {owner.agent && <ExamForAgent key={`${owner.agent.id}:${location.search.get("exam") ?? ""}`} agent={owner.agent} />}
+  </SpecialistPage>;
 }
 
-function ExamBody({ agentId }: { readonly agentId?: string }) {
-  const agents = useLoad(() => specialists.agents(), "agents");
-  if (agents.data === null) {
-    return agents.error !== null ? (
-      <LoadFailed error={agents.error} onRetry={agents.reload} />
-    ) : (
-      <SkeletonCard lines={4} />
-    );
-  }
-  const agent = agents.data.find((a) => a.id === agentId) ?? agents.data[0] ?? null;
-  if (agent === null) {
-    return (
-      <EmptyState action={{ to: "/specialists", label: "Plug in an agent" }}>
-        No agent to examine yet. Plug one in first.
-      </EmptyState>
-    );
-  }
-  return <ExamForAgent key={agent.id} agent={agent} onChanged={agents.reload} />;
-}
-
-function ExamForAgent({ agent, onChanged }: { readonly agent: SpecialistAgent; readonly onChanged: () => void }) {
-  // The replay is read per task. A missing file comes back as null, not as an error.
-  const replay = useLoad(async () => ({ replay: await loadExamReplay(agent.task) }), agent.task);
+function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
+  const { location } = useRouter();
+  const { reload, announce } = useOwner();
+  const available = hasLiveExam(agent.task);
+  const replay = useLoad(async () => ({ replay: available ? await loadExamReplay(agent.task) : null }), agent.task);
+  const examId = location.search.get("exam");
   const [exam, setExam] = useState<Exam | null>(null);
   const [starting, setStarting] = useState(false);
-  const [startError, setStartError] = useState<unknown>(null);
-  // The code the last start call answered with. A 503 that means live runs are not set up turns into the block reason.
-  const [refusal, setRefusal] = useState<string | null>(null);
-  const [pollError, setPollError] = useState<unknown>(null);
+  const [error, setError] = useState<unknown>(null);
   const [pollTick, setPollTick] = useState(0);
-  const [playId, setPlayId] = useState(0);
-
-  const live = exam !== null;
-  const open = exam !== null && isOpenExam(exam.status);
-
-  // Read the live run once a second while it is open. Each read sets a new `exam`, which schedules the next read.
+  const [readTick, setReadTick] = useState(0);
+  const [recordLoading, setRecordLoading] = useState(true);
+  const [recordError, setRecordError] = useState<unknown>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
   useEffect(() => {
-    if (exam === null || !isOpenExam(exam.status)) return;
-    let stopped = false;
+    if (!available) { setRecordLoading(false); return; }
+    let cancelled = false;
+    setRecordLoading(true); setRecordError(null);
+    specialists.exam(agent.id, examId ?? undefined).then((r) => {
+      if (!cancelled) {
+        setExam(r?.exam ?? null);
+        if (!r && examId) setRecordError(new ApiError(404, "EXAM_NOT_FOUND"));
+        setRecordLoading(false);
+      }
+    }, (e) => { if (!cancelled) { setRecordError(e); setRecordLoading(false); } });
+    return () => { cancelled = true; };
+  }, [agent.id, examId, readTick, available]);
+  useEffect(() => {
+    if (!exam || !isOpenExam(exam.status) || error) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      specialists.exam(agent.id, exam.id).then(
-        (read) => {
-          if (stopped) return;
-          // A run that was just started is there to read. Null means it is gone, so polling stops with a message.
-          if (read === null) {
-            setPollError(new ApiError(404, "EXAM_NOT_FOUND"));
-            return;
-          }
-          setExam(read.exam);
-          if (!isOpenExam(read.exam.status)) onChanged();
-        },
-        (e: unknown) => {
-          if (!stopped) setPollError(e);
-        },
-      );
-    }, POLL_MS);
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [agent.id, exam, pollTick, onChanged]);
-
+      specialists.exam(agent.id, exam.id).then((r) => {
+        if (cancelled) return;
+        if (!r) { setError(new ApiError(404, "EXAM_NOT_FOUND")); return; }
+        setExam(r.exam);
+        if (!isOpenExam(r.exam.status)) reload();
+      }, (e) => { if (!cancelled) setError(e); });
+    }, 1000);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [agent.id, exam, error, pollTick, reload]);
+  // A fixture never stands in for an acquitted agent's missing server record.
+  const sample = available && !agent.acquitted ? replay.data?.replay ?? null : null;
   const start = async () => {
-    setStarting(true);
-    setStartError(null);
-    setPollError(null);
-    try {
-      setExam(await specialists.startExam(agent.id));
-      setRefusal(null);
-    } catch (e) {
-      setRefusal(e instanceof ApiError ? e.code : null);
-      setStartError(e);
-    } finally {
-      setStarting(false);
-    }
+    if (!available || recordLoading || starting || liveRunBlock(agent.task, agent.acquitted, refusal) !== null) return;
+    setStarting(true); setError(null);
+    try { const next = await specialists.startExam(agent.id); setExam(next); setRefusal(null); if (!isOpenExam(next.status)) reload(); }
+    catch (e) { setError(e); setRefusal(e instanceof ApiError ? e.code : null); }
+    finally { setStarting(false); }
   };
-
+  const status = exam?.status ?? "RUNNING";
+  const open = exam !== null && isOpenExam(status);
   const block = liveRunBlock(agent.task, agent.acquitted, refusal);
-  const sample = replay.data?.replay ?? null;
-  const shape = EXAM_SHAPE[agent.task];
-
-  let board: { visible: readonly boolean[]; hidden: readonly boolean[]; ready: boolean; verdict: ReactNode } | null = null;
-  if (exam === null && sample !== null) {
-    board = {
-      visible: sample.visible,
-      hidden: sample.hidden,
-      ready: true,
-      verdict: (
-        <VerdictLine
-          status={sample.outcome}
-          gradeText={`Starts at grade ${START_GRADE}`}
-          reasons={sample.reasons}
-          simulated={sample.simulated}
-          recorded
-        />
-      ),
-    };
-  } else if (exam !== null && open) {
-    board = {
-      visible: Array.from({ length: shape.visible }, () => false),
-      hidden: Array.from({ length: shape.hidden }, () => false),
-      ready: false,
-      verdict: null,
-    };
-  } else if (exam !== null) {
-    board = {
-      visible: exam.visible ? flagsFrom(exam.visible) : [],
-      hidden: exam.hidden ? flagsFrom(exam.hidden) : [],
-      ready: true,
-      verdict: (
-        <VerdictLine
-          status={exam.status}
-          gradeText={agent.acquitted ? gradeWords(agent.grade) : null}
-          reasons={exam.reasons}
-          simulated={exam.simulated}
-        />
-      ),
-    };
-  }
-
-  const startMessage = startError instanceof ApiError ? examStartWords(startError.code) : null;
-  const runDisabled = block !== null || starting || open;
-
-  return (
-    <>
-      <AgentCard agent={agent} />
-
-      <section className="card pad spec-exam" aria-labelledby="spec-exam-title">
-        <div className="spec-exam-head">
-          <h2 id="spec-exam-title" className="spec-h2">
-            {live ? "Live run" : "Replay"}
-          </h2>
-          {!live && sample !== null && <span className="sandbox">{replayLabel(replay.data?.replay?.source ?? "fixture")}</span>}
-        </div>
-
-        {live && <p className="spec-status" role="status">{examStatusWords(exam.status)}{open && <Spinner />}</p>}
-
-        {board !== null ? (
-          <ChecksBoard
-            key={live ? `live-${exam.id}` : `replay-${playId}`}
-            task={agent.task}
-            visible={board.visible}
-            hidden={board.hidden}
-            ready={board.ready}
-            verdict={board.verdict}
-          />
-        ) : replay.data === null && replay.error !== null ? (
-          <LoadFailed error={replay.error} onRetry={replay.reload} />
-        ) : replay.data === null ? (
-          <SkeletonCard lines={3} />
-        ) : (
-          <p className="muted">No replay is recorded for this task yet.</p>
-        )}
-
-        {pollError !== null && (
-          <LoadFailed
-            error={pollError}
-            onRetry={() => {
-              setPollError(null);
-              setPollTick((n) => n + 1);
-            }}
-          />
-        )}
-        {startError !== null && startMessage === null && <ErrorNote error={startError} />}
-
-        <div className="spec-actions">
-          <button type="button" className="btn" disabled={runDisabled} onClick={() => void start()}>
-            {starting && <Spinner />}
-            {open ? "Running" : starting ? "Starting" : "Run it live"}
-          </button>
-          {block !== null && <p className="muted">{block}</p>}
-          {live && !open && (
-            <button
-              type="button"
-              className="btn ghost sm"
-              onClick={() => {
-                setExam(null);
-                setPlayId((n) => n + 1);
-              }}
-            >
-              Show the replay
-            </button>
-          )}
-          {!live && sample !== null && (
-            <button type="button" className="btn secondary sm" onClick={() => setPlayId((n) => n + 1)}>
-              Play again
-            </button>
-          )}
-        </div>
-      </section>
-
-      <div className="spec-next">
-        <Link to={`/specialists/orders/${agent.id}`} className="btn">
-          Next
-        </Link>
+  const date = exam?.endedAt ?? null;
+  const pass = exam?.status === "PASSED";
+  useEffect(() => { announce(!available ? "Exam coming." : recordLoading ? "Loading exam record." : recordError ? "Exam record unavailable." : exam ? `Exam ${exam.status.toLowerCase()}.` : "Ready to take the exam."); }, [available, recordLoading, recordError, exam?.status, announce]);
+  const recordPath = `/specialists/exam/${encodeURIComponent(agent.id)}${exam ? `?exam=${encodeURIComponent(exam.id)}` : ""}`;
+  if (!available) return <section className="exam-before"><h1>Exam coming</h1>
+    <p>Use Code fixer to try the built exam.</p>
+    <ul className="record-origin"><li className="pill">Exam · Not built</li><li className="pill">Hardware connection · Not built</li></ul>
+    <div className="owner-actions"><Link className="btn" to="/specialists">Plug in Code fixer</Link></div></section>;
+  if (recordLoading) return <section className="exam-record exam-loading" aria-busy="true"><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
+  if (recordError !== null) return <section><h1>Exam record unavailable</h1><LoadFailed error={recordError} onRetry={() => setReadTick((n) => n + 1)} primary /></section>;
+  if (!exam && agent.acquitted) return <section className="exam-empty"><h1>No stored exam record</h1>
+    <p>This agent is Acquitted, but no stored exam run is available. Sample data is not its exam record.</p>
+    <div className="owner-actions"><Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link></div></section>;
+  if (!exam) return <section className="exam-before"><h1>Take the exam</h1><p>Pass to bid on code jobs.</p>
+    {sample && <details className="exam-sample"><summary>Example of a passed exam · sample data · Simulated</summary>
+      <div className="sample-proof"><p>Example only, not your agent’s record.</p>
+        <CheckCells counts={{ total: sample.visible.length, passed: sample.visible.filter(Boolean).length }} total={sample.visible.length} hidden={false} />
+        <CheckCells counts={{ total: sample.hidden.length, passed: sample.hidden.filter(Boolean).length }} total={sample.hidden.length} hidden />
       </div>
-    </>
-  );
-}
-
-/**
- * The checks as a board. Each check reveals on its own tick. A visible check shows its mark, a hidden one stays sealed
- * until its tick, then opens to pass or fail only. The verdict appears after the last check.
- */
-function ChecksBoard({
-  task,
-  visible,
-  hidden,
-  ready,
-  verdict,
-}: {
-  readonly task: Task;
-  readonly visible: readonly boolean[];
-  readonly hidden: readonly boolean[];
-  readonly ready: boolean;
-  readonly verdict: ReactNode;
-}) {
-  const total = visible.length + hidden.length;
-  const [shown, setShown] = useState(0);
-
-  useEffect(() => {
-    if (!ready || shown >= total) return;
-    const timer = window.setTimeout(() => setShown((n) => n + 1), TICK_MS);
-    return () => window.clearTimeout(timer);
-  }, [ready, shown, total]);
-
-  const done = ready && shown >= total;
-
-  return (
-    <div className="spec-board">
-      <ol className="spec-checks" aria-label="Visible checks">
-        {visible.map((passed, i) => {
-          const state = i < shown ? (passed ? "passed" : "failed") : ready && i === shown ? "checking" : "waiting";
-          return (
-            <li key={i} className={`spec-check ${state}`}>
-              <span className="spec-check-name">{checkLabel(task, i + 1)}</span>
-              <span className="spec-check-state">
-                {state === "passed" && (
-                  <>
-                    <Icon name="check" size={14} /> Passed
-                  </>
-                )}
-                {state === "failed" && (
-                  <>
-                    <Icon name="close" size={14} /> Failed
-                  </>
-                )}
-                {state === "checking" && (
-                  <>
-                    <Spinner /> Checking
-                  </>
-                )}
-                {state === "waiting" && "Waiting"}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-
-      {hidden.length > 0 && (
-        <ol className="spec-checks spec-sealed" aria-label="Hidden checks">
-          {hidden.map((passed, j) => {
-            const k = visible.length + j;
-            const opened = k < shown;
-            return (
-              <li key={j} className={`spec-check ${opened ? (passed ? "passed" : "failed") : "sealed"}`}>
-                <span className="spec-check-name">Hidden check {j + 1}</span>
-                <span className="spec-check-state">
-                  {opened ? (
-                    passed ? (
-                      <>
-                        <Icon name="check" size={14} /> Opened: passed
-                      </>
-                    ) : (
-                      <>
-                        <Icon name="close" size={14} /> Opened: failed
-                      </>
-                    )
-                  ) : (
-                    <>
-                      <Icon name="shield" size={14} /> Sealed
-                    </>
-                  )}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-
-      {done && (
-        <div className="spec-verdict" role="status">
-          {verdict}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * The verdict of a run. A replay's verdict is the recorded run's, so it says so; it is not this agent's status.
- * A simulated run carries the Simulated label whatever its outcome.
- */
-function VerdictLine({
-  status,
-  gradeText,
-  reasons,
-  simulated,
-  recorded = false,
-}: {
-  readonly status: ExamStatus;
-  readonly gradeText: string | null;
-  readonly reasons: readonly string[];
-  readonly simulated: boolean;
-  readonly recorded?: boolean;
-}) {
-  if (status === "PASSED") {
-    return (
-      <p className="spec-verdict-line">
-        {recorded && <span className="muted">In the recorded run:</span>}
-        <span className="pill ok">{examStatusWords(status)}</span>
-        {simulated && <span className="sandbox">{SIMULATED_WORD}</span>}
-        {gradeText && <span className="spec-grade">{gradeText}</span>}
-      </p>
-    );
-  }
-  return (
-    <div className="spec-verdict-line">
-      {recorded && <span className="muted">In the recorded run:</span>}
-      <span className="pill new">{examStatusWords(status)}</span>
-      {simulated && <span className="sandbox">{SIMULATED_WORD}</span>}
-      {reasonSentences(reasons).length > 0 && (
-        <ul className="spec-reasons">
-          {reasonSentences(reasons).map((sentence) => (
-            <li key={sentence}>{sentence}</li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+    </details>}
+    {error !== null && <ErrorNote error={error} />}
+    <div className="owner-actions"><button type="button" className="btn" disabled={starting || block !== null} onClick={() => void start()}>{starting ? "Starting…" : "Take the exam"}</button></div>
+    {block && <p>{block}</p>}</section>;
+  const action = pass && agent.acquitted ? <Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link>
+    : <button className="btn" type="button" disabled={starting || open || block !== null} onClick={() => void start()}>
+      {starting && <Spinner />}{open ? "Running the exam" : starting ? "Starting…" : status === "FAILED" || status === "ERROR" ? "Retry the exam" : "Take the exam"}
+    </button>;
+  return <>
+    <ExamRecord status={status} simulated={exam.simulated} task={agent.task} grade={agent.grade} date={date}
+      visible={open ? null : exam.visible} hidden={open ? null : exam.hidden}
+      recordPath={recordPath} action={action} />
+    {error !== null && <LoadFailed error={error} onRetry={() => { setError(null); setPollTick((n) => n + 1); }} />}
+    {block && !agent.acquitted && <p className="muted">{block}</p>}
+  </>;
 }

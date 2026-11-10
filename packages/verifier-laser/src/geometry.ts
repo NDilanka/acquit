@@ -94,6 +94,17 @@ export function pointEdgeDistance(point: Vec2, edges: readonly (readonly [Vec2, 
 	return best;
 }
 
+/** Shortest distance from a point to the edges at the given indexes in the list. Infinity when indexes is empty. */
+export function pointEdgeDistanceAt(point: Vec2, edges: readonly (readonly [Vec2, Vec2])[], indexes: readonly number[]): number {
+	let best = Infinity;
+	for (const index of indexes) {
+		const [a, b] = edges[index]!;
+		const distance = pointToSegment(point, a, b);
+		if (distance < best) best = distance;
+	}
+	return best;
+}
+
 /** Orientation noise below this, in mm squared, counts as collinear. */
 const TOUCH_EPS = 1e-9;
 
@@ -182,6 +193,30 @@ export function selfOverlaps(points: readonly Vec2[], closed: boolean): boolean 
 		}
 	}
 	return false;
+}
+
+/** Signed area of a closed path, in mm squared. Positive when the path runs counter-clockwise in a y-up frame. */
+export function areaOf(points: readonly Vec2[]): number {
+	let twice = 0;
+	for (const [[ax, ay], [bx, by]] of edgesOf(points, true)) twice += ax * by - bx * ay;
+	return twice / 2;
+}
+
+/**
+ * Whole turns a closed path makes round a point: +1 or -1 when it goes once round it, 0 when it does not. Each edge turns
+ * through the angle it subtends at the point, which is under a half turn for an edge that misses the point, so the summed
+ * angle is a whole number of turns.
+ */
+export function windingAround(points: readonly Vec2[], point: Vec2): number {
+	let total = 0;
+	for (const [[ax, ay], [bx, by]] of edgesOf(points, true)) {
+		const ux = ax - point[0];
+		const uy = ay - point[1];
+		const vx = bx - point[0];
+		const vy = by - point[1];
+		total += Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+	}
+	return Math.round(total / (2 * Math.PI));
 }
 
 export const roundMm = (value: number): number => Math.round(value * 1000) / 1000;

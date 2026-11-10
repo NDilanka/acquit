@@ -27,7 +27,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div className="toast-region" role="status" aria-live="polite">
+      <div className="toast-region" aria-live="polite" aria-atomic="true">
         {shown && (
           <p key={shown.id} className="toast">
             {shown.message}

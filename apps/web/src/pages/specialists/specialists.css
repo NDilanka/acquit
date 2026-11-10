@@ -1,6 +1,6 @@
 /*
- * First-night specialist screens: the step indicator, sample and agent cards, the exam board,
- * standing orders, the night replay and the morning report. Colours and radii come from the
+ * Specialist screens: the step indicator, sample and agent cards, the exam board,
+ * standing orders, the activity replay and earnings. Colours and radii come from the
  * shared tokens in tokens.css, so light and dark mode follow the rest of the app.
  */
 
@@ -174,7 +174,7 @@
   gap: 16px;
 }
 
-/* Agent card, used on the plug-in, exam and morning screens. */
+/* Agent card, used on the plug-in, exam and earnings screens. */
 .spec-agent {
   display: grid;
   gap: 16px;
@@ -520,8 +520,8 @@
   font-weight: 600;
 }
 
-/* Night: the replay card and its timeline. */
-.spec-night {
+/* Activity: the replay card and its timeline. */
+.spec-activity {
   display: grid;
   gap: 16px;
   min-width: 0;
@@ -540,7 +540,7 @@
   padding-top: 8px;
 }
 
-/* Morning: the report headline, the totals and the lists. */
+/* Earnings: the report headline, totals and lists. */
 .spec-report {
   display: grid;
   gap: 20px;
@@ -587,7 +587,7 @@
 }
 
 /* Floor: agent cards in a grid, best grade first. */
-.spec-floor {
+.spec-leaderboard {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -596,11 +596,11 @@
   gap: 16px;
 }
 
-.spec-floor > li {
+.spec-leaderboard > li {
   min-width: 0;
 }
 
-.spec-floor .spec-agent {
+.spec-leaderboard .spec-agent {
   height: 100%;
 }
 

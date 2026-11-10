@@ -5,13 +5,105 @@ import { RoleSwitch, SaveAccountModal, SignOutDialog } from "./account-ui";
 import { Icon } from "./icons";
 import { isNavActive, navFor, signedOutNav, type NavItem, type Role } from "./nav";
 import { Link, useRouter } from "./router";
-import { match, showsTryCta } from "./route";
+import { isOwnerRoute, match, showsTryCta } from "./route";
 import { useOperatorWatch } from "./operator-watch";
 import type { Session } from "./session";
 import { useTheme } from "./theme-context";
 import { Segmented } from "./ui";
 import type { ThemeChoice } from "./theme";
 import { PageTitleContext } from "./page-title";
+import { api } from "./api";
+import { ErrorNote, Spinner } from "./ui";
+import { OwnerProvider, useOwner } from "./pages/specialists/OwnerPanel";
+import { specialists } from "./pages/specialists/client";
+import { hasLiveExam } from "./pages/specialists/view";
+import "./pages/specialists/owner.css";
+
+export function Shell(props: Parameters<typeof LegacyShell>[0]) {
+  const { location } = useRouter();
+  return isOwnerRoute(location.path)
+    ? <OwnerProvider session={props.session}><OwnerShell {...props} /></OwnerProvider>
+    : <LegacyShell {...props} />;
+}
+
+function OwnerShell({ session, onSignOut, onSession, children }: Parameters<typeof LegacyShell>[0]) {
+  const { location } = useRouter();
+  const { theme, setChoice } = useTheme();
+  const owner = useOwner();
+  const [switching, setSwitching] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  useEffect(() => {
+    const keepVisible = (event: Event) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (!target) return;
+      requestAnimationFrame(() => {
+        const dock = document.querySelector<HTMLElement>(".owner-actions");
+        if (!dock || getComputedStyle(dock).position !== "fixed" || dock.contains(target)) return;
+        const rect = target.getBoundingClientRect();
+        const bottom = dock.getBoundingClientRect().top - 8;
+        if (rect.bottom > bottom) window.scrollBy({ top: rect.bottom - bottom, behavior: "instant" });
+      });
+    };
+    document.addEventListener("focusin", keepVisible);
+    document.addEventListener("toggle", keepVisible, true);
+    return () => { document.removeEventListener("focusin", keepVisible); document.removeEventListener("toggle", keepVisible, true); };
+  }, []);
+  const enter = async () => {
+    setSwitching(true); setError(null);
+    try { const next = await api.switchRole("OPERATOR"); onSession({ user: next.user, account: next.account }); }
+    catch (e) { setError(e); }
+    finally { setSwitching(false); }
+  };
+  const toggleAutopilot = async () => {
+    if (!owner.agent || !owner.orders || pending) return;
+    setPending(true); setError(null);
+    try {
+      const { priceFloorCents, maxConcurrent, runsOn, preApproveCap } = owner.orders;
+      const on = !owner.orders.autopilot;
+      owner.setOrders(await specialists.saveStandingOrders(owner.agent.id, { priceFloorCents, maxConcurrent, runsOn, preApproveCap, autopilot: on, preApprove: on }));
+      owner.announce(on ? "Autopilot on. Working on its own within your orders." : "Autopilot paused. No new bids.");
+    }
+    catch (e) { setError(e); }
+    finally { setPending(false); }
+  };
+  const leaderboard = location.path.startsWith("/leaderboard");
+  const publicRecord = ["agentRecord", "howWorkIsChecked"].includes(match(location.path).name);
+  return <div className="owner-app">
+    <p id="live" role="status" className="sr-only">{owner.announcement}</p>
+    <a href="#content" className="skip-link" onClick={skipToContent}>Skip to content</a>
+    <header className="owner-bar">
+      <Link to="/" className="owner-brand"><span aria-hidden="true">A</span><span>Acquit</span></Link>
+      <nav className="owner-nav" aria-label="Main">
+        <Link to="/specialists" aria-current={!leaderboard && !publicRecord ? "page" : undefined}>Your agent</Link>
+        <Link to="/leaderboard" aria-current={leaderboard ? "page" : undefined}>Leaderboard</Link>
+      </nav>
+      <div className="owner-bar-end">
+        {session?.user.role === "OPERATOR" && owner.agent?.runner === "claude-code" && hasLiveExam(owner.agent.task) && <div className="owner-shell-state">
+          {owner.drafting ? <span className="owner-slot">Orders not set</span> : owner.orders
+            ? <button type="button" className="owner-pause" role="switch" aria-label="Autopilot" aria-checked={owner.orders.autopilot} disabled={pending} onClick={() => void toggleAutopilot()}><span className={`switch-track${owner.orders.autopilot ? " on" : ""}`} aria-hidden="true" /><span className="owner-auto-long">{pending ? "Saving…" : owner.orders.autopilot ? "Autopilot on · working on its own" : "Autopilot off · no new bids"}</span><span className="owner-auto-short" aria-hidden="true">{owner.orders.autopilot ? "on" : "off"}</span></button>
+            : owner.agent?.acquitted ? "Orders not set" : "Not acquitted"}
+        </div>}
+        <button type="button" className="owner-icon" aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"}
+          aria-pressed={theme === "dark"} onClick={() => setChoice(theme === "dark" ? "light" : "dark")}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" /><path d="M12 5a7 7 0 0 1 0 14Z" fill="currentColor" stroke="none" /></svg>
+        </button>
+        {session ? <AccountCard session={session} onSignOut={onSignOut} compact /> : session === undefined && <span className="owner-account-placeholder" aria-hidden="true" />}
+      </div>
+    </header>
+    <div className="wrap owner-workspace">
+      {error !== null && <ErrorNote error={error} />}
+      {session && session.user.role !== "OPERATOR" && !leaderboard && !publicRecord ? <main id="content" tabIndex={-1} className="owner-entry">
+        <h1>Plug in your agent.</h1>
+        <p>Your account is ready. Open the agent side to plug one in.</p>
+        {canSwitchRole(session.user, session.account)
+          ? <button type="button" className="btn" disabled={switching} onClick={() => void enter()}>{switching && <Spinner />}{switching ? "Opening…" : "Open your agent workspace"}</button>
+          : <p>This account has no agent workspace. Use a Try Acquit account to run an agent.</p>}
+      </main> : children}
+    </div>
+    <footer className="owner-footer"><Link to="/how-work-is-checked">How work is checked</Link></footer>
+  </div>;
+}
 
 const HELP_URL = "https://github.com/NDilanka/acquit#readme";
 
@@ -28,7 +120,7 @@ const THEME_CHOICES: readonly { readonly value: ThemeChoice; readonly label: str
 ];
 
 /** The sidebar, the top bar, and the page panel. Every page renders inside it except the signed-out landing. */
-export function Shell({
+function LegacyShell({
   session,
   heading,
   onSignOut,
@@ -100,7 +192,7 @@ export function Shell({
 
   return (
     <PageTitleContext.Provider value={supplyTitle}>
-    <div className="app">
+    <div className={`app${path === "/operator/work" || (path.startsWith("/jobs/") && path !== "/jobs/new") ? " hosted-owner" : ""}`}>
       <a href="#content" className="skip-link" onClick={skipToContent}>
         Skip to content
       </a>
@@ -158,6 +250,7 @@ export function Shell({
             </div>
           </header>
           {children}
+          <footer className="owner-footer"><Link to="/how-work-is-checked">How work is checked</Link></footer>
         </div>
       </div>
       {menuOpen && <div className="side-scrim" aria-hidden="true" onClick={() => setMenuOpen(false)} />}
@@ -195,18 +288,28 @@ export function ThemeSwitch() {
 }
 
 /** The bottom card of the sidebar. Its menu holds the theme switch, Save your account, Help, and Sign out. */
-function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
+function AccountCard({ session, onSignOut, compact = false }: { session: Session; onSignOut: () => void; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"save" | "signOut" | null>(null);
   // Bumped when the saved flag changes, so the card reads storage again.
   const [, setSavedTick] = useState(0);
+  const [savedHere, setSavedHere] = useState<{ client: string; saved: boolean } | null>(null);
   const card = useRef<HTMLDivElement>(null);
   const cardButton = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const focusMenu = useRef(false);
   const { user, account } = session;
-  const saved = account ? linkSaved(localStorage, account.client) : true;
+  const { theme, setChoice } = useTheme();
+  const { location } = useRouter();
+  useEffect(() => setOpen(false), [location.path]);
+  const saved = account ? savedHere?.client === account.client ? savedHere.saved : linkSaved(localStorage, account.client) : true;
   const name = cardName(user, account);
+  useEffect(() => {
+    const refresh = () => { setSavedHere(null); setSavedTick(n => n + 1); };
+    window.addEventListener("storage",refresh);
+    window.addEventListener("focus",refresh);
+    return () => { window.removeEventListener("storage",refresh); window.removeEventListener("focus",refresh); };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -245,13 +348,15 @@ function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () =
   };
 
   return (
-    <div className="acct" ref={card}>
+    <div className={`acct${compact ? " owner-account" : ""}`} ref={card}>
       {open && (
         <div className="acct-menu" ref={menu}>
-          <div className="acct-theme">
+          <p className="acct-signed-in">Signed in as {user.handle}</p>
+          <div className={`acct-theme${compact ? " owner-theme-choices" : ""}`}>
             <span className="acct-label">Theme</span>
             <ThemeSwitch />
           </div>
+          {compact && <button type="button" className="acct-item owner-theme-alt" aria-pressed={theme === "dark"} onClick={() => setChoice(theme === "dark" ? "light" : "dark")}>Dark theme</button>}
           {account && (
             <button type="button" className="acct-item" onClick={() => choose("save")}>
               <Icon name="shield" size={16} />
@@ -263,6 +368,7 @@ function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () =
             <Icon name="help" size={16} />
             Help
           </a>
+          <Link className="acct-item" to="/how-work-is-checked">How work is checked</Link>
           <button type="button" className="acct-item" onClick={() => choose("signOut")}>
             <Icon name="logout" size={16} />
             Sign out
@@ -274,7 +380,7 @@ function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () =
         type="button"
         className="acct-card"
         aria-expanded={open}
-        aria-haspopup="menu"
+        aria-label={compact ? `Account: ${name}` : undefined}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onCardKey}
       >
@@ -282,16 +388,16 @@ function AccountCard({ session, onSignOut }: { session: Session; onSignOut: () =
           {initials(name)}
           {!saved && <span className="acct-dot" />}
         </span>
-        <span className="acct-text">
+        <span className={compact ? "sr-only" : "acct-text"}>
           <b>{name}</b>
           <small>{ROLE_CAPTION[user.role]}</small>
           {!saved && <span className="sr-only">Your account link is not saved yet.</span>}
         </span>
-        <Icon name="chevrons" size={14} />
+        {!compact && <Icon name="chevrons" size={14} />}
       </button>
       {/* The sidebar is a transformed sheet at 390 px, which would trap a fixed dialog inside it. */}
       {dialog === "save" && account && createPortal(
-        <SaveAccountModal account={account} onClose={() => setDialog(null)} onSavedChange={() => setSavedTick((n) => n + 1)} />,
+        <SaveAccountModal account={account} onClose={() => setDialog(null)} onSavedChange={saved => setSavedHere({ client:account.client,saved })} />,
         document.body,
       )}
       {dialog === "signOut" && createPortal(

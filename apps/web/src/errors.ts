@@ -69,6 +69,7 @@ const WORDS = new Map<string, string>(
     PLATFORM_KEY_UNSET: "Platform sign-in is not set up on this deployment.",
     PLATFORM_ONLY: "Only the platform can open this.",
     PLATFORM_READ_ONLY: "The platform view is read only.",
+    PRICE_CANNOT_FUND: "That price is too low for the House to fund.",
     PRICE_OVER_BUDGET: "The price is higher than the job budget.",
     RESTORE_LIMITED: "Too many tries from this network. Wait 15 minutes, then open the link again.",
     REVIEW_CLOSED: "The review window is closed.",

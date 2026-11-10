@@ -198,3 +198,152 @@ test("a required window cut inside a larger required window fails cutouts, drawn
 	assert.deepEqual(failed(verify(spec, edit(withoutMounts(), WINDOW, `${small}\n${WINDOW}`))), ["cutouts"]);
 	assert.ok(failed(verify(spec, edit(withoutMounts(), WINDOW, `${WINDOW}\n${small}`))).includes("cut-order"), "outer-first is the control");
 });
+
+/** A 120 x 80 mm panel with the given hole, on a 300 x 200 mm bed. The outline's right and top edges are the kerf-widened sizes. */
+const smallHolePanel = (hole: string, right: number, top: number): string =>
+	`<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="200mm" viewBox="0 0 300 200">${hole}` +
+	`<path id="label" d="M65 77 H95" stroke="#0000ff" fill="none"/>` +
+	`<path id="outline" d="M10 10 H${right} V${top} H10 Z" stroke="#ff0000" fill="none"/></svg>`;
+
+/** Points of a C: two concentric arcs joined at both ends, open by gap radians at angle zero, with steps per arc. */
+function cPoints(centre: [number, number], outer: number, inner: number, gap: number, steps: number): string {
+	const at = (radius: number, angle: number): string => `${centre[0] + radius * Math.cos(angle)},${centre[1] + radius * Math.sin(angle)}`;
+	const sweep = 2 * Math.PI - gap;
+	const outerArc = Array.from({ length: steps + 1 }, (_, i) => at(outer, gap / 2 + (sweep * i) / steps));
+	const innerArc = Array.from({ length: steps + 1 }, (_, i) => at(inner, gap / 2 + sweep - (sweep * i) / steps));
+	return [...outerArc, ...innerArc].join(" ");
+}
+
+test("a C-shaped loop with a small gap fails holes, while the same hole as a true circle passes", () => {
+	// Every stretch of the circle is covered and every point is within tolerance, but the loop winds round the centre zero times.
+	type Case = { tolerance: number; kerfMm: number; diameterMm: number; outer: number; inner: number; gap: number; centre: [number, number]; right: number; top: number };
+	const cases: Case[] = [
+		{ tolerance: 1, kerfMm: 0.2, diameterMm: 20.2, outer: 10, inner: 9.5, gap: 0.18, centre: [30.1, 70.1], right: 130.2, top: 90.2 },
+		{ tolerance: 0.1, kerfMm: 0.05, diameterMm: 20, outer: 9.975, inner: 9.895, gap: 0.018, centre: [30.025, 70.025], right: 130.05, top: 90.05 },
+	];
+	for (const c of cases) {
+		const spec = specWith({
+			kerfMm: c.kerfMm,
+			holes: [{ id: "required-hole", centreMm: [20, 20], diameterMm: c.diameterMm, toleranceMm: c.tolerance }],
+			slots: [],
+			labelRegionMm: { originMm: [50, 10], sizeMm: [44, 6] },
+		});
+		const loop = `<polygon id="required-hole" points="${cPoints(c.centre, c.outer, c.inner, c.gap, 128)}" stroke="#ff0000" fill="none"/>`;
+		assert.deepEqual(failed(verify(spec, smallHolePanel(loop, c.right, c.top))), ["holes"], `tolerance ${c.tolerance}`);
+		const circle = `<circle id="required-hole" cx="${c.centre[0]}" cy="${c.centre[1]}" r="${c.outer}" stroke="#ff0000" fill="none"/>`;
+		assert.deepEqual(failed(verify(spec, smallHolePanel(circle, c.right, c.top))), [], `tolerance ${c.tolerance}, true circle`);
+	}
+});
+
+/** Points of a rounded rectangle drawn as a polygon, with steps segments on each corner arc and vertices on the arcs. */
+function roundedCornersPoints(centre: [number, number], width: number, height: number, radius: number, steps: number): string {
+	const [cx, cy] = centre;
+	const hw = width / 2;
+	const hh = height / 2;
+	const corners: [number, number, number][] = [
+		[cx + hw - radius, cy - hh + radius, -Math.PI / 2],
+		[cx + hw - radius, cy + hh - radius, 0],
+		[cx - hw + radius, cy + hh - radius, Math.PI / 2],
+		[cx - hw + radius, cy - hh + radius, Math.PI],
+	];
+	return corners
+		.flatMap(([ox, oy, start]) =>
+			Array.from({ length: steps + 1 }, (_, i) => {
+				const a = start + (Math.PI / 2) * (i / steps);
+				return `${ox + radius * Math.cos(a)},${oy + radius * Math.sin(a)}`;
+			}),
+		)
+		.join(" ");
+}
+
+test("a 200 mm-radius outline drawn with 16 segments a corner fails outer-size, while the true arc passes", () => {
+	// Sixteen segments per corner put each chord's midpoint 0.24 mm inside its arc, more than the 0.1 mm tolerance.
+	const spec = specWith({
+		partMm: [600, 600],
+		bedMm: [700, 700],
+		cornerRadiusMm: 200,
+		labelRegionMm: { originMm: [250, 20], sizeMm: [100, 10] },
+		holes: [],
+		slots: [],
+	});
+	const panel = (outline: string): string =>
+		`<svg xmlns="http://www.w3.org/2000/svg" width="700mm" height="700mm" viewBox="0 0 700 700">${outline}` +
+		`<path id="label" d="M270 585 H310" stroke="#0000ff" fill="none"/></svg>`;
+	const probe: HiddenSample = { keepMaterialMm: [[300, 300]] };
+	const coarse = `<polygon id="outline" points="${roundedCornersPoints([310.1, 310.1], 600.2, 600.2, 200.1, 16)}" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(spec, panel(coarse), probe)), ["outer-size"]);
+	const fine = `<polygon id="outline" points="${roundedCornersPoints([310.1, 310.1], 600.2, 600.2, 200.1, 256)}" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(spec, panel(fine), probe)), []);
+	const arc = `<rect id="outline" x="10" y="10" width="600.2" height="600.2" rx="200.1" ry="200.1" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(spec, panel(arc), probe)), []);
+});
+
+test("the mount hole drawn as cubic or quadratic arcs of the true circle passes holes, and an ellipse with unequal radii fails it", () => {
+	// Four cubic arcs with the standard handle, and eight quadratic arcs whose control points sit where the tangents meet.
+	const [cx, cy, r] = [16.1, 84.1, 1.5];
+	const k = 0.5522847498 * r;
+	const cubic = `<path id="mount-a" d="M${cx + r} ${cy} C${cx + r} ${cy + k} ${cx + k} ${cy + r} ${cx} ${cy + r} C${cx - k} ${cy + r} ${cx - r} ${cy + k} ${cx - r} ${cy} C${cx - r} ${cy - k} ${cx - k} ${cy - r} ${cx} ${cy - r} C${cx + k} ${cy - r} ${cx + r} ${cy - k} ${cx + r} ${cy} Z" stroke="#ff0000" fill="none"/>`;
+	const step = Math.PI / 4;
+	const handle = r / Math.cos(step / 2);
+	const quadratic = Array.from({ length: 8 }, (_, i) => {
+		const mid = (i + 0.5) * step;
+		const end = (i + 1) * step;
+		return `Q${cx + handle * Math.cos(mid)} ${cy + handle * Math.sin(mid)} ${cx + r * Math.cos(end)} ${cy + r * Math.sin(end)}`;
+	}).join(" ");
+	const quadPath = `<path id="mount-a" d="M${cx + r} ${cy} ${quadratic} Z" stroke="#ff0000" fill="none"/>`;
+	const ellipse = `<ellipse id="mount-a" cx="${cx}" cy="${cy}" rx="1.5" ry="1.62" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(specWith(), edit(honest, MOUNT_A, cubic), hidden)), []);
+	assert.deepEqual(failed(verify(specWith(), edit(honest, MOUNT_A, quadPath), hidden)), []);
+	assert.deepEqual(failed(verify(specWith(), edit(honest, MOUNT_A, ellipse), hidden)), ["holes"]);
+});
+
+test("a rounded outline that shortcuts one corner fails outer-size, and the true corner passes with the hidden probe", () => {
+	// The chord across the bottom-right corner keeps every vertex and edge midpoint within 0.1 mm of the ideal
+	// outline, but points of the ideal corner arc stand 0.16 mm off the cut.
+	const spec = specWith({ cornerRadiusMm: 0.1 });
+	const bad = `<path id="outline" d="M10.2 10 H130 A.2 .2 0 0 1 130.2 10.2 V89.2 L130.002 90.2 H10.2 A.2 .2 0 0 1 10 90 V10.2 A.2 .2 0 0 1 10.2 10 Z" stroke="#ff0000" fill="none"/>`;
+	const good = `<rect id="outline" x="10" y="10" width="120.2" height="80.2" rx=".2" stroke="#ff0000" fill="none"/>`;
+	const q = Math.hypot(1, 0.198);
+	const probe: [number, number] = [130 + 0.05 / q - 10.1, 90.1 - (90 + (0.05 * 0.198) / q)];
+	const more: HiddenSample = { ...hidden, keepMaterialMm: [...hidden.keepMaterialMm, probe] };
+	assert.deepEqual(failed(verify(spec, edit(honest, OUTLINE, bad), hidden)), ["outer-size"]);
+	assert.deepEqual(failed(verify(spec, edit(honest, OUTLINE, bad), more)), ["outer-size", "hidden-material"]);
+	assert.deepEqual(failed(verify(spec, edit(honest, OUTLINE, good), more)), []);
+});
+
+test("an outline that hugs the tolerance band but steps around a corner fails outer-size, and the same step in the window fails cutouts", () => {
+	// Every drawn point is within 0.2 mm of the ideal outline, but the ideal corner is 0.28 mm from the cut.
+	const spec = specWith({ toleranceMm: 0.2 });
+	const steppedOutline = `<path id="outline" d="M10 10 H130.2 V89.2 H130.001 V90.001 H129.2 V90.2 H10 Z" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(spec, edit(honest, OUTLINE, steppedOutline), hidden)), ["outer-size"]);
+	const steppedWindow = `<path id="window" d="M55.2 44.2 H85 V55 H84.801 V55.801 H84 V56 H55.2 Z" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(spec, edit(honest, WINDOW, steppedWindow), hidden)), ["cutouts"]);
+	// The honest panel at the coarser tolerance, and a true rounded outline at radius 1, still pass.
+	assert.deepEqual(failed(verify(spec, honest, hidden)), []);
+	const rounded = `<rect id="outline" x="10" y="10" width="120.2" height="80.2" rx="1.1" stroke="#ff0000" fill="none"/>`;
+	assert.deepEqual(failed(verify(specWith({ toleranceMm: 0.2, cornerRadiusMm: 1 }), edit(honest, OUTLINE, rounded), hidden)), []);
+});
+
+test("true rounded outlines pass at several corner radii, square included", () => {
+	for (const [radius, drawn] of [[0, 0], [0.9, 1], [5, 5.1], [8, 8.1]] as const) {
+		const spec = specWith({ cornerRadiusMm: radius });
+		const text =
+			radius === 0
+				? honest
+				: edit(honest, OUTLINE, `<rect id="outline" x="10" y="10" width="120.2" height="80.2" rx="${drawn}" stroke="#ff0000" fill="none"/>`);
+		assert.deepEqual(failed(verify(spec, text)), [], `radius ${radius}`);
+	}
+});
+
+test("an outline too large to check at the requested tolerance fails parse, and passes at a coarser tolerance", () => {
+	// At 0.04 mm the 8000 mm outline needs about 29 million distance tests, more than the work budget leaves.
+	const bigPanel = (side: number): string =>
+		`<svg xmlns="http://www.w3.org/2000/svg" width="9000mm" height="9000mm" viewBox="0 0 9000 9000">` +
+		`<path id="label" d="M111 ${side - 100} H141" stroke="#0000ff" fill="none"/>` +
+		`<path id="outline" d="M10 10 H${side + 10.2} V${side + 10.2} H10 Z" stroke="#ff0000" fill="none"/></svg>`;
+	const bigSpec = (side: number, toleranceMm: number): Spec =>
+		specWith({ partMm: [side, side], bedMm: [9000, 9000], toleranceMm, holes: [], slots: [], labelRegionMm: { originMm: [100, 100], sizeMm: [44, 20] } });
+	assert.deepEqual(failed(verify(bigSpec(1000, 0.04), bigPanel(1000))), []);
+	assert.deepEqual(failed(verify(bigSpec(8000, 0.2), bigPanel(8000))), []);
+	assert.deepEqual(failed(verify(bigSpec(8000, 0.04), bigPanel(8000))), ["parse"]);
+});

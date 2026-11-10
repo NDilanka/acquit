@@ -13,6 +13,7 @@ import {
   gateWords,
   gradeChangeWords,
   isExaminable,
+  hasLiveExam,
   liveRunBlock,
   runnerWords,
   ordersDirty,
@@ -30,21 +31,37 @@ import {
   nightKindWords,
   nightTone,
   pickAgent,
+  ownerAgent,
+  checkLayout,
   recordWords,
   sinceIso,
+  parsePrice,
+  provenanceWords,
 } from "./view.ts";
 import type { StandingOrders } from "./types.ts";
 
-describe("agent picking and the morning window", () => {
-  it("picks the named agent, else the first one", () => {
+describe("agent picking and the initial report window", () => {
+  it("requires an explicit choice for several agents and never substitutes for a missing id", () => {
     const agents = [{ id: "a1" }, { id: "a2" }];
     assert.equal(pickAgent(agents, "a2")?.id, "a2");
-    assert.equal(pickAgent(agents, "gone")?.id, "a1");
-    assert.equal(pickAgent(agents, undefined)?.id, "a1");
+    assert.equal(pickAgent(agents, "gone"), null);
+    assert.equal(pickAgent(agents, undefined), null);
+    assert.equal(pickAgent([agents[0]!], undefined)?.id, "a1");
+    assert.equal(pickAgent([agents[0]!], "gone"), null);
     assert.equal(pickAgent([], undefined), null);
   });
 
-  it("reads the morning report from the last 24 hours", () => {
+  it("retains the selected agent, falls back to last-used or first, and never replaces an explicit missing id", () => {
+    const agents = [{ id: "a1" }, { id: "a2" }];
+    assert.equal(ownerAgent(agents, "a2", "a1")?.id, "a2");
+    assert.equal(ownerAgent(agents, undefined, "a2")?.id, "a2");
+    assert.equal(ownerAgent(agents, undefined, "gone")?.id, "a1");
+    assert.equal(ownerAgent(agents)?.id, "a1");
+    assert.equal(ownerAgent(agents, "gone", "a2"), null);
+    assert.equal(ownerAgent([]), null);
+  });
+
+  it("uses an initial window before the account has a read cursor", () => {
     const now = Date.UTC(2026, 10, 10, 12, 0, 0);
     assert.equal(sinceIso(now), "2026-11-09T12:00:00.000Z");
   });
@@ -61,7 +78,7 @@ describe("report lines and records", () => {
     assert.equal(recordWords({ jobsTaken: 3, verified: 2, rejected: 1 }), "3 taken, 2 verified, 1 rejected");
   });
 
-  it("names each night event kind and gives it a timeline tone", () => {
+  it("names each activity event kind and gives it a timeline tone", () => {
     assert.deepEqual(
       (["bid", "win", "money-held", "delivery", "verdict"] as const).map((k) => [nightKindWords(k), nightTone(k)]),
       [
@@ -76,6 +93,17 @@ describe("report lines and records", () => {
 });
 
 describe("exam shape", () => {
+  it("uses one bar above eight visible checks and bounded icon rows for hidden counts", () => {
+    for (const total of [9, 48, 1000]) assert.deepEqual(checkLayout(total, false), { segmented: true, rows: [] });
+    for (const total of [0, 1, 5, 8, 49, 1000]) {
+      const layout = checkLayout(total, true);
+      assert.equal(layout.segmented, false);
+      assert.ok(layout.rows.every((row) => row.length <= 4));
+      assert.deepEqual(layout.rows.flat(), Array.from({ length: total }, (_, i) => i));
+    }
+    assert.deepEqual(checkLayout(8, false).rows.map((row) => row.length), [4, 4]);
+    assert.deepEqual(checkLayout(8, true).rows.map((row) => row.length), [4, 4]);
+  });
   it("draws the same number of checks the samples report", () => {
     assert.deepEqual(EXAM_SHAPE.code, { visible: 5, hidden: 3 });
     assert.deepEqual(EXAM_SHAPE["print-fdm"], { visible: 5, hidden: 1 });
@@ -90,12 +118,32 @@ describe("steps", () => {
       STEPS.map((s) => [s.step, s.label]),
       [
         [1, "Plug in"],
-        [2, "The exam"],
-        [3, "Standing orders"],
-        [4, "The night"],
-        [5, "The morning"],
+        [2, "Exam"],
+        [3, "Orders"],
+        [4, "Activity"],
+        [5, "Earnings"],
       ],
     );
+  });
+});
+
+describe("lenient orders prices and honest provenance", () => {
+  it("accepts and normalises plain dollars and a currency prefix without losing cents", () => {
+    for (const input of ["40", "$40", "40.00", "  $40.00  "]) {
+      assert.equal(parsePrice(input), 4000);
+      assert.equal(toOrdersInput({ ...DEFAULT_FORM, priceUsd: input }, "owner").priceFloorCents, 4000);
+    }
+    assert.equal(parsePrice("$0.01"), 1);
+    for (const input of ["", "$", "4$0", "40.001", "-40", "1e3", "40,00"]) assert.equal(parsePrice(input), null);
+    assert.ok(formProblems({ ...DEFAULT_FORM, priceUsd: "$0" }));
+  });
+  it("distinguishes sample data, recorded replay, simulation and seeded records", () => {
+    assert.equal(provenanceWords("fixture", false), "Sample data");
+    assert.equal(provenanceWords("recorded", false), "Replay of a recorded run");
+    assert.equal(provenanceWords("recorded", true), "Replay of a recorded run · Simulated");
+    assert.equal(provenanceWords(null, true), "Simulated");
+    assert.equal(provenanceWords(null, false, true), "Seeded");
+    assert.equal(provenanceWords(null, false), "");
   });
 });
 
@@ -169,8 +217,15 @@ describe("exam reasons", () => {
 });
 
 describe("live run gate", () => {
-  it("blocks laser cut, acquitted agents and a missing verifier CI", () => {
-    assert.equal(liveRunBlock("laser-cut", false, null), "Exam coming.");
+  it("blocks print and laser before a start, even for a seeded acquittal", () => {
+    for (const task of ["print-fdm", "laser-cut"] as const) {
+      for (const acquitted of [false, true]) assert.equal(liveRunBlock(task, acquitted, null), "Exam coming.");
+      assert.equal(hasLiveExam(task), false);
+    }
+    assert.equal(hasLiveExam("code"), true);
+  });
+
+  it("blocks acquitted agents and a missing verifier CI", () => {
     assert.match(liveRunBlock("code", true, null) ?? "", /already Acquitted/);
     assert.match(liveRunBlock("code", false, "VERIFIER_CI_NOT_CONFIGURED") ?? "", /CI is not set up/);
   });
@@ -186,7 +241,6 @@ describe("live run gate", () => {
 
   it("allows a live run otherwise", () => {
     assert.equal(liveRunBlock("code", false, null), null);
-    assert.equal(liveRunBlock("print-fdm", false, null), null);
   });
 
   it("leaves other start refusals to show as errors, not as a block", () => {
@@ -217,6 +271,7 @@ describe("standing orders form", () => {
   it("starts from the defaults when nothing is saved", () => {
     assert.deepEqual(formFrom(null), DEFAULT_FORM);
     assert.equal(DEFAULT_FORM.preApproveCap, 3);
+    assert.equal(DEFAULT_FORM.priceUsd, "$40.00");
   });
 
   it("reads a saved price as dollars", () => {
@@ -229,7 +284,7 @@ describe("standing orders form", () => {
       preApproveCap: 2,
       updatedAt: "2026-11-10T18:00:00Z",
     });
-    assert.equal(form.priceUsd, "40.50");
+    assert.equal(form.priceUsd, "$40.50");
     assert.equal(form.maxConcurrent, 2);
     assert.equal(form.autopilot, true);
   });
@@ -266,7 +321,7 @@ describe("autopilot copy", () => {
   });
 });
 
-describe("morning report helpers", () => {
+describe("earnings helpers", () => {
   it("adds up payouts in cents", () => {
     assert.equal(paidTotalCents([{ amountCents: 4500 }, { amountCents: 500 }]), 5000);
     assert.equal(paidTotalCents([]), 0);
