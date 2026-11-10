@@ -44,6 +44,13 @@ test("a refunded job keeps its rejections and no earnings", () => {
 	assert.deepEqual(recordOf("ts-bugfixer", rows), { jobsTaken: 1, verified: 0, rejected: 1, earnedCents: 0 });
 });
 
+test("a refunded job's passes do not count toward the record or the grade, and its rejections still do", () => {
+	const rows = [row({ status: "REFUNDED", payee: payee("ts-bugfixer"), history: [passed, rejected] })];
+	const record = recordOf("ts-bugfixer", rows);
+	assert.deepEqual(record, { jobsTaken: 1, verified: 0, rejected: 1, earnedCents: 0 });
+	assert.equal(gradeOf(record, acquittal), 40);
+});
+
 test("an in-progress job counts the attempts judged so far", () => {
 	const rows = [row({ status: "IN_PROGRESS", escrow: { payee: payee("ts-bugfixer") },
 		attempts: { phase: "READY", history: [rejected], runsStarted: 1 } })];

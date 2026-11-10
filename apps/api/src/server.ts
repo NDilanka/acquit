@@ -1368,7 +1368,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (current.actor.role !== "OPERATOR" || row === null || !operatorHasJob(row, current.actor.operatorId)) {
 			json(res, 404, { error: "NOT_FOUND" }); return;
 		}
-		json(res, 200, await moneyHeldOf(row, moneyRead, clock.now())); return;
+		json(res, 200, await moneyHeldOf(row, current.actor.operatorId, moneyRead, clock.now())); return;
 	}
 	if (url.pathname === "/api/studio/layout" && method === "PUT") {
 		// The signed-in user's own layout for one named dashboard. The body holds the Studio state
