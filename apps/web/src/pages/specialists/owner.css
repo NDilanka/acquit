@@ -215,7 +215,7 @@
   .record-check-cell { border-radius: var(--r); }
   .check-group-label { padding-bottom: var(--space-2); }
   .record-foot { grid-template-columns: 1fr; gap: 0 var(--space-3); padding-top: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-xs); }
-  .owner-actions { position: sticky; z-index: 20; top: calc(100dvh - 80px); bottom: auto; min-height: 80px; padding: var(--space-4); margin-inline: calc(-1 * var(--space-4)); background: var(--paper); border-top: 1px solid var(--line); border-radius: 0; margin-top: var(--space-6) !important; flex-wrap: wrap; gap: var(--space-2); box-shadow: none; }
+  .owner-actions { position: fixed; z-index: 20; inset: auto 0 0; min-height: 80px; padding: var(--space-4); margin: 0 !important; background: var(--paper); border-top: 1px solid var(--line); border-radius: 0; flex-wrap: wrap; gap: var(--space-2); box-shadow: none; }
   .owner-actions .btn { width: 100%; }
   .owner-actions > p { font-size: var(--text-xs); line-height: var(--leading-xs); }
   .owner-entry, .agent-picker, .owner-leaderboard { padding: var(--space-6) var(--space-4); }
@@ -228,6 +228,25 @@
   .sample-choice { gap: var(--space-3); padding-inline: var(--space-2); }
   .sample-choice small { font-size: var(--text-xs); line-height: var(--leading-xs); }
   .sample-word { display: none; }
+}
+
+/* Keep real controls and proof compact; the mobile action dock never changes their tab order. */
+.exam-record { min-height: 0; gap: var(--space-4); }
+.record-check-bed { min-height: 0; }
+.record-foot { margin-top: 0; padding-top: 0; border-top: 0; }
+.record-heading { min-height: 80px; }
+.plug-in { display: grid; grid-template-columns: minmax(0,7fr) minmax(0,5fr); gap: var(--space-2) var(--space-12); }
+.plug-in > :is(h1,p,.owner-actions,.alert) { grid-column: 1 / -1; }
+.plug-in .sample-choices { margin-top: var(--space-4) !important; }
+.plug-in .sample-choice { min-height: 72px; }
+.plug-extras { padding-top: var(--space-4); min-width: 0; }
+.plug-extras .plug-own { margin-top: 0; }
+.plug-in .owner-actions { margin-top: var(--space-4) !important; }
+@media (max-width: 640px) {
+  .plug-in { grid-template-columns: minmax(0,1fr); }
+  .exam-record { min-height: 0; }
+  .record-heading { min-height: 80px; }
+  .plug-in .owner-actions { margin: 0 !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   .owner-app *, .owner-app *::before, .owner-app *::after { animation: none !important; transition-duration: 0s !important; transition-delay: 0s !important; }
@@ -320,7 +339,9 @@
 .public-record .public-proof { min-height: 240px; }
 .record-loading { min-height: 240px; }
 .activity-feed .earnings-events [data-tone="fail"] { color: var(--red); }
+.owner-deck .spec:has(> .exam-record) { row-gap: var(--space-6); }
 @media (max-width: 640px) {
+  .owner-footer { padding-bottom: 160px; }
   .owner-bar-end { min-width: 108px; }
   .owner-account-placeholder { width: 44px; height: 44px; }
   .owner-bridge { grid-template-columns: minmax(0,1fr) 96px; min-height: 112px; }

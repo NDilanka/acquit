@@ -17,7 +17,7 @@
 .results-pass { fill: var(--green-text); }
 .results-fail { fill: var(--red); }
 .mobile-results { display: none; }
-.board-mine { position: sticky; bottom: 0; z-index: 10; background: var(--panel); border-top: 1px solid var(--line-2); padding-inline: var(--space-4); margin-inline: calc(-1 * var(--space-4)); }
+.board-mine { position: static; background: var(--panel); border-top: 1px solid var(--line-2); padding-inline: var(--space-4); margin-inline: calc(-1 * var(--space-4)); }
 .board-mine thead { clip-path: inset(50%); }
 .board-mine th { height: 0; padding-block: 0; font-size: 0; line-height: 0; border: 0; }
 .board-fold { margin-top: var(--space-4); }
@@ -32,5 +32,4 @@
   .board .board-grade { width: 64px; }
   .board :is(th,td) { padding-right: var(--space-4); }
   .mobile-results { display: block; color: var(--muted); }
-  .board-mine { bottom: 80px; }
 }

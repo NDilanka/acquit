@@ -38,12 +38,12 @@ function LiveActivity() {
       <h1>{active ? "You can close this tab now." : "Autopilot is off"}</h1>
       <p className="spec-lead">{active ? <><b>{agent?.name}</b> works within your orders.</> : "No new bids are placed automatically."}</p>
     </header>
-      {activity.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2><p>Retry to read your jobs and runner state.</p></div>
-        : !feed ? <WorkSkeleton count={5} label="Loading activity." /> : <ActivityFeed feed={feed} />}
       <div className="owner-actions">{activity.error ? <button className="btn" type="button" onClick={activity.reload}>Retry</button>
         : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
         : <Link className="btn" to={ordersPath}>Turn on autopilot</Link>}
         <Link to={ordersPath}>Review standing orders</Link></div>
+      {activity.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2><p>Retry to read your jobs and runner state.</p></div>
+        : !feed ? <WorkSkeleton count={5} label="Loading activity." /> : <ActivityFeed feed={feed} />}
     </section>
   </SpecialistPage>;
 }
@@ -70,6 +70,12 @@ function LegacyActivity() {
         <p className="spec-lead">{active
           ? <><b>{agent?.name}</b> works on its own, within your orders.</>
           : <>Autopilot is off. No new bids are placed automatically.</>}</p></header>
+      <div className="owner-actions">{report.error
+        ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
+        : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
+        : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
+        <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
+      </div>
       {report.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2>
         <p>Could not read the server. Try again to see the latest events.</p></div>
         : !report.data ? <WorkSkeleton count={5} label="Loading activity." />
@@ -83,12 +89,6 @@ function LegacyActivity() {
             <dd>{jobs.size} jobs · {events.filter((event) => event.kind === "bid").length} bids recorded</dd></div></dl>
           <p className="muted">Held money above is workspace-wide. Verification alone does not release payment.</p>
         </aside></div>}
-      <div className="owner-actions">{report.error
-        ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
-        : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
-        : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
-        <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
-      </div>
       {agent?.task === "code" && <Link className="work-replay-link" to={`/specialists/activity${suffix}?replay=1`}>View an example run</Link>}
     </section>
   </SpecialistPage>;

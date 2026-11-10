@@ -30,11 +30,17 @@ function Earnings() {
   const paid = data ? paidTotalCents(data.payouts) : 0;
   const firstPaid = data?.payouts[0];
   const ordersPath = `/specialists/orders${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
+  const actions = <div className="owner-actions">{report.error
+    ? <button type="button" className="btn" onClick={() => { announce("Retrying earnings."); report.reload(); }}>Retry</button>
+    : firstPaid && !quiet ? <Link className="btn" to={releasedWorkHref(firstPaid.jobId,activity.data?.activity)}>See the paid work</Link>
+    : <Link className="btn" to={ordersPath}>Review standing orders</Link>}
+  </div>;
   return <SpecialistPage step={5} lead="" gradeDelta={agentDelta(data, agent?.id)} provenance="Live workspace report">
     <section className="work-page earnings-page">
       {report.error ? <><h1>Earnings did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
-        <p>Could not read the report. Retry to check recorded work and money.</p></div></>
+        <p>Could not read the report. Retry to check recorded work and money.</p></div>{actions}</>
         : !data ? <><EarningsHeadingSkeleton />
+          {actions}
           <WorkSkeleton count={3} label="Loading earnings." /></>
         : <>
           <header className="earnings-head"><div className="work-heading">
@@ -48,6 +54,7 @@ function Earnings() {
             </div>)}
             {!quiet && <p className="muted">Payouts are workspace-wide, not attributed to the selected agent.</p>}
           </div></header>
+          {actions}
           <div className="work-split"><ol className="work-timeline" aria-label="Earnings by job, newest first">
             {quiet ? <TimelineMark title="No new work recorded"><p className="work-status">Nothing released in this report · PayPal sandbox</p></TimelineMark>
               : groupJobs(events).map(({ id, entries }, index) => {
@@ -71,11 +78,6 @@ function Earnings() {
             <p className="muted">Verification alone does not release payment. Release requires client approval, the release timer or an arbiter.</p>
           </aside></div>
         </>}
-      <div className="owner-actions">{report.error
-        ? <button type="button" className="btn" onClick={() => { announce("Retrying earnings."); report.reload(); }}>Retry</button>
-        : firstPaid && !quiet ? <Link className="btn" to={releasedWorkHref(firstPaid.jobId,activity.data?.activity)}>See the paid work</Link>
-        : <Link className="btn" to={ordersPath}>Review standing orders</Link>}
-      </div>
     </section>
   </SpecialistPage>;
 }
