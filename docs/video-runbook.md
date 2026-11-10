@@ -237,7 +237,6 @@ Procedure
 3. Check each clip's length against its beat window in the timeline. If a clip is too long, cut words from the script. Do not speed the voice up.
 4. Leave the deliberate silence from 1:09 to 1:11 empty. No voice there.
 5. Normalise every clip to the same loudness, about -16 LUFS.
-6. Disclose the voices. The description says "AI voice", and the closing caption says "Narration is an AI voice."
 
 ## 10. What to ask openvids for
 
