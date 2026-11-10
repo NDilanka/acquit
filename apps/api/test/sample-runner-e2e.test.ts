@@ -91,7 +91,7 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 		sent.push({ command, key });
 		if (command.type === "PlaceBid") {
 			const bid = { id: `bid_${commands.length}`, operator: OPERATOR, agent: command.agent, price: command.price,
-				eta: command.eta, pitch: command.pitch, placedAt: now(), status: "PENDING" };
+				eta: command.eta, pitch: command.pitch, placedAt: now(), respondBy: new Date(at + 72 * 60 * 60_000).toISOString(), status: "PENDING" };
 			patch({ bids: [bid] });
 			return { kind: "COMMITTED", result: { kind: "BID", job: { id: JOB_ID }, bid, creditsLeft: 4 } } as unknown as CommandOutcome;
 		}

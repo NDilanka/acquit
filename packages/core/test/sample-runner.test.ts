@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SAMPLE_BID_WAIT_MS, SAMPLE_RUNS_PER_DAY, decideSampleTick, runsInWindow } from "../src/sample-runner.ts";
+import { SAMPLE_RUNS_PER_DAY, decideSampleTick, runsInWindow } from "../src/sample-runner.ts";
 import type { SampleBid, SampleFacts, SampleJob, SampleRun } from "../src/sample-runner.ts";
 
 const operator = "op_visitor";
@@ -14,8 +14,11 @@ function job(id: string, fields: Partial<SampleJob> = {}): SampleJob {
 	return { id, status: "OPEN", vertical: "code", budgetCents: 5000, starter: true, fixtureMatched: true, attemptsPhase: null, attemptsRunsStarted: null, bids: [], history: [], ...fields };
 }
 
+/** A bid whose House respond-by time is well after `now`, unless the test sets one. */
+const farRespondBy = "2026-11-20T12:00:00.000Z";
+
 function bid(status: string, placedAt = minutesAgo(1), fields: Partial<SampleBid> = {}): SampleBid {
-	return { operator: fields.operator ?? operator, agent: fields.agent ?? agent, status, placedAt };
+	return { operator: fields.operator ?? operator, agent: fields.agent ?? agent, status, placedAt, respondBy: fields.respondBy ?? farRespondBy };
 }
 
 function run(jobId: string, fields: Partial<SampleRun> = {}): SampleRun {
@@ -149,17 +152,18 @@ test("a visitor's run in flight blocks a new bid, whichever agent it is for", ()
 	assert.deepEqual(decision.actions, []);
 });
 
-test("a bid waiting for the House client to accept is left alone until the bid wait runs out", () => {
-	const waiting = decideSampleTick(facts({ jobs: [job("job_a", { bids: [bid("PENDING", minutesAgo(2))] })], runs: [run("job_a")], globalActive: 1 }));
+test("a PENDING bid is left alone until the House's respond-by time, then it is lost", () => {
+	const respondBy = "2026-11-11T18:00:00.000Z";
+	const pending = [bid("PENDING", minutesAgo(60 * 3), { respondBy })];
+
+	// Placed an hour ago, still ahead of its respond-by time: the run waits, however old the bid is.
+	const waiting = decideSampleTick(facts({ jobs: [job("job_a", { bids: pending })], runs: [run("job_a")], globalActive: 1 }));
 	assert.equal(waiting.status, "RUNNING");
 	assert.deepEqual(waiting.actions, []);
 
-	const timedOut = decideSampleTick(facts({
-		jobs: [job("job_a", { bids: [bid("PENDING", minutesAgo(SAMPLE_BID_WAIT_MS / 60_000 + 1))] })],
-		runs: [run("job_a", { placedAt: minutesAgo(SAMPLE_BID_WAIT_MS / 60_000 + 1) })],
-		globalActive: 1,
-	}));
-	assert.deepEqual(timedOut.actions, [{ kind: "finish", jobId: "job_a", outcome: "BID_LOST", reason: "no accept within the bid wait" }]);
+	// At the respond-by time the House returns the bid, so the run closes as lost.
+	const atDeadline = decideSampleTick(facts({ now: respondBy, jobs: [job("job_a", { bids: pending })], runs: [run("job_a")], globalActive: 1 }));
+	assert.deepEqual(atDeadline.actions, [{ kind: "finish", jobId: "job_a", outcome: "BID_LOST", reason: "no answer by the bid's respond-by time" }]);
 });
 
 test("a chosen bid that is funding is never timed out, however old the bid is", () => {

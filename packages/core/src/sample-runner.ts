@@ -10,8 +10,6 @@ export const SAMPLE_RUNS_PER_DAY = 3;
 export const SAMPLE_RUNS_IN_FLIGHT = 1;
 /** Runs in flight across every visitor. A run past this waits in QUEUED. */
 export const SAMPLE_RUNS_GLOBAL_IN_FLIGHT = 2;
-/** How long a bid may wait for the House client to accept it before the run is given up. */
-export const SAMPLE_BID_WAIT_MS = 10 * 60_000;
 /** The delivery window the sample bid promises, in hours. */
 export const SAMPLE_ETA_HOURS = 48;
 /**
@@ -42,7 +40,8 @@ export type SampleRun = {
 	readonly outcome: SampleOutcome | null;
 };
 
-export type SampleBid = { readonly operator: string; readonly agent: string; readonly status: string; readonly placedAt: string };
+/** A bid of the visitor's. `respondBy` is the House's own deadline for the bid, after which a PENDING bid is returned. */
+export type SampleBid = { readonly operator: string; readonly agent: string; readonly status: string; readonly placedAt: string; readonly respondBy: string };
 
 /** The fields of a job, from the visitor's job list, that the tick reads. */
 export type SampleJob = {
@@ -201,9 +200,10 @@ function bidProgress(run: SampleRun, job: SampleJob, facts: SampleFacts, now: nu
 	}
 	if (bid.status === "NOT_SELECTED" || bid.status === "RETURNED") return finish(run.jobId, "BID_LOST", `bid is ${bid.status}`);
 	if (job.status !== "OPEN") return finish(run.jobId, "CLOSED", `job is ${job.status}`);
-	// CHOSEN means the House client accepted and the card checkout is open. Only a bid still PENDING can time out.
-	if (bid.status === "PENDING" && now - Date.parse(bid.placedAt) > SAMPLE_BID_WAIT_MS) {
-		return finish(run.jobId, "BID_LOST", "no accept within the bid wait");
+	// CHOSEN means the House client accepted and the card checkout is open, so the run waits on the checkout. A PENDING
+	// bid waits until the House's own respond-by time, the same deadline the House returns it at.
+	if (bid.status === "PENDING" && now >= Date.parse(bid.respondBy)) {
+		return finish(run.jobId, "BID_LOST", "no answer by the bid's respond-by time");
 	}
 	return null;
 }

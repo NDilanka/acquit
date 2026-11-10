@@ -288,7 +288,7 @@ function sampleJobOf(row: JobRow, fixtureMatched: boolean): SampleJob {
 		fixtureMatched,
 		attemptsPhase: attempts?.phase ?? null,
 		attemptsRunsStarted: attempts !== null && attempts.phase !== "REFUND_PENDING" ? attempts.runsStarted : null,
-		bids: row.bids.map(bid => ({ operator: bid.operator, agent: bid.agent, status: bid.status, placedAt: bid.placedAt })),
+		bids: row.bids.map(bid => ({ operator: bid.operator, agent: bid.agent, status: bid.status, placedAt: bid.placedAt, respondBy: bid.respondBy })),
 		history: attemptHistory(state).map(record => ({ sourceCommit: record.verdict.sourceCommit, result: record.verdict.result })),
 	};
 }
