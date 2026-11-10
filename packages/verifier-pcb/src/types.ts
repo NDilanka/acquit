@@ -30,12 +30,7 @@ export type Scene = {
 	readonly size: readonly [number, number, number]; // bounding box
 	readonly stock?: { readonly size: readonly [number, number, number]; readonly material: string };
 	readonly paths: readonly ScenePath[];
-	readonly probes?: readonly {
-		readonly a: readonly [number, number, number];
-		readonly b: readonly [number, number, number];
-		readonly expect: "continuity" | "isolation";
-		readonly ok: boolean;
-	}[];
+	// No probes: hidden flying-probe data must never reach the scene the submitter sees.
 };
 
 export type Verdict = {

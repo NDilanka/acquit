@@ -15,6 +15,18 @@ Public rule ids: `parse`, `no-zones`, `outline`, `parts-placed`, `inside-board`,
 `no-shorts`, `clearance`, `track-width`, `power-width`, `via-rules`, `pad-rules`, `keepouts`, `mounting-holes`.
 Hidden rule ids (`hidden: true`, no location): `hidden-probe`, `hidden-clearance`.
 
+## Where the camera points
+
+A failed public finding carries `at`, the point the inspector's camera should show, when the failure has a single
+place to blame: a pad, a track, a via, a keepout, a mounting hole, the outline's lower-left corner (size mismatch
+only), the spec's placement of a missing part, or the midpoint of the two pads a short joins. A hidden finding
+never carries `at`: its position would name the hidden probe or clearance point.
+
+Findings with no `at`: anything hidden; `parse` (a board-wide failure has no one place); `no-zones` (a zone is an
+area, not a point); a missing or open `outline` (there is no outline to point at). The verdict's `scene` shows
+only what the submitter may see: the board's paths. It has no probe data; the hidden sample's probes never reach
+anything `verify` returns.
+
 ## Modelled subset
 
 Supported:
