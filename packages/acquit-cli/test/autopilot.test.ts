@@ -43,6 +43,8 @@ type Harness = {
 	/** GET answers by path. An Error value is thrown instead. A missing path answers NOT_FOUND. */
 	readonly gets: Map<string, unknown>;
 	readonly jobs: Map<string, Record<string, unknown>>;
+	/** The per-job answer's fixtureMatched, beside the job as the server sends it. Unset means matched. */
+	readonly fixtures: Map<string, unknown>;
 	readonly calls: Calls;
 	readonly out: string[];
 	actions: Partial<AutopilotActions>;
@@ -61,14 +63,18 @@ function harness(): Harness {
 	roots.push(root);
 	const gets = new Map<string, unknown>([["/api/me/operator", operator()], [ORDERS, orders()]]);
 	const jobs = new Map<string, Record<string, unknown>>();
+	const fixtures = new Map<string, unknown>();
 	const client: ApiClient = {
 		baseUrl: "http://test.invalid",
 		async get(path) {
 			if (path === "/api/jobs") return { jobs: [...jobs.values()], nextCursor: null, starters: [] };
 			if (path.startsWith("/api/jobs/")) {
-				const found = jobs.get(path.slice("/api/jobs/".length));
+				const id = path.slice("/api/jobs/".length);
+				const found = jobs.get(id);
 				if (found === undefined) throw new CliError("NOT_FOUND", "No such job.");
-				return { job: found, handles: [], diff: null, now: "2026-11-10T12:00:00.000Z" };
+				// The list carries no fixtureMatched; the per-job answer carries it beside the job.
+				const fixtureMatched = fixtures.has(id) ? fixtures.get(id) : true;
+				return { job: found, fixtureMatched, handles: [], diff: null, now: "2026-11-10T12:00:00.000Z" };
 			}
 			const value = gets.get(path);
 			if (value instanceof Error) throw value;
@@ -87,6 +93,7 @@ function harness(): Harness {
 		workRoot: join(root, "work"),
 		gets,
 		jobs,
+		fixtures,
 		calls,
 		out: [],
 		client,
@@ -146,14 +153,14 @@ function operator(runner = "claude-code") {
 }
 
 function job(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-	return { id, status: "OPEN", vertical: "code", budget: 5000, lockedTo: null, fixtureMatched: true,
+	return { id, status: "OPEN", vertical: "code", budget: 5000, lockedTo: null,
 		bids: { operators: [] }, attempts: { used: 0, left: 3, history: [] }, ...overrides };
 }
 
 /** A job the pilot won: its bid is accepted, the job is in progress, and it is locked to the operator. */
 function won(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return job(id, { status: "IN_PROGRESS", lockedTo: "op-1",
-		bids: { operators: [{ operator: "op-1", agent: "pilot", status: "ACCEPTED" }] }, ...overrides });
+		bids: { operators: [{ operator: "op-1", agent: "ag-1", status: "ACCEPTED" }] }, ...overrides });
 }
 
 test("bids at the price floor on open jobs of this agent's task, once per job", async () => {
@@ -162,10 +169,10 @@ test("bids at the price floor on open jobs of this agent's task, once per job", 
 	h.jobs.set("job-2", job("job-2", { vertical: "print-fdm" }));
 	h.jobs.set("job-3", job("job-3", { budget: 3000 }));
 	assert.equal(await tick(h), 0);
-	assert.deepEqual(h.calls.bids, [{ jobId: "job-1", price: 4000, etaHours: 48, agent: "pilot", pitch: BID_PITCH }]);
+	assert.deepEqual(h.calls.bids, [{ jobId: "job-1", price: 4000, etaHours: 48, agent: "ag-1", pitch: BID_PITCH }]);
 	assert.equal(readState(h).jobs["job-1"].phase, "BID");
 	// The listing shows the bid now. Later ticks neither bid again nor touch the job.
-	h.jobs.set("job-1", job("job-1", { bids: { operators: [{ operator: "op-1", agent: "pilot", status: "PENDING" }] } }));
+	h.jobs.set("job-1", job("job-1", { bids: { operators: [{ operator: "op-1", agent: "ag-1", status: "PENDING" }] } }));
 	assert.equal(await tick(h), 0);
 	assert.equal(h.calls.bids.length, 1);
 });
@@ -209,7 +216,7 @@ test("max concurrent counts jobs still waiting on a bid", async () => {
 	h.jobs.set("job-1", job("job-1"));
 	h.jobs.set("job-2", job("job-2"));
 	assert.equal(await tick(h), 0);
-	h.jobs.set("job-1", job("job-1", { bids: { operators: [{ operator: "op-1", agent: "pilot", status: "PENDING" }] } }));
+	h.jobs.set("job-1", job("job-1", { bids: { operators: [{ operator: "op-1", agent: "ag-1", status: "PENDING" }] } }));
 	assert.equal(await tick(h), 0);
 	assert.deepEqual(h.calls.bids.map(bid => bid.jobId), ["job-1"]);
 	assert.equal(readState(h).lastNote, "at max concurrent: 1 of 1 active");
@@ -314,11 +321,12 @@ for (const status of ["VERIFIED", "PAID"]) {
 	});
 }
 
-for (const fixtureMatched of ["true", 1, null]) {
+for (const fixtureMatched of ["true", 1, null, false]) {
 	test(`waits for typed confirmation when fixtureMatched is ${JSON.stringify(fixtureMatched)}`, async () => {
 		const h = harness();
 		track(h, { "job-1": { phase: "RAN", commit: null } });
-		h.jobs.set("job-1", won("job-1", { fixtureMatched }));
+		h.jobs.set("job-1", won("job-1"));
+		h.fixtures.set("job-1", fixtureMatched);
 		assert.equal(await tick(h), 0);
 		assert.deepEqual(h.calls.submits, []);
 		const state = readState(h);
@@ -337,7 +345,8 @@ for (const fixtureMatched of ["true", 1, null]) {
 test("a confirmation for another commit is not submitted", async () => {
 	const h = harness();
 	track(h, { "job-1": { phase: "RAN", commit: null } });
-	h.jobs.set("job-1", won("job-1", { fixtureMatched: false }));
+	h.jobs.set("job-1", won("job-1"));
+	h.fixtures.set("job-1", false);
 	// The worker asks for COMMIT and waits for the owner.
 	assert.equal(await tick(h), 0);
 	assert.deepEqual(h.calls.submits, []);
