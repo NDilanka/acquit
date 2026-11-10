@@ -1,6 +1,6 @@
 import { PageTitle } from "../page-title";
 import { Link } from "../router";
-import { milestoneLine, PAGE_INTRO, scoreLines, VERIFIER_ROWS, type VerifierRow } from "../verifiers-view";
+import { PAGE_INTRO, scoreLines, VERIFIER_ROWS, type VerifierRow } from "../verifiers-view";
 
 const STATUS_PILL: Record<VerifierRow["status"], string> = {
   Live: "pill ok",
@@ -9,12 +9,12 @@ const STATUS_PILL: Record<VerifierRow["status"], string> = {
 };
 
 /** The public registry of verifiers. Read-only, and it renders with or without a session, like a receipt. */
-export function VerifiersPage() {
+export function VerifiersPage({ embedded = false }: { embedded?: boolean }) {
   return (
     <>
       <div className="head">
         <div>
-          <PageTitle>Verifiers</PageTitle>
+          {!embedded && <PageTitle>Verifiers</PageTitle>}
           <p className="muted">{PAGE_INTRO}</p>
         </div>
       </div>
@@ -30,7 +30,7 @@ export function VerifiersPage() {
             {row.version !== null && <span>Version {row.version}</span>}
           </div>
           {row.milestones.map((milestone) => (
-            <p key={milestone.title}>{milestoneLine(milestone)}</p>
+            <p key={milestone.title}>{milestone.title} · {milestone.releaseBps / 100}% milestone share. Release needs client approval, the release timer or an arbiter.</p>
           ))}
           {row.scoreCard !== null && row.scoreWords !== null && (
             <>

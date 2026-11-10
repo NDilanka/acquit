@@ -35,7 +35,7 @@ import {
 } from "../print-view";
 import { PRINT_ROW, scoreLines } from "../verifiers-view";
 
-type Props = { readonly session: Session | null | undefined; readonly onSignedIn: (session: Session) => void };
+type Props = { readonly session: Session | null | undefined; readonly onSignedIn: (session: Session) => void; readonly embedded?: boolean };
 
 /**
  * The public print demo, one job page read top to bottom: what is real, the run, the contract, the qualification
@@ -43,7 +43,7 @@ type Props = { readonly session: Session | null | undefined; readonly onSignedIn
  * qualifies, then prints one job, and the real print judge decides. It reads without a session, like the verifier
  * registry. A run needs an account of its own, so the first run makes one.
  */
-export function PrintDemoPage({ session, onSignedIn }: Props) {
+export function PrintDemoPage({ session, onSignedIn, embedded = false }: Props) {
   const [run, setRun] = useState<PrintRunView | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +97,7 @@ export function PrintDemoPage({ session, onSignedIn }: Props) {
       <div className="head">
         <div>
           <div className="eyebrow">Simulated farms</div>
-          <PageTitle>{PRINT_TITLE}</PageTitle>
+          {embedded ? <h3>{PRINT_TITLE}</h3> : <PageTitle>{PRINT_TITLE}</PageTitle>}
           <p className="muted">{PRINT_INTRO}</p>
         </div>
       </div>

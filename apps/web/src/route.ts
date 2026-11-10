@@ -8,6 +8,7 @@ export type Route =
   | { name: "receipt"; id: string }
   | { name: "verifiers" }
   | { name: "print" }
+  | { name: "howWorkIsChecked" }
   | { name: "tour" }
   | { name: "operator" }
   | { name: "operatorBids" }
@@ -28,14 +29,15 @@ export type Route =
 type AgentPage = "specialistExam" | "specialistOrders" | "specialistActivity";
 
 export function isOwnerRoute(path: string): boolean {
-  return /^\/specialists(?:\/|$)/.test(path) || /^\/(?:earnings|leaderboard)\/?$/.test(path) || /^\/agents\/[^/]+\/record\/?$/.test(path);
+  return /^\/specialists(?:\/|$)/.test(path) || /^\/(?:earnings|leaderboard|how-work-is-checked)\/?$/.test(path) || /^\/agents\/[^/]+\/record\/?$/.test(path);
 }
 
 /** Old bookmarks replace their address, preserving the selected agent and query. */
 export function ownerRouteUrl(url: string): string {
   return url.replace(/^\/specialists\/night(?=\/|[?#]|$)/, "/specialists/activity")
     .replace(/^\/specialists\/(?:morning|earnings)\/?(?=[?#]|$)/, "/earnings")
-    .replace(/^\/specialists\/(?:floor|leaderboard)\/?(?=[?#]|$)/, "/leaderboard");
+    .replace(/^\/specialists\/(?:floor|leaderboard)\/?(?=[?#]|$)/, "/leaderboard")
+    .replace(/^\/(?:verifiers|print)\/?(?=[?#]|$)/, "/how-work-is-checked");
 }
 
 export function signUpPath(path: string, role: string): string {
@@ -64,6 +66,7 @@ export function match(path: string): Route {
   if (path === "/verifiers" || path === "/verifiers/") return { name: "verifiers" };
   if (path === "/print" || path === "/print/") return { name: "print" };
   if (path === "/tour" || path === "/tour/") return { name: "tour" };
+  if (/^\/how-work-is-checked\/?$/.test(path)) return { name: "howWorkIsChecked" };
   if (/^\/specialists\/?$/.test(path)) return { name: "specialists" };
   if (/^\/earnings\/?$/.test(path)) return { name: "specialistEarnings" };
   if (/^\/leaderboard\/?$/.test(path)) return { name: "specialistLeaderboard" };
@@ -96,6 +99,7 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
       return "welcomeBack";
     case "agentRecord":
     case "specialistLeaderboard":
+    case "howWorkIsChecked":
       return "public";
     case "receipt":
     case "verifiers":

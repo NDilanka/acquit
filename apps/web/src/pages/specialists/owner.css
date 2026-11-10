@@ -244,9 +244,32 @@
 .owner-deck { padding: 0; margin-top: var(--space-12); }
 .owner-deck .spec { gap: var(--space-12); }
 .owner-app h1 { font-size: var(--text-display); line-height: var(--leading-display); }
+.owner-bar { grid-template-columns: auto auto minmax(0,1fr); max-width: 1440px; padding: var(--space-2) var(--owner-gutter); gap: var(--space-4); min-height: 64px; }
+.owner-nav { justify-self: start; gap: var(--space-2); }
+.owner-nav a { padding-inline: var(--space-2); border: 0; border-radius: 0; }
+.owner-nav a[aria-current] { background: transparent; text-decoration: underline 2px; text-underline-offset: 8px; }
+.owner-shell-state { position: static; font-size: var(--text-ui); line-height: var(--leading-ui); }
+.owner-auto-short { display: none; }
+.owner-theme-alt { display: none !important; }
+.owner-footer { margin: var(--space-12) auto var(--space-8); padding-inline: var(--space-6); max-width: 1440px; color: var(--muted); font-size: var(--text-ui); line-height: var(--leading-ui); }
+.owner-footer a { display: inline-flex; align-items: center; min-height: var(--control-lg); text-underline-offset: 4px; }
+.acct-signed-in { padding: var(--space-2); color: var(--muted); font-size: var(--text-ui); overflow-wrap: anywhere; }
 @media (max-width: 1199px) { .owner-app { --owner-gutter: var(--space-8); } }
 @media (max-width: 640px) {
   .owner-app { --owner-gutter: var(--space-4); --owner-bleed: var(--space-4); }
+  .owner-bar { grid-template-columns: auto auto minmax(0,1fr); gap: var(--space-2); padding: var(--space-2) var(--space-4); }
+  .owner-brand > span:last-child { display: none; }
+  .owner-brand { width: 24px; }
+  .owner-nav { gap: 0; justify-self: start; }
+  .owner-nav a { font-size: var(--text-ui); padding-inline: var(--space-1); }
+  .owner-bar-end { gap: var(--space-2); }
+  .owner-bar .owner-icon { display: none; }
+  .owner-shell-state { position: static; max-width: none; padding: 0; }
+  .owner-auto-long, .owner-slot { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .owner-auto-short { display: inline; font-size: var(--text-ui); }
+  .owner-pause { min-height: 44px; }
+  .owner-account .owner-theme-choices { display: none; }
+  .owner-theme-alt { display: flex !important; }
   .owner-workspace.wrap { margin: 0; padding: var(--space-8) var(--owner-gutter) 160px; }
   .owner-panel { border-radius: 0; border-inline: 0; }
   .owner-bridge { padding: var(--space-6) var(--owner-bleed) var(--space-4); gap: var(--space-4); }

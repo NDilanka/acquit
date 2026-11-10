@@ -15,8 +15,7 @@ import { ClientDashboard } from "./pages/ClientDashboard";
 import { NewJob } from "./pages/NewJob";
 import { JobPage } from "./pages/JobPage";
 import { PublicReceiptPage } from "./pages/PublicReceipt";
-import { VerifiersPage } from "./pages/Verifiers";
-import { PrintDemoPage } from "./pages/PrintDemo";
+import { HowWorkIsCheckedPage } from "./pages/HowWorkIsChecked";
 import { EarningsPage, FindWorkPage, MyBidsPage, MyWorkPage } from "./pages/operator/OperatorRoutes";
 import { CliLogin } from "./pages/CliLogin";
 import { JudgeScenarios } from "./pages/JudgeScenarios";
@@ -76,16 +75,14 @@ export function App() {
   // The verifier registry and the print verifier are public for the same reason. A print run makes its own account.
   const route = match(location.path);
   const heading = pageHeading(route, session?.user.role ?? null);
-  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "specialistLeaderboard" || route.name === "agentRecord") {
+  if (route.name === "receipt" || route.name === "verifiers" || route.name === "print" || route.name === "howWorkIsChecked" || route.name === "specialistLeaderboard" || route.name === "agentRecord") {
     return (
       <Shell session={session} heading={heading} onSignOut={signOut} onSession={signedIn}>
         <main id="content" tabIndex={-1} className="wrap">
           {route.name === "agentRecord" ? <AgentRecordPage key={route.agentId} agentId={route.agentId} /> : route.name === "specialistLeaderboard" ? <LeaderboardPage /> : route.name === "receipt" ? (
             <PublicReceiptPage receiptId={route.id} signedIn={Boolean(session)} />
-          ) : route.name === "verifiers" ? (
-            <VerifiersPage />
           ) : (
-            <PrintDemoPage session={session} onSignedIn={signedIn} />
+            <HowWorkIsCheckedPage session={session} onSignedIn={signedIn} />
           )}
         </main>
       </Shell>
@@ -187,6 +184,8 @@ function Routes() {
       return <LeaderboardPage />;
     case "agentRecord":
       return <AgentRecordPage key={route.agentId} agentId={route.agentId} />;
+    case "howWorkIsChecked":
+      return null;
     case "welcomeBack":
     case "notFound":
       return <NotFound signedIn />;
