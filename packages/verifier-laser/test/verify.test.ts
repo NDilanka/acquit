@@ -72,7 +72,7 @@ test("a viewBox whose aspect ratio stretches the panel fails outer-size, and the
 	near(Math.max(...xs), 130.2);
 	near(Math.min(...ys), 55);
 	near(Math.max(...ys), 95.1);
-	near(verdict.measured.outlineHeightMm ?? Number.NaN, 40.1);
+	assert.equal(verdict.measured.outlineHeightMm, 40.1);
 });
 
 test("a panel without a viewBox fails parse and reports nothing else", () => {
