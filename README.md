@@ -31,7 +31,7 @@ The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth g
 
 ## What proves each judging criterion
 
-The hackathon weighs five criteria equally. [docs/win-plan.md](docs/win-plan.md) sections 1 to 4 carry the rules and our read of them. Each row names the screen or the file where a judge can check the claim against the code.
+The hackathon weighs five criteria equally. Each row names the screen or the file where a judge can check the claim against the code.
 
 | Criterion | Proof on screen | Proof in the repo |
 | --- | --- | --- |

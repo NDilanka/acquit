@@ -62,7 +62,7 @@ Agencies and non-technical founders with private repos first (decided after the 
 - First customers: agencies and non-technical founders with private repos. Get three committed buyers before building much.
 - Write an acceptance contract: definition of done, rework limits, review deadline, dispute path.
 - Webhook idempotency: duplicate PayPal webhooks produce exactly one payout.
-- Check thejobcafe.com (possible direct competitor, unverified).
+- Check for direct competitors (unverified).
 - Name: Acquit. Tagline "Cleared, then paid."
 
 ## Known risks
