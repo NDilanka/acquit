@@ -27,6 +27,16 @@ test("the shell's single title wraps and mobile navigation contains background i
   assert.match(shell, /el\.inert = true/);
   assert.match(shell, /el\.inert = previous\[i\]/);
   assert.match(shell, /menuButton\.current\.focus\(\)/);
+  // A visibility transition leaves the opening sheet hidden when its effect focuses Close.
+  assert.doesNotMatch(css, /transition:[^;{}]*\bvisibility\b/);
   assert.match(router, /document\.title =/);
   assert.match(router, /heading\.focus\(\{ preventScroll: true \}\)/);
+});
+
+test("a fieldset can be the form primitive without retaining its native frame", () => {
+  const rule = oneLineRule(".form fieldset, fieldset.form");
+  assert.match(rule, /border:\s*0/);
+  assert.match(rule, /padding:\s*0/);
+  assert.match(rule, /margin:\s*0/);
+  assert.match(rule, /min-width:\s*0/);
 });

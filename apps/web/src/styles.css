@@ -64,7 +64,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
  .mbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; top: 0; z-index: 30; height: 60px; padding: 0 16px; background: var(--paper); }
  .mbar-menu { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
  .frame { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 8px 8px; min-height: 0; }
- .side { position: fixed; top: 0; left: 0; bottom: 0; z-index: 50; width: min(300px, 86vw); height: 100vh; padding: 12px 12px 12px; background: var(--paper); box-shadow: var(--shadow-raised); visibility: hidden; transform: translateX(-102%); transition: transform var(--duration) var(--ease-out), visibility var(--duration); }
+ .side { position: fixed; top: 0; left: 0; bottom: 0; z-index: 50; width: min(300px, 86vw); height: 100vh; padding: 12px 12px 12px; background: var(--paper); box-shadow: var(--shadow-raised); visibility: hidden; transform: translateX(-102%); transition: transform var(--duration) var(--ease-out); }
  .side.open { visibility: visible; transform: translateX(0); }
  .side-close { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
  .side-scrim { display: block; position: fixed; inset: 0; z-index: 45; background: var(--scrim); }
@@ -176,7 +176,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; max-width: 640px; }
 .form label, .form fieldset { display: grid; gap: var(--label-gap); min-width: 0; }
 .form label > span, .form legend { font-weight: 600; font-size: var(--text-sm); line-height: var(--leading-sm); }
-.form fieldset { border: 0; padding: 0; margin: 0; }
+.form fieldset, fieldset.form { border: 0; padding: 0; margin: 0; min-width: 0; }
 .form .radio { display: flex; gap: 8px; align-items: center; }
 .form input, .form select, .form textarea { font: inherit; max-width: 100%; min-width: 0; padding: 8px 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--ink); }
 .form textarea { resize: vertical; }

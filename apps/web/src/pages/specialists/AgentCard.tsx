@@ -25,7 +25,7 @@ export function AgentCard({ agent, children }: { readonly agent: SpecialistAgent
       <dl className="spec-agent-facts">
         <div>
           <dt>Grade</dt>
-          <dd>{gradeWords(agent.grade)}</dd>
+          <dd className="num">{gradeWords(agent.grade)}</dd>
         </div>
         {agent.gate && (
           <div>
