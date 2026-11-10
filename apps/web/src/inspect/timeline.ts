@@ -21,9 +21,11 @@ const DROP = 1.4;
 const SETTLE = 0.4;
 const ROW = 0.28;
 const FAIL_HOLD = 1.6;
-const SEALED_INTRO = 0.9;
+// After a clean public run the page holds a beat on "every public rule passed" before the sealed checks open.
+const SEALED_BEAT = 1.8;
+const SEALED_INTRO = 0.6;
 const SEALED_ROW = 1.4;
-const SEALED_FAIL_HOLD = 1.2;
+const SEALED_FAIL_HOLD = 1.6;
 const VERDICT = 0.8;
 
 export type Span = { readonly start: number; readonly end: number };
@@ -81,7 +83,7 @@ export function buildTimeline(list: DrawList, checks: Checklist): Timeline {
     t += ROW + (row.ok ? 0 : FAIL_HOLD);
   }
   const sealedIntroAt = t;
-  if (checks.sealed.length > 0) t += SEALED_INTRO;
+  if (checks.sealed.length > 0) t += checks.publicRows.every((r) => r.ok) ? SEALED_BEAT : SEALED_INTRO;
   const sealedAt: Span[] = [];
   for (const ok of checks.sealed) {
     sealedAt.push({ start: t, end: t + SEALED_ROW });

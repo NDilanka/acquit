@@ -38,6 +38,20 @@ const UNITS: readonly (readonly [RegExp, string])[] = [
   [/Seconds$/, "s"],
 ];
 
+/** A measured value as text: whole numbers as they are, lengths and times rounded to a sensible step. */
+export function formatMeasured(
+  key: string,
+  value: number | string,
+  format?: { readonly label: string; readonly unit?: string; readonly digits?: number },
+): { readonly label: string; readonly value: string; readonly unit: string | null } {
+  const guessed = measuredLabel(key);
+  const label = format?.label ?? guessed.label;
+  const unit = format ? format.unit ?? null : guessed.unit;
+  if (typeof value !== "number") return { label, value, unit };
+  const digits = format?.digits ?? (Number.isInteger(value) ? 0 : Math.abs(value) >= 100 ? 1 : 2);
+  return { label, value: String(Number(value.toFixed(digits))), unit };
+}
+
 /** A `measured` key as a label, with its unit split off: `cutLengthMm` reads "Cut length", "mm". */
 export function measuredLabel(key: string): { readonly label: string; readonly unit: string | null } {
   let base = key;

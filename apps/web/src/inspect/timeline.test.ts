@@ -97,3 +97,9 @@ test("the checklist carries no hidden rule name or message", () => {
   assert.equal(checks.publicRows.some((r) => r.rule === "c"), false);
   assert.equal(checks.publicRows[0]!.message, "A holds.");
 });
+
+test("a clean public run holds a longer beat before the sealed checks than a failed one", () => {
+  const clean = setup(false, true).tl;
+  const failed = setup(true, true).tl;
+  assert.ok(clean.sealedAt[0]!.start - clean.sealedIntroAt > failed.sealedAt[0]!.start - failed.sealedIntroAt);
+});

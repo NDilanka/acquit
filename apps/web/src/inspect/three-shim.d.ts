@@ -137,6 +137,7 @@ declare module "three" {
     constructor(fov?: number, aspect?: number, near?: number, far?: number);
     fov: number;
     aspect: number;
+    setViewOffset(fullWidth: number, fullHeight: number, x: number, y: number, width: number, height: number): void;
     updateProjectionMatrix(): void;
   }
   export class WebGLRenderer {

@@ -1,7 +1,8 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { checklistOf, measuredLabel, type Checklist } from "./checklist.ts";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { checklistOf, formatMeasured, type Checklist, type PublicRow } from "./checklist.ts";
 import type { Delivery, InspectVerdict } from "./contract.ts";
 import { onThemeChange, readPalette } from "./palette.ts";
+import type { CheckerEntry } from "./registry.ts";
 import { placeOf, toDrawList, type DrawList, type Place } from "./scene-draw.ts";
 import { Stage2D } from "./Stage2D.tsx";
 import type { Stage } from "./stage-three.ts";
@@ -40,21 +41,30 @@ function runOf(delivery: Delivery): Run {
   return { verdict, list, checks, timeline: buildTimeline(list, checks) };
 }
 
+function ruleName(checker: CheckerEntry, rule: string): string {
+  return checker.ruleNames[rule] ?? rule;
+}
+
+function failText(checker: CheckerEntry, row: PublicRow): string {
+  return checker.failCaption(row.finding) ?? row.message;
+}
+
 export type InspectorProps = {
-  readonly deliveries: readonly Delivery[];
-  /** One sentence naming the job the deliveries answer. */
-  readonly job?: string;
+  readonly checker: CheckerEntry;
+  /** The id of the delivery to open on. The first delivery when absent or unknown. */
+  readonly delivery?: string;
   /** Draw the flat view even where WebGL works. */
   readonly flat?: boolean;
-  readonly initialId?: string;
 };
 
 /** Pick a delivery, run the real checker on it in the browser, and play the simulated machine run and the checks. */
-export function Inspector({ deliveries, job, flat = false, initialId }: InspectorProps) {
+export function Inspector({ checker, delivery: initialId, flat = false }: InspectorProps) {
+  const deliveries = checker.deliveries;
   const reduced = useReducedMotion();
   const [id, setId] = useState(() => (deliveries.some((d) => d.id === initialId) ? initialId! : deliveries[0]?.id ?? ""));
   const delivery = deliveries.find((d) => d.id === id) ?? deliveries[0]!;
   const run = useMemo(() => runOf(delivery), [delivery]);
+  const total = run.timeline.total;
   const [t, setT] = useState(() => (reduced ? Infinity : 0));
   const [playing, setPlaying] = useState(!reduced);
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
@@ -67,15 +77,24 @@ export function Inspector({ deliveries, job, flat = false, initialId }: Inspecto
   const frame = useMemo(() => frameAt(run.list, run.checks, run.timeline, t), [run, t]);
   const focusRow = frame.focus === null ? null : run.checks.publicRows[frame.focus] ?? null;
   const place: Place | null = focusRow ? placeOf(run.list, focusRow.finding) : null;
-  const refs = focusRow?.finding.refs ?? [];
+  const refs = useMemo(() => focusRow?.finding.refs ?? [], [focusRow]);
 
+  // Reduced motion never animates: every start lands on the finished state.
+  const start = () => {
+    if (reduced) {
+      setT(total);
+      setPlaying(false);
+    } else {
+      setT(0);
+      setPlaying(true);
+    }
+  };
   const pick = (next: Delivery) => {
     setId(next.id);
     setT(reduced ? Infinity : 0);
     setPlaying(!reduced);
   };
 
-  // Playback clock. Reduced motion leaves it parked on the finished state.
   useEffect(() => {
     if (!playing) return;
     let raf = 0;
@@ -84,15 +103,15 @@ export function Inspector({ deliveries, job, flat = false, initialId }: Inspecto
       const dt = Math.min(0.1, (now - prev) / 1000);
       prev = now;
       setT((cur) => {
-        const next = Math.min(run.timeline.total, (Number.isFinite(cur) ? cur : 0) + dt * speed);
-        if (next >= run.timeline.total) setPlaying(false);
+        const next = Math.min(total, (Number.isFinite(cur) ? cur : 0) + dt * speed);
+        if (next >= total) setPlaying(false);
         return next;
       });
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, run]);
+  }, [playing, speed, total]);
 
   // The 3D stage loads three.js in its own chunk and is rebuilt for each delivery.
   useEffect(() => {
@@ -102,7 +121,7 @@ export function Inspector({ deliveries, job, flat = false, initialId }: Inspecto
     import("./stage-three.ts")
       .then(({ createThreeStage }) => {
         if (cancelled || !host.current) return;
-        stage.current = createThreeStage(host.current, run.list, readPalette(), { reducedMotion: reduced });
+        stage.current = createThreeStage(host.current, run.list, readPalette(), { reducedMotion: reduced, dressing: checker.dressing });
         off = onThemeChange(() => stage.current?.setPalette(readPalette()));
         setStageReady((n) => n + 1);
       })
@@ -115,17 +134,16 @@ export function Inspector({ deliveries, job, flat = false, initialId }: Inspecto
       stage.current?.dispose();
       stage.current = null;
     };
-  }, [mode, run, reduced]);
+  }, [mode, run, reduced, checker.dressing]);
 
   useEffect(() => {
     stage.current?.update({ frame, focus: focusRow ? { place, refs } : null });
   }, [frame, focusRow, place, refs, stageReady]);
 
-  const total = run.timeline.total;
   const shownT = Math.min(t, total);
-  const done = frame.verdict;
   const togglePlay = () => {
     if (playing) setPlaying(false);
+    else if (reduced) setT(total);
     else {
       if (shownT >= total) setT(0);
       setPlaying(true);
@@ -134,39 +152,31 @@ export function Inspector({ deliveries, job, flat = false, initialId }: Inspecto
 
   return (
     <section className="inspector" aria-label="Try to cheat the checker">
-      {job && <p className="insp-job">{job}</p>}
-      <div className="insp-picker" role="group" aria-label="Deliveries">
-        {deliveries.map((d, i) => (
-          <Fragment key={d.id}>
-            {d.cheat && !deliveries[i - 1]?.cheat && <span className="insp-picker-label">Cheats</span>}
-            <button type="button" className="insp-chip" aria-pressed={d.id === delivery.id} onClick={() => pick(d)}>
-              {d.title}
-            </button>
-          </Fragment>
-        ))}
+      <Picker checker={checker} selected={delivery} onPick={pick} />
+      <div className="insp-about">
+        <p className="insp-blurb">
+          <b>{delivery.title}.</b> {delivery.blurb}
+        </p>
+        <p className="insp-honest">
+          <span className="sandbox">Simulated</span>
+          The file is checked by the real checker, running in your browser. The machine run is simulated.
+        </p>
       </div>
-      <p className="insp-blurb">
-        <b>{delivery.title}.</b> {delivery.blurb}
-      </p>
-      <p className="insp-honest">
-        <span className="sandbox">Simulated</span>
-        The file is checked by the real checker, running in your browser. The machine run is simulated.
-      </p>
 
       <div className="insp-grid">
         <div className="insp-stage-col">
+          <div className="insp-stage-box">
           <div
             className={`insp-stage${mode === "2d" ? " flat" : ""}`}
             ref={host}
             tabIndex={mode === "3d" ? 0 : -1}
             role={mode === "3d" ? "application" : undefined}
-            aria-label={mode === "3d" ? "3D view of the sheet on the laser bed. Drag or use the arrow keys to turn it, plus and minus to zoom, 0 to reset." : undefined}
+            aria-label={mode === "3d" ? "3D view of the sheet on the machine bed. Drag or use the arrow keys to turn it, plus and minus to zoom, 0 to reset." : undefined}
           >
             {mode === "2d" && <Stage2D list={run.list} frame={frame} place={place} refs={refs} />}
-            <StageCaption frame={frame} checks={run.checks} place={place} focusRule={focusRow?.rule ?? null} />
-            {done && (
-              <p className={`insp-stage-verdict ${run.checks.pass ? "pass" : "fail"}`}>{run.checks.pass ? "Passed" : "Rejected"}</p>
-            )}
+            {frame.verdict && <p className={`insp-stage-verdict ${run.checks.pass ? "pass" : "fail"}`}>{run.checks.pass ? "Passed" : "Rejected"}</p>}
+          </div>
+          <StageCaption checker={checker} frame={frame} checks={run.checks} place={place} focusRow={focusRow} />
           </div>
           <Controls
             playing={playing}
@@ -174,46 +184,82 @@ export function Inspector({ deliveries, job, flat = false, initialId }: Inspecto
             total={total}
             speed={speed}
             frame={frame}
-            onReplay={() => { setT(0); setPlaying(true); }}
+            onReplay={start}
             onToggle={togglePlay}
-            onScrub={(v) => { setPlaying(false); setT(v); }}
+            onScrub={(v) => {
+              setPlaying(false);
+              setT(v);
+            }}
             onSpeed={setSpeed}
             onResetView={mode === "3d" ? () => stage.current?.resetView() : null}
             showFile={showFile}
             onShowFile={() => setShowFile((s) => !s)}
           />
+          <VerdictLine checker={checker} checks={run.checks} done={frame.verdict} />
           {mode === "2d" && !flat && <p className="insp-note">This browser has no WebGL, so the run is drawn flat.</p>}
         </div>
-        <div className="insp-side">
-          <div className="insp-side-inner">
-            <Checks checks={run.checks} frame={frame} />
-            <VerdictCard checks={run.checks} done={done} />
-          </div>
-        </div>
+        <Checks checker={checker} checks={run.checks} frame={frame} />
       </div>
 
-      {showFile && <FileText name={delivery.fileName} text={delivery.text} />}
-      <Measured measured={run.verdict.measured} />
+      {showFile && <Files delivery={delivery} checker={checker} />}
+      <Measured checker={checker} measured={run.verdict.measured} />
     </section>
   );
 }
 
-function StageCaption({ frame, checks, place, focusRule }: { frame: Frame; checks: Checklist; place: Place | null; focusRule: string | null }) {
+function Picker({ checker, selected, onPick }: { checker: CheckerEntry; selected: Delivery; onPick: (d: Delivery) => void }) {
+  const featured = checker.featured
+    .map((id) => checker.deliveries.find((d) => d.id === id))
+    .filter((d): d is Delivery => d !== undefined);
+  const rest = checker.deliveries.filter((d) => !featured.includes(d));
+  const [more, setMore] = useState(() => rest.includes(selected));
+  const shown = more ? [...featured, ...rest] : featured;
+  return (
+    <div className="insp-picker-wrap">
+      <div className="insp-picker" role="group" aria-label="Deliveries">
+        {shown.map((d, i) => (
+          <Fragment key={d.id}>
+            {d.cheat && !shown[i - 1]?.cheat && <span className="insp-picker-label">Cheats</span>}
+            <button type="button" className="insp-chip" aria-pressed={d.id === selected.id} onClick={() => onPick(d)}>
+              {d.title}
+            </button>
+          </Fragment>
+        ))}
+        {rest.length > 0 && (
+          <button type="button" className="insp-more" aria-expanded={more} onClick={() => setMore((m) => !m)}>
+            {more ? "Fewer cheats" : `More cheats (${rest.length})`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StageCaption({ checker, frame, checks, place, focusRow }: { checker: CheckerEntry; frame: Frame; checks: Checklist; place: Place | null; focusRow: PublicRow | null }) {
   const sealedFailed = frame.sealedShown > 0 && checks.sealed.slice(0, frame.sealedShown).some((ok) => !ok);
   const allPublicPassed = checks.publicRows.every((r) => r.ok);
-  let text: string;
-  if (sealedFailed && allPublicPassed) text = "Every public rule passed. A sealed check did not. Where it looked stays sealed, so nothing is marked.";
-  else if (focusRule !== null)
-    text = place ? `${focusRule} failed. Marked on the part: the paths the checker named.` : `${focusRule} failed. The checker names no place on the part for this rule.`;
-  else if (frame.phase === "trace") text = "Simulated laser run, in the checker's cut order. Engraving is blue, moves between cuts are faint.";
-  else if (frame.phase === "drop") text = "The cut-out pieces fall away and the finished part is left.";
-  else if (frame.phase === "sealed") text = frame.sealedChecking !== null ? "Running a sealed check. What it checks is not shown." : "Now the sealed checks.";
-  else if (frame.phase === "checks") text = "Checking the public rules.";
-  else text = checks.pass ? "Every rule passed." : "The checker found a problem.";
+  if (sealedFailed && allPublicPassed)
+    return (
+      <div className="insp-caption moment" aria-live="polite">
+        <p>Every public rule passed. A sealed check did not.</p>
+        <p className="insp-caption-sub">The agent never sees sealed checks, so it cannot aim at them.</p>
+      </div>
+    );
+  let main: string;
+  let sub: string | null = null;
+  if (focusRow) {
+    main = failText(checker, focusRow);
+    sub = place ? `${ruleName(checker, focusRow.rule)}: marked on the part.` : `${ruleName(checker, focusRow.rule)}: the checker names no place on the part for this rule.`;
+  } else if (frame.phase === "trace") main = checker.runCaption;
+  else if (frame.phase === "drop") main = "The cut-out pieces fall away and the finished part is left.";
+  else if (frame.phase === "sealed") main = frame.sealedChecking !== null ? "Opening a sealed check. What it checks is not shown." : "Every public rule passed. Now the sealed checks.";
+  else if (frame.phase === "checks") main = "Checking the public rules.";
+  else main = checks.pass ? "Every rule passed." : "The checker found a problem.";
   return (
-    <p className={`insp-caption${sealedFailed && allPublicPassed ? " moment" : ""}`} aria-live="polite">
-      {text}
-    </p>
+    <div className={`insp-caption${focusRow ? " fail" : ""}`} aria-live="polite">
+      <p>{main}</p>
+      {sub && <p className="insp-caption-sub">{sub}</p>}
+    </div>
   );
 }
 
@@ -233,7 +279,7 @@ type ControlsProps = {
 };
 
 const PHASE_WORDS: Readonly<Record<Frame["phase"], string>> = {
-  trace: "cutting",
+  trace: "machine run",
   drop: "pieces falling away",
   checks: "public rules",
   sealed: "sealed checks",
@@ -260,15 +306,13 @@ function Controls(p: ControlsProps) {
         aria-valuetext={`${Math.round((p.t / p.total) * 100)} percent, ${PHASE_WORDS[p.frame.phase]}`}
         onChange={(e) => p.onScrub(Number(e.target.value))}
       />
-      <label className="insp-speed">
-        <select value={p.speed} onChange={(e) => p.onSpeed(Number(e.target.value) as (typeof SPEEDS)[number])} aria-label="Playback speed">
-          {SPEEDS.map((s) => (
-            <option key={s} value={s}>
-              {s}x
-            </option>
-          ))}
-        </select>
-      </label>
+      <select className="insp-speed" value={p.speed} onChange={(e) => p.onSpeed(Number(e.target.value) as (typeof SPEEDS)[number])} aria-label="Playback speed">
+        {SPEEDS.map((s) => (
+          <option key={s} value={s}>
+            {s}x
+          </option>
+        ))}
+      </select>
       {p.onResetView && (
         <button type="button" className="btn ghost sm" onClick={p.onResetView}>
           Reset view
@@ -281,59 +325,49 @@ function Controls(p: ControlsProps) {
   );
 }
 
-const Checks = memo(function Checks({ checks, frame }: { checks: Checklist; frame: Frame }) {
+const Checks = memo(function Checks({ checker, checks, frame }: { checker: CheckerEntry; checks: Checklist; frame: Frame }) {
+  const n = checks.publicRows.length;
+  const passed = checks.publicRows.filter((r) => r.ok).length;
+  const allShown = frame.publicShown >= n;
   const sealedCount = checks.sealed.length;
-  const box = useRef<HTMLElement>(null);
-  // Keep the row that matters in view inside the list, without scrolling the page: the failing row once it shows,
-  // else the sealed checks once they open, else the latest row.
-  const target = frame.focus !== null ? `p${frame.focus}` : frame.sealedOpen ? "sealed" : frame.publicShown > 0 ? `p${frame.publicShown - 1}` : null;
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    if (target === null) { el.scrollTop = 0; return; }
-    const row = el.querySelector<HTMLElement>(`[data-row="${target}"]`);
-    if (!row) return;
-    const top = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
-    if (top < el.scrollTop + 8 || top + row.offsetHeight > el.scrollTop + el.clientHeight - 8)
-      el.scrollTop = Math.max(0, top - el.clientHeight / 3);
-  }, [target, frame.verdict]);
   return (
-    <aside className="insp-checks card" aria-label="Checks" ref={box}>
-      <h2 className="insp-h">Public rules</h2>
-      <p className="insp-sub muted">Published in the job. Any agent can read them.</p>
+    <aside className="insp-checks card" aria-label="Checks">
+      <div className="insp-checks-head">
+        <h2 className="insp-h">Public rules</h2>
+        <p className={`insp-count${allShown ? (passed === n ? " pass" : " fail") : ""}`}>
+          {allShown ? `${passed} of ${n} public rules passed` : `${frame.publicShown} of ${n} checked`}
+        </p>
+      </div>
       <ol className="insp-rules">
         {checks.publicRows.map((row, i) => {
           const shown = i < frame.publicShown;
           const state = !shown ? "pending" : row.ok ? "pass" : "fail";
           return (
-            <li key={row.rule} data-row={`p${i}`} className={`insp-rule ${state}${frame.focus === i ? " focus" : ""}`}>
+            <li key={row.rule} className={`insp-rule ${state}`} tabIndex={shown ? 0 : undefined}>
               <Mark state={state} />
-              <span className="insp-rule-text">
-                <span className="insp-rule-id">{row.rule}</span>
-                {shown && <span>{row.message}</span>}
-              </span>
+              <span className="insp-rule-name">{ruleName(checker, row.rule)}</span>
+              <span className="insp-rule-id">{row.rule}</span>
+              {shown && <span className="insp-rule-desc">{row.ok ? row.message : failText(checker, row)}</span>}
             </li>
           );
         })}
       </ol>
       {sealedCount > 0 && (
-        <div className={`insp-sealed${frame.sealedOpen ? " open" : ""}`} data-row="sealed">
-          <h2 className="insp-h">Sealed checks</h2>
-          <p className="insp-sub muted">
-            {sealedCount === 1 ? "1 sealed check." : `${sealedCount} sealed checks.`} The agent never sees what is checked, so it cannot aim at it.
-          </p>
+        <div className={`insp-sealed${frame.sealedOpen ? " open" : ""}`}>
+          <div className="insp-checks-head">
+            <h2 className="insp-h">Sealed checks</h2>
+            <p className="insp-count">{sealedCount === 1 ? "1 sealed check" : `${sealedCount} sealed checks`}</p>
+          </div>
           <ol className="insp-rules">
             {checks.sealed.map((ok, i) => {
               const shown = i < frame.sealedShown;
-              const checking = frame.sealedChecking === i;
-              const state = shown ? (ok ? "pass" : "fail") : checking ? "checking" : "pending";
+              const opening = frame.sealedChecking === i;
+              const state = shown ? (ok ? "pass" : "fail") : opening ? "opening" : "pending";
               return (
                 <li key={i} className={`insp-rule sealed ${state}`}>
-                  <Mark state={state} />
-                  <span className="insp-rule-text">
-                    <span className="insp-rule-id">Sealed check {i + 1}</span>
-                    <span>{shown ? (ok ? "Passed." : "Failed.") : checking ? "Checking." : "Not run yet."}</span>
-                  </span>
+                  <Envelope state={state} />
+                  <span className="insp-rule-name">{shown ? (ok ? "Sealed check passed" : "Sealed check failed") : opening ? "Opening sealed check" : "Sealed check"}</span>
+                  <span className="insp-rule-id">{sealedCount > 1 ? `${i + 1} of ${sealedCount}` : "content not shown"}</span>
                 </li>
               );
             })}
@@ -344,8 +378,8 @@ const Checks = memo(function Checks({ checks, frame }: { checks: Checklist; fram
   );
 });
 
-function Mark({ state }: { state: "pending" | "pass" | "fail" | "checking" }) {
-  const label = { pending: "Not checked yet", pass: "Passed", fail: "Failed", checking: "Checking" }[state];
+function Mark({ state }: { state: "pending" | "pass" | "fail" }) {
+  const label = { pending: "Not checked yet", pass: "Passed", fail: "Failed" }[state];
   return (
     <span className={`insp-mark ${state}`} role="img" aria-label={label}>
       {state === "pass" && (
@@ -358,13 +392,22 @@ function Mark({ state }: { state: "pending" | "pass" | "fail" | "checking" }) {
   );
 }
 
-const VerdictCard = memo(function VerdictCard({ checks, done }: { checks: Checklist; done: boolean }) {
-  if (!done)
-    return (
-      <div className="insp-verdict card pending">
-        <p className="insp-verdict-detail muted">The verdict shows once every check has run.</p>
-      </div>
-    );
+/** A sealed envelope: closed while waiting, its flap lifting while it is checked, open in the result's colour. */
+function Envelope({ state }: { state: "pending" | "opening" | "pass" | "fail" }) {
+  const label = { pending: "Sealed, not run yet", opening: "Being checked", pass: "Passed", fail: "Failed" }[state];
+  return (
+    <span className={`insp-envelope ${state}`} role="img" aria-label={label}>
+      <svg viewBox="0 0 24 20" aria-hidden="true">
+        <rect x="1.5" y="5.5" width="21" height="13" rx="2" fill="currentColor" fillOpacity="0.12" stroke="currentColor" strokeWidth="1.5" />
+        <path className="insp-flap" d="M1.5 7.5 L12 14 L22.5 7.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
+}
+
+const VerdictLine = memo(function VerdictLine({ checker, checks, done }: { checker: CheckerEntry; checks: Checklist; done: boolean }) {
+  // The verdict's place is kept while the run plays, so nothing moves when it arrives.
+  if (!done) return <div className="insp-verdict waiting" aria-hidden="true" />;
   const failed = checks.publicRows.find((r) => !r.ok);
   const sealedFailed = checks.sealed.filter((ok) => !ok).length;
   const n = checks.publicRows.length;
@@ -372,41 +415,51 @@ const VerdictCard = memo(function VerdictCard({ checks, done }: { checks: Checkl
   const detail = checks.pass
     ? `All ${n} public rules passed${s ? `, and ${s === 1 ? "the sealed check" : `all ${s} sealed checks`} too` : ""}.`
     : failed
-      ? `Failed ${failed.rule}: ${failed.message}`
+      ? `${ruleName(checker, failed.rule)} failed. ${failText(checker, failed)}`
       : `Every public rule passed, and ${sealedFailed === 1 ? "a sealed check" : `${sealedFailed} sealed checks`} failed.`;
   return (
-    <div className={`insp-verdict card ${checks.pass ? "pass" : "fail"}`} role="status">
+    <div className={`insp-verdict ${checks.pass ? "pass" : "fail"}`} role="status">
       <p className="insp-verdict-line">{checks.pass ? "Passed. Payment could be released." : "Rejected. No payment."}</p>
       <p className="insp-verdict-detail">{detail}</p>
     </div>
   );
 });
 
-const FileText = memo(function FileText({ name, text }: { name: string; text: string }) {
+const Files = memo(function Files({ delivery, checker }: { delivery: Delivery; checker: CheckerEntry }) {
   return (
     <section className="insp-file card">
-      <h2 className="insp-h">
-        The file <span className="mono muted">{name}</span>
-      </h2>
-      <pre tabIndex={0} aria-label={`Contents of ${name}`}>{text}</pre>
+      <div className="insp-file-cols">
+        <div>
+          <h2 className="insp-h">
+            The delivered file <span className="mono muted">{delivery.fileName}</span>
+          </h2>
+          <pre tabIndex={0} aria-label={`Contents of ${delivery.fileName}`}>{delivery.text}</pre>
+        </div>
+        <div>
+          <h2 className="insp-h">
+            The job spec <span className="mono muted">{checker.specFileName}</span>
+          </h2>
+          <pre tabIndex={0} aria-label={`Contents of ${checker.specFileName}`}>{checker.specText}</pre>
+        </div>
+      </div>
     </section>
   );
 });
 
-const Measured = memo(function Measured({ measured }: { measured: Readonly<Record<string, number | string>> }) {
+const Measured = memo(function Measured({ checker, measured }: { checker: CheckerEntry; measured: Readonly<Record<string, number | string>> }) {
   const entries = Object.entries(measured);
   if (entries.length === 0) return null;
   return (
     <section className="insp-measured card">
       <h2 className="insp-h">Measured by the checker</h2>
       <dl>
-        {entries.map(([key, value]) => {
-          const { label, unit } = measuredLabel(key);
+        {entries.map(([key, raw]) => {
+          const { label, value, unit } = formatMeasured(key, raw, checker.measured[key]);
           return (
             <div key={key}>
               <dt>{label}</dt>
               <dd className="mono">
-                {String(value)}
+                {value}
                 {unit && <span className="muted"> {unit}</span>}
               </dd>
             </div>

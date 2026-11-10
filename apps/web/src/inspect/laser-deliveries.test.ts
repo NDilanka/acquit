@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { caughtOnlyBySealed, checklistOf, measuredLabel } from "./checklist.ts";
-import { LASER_DELIVERIES, LASER_SAMPLE_FILES, laserJobSummary } from "./laser-deliveries.ts";
+import { caughtOnlyBySealed, checklistOf, formatMeasured, measuredLabel } from "./checklist.ts";
+import { LASER_CHECKER, LASER_DELIVERIES, LASER_SAMPLE_FILES, laserJobSummary } from "./laser-deliveries.ts";
+import { checkerFor } from "./registry.ts";
 import { placeOf, toDrawList } from "./scene-draw.ts";
 
 test("the picker offers every laser sample exactly once", () => {
@@ -54,4 +55,45 @@ test("measured keys read as labels with their unit", () => {
   assert.deepEqual(measuredLabel("cutLengthMm"), { label: "Cut length", unit: "mm" });
   assert.deepEqual(measuredLabel("holesMatched"), { label: "Holes matched", unit: null });
   assert.deepEqual(measuredLabel("estimatedCutSeconds"), { label: "Estimated cut", unit: "s" });
+});
+
+test("the featured deliveries exist and start with the honest file and the sealed-only cheat", () => {
+  const ids = new Set(LASER_DELIVERIES.map((d) => d.id));
+  for (const id of LASER_CHECKER.featured) assert.ok(ids.has(id), id);
+  assert.deepEqual(LASER_CHECKER.featured.slice(0, 2), ["honest", "fraud-hidden-notch"]);
+});
+
+test("every public rule the checker reports has a plain name, and no hidden rule has one", () => {
+  for (const delivery of LASER_DELIVERIES)
+    for (const finding of delivery.run().findings) {
+      if (finding.hidden) assert.equal(LASER_CHECKER.ruleNames[finding.rule], undefined, finding.rule);
+      else assert.ok(LASER_CHECKER.ruleNames[finding.rule], `${finding.rule} has no plain name`);
+    }
+});
+
+test("every failure caption is plain words and copies its numbers from the checker's message", () => {
+  for (const delivery of LASER_DELIVERIES)
+    for (const finding of delivery.run().findings.filter((f) => !f.ok && !f.hidden)) {
+      const caption = LASER_CHECKER.failCaption(finding);
+      assert.ok(caption, `${delivery.id} ${finding.rule} has a caption`);
+      for (const n of caption.match(/\d+(?:\.\d+)?/g) ?? []) assert.ok(finding.message.includes(n), `${delivery.id}: ${n} is not in "${finding.message}"`);
+      assert.doesNotMatch(caption, /\(s\)/);
+    }
+});
+
+test("the planned cut time reads as an estimate rounded to one decimal", () => {
+  const honest = LASER_DELIVERIES[0]!.run();
+  const raw = honest.measured.estimatedCutSeconds!;
+  assert.deepEqual(formatMeasured("estimatedCutSeconds", raw, LASER_CHECKER.measured.estimatedCutSeconds), {
+    label: "Planned cut time (estimate)",
+    value: String(Number(Number(raw).toFixed(1))),
+    unit: "s",
+  });
+  assert.deepEqual(formatMeasured("minWebMm", 4.3612), { label: "Min web", value: "4.36", unit: "mm" });
+  assert.deepEqual(formatMeasured("cutPaths", 6), { label: "Cut paths", value: "6", unit: null });
+});
+
+test("the registry offers the laser checker by its workflow", () => {
+  assert.equal(checkerFor("laser-cut"), LASER_CHECKER);
+  assert.equal(checkerFor("pcb"), null);
 });
