@@ -9,7 +9,7 @@ import type { Camera, Spec } from "../src/types.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const CAMERA: Camera = { sensorWidthMm: 13.2, sensorHeightMm: 8.8, focalMm: 8.8, imageWidthPx: 5472 };
+const CAMERA: Camera = { sensorWidthMm: 13.2, sensorHeightMm: 8.8, focalMm: 8.8, imageWidthPx: 5472, imageHeightPx: 3648 };
 const ORIGIN: [number, number] = [51.5, -0.12];
 const SAMPLES = fileURLToPath(new URL("../samples/", import.meta.url));
 
