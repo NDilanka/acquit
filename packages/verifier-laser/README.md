@@ -51,8 +51,8 @@ The chord count for a curve is bounded by the limits in `src/limits.ts`. A curve
 A round hole is checked against its true circle, not a polygon. A closed cut fits the hole when its loop is simple, runs
 once round the centre and encloses an area the tolerance allows, every vertex and every edge midpoint lies within the
 tolerance of that circle, and no arc of the circle is left uncut for longer than twice the tolerance. A polygon with
-the right vertices but straight sides fails. A C-shaped loop whose two arcs lie on the circle fails, because it does
-not run round the centre.
+the right vertices but straight sides fails. A C-shaped loop whose arcs lie within the tolerance of the circle but do not
+run round the centre fails.
 
 The outer cut fits the declared rectangle when every vertex and every edge midpoint lies within the tolerance of the
 exact outline: straight sides and quarter-circle corners at the declared radius, measured on the box the cut spans.
