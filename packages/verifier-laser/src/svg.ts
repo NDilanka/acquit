@@ -1,6 +1,7 @@
-// The SVG reader. It takes the laser cut file as text and returns every drawn path in millimetres, flattened,
-// with the stroke colour it carries. It reads the subset a laser cut file uses and refuses whatever it cannot
-// place exactly (text, images, clip paths, hidden elements), so no cut can hide in something the checker skipped.
+// The SVG reader. It takes the laser cut file as text and returns every drawn path in millimetres, flattened, with
+// the stroke colour it carries. It reads the subset a laser cut file uses and refuses whatever it cannot place exactly
+// (text, images, clip paths, hidden or partly transparent elements, styles it does not model), so no cut can hide in
+// something the checker skipped.
 
 import { MAX_CHORDS, MAX_DEPTH, MAX_ELEMENTS, MAX_POINTS, MAX_SUBPATHS, MAX_TEXT_CHARS } from "./limits.ts";
 import type { Checked, SvgDoc, SvgPath, Vec2 } from "./types.ts";
@@ -8,15 +9,42 @@ import type { Checked, SvgDoc, SvgPath, Vec2 } from "./types.ts";
 /** Curves are flattened to chords within this distance of the true curve, in mm. The contract allows 0.05. */
 export const FLATTEN_TOL_MM = 0.02;
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+const XML_NS = "http://www.w3.org/XML/1998/namespace";
+
 /** Millimetres per unit. Unitless and px follow the SVG convention of 96 px to the inch. */
 const MM_PER_UNIT: Readonly<Record<string, number>> = { "": 25.4 / 96, px: 25.4 / 96, mm: 1, cm: 10, in: 25.4, pt: 25.4 / 72, pc: 25.4 / 6 };
 
-const SKIPPED = new Set(["defs", "metadata", "title", "desc", "style"]);
 const SHAPES = new Set(["path", "rect", "circle", "ellipse", "line", "polyline", "polygon"]);
+/** Unprefixed attributes a drawn element or the root may carry. Prefixed attributes are foreign metadata and are inert. */
+const DRAWN_ATTRIBUTES = new Set([
+	"id", "style", "transform", "stroke", "stroke-width", "stroke-opacity", "opacity", "fill", "display", "visibility",
+	"stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray",
+	"version", "width", "height", "viewBox", "preserveAspectRatio", "x", "y", "d", "cx", "cy", "r", "rx", "ry",
+	"x1", "y1", "x2", "y2", "points",
+]);
+/**
+ * The presentation properties. Each may be set as an attribute or in style, and each has one accepted range. The
+ * caps, joins and miter limit only shape the ends and corners of a stroke, so laser tools write them by default and
+ * they are read as well. A dash pattern would cut a path into pieces, so only "none" is accepted.
+ */
+const PRESENTATION = [
+	"stroke", "stroke-width", "stroke-opacity", "opacity", "fill", "display", "visibility",
+	"stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray",
+];
 const COMMANDS = "MmLlHhVvCcSsQqTtAaZz";
 const PLAIN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 const LENGTH = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)([A-Za-z]*)$/;
-const ATTRIBUTE = /([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const START = /<([A-Za-z_][\w.:-]*)((?:\s+[A-Za-z_][\w.:-]*\s*=\s*(?:"[^"<]*"|'[^'<]*'))*)\s*(\/?)>/y;
+const END_TAG = /<\/([A-Za-z_][\w.:-]*)\s*>/y;
+const ATTRIBUTE = /([A-Za-z_][\w.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const ENTITY = /&(?:#x[0-9a-fA-F]+|#\d+|[A-Za-z]+);/g;
+const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map([["amp", "&"], ["lt", "<"], ["gt", ">"], ["quot", '"'], ["apos", "'"]]);
+/** The only colour names read. Any other keyword is refused, so every accepted colour is one a reader can compare exactly. */
+const NAMED_COLOURS: ReadonlyMap<string, string> = new Map([["red", "#ff0000"], ["blue", "#0000ff"]]);
+const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/;
+const RGB = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/;
+const RGB_PERCENT = /^rgb\(\s*(\d{1,3}(?:\.\d+)?)%\s*,\s*(\d{1,3}(?:\.\d+)?)%\s*,\s*(\d{1,3}(?:\.\d+)?)%\s*\)$/;
 const NUMBER_TOKEN = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/y;
 const SEPARATOR = /[\s,]*/y;
 const TRANSFORM = /\s*(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)\s*,?/y;
@@ -27,7 +55,14 @@ const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
 class SvgError extends Error {}
 
-type Element = { readonly name: string; readonly attrs: Readonly<Record<string, string>>; readonly children: Element[] };
+/** A parsed element. uri is its namespace, "" when the root declares none. */
+type Element = {
+	readonly name: string;
+	readonly local: string;
+	readonly uri: string;
+	readonly attrs: ReadonlyMap<string, string>;
+	readonly children: Element[];
+};
 type Subpath = { readonly points: readonly Vec2[]; readonly closed: boolean };
 
 /** What the file has drawn so far against the limits in limits.ts. Each point and subpath is charged before it is made. */
@@ -51,71 +86,106 @@ function subpathSpend(budget: Budget): void {
 	if (budget.subpaths > MAX_SUBPATHS) throw new SvgError("the drawing has too many subpaths to read");
 }
 
-const localName = (name: string): string => name.slice(name.lastIndexOf(":") + 1);
+const localOf = (name: string): string => name.slice(name.indexOf(":") + 1);
+const prefixOf = (name: string): string => (name.includes(":") ? name.slice(0, name.indexOf(":")) : "");
 
-function tagEnd(text: string, start: number): number {
-	let quote = "";
-	for (let i = start + 1; i < text.length; i++) {
-		const c = text[i];
-		if (quote !== "") {
-			if (c === quote) quote = "";
-		} else if (c === '"' || c === "'") quote = c;
-		else if (c === ">") return i;
+/**
+ * Decodes the predefined and numeric entities. A bare ampersand, an unknown name, or a code point that is not a
+ * character is refused. Text is checked the same way even where it is not read.
+ */
+function decodeEntities(raw: string): string {
+	if (!raw.includes("&")) return raw;
+	if (raw.replace(ENTITY, "").includes("&")) throw new SvgError("a bare & must be written as &amp;");
+	return raw.replace(ENTITY, (whole: string) => {
+		const body = whole.slice(1, -1);
+		if (body.startsWith("#")) {
+			const code = body[1] === "x" ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
+			if (!(code > 0 && code <= 0x10ffff) || (code >= 0xd800 && code <= 0xdfff)) throw new SvgError("a numeric entity is not a character");
+			return String.fromCodePoint(code);
+		}
+		const named = NAMED_ENTITIES.get(body);
+		if (named === undefined) throw new SvgError(`the entity &${body}; is not supported`);
+		return named;
+	});
+}
+
+function parseAttributes(text: string): Map<string, string> {
+	const attrs = new Map<string, string>();
+	for (const match of text.matchAll(ATTRIBUTE)) {
+		const name = match[1]!;
+		if (attrs.has(name)) throw new SvgError(`the attribute ${name} is given twice`);
+		attrs.set(name, decodeEntities(match[2] ?? match[3] ?? ""));
 	}
-	throw new SvgError("a tag is never closed");
+	return attrs;
 }
 
-function parseAttributes(text: string): Readonly<Record<string, string>> {
-	const pairs: [string, string][] = [];
-	for (const match of text.matchAll(ATTRIBUTE)) pairs.push([match[1]!, match[2] ?? match[3] ?? ""]);
-	return Object.fromEntries(pairs);
-}
-
+/**
+ * Parses the markup into one element tree. Only the XML declaration may open a file, so stylesheets and other
+ * instructions are refused. DOCTYPE and CDATA are refused. Namespace declarations are only accepted on the root.
+ */
 function parseXml(text: string): Element {
 	const stack: Element[] = [];
 	let root: Element | null = null;
+	const scope = new Map<string, string>([["xml", XML_NS]]);
 	let elements = 0;
 	let pos = 0;
-	while (pos < text.length) {
+	for (;;) {
 		const lt = text.indexOf("<", pos);
-		const stop = lt < 0 ? text.length : lt;
-		if (stack.length === 0 && text.slice(pos, stop).trim() !== "") throw new SvgError("text outside the root element");
+		const chunk = text.slice(pos, lt < 0 ? text.length : lt);
+		decodeEntities(chunk);
+		if (stack.length === 0 && chunk.trim() !== "") throw new SvgError("text outside the root element");
 		if (lt < 0) break;
 		if (text.startsWith("<!--", lt)) {
 			const end = text.indexOf("-->", lt + 4);
 			if (end < 0) throw new SvgError("a comment is never closed");
 			pos = end + 3;
-			continue;
-		}
-		if (text.startsWith("<?", lt)) {
+		} else if (text.startsWith("<?", lt)) {
 			const end = text.indexOf("?>", lt + 2);
 			if (end < 0) throw new SvgError("a processing instruction is never closed");
+			if (lt !== 0 || !/^<\?xml\s/.test(text.slice(lt, end + 2))) throw new SvgError("processing instructions are not accepted");
 			pos = end + 2;
-			continue;
-		}
-		if (text.startsWith("<!", lt)) throw new SvgError("DOCTYPE and CDATA are not accepted");
-		const end = tagEnd(text, lt);
-		const body = text.slice(lt + 1, end);
-		if (body.startsWith("/")) {
-			const name = body.slice(1).trim();
+		} else if (text.startsWith("<!", lt)) {
+			throw new SvgError("DOCTYPE and CDATA are not accepted");
+		} else if (text.startsWith("</", lt)) {
+			END_TAG.lastIndex = lt;
+			const match = END_TAG.exec(text);
+			if (match === null) throw new SvgError("a closing tag is malformed");
 			const top = stack.pop();
-			if (top === undefined || top.name !== name) throw new SvgError(`</${name}> does not close an open element`);
+			if (top === undefined || top.name !== match[1]) throw new SvgError(`</${match[1]}> does not close an open element`);
+			pos = END_TAG.lastIndex;
 		} else {
-			const selfClosing = body.endsWith("/");
-			const inner = (selfClosing ? body.slice(0, -1) : body).trimStart();
-			const nameMatch = /^[A-Za-z_][\w:.-]*/.exec(inner);
-			if (nameMatch === null) throw new SvgError("a tag has no name");
+			START.lastIndex = lt;
+			const match = START.exec(text);
+			if (match === null) throw new SvgError("a tag is malformed or never closed");
+			const name = match[1]!;
+			const attrs = parseAttributes(match[2] ?? "");
 			elements++;
 			if (elements > MAX_ELEMENTS) throw new SvgError("the file has too many elements");
 			if (stack.length + 1 > MAX_DEPTH) throw new SvgError("the file nests its elements too deeply");
-			const element: Element = { name: nameMatch[0], attrs: parseAttributes(inner.slice(nameMatch[0].length)), children: [] };
-			const parent = stack[stack.length - 1];
-			if (parent !== undefined) parent.children.push(element);
-			else if (root === null) root = element;
-			else throw new SvgError("more than one root element");
-			if (!selfClosing) stack.push(element);
+			if (root === null) {
+				for (const [key, value] of attrs) {
+					if (key === "xmlns") scope.set("", value);
+					else if (key.startsWith("xmlns:")) scope.set(key.slice(6), value);
+				}
+			} else {
+				if (stack.length === 0) throw new SvgError("more than one root element");
+				for (const key of attrs.keys()) {
+					if (key === "xmlns" || key.startsWith("xmlns:")) throw new SvgError("namespace declarations are only accepted on the root element");
+				}
+			}
+			for (const key of attrs.keys()) {
+				const prefix = prefixOf(key);
+				if (prefix !== "" && prefix !== "xmlns" && !scope.has(prefix)) throw new SvgError(`the prefix ${prefix} is not declared`);
+			}
+			const prefix = prefixOf(name);
+			const uri = scope.get(prefix) ?? (prefix === "" ? "" : undefined);
+			if (uri === undefined) throw new SvgError(`the prefix ${prefix} is not declared`);
+			const element: Element = { name, local: localOf(name), uri, attrs, children: [] };
+			if (root === null) root = element;
+			else stack[stack.length - 1]!.children.push(element);
+			if (!match[3]) stack.push(element);
+			pos = START.lastIndex;
 		}
-		pos = end + 1;
 	}
 	const open = stack[stack.length - 1];
 	if (open !== undefined) throw new SvgError(`<${open.name}> is never closed`);
@@ -200,24 +270,138 @@ function parseTransform(value: string): Matrix {
 	return result;
 }
 
-function numberAttribute(attrs: Readonly<Record<string, string>>, name: string, fallback: number): number {
-	const value = attrs[name];
-	if (value === undefined) return fallback;
-	return finiteNumber(value.trim(), name);
+function attrNumber(attrs: ReadonlyMap<string, string>, name: string, fallback: number): number {
+	const value = attrs.get(name);
+	return value === undefined ? fallback : finiteNumber(value.trim(), name);
 }
 
-function refuseHidden(element: Element): void {
-	const style = element.attrs.style ?? "";
-	if (element.attrs.display === "none" || /display\s*:\s*none/.test(style)) throw new SvgError(`<${element.name}> is hidden (display none)`);
-	if (element.attrs.visibility === "hidden" || /visibility\s*:\s*hidden/.test(style)) throw new SvgError(`<${element.name}> is hidden (visibility hidden)`);
+/** A value a presentation property may take. Anything else is refused, so no drawn element can be hidden or faded. */
+function checkPresentation(name: string, raw: string): void {
+	const value = raw.trim();
+	switch (name) {
+		case "stroke":
+			if (value.toLowerCase() !== "inherit") strokeValue(value);
+			return;
+		case "stroke-width":
+			if (!(finiteNumber(value, "stroke-width") > 0)) throw new SvgError("stroke-width must be greater than 0");
+			return;
+		case "stroke-opacity":
+		case "opacity":
+			if (finiteNumber(value, name) !== 1) throw new SvgError(`${name} must be 1: partly transparent paths are not supported`);
+			return;
+		case "fill":
+			if (value !== "none") throw new SvgError("fill must be none: filled shapes are not supported");
+			return;
+		case "stroke-linecap":
+			if (!["butt", "round", "square"].includes(value)) throw new SvgError(`stroke-linecap ${value} is not supported`);
+			return;
+		case "stroke-linejoin":
+			if (!["miter", "round", "bevel"].includes(value)) throw new SvgError(`stroke-linejoin ${value} is not supported`);
+			return;
+		case "stroke-miterlimit":
+			if (!(finiteNumber(value, name) >= 1)) throw new SvgError("stroke-miterlimit must be at least 1");
+			return;
+		case "stroke-dasharray":
+			if (value !== "none") throw new SvgError("stroke-dasharray must be none: dashed cuts are not supported");
+			return;
+		case "display":
+			if (value !== "inline") throw new SvgError("display must be inline: hidden elements are not supported");
+			return;
+		default:
+			if (value !== "visible") throw new SvgError("visibility must be visible: hidden elements are not supported");
+	}
 }
 
-/** The stroke colour in effect: the element's own, or the one it inherits. null means no stroke. */
-function strokeOf(element: Element, inherited: string | null): string | null {
-	const fromStyle = /(?:^|;)\s*stroke\s*:\s*([^;]+)/.exec(element.attrs.style ?? "")?.[1];
-	const value = (fromStyle ?? element.attrs.stroke)?.trim().toLowerCase();
-	if (value === undefined || value === "inherit") return inherited;
-	return value === "none" ? null : value;
+/** The declarations of a style attribute. Only presentation properties are read; an unknown, empty or repeated one is refused. */
+function parseStyle(text: string): Map<string, string> {
+	const declarations = new Map<string, string>();
+	for (const part of text.split(";")) {
+		if (part.trim() === "") continue;
+		const colon = part.indexOf(":");
+		if (colon < 0) throw new SvgError(`the style declaration ${part.trim()} has no value`);
+		const name = part.slice(0, colon).trim().toLowerCase();
+		const value = part.slice(colon + 1).trim();
+		if (!PRESENTATION.includes(name)) throw new SvgError(`the style property ${name} is not supported`);
+		if (value === "") throw new SvgError(`the style property ${name} has no value`);
+		if (declarations.has(name)) throw new SvgError(`the style property ${name} is set twice`);
+		declarations.set(name, value);
+	}
+	return declarations;
+}
+
+function rgbHex(parts: readonly number[]): string {
+	return `#${parts
+		.map(part => {
+			if (!(part >= 0 && part <= 255)) throw new SvgError("an rgb() channel is out of range");
+			return Math.round(part).toString(16).padStart(2, "0");
+		})
+		.join("")}`;
+}
+
+/** The lower-case hex of a colour written as #rgb, #rrggbb, rgb(), or one of the two named colours. null means no stroke. */
+function strokeValue(raw: string): string | null {
+	const value = raw.trim().toLowerCase();
+	if (value === "none") return null;
+	const named = NAMED_COLOURS.get(value);
+	if (named !== undefined) return named;
+	const hex = HEX.exec(value);
+	if (hex !== null) {
+		const digits = hex[1]!;
+		return digits.length === 3 ? `#${digits[0]}${digits[0]}${digits[1]}${digits[1]}${digits[2]}${digits[2]}` : `#${digits}`;
+	}
+	const rgb = RGB.exec(value);
+	if (rgb !== null) return rgbHex(rgb.slice(1).map(Number));
+	const percent = RGB_PERCENT.exec(value);
+	if (percent !== null) {
+		const parts = percent.slice(1).map(Number);
+		if (parts.some(part => part > 100)) throw new SvgError("an rgb() percentage is out of range");
+		return rgbHex(parts.map(part => (part * 255) / 100));
+	}
+	throw new SvgError(`the colour ${raw.trim()} is not supported; write it as #rrggbb, rgb(), red or blue`);
+}
+
+/**
+ * The presentation values an element sets, from its attributes and its style. Style wins over the attribute, as in
+ * CSS. Every value is checked, and an attribute or property outside the supported set is refused.
+ */
+function presentationOf(element: Element): Map<string, string> {
+	for (const name of element.attrs.keys()) {
+		if (name === "xmlns" || name.includes(":")) continue;
+		if (!DRAWN_ATTRIBUTES.has(name)) throw new SvgError(`<${element.local}> attribute ${name} is not supported`);
+	}
+	const values = new Map<string, string>();
+	for (const name of PRESENTATION) {
+		const value = element.attrs.get(name);
+		if (value !== undefined) {
+			checkPresentation(name, value);
+			values.set(name, value);
+		}
+	}
+	for (const [name, value] of parseStyle(element.attrs.get("style") ?? "")) {
+		checkPresentation(name, value);
+		values.set(name, value);
+	}
+	return values;
+}
+
+/** The stroke an element draws with: its own value, the inherited one, or null for none. */
+function strokeFrom(values: ReadonlyMap<string, string>, inherited: string | null): string | null {
+	const value = values.get("stroke");
+	if (value === undefined || value.trim().toLowerCase() === "inherit") return inherited;
+	return strokeValue(value);
+}
+
+/** Title and description text is inert. An element inside one, or inside a defs, is refused. */
+function refuseChildren(element: Element): void {
+	if (element.children.length > 0) throw new SvgError(`<${element.local}> cannot hold elements in a laser cut file`);
+}
+
+/** Foreign elements are inert, but an SVG element inside one or inside metadata is refused, since a reader may draw it. */
+function refuseSvgWithin(element: Element): void {
+	for (const child of element.children) {
+		if (child.uri === SVG_NS) throw new SvgError(`<${child.name}> is an SVG element inside a non-SVG element`);
+		refuseSvgWithin(child);
+	}
 }
 
 /**
@@ -476,40 +660,76 @@ function parsePathData(d: string, tol: number, budget: Budget): Subpath[] {
 	return out;
 }
 
-function shapeSubpaths(local: string, attrs: Readonly<Record<string, string>>, tol: number, budget: Budget): Subpath[] {
+/**
+ * A rounded rect, clockwise on the page, with each corner drawn as the quarter arc its radii name. The arcs start and
+ * end on the straight edges, so the outline has no sharp corner left.
+ */
+function roundedRect(x: number, y: number, width: number, height: number, rx: number, ry: number, tol: number, budget: Budget): Vec2[] {
+	const right = x + width;
+	const bottom = y + height;
+	spend(budget, 4);
+	return [
+		[right - rx, y],
+		...arcSamples(right - rx, y + ry, rx, ry, 0, -Math.PI / 2, Math.PI / 2, tol, budget, [right, y + ry]),
+		[right, bottom - ry],
+		...arcSamples(right - rx, bottom - ry, rx, ry, 0, 0, Math.PI / 2, tol, budget, [right - rx, bottom]),
+		[x + rx, bottom],
+		...arcSamples(x + rx, bottom - ry, rx, ry, 0, Math.PI / 2, Math.PI / 2, tol, budget, [x, bottom - ry]),
+		[x, y + ry],
+		...arcSamples(x + rx, y + ry, rx, ry, 0, Math.PI, Math.PI / 2, tol, budget, [x + rx, y]),
+	];
+}
+
+/**
+ * A rect's radii: a missing rx takes ry and a missing ry takes rx, as in SVG, then each is clamped to half the side.
+ * A radius of zero leaves the corner square.
+ */
+function rectSubpaths(attrs: ReadonlyMap<string, string>, tol: number, budget: Budget): Subpath[] {
+	const x = attrNumber(attrs, "x", 0);
+	const y = attrNumber(attrs, "y", 0);
+	const width = attrNumber(attrs, "width", 0);
+	const height = attrNumber(attrs, "height", 0);
+	if (width < 0 || height < 0) throw new SvgError("a rect has a negative size");
+	if (width === 0 || height === 0) return [];
+	const rxGiven = attrs.has("rx") ? attrNumber(attrs, "rx", 0) : undefined;
+	const ryGiven = attrs.has("ry") ? attrNumber(attrs, "ry", 0) : undefined;
+	if ((rxGiven ?? 0) < 0 || (ryGiven ?? 0) < 0) throw new SvgError("a rect radius must not be negative");
+	const rx = Math.min(rxGiven ?? ryGiven ?? 0, width / 2);
+	const ry = Math.min(ryGiven ?? rxGiven ?? 0, height / 2);
+	subpathSpend(budget);
+	if (rx === 0 || ry === 0) {
+		spend(budget, 4);
+		return [{ points: [[x, y], [x + width, y], [x + width, y + height], [x, y + height]], closed: true }];
+	}
+	return [{ points: roundedRect(x, y, width, height, rx, ry, tol, budget), closed: true }];
+}
+
+function shapeSubpaths(local: string, attrs: ReadonlyMap<string, string>, tol: number, budget: Budget): Subpath[] {
 	switch (local) {
 		case "path":
-			return parsePathData(attrs.d ?? "", tol, budget);
-		case "rect": {
-			if (numberAttribute(attrs, "rx", 0) !== 0 || numberAttribute(attrs, "ry", 0) !== 0) throw new SvgError("rounded rectangles are not supported");
-			const x = numberAttribute(attrs, "x", 0);
-			const y = numberAttribute(attrs, "y", 0);
-			const width = numberAttribute(attrs, "width", 0);
-			const height = numberAttribute(attrs, "height", 0);
-			if (width <= 0 || height <= 0) return [];
-			subpathSpend(budget);
-			spend(budget, 4);
-			return [{ points: [[x, y], [x + width, y], [x + width, y + height], [x, y + height]], closed: true }];
-		}
+			return parsePathData(attrs.get("d") ?? "", tol, budget);
+		case "rect":
+			return rectSubpaths(attrs, tol, budget);
 		case "circle":
 		case "ellipse": {
-			const cx = numberAttribute(attrs, "cx", 0);
-			const cy = numberAttribute(attrs, "cy", 0);
-			const rx = local === "circle" ? numberAttribute(attrs, "r", 0) : numberAttribute(attrs, "rx", 0);
-			const ry = local === "circle" ? rx : numberAttribute(attrs, "ry", 0);
-			if (rx <= 0 || ry <= 0) return [];
+			const cx = attrNumber(attrs, "cx", 0);
+			const cy = attrNumber(attrs, "cy", 0);
+			const rx = local === "circle" ? attrNumber(attrs, "r", 0) : attrNumber(attrs, "rx", 0);
+			const ry = local === "circle" ? rx : attrNumber(attrs, "ry", 0);
+			if (rx < 0 || ry < 0) throw new SvgError(`<${local}> has a negative radius`);
+			if (rx === 0 || ry === 0) return [];
 			const samples = arcSamples(cx, cy, rx, ry, 0, 0, 2 * Math.PI, tol, budget);
 			subpathSpend(budget);
 			return [{ points: [[cx + rx, cy], ...samples.slice(0, -1)], closed: true }];
 		}
 		case "line": {
-			const points: Vec2[] = [[numberAttribute(attrs, "x1", 0), numberAttribute(attrs, "y1", 0)], [numberAttribute(attrs, "x2", 0), numberAttribute(attrs, "y2", 0)]];
+			const points: Vec2[] = [[attrNumber(attrs, "x1", 0), attrNumber(attrs, "y1", 0)], [attrNumber(attrs, "x2", 0), attrNumber(attrs, "y2", 0)]];
 			subpathSpend(budget);
 			spend(budget, 2);
 			return [{ points, closed: false }];
 		}
 		default: {
-			const values = (attrs.points ?? "").trim().split(/[\s,]+/).filter(text => text !== "").map(text => finiteNumber(text, "points"));
+			const values = (attrs.get("points") ?? "").trim().split(/[\s,]+/).filter(text => text !== "").map(text => finiteNumber(text, "points"));
 			if (values.length % 2 !== 0 || values.length < 4) return [];
 			subpathSpend(budget);
 			spend(budget, values.length / 2);
@@ -521,20 +741,36 @@ function shapeSubpaths(local: string, attrs: Readonly<Record<string, string>>, t
 }
 
 function visit(element: Element, parentCtm: Matrix, inherited: string | null, state: State): void {
-	const local = localName(element.name);
-	if (SKIPPED.has(local)) return;
+	if (element.uri !== SVG_NS) {
+		refuseSvgWithin(element);
+		return;
+	}
+	const local = element.local;
+	if (local === "title" || local === "desc" || local === "defs") {
+		refuseChildren(element);
+		return;
+	}
+	if (local === "metadata") {
+		refuseSvgWithin(element);
+		return;
+	}
 	if (local !== "g" && !SHAPES.has(local)) throw new SvgError(`<${element.name}> is not supported in a laser cut file`);
-	refuseHidden(element);
-	const ctm = element.attrs.transform === undefined ? parentCtm : multiply(parentCtm, parseTransform(element.attrs.transform));
+	const values = presentationOf(element);
+	const transform = element.attrs.get("transform");
+	const ctm = transform === undefined ? parentCtm : multiply(parentCtm, parseTransform(transform));
 	if (!ctm.every(Number.isFinite)) throw new SvgError("a transform is too large");
-	const stroke = strokeOf(element, inherited);
+	const stroke = strokeFrom(values, inherited);
 	if (local === "g") {
 		for (const child of element.children) visit(child, ctm, stroke, state);
 		return;
 	}
+	for (const child of element.children) {
+		if (child.uri !== SVG_NS || child.local !== "title") throw new SvgError(`<${local}> may only contain a title`);
+		refuseChildren(child);
+	}
 	const subpaths = shapeSubpaths(local, element.attrs, FLATTEN_TOL_MM / stretch(ctm), state.budget);
 	const order = state.order++;
-	const id = element.attrs.id ?? `${local}-${order}`;
+	const id = element.attrs.get("id") ?? `${local}-${order}`;
 	subpaths.forEach((subpath, k) => {
 		state.paths.push({
 			id: subpaths.length > 1 ? `${id}.${k}` : id,
@@ -546,10 +782,13 @@ function visit(element: Element, parentCtm: Matrix, inherited: string | null, st
 	});
 }
 
-/** The root's size in mm, and the matrix that maps its viewBox onto that size. */
+/**
+ * The root's size in mm, and the matrix that maps its viewBox onto that size. The viewBox is required, and the only
+ * aspect handling is the SVG default, xMidYMid meet: uniform scale, centred, letterboxed.
+ */
 function rootFrame(root: Element): { unit: string; widthMm: number; heightMm: number; ctm: Matrix } {
 	const length = (name: string) => {
-		const text = root.attrs[name];
+		const text = root.attrs.get(name);
 		if (text === undefined) throw new SvgError(`the root svg needs a ${name}`);
 		const match = LENGTH.exec(text.trim());
 		if (match === null) throw new SvgError(`the root ${name} is not a length`);
@@ -561,16 +800,17 @@ function rootFrame(root: Element): { unit: string; widthMm: number; heightMm: nu
 	};
 	const width = length("width");
 	const height = length("height");
-	let view: [number, number, number, number] = [0, 0, width.value, height.value];
-	if (root.attrs.viewBox !== undefined) {
-		const parts = root.attrs.viewBox.trim().split(/[\s,]+/).map(Number);
-		if (parts.length !== 4 || parts.some(value => !Number.isFinite(value)) || !(parts[2]! > 0) || !(parts[3]! > 0)) throw new SvgError("the viewBox is not four numbers with a positive size");
-		view = [parts[0]!, parts[1]!, parts[2]!, parts[3]!];
-	}
-	const sx = width.mm / view[2];
-	const sy = height.mm / view[3];
-	let ctm: Matrix = [sx, 0, 0, sy, -view[0] * sx, -view[1] * sy];
-	if (root.attrs.transform !== undefined) ctm = multiply(ctm, parseTransform(root.attrs.transform));
+	const viewBox = root.attrs.get("viewBox");
+	if (viewBox === undefined) throw new SvgError("the root svg needs a viewBox");
+	const parts = viewBox.trim().split(/[\s,]+/).map(text => finiteNumber(text, "the viewBox"));
+	if (parts.length !== 4 || !(parts[2]! > 0) || !(parts[3]! > 0)) throw new SvgError("the viewBox needs four numbers and a positive size");
+	const aspect = (root.attrs.get("preserveAspectRatio") ?? "xMidYMid meet").trim().split(/\s+/).join(" ");
+	if (aspect !== "xMidYMid meet") throw new SvgError("only the default preserveAspectRatio, xMidYMid meet, is supported");
+	const [vx, vy, vw, vh] = parts;
+	const scale = Math.min(width.mm / vw!, height.mm / vh!);
+	let ctm: Matrix = [scale, 0, 0, scale, (width.mm - vw! * scale) / 2 - vx! * scale, (height.mm - vh! * scale) / 2 - vy! * scale];
+	const transform = root.attrs.get("transform");
+	if (transform !== undefined) ctm = multiply(ctm, parseTransform(transform));
 	if (!ctm.every(Number.isFinite)) throw new SvgError("the root size is too large");
 	return { unit: width.unit === height.unit ? width.unit : `${width.unit}/${height.unit}`, widthMm: width.mm, heightMm: height.mm, ctm };
 }
@@ -580,11 +820,11 @@ export function parseSvg(text: string): Checked<SvgDoc> {
 	try {
 		if (typeof text !== "string") throw new SvgError("the file must be SVG text");
 		if (text.length > MAX_TEXT_CHARS) throw new SvgError("the file is larger than the reader accepts");
-		const root = parseXml(text);
-		if (localName(root.name) !== "svg") throw new SvgError("the root element must be svg");
+		const root = parseXml(text.replace(/^\uFEFF/, ""));
+		if (root.name !== "svg" || root.uri !== SVG_NS) throw new SvgError("the root element must be an svg element in the SVG namespace");
 		const frame = rootFrame(root);
+		const rootStroke = strokeFrom(presentationOf(root), null);
 		const state: State = { order: 0, paths: [], budget: { points: 0, subpaths: 0 } };
-		const rootStroke = strokeOf(root, null);
 		for (const child of root.children) visit(child, frame.ctm, rootStroke, state);
 		return { ok: true, value: { unit: frame.unit, widthMm: frame.widthMm, heightMm: frame.heightMm, paths: state.paths } };
 	} catch (error) {
