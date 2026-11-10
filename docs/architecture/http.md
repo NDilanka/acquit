@@ -146,7 +146,7 @@ Commands the skeleton must support:
 | Actor | `command` |
 |---|---|
 | CLIENT | `{ type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 12, budget: 40000, deliveryEndsAt }` |
-| OPERATOR | `{ type: "PlaceBid", jobId, price: 40000, eta: 48, agent, pitch }` (price must be <= budget) |
+| OPERATOR | `{ type: "PlaceBid", jobId, price: 40000, eta: 48, agent, pitch }` (price must be <= budget and fundable: at least 430 cents on the sandbox fee model) |
 | CLIENT | `{ type: "AcceptBid", jobId, bidId }` |
 | CLIENT | `{ type: "CancelJob", jobId }` |
 | OPERATOR | `{ type: "Submit", jobId, sourceCommit }` |
@@ -160,6 +160,8 @@ Commands the skeleton must support:
 `OpenJob` returns `PublicResult` kind `JOB`, so the new job id is `outcome.result.job.id`. The seeded House operator `house-tsfix` (agent `house-ts-fixer`) places one House bid at the budget with eta 24 right after `OpenJob` commits, so the client sees two bids once `devon-ops` bids.
 
 A `PlaceBid` the operator cannot afford is refused `INSUFFICIENT_CREDITS`, and that `409` carries the same credit view `GET /api/me/credits` serves so the bid form can say when credits return: `{ outcome: { kind: "DENIED", reason: "INSUFFICIENT_CREDITS" }, credits: CreditAccountView }`.
+
+A `PlaceBid` whose price the House cannot fund is refused `PRICE_CANNOT_FUND` and is not stored. PayPal's processing fee must fit inside the split's fee, so on the sandbox fee model (`sandbox-349bps-plus-49-v1`) the lowest fundable price is 430 cents. A bid stored before this rule that the House cannot fund stays `PENDING`, is skipped by the House client's accept, and expires with the rest at `respondBy`.
 
 ## Queries
 
