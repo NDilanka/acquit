@@ -209,15 +209,19 @@ function writeAcquittal(db: DatabaseSync, agent: Agent, acquittal: Acquittal): v
 
 export type ExamStartOutcome =
 	| { readonly ok: true; readonly run: ExamRun }
-	| { readonly ok: false; readonly error: ExamRefusal | "EXAM_NOT_BUILT" };
+	| { readonly ok: false; readonly error: ExamRefusal | "EXAM_NOT_BUILT" | "NOT_FOUND" };
 
 /**
- * Row 4. The guard and the write share one unit of work, so two starts cannot both pass it. A print-fdm agent answers
- * EXAM_NOT_BUILT and writes nothing. A code agent gets the labelled simulated run: the row is inserted RUNNING, settled
- * PASSED with the example fixture's counts, and the simulated acquittal is written, all before the answer.
+ * Row 4. The guard and the write share one unit of work, so two starts cannot both pass it. The agent row is read inside
+ * that unit: the caller's Agent supplies only the id, so a value read before an earlier start cannot pass the guard
+ * again. A print-fdm agent answers EXAM_NOT_BUILT and writes nothing. A code agent gets the labelled simulated run: the
+ * row is inserted RUNNING, settled PASSED with the example fixture's counts, and the simulated acquittal is written, all
+ * before the answer.
  */
-export function startExam(db: DatabaseSync, agent: Agent, id: string, now: Instant): ExamStartOutcome {
+export function startExam(db: DatabaseSync, snapshot: Agent, id: string, now: Instant): ExamStartOutcome {
 	return transaction<ExamStartOutcome>(db, () => {
+		const agent = readAgentRow(db, snapshot.id);
+		if (agent === null) return { ok: false, error: "NOT_FOUND" };
 		const refusal = examRefusal(agent, examStartsOf(db, agent.id), now);
 		if (refusal !== null) return { ok: false, error: refusal };
 		if (agent.task === PRINT_VERTICAL) return { ok: false, error: "EXAM_NOT_BUILT" };
