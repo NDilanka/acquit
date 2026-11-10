@@ -30,19 +30,20 @@ function LiveActivity() {
     return () => window.clearInterval(timer);
   }, [report.reload]);
   const events = report.data ? reportEvents(report.data).filter((entry) => entry.agentId === agent?.id) : [];
+  const active = orders?.autopilot && agent?.runner === "claude-code";
   const jobs = new Set(events.flatMap((event) => event.jobId ? [event.jobId] : []));
   const suffix = agent ? `/${encodeURIComponent(agent.id)}` : "";
   return <SpecialistPage step={4} lead="" gradeDelta={agentDelta(report.data, agent?.id)} provenance="Live workspace activity">
     <section className="work-page">
       <header className="work-heading"><h1>You can close this tab now.</h1>
-        <p className="spec-lead">{orders?.autopilot && agent?.runner === "claude-code"
+        <p className="spec-lead">{active
           ? <><b>{agent.name}</b> works on its own, within your orders.</>
           : <>Autopilot is off. No new bids are placed automatically.</>}</p></header>
-      {report.error ? <div className="work-alert" role="alert"><h2>Activity did not load.</h2>
+      {report.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2>
         <p>Could not read the server. Try again to see the latest events.</p></div>
         : !report.data ? <WorkSkeleton count={5} label="Loading activity." />
         : <div className="work-split"><ol className="work-timeline" aria-label="Activity, newest first">
-          <TimelineMark title={orders?.autopilot ? "Watching for work within your orders" : "Autopilot off"}>
+          <TimelineMark title={active ? "Watching for work within your orders" : "Autopilot off"}>
             <p className="work-status">{events.length ? "Latest recorded events below." : "No activity recorded in this window."}</p></TimelineMark>
           {events.map((event, i) => <EventMark key={event.id} event={event} index={i + 1} />)}
         </ol><aside className="work-side" aria-label="Activity summary">
@@ -69,7 +70,7 @@ function ReplayActivity({ agent }: { agent: SpecialistAgent }) {
   const provenance = recording?.source === "recorded" && recording.recordedAt
     ? `Replay of a recorded run · ${new Date(recording.recordedAt).toLocaleDateString("en-GB")}`
     : "Sample data · not a live run";
-  const lanes: WorkLane[] = recording?.events.map((event, i) => ({ id: String(i), label: event.kind === "money-held" ? "Sample money held · PayPal sandbox" : event.title,
+  const lanes: WorkLane[] = recording?.events.map((event, i) => ({ id: String(i), label: event.kind === "money-held" ? "Sample money held · PayPal sandbox" : event.kind === "verdict" ? "Example verdict" : event.kind === "bid" ? "Example bid · pending" : event.title,
     start: event.at, end: event.at, tone: "open" })) ?? [];
   return <SpecialistPage step={4} lead="" provenance={provenance}>
     <section className="work-page"><header className="work-heading"><h1>{recording?.source === "recorded" ? "A recorded run" : "An example run"}</h1>
@@ -78,7 +79,7 @@ function ReplayActivity({ agent }: { agent: SpecialistAgent }) {
         ? <p>No activity replay is available for this task.</p>
         : <div className="work-split"><ol className="work-timeline" aria-label="Example activity, newest first">
           {[...recording.events].reverse().map((event, i) => <TimelineMark key={`${event.at}:${i}`} at={event.at} index={i}
-            title={event.kind === "verdict" ? "Example verdict" : event.title}>
+            title={event.kind === "verdict" ? "Example verdict" : event.kind === "bid" ? `${event.title} · pending · PayPal sandbox` : event.title}>
             <p className="work-status">{event.kind === "verdict" ? "Verification is separate from payment release."
               : event.kind === "money-held" ? "Example held money · PayPal sandbox" : "Example event · not live"}</p>
           </TimelineMark>)}

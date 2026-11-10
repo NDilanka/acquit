@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useRouter } from "../../router";
-import { CopyField, ErrorNote, SkeletonCard, Spinner } from "../../ui";
+import { ErrorNote, SkeletonCard, Spinner } from "../../ui";
+import { CopyWorkValue } from "./AgentEarnings";
 import { specialists } from "./client";
 import { useOwner } from "./OwnerPanel";
 import { LoadFailed, SpecialistPage } from "./SpecialistPage";
@@ -27,17 +28,16 @@ function PlugIn() {
     } catch (e) { setError(e); }
     finally { setBusy(false); }
   };
-  return <section className="plug-in"><h1>Plug in one task.</h1><p className="muted">Try a sample agent, or connect your own.</p>
+  return <section className="plug-in"><h1>Plug in your agent.</h1><p className="muted">Pass its exam, then work within your orders.</p>
     {samples.data === null ? samples.error ? <LoadFailed error={samples.error} onRetry={samples.reload} /> : <SkeletonCard lines={3} />
       : <fieldset className="sample-choices"><legend className="sr-only">Sample agents</legend>{samples.data.map((s) => <label key={s.id} className="sample-choice">
         <input type="radio" name="sample" value={s.id} checked={sample?.id === s.id} disabled={!isExaminable(s.task)} onChange={() => setChosen(s.id)} />
-        <span>{s.name}<small>{taskLabel(s.task)}{s.task !== "code" ? " · Simulated" : ""}{!isExaminable(s.task) ? " · coming" : ""}</small></span>
-        <span className="sample-word">Sample</span>
+        <span>{s.name}<small>{s.task === "code" ? "Sample · Code" : "Simulated · Exam coming"}</small></span>
       </label>)}</fieldset>}
     {error !== null && <ErrorNote error={error} />}
-    <details className="plug-own"><summary>Connect your own agent</summary><p>Run this on your agent’s machine.</p><CopyField label="Connect command" value="acquit agent create --task code" /></details>
-    {!!owner.agents?.length && <details className="plug-existing"><summary>Choose an existing agent ({owner.agents.length})</summary><ul>{owner.agents.map((a) =>
+    <details className="plug-own"><summary>Use your own agent</summary><p>Run on your agent’s machine.</p><code className="plug-command">acquit agent create --task code</code><CopyWorkValue value="acquit agent create --task code" /></details>
+    {!!owner.agents?.length && <details className="plug-existing"><summary>Existing agents ({owner.agents.length})</summary><ul>{owner.agents.map((a) =>
       <li key={a.id}><Link to={`/specialists/exam/${a.id}`} className="agent-choice"><span>{a.name}<small>{taskLabel(a.task)} · {!hasLiveExam(a.task) ? "Exam coming" : a.acquitted ? "Acquitted" : "Not acquitted"}{hasLiveExam(a.task) && a.acquitted && a.simulated ? ` · ${SIMULATED_WORD}` : ""}{a.seeded ? " · Seeded" : a.sample ? " · Sample" : ""}</small></span><span>Grade {hasLiveExam(a.task) ? a.grade ?? "—" : "—"}</span></Link></li>)}</ul></details>}
-    <div className="owner-actions"><button type="button" className="btn" disabled={busy || !sample} onClick={() => void plug()}>{busy && <Spinner />}{busy ? "Plugging in…" : sample?.plugged ? "Take the exam" : "Plug in the sample"}</button></div>
+    <div className="owner-actions"><button type="button" className="btn" aria-busy={busy} disabled={busy || !sample} onClick={() => void plug()}>{busy && <Spinner />}{busy ? "Plugging in…" : sample?.plugged ? "Take the exam" : `Plug in ${sample?.name ?? "agent"}`}</button></div>
   </section>;
 }

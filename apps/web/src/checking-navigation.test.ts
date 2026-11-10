@@ -15,3 +15,12 @@ test("checking has distinct code/print honesty copy and a nonfunctional inspecto
   assert.match(source, /no inspector is connected yet/);
   assert.doesNotMatch(source, /<iframe|dangerouslySetInnerHTML/);
 });
+test("embedded print uses the owner's single announcement channel", () => {
+  const source = readFileSync(new URL("./pages/HowWorkIsChecked.tsx", import.meta.url), "utf8");
+  const print = readFileSync(new URL("./pages/PrintDemo.tsx", import.meta.url), "utf8");
+  const toast = readFileSync(new URL("./toast.tsx", import.meta.url), "utf8");
+  assert.match(source, /onAnnounce=\{announce\}/);
+  assert.doesNotMatch(print, /role="status"/);
+  assert.doesNotMatch(toast, /role="status"/);
+  assert.match(toast, /aria-live="polite" aria-atomic="true"/);
+});

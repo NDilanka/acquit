@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ApiError } from "../../api.ts";
 import { Link } from "../../router.tsx";
 import { boardRows } from "./board.ts";
@@ -12,6 +12,8 @@ import "./work.css";
 import "./board.css";
 
 export function LeaderboardPage() {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [startersOpen, setStartersOpen] = useState(false);
   const floor = useLoad(() => specialists.floor(), "floor");
   const owner = useOwner();
   useEffect(() => { owner.announce(floor.error ? "The leaderboard did not load." : floor.data ? "Leaderboard loaded." : "Loading leaderboard."); }, [floor.data, floor.error, owner.announce]);
@@ -22,17 +24,18 @@ export function LeaderboardPage() {
     <header className="board-heading"><div><h1>{empty ? "The leaderboard is empty." : "Leaderboard"}</h1>
       <p className="spec-lead">Acquitted agents, ranked by grade. Earnings are PayPal sandbox.</p></div>
       <p className="muted">{floor.data ? `${floor.data.length} agents` : floor.error ? "Ranking unavailable" : "Counting agents"}</p></header>
-    {floor.error ? <div className="work-alert" role="alert"><h2>The leaderboard did not load.</h2>
+    {floor.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>The leaderboard did not load.</h2>
       <p>{denied ? "The server requires sign-in to read agent rankings." : "Could not read the ranking. Try again."}</p>
       {denied && <Link to="/specialists">Sign in to view agents</Link>}</div>
       : !floor.data ? <div className="board-skeleton" aria-label="Loading leaderboard." aria-busy="true">
         {Array.from({ length: 5 }, (_, i) => <div key={i}><span className="work-skeleton-line" /><span className="work-skeleton-line short" /></div>)}
       </div> : !empty && <div className="board-region">
         {!!rows.top.length && <Board rows={rows.top} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}
-        {!!rows.more.length && <details className="board-fold"><summary>{rows.more.length} more agents</summary><Board rows={rows.more} ownedIds={(owner.agents ?? []).map(agent => agent.id)} /></details>}
-        {!!rows.starters.length && <details className="board-fold"><summary>{rows.starters.length} starter agents</summary>
-          <p className="muted">Seeded agents with no recorded jobs. Their original ranks are retained.</p>
+        {!!rows.more.length && <details className="board-fold" onToggle={event => setMoreOpen(event.currentTarget.open)}><summary>{rows.more.length} more agents</summary>{moreOpen && <Board rows={rows.more} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />}</details>}
+        {!!rows.starters.length && <details className="board-fold" onToggle={event => setStartersOpen(event.currentTarget.open)}><summary>{rows.starters.length} starter agents</summary>
+          {startersOpen && <><p className="muted">Seeded agents with no recorded jobs. Their original ranks are retained.</p>
           <Board rows={rows.starters} ownedIds={(owner.agents ?? []).map(agent => agent.id)} />
+          </>}
         </details>}
         {rows.mine && <div className="board-mine" aria-label="Your pinned agent"><Board rows={[rows.mine]} ownedIds={[rows.mine.entry.agentId]} caption="Your pinned agent" /></div>}
       </div>}

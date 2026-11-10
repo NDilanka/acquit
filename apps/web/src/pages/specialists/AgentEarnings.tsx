@@ -10,7 +10,9 @@ import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.t
 import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes } from "./work.ts";
 
 export function AgentEarningsPage() {
-  const { agent } = useOwner();
+  const { agent, agents } = useOwner();
+  // Do not advance the workspace cursor before the owner has finished loading.
+  if (agents === null) return <SpecialistPage step={5} lead="">{null}</SpecialistPage>;
   return <Earnings key={agent?.id ?? "workspace"} />;
 }
 
@@ -28,7 +30,7 @@ function Earnings() {
   const ordersPath = `/specialists/orders${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
   return <SpecialistPage step={5} lead="" gradeDelta={agentDelta(data, agent?.id)} provenance="Live workspace report">
     <section className="work-page earnings-page">
-      {report.error ? <><h1>Earnings did not load.</h1><div className="work-alert" role="alert">
+      {report.error ? <><h1>Earnings did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
         <p>Could not read the report. Retry to check recorded work and money.</p></div></>
         : !data ? <><h1 className="sr-only">Earnings</h1><div className="earnings-key-skeleton" />
           <WorkSkeleton count={3} label="Loading earnings." /></>

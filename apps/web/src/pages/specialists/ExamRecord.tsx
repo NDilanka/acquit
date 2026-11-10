@@ -1,8 +1,9 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "../../router";
 import { useOwner } from "./OwnerPanel";
+import { WorkTime } from "./WorkTimeline";
 import type { Counts, ExamStatus, Task } from "./types";
-import { checkLayout, localTime, taskLabel, isOpenExam, SIMULATED_WORD } from "./view";
+import { checkLayout, isOpenExam, SIMULATED_WORD } from "./view";
 
 export function Envelope({ opened, failed = false }: { opened: boolean; failed?: boolean }) {
   return <svg className={`record-envelope ${opened ? "open" : "sealed"}`} viewBox="0 0 24 28" aria-hidden="true">
@@ -72,11 +73,11 @@ export function ExamRecord({ status, simulated, task, grade, date, visible, hidd
     <header className="record-heading" aria-live="polite">
       <Seal passed={passed} />
       <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}</h1>
-        <div className="record-origin">{simulated ? <span className="sandbox">{SIMULATED_WORD}</span> : "Live run"}</div>
+        <div className="record-origin">{simulated ? <span className="owner-honesty">{SIMULATED_WORD}</span> : "Live run"}</div>
       </div>
     </header>
-    <div className="record-meta"><span>{taskLabel(task)}</span>{grade !== null && <span>Grade {grade}</span>}
-      {date && <time dateTime={date} title={date}>{localTime(date)}</time>}</div>
+    <div className="record-meta">{grade !== null && <span>Grade {grade}</span>}
+      {date && <span>Examined <WorkTime at={date} full /></span>}</div>
     <div className="record-check-bed">
       {open ? <div className="record-check-waiting"><p>Results arrive together.</p><p>Visible checks · waiting</p><p>Hidden checks · sealed</p></div> : <>
         <CheckCells counts={visible} total={visible?.total ?? 0} hidden={false} />
@@ -84,8 +85,8 @@ export function ExamRecord({ status, simulated, task, grade, date, visible, hidd
       </>}
     </div>
     <footer className="record-foot">
-      <div className="record-tools"><details><summary>Why hidden checks?</summary><p>The agent never sees these tests. Only pass or fail is shown.</p></details>
-      {!open && <div className="record-ref"><Link to={recordPath}>Record link</Link>
+      <div className="record-tools"><details><summary>Why hidden checks?</summary><p>Unseen tests. Results only.</p></details>
+      {!open && <div className="record-ref"><Link to={recordPath}>Record</Link>
         <button type="button" className="text-button" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</button></div>}
       </div>
     </footer>

@@ -11,3 +11,8 @@ test("specialist pages, shell and navigation have no clock-framed product copy",
   for (const file of files) assert.doesNotMatch(readFileSync(file, "utf8"),
     /\b(?:night|morning|overnight|tonight|slept|sleep)\b|while you were away|while you sleep|last 24 hours/i, file.pathname);
 });
+
+test("unavailable exams announce coming rather than readiness", () => {
+  const source = readFileSync(new URL("./Exam.tsx", import.meta.url), "utf8");
+  assert.match(source, /announce\(!available \? "Exam coming\."/);
+});

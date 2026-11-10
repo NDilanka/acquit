@@ -7,11 +7,11 @@ export function WorkTime({ at, full = false }: { at: string; full?: boolean }) {
   return <time dateTime={at} title={timeWords(at, true)}>{timeWords(at, full)}</time>;
 }
 
-export function TimelineMark({ at, title, children, tone = "", index = 0 }: {
-  at?: string; title: ReactNode; children?: ReactNode; tone?: string; index?: number;
+export function TimelineMark({ at, title, children, tone = "", index = 0, placeholder = false }: {
+  at?: string; title: ReactNode; children?: ReactNode; tone?: string; index?: number; placeholder?: boolean;
 }) {
-  return <li className={`work-mark ${tone}`} style={{ "--mark-delay": `${Math.min(index, 8) * 60}ms` } as CSSProperties}>
-    <span className="work-time">{at ? <WorkTime at={at} /> : "Now"}</span>
+  return <li className={`work-mark ${tone}`} data-tone={tone === "fail" ? "fail" : undefined} style={{ "--mark-delay": `${Math.min(index, 8) * 60}ms` } as CSSProperties}>
+    <span className="work-time">{placeholder ? null : at ? <WorkTime at={at} /> : "Now"}</span>
     <span className="work-node" aria-hidden="true" />
     <div className="work-body"><p className="work-what">{title}</p>{children}</div>
   </li>;
@@ -44,7 +44,7 @@ export function JobStrip({ lanes, through }: { lanes: readonly WorkLane[]; throu
       const x = (Date.parse(lane.start) - range.start) / range.span;
       const end = (Date.parse(lane.end) - range.start) / range.span;
       return <span key={lane.id} className={`strip-label ${x > .6 ? "end" : ""}`}
-        style={{ top: i * 56 + 8, left: `${(x > .6 ? end : x) * 100}%` }}>{lane.label}</span>;
+        style={{ top: i * 56 + 8, left: `${(x > .6 ? end : x) * 100}%`, maxWidth: `${(x > .6 ? end : 1 - x) * 100}%` }}>{lane.label}</span>;
     })}
     <figcaption className="strip-ends"><WorkTime at={first} /><span>{through && "Now · "}<WorkTime at={last} /></span></figcaption>
   </figure>;
@@ -53,7 +53,7 @@ export function JobStrip({ lanes, through }: { lanes: readonly WorkLane[]; throu
 export function WorkSkeleton({ count, label }: { count: number; label: string }) {
   return <div className="work-split" aria-label={label} aria-busy="true">
     <ol className="work-timeline">{Array.from({ length: count }, (_, i) =>
-      <TimelineMark key={i} title={<span className="work-skeleton-line" />}><span className="work-skeleton-line short" /></TimelineMark>)}</ol>
+      <TimelineMark key={i} placeholder title={<span className="work-skeleton-line" />}><span className="work-skeleton-line short" /></TimelineMark>)}</ol>
     <div className="work-strip-skeleton" />
   </div>;
 }

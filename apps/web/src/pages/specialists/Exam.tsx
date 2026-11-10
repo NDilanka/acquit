@@ -20,7 +20,7 @@ export function ExamPage({ agentId }: { agentId?: string }) {
 
 function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const { location } = useRouter();
-  const { reload } = useOwner();
+  const { reload, announce } = useOwner();
   const available = hasLiveExam(agent.task);
   const replay = useLoad(async () => ({ replay: available ? await loadExamReplay(agent.task) : null }), agent.task);
   const examId = location.search.get("exam");
@@ -72,6 +72,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const block = liveRunBlock(agent.task, agent.acquitted, refusal);
   const date = exam?.endedAt ?? null;
   const pass = exam?.status === "PASSED";
+  useEffect(() => { announce(!available ? "Exam coming." : recordLoading ? "Loading exam record." : recordError ? "Exam record unavailable." : exam ? `Exam ${exam.status.toLowerCase()}.` : "Ready to take the exam."); }, [available, recordLoading, recordError, exam?.status, announce]);
   const recordPath = `/specialists/exam/${encodeURIComponent(agent.id)}${exam ? `?exam=${encodeURIComponent(exam.id)}` : ""}`;
   if (!available) return <section className="exam-empty"><h1>Simulated {agent.task === "print-fdm" ? "3D printer" : "laser cutter"} · Exam coming</h1>
     <p>This exam is not available in this build.</p></section>;

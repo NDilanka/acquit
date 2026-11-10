@@ -139,7 +139,7 @@
 .switch-track.on::after { transform: translateX(16px); background: var(--panel); }
 .owner-gate { display: grid; gap: var(--space-6); margin-top: var(--space-8); justify-items: start; }
 .sample-choices { border: 0; padding: 0; margin-top: var(--space-8) !important; }
-.sample-choice { display: grid; grid-template-columns: 24px minmax(0,1fr) auto; gap: var(--space-4); align-items: center; min-height: 88px; padding: var(--space-4) var(--space-3); border-top: 1px solid var(--line); cursor: pointer; }
+.sample-choice { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: var(--space-4); align-items: center; min-height: 88px; padding: var(--space-4) var(--space-3); border-top: 1px solid var(--line); cursor: pointer; }
 .sample-choice:has(:checked) { background: var(--surface); }
 .sample-choice input { appearance: none; margin: 0; width: 20px; height: 20px; border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--panel); }
 .sample-choice input:checked { border: 6px solid var(--ink); }
@@ -149,6 +149,10 @@
 .plug-in > .muted { margin-top: var(--space-2); }
 .plug-own { margin-top: var(--space-6); }
 .plug-own p { font-size: var(--text-ui); color: var(--muted); margin-bottom: var(--space-3); }
+.plug-command { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); overflow-wrap: anywhere; }
+.orders-limits { margin-top: var(--space-4); }
+.owner-app .wrap .orders-limits select { appearance: none; min-height: var(--control-lg); width: 72px; padding: 0 var(--space-8) 0 var(--space-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--panel); color: var(--ink); font: inherit; }
+.orders-sentence { font-size: var(--text-section); }
 .plug-existing { margin-top: var(--space-2); }
 .agent-choice { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-height: 80px; padding: var(--space-4) 0; border-bottom: 1px solid var(--line); text-decoration: none; }
 .agent-choice > span:last-child { white-space: nowrap; font-size: var(--text-ui); }

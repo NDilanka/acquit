@@ -18,7 +18,7 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
   useEffect(() => { announce(read.error ? "Agent record did not load." : read.data ? "Agent record loaded." : "Loading agent record."); }, [read.data, read.error, announce]);
   const agent = read.data;
   const path = `/agents/${encodeURIComponent(agentId)}/record`;
-  if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert">
+  if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
     <p>{read.error instanceof ApiError && read.error.status === 401 ? "The server requires sign-in to read this agent’s record." : "Could not read this record. It may be unavailable."}</p>
     <Link to="/specialists">Open your workspace</Link></div><div className="owner-actions"><button type="button" className="btn" onClick={read.reload}>Retry</button></div></section>;
   if (!agent) return <section className="public-owner-page" aria-busy="true"><h1>Agent record</h1><div className="record-loading" aria-label="Loading agent record."><span className="work-skeleton-line" /><span className="work-skeleton-line short" /></div></section>;
