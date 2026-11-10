@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
-import { attemptHistory, bidGate, captureAt, GRADE_PER_REJECTED, GRADE_PER_VERIFIED, gradeOf, heldPayee, LASER_VERTICAL, recordOf, sampleOf, SAMPLES } from "../../../packages/core/src/exam.ts";
+import { bidGate, captureAt, countedAttempts, GRADE_PER_REJECTED, GRADE_PER_VERIFIED, gradeOf, heldPayee, LASER_VERTICAL, recordOf, sampleOf, SAMPLES } from "../../../packages/core/src/exam.ts";
 import type { StandingOrders } from "../../../packages/core/src/exam.ts";
 import { captureOf, payeeMerchantOf } from "../../../packages/core/src/job.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
@@ -174,7 +174,7 @@ export function morningReport(db: DatabaseSync, operatorId: OperatorId, since: I
 		// The win is the locked bid's price on the escrow the capture opened, stamped when that capture landed.
 		const won = captureAt(row.state);
 		if (won !== null) wins.push({ jobId: row.id, agentId: payee.agent, amountCents: Number(payee.price), at: won });
-		for (const attempt of attemptHistory(row.state)) {
+		for (const attempt of countedAttempts(row.state)) {
 			const { verdict } = attempt;
 			const entry = { jobId: row.id, agentId: payee.agent, runId: verdict.runId, at: verdict.at };
 			if (verdict.result === "VERIFIED") {
@@ -234,13 +234,15 @@ export function operatorHasJob(row: JobRow, operatorId: OperatorId): boolean {
 /**
  * Row 12: whether a job's money is held now. Only an IN_PROGRESS or VERIFIED job holds escrow, so only those read
  * PayPal, and held needs the capture COMPLETED there. The escrow state answers when the read is not made or fails.
+ * The capture id and its PayPal status go only to the operator the job is locked to. Any other bidder gets held and source.
  */
-export async function moneyHeldOf(row: JobRow, read: ObjectRead | null, now: Instant): Promise<MoneyHeld> {
+export async function moneyHeldOf(row: JobRow, operatorId: OperatorId, read: ObjectRead | null, now: Instant): Promise<MoneyHeld> {
+	const lockedTo = heldPayee(row.state)?.operator === operatorId;
 	const captureId = captureOf(row);
 	const holding = row.state.status === "IN_PROGRESS" || row.state.status === "VERIFIED";
-	const fromState: MoneyHeld = { held: holding, source: "ESCROW_STATE", captureId, captureStatus: null, checkedAt: now };
+	const fromState: MoneyHeld = { held: holding, source: "ESCROW_STATE", captureId: lockedTo ? captureId : null, captureStatus: null, checkedAt: now };
 	if (!holding || captureId === null || read === null) return fromState;
 	const fact = await captureFactOf(captureId, payeeMerchantOf(row), read);
 	if (fact === null) return fromState;
-	return { held: fact.status === "COMPLETED", source: "PAYPAL_READ", captureId, captureStatus: fact.status, checkedAt: now };
+	return { held: fact.status === "COMPLETED", source: "PAYPAL_READ", captureId: lockedTo ? captureId : null, captureStatus: lockedTo ? fact.status : null, checkedAt: now };
 }
