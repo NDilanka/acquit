@@ -29,10 +29,12 @@ const SHORTS: readonly [string, Fixture][] = [
 		},
 	],
 	[
+		// The via's ring reaches 0.05 mm into the pad of another net. Its 0.3 mm bore stays clear of the pad, since a bore
+		// that cuts a foreign pad is refused at the parse (see via-erases-pad.test.ts). So this is a ring short.
 		"a via that overlaps a pad of another net, and reaches its own net on the back",
 		{
 			parts: [padAt("U1", "SIG1", [120, 110]), part("U2", [125, 110], thruPad("A", "SIG2"))],
-			copper: [via([120.2, 110], "SIG2"), segment([120.2, 110], [125, 110], 0.25, "B.Cu", "SIG2")],
+			copper: [via([120.75, 110], "SIG2"), segment([120.75, 110], [125, 110], 0.25, "B.Cu", "SIG2")],
 		},
 	],
 	[

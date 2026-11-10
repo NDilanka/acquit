@@ -4,6 +4,7 @@
 
 import { readBoard, type Board, type CopperLayer, type Footprint, type Hole, type PadInst, type Via } from "./board.ts";
 import {
+	circleError,
 	circlePolygon,
 	dist,
 	pointInPolygon,
@@ -221,6 +222,63 @@ function worstBoreClearance(
 	return worst;
 }
 
+/** The disc a drill removes, as a polygon. circleError gives how far the polygon may fall short of the true bore. */
+function drillGeo(center: Vec2, drill: number): PolyGeo {
+	const poly = circlePolygon(center, drill / 2);
+	return { kind: "poly", layers: ["F.Cu", "B.Cu"], poly, box: boxOf(poly, 0), slop: circleError(drill / 2) };
+}
+
+function describeAt(p: Vec2): string {
+	return `(${fmt(p[0])}, ${fmt(p[1])})`;
+}
+
+/** The drill a copper item carries: a via's bore, or a plated pad's. Undefined for any other item. */
+function plateDrillOf(g: Geo): { center: Vec2; drill: number; name: string } | undefined {
+	if (g.kind !== "poly") return undefined;
+	if (g.via) return { center: g.via.at, drill: g.via.drill, name: `the via at ${describeAt(g.via.at)}` };
+	if (g.pad && g.pad.drill !== undefined) {
+		return { center: g.pad.center, drill: g.pad.drill, name: `the drill of pad ${g.pad.id}` };
+	}
+	return undefined;
+}
+
+function describeGeo(g: Geo): string {
+	if (g.kind === "track") return `a track on ${g.layers[0]} from ${describeAt(g.a)} to ${describeAt(g.b)}`;
+	if (g.via) return `the via at ${describeAt(g.via.at)}`;
+	return g.pad ? `pad ${g.pad.id}` : "a copper item";
+}
+
+/** A track that ends at the drill's centre and runs out past the drill: how a via or a through-hole pad is wired. */
+function wiredThrough(t: TrackGeo, center: Vec2, radius: number): boolean {
+	const far = dist(t.a, center) <= EPS ? t.b : dist(t.b, center) <= EPS ? t.a : undefined;
+	return far !== undefined && dist(far, center) > radius;
+}
+
+/**
+ * The first plated drill that cuts another item, as a parse message, or undefined. A via's bore and a plated pad's
+ * bore remove copper on every layer, so no other item may reach into one, whatever its net. The drilled item's own
+ * copper is exempt, and so is a track wired through the drill's centre. Non-plated holes are clearance checks instead.
+ * This runs before connectivity, so no contact is credited through copper a drill removes.
+ */
+function plateBoreCut(geos: readonly Geo[], budget: Budget): string | undefined {
+	for (const owner of geos) {
+		const plate = plateDrillOf(owner);
+		if (!plate) continue;
+		const radius = plate.drill / 2;
+		const bore = drillGeo(plate.center, plate.drill);
+		for (const g of geos) {
+			if (g === owner) continue;
+			if (g.kind === "track" && wiredThrough(g, plate.center, radius)) continue;
+			if (boxGap(g.box, bore.box) > ROUNDOFF + g.slop + bore.slop) continue;
+			if (!take(budget, edgesOf(g) * edgesOf(bore))) return undefined;
+			if (gap(g, bore) - (g.slop + bore.slop) <= ROUNDOFF) {
+				return `${plate.name} cuts into ${describeGeo(g)}; a drill may cut only its own copper`;
+			}
+		}
+	}
+	return undefined;
+}
+
 /** Names the curved item of an undecidable contact, so the parse failure says what the checker cannot model. */
 function curvedName(g: Geo): string {
 	if (g.kind === "track") return "an arc";
@@ -397,6 +455,9 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		bores.push({ kind: "poly", layers: ["F.Cu", "B.Cu"], poly: h.poly, box: boxOf(h.poly, 0), slop: h.slop, hole: h });
 	}
 	const budget: Budget = { left: MAX_SEGMENT_TESTS, spent: false };
+	// A drill removes copper before any contact is read, so no contact is credited through copper a drill removes.
+	const cut = plateBoreCut(geos, budget);
+	if (cut !== undefined) return failedParse(spec, cut);
 	const { comp, ambiguous } = connectedComponents(geos, budget);
 	if (ambiguous) {
 		const x = geos[ambiguous.i] as Geo;
