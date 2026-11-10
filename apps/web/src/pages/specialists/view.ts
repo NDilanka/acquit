@@ -16,10 +16,10 @@ import type {
 
 export const STEPS = [
   { step: 1, label: "Plug in", to: "/specialists" },
-  { step: 2, label: "The exam", to: "/specialists/exam" },
-  { step: 3, label: "Standing orders", to: "/specialists/orders" },
-  { step: 4, label: "The night", to: "/specialists/night" },
-  { step: 5, label: "The morning", to: "/specialists/morning" },
+  { step: 2, label: "Exam", to: "/specialists/exam" },
+  { step: 3, label: "Orders", to: "/specialists/orders" },
+  { step: 4, label: "Night", to: "/specialists/night" },
+  { step: 5, label: "Morning", to: "/specialists/morning" },
 ] as const;
 
 const TASK_LABEL: Record<Task, string> = { code: "Code", "print-fdm": "3D print", "laser-cut": "Laser cut" };
@@ -177,8 +177,13 @@ export function formFrom(orders: StandingOrders | null): OrdersForm {
 
 export type OrdersProblems = { readonly priceUsd?: string };
 
+/** Accept an optional currency prefix, never strip punctuation out of malformed input. */
+export function parsePrice(input: string): number | null {
+  return parseUsd(input.trim().replace(/^\$\s*/, ""));
+}
+
 export function formProblems(form: OrdersForm): OrdersProblems | null {
-  const cents = parseUsd(form.priceUsd);
+  const cents = parsePrice(form.priceUsd);
   if (cents === null || cents <= 0) return { priceUsd: "Enter a price such as 40 or 40.00." };
   return null;
 }
@@ -186,7 +191,7 @@ export function formProblems(form: OrdersForm): OrdersProblems | null {
 /** The body for PUT standing orders. Autopilot and pre-approval switch together: a pre-approved submit needs both on. */
 export function toOrdersInput(form: OrdersForm, runsOn: "owner" | "acquit"): StandingOrdersInput {
   return {
-    priceFloorCents: parseUsd(form.priceUsd) ?? 0,
+    priceFloorCents: parsePrice(form.priceUsd) ?? 0,
     maxConcurrent: form.maxConcurrent,
     autopilot: form.autopilot,
     runsOn,
@@ -199,7 +204,7 @@ export function toOrdersInput(form: OrdersForm, runsOn: "owner" | "acquit"): Sta
 export function ordersDirty(form: OrdersForm, saved: StandingOrders | null): boolean {
   if (saved === null) return true;
   return (
-    parseUsd(form.priceUsd) !== saved.priceFloorCents ||
+    parsePrice(form.priceUsd) !== saved.priceFloorCents ||
     form.maxConcurrent !== saved.maxConcurrent ||
     form.autopilot !== saved.autopilot ||
     form.preApproveCap !== saved.preApproveCap
@@ -243,9 +248,25 @@ export const EXAM_SHAPE: Record<Task, { readonly visible: number; readonly hidde
   "laser-cut": { visible: 0, hidden: 0 },
 };
 
-/** The agent a route names, or the first agent when it names none or the one it names is gone. */
+/** An explicit id must match. Only an unambiguous, single-agent list may infer a choice. */
 export function pickAgent<T extends { readonly id: string }>(agents: readonly T[], id: string | undefined): T | null {
-  return agents.find((a) => a.id === id) ?? agents[0] ?? null;
+  return id !== undefined ? agents.find((a) => a.id === id) ?? null : agents.length === 1 ? agents[0]! : null;
+}
+
+export function provenanceWords(source: ReplaySource | null, simulated: boolean, seeded = false): string {
+  return [source === "recorded" ? "Replay of a recorded run" : source === "fixture" ? "Sample data" : seeded ? "Seeded" : null, simulated ? "Simulated" : null].filter(Boolean).join(" · ");
+}
+
+export function localTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "Date unavailable" : new Intl.DateTimeFormat(undefined, {
+    day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(date);
+}
+
+/** Owner money uses one format; its caller must keep the status alongside it. */
+export function dollars(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
 }
 
 /** A track record as one line: "3 taken, 2 verified, 1 rejected". */

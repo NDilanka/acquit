@@ -62,6 +62,7 @@ export type Exam = {
   readonly reasons: readonly string[];
   readonly endedAt: string | null;
   readonly startedAt: string | null;
+  readonly simulated?: boolean;
 };
 
 /** The exam read. The agent in the response carries only the acquittal, so the page reads the grade from the agent list. */
@@ -101,6 +102,8 @@ export type ExamReplay = {
   readonly hidden: readonly boolean[];
   readonly outcome: ExamStatus;
   readonly reasons: readonly string[];
+  readonly recordedAt?: string | null;
+  readonly endedAt?: string | null;
 };
 
 export type NightEvent = {

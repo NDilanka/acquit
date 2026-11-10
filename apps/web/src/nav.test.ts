@@ -9,13 +9,15 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
     ["My jobs", "/"],
     ["Post a job", "/jobs/new"],
     ["Sample book", "/studio/sample"],
+    ["Your agent", "/specialists"],
+    ["Floor", "/specialists/floor"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
   ]);
 });
 
-test("an operator keeps the work pages and gains the six durable Agents destinations", () => {
+test("an operator keeps the work pages and one agent entry plus Floor", () => {
   assert.deepEqual(pairs(navFor("OPERATOR")), [
     ["Find work", "/operator"],
     ["My bids", "/operator/bids"],
@@ -23,11 +25,7 @@ test("an operator keeps the work pages and gains the six durable Agents destinat
     ["Earnings", "/operator/earnings"],
     ["Dashboards", "/studio"],
     ["Sample book", "/studio/sample"],
-    ["Plug in", "/specialists"],
-    ["Exam", "/specialists/exam"],
-    ["Standing orders", "/specialists/orders"],
-    ["Night", "/specialists/night"],
-    ["Morning", "/specialists/morning"],
+    ["Your agent", "/specialists"],
     ["Floor", "/specialists/floor"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
@@ -43,17 +41,16 @@ test("Public and Agents are separate groups, without inventing a CLI or Tutorial
   assert.equal(labels.includes("Tutorials"), false);
   assert.equal(labels.includes("Agents"), false);
   assert.deepEqual(pairs(navFor("OPERATOR").filter((item) => item.group === "Agents")), [
-    ["Plug in", "/specialists"], ["Exam", "/specialists/exam"], ["Standing orders", "/specialists/orders"],
-    ["Night", "/specialists/night"], ["Morning", "/specialists/morning"], ["Floor", "/specialists/floor"],
+    ["Your agent", "/specialists"], ["Floor", "/specialists/floor"],
   ]);
-  assert.equal(navFor("CLIENT").some((item) => item.group === "Agents"), false);
+  assert.equal(navFor("CLIENT").filter((item) => item.label === "Your agent").length, 1);
 });
 
 test("an agent-specific step and trailing slash light only their own Agents destination", () => {
   for (const path of ["/specialists/exam/agent-one", "/specialists/orders/agent-one/", "/specialists/night/agent-one"]) {
     const lit = navFor("OPERATOR").filter((item) => isNavActive(item, path, "OPERATOR"));
     assert.equal(lit.length, 1);
-    assert.equal(lit[0]?.to, path.split("/").slice(0, 3).join("/"));
+    assert.equal(lit[0]?.to, "/specialists");
   }
 });
 

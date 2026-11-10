@@ -31,15 +31,19 @@ import {
   pickAgent,
   recordWords,
   sinceIso,
+  parsePrice,
+  provenanceWords,
 } from "./view.ts";
 import type { StandingOrders } from "./types.ts";
 
 describe("agent picking and the morning window", () => {
-  it("picks the named agent, else the first one", () => {
+  it("requires an explicit choice for several agents and never substitutes for a missing id", () => {
     const agents = [{ id: "a1" }, { id: "a2" }];
     assert.equal(pickAgent(agents, "a2")?.id, "a2");
-    assert.equal(pickAgent(agents, "gone")?.id, "a1");
-    assert.equal(pickAgent(agents, undefined)?.id, "a1");
+    assert.equal(pickAgent(agents, "gone"), null);
+    assert.equal(pickAgent(agents, undefined), null);
+    assert.equal(pickAgent([agents[0]!], undefined)?.id, "a1");
+    assert.equal(pickAgent([agents[0]!], "gone"), null);
     assert.equal(pickAgent([], undefined), null);
   });
 
@@ -89,12 +93,32 @@ describe("steps", () => {
       STEPS.map((s) => [s.step, s.label]),
       [
         [1, "Plug in"],
-        [2, "The exam"],
-        [3, "Standing orders"],
-        [4, "The night"],
-        [5, "The morning"],
+        [2, "Exam"],
+        [3, "Orders"],
+        [4, "Night"],
+        [5, "Morning"],
       ],
     );
+  });
+});
+
+describe("lenient orders prices and honest provenance", () => {
+  it("accepts and normalises plain dollars and a currency prefix without losing cents", () => {
+    for (const input of ["40", "$40", "40.00", "  $40.00  "]) {
+      assert.equal(parsePrice(input), 4000);
+      assert.equal(toOrdersInput({ ...DEFAULT_FORM, priceUsd: input }, "owner").priceFloorCents, 4000);
+    }
+    assert.equal(parsePrice("$0.01"), 1);
+    for (const input of ["", "$", "4$0", "40.001", "-40", "1e3", "40,00"]) assert.equal(parsePrice(input), null);
+    assert.ok(formProblems({ ...DEFAULT_FORM, priceUsd: "$0" }));
+  });
+  it("distinguishes sample data, recorded replay, simulation and seeded records", () => {
+    assert.equal(provenanceWords("fixture", false), "Sample data");
+    assert.equal(provenanceWords("recorded", false), "Replay of a recorded run");
+    assert.equal(provenanceWords("recorded", true), "Replay of a recorded run · Simulated");
+    assert.equal(provenanceWords(null, true), "Simulated");
+    assert.equal(provenanceWords(null, false, true), "Seeded");
+    assert.equal(provenanceWords(null, false), "");
   });
 });
 

@@ -1,73 +1,28 @@
 import type { ReactNode } from "react";
-import { Link } from "../../router.tsx";
-import { useSession } from "../../session.tsx";
-import { ErrorNote, NotFound } from "../../ui.tsx";
-import { STEPS } from "./view.ts";
+import { useRouter } from "../../router";
+import { useSession } from "../../session";
+import { ErrorNote, SkeletonCard } from "../../ui";
+import { AgentPanel, AgentPicker, useOwner } from "./OwnerPanel";
+import { provenanceWords } from "./view";
 import "./specialists.css";
+import "./owner.css";
 
-/** A failed read: the sentence, and a button to read again. */
 export function LoadFailed({ error, onRetry }: { readonly error: unknown; readonly onRetry: () => void }) {
-  return (
-    <div className="load-failed">
-      <ErrorNote error={error} />
-      <button type="button" className="btn secondary sm" onClick={onRetry}>
-        Try again
-      </button>
-    </div>
-  );
+  return <div className="load-failed"><ErrorNote error={error} /><button type="button" className="btn secondary" onClick={onRetry}>Try again</button></div>;
 }
 
-/** The 1 to 5 step indicator. The exam, orders and night steps keep the agent the page is about. */
-export function StepIndicator({ current, agentId }: { readonly current: number; readonly agentId?: string }) {
-  return (
-    <nav aria-label="Steps" className="spec-steps">
-      <ol>
-        {STEPS.map((s) => {
-          const withAgent = agentId && (s.to === "/specialists/exam" || s.to === "/specialists/orders" || s.to === "/specialists/night");
-          const to = withAgent ? `${s.to}/${agentId}` : s.to;
-          const state = s.step === current ? "current" : s.step < current ? "done" : "todo";
-          return (
-            <li key={s.step} className={`spec-step ${state}`} aria-current={s.step === current ? "step" : undefined}>
-              <Link to={to}>
-                <span className="spec-step-num mono">{s.step}</span>
-                <span>{s.label}</span>
-              </Link>
-            </li>
-          );
-        })}
-      </ol>
-    </nav>
-  );
-}
-
-/**
- * The frame for every specialist screen: the step indicator and one lead sentence.
- * The shell already shows the page heading. Operator-only pages send other roles to the same notice the operator pages use.
- */
-export function SpecialistPage({
-  step,
-  agentId,
-  lead,
-  operatorOnly = true,
-  children,
-}: {
-  readonly step?: number;
-  readonly agentId?: string;
-  readonly lead: string;
-  readonly operatorOnly?: boolean;
-  readonly children: ReactNode;
+export function SpecialistPage({ step, lead, operatorOnly = true, children }: {
+  step?: number; agentId?: string; lead: string; operatorOnly?: boolean; children: ReactNode;
 }) {
   const { user } = useSession();
-  if (operatorOnly && user.role !== "OPERATOR") {
-    return <NotFound signedIn title="This page is for operators" message="Switch to Operator in the sidebar to see it." />;
-  }
-  return (
-    <div className="spec">
-      <div className="spec-top">
-        {step !== undefined && <StepIndicator current={step} agentId={agentId} />}
-      </div>
-      <p className="spec-lead">{lead}</p>
-      {children}
-    </div>
-  );
+  const { location } = useRouter();
+  const owner = useOwner();
+  if (operatorOnly && user.role !== "OPERATOR") return null;
+  if (owner.agents === null) return owner.error !== null ? <LoadFailed error={owner.error} onRetry={owner.reload} /> : <SkeletonCard lines={4} />;
+  if (step && step > 1 && step < 5 && !owner.agent) return <AgentPicker agents={owner.agents} requestedId={owner.requestedId} base={location.path.replace(/\/[^/]+$/, "") === "/specialists" ? location.path : location.path.slice(0, location.path.lastIndexOf("/"))} />;
+  if (!step) return <div className="spec owner-floor"><h1>Floor</h1><p className="muted">{lead}</p>{children}</div>;
+  return <AgentPanel agent={owner.agent} step={step}
+    provenance={owner.provenance || provenanceWords(null, owner.agent?.task === "print-fdm" || owner.agent?.task === "laser-cut", owner.agent?.seeded) || (owner.agent?.sample ? "Sample agent" : "")}>
+    <div className="spec">{children}</div>
+  </AgentPanel>;
 }

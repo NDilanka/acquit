@@ -58,6 +58,7 @@ export type RawExam = {
   reasons?: string[];
   endedAt?: string | null;
   startedAt?: string | null;
+  simulated?: boolean;
 };
 
 export type RawFloor = {
@@ -150,6 +151,7 @@ export function examOf(raw: RawExam): Exam {
     reasons: raw.reasons ?? [],
     endedAt: raw.endedAt ?? null,
     startedAt: raw.startedAt ?? null,
+    ...(raw.simulated !== undefined ? { simulated: raw.simulated } : {}),
   };
 }
 
@@ -179,6 +181,8 @@ export function examReplayOf(raw: RawExamReplay): ExamReplay {
     hidden: exam.hidden ? flagsFrom(exam.hidden) : [],
     outcome: exam.status,
     reasons: exam.reasons,
+    recordedAt: raw.recordedAt,
+    endedAt: exam.endedAt,
   };
 }
 
