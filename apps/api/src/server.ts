@@ -215,6 +215,9 @@ const admitOperatorTurn = operatorTurnLimiter();
 const sampleExecutor = sampleAskToolExecutor();
 const sampleAskTools = sampleAskToolList();
 const admitSampleTurn = sampleTurnLimiter();
+// A platform or operator turn that runs past this deadline is answered as a timeout, and its model work is cancelled with it.
+const ASK_TURN_DEADLINE_MS = 120_000;
+const askTurnTimedOut: AskTurnOutcome = { ok: false, reason: "MODEL_TIMEOUT", detail: "the model did not answer in time" };
 const acquireSampleSlot = sampleInFlightGate();
 const admitRestore = attemptLimiter(RESTORE_ATTEMPTS, RESTORE_WINDOW_MS);
 /** An operator's ask executor, built for one request from its session actor: its own jobs, receipts, and payouts, read under that actor. The platform's executor is never reused for an operator. */
@@ -850,15 +853,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 				json(res, 429, { error: "MODEL_BUDGET", detail: `A sample turn is limited to ${OPERATOR_TURNS_PER_MINUTE} a minute and ${OPERATOR_TURNS_PER_DAY} a day for each account and each address.` });
 				return;
 			}
-			const timedOut: AskTurnOutcome = { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: "the model did not answer in time" };
 			// A client that leaves before the answer ends the turn too: no retry starts for a response nobody reads.
 			const clientGone = new AbortController();
 			res.once("close", () => { if (!res.writableFinished) clientGone.abort(); });
 			const outcome = await withDeadline(signal => askLedgerTurn({ model: askModel, callLog: askCallLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
-				{ ...relayed, scope: "SAMPLE", signal }), SAMPLE_TURN_DEADLINE_MS, timedOut, clientGone.signal);
+				{ ...relayed, scope: "SAMPLE", signal }), SAMPLE_TURN_DEADLINE_MS, askTurnTimedOut, clientGone.signal);
 			if (!outcome.ok) {
 				json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
-					: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
+					: outcome.reason === "MODEL_KEY_MISSING" ? 503 : outcome.reason === "MODEL_TIMEOUT" ? 504 : 502, { error: outcome.reason, detail: outcome.detail });
 				return;
 			}
 			// Every sample answer carries the sample label, whatever the model wrote.
@@ -975,10 +977,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			json(res, 429, { error: "MODEL_BUDGET", detail: `An operator may run ${OPERATOR_TURNS_PER_MINUTE} Ask the ledger turns a minute and ${OPERATOR_TURNS_PER_DAY} a day.` });
 			return;
 		}
-		const outcome = await askLedgerTurn({ model: askModel, callLog: askCallLog }, { ...relayed, scope: current.actor.role === "OPERATOR" ? "OPERATOR" : "PLATFORM" });
+		// The turn ends at its deadline, or when the client leaves, so a stalled model call cannot hold this route and its droid open.
+		const clientGone = new AbortController();
+		res.once("close", () => { if (!res.writableFinished) clientGone.abort(); });
+		const outcome = await withDeadline(signal => askLedgerTurn({ model: askModel, callLog: askCallLog },
+			{ ...relayed, scope: current.actor.role === "OPERATOR" ? "OPERATOR" : "PLATFORM", signal }), ASK_TURN_DEADLINE_MS, askTurnTimedOut, clientGone.signal);
 		if (!outcome.ok) {
 			json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
-				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : 502, { error: outcome.reason, detail: outcome.detail });
+				: outcome.reason === "MODEL_KEY_MISSING" ? 503 : outcome.reason === "MODEL_TIMEOUT" ? 504 : 502, { error: outcome.reason, detail: outcome.detail });
 			return;
 		}
 		json(res, 200, outcome);

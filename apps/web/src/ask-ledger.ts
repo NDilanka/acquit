@@ -31,6 +31,10 @@ export const ASK_VALIDATION_QUESTION = "How much escrow is held right now, and d
 // the answer. A few spare cover a delegation, and anything longer is a loop that will not settle.
 export const ASK_MAX_TURNS = 6;
 
+// The server ends its own turn at 120 seconds, so the browser's limit answers only when the server never does.
+export const ASK_TURN_TIMEOUT_MS = 150_000;
+export const ASK_TIMEOUT_TEXT = "Ask the ledger did not answer in time. Try again in a minute.";
+
 export const ASK_INSTRUCTIONS = [
   "You are Ask the ledger, the agent on Acquit's platform escrow dashboard.",
   "You answer questions about Acquit's ledger and PayPal's view of it, from your tools alone; never answer from memory or guess a figure.",
@@ -225,9 +229,10 @@ export function fromAskTurn(turn: AskTurnResponse, ids: { response: string; crea
 }
 
 /** A turn the route refused, as a failed response: the loop throws its message as the run's error. */
-export function failedTurn(error: unknown, ids: { response: string; createdAt: number }, aborted: boolean): AgLlmResponse {
+export function failedTurn(error: unknown, ids: { response: string; createdAt: number }, aborted: boolean, timedOut = false): AgLlmResponse {
   const base = { id: ids.response, createdAt: ids.createdAt, output: [] };
   if (aborted) return { ...base, status: "cancelled", error: { code: "CANCELLED", message: "The question was cancelled." } };
+  if (timedOut) return { ...base, status: "failed", error: { code: "TIMEOUT", message: ASK_TIMEOUT_TEXT } };
   if (error instanceof ApiError) return { ...base, status: "failed", error: { code: error.code, message: askErrorText(error) } };
   return { ...base, status: "failed", error: { code: "NETWORK", message: `The server could not be reached: ${errorMessage(error)}` } };
 }
@@ -244,6 +249,8 @@ export function askErrorText(error: ApiError): string {
       return "Ask the ledger is out of model budget for now. Try again later.";
     case "MODEL_PROVIDER_ERROR":
       return `The model provider failed to answer.${detail}`;
+    case "MODEL_TIMEOUT":
+      return ASK_TIMEOUT_TEXT;
     case "BAD_REQUEST":
       return `The server refused the conversation.${detail}`;
     case "PLATFORM_ONLY":
@@ -289,6 +296,8 @@ export type AskAdapterDeps = {
   readonly renderWaitMs?: number;
   /** The turn route the adapter posts to. The platform's by default; the sample book's own for the sample scope. */
   readonly turn?: AskTurnRoute;
+  /** How long the browser waits for one turn before it stops and says so. Defaults to ASK_TURN_TIMEOUT_MS. */
+  readonly turnTimeoutMs?: number;
 };
 
 let minted = 0;
@@ -306,11 +315,14 @@ export function askLedgerAdapter(deps: AskAdapterDeps = {}): AgLlmAdapter {
     executeTurn(request: AgLlmRequest, options) {
       const signal = options?.signal;
       const ids = { response: newId(), createdAt: now() };
+      // The turn stops at the user's cancel or at its time limit, whichever comes first.
+      const deadline = AbortSignal.timeout(deps.turnTimeoutMs ?? ASK_TURN_TIMEOUT_MS);
+      const turnSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
       // Never rejects: a refused or failed turn is a response the loop reads, not a thrown promise
       // that would also surface as an unhandled rejection when nothing awaits `complete`.
-      const complete = turn(toAskTurnBody(request), { signal, fetch: deps.fetch }).then(
+      const complete = turn(toAskTurnBody(request), { signal: turnSignal, fetch: deps.fetch }).then(
         (turn) => fromAskTurn(turn, ids),
-        (error: unknown) => failedTurn(error, ids, signal?.aborted === true),
+        (error: unknown) => failedTurn(error, ids, signal?.aborted === true, deadline.aborted),
       );
       async function* stream(): AsyncGenerator<AgAiEvent> {
         yield* eventsFor((await complete).output);

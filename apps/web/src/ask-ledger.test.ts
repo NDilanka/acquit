@@ -174,7 +174,10 @@ test("the adapter posts one turn to the app's own route and maps the answer onto
   assert.equal(seen[0]?.url, "/api/ask-ledger/turn");
   assert.equal(seen[0]?.init.method, "POST");
   assert.equal(seen[0]?.init.credentials, "same-origin");
-  assert.equal(seen[0]?.init.signal, controller.signal);
+  // The turn's signal follows the caller's cancel and carries the turn's own time limit besides.
+  assert.equal(seen[0]?.init.signal?.aborted, false);
+  controller.abort();
+  assert.equal(seen[0]?.init.signal?.aborted, true);
   const body = JSON.parse(String(seen[0]?.init.body)) as { messages: unknown[]; instructions: string };
   assert.deepEqual(body.messages, toAskMessages(conversation));
   assert.equal(body.instructions, "Check both.");
@@ -247,6 +250,35 @@ test("a cancelled turn resolves as cancelled rather than rejecting", async () =>
   const handler = askLedgerAdapter({ fetch, newId: () => "t5", now: () => 1 }).executeTurn(request(conversation), { signal: controller.signal });
   assert.deepEqual(await drain(handler.stream), []);
   assert.equal((await handler.complete).status, "cancelled");
+});
+
+test("a turn the server never answers stops at the browser's limit with the timeout copy, not a network error", async () => {
+  const fetch = (async (_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+  })) as typeof globalThis.fetch;
+  const handler = askLedgerAdapter({ fetch, newId: () => "t6", now: () => 1, turnTimeoutMs: 5 }).executeTurn(request(conversation));
+  assert.deepEqual(await drain(handler.stream), []);
+  const response = await handler.complete;
+  assert.equal(response.status, "failed");
+  assert.equal(response.error?.code, "TIMEOUT");
+  assert.equal(response.error?.message, "Ask the ledger did not answer in time. Try again in a minute.");
+});
+
+test("the server's own turn timeout reads as the same copy, and a cancel during a timed wait still reads as cancelled", async () => {
+  const timedOut = await askLedgerAdapter({ fetch: fakeFetch(504, { error: "MODEL_TIMEOUT", detail: "the model did not answer in time" }), newId: () => "t7", now: () => 1 })
+    .executeTurn(request(conversation)).complete;
+  assert.equal(timedOut.status, "failed");
+  assert.equal(timedOut.error?.code, "MODEL_TIMEOUT");
+  assert.equal(timedOut.error?.message, "Ask the ledger did not answer in time. Try again in a minute.");
+
+  const controller = new AbortController();
+  const fetch = (async (_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+    init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+    controller.abort();
+  })) as typeof globalThis.fetch;
+  const cancelled = await askLedgerAdapter({ fetch, newId: () => "t8", now: () => 1, turnTimeoutMs: 60_000 })
+    .executeTurn(request(conversation), { signal: controller.signal }).complete;
+  assert.equal(cancelled.status, "cancelled");
 });
 
 test("Studio's own loop runs a tool round and an answer over the adapter, and a refused turn ends the run in error", async () => {

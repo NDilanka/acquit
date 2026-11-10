@@ -45,7 +45,7 @@ export type AskCall = { readonly id: string | null; readonly name: string; reado
 export type AskTurnOutcome =
 	| { readonly ok: true; readonly message: string | null; readonly calls: readonly AskCall[]; readonly model: string;
 		readonly sessionId: string | null; readonly factoryCredits: number | null }
-	| { readonly ok: false; readonly reason: "MODEL_PROVIDER_ERROR" | "MODEL_RATE_LIMITED" | "MODEL_BUDGET" | "MODEL_KEY_MISSING"; readonly detail: string };
+	| { readonly ok: false; readonly reason: "MODEL_PROVIDER_ERROR" | "MODEL_RATE_LIMITED" | "MODEL_BUDGET" | "MODEL_KEY_MISSING" | "MODEL_TIMEOUT"; readonly detail: string };
 
 /** The model-turn port, shared by both providers: the composed prompt in, the answer text out. The signal, when given,
  * aborts the provider's work: the port stops its child or request and answers a failure at once. */
