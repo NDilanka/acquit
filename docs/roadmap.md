@@ -12,7 +12,7 @@ This doc is the working plan for building Acquit for the PayPal AI Hackathon. Th
 | gf-skeleton | Build the walking skeleton | done | 2026-10-19 to 2026-10-21 | One command starts web and API, and a funded job shows a HELD ledger line. |
 | gf-verify | Create the verification skill | done | 2026-10-22 to 2026-10-23 | `/verify-acquit` exists and ran once end to end. |
 | gf-plan | Turn the design into a plan | done | 2026-10-24 to 2026-10-25 | The plan file passes `check-plan.mjs`, and you said go. |
-| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, F2, and F4 merged on 2026-10-07 (#1 to #4, #6, #8). F5 merged on 2026-10-08 (#10). F6 is next, ordered by `docs/win-plan.md`. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
+| gf-feature | Build each feature with proof | next. H0, F1, H1, F3, F2, and F4 merged on 2026-10-07 (#1 to #4, #6, #8). F5 merged on 2026-10-08 (#10). F6 is next. | 2026-10-26 to 2026-11-07 | Every feature PR in the gf-feature list merged with proof. |
 | Step 8 (id not printed) | Open the PR, babysit, ship | in progress. The root lands PRs since 2026-10-07. | Per PR, 2026-10-26 to 2026-11-08 | Every feature PR merged through Shipping. |
 | Step 9 (id not printed) | Maintain the verification skill | pending | Daily from 2026-10-23 | A daily run reports `clean`, `changed`, or `blocked`. |
 
@@ -28,7 +28,7 @@ These tasks run beside the build. None of them waits for code.
 - [x] Create the public GitHub repo with a license and push. Done 2026-10-05 (`NDilanka/acquit`, MIT).
 - [ ] Read the Devpost rules on existing projects and record the answer in the decision log. Target 2026-10-06.
 - [ ] Apply for PayPal partner status, which live delayed disbursement needs. Target 2026-10-06.
-- [ ] Look at thejobcafe.com and assay.guide. Record whether either is a direct competitor in the decision log. Target 2026-10-07.
+- [ ] Check for direct competitors. Record the answer in the decision log. Target 2026-10-07.
 - [ ] Line up three committed buyers from agencies and non-technical founders with private repos. Target 2026-10-16, before gf-skeleton starts.
 
 ## Write the tutorial first (gf-tutorial)
@@ -136,7 +136,7 @@ Results, 2026-10-05. Each folder has a `RESULT.md` with raw output.
 - **c.** Neither variant alone was enough. Path protection (A) rejected a fix that also touched a test. The frozen overlay (B) verified a tree that differs from what merges. Decision: run on frozen inputs (B), reject protected-path changes in the merge diff (A), and require every test to complete. Residual: source code that replaces a test matcher passed both, so assertions must run outside the submitted code's process. See `scratch/verifier/RESULT.md`.
 - **d.** Three layouts. Decision: variant 2, proof first, for choosing a bid. After a bid is accepted, the page switches to variant 3, the ledger spine. Screenshots are in `scratch/job-page/shots/`.
 
-Results, 2026-10-08. Prototype M from `docs/win-plan.md` week 1, a real model on the House fix for invoice-app issue 12. The gate is at least 9 of 10 VERIFIED.
+Results, 2026-10-08. Prototype M from week 1 of the plan, a real model on the House fix for invoice-app issue 12. The gate is at least 9 of 10 VERIFIED.
 
 - **M.** Claude Sonnet 5.5 through OpenRouter on paid credit. All 8 runs that reached a verdict were VERIFIED, with a median of 24.5 s and 0.048 USD per run. Runs 9 and 10 ended in HTTP 402 because the credit ran out, so they are not model results. The gate is unmet for credit reasons. The operator's free-only rule then ruled paid models out. See `acquit-worktrees/proto-m/data/evidence/proto-m/summary.json`.
 - **M2.** Free models with the CLI default instruction. The laguna model went 3 of 10 and `nvidia/nemotron-3-ultra-550b-a55b:free` went 2 of 10. Every rejection was hidden case 6 (JPY). An instruction that named the ISO 4217 decimal rule went 9 of 10, but the root ruled it out because it encodes the hidden test. The free tier measured 20 requests a minute and 1000 a day, reset at 00:00Z. See `acquit-worktrees/proto-m2/data/evidence/proto-m2/`.
@@ -419,7 +419,7 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | 2026-10-07 | The arbiter's hackathon surface is the dev-only `POST /api/dev/arbiter`, open to any signed-in session when `ACQUIT_DEV=1`. | A real arbiter role and console are out of scope for the hackathon, and the route is off outside dev. | https://github.com/NDilanka/acquit/pull/8 |
 | 2026-10-08 | F5 passed its gate and landed as #10. Head `--help` start 1.11 times trunk, `jobs list` median 195 ms, and warm `runStart` median 0.6 s. All 10 lanes passed on disposable client repos. | The plan's rules are 20 percent over trunk, 800 ms, and 30 seconds. It took 17 rounds, most of them closing host git and token paths the sandbox could reach. | https://github.com/NDilanka/acquit/pull/10 |
 | 2026-10-08 | The operator CLI stores the provider key in the OS keychain: Windows Credential Manager, the macOS keychain, or the Linux kernel user keyring. Lane 10 runs `claude-code` through OpenRouter. | The tutorial promises the OS keychain, and the build machine is Linux. There was no Anthropic key, and OpenRouter serves the same runner. | https://github.com/NDilanka/acquit/pull/10 |
-| 2026-10-08 | The remaining work follows `docs/win-plan.md`: target 1st place plus Best Use of AG Grid, one project, a public hosted demo, and four in-product AI pieces. Display-only PRs run three live lanes. Secret rotation lands before the demo goes public. | The operator approved it on 2026-10-08. AI not visible in the demo was a Stage One risk. | `docs/win-plan.md` |
+| 2026-10-08 | The remaining work follows the win plan: target 1st place plus Best Use of AG Grid, one project, a public hosted demo, and four in-product AI pieces. Display-only PRs run three live lanes. Secret rotation lands before the demo goes public. | The operator approved it on 2026-10-08. AI not visible in the demo was a Stage One risk. | Operator approval, 2026-10-08 |
 
 ## How to update this doc
 
