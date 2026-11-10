@@ -17,6 +17,7 @@ function specWith(patch: Record<string, unknown> = {}): Spec {
 }
 
 const honest = sample("honest.svg");
+const enclosure = JSON.parse(sample("enclosure-panel.hidden.json")) as HiddenSample;
 
 /** Replaces one fragment of the honest panel. Throws when the fragment is missing, so an edit cannot silently do nothing. */
 function edit(text: string, from: string, to: string): string {
@@ -99,4 +100,26 @@ test("a hidden clearance failure does not leak the probe coordinates", () => {
 test("a non-finite expected-void probe or a negative clearance fails parse", () => {
 	assert.deepEqual(failed(verify(specWith(), honest, { keepMaterialMm: [], voidMm: [[Infinity, 1]] })), ["parse"]);
 	assert.deepEqual(failed(verify(specWith(), honest, { keepMaterialMm: [[60, 40]], clearanceMm: -1 })), ["parse"]);
+});
+
+// The first hole drawn at r 1.53 instead of 1.5: its finished radius is 1.63 mm, and it still passes the hole tolerance.
+const enlargedFirstHole = (): string => edit(honest, 'r="1.5"', 'r="1.53"');
+
+test("a keep-material probe that the enlarged first hole cuts away fails hidden-material", () => {
+	// The probe is 1.625 mm from the first hole's centre at part (6, 6). The honest hole finishes at 1.6 mm, so the
+	// probe is material. The enlarged hole finishes at 1.63 mm and cuts the probe away by 0.005 mm. The drawn circle is
+	// flattened to an inscribed polygon, so its edges can look further from the probe than the true hole edge.
+	const probe: [number, number] = [7.611097899732444, 5.78789493764242];
+	const hidden: HiddenSample = { ...enclosure, keepMaterialMm: [...enclosure.keepMaterialMm, probe] };
+	assert.deepEqual(failed(verify(specWith(), honest, hidden)), []);
+	assert.deepEqual(failed(verify(specWith(), enlargedFirstHole(), hidden)), ["hidden-material"]);
+});
+
+test("a clearance probe that the enlarged first hole brings under the clearance fails hidden-material", () => {
+	// The probe is 2.62 mm from the first hole's centre. Honest clearance is 1.02 mm, which passes a 1 mm clearance.
+	// The enlarged hole leaves 0.99 mm, which must fail.
+	const probe: [number, number] = [8.597585536799384, 5.658021376383459];
+	const hidden: HiddenSample = { ...enclosure, clearanceMm: 1, keepMaterialMm: [...enclosure.keepMaterialMm, probe] };
+	assert.deepEqual(failed(verify(specWith(), honest, hidden)), []);
+	assert.deepEqual(failed(verify(specWith(), enlargedFirstHole(), hidden)), ["hidden-material"]);
 });

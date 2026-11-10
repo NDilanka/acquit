@@ -4,6 +4,7 @@
 // geometry through this module, so the holes, cutouts, outer size, webs, engravings and hidden samples agree.
 
 import { boundsOf, edgesOf, heightOf, pointEdgeDistance, pointInPolygon, segmentDistance, widthOf } from "./geometry.ts";
+import { FLATTEN_TOL_MM } from "./svg.ts";
 import type { Vec2 } from "./types.ts";
 
 type Ring = { readonly points: readonly Vec2[]; readonly edges: readonly (readonly [Vec2, Vec2])[] };
@@ -51,32 +52,29 @@ export const toDrawing = (part: FinishedPart, [px, py]: Vec2): Vec2 => [px + par
 /** The finished size of an inner cut drawn at a given size: kerf widens each void by kerf/2 per side. */
 export const finishedInnerSize = (part: FinishedPart, drawnMm: number): number => drawnMm + part.kerfMm;
 
-function inVoid(ring: Ring, point: Vec2, half: number): boolean {
-	if (pointInPolygon(point, ring.points)) return true;
-	return pointEdgeDistance(point, ring.edges) <= half + EDGE_EPS;
-}
-
 /**
- * True when a drawn point is strictly inside the finished part: inside the drawn outer and more than kerf/2 from its
- * line, and not inside or on any finished void. A point on a finished edge is not kept, on either side, because the
- * machine's edge is not a reliable place to keep material.
+ * True when a drawn point is certainly inside the finished part: inside the drawn outer and more than kerf/2 plus the
+ * flattening allowance from its line, and certainly outside every finished void. The drawn lines are polylines that
+ * may stand up to FLATTEN_TOL_MM from the curves they came from, so a point nearer its line than that could be on
+ * either side. Such a point is not kept, on either side, because the machine's edge is not a reliable place to keep
+ * material and the verdict must not depend on the flattening.
  */
 export function isMaterial(part: FinishedPart, point: Vec2): boolean {
-	const half = part.kerfMm / 2;
+	const reach = part.kerfMm / 2 + FLATTEN_TOL_MM + EDGE_EPS;
 	if (!pointInPolygon(point, part.outer.points)) return false;
-	if (pointEdgeDistance(point, part.outer.edges) <= half + EDGE_EPS) return false;
-	return !part.voids.some(ring => inVoid(ring, point, half));
+	if (pointEdgeDistance(point, part.outer.edges) <= reach) return false;
+	return part.voids.every(ring => !pointInPolygon(point, ring.points) && pointEdgeDistance(point, ring.edges) > reach);
 }
 
 /**
- * Distance from a material point to the nearest finished edge, outer or void. The finished edge lies kerf/2 from
- * each drawn line, so the drawn distance less kerf/2 is exact. Meaningful only for a point that isMaterial.
+ * A lower bound on the distance from a material point to the nearest finished edge, outer or void. The finished edge
+ * lies kerf/2 from each drawn line, and the drawn line may lie FLATTEN_TOL_MM from the true curve, so the drawn
+ * distance less both allowances is never more than the true one. Meaningful only for a point that isMaterial.
  */
 export function clearanceOf(part: FinishedPart, point: Vec2): number {
-	const half = part.kerfMm / 2;
-	let nearest = pointEdgeDistance(point, part.outer.edges) - half;
-	for (const ring of part.voids) nearest = Math.min(nearest, pointEdgeDistance(point, ring.edges) - half);
-	return nearest;
+	let nearest = pointEdgeDistance(point, part.outer.edges);
+	for (const ring of part.voids) nearest = Math.min(nearest, pointEdgeDistance(point, ring.edges));
+	return nearest - part.kerfMm / 2 - FLATTEN_TOL_MM;
 }
 
 /** True when a material point keeps at least clearanceMm from every finished edge. */
@@ -85,21 +83,27 @@ export function keepsClearance(part: FinishedPart, point: Vec2, clearanceMm: num
 }
 
 /**
- * True when a drawn point lies strictly inside a finished void: inside a drawn inner cut, or less than kerf/2 from its
- * line. A point on the finished boundary is not in the void, so it fails an expected-void probe.
+ * True when a drawn point is certainly inside a finished void: inside a drawn inner cut and more than the flattening
+ * allowance from its line, or within kerf/2 less that allowance of its line. Any other point, including one on the
+ * finished boundary, is not certainly in the void, so it fails an expected-void probe.
  */
 export function isVoidPoint(part: FinishedPart, point: Vec2): boolean {
 	const half = part.kerfMm / 2;
-	return part.voids.some(ring => pointInPolygon(point, ring.points) || pointEdgeDistance(point, ring.edges) < half - EDGE_EPS);
+	return part.voids.some(ring => {
+		const distance = pointEdgeDistance(point, ring.edges);
+		if (pointInPolygon(point, ring.points) && distance > FLATTEN_TOL_MM + EDGE_EPS) return true;
+		return distance < half - FLATTEN_TOL_MM - EDGE_EPS;
+	});
 }
 
 /**
- * True when the whole segment from a to b is finished material. Both ends must be material, and no outer or void edge
- * may come within kerf/2 of the segment. Then no point of the segment reaches a finished edge.
+ * True when the whole segment from a to b is certainly finished material. Both ends must be material, and no outer or
+ * void edge may come within kerf/2 plus twice the flattening allowance of the segment. The allowance covers the
+ * segment's own curve and the edge's curve, so every point the flattened curve could place on the segment stays clear.
  */
 export function isMaterialSegment(part: FinishedPart, a: Vec2, b: Vec2): boolean {
-	const half = part.kerfMm / 2;
 	if (!isMaterial(part, a) || !isMaterial(part, b)) return false;
+	const reach = part.kerfMm / 2 + 2 * FLATTEN_TOL_MM + EDGE_EPS;
 	const rings = [part.outer, ...part.voids];
-	return rings.every(ring => ring.edges.every(([c, d]) => segmentDistance(a, b, c, d) > half + EDGE_EPS));
+	return rings.every(ring => ring.edges.every(([c, d]) => segmentDistance(a, b, c, d) > reach));
 }

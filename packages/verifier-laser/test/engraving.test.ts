@@ -47,6 +47,13 @@ test("a label in material but outside the label region fails engrave-inside", ()
 	assert.deepEqual(failed(verify(specWith(), text)), ["engrave-inside"]);
 });
 
+test("a label curve that rises 0.005 mm above the label region fails engrave-inside", () => {
+	// The quadratic peaks at drawn y 76.095, 0.005 mm above the region's top edge at 76.1. Flattening reduces it to a
+	// chord on that edge, which lies inside the region, so the flattened chord cannot show the rise.
+	const text = edit(honest, 'd="M20 80.2 H60"', 'd="M20 76.1 Q40 76.09 60 76.1"');
+	assert.deepEqual(failed(verify(specWith(), text)), ["engrave-inside"]);
+});
+
 test("a label whose ends are clear but whose middle crosses a cut fails engrave-inside", () => {
 	// A round cut across the label line. Both label ends are clear of it, so only the whole segment shows the crossing.
 	const crossing = `<circle id="crossing" cx="40" cy="80.2" r="1" stroke="#ff0000" fill="none"/>`;

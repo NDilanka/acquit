@@ -214,14 +214,15 @@ function sampleProblem(hidden: HiddenSample | null): string | null {
 	return null;
 }
 
-/** Tolerance on the label region's edges, so a label drawn exactly on its boundary is not refused by float noise. */
-const REGION_EPS = 1e-6;
-
+/**
+ * True when a drawn point is inside the label region by more than the flattening allowance on every side. A curve
+ * may stand up to FLATTEN_TOL_MM from its flattened points, so a point on or near the region's edge is refused.
+ */
 const inRegion = (part: FinishedPart, region: SpecRect, point: Vec2): boolean => {
 	const [px, py] = toPart(part, point);
 	const [ox, oy] = region.originMm;
 	const [sx, sy] = region.sizeMm;
-	return px >= ox - REGION_EPS && px <= ox + sx + REGION_EPS && py >= oy - REGION_EPS && py <= oy + sy + REGION_EPS;
+	return px >= ox + FLATTEN_TOL_MM && px <= ox + sx - FLATTEN_TOL_MM && py >= oy + FLATTEN_TOL_MM && py <= oy + sy - FLATTEN_TOL_MM;
 };
 
 /**
