@@ -75,12 +75,12 @@ test("custom pad primitives are rejected", () => {
 });
 
 test("tracks on an inner layer are rejected", () => {
-	const seg = '(segment (start 110 110) (end 115 110) (width 0.2) (layer "In1.Cu") (net 1 "VIN"))';
+	const seg = '(segment (start 110 110) (end 115 110) (width 0.2) (layer "In1.Cu") (net 1))';
 	assert.equal(parseFailed(onRoot(seg)), true);
 });
 
 test("a segment nested in an unknown container is rejected", () => {
-	const seg = '(segment (start 110 110) (end 115 110) (width 0.2) (layer "F.Cu") (net 1 "VIN"))';
+	const seg = '(segment (start 110 110) (end 115 110) (width 0.2) (layer "F.Cu") (net 1))';
 	assert.equal(parseFailed(onRoot(`(group (name "g") ${seg})`)), true);
 });
 

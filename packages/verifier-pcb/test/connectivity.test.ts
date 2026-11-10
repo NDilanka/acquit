@@ -26,7 +26,7 @@ test("without vias the B.Cu ground bus is cut off from the front copper", () => 
 
 test("track net labels are never trusted: relabelling the LED lane keeps the copper connected", () => {
 	const relabelled = SAMPLE_HONEST_PCB.split("\n")
-		.map(line => (line.trimStart().startsWith("(segment ") ? line.replace('(net 4 "LED_A")', '(net 1 "VIN")') : line))
+		.map(line => (line.trimStart().startsWith("(segment ") ? line.replace("(net 4)", "(net 1)") : line))
 		.join("\n");
 	assert.notEqual(relabelled, SAMPLE_HONEST_PCB);
 	assert.ok(!failing(relabelled).includes("connected"));

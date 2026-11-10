@@ -115,8 +115,16 @@ export type Options = {
 	readonly extra?: readonly string[]; // extra raw elements appended to the board
 };
 
+// Pads name their net by number and name, as KiCad 8 writes them.
 function netAttr(net: string): string {
 	return net === "" ? "" : ` (net ${NET[net] ?? 0} "${net}")`;
+}
+
+// Tracks and vias name their net by number alone. The number must be a known net code.
+function trackNetAttr(net: string): string {
+	const code = NET[net];
+	if (code === undefined) throw new Error(`no net code for ${net}`);
+	return ` (net ${code})`;
 }
 
 function padText(p: PadDef, off: Xy, labelNet: string): string {
@@ -148,11 +156,11 @@ function footprintText(part: PartDef, o: Options): string {
 }
 
 function seg(a: Xy, b: Xy, w: number, layer: string, net: string): string {
-	return `\t(segment (start ${a[0]} ${a[1]}) (end ${b[0]} ${b[1]}) (width ${w}) (layer "${layer}")${netAttr(net)})`;
+	return `\t(segment (start ${a[0]} ${a[1]}) (end ${b[0]} ${b[1]}) (width ${w}) (layer "${layer}")${trackNetAttr(net)})`;
 }
 
-function via(at: Xy, drill: number): string {
-	return `\t(via (at ${at[0]} ${at[1]}) (size 0.6) (drill ${drill}) (layers "F.Cu" "B.Cu")${netAttr("GND")})`;
+function via(at: Xy, drill: number, net: string): string {
+	return `\t(via (at ${at[0]} ${at[1]}) (size 0.6) (drill ${drill}) (layers "F.Cu" "B.Cu")${trackNetAttr(net)})`;
 }
 
 function edge(a: Xy, b: Xy): string {
@@ -201,7 +209,7 @@ export function build(o: Options = {}): string {
 	tracks.push(seg(via4, [126.05, 120.5], 0.5, "B.Cu", "GND"));
 	tracks.push(seg([130.54, 118], [130.54, 120.5], 0.5, "B.Cu", "GND"));
 
-	const vias = [via(via1, drill), via(via2, drill), via(via3, drill), via(via4, drill)];
+	const vias = [via(via1, drill, "GND"), via(via2, drill, "GND"), via(via3, drill, "GND"), via(via4, drill, "GND")];
 	const outline = [
 		edge([100, 100], [140, 100]),
 		edge([140, 100], [140, 125]),

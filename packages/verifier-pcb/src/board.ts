@@ -510,12 +510,34 @@ function zeroLengthProblem(t: readonly SExpr[]): string | undefined {
 	return a && b && dist(a, b) <= ROUNDOFF ? "(segment) of zero length" : undefined;
 }
 
+function isNetNumber(v: SExpr | undefined): boolean {
+	return typeof v === "string" && /^\d+$/.test(v);
+}
+
+/** A track or via names its net by number alone, as KiCad 8 writes it. The name belongs to pad and zone records. */
+function trackNetProblem(t: readonly SExpr[]): string | undefined {
+	const net = child(t, "net");
+	if (!net) return undefined;
+	return net.length === 2 && isNetNumber(net[1])
+		? undefined
+		: `(${String(t[0])}) has a net that is not a single net number`;
+}
+
+/** A pad names its net by number and name, as KiCad 8 writes it. */
+function padNetProblem(p: readonly SExpr[], name: string, ref: string): string | undefined {
+	const net = child(p, "net");
+	if (!net) return undefined;
+	return net.length === 3 && isNetNumber(net[1]) && typeof net[2] === "string"
+		? undefined
+		: `pad ${name} on ${ref} has a net that is not a number and a name`;
+}
+
 function trackProblem(t: readonly SExpr[]): string | undefined {
 	const bad = unexpectedChild(t, TRACK_HEADS, 0);
 	if (bad) return bad;
 	const layer = child(t, "layer")?.[1];
 	if (layer !== "F.Cu" && layer !== "B.Cu") return `(${String(t[0])}) on layer ${String(layer)}`;
-	return numericProblem(t) ?? lengthsProblem(t, "width", 1) ?? zeroLengthProblem(t);
+	return numericProblem(t) ?? trackNetProblem(t) ?? lengthsProblem(t, "width", 1) ?? zeroLengthProblem(t);
 }
 
 /**
@@ -537,6 +559,7 @@ function viaProblem(v: readonly SExpr[]): string | undefined {
 		unexpectedChild(v, VIA_HEADS, 0) ??
 		viaSpanProblem(v) ??
 		numericProblem(v) ??
+		trackNetProblem(v) ??
 		lengthsProblem(v, "size", 1) ??
 		lengthsProblem(v, "drill", 1)
 	);
@@ -578,7 +601,7 @@ function padProblem(p: readonly SExpr[], ref: string): string | undefined {
 	const copper = copperLayersOf(layers);
 	// A through-hole or SMD pad is copper, so it needs a copper layer. A non-plated hole may be a mask-only bore.
 	if (type !== "np_thru_hole" && copper.length === 0) return `pad ${name} on ${ref} has no copper layer`;
-	const structural = numericProblem(p) ?? lengthsProblem(p, "size", 2);
+	const structural = numericProblem(p) ?? lengthsProblem(p, "size", 2) ?? padNetProblem(p, name, ref);
 	if (structural) return structural;
 	if (type === "np_thru_hole") return boreProblem(p, name, ref, shape, copper.length > 0);
 	// An SMD pad is a flat land and never carries a hole. A through-hole pad needs its drill.

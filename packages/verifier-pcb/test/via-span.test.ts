@@ -60,8 +60,8 @@ test("via-span-matrix: a via on a span other than F.Cu and B.Cu fails the parse"
 
 test("via-span-matrix: copper-removal options on ordinary through vias fail the parse", () => {
 	const variants: readonly (readonly [string, string])[] = [
-		["remove_unused_layers", onVias('(net 2 "GND")', '(net 2 "GND") (remove_unused_layers yes)')],
-		["keep_end_layers", onVias('(net 2 "GND")', '(net 2 "GND") (keep_end_layers yes)')],
+		["remove_unused_layers", onVias("(net 2)", "(net 2) (remove_unused_layers yes)")],
+		["keep_end_layers", onVias("(net 2)", "(net 2) (keep_end_layers yes)")],
 	];
 	for (const [label, text] of variants) {
 		assert.equal(parseFailed(text), true, `${label} must fail the parse`);
@@ -75,9 +75,9 @@ test("via-span-matrix: ordinary F.Cu/B.Cu through vias pass, in either layer ord
 
 test("benign-via-options: free, locked and tenting metadata on ordinary through vias keep the board passing", () => {
 	const variants: readonly (readonly [string, string])[] = [
-		["free yes", onVias('(net 2 "GND")', '(net 2 "GND") (free yes)')],
-		["locked yes", onVias('(net 2 "GND")', '(net 2 "GND") (locked yes)')],
-		["tenting front back", onVias('(net 2 "GND")', '(net 2 "GND") (tenting front back)')],
+		["free yes", onVias("(net 2)", "(net 2) (free yes)")],
+		["locked yes", onVias("(net 2)", "(net 2) (locked yes)")],
+		["tenting front back", onVias("(net 2)", "(net 2) (tenting front back)")],
 	];
 	for (const [label, text] of variants) {
 		const v = verdictFor(text);

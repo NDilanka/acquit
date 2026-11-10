@@ -21,8 +21,8 @@ const hidden: HiddenSample = (() => {
 	return r.hidden;
 })();
 
-const LED_RISE = '(segment (start 127.95 103) (end 127.95 106) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
-const LED_RUN = '(segment (start 122.95 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+const LED_RISE = '(segment (start 127.95 103) (end 127.95 106) (width 0.25) (layer "F.Cu") (net 4))';
+const LED_RUN = '(segment (start 122.95 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4))';
 
 /** Replaces one honest item, asserting the item is present so a test never passes on an unchanged board. */
 const edit = (from: string, to: string): string => {
@@ -40,7 +40,7 @@ test("the honest board passes with its hidden sample", () => {
 });
 
 test("a 0.005 mm air gap between a track end and its pad is an open net", () => {
-	const v = verdictFor(edit(LED_RISE, '(segment (start 127.95 103) (end 127.95 105.22) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))'));
+	const v = verdictFor(edit(LED_RISE, '(segment (start 127.95 103) (end 127.95 105.22) (width 0.25) (layer "F.Cu") (net 4))'));
 	assert.equal(okOf(v, "connected"), false);
 	assert.equal(okOf(v, "hidden-probe"), false);
 	assert.equal(v.pass, false);
@@ -48,8 +48,8 @@ test("a 0.005 mm air gap between a track end and its pad is an open net", () => 
 
 test("a 0.005 mm air gap in the middle of a track splits the net", () => {
 	const halves =
-		'(segment (start 122.95 103) (end 125 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A")) ' +
-		'(segment (start 125.255 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+		'(segment (start 122.95 103) (end 125 103) (width 0.25) (layer "F.Cu") (net 4)) ' +
+		'(segment (start 125.255 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4))';
 	const v = verdictFor(edit(LED_RUN, halves));
 	assert.equal(okOf(v, "connected"), false);
 	assert.equal(okOf(v, "hidden-probe"), false);
@@ -67,15 +67,15 @@ test("contact is decided by copper overlap, and a positive gap of any size stays
 		[105.215, false, "0.010 mm gap"],
 	];
 	for (const [y, touches, label] of cases) {
-		const v = verdictFor(edit(LED_RISE, `(segment (start 127.95 103) (end 127.95 ${y}) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))`));
+		const v = verdictFor(edit(LED_RISE, `(segment (start 127.95 103) (end 127.95 ${y}) (width 0.25) (layer "F.Cu") (net 4))`));
 		assert.equal(okOf(v, "connected"), touches, `${label}: connected`);
 		assert.equal(okOf(v, "hidden-probe"), touches, `${label}: hidden-probe`);
 	}
 });
 
 test("a branch that meets the middle of a track, at its centre or its edge, is connected", () => {
-	const centre = '(segment (start 125 103) (end 125 104.5) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
-	const edge = '(segment (start 125 103.25) (end 125 104.5) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+	const centre = '(segment (start 125 103) (end 125 104.5) (width 0.25) (layer "F.Cu") (net 4))';
+	const edge = '(segment (start 125 103.25) (end 125 104.5) (width 0.25) (layer "F.Cu") (net 4))';
 	for (const [label, branch] of [
 		["centre", centre],
 		["edge", edge],
@@ -86,21 +86,21 @@ test("a branch that meets the middle of a track, at its centre or its edge, is c
 });
 
 test("a zero-length track is a parse failure, not a copper dot", () => {
-	const dot = '(segment (start 125 103) (end 125 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+	const dot = '(segment (start 125 103) (end 125 103) (width 0.25) (layer "F.Cu") (net 4))';
 	assert.equal(parseFailed(edit(LED_RUN, `${LED_RUN} ${dot}`)), true);
 });
 
 test("curved copper that only nearly touches other copper fails closed as a parse failure", () => {
 	// The GND via sits at (126.05, 108.5) with radius 0.3 mm. This stub ends 0.425 mm from its centre, so its cap is
 	// exactly tangent to the true via edge. The checker cannot decide that contact within the via's approximation.
-	const stub = '(segment (start 125.625 108.5) (end 124.5 108.5) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+	const stub = '(segment (start 125.625 108.5) (end 124.5 108.5) (width 0.25) (layer "F.Cu") (net 4))';
 	assert.equal(parseFailed(edit(LED_RUN, `${LED_RUN} ${stub}`)), true);
 });
 
 test("curved copper with a real 0.005 mm gap is open, not joined", () => {
 	// The same stub moved 0.005 mm further from the via. The gap is far enough from zero to decide, so it is not a
 	// parse failure, and the stub joins no other net.
-	const stub = '(segment (start 125.62 108.5) (end 124.5 108.5) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+	const stub = '(segment (start 125.62 108.5) (end 124.5 108.5) (width 0.25) (layer "F.Cu") (net 4))';
 	const v = verdictFor(edit(LED_RUN, `${LED_RUN} ${stub}`));
 	assert.equal(v.findings.some(f => !f.ok && f.rule === "parse"), false);
 	assert.equal(okOf(v, "no-shorts"), true);

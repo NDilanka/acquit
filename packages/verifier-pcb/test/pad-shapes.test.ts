@@ -97,14 +97,14 @@ const ovalSpec = (): Spec => {
 
 test("tall-oval-clearance: a 0.1 mm gap from a tall oval pad fails clearance", () => {
 	// The pad's right edge is at x = 120.5 mm. The track's left edge at x = 120.6 mm leaves a true gap of 0.1 mm.
-	const near = verify(ovalSpec(), ovalBoard('(segment (start 120.7 113.9) (end 120.7 114.1) (width 0.2) (layer "F.Cu") (net 2 "OTHER"))'));
+	const near = verify(ovalSpec(), ovalBoard('(segment (start 120.7 113.9) (end 120.7 114.1) (width 0.2) (layer "F.Cu") (net 2))'));
 	assert.equal(near.findings.some(f => !f.ok && f.rule === "parse"), false, "the fixture must parse");
 	assert.equal(okOf(near, "clearance"), false);
 	assert.equal(near.pass, false);
 });
 
 test("tall-oval-clearance: the same track 0.4 mm from the pad is clear, so the failure above is the gap", () => {
-	const far = verify(ovalSpec(), ovalBoard('(segment (start 121 113.9) (end 121 114.1) (width 0.2) (layer "F.Cu") (net 2 "OTHER"))'));
+	const far = verify(ovalSpec(), ovalBoard('(segment (start 121 113.9) (end 121 114.1) (width 0.2) (layer "F.Cu") (net 2))'));
 	assert.equal(far.findings.some(f => !f.ok && f.rule === "parse"), false, "the fixture must parse");
 	assert.equal(okOf(far, "clearance"), true);
 });

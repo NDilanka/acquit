@@ -20,7 +20,7 @@ const hidden: HiddenSample = (() => {
 	return r.hidden;
 })();
 
-const LED_RUN = '(segment (start 122.95 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+const LED_RUN = '(segment (start 122.95 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4))';
 
 /** Replaces one honest item, asserting the item is present so a test never passes on an unchanged board. */
 const edit = (from: string, to: string): string => {
@@ -58,8 +58,8 @@ test("a non-plated bore that cuts through a routed track fails clearance", () =>
 test("a non-plated hole is not copper, so it cannot bridge a break in a net", () => {
 	// The track is split with a 0.255 mm gap. The bore lies across the gap and cuts both track ends.
 	const halves =
-		'(segment (start 122.95 103) (end 125 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A")) ' +
-		'(segment (start 125.255 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4 "LED_A"))';
+		'(segment (start 122.95 103) (end 125 103) (width 0.25) (layer "F.Cu") (net 4)) ' +
+		'(segment (start 125.255 103) (end 127.95 103) (width 0.25) (layer "F.Cu") (net 4))';
 	const bridge =
 		'(footprint "MountingHole:MountingHole_0.4mm" (layer "F.Cu") (at 125.1275 103) (property "Reference" "H6" (at 0 -2 0) (layer "F.SilkS")) (pad "1" np_thru_hole circle (at 0 0) (size 0.4 0.4) (drill 0.4) (layers "*.Cu" "*.Mask")))';
 	const v = verdictFor(edit(LED_RUN, `${halves} ${bridge}`));
