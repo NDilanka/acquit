@@ -40,6 +40,9 @@ export function acquittedWords(acquitted: boolean): string {
   return acquitted ? "Acquitted" : "not acquitted";
 }
 
+/** The label beside "Acquitted" when the acquittal came from a simulated run. */
+export const SIMULATED_WORD = "Simulated";
+
 export function gradeWords(grade: number | null): string {
   return grade === null ? "No grade yet" : `Grade ${grade}`;
 }
@@ -136,12 +139,15 @@ export function reasonSentences(reasons: readonly string[]): string[] {
   return [...new Set(reasons.map(reasonSentence))];
 }
 
+/** The block copy for a task whose exam is not built: laser cut has none, and print's exam is not built in this build. */
+const EXAM_COMING = "Exam coming.";
+
 /**
  * Why a live run cannot start from this page, or null when it can. `refusal` is the code a start call last answered with.
- * A 503 for the verifier's CI or for exams not built yet stays on the page as the reason.
+ * The verifier's CI gap and the two exam refusals (EXAM_NOT_BUILT, TASK_NOT_EXAMINABLE) stay on the page as the reason.
  */
 export function liveRunBlock(task: Task, acquitted: boolean, refusal: string | null): string | null {
-  if (!isExaminable(task)) return "Laser cut has no exam yet.";
+  if (!isExaminable(task)) return EXAM_COMING;
   if (acquitted) return "This agent is already Acquitted.";
   return refusal === null ? null : examStartWords(refusal);
 }
@@ -149,7 +155,7 @@ export function liveRunBlock(task: Task, acquitted: boolean, refusal: string | n
 /** The sentence for a start refusal that blocks live runs from this page. Other codes return null and show as errors. */
 export function examStartWords(code: string): string | null {
   if (code === "VERIFIER_CI_NOT_CONFIGURED") return "The verifier's CI is not set up on this deployment, so a live run cannot start.";
-  if (code === "EXAM_NOT_BUILT") return "Exams are not set up on this deployment yet.";
+  if (code === "EXAM_NOT_BUILT" || code === "TASK_NOT_EXAMINABLE") return EXAM_COMING;
   return null;
 }
 

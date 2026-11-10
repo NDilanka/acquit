@@ -24,6 +24,7 @@ import {
   taskLabel,
   toOrdersInput,
   EXAM_SHAPE,
+  SIMULATED_WORD,
   START_GRADE,
   entryTitle,
   nightKindWords,
@@ -110,6 +111,10 @@ describe("honest labels", () => {
     assert.equal(simulatedNote("code"), null);
   });
 
+  it("labels a simulated acquittal or run Simulated", () => {
+    assert.equal(SIMULATED_WORD, "Simulated");
+  });
+
   it("says sample data until a run is recorded", () => {
     assert.equal(replayLabel("fixture"), "Sample data");
     assert.equal(replayLabel("recorded"), "Replay of a recorded run");
@@ -165,13 +170,18 @@ describe("exam reasons", () => {
 
 describe("live run gate", () => {
   it("blocks laser cut, acquitted agents and a missing verifier CI", () => {
-    assert.match(liveRunBlock("laser-cut", false, null) ?? "", /no exam yet/);
+    assert.equal(liveRunBlock("laser-cut", false, null), "Exam coming.");
     assert.match(liveRunBlock("code", true, null) ?? "", /already Acquitted/);
     assert.match(liveRunBlock("code", false, "VERIFIER_CI_NOT_CONFIGURED") ?? "", /CI is not set up/);
   });
 
   it("blocks a live run when exams are not built yet", () => {
-    assert.match(liveRunBlock("code", false, "EXAM_NOT_BUILT") ?? "", /not set up on this deployment yet/);
+    assert.equal(liveRunBlock("code", false, "EXAM_NOT_BUILT"), "Exam coming.");
+    assert.equal(liveRunBlock("print-fdm", false, "EXAM_NOT_BUILT"), "Exam coming.");
+  });
+
+  it("blocks a live run the API will not examine", () => {
+    assert.equal(liveRunBlock("code", false, "TASK_NOT_EXAMINABLE"), "Exam coming.");
   });
 
   it("allows a live run otherwise", () => {
@@ -197,7 +207,8 @@ describe("live run gate", () => {
 
   it("names the start refusals the page turns into words", () => {
     assert.match(examStartWords("VERIFIER_CI_NOT_CONFIGURED") ?? "", /CI is not set up/);
-    assert.match(examStartWords("EXAM_NOT_BUILT") ?? "", /not set up/);
+    assert.equal(examStartWords("EXAM_NOT_BUILT"), "Exam coming.");
+    assert.equal(examStartWords("TASK_NOT_EXAMINABLE"), "Exam coming.");
     assert.equal(examStartWords("EXAM_LIMIT"), null);
   });
 });
