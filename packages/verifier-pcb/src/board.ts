@@ -14,9 +14,12 @@ import {
 	ovalError,
 	ovalPolygon,
 	planArc,
+	pointSegmentDistance,
 	rectPolygon,
 	ROUNDOFF,
 	rotate,
+	segmentSegmentDistance,
+	shoelaceArea,
 	type ArcPlan,
 } from "./geometry.ts";
 import {
@@ -93,7 +96,7 @@ export type Board = {
 	readonly ok: boolean;
 	readonly error?: string;
 	readonly hasZones: boolean;
-	readonly outlineLoops: readonly (readonly Vec2[])[];
+	readonly outlineLoops: readonly (readonly Vec2[])[]; // at most one: a second closed loop fails the parse
 	readonly outlineOpen: boolean; // true when an Edge.Cuts chain does not close
 	readonly tracks: readonly Track[];
 	readonly pads: readonly PadInst[]; // conducting pads only; a non-plated hole is in holes
@@ -231,6 +234,65 @@ function chainLoops(edges: readonly (readonly [Vec2, Vec2])[]): { loops: Vec2[][
 		else open = true;
 	}
 	return { loops, open };
+}
+
+/** A closed loop that encloses less area than this is no board outline. */
+const MIN_LOOP_AREA = JOIN_TOLERANCE * JOIN_TOLERANCE;
+
+/**
+ * Checks the Edge.Cuts edges before they are chained, so that the chain follows one path and never chooses between
+ * two. Returns the construct that breaks a simple boundary, or undefined. An edge of no length has no direction. A
+ * point where three or more edge ends meet is a branch. Two edges that share no end point must not touch or cross.
+ * Two edges that share an end point must not overlap: the far end of each must lie clear of the other.
+ */
+function outlineEdgesProblem(edges: readonly (readonly [Vec2, Vec2])[]): string | undefined {
+	for (const [a, b] of edges) {
+		if (sameKey(a, b)) return "a zero-length Edge.Cuts edge";
+	}
+	const ends: Vec2[] = [];
+	for (const [a, b] of edges) ends.push(a, b);
+	for (let i = 0; i < ends.length; i++) {
+		let meet = 0;
+		for (let j = 0; j < ends.length; j++) {
+			if (j !== i && sameKey(ends[i] as Vec2, ends[j] as Vec2)) meet += 1;
+		}
+		if (meet > 1) return "an Edge.Cuts branch (three or more edges meet at one point)";
+	}
+	for (let i = 0; i < edges.length; i++) {
+		const [a1, a2] = edges[i] as readonly [Vec2, Vec2];
+		for (let j = i + 1; j < edges.length; j++) {
+			const [b1, b2] = edges[j] as readonly [Vec2, Vec2];
+			const a1Shared = sameKey(a1, b1) || sameKey(a1, b2);
+			const a2Shared = sameKey(a2, b1) || sameKey(a2, b2);
+			if (!a1Shared && !a2Shared) {
+				if (segmentSegmentDistance(a1, a2, b1, b2) <= JOIN_TOLERANCE) {
+					return "an Edge.Cuts edge that touches or crosses another without sharing an end point";
+				}
+				continue;
+			}
+			const b1Shared = sameKey(b1, a1) || sameKey(b1, a2);
+			const b2Shared = sameKey(b2, a1) || sameKey(b2, a2);
+			if ((a1Shared && a2Shared) || (b1Shared && b2Shared)) {
+				return "Edge.Cuts edges that overlap: two edges share both end points";
+			}
+			// Each edge now shares exactly one end point. The other end of each must lie clear of the other edge.
+			const farI = a1Shared ? a2 : a1;
+			const farJ = b1Shared ? b2 : b1;
+			const foldsOnto =
+				pointSegmentDistance(farI, b1, b2) <= JOIN_TOLERANCE || pointSegmentDistance(farJ, a1, a2) <= JOIN_TOLERANCE;
+			if (foldsOnto) return "Edge.Cuts edges that overlap: one folds back over the other";
+		}
+	}
+	return undefined;
+}
+
+/** One closed Edge.Cuts loop is the board. More than one is a cutout or an island; a loop of no area is no board. */
+function loopsProblem(loops: readonly (readonly Vec2[])[]): string | undefined {
+	if (loops.length > 1) return "more than one closed Edge.Cuts outline (a cutout or an island)";
+	for (const loop of loops) {
+		if (shoelaceArea(loop) < MIN_LOOP_AREA) return "a closed Edge.Cuts outline that encloses no area";
+	}
+	return undefined;
 }
 
 // The supported subset. A construct outside these lists fails the parse with its name, so it is never silently
@@ -628,7 +690,7 @@ export function readBoard(text: string): Board {
 	if (limit) return { ...EMPTY, hasZones, error: limit };
 
 	const edges: [Vec2, Vec2][] = [];
-	const loops: Vec2[][] = [];
+	const circles: Vec2[][] = [];
 	for (const g of children(root, "gr_line")) {
 		if (child(g, "layer")?.[1] !== "Edge.Cuts") continue;
 		const a = point(child(g, "start"));
@@ -654,10 +716,14 @@ export function readBoard(text: string): Board {
 		if (child(g, "layer")?.[1] !== "Edge.Cuts") continue;
 		const c = point(child(g, "center"));
 		const e = point(child(g, "end"));
-		if (c && e) loops.push(circlePolygon(c, dist(c, e)));
+		if (c && e) circles.push(circlePolygon(c, dist(c, e)));
 	}
+	const edgeProblem = outlineEdgesProblem(edges);
+	if (edgeProblem) return { ...EMPTY, hasZones, error: `unsupported construct: ${edgeProblem}` };
 	const chained = chainLoops(edges);
-	loops.push(...chained.loops);
+	const loops = [...circles, ...chained.loops];
+	const loopProblem = loopsProblem(loops);
+	if (loopProblem) return { ...EMPTY, hasZones, error: `unsupported construct: ${loopProblem}` };
 
 	const tracks: Track[] = [];
 	for (const seg of children(root, "segment")) {

@@ -109,6 +109,17 @@ const OVAL_STEPS = 16;
  */
 export const ROUNDOFF = 1e-9;
 
+/** The area enclosed by a closed polygon, mm squared. Zero for a polygon with no area. */
+export function shoelaceArea(poly: readonly Vec2[]): number {
+	let s = 0;
+	for (let i = 0; i < poly.length; i++) {
+		const p = poly[i] as Vec2;
+		const q = poly[(i + 1) % poly.length] as Vec2;
+		s += p[0] * q[1] - q[0] * p[1];
+	}
+	return Math.abs(s) / 2;
+}
+
 /** The largest distance between a circle of radius r and its polygon. The polygon lies inside the circle. */
 export function circleError(r: number): number {
 	return r * (1 - Math.cos(Math.PI / CIRCLE_SIDES));

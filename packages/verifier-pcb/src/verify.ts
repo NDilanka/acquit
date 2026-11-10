@@ -144,16 +144,6 @@ function fmt(n: number): string {
 	return n.toFixed(2);
 }
 
-function shoelaceArea(poly: readonly Vec2[]): number {
-	let s = 0;
-	for (let i = 0; i < poly.length; i++) {
-		const p = poly[i] as Vec2;
-		const q = poly[(i + 1) % poly.length] as Vec2;
-		s += p[0] * q[1] - q[0] * p[1];
-	}
-	return Math.abs(s) / 2;
-}
-
 /**
  * The disjoint-set root of each item, and the first pair whose contact cannot be decided. Items touch only when the
  * true gap is within float roundoff. The true gap lies within slop of the modelled gap, so a pair is joined when its
@@ -412,11 +402,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		if (g.kind === "poly" && g.pad && !padGeo.has(g.pad.id)) padGeo.set(g.pad.id, i);
 	});
 
-	// Outline: the largest closed loop is the board.
-	let boardPoly: readonly Vec2[] | undefined;
-	for (const loop of board.outlineLoops) {
-		if (!boardPoly || shoelaceArea(loop) > shoelaceArea(boardPoly)) boardPoly = loop;
-	}
+	// Outline: a parsed board has at most one closed loop, and that loop is the board (board.ts refuses any more).
+	const boardPoly: readonly Vec2[] | undefined = board.outlineLoops[0];
 	const bbox = boardPoly ? boxOf(boardPoly, 0) : undefined;
 	const boardW = bbox ? bbox[2] - bbox[0] : 0;
 	const boardH = bbox ? bbox[3] - bbox[1] : 0;
