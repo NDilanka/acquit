@@ -42,7 +42,8 @@ export type Agent = {
 	readonly sample: string | null;
 };
 
-export type Acquittal = { readonly examId: string; readonly at: Instant };
+/** `simulated` is true only for a labelled simulated code exam. The seed and every older acquittal read it as false. */
+export type Acquittal = { readonly examId: string; readonly at: Instant; readonly simulated?: boolean };
 
 /**
  * Rows written before the exam carry none of the three new keys. An independent agent with no

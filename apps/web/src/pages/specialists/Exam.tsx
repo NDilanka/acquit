@@ -35,7 +35,11 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
     let cancelled = false;
     setRecordLoading(true); setError(null);
     specialists.exam(agent.id, examId).then((r) => {
-      if (!cancelled) { setExam(r.exam); setRecordLoading(false); }
+      if (!cancelled) {
+        if (r) setExam(r.exam);
+        else setError(new ApiError(404, "EXAM_NOT_FOUND"));
+        setRecordLoading(false);
+      }
     }, (e) => { if (!cancelled) { setError(e); setRecordLoading(false); } });
     return () => { cancelled = true; };
   }, [agent.id, examId, readTick]);
@@ -45,6 +49,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
     const timer = window.setTimeout(() => {
       specialists.exam(agent.id, exam.id).then((r) => {
         if (cancelled) return;
+        if (!r) { setError(new ApiError(404, "EXAM_NOT_FOUND")); return; }
         setExam(r.exam);
         if (!isOpenExam(r.exam.status)) reload();
       }, (e) => { if (!cancelled) setError(e); });
@@ -75,7 +80,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   if (!exam && !sample) return <section className="exam-empty"><h1>Take the exam</h1><p>No recorded exam is available. Run it to make a record.</p>
     {error !== null && <ErrorNote error={error} />}<div className="owner-actions"><button type="button" className="btn" disabled={starting || block !== null} onClick={() => void start()}>{starting ? "Starting…" : "Take the exam"}</button></div>{block && <p>{block}</p>}</section>;
   return <>
-    <ExamRecord status={status} task={agent.task} grade={exam ? agent.grade : null} date={date}
+    <ExamRecord status={status} simulated={exam?.simulated ?? sample?.simulated ?? false} task={agent.task} grade={exam ? agent.grade : null} date={date}
       visible={open ? null : visible} hidden={open ? null : hidden} shape={EXAM_SHAPE[agent.task]}
       recordPath={recordPath} provenance={<>
         {exam ? exam.simulated ? "Simulated" : "Live run" : sample?.source === "recorded"

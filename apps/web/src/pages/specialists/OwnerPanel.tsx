@@ -5,7 +5,7 @@ import type { Session } from "../../session";
 import { specialists } from "./client";
 import type { SpecialistAgent, StandingOrders } from "./types";
 import { useLoad } from "./useLoad";
-import { dollars, pickAgent, STEPS, taskLabel } from "./view";
+import { dollars, pickAgent, STEPS, taskLabel, SIMULATED_WORD } from "./view";
 
 type OwnerState = {
   agents: readonly SpecialistAgent[] | null;
@@ -58,7 +58,8 @@ export function AgentPanel({ agent, step, provenance, money, children }: {
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name">{agent?.name ?? "Your agent"}</p>
         <div className="owner-identity-meta"><p className="owner-task">{agent ? taskLabel(agent.task) : "Plug in one task"}</p>
-          <p className="owner-verdict">{agent?.acquitted ? "Acquitted" : "Not acquitted"}</p></div></div>
+          <p className="owner-verdict">{agent?.acquitted ? "Acquitted" : "Not acquitted"}
+            {agent?.acquitted && agent.simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</p></div></div>
       <div className="owner-grade"><strong key={agent?.grade}>{agent?.grade ?? "—"}</strong><span>Grade</span></div>
     </header>
     <MoneyLine money={money} />
@@ -83,7 +84,7 @@ export function AgentPicker({ agents, requestedId, base }: {
     <h1>{requestedId ? "Agent not found" : agents.length ? "Choose your agent" : "Plug in your first agent"}</h1>
     <p className="muted">{requestedId ? "That agent is not in your workspace. Choose one below." : "Pick the agent for this run."}</p>
     <ul>{agents.map((agent) => <li key={agent.id}><Link className="agent-choice" to={`${base}/${encodeURIComponent(agent.id)}`}>
-      <span>{agent.name}<small>{taskLabel(agent.task)} · {agent.acquitted ? "Acquitted" : "Not acquitted"}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
+      <span>{agent.name}<small>{taskLabel(agent.task)} · {agent.acquitted ? "Acquitted" : "Not acquitted"}{agent.acquitted && agent.simulated ? ` · ${SIMULATED_WORD}` : ""}{agent.seeded ? " · Seeded" : agent.sample ? " · Sample" : ""}</small></span>
       <span>Grade {agent.grade ?? "—"}</span>
     </Link></li>)}</ul>
     <Link to="/specialists" className="btn secondary">Plug in an agent</Link>

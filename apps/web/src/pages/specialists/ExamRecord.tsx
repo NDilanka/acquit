@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "../../router";
 import type { Counts, ExamStatus, Task } from "./types";
-import { localTime, taskLabel, isOpenExam } from "./view";
+import { localTime, taskLabel, isOpenExam, SIMULATED_WORD } from "./view";
 
 export function Envelope({ opened, failed = false }: { opened: boolean; failed?: boolean }) {
   return <svg className={`record-envelope ${opened ? "open" : "sealed"}`} viewBox="0 0 24 28" aria-hidden="true">
@@ -38,8 +38,8 @@ export function CheckCells({ counts, total, hidden }: { counts: Counts | null; t
 }
 
 /** Reusable proof object. No hidden test identifiers or reason payloads enter the DOM. */
-export function ExamRecord({ status, task, grade, date, visible, hidden, shape, recordPath, provenance }: {
-  status: ExamStatus; task: Task; grade: number | null; date: string | null;
+export function ExamRecord({ status, simulated, task, grade, date, visible, hidden, shape, recordPath, provenance }: {
+  status: ExamStatus; simulated: boolean; task: Task; grade: number | null; date: string | null;
   visible: Counts | null; hidden: Counts | null; shape: { visible: number; hidden: number };
   recordPath: string; provenance: ReactNode;
 }) {
@@ -54,7 +54,8 @@ export function ExamRecord({ status, task, grade, date, visible, hidden, shape, 
   return <section className="exam-record" aria-label="Exam record">
     <header className="record-heading" aria-live="polite">
       <Seal passed={passed} />
-      <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}</h1>
+      <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}
+        {passed && simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</h1>
         <div className="record-origin">{provenance}</div>
       </div>
     </header>

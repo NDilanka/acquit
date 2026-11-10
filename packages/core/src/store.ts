@@ -177,6 +177,10 @@ export function openDatabase(path: string, fixtures: readonly FixtureRef[] = [],
 	if (!visitorColumns.has("state")) db.exec("ALTER TABLE visitors ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'");
 	if (!visitorColumns.has("repository_id")) db.exec("ALTER TABLE visitors ADD COLUMN repository_id INTEGER");
 	migrateLastingAccounts(db);
+	// exam_runs gained the simulated flag with the labelled simulated code exam (contract section 2.2). A row from before
+	// it names a live run, so the default 0 reads it as live.
+	const examColumns = new Set(db.prepare("SELECT name FROM pragma_table_info('exam_runs')").all().map(row => String(row.name)));
+	if (!examColumns.has("simulated")) db.exec("ALTER TABLE exam_runs ADD COLUMN simulated INTEGER NOT NULL DEFAULT 0");
 	// The seed acquittal (contract section 3.6): a pre-exam visitor starter (`<handle>-agent`, owned by that visitor's
 	// operator) takes the seed acquittal dated at the visitor's creation. A row that already has an acquittal or a sample
 	// is never written, so a second run changes nothing. House agents and plugged samples match neither statement.

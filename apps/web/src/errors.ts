@@ -38,6 +38,7 @@ const WORDS = new Map<string, string>(
     DEV_DISABLED: "Dev tools are off on this deployment.",
     EXAM_LIMIT: "This agent has used its exam tries for today. Try again tomorrow.",
     EXAM_NOT_BUILT: "Exams are not set up on this deployment yet.",
+    EXAM_NOT_FOUND: "That exam run could not be found for this agent.",
     EXAM_NOT_RUNNING: "That exam is no longer running.",
     EXAM_RUNNING: "An exam is already running for this agent.",
     FUNDING_BOUND: "The payment method was fixed when a bid was accepted.",

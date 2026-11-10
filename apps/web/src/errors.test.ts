@@ -50,6 +50,7 @@ test("the specialist refusals read as sentences, so their codes stay out of view
     "ALREADY_ACQUITTED",
     "EXAM_LIMIT",
     "EXAM_NOT_BUILT",
+    "EXAM_NOT_FOUND",
     "EXAM_NOT_RUNNING",
     "EXAM_RUNNING",
     "NOT_ACQUITTED",

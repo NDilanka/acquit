@@ -35,10 +35,18 @@ describe("agent mapping", () => {
     const acquitted = agentOf({ ...rawAgent, acquittal: { examId: "exam_9", at: "2026-11-09T20:00:00.000Z" } });
     assert.equal(acquitted.acquitted, true);
     assert.equal(acquitted.seeded, false);
+    assert.equal(acquitted.simulated, false);
 
     const seeded = agentOf({ ...rawAgent, acquittal: { examId: "seed", at: "2026-11-09T20:00:00.000Z", seeded: true } });
     assert.equal(seeded.acquitted, true);
     assert.equal(seeded.seeded, true);
+  });
+
+  it("reads simulated from the acquittal on the owner's list, and only when the acquittal says so", () => {
+    const simulated = agentOf({ ...rawAgent, acquittal: { examId: "exam_9", at: "2026-11-09T20:00:00.000Z", simulated: true } });
+    assert.equal(simulated.acquitted, true);
+    assert.equal(simulated.simulated, true);
+    assert.equal(agentOf({ ...rawAgent, acquittal: null }).simulated, false);
   });
 
   it("keeps standing orders null when the list omits them", () => {
@@ -79,6 +87,7 @@ describe("agent mapping", () => {
     const plugged = plugOf({ id: "agt_2", name: "Printer", task: "print-fdm", runner: "simulated-fdm", sample: "print-fdm" });
     assert.equal(plugged.acquitted, false);
     assert.equal(plugged.seeded, false);
+    assert.equal(plugged.simulated, false);
     assert.equal(plugged.grade, null);
   });
 
@@ -101,6 +110,18 @@ describe("agent mapping", () => {
     assert.equal(seeded.acquitted, true);
     assert.equal(seeded.seeded, true);
     assert.deepEqual(seeded.record, { jobsTaken: 2, verified: 1, rejected: 0 });
+
+    const simulated = publicAgentOf({
+      id: "agt_8",
+      name: "F",
+      task: "code",
+      runner: "claude-code",
+      acquittal: { examId: "exam_8", at: "2026-11-09T20:00:00.000Z", simulated: true },
+      grade: 50,
+      record,
+    });
+    assert.equal(simulated.simulated, true);
+    assert.equal(open.simulated, false);
   });
 });
 
@@ -112,12 +133,17 @@ describe("exam mapping", () => {
     assert.deepEqual(exam.reasons, []);
     assert.equal(exam.endedAt, null);
     assert.equal(exam.startedAt, null);
-    assert.equal(exam.simulated, undefined);
+    assert.equal(exam.simulated, false);
   });
 
   it("preserves supplied simulation metadata without inferring it", () => {
     assert.equal(examOf({ id: "sim", status: "PASSED", simulated: true }).simulated, true);
     assert.equal(examOf({ id: "live", status: "PASSED", simulated: false }).simulated, false);
+  });
+
+  it("reads simulated from the run, and is false when the run omits it", () => {
+    assert.equal(examOf({ id: "exam_1", status: "RUNNING", simulated: true }).simulated, true);
+    assert.equal(examOf({ id: "exam_2", status: "PASSED" }).simulated, false);
   });
 
   it("reads acquitted for the exam read from the agent's acquittal", () => {
@@ -214,6 +240,13 @@ describe("floor and morning mapping", () => {
     assert.equal(seeded.seeded, true);
     const plain = floorOf({ agentId: "agt_6", name: "Plain", task: "code", grade: 45, record, earnedCents: 0 });
     assert.equal(plain.seeded, false);
+  });
+
+  it("reads the floor's simulated flag from the top level", () => {
+    const simulated = floorOf({ agentId: "agt_7", name: "Sim", task: "code", grade: 50, record, earnedCents: 0, simulated: true });
+    assert.equal(simulated.simulated, true);
+    const plain = floorOf({ agentId: "agt_8", name: "Plain", task: "code", grade: 45, record, earnedCents: 0 });
+    assert.equal(plain.simulated, false);
   });
 
   it("keeps the four payout fields the morning report reads", () => {
