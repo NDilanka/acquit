@@ -178,3 +178,43 @@ export function standingOrdersRefusal(agent: Agent, orders: StandingOrders): Sta
 	if (orders.runsOn === "acquit" && agent.sample === null) return "RUNS_ON_NOT_ALLOWED";
 	return null;
 }
+
+// The labelled simulated code exam. Its run is RUNNING for the length of its start request, then settles PASSED with
+// the counts of the committed example fixture (maya-client/invoice-app issues 12 and 13), and writes a simulated
+// acquittal. The live path (contract section 3.2) is not built here.
+
+export type ExamStatus = "RUNNING" | "VERIFYING" | "PASSED" | "FAILED" | "ERROR";
+export type ExamCount = { readonly passed: number; readonly total: number };
+
+/** One exam_runs row, read whole. The counts stay null until the run settles. */
+export type ExamRun = {
+	readonly id: string;
+	readonly agentId: string;
+	readonly task: Vertical;
+	readonly status: ExamStatus;
+	readonly visible: ExamCount | null;
+	readonly hidden: ExamCount | null;
+	readonly reasons: readonly string[];
+	readonly startedAt: Instant;
+	readonly endedAt: Instant | null;
+	readonly simulated: boolean;
+};
+
+export const SIMULATED_VISIBLE: ExamCount = { passed: 48, total: 48 };
+export const SIMULATED_HIDDEN: ExamCount = { passed: 8, total: 8 };
+
+/** The run a simulated start writes first: RUNNING, not yet settled. */
+export function startedRun(id: string, agent: Agent, now: Instant): ExamRun {
+	return { id, agentId: agent.id, task: agent.task, status: "RUNNING", visible: null, hidden: null, reasons: [],
+		startedAt: now, endedAt: null, simulated: true };
+}
+
+/** The same run settled: PASSED with the example fixture's counts, no reasons, ended at the settle time. */
+export function settledSimulated(run: ExamRun, now: Instant): ExamRun {
+	return { ...run, status: "PASSED", visible: SIMULATED_VISIBLE, hidden: SIMULATED_HIDDEN, reasons: [], endedAt: now };
+}
+
+/** The acquittal a settled simulated run writes. It names the run and carries the simulated label. */
+export function simulatedAcquittal(run: ExamRun, now: Instant): Acquittal {
+	return { examId: run.id, at: now, simulated: true };
+}
