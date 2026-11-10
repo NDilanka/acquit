@@ -7,10 +7,10 @@ export function WorkTime({ at, full = false }: { at: string; full?: boolean }) {
   return <time dateTime={at} title={timeWords(at, true)}>{timeWords(at, full)}</time>;
 }
 
-export function TimelineMark({ at, title, children, tone = "", index = 0, placeholder = false }: {
-  at?: string; title: ReactNode; children?: ReactNode; tone?: string; index?: number; placeholder?: boolean;
+export function TimelineMark({ at, title, children, tone = "", index = 0, placeholder = false, id }: {
+  at?: string; title: ReactNode; children?: ReactNode; tone?: string; index?: number; placeholder?: boolean; id?: string;
 }) {
-  return <li className={`work-mark ${tone}`} data-tone={tone === "fail" ? "fail" : undefined} style={{ "--mark-delay": `${Math.min(index, 8) * 60}ms` } as CSSProperties}>
+  return <li id={id} tabIndex={id ? -1 : undefined} className={`work-mark ${tone}`} data-tone={tone === "fail" ? "fail" : undefined} style={{ "--mark-delay": `${Math.min(index, 8) * 60}ms` } as CSSProperties}>
     <span className="work-time">{placeholder ? null : at ? <WorkTime at={at} /> : "Now"}</span>
     <span className="work-node" aria-hidden="true" />
     <div className="work-body"><p className="work-what">{title}</p>{children}</div>

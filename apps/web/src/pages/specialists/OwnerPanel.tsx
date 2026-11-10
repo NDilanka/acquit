@@ -5,7 +5,7 @@ import { match } from "../../route";
 import type { Session } from "../../session";
 import { specialists } from "./client";
 import { agentTaskLabel, completedSetup, reportWorkDates, workAgent } from "./ownerState";
-import type { SpecialistAgent, StandingOrders } from "./types";
+import type { OwnerActivity, SpecialistAgent, StandingOrders } from "./types";
 import { useLoad } from "./useLoad";
 import { dollars, gradeChangeWords, hasLiveExam, ownerAgent, STEPS, SIMULATED_WORD } from "./view";
 
@@ -16,6 +16,7 @@ type OwnerState = {
   agent: SpecialistAgent | null;
   requestedId?: string;
   selectionPending: boolean;
+  activity: { data: { activity: OwnerActivity | null } | null; error: unknown; reload: () => void };
   provenance: string;
   setProvenance: (words: string) => void;
   orders: StandingOrders | null;
@@ -37,15 +38,19 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   const held = useLoad(async () => session?.user.role === "OPERATOR" ? api.escrow() : { escrow: [] }, `${session?.user.handle ?? ""}:${session?.user.role ?? ""}`);
   const route = match(location.path);
   const requestedId = ("agentId" in route ? route.agentId : undefined) ?? location.search.get("agent") ?? undefined;
-  const defaultWork = requestedId === undefined && (route.name === "specialistActivity" || route.name === "specialistEarnings");
+  const workScreen = route.name === "specialistActivity" || route.name === "specialistEarnings";
+  const activity = useLoad(async () => ({ activity: session?.user.role === "OPERATOR" && workScreen
+    ? await specialists.activity(50) : null }), `${session?.user.handle ?? ""}:${session?.user.role ?? ""}:${workScreen}`);
+  const defaultWork = requestedId === undefined && workScreen;
   const recent = useLoad(async () => ({ report: session?.user.role === "OPERATOR" && defaultWork
     ? await specialists.morningReport("1970-01-01T00:00:00.000Z") : null }), `${session?.user.handle ?? ""}:${defaultWork}`);
-  const selectionPending = defaultWork && recent.data?.report == null && recent.error === null;
+  const selectionPending = defaultWork && ((recent.data?.report == null && recent.error === null) || (activity.data === null && activity.error === null));
   const storageKey = `acquit.ownerAgent:${session?.user.handle ?? ""}`;
   const [lastId, setLastId] = useState(() => {
     try { return localStorage.getItem(storageKey); } catch { return null; }
   });
-  const agent = defaultWork ? workAgent(load.data ?? [], reportWorkDates(recent.data?.report ?? null))
+  const agent = defaultWork ? workAgent(load.data ?? [], [...reportWorkDates(recent.data?.report ?? null),
+    ...(activity.data?.activity?.activity.map(job => ({ agentId:job.agentId,at:job.updatedAt })) ?? [])])
     : ownerAgent(load.data ?? [], requestedId, lastId);
   useEffect(() => {
     if (!agent) return;
@@ -57,7 +62,7 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   const [drafting, setDrafting] = useState(false);
   const [ack, setAck] = useState<{ id: string; orders: StandingOrders | null } | null>(null);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
-  return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId, selectionPending,
+  return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId, selectionPending, activity,
     provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
     heldCents: held.data === null ? null : held.data.escrow.reduce((sum, row) => sum + row.cents, 0),
     moneyError: held.error, reloadMoney: held.reload,

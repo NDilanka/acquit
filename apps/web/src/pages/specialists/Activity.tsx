@@ -9,6 +9,7 @@ import { useReport } from "./useReport.ts";
 import { EventMark, JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
 import { agentDelta, jobLanes, reportEvents, type WorkLane } from "./work.ts";
 import type { SpecialistAgent } from "./types.ts";
+import { ActivityFeed } from "./ActivityFeed.tsx";
 
 export function ActivityPage({ agentId }: { readonly agentId?: string }) {
   const { agent } = useOwner();
@@ -19,6 +20,35 @@ export function ActivityPage({ agentId }: { readonly agentId?: string }) {
 }
 
 function LiveActivity() {
+  const { activity, agent, orders, announce } = useOwner();
+  const active = autopilotIsOn(agent,orders);
+  const feed = activity.data?.activity;
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (!document.hidden) activity.reload(); },15000);
+    return () => window.clearInterval(timer);
+  }, [activity.reload]);
+  useEffect(() => {
+    if (feed === null) return;
+    announce(activity.error ? "Activity did not load." : feed ? "Activity updated." : "Loading activity.");
+  }, [feed,activity.error,announce]);
+  if (feed === null) return <LegacyActivity />;
+  const ordersPath = `/specialists/orders${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
+  return <SpecialistPage step={4} lead="" provenance="Live workspace activity">
+    <section className="work-page"><header className="work-heading">
+      <h1>{active ? "You can close this tab now." : "Autopilot is off"}</h1>
+      <p className="spec-lead">{active ? <><b>{agent?.name}</b> works within your orders.</> : "No new bids are placed automatically."}</p>
+    </header>
+      {activity.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2><p>Retry to read your jobs and runner state.</p></div>
+        : !feed ? <WorkSkeleton count={5} label="Loading activity." /> : <ActivityFeed feed={feed} />}
+      <div className="owner-actions">{activity.error ? <button className="btn" type="button" onClick={activity.reload}>Retry</button>
+        : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
+        : <Link className="btn" to={ordersPath}>Turn on autopilot</Link>}
+        <Link to={ordersPath}>Review standing orders</Link></div>
+    </section>
+  </SpecialistPage>;
+}
+
+function LegacyActivity() {
   const { agent, orders, announce } = useOwner();
   const report = useReport();
   const [readAt, setReadAt] = useState(() => new Date().toISOString());

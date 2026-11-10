@@ -8,6 +8,7 @@ import { useReport } from "./useReport.ts";
 import { dollars, paidTotalCents } from "./view.ts";
 import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
 import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes } from "./work.ts";
+import { releasedWorkHref } from "./liveWork.ts";
 
 export function AgentEarningsPage() {
   const { agent, agents, selectionPending } = useOwner();
@@ -17,7 +18,7 @@ export function AgentEarningsPage() {
 }
 
 function Earnings() {
-  const { agent, announce } = useOwner();
+  const { agent, announce, activity } = useOwner();
   const report = useReport(true);
   const totals = useLoad(async () => agent ? specialists.agent(agent.id) : null, agent?.id ?? "");
   const [readAt] = useState(() => new Date().toISOString());
@@ -40,7 +41,7 @@ function Earnings() {
             <p className="spec-lead">Workspace report since <WorkTime at={data.since} full />. {quiet ? "No work was recorded." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${data.bids.length} bids recorded.`}</p>
           </div><div className="earnings-refs"><p>PayPal sandbox · workspace earnings</p>
             {data.payouts.map((payout) => <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
-              <p>{dollars(payout.amountCents)} released · {jobLabel(payout.jobId)}</p>
+              <p><Link to={releasedWorkHref(payout.jobId,activity.data?.activity)}>{dollars(payout.amountCents)} released · {jobLabel(payout.jobId)}</Link></p>
               <p className="muted">Reference <code>{payout.reference.match(/.{1,4}/g)?.join(" ")}</code></p>
               <CopyWorkValue value={payout.reference} label="Copy reference" />
             </div>)}
@@ -52,7 +53,8 @@ function Earnings() {
                 const latest = entries[0]!;
                 return <TimelineMark key={id} at={latest.at} index={index} tone={latest.kind === "rejected" ? "fail" : ""}
                   title={latest.jobId ? <Link to={`/jobs/${encodeURIComponent(latest.jobId)}`}>{jobLabel(latest.jobId)}</Link> : "Workspace activity"}>
-                  <p className="work-status">{latest.status}{latest.kind === "released" && " · PayPal sandbox"}</p>
+                  <p className="work-status">{latest.kind === "released" && latest.jobId
+                    ? <Link to={releasedWorkHref(latest.jobId,activity.data?.activity)}>{latest.status} · PayPal sandbox</Link> : latest.status}</p>
                   <ul className="earnings-events">{entries.slice(1).map((entry) => <li key={entry.id}>{entry.status} · <WorkTime at={entry.at} /></li>)}</ul>
                 </TimelineMark>;
               })}
@@ -70,7 +72,7 @@ function Earnings() {
         </>}
       <div className="owner-actions">{report.error
         ? <button type="button" className="btn" onClick={() => { announce("Retrying earnings."); report.reload(); }}>Retry</button>
-        : firstPaid && !quiet ? <Link className="btn" to={`/jobs/${encodeURIComponent(firstPaid.jobId)}`}>See the paid work</Link>
+        : firstPaid && !quiet ? <Link className="btn" to={releasedWorkHref(firstPaid.jobId,activity.data?.activity)}>See the paid work</Link>
         : <Link className="btn" to={ordersPath}>Review standing orders</Link>}
       </div>
     </section>

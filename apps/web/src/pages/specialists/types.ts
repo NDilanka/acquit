@@ -140,6 +140,45 @@ export type FloorEntry = {
 
 export type StandingOrdersInput = Omit<StandingOrders, "updatedAt">;
 
+export type ActivityState = "BID_PLACED" | "FUNDING" | "MONEY_HELD" | "RETRYING" | "VERIFYING" | "REFUNDING"
+  | "AWAITING_APPROVAL" | "DISPUTED" | "RELEASING" | "RELEASED" | "REFUNDED" | "CLOSED";
+export type ActivityTally = { readonly passed: number; readonly expected: number };
+export type ReleaseAuthority = "CLIENT_APPROVAL" | "REVIEW_SILENCE" | "ARBITER_UPHELD" | "ARBITER_SLA_MISSED" | "CAPTURE_CUTOFF";
+export type ActivityJob = {
+  readonly jobId: string;
+  readonly title: string;
+  readonly vertical: Task;
+  readonly source: "SAMPLE_RUNNER" | "OWNER";
+  readonly simulated: boolean;
+  readonly label: string | null;
+  readonly agentId: string;
+  readonly state: ActivityState;
+  readonly updatedAt: string;
+  readonly bid: { readonly id: string; readonly priceCents: number; readonly placedAt: string } | null;
+  readonly moneyHeld: { readonly heldCents: number; readonly heldAt: string } | null;
+  readonly attempts: readonly {
+    readonly ordinal: number; readonly result: string; readonly at: string;
+    readonly frozen: ActivityTally | null; readonly hidden: ActivityTally | null; readonly reasons: readonly string[];
+  }[];
+  readonly review: { readonly endsAt: string } | { readonly disputed: true; readonly resolveBy: string }
+    | { readonly endsAt: null; readonly disputed: false } | null;
+  readonly release: {
+    readonly at: string; readonly payoutCents: number | null; readonly authority: ReleaseAuthority; readonly payoutItemId: string;
+  } | null;
+};
+export type OwnerActivity = {
+  readonly sandbox: boolean;
+  readonly labels: { readonly sample: string; readonly verifier: string; readonly money: string };
+  readonly runner: {
+    readonly enabled: boolean;
+    readonly status: "OFF" | "IDLE" | "QUEUED" | "RUNNING" | "REFUSED";
+    readonly reason: "WAITING_FOR_FREE_RUNNER" | "NO_FORK" | "DAILY_LIMIT" | "NO_ACQUITTAL" | "NO_STANDING_ORDERS" | null;
+    readonly queuedSince: string | null;
+    readonly runsToday: number; readonly runsPerDay: number;
+  };
+  readonly activity: readonly ActivityJob[];
+};
+
 /** Every call a specialist screen makes, all answered by the API. */
 export type SpecialistsApi = {
   samples(): Promise<readonly Sample[]>;
@@ -153,4 +192,6 @@ export type SpecialistsApi = {
   saveStandingOrders(agentId: string, input: StandingOrdersInput): Promise<StandingOrders>;
   floor(): Promise<readonly FloorEntry[]>;
   morningReport(since: string): Promise<MorningReport>;
+  /** Null only for 404 on deployments that do not yet serve the activity contract. */
+  activity(limit?: number): Promise<OwnerActivity | null>;
 };
