@@ -121,7 +121,9 @@ function ExamForAgent({ agent, onChanged }: { readonly agent: SpecialistAgent; r
       visible: sample.visible,
       hidden: sample.hidden,
       ready: true,
-      verdict: <VerdictLine status={sample.outcome} gradeText={`Starts at grade ${START_GRADE}`} reasons={sample.reasons} />,
+      verdict: (
+        <VerdictLine status={sample.outcome} gradeText={`Starts at grade ${START_GRADE}`} reasons={sample.reasons} recorded />
+      ),
     };
   } else if (exam !== null && open) {
     board = {
@@ -324,18 +326,22 @@ function ChecksBoard({
   );
 }
 
+/** The verdict of a run. A replay's verdict is the recorded run's, so it says so; it is not this agent's status. */
 function VerdictLine({
   status,
   gradeText,
   reasons,
+  recorded = false,
 }: {
   readonly status: ExamStatus;
   readonly gradeText: string | null;
   readonly reasons: readonly string[];
+  readonly recorded?: boolean;
 }) {
   if (status === "PASSED") {
     return (
       <p className="spec-verdict-line">
+        {recorded && <span className="muted">In the recorded run:</span>}
         <span className="pill ok">{examStatusWords(status)}</span>
         {gradeText && <span className="spec-grade">{gradeText}</span>}
       </p>
@@ -343,6 +349,7 @@ function VerdictLine({
   }
   return (
     <div className="spec-verdict-line">
+      {recorded && <span className="muted">In the recorded run:</span>}
       <span className="pill new">{examStatusWords(status)}</span>
       {reasonSentences(reasons).length > 0 && (
         <ul className="spec-reasons">

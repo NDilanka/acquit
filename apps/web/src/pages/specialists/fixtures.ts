@@ -247,7 +247,8 @@ export const fixtureApi: SpecialistsApi = {
     const e = exams.find((x) => x.exam.id === examId && x.agentId === agentId);
     if (!e) throw new ApiError(404, "NOT_FOUND");
     advance(e);
-    return { exam: e.exam, acquitted: ownerAgent(agentId).acquittedAt !== null };
+    // A new object per read, as a JSON response gives. The screen only reschedules its poll when the exam changes.
+    return { exam: { ...e.exam }, acquitted: ownerAgent(agentId).acquittedAt !== null };
   },
 
   async standingOrders(agentId) {
