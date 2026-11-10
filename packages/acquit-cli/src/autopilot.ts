@@ -62,7 +62,7 @@ export type AutopilotDeps = {
 
 export type HeldCheck = {
 	readonly held: boolean;
-	/** `paypal` when the money-held endpoint answered, `acquit` when the lock check alone decided. */
+	/** `paypal` when PayPal's read decided (money-held source PAYPAL_READ), `acquit` otherwise. */
 	readonly source: "paypal" | "acquit";
 	readonly reason: string;
 };
@@ -379,9 +379,13 @@ async function confirmHeld(worker: Worker, job: JobBody): Promise<HeldCheck> {
 		return { held: false, source: "acquit", reason: "the job is not in progress for this operator" };
 	}
 	try {
-		const body = await worker.client.get(`/api/me/jobs/${encodeURIComponent(job.id)}/money-held`) as { readonly held?: unknown };
-		if (body.held !== true) return { held: false, source: "paypal", reason: "PayPal says the money is not held" };
-		return { held: true, source: "paypal", reason: "PayPal says the money is held" };
+		const body = await worker.client.get(`/api/me/jobs/${encodeURIComponent(job.id)}/money-held`) as { readonly held?: unknown; readonly source?: unknown };
+		// The server answers PAYPAL_READ when it read PayPal, and ESCROW_STATE when it could not.
+		const source = body.source === "PAYPAL_READ" ? "paypal" : "acquit";
+		if (body.held !== true) {
+			return { held: false, source, reason: source === "paypal" ? "PayPal says the money is not held" : "the escrow state says the money is not held" };
+		}
+		return { held: true, source, reason: source === "paypal" ? "PayPal says the money is held" : "the escrow state says the money is held" };
 	} catch (error) {
 		if (error instanceof CliError && error.code === "NOT_FOUND") {
 			return { held: true, source: "acquit", reason: "the job is locked to this operator" };

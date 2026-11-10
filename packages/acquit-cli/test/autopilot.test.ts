@@ -232,6 +232,23 @@ test("runs a job only when PayPal says its money is held", async () => {
 	assert.equal(readState(h).jobs["job-1"].phase, "RAN");
 });
 
+test("an escrow-state money-held answer is labelled acquit, and not-held still stops the run", async () => {
+	const h = harness();
+	track(h, { "job-1": { phase: "BID", commit: null } });
+	h.jobs.set("job-1", won("job-1"));
+	const promptPath = join(h.root, "prompt.md");
+	writeFileSync(promptPath, "Fix the failing test.\n");
+	h.gets.set(HELD_JOB_1, { held: false, source: "ESCROW_STATE", captureId: null, captureStatus: null, checkedAt: "2026-11-10T11:59:00.000Z" });
+	assert.equal(await tick(h, { promptPath }), 0);
+	assert.equal(h.calls.runs.length, 0);
+	assert.equal(readState(h).jobs["job-1"].note, "not run: the escrow state says the money is not held (source acquit)");
+
+	h.gets.set(HELD_JOB_1, { held: true, source: "ESCROW_STATE", captureId: null, captureStatus: null, checkedAt: "2026-11-10T11:59:00.000Z" });
+	assert.equal(await tick(h, { promptPath }), 0);
+	assert.equal(h.calls.runs.length, 1);
+	assert.match(recordText(h), /"note":"held by acquit"/);
+});
+
 test("falls back to the lock check when the money-held endpoint is absent", async () => {
 	const h = harness();
 	track(h, { "job-1": { phase: "BID", commit: null } });
