@@ -15,10 +15,11 @@ import { GitHubAppError, GitHubAppNotConfigured, boundedDetail } from "./github.
 import type { WorkRepoFork } from "./github.ts";
 import type { GitHubFailureCode, MergeOutcome, WorkRepoPort } from "./github.ts";
 import { commercialSplit } from "./ledger.ts";
+import type { UsdCents } from "./ledger.ts";
 import { logQuoted } from "./log.ts";
 import type { Agent, OperatorEffect, OperatorRow } from "./operator.ts";
 import { disputeOfVerifiedDelivery, quote } from "./paypal.ts";
-import type { EvidenceType, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
+import type { EvidenceType, FeeQuote, PayPal, PayPalCall, PayPalObservation, ProcessorFeeModel, RemoteOutcome, ResourceRead, WebhookEnvelope, WebhookResource, WebhookResourceKind } from "./paypal.ts";
 import { manifestOf, matchFixture } from "./fixtures.ts";
 import { isHouseClient, isStarterJob, retirable } from "./house-client.ts";
 import type { JobScopingRow } from "./scoping.ts";
@@ -229,9 +230,25 @@ export type Ports = {
 	readonly clock: { now(): Instant };
 };
 
-/** The House client's pick among a job's bids: the lowest PENDING operator bid, the earlier one on a tie, then the lower id. */
-function lowestPendingBid(row: JobRow | null): JobRow["bids"][number] | undefined {
-	return row?.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING")
+/**
+ * The quote for a bid's price, or null when the House cannot fund it: the split holds no such price, or PayPal's fee
+ * would not fit inside the split's fee. A malformed fee model is a deployment fault, not a bad bid, so it still throws.
+ */
+function fundableQuote(price: UsdCents, feeModel: ProcessorFeeModel): FeeQuote | null {
+	try {
+		return quote(commercialSplit(price), feeModel);
+	} catch (error) {
+		if (error instanceof Error && error.message !== "Invalid fee model") return null;
+		throw error;
+	}
+}
+
+/**
+ * The House client's pick among a job's bids: the lowest PENDING operator bid the House can fund, the earlier one on a tie,
+ * then the lower id. A bid it cannot fund stays PENDING and expires with the rest, so one stored price never stops an accept.
+ */
+function lowestPendingBid(row: JobRow | null, feeModel: ProcessorFeeModel): JobRow["bids"][number] | undefined {
+	return row?.bids.filter(bid => bid.kind !== "HOUSE" && bid.status === "PENDING" && fundableQuote(bid.price, feeModel) !== null)
 		.toSorted((a, b) => a.price - b.price || a.placedAt.localeCompare(b.placedAt) || a.id.localeCompare(b.id))[0];
 }
 
@@ -274,15 +291,16 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 			const operator = await ports.store.readOperator(actor.operatorId);
 			const agent = await ports.store.readAgent(command.agent);
 			if (!operator || !agent) return { kind: "DENIED", reason: "NOT_FOUND" };
-			loaded = { kind: "PLACE_BID", operator, agent, credits: await ports.store.readCredits(operator.id) };
+			loaded = { kind: "PLACE_BID", operator, agent, credits: await ports.store.readCredits(operator.id),
+				fundable: fundableQuote(command.price, ports.feeModel) !== null };
 		} else if (command.type === "AcceptBid") {
-			// A starter accept names no bid. The House client takes the lowest PENDING bid of the row this attempt reads, so the
+			// A starter accept names no bid. The House client takes the lowest PENDING bid it can fund on the row this attempt reads, so the
 			// bid and the version it commits come from one read, and a version conflict chooses again from the fresh row.
-			const bid = command.bidId === undefined ? (isHouseClient(actor) ? lowestPendingBid(row) : undefined) : row?.bids.find(b => b.id === command.bidId);
+			const bid = command.bidId === undefined ? (isHouseClient(actor) ? lowestPendingBid(row, ports.feeModel) : undefined) : row?.bids.find(b => b.id === command.bidId);
 			if (!bid) return { kind: "DENIED", reason: "NOT_FOUND" };
 			applied = { ...command, bidId: bid.id };
 			// The job's own choice wins; a job nobody chose for funds with the deployment's mode.
-			loaded = { kind: "ACCEPT_BID", quote: quote(commercialSplit(bid.price), ports.feeModel),
+			loaded = { kind: "ACCEPT_BID", quote: fundableQuote(bid.price, ports.feeModel),
 				fundingMode: row?.funding ?? ports.fundingMode?.() ?? "checkout" };
 		} else if (command.type === "CancelJob") {
 			// A House retire is decided on the row this attempt reads, so a bid or an accept that committed after the pass's

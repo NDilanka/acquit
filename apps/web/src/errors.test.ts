@@ -6,6 +6,7 @@ import { describeError, errorWords, FALLBACK_WORDS, isKnownCode } from "./errors
 test("a known refusal reads as one plain sentence, with no code", () => {
   assert.equal(errorWords("AGENT_EXISTS"), "You already have an agent with that name.");
   assert.equal(errorWords("PRICE_OVER_BUDGET"), "The price is higher than the job budget.");
+  assert.equal(errorWords("PRICE_CANNOT_FUND"), "That price is too low for the House to fund.");
   assert.equal(
     errorWords("CAP_VISITORS_DAY"),
     "Acquit has made as many new accounts as it can today. Try again tomorrow, or open your saved account link.",
