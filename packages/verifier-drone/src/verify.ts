@@ -435,8 +435,7 @@ const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
 };
 
 function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], shots: readonly Shot[], camera: Camera, frame: Frame | null): Scene {
-	const xs = geometry.area.map(p => p[0]);
-	const ys = geometry.area.map(p => p[1]);
+	const box = bounds(geometry.area);
 	const paths: ScenePath[] = [{ id: "area", kind: "area", layer: "survey", z: 0, closed: true, points: geometry.area }];
 	for (const zone of geometry.zones) paths.push({ id: `zone-${zone.id}`, kind: "zone", layer: "no-fly", z: 0, closed: true, points: zone.polygon });
 	let maxAlt = 0;
@@ -467,7 +466,7 @@ function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs:
 			paths.push({ id: `photo-${index}`, kind: "footprint", layer: "photo", z: 0, closed: true, order: index, points: corners });
 		}
 	}
-	return { units: "m", size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), maxAlt], paths };
+	return { units: "m", size: [box.maxX - box.minX, box.maxY - box.minY, maxAlt], paths };
 }
 
 function refused(reason: string, scene: Scene): Verdict {
@@ -554,6 +553,11 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 	const frontWorst = worstFrontLeg(legs, spec.camera);
 	const sides = sideOverlaps(legs, spec.camera);
 	const samples = sampleGrid(geometry.area);
+	// Iterative extrema, never argument spreads: a long list cannot overflow the stack.
+	let maxAltitude = parsed.waypoints[0]!.alt;
+	for (const waypoint of parsed.waypoints) if (waypoint.alt > maxAltitude) maxAltitude = waypoint.alt;
+	let sideMin = 1;
+	for (const pair of sides) if (pair.overlap < sideMin) sideMin = pair.overlap;
 	const measured: Record<string, number | string> = {
 		sceneUnit: "m",
 		cruiseMs: parsed.cruiseMs,
@@ -561,10 +565,10 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		...(parsed.triggerM === null ? {} : { triggerM: parsed.triggerM }),
 		surveyLines: legs.length,
 		flightSeconds: routeSeconds,
-		maxAltitudeM: Math.max(...parsed.waypoints.map(w => w.alt)),
+		maxAltitudeM: maxAltitude,
 		maxGsdCm: gsdWorst === null ? 0 : gsdCm(gsdWorst.alt, spec.camera),
 		frontOverlap: frontWorst === null ? 0 : frontOverlapOf(frontWorst, spec.camera),
-		sideOverlap: sides.length === 0 ? 1 : Math.min(...sides.map(pair => pair.overlap)),
+		sideOverlap: sides.length === 0 ? 1 : sideMin,
 		samplePoints: samples.length,
 		photographs: shots.length,
 		uncoveredSamples: samples.filter(p => holding(p, shots, spec.camera, frame) === 0).length,
