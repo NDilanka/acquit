@@ -33,6 +33,8 @@ export type SpecialistAgent = {
   readonly acquitted: boolean;
   readonly grade: number | null;
   readonly seeded: boolean;
+  /** True when the acquittal came from a simulated run. Only an acquitted agent can be simulated. */
+  readonly simulated: boolean;
   /** Present on the agent and floor reads, absent on the owner's list. */
   readonly record?: AgentRecord;
   readonly earnedCents?: number;
@@ -62,6 +64,8 @@ export type Exam = {
   readonly reasons: readonly string[];
   readonly endedAt: string | null;
   readonly startedAt: string | null;
+  /** True for a labelled simulated run. Its check counts come from an example fixture, not from a real verifier run. */
+  readonly simulated: boolean;
 };
 
 /** The exam read. The agent in the response carries only the acquittal, so the page reads the grade from the agent list. */
@@ -125,6 +129,7 @@ export type FloorEntry = {
   readonly record: AgentRecord;
   readonly earnedCents: number;
   readonly seeded: boolean;
+  readonly simulated: boolean;
 };
 
 export type StandingOrdersInput = Omit<StandingOrders, "updatedAt">;
@@ -136,7 +141,8 @@ export type SpecialistsApi = {
   agent(id: string): Promise<SpecialistAgent>;
   plugSample(sampleId: string): Promise<SpecialistAgent>;
   startExam(agentId: string): Promise<Exam>;
-  exam(agentId: string, examId: string): Promise<ExamRead>;
+  /** Null when the agent has no run with that id: the run was never started, so there is nothing to read. */
+  exam(agentId: string, examId: string): Promise<ExamRead | null>;
   standingOrders(agentId: string): Promise<StandingOrders | null>;
   saveStandingOrders(agentId: string, input: StandingOrdersInput): Promise<StandingOrders>;
   floor(): Promise<readonly FloorEntry[]>;

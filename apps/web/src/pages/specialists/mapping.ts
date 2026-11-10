@@ -21,7 +21,7 @@ import type {
 } from "./types.ts";
 import { flagsFrom } from "./view.ts";
 
-export type RawAcquittal = { examId: string; at: string; seeded?: boolean } | null;
+export type RawAcquittal = { examId: string; at: string; seeded?: boolean; simulated?: boolean } | null;
 
 export type RawSample = Omit<Sample, "runsOn">;
 
@@ -58,6 +58,7 @@ export type RawExam = {
   reasons?: string[];
   endedAt?: string | null;
   startedAt?: string | null;
+  simulated?: boolean;
 };
 
 export type RawFloor = {
@@ -68,6 +69,7 @@ export type RawFloor = {
   record: AgentRecord;
   earnedCents: number;
   seeded?: boolean;
+  simulated?: boolean;
 };
 
 /** A morning entry. The API also sends amountCents, bidId and runId, which the screens do not read. */
@@ -89,7 +91,7 @@ export function sampleOf(raw: RawSample): Sample {
   return { id: raw.id, name: raw.name, task: raw.task, runner: raw.runner, blurb: raw.blurb, runsOn: "acquit", plugged: raw.plugged };
 }
 
-/** An agent on the owner's own list. `seeded` comes only from the acquittal the API marks as seeded. */
+/** An agent on the owner's own list. `seeded` and `simulated` come only from the acquittal the API marks. */
 export function agentOf(raw: RawAgent): SpecialistAgent {
   return {
     id: raw.id,
@@ -100,6 +102,7 @@ export function agentOf(raw: RawAgent): SpecialistAgent {
     acquitted: raw.acquittal !== null,
     grade: raw.grade,
     seeded: raw.acquittal?.seeded === true,
+    simulated: raw.acquittal?.simulated === true,
     standingOrders: raw.standingOrders ?? null,
     gate: raw.gate ?? null,
   };
@@ -116,11 +119,12 @@ export function plugOf(raw: RawPlugged): SpecialistAgent {
     acquitted: false,
     grade: null,
     seeded: false,
+    simulated: false,
     standingOrders: null,
   };
 }
 
-/** The public agent read. `seeded` comes only from the acquittal the API marks as seeded, the same as on the owner's list. */
+/** The public agent read. `seeded` and `simulated` come only from the acquittal, the same as on the owner's list. */
 export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
   return {
     id: raw.id,
@@ -131,6 +135,7 @@ export function publicAgentOf(raw: RawPublicAgent): SpecialistAgent {
     acquitted: raw.acquittal !== null,
     grade: raw.grade,
     seeded: raw.acquittal?.seeded === true,
+    simulated: raw.acquittal?.simulated === true,
     gate: raw.gate ?? null,
     record: recordOf(raw.record),
     earnedCents: raw.record.earnedCents ?? 0,
@@ -150,6 +155,7 @@ export function examOf(raw: RawExam): Exam {
     reasons: raw.reasons ?? [],
     endedAt: raw.endedAt ?? null,
     startedAt: raw.startedAt ?? null,
+    simulated: raw.simulated === true,
   };
 }
 
@@ -199,6 +205,7 @@ export function floorOf(raw: RawFloor): FloorEntry {
     record: recordOf(raw.record),
     earnedCents: raw.earnedCents,
     seeded: raw.seeded === true,
+    simulated: raw.simulated === true,
   };
 }
 

@@ -50,6 +50,7 @@ function floorAgent(entry: FloorEntry): SpecialistAgent {
     acquitted: true,
     grade: entry.grade,
     seeded: entry.seeded,
+    simulated: entry.simulated,
     record: entry.record,
     earnedCents: entry.earnedCents,
   };

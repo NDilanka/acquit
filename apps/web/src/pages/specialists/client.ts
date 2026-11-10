@@ -51,19 +51,6 @@ async function call<T>(method: Method, path: string, body?: unknown): Promise<T>
   return data as T;
 }
 
-/**
- * The exam routes answer 404 NOT_FOUND until the server serves them. The screens read that as exams not built,
- * the same as the EXAM_NOT_BUILT code the server gives once it refuses live runs.
- */
-async function examCall<T>(method: Method, path: string, body?: unknown): Promise<T> {
-  try {
-    return await call<T>(method, path, body);
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 404 && e.code === "NOT_FOUND") throw new ApiError(e.status, "EXAM_NOT_BUILT");
-    throw e;
-  }
-}
-
 const enc = encodeURIComponent;
 
 export const specialists: SpecialistsApi = {
@@ -87,14 +74,22 @@ export const specialists: SpecialistsApi = {
     return plugOf(r.agent);
   },
 
+  // A refused start throws with the server's code: EXAM_NOT_BUILT (503) for print, TASK_NOT_EXAMINABLE (409) for laser cut.
   async startExam(agentId) {
-    const r = await examCall<{ exam: RawExam }>("POST", `/api/me/agents/${enc(agentId)}/exam`, {});
+    const r = await call<{ exam: RawExam }>("POST", `/api/me/agents/${enc(agentId)}/exam`, {});
     return examOf(r.exam);
   },
 
+  // The start answers the run as RUNNING. The settled counts and the acquittal show on the next read.
   async exam(agentId, examId) {
-    const r = await examCall<RawExamRead>("GET", `/api/me/agents/${enc(agentId)}/exam?examId=${enc(examId)}`);
-    return examReadOf(r);
+    try {
+      const r = await call<RawExamRead>("GET", `/api/me/agents/${enc(agentId)}/exam?examId=${enc(examId)}`);
+      return examReadOf(r);
+    } catch (e) {
+      // A 404 means no run with this id for this agent: the exam was never started, so there is no run to read.
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
   },
 
   async standingOrders(agentId) {

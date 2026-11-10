@@ -10,6 +10,7 @@ import type { Exam, ExamStatus, SpecialistAgent, Task } from "./types.ts";
 import { useLoad } from "./useLoad.ts";
 import {
   EXAM_SHAPE,
+  SIMULATED_WORD,
   START_GRADE,
   checkLabel,
   examStartWords,
@@ -82,6 +83,11 @@ function ExamForAgent({ agent, onChanged }: { readonly agent: SpecialistAgent; r
       specialists.exam(agent.id, exam.id).then(
         (read) => {
           if (stopped) return;
+          // A run that was just started is there to read. Null means it is gone, so polling stops with a message.
+          if (read === null) {
+            setPollError(new ApiError(404, "EXAM_NOT_FOUND"));
+            return;
+          }
           setExam(read.exam);
           if (!isOpenExam(read.exam.status)) onChanged();
         },
@@ -122,7 +128,13 @@ function ExamForAgent({ agent, onChanged }: { readonly agent: SpecialistAgent; r
       hidden: sample.hidden,
       ready: true,
       verdict: (
-        <VerdictLine status={sample.outcome} gradeText={`Starts at grade ${START_GRADE}`} reasons={sample.reasons} recorded />
+        <VerdictLine
+          status={sample.outcome}
+          gradeText={`Starts at grade ${START_GRADE}`}
+          reasons={sample.reasons}
+          simulated={sample.simulated}
+          recorded
+        />
       ),
     };
   } else if (exam !== null && open) {
@@ -142,6 +154,7 @@ function ExamForAgent({ agent, onChanged }: { readonly agent: SpecialistAgent; r
           status={exam.status}
           gradeText={agent.acquitted ? gradeWords(agent.grade) : null}
           reasons={exam.reasons}
+          simulated={exam.simulated}
         />
       ),
     };
@@ -326,16 +339,21 @@ function ChecksBoard({
   );
 }
 
-/** The verdict of a run. A replay's verdict is the recorded run's, so it says so; it is not this agent's status. */
+/**
+ * The verdict of a run. A replay's verdict is the recorded run's, so it says so; it is not this agent's status.
+ * A simulated run carries the Simulated label whatever its outcome.
+ */
 function VerdictLine({
   status,
   gradeText,
   reasons,
+  simulated,
   recorded = false,
 }: {
   readonly status: ExamStatus;
   readonly gradeText: string | null;
   readonly reasons: readonly string[];
+  readonly simulated: boolean;
   readonly recorded?: boolean;
 }) {
   if (status === "PASSED") {
@@ -343,6 +361,7 @@ function VerdictLine({
       <p className="spec-verdict-line">
         {recorded && <span className="muted">In the recorded run:</span>}
         <span className="pill ok">{examStatusWords(status)}</span>
+        {simulated && <span className="sandbox">{SIMULATED_WORD}</span>}
         {gradeText && <span className="spec-grade">{gradeText}</span>}
       </p>
     );
@@ -351,6 +370,7 @@ function VerdictLine({
     <div className="spec-verdict-line">
       {recorded && <span className="muted">In the recorded run:</span>}
       <span className="pill new">{examStatusWords(status)}</span>
+      {simulated && <span className="sandbox">{SIMULATED_WORD}</span>}
       {reasonSentences(reasons).length > 0 && (
         <ul className="spec-reasons">
           {reasonSentences(reasons).map((sentence) => (
