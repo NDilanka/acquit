@@ -29,7 +29,8 @@ import {
 	MAX_OUTLINE_EDGES,
 	MAX_VERTICES,
 } from "./limits.ts";
-import { child, children, num, parseSexprs, type SExpr } from "./sexpr.ts";
+import { fieldOf, listOf, recordProblem, recordsOf } from "./fields.ts";
+import { num, parseSexprs, type SExpr } from "./sexpr.ts";
 import type { Vec2 } from "./types.ts";
 
 export type CopperLayer = "F.Cu" | "B.Cu";
@@ -132,7 +133,7 @@ function layerOf(list: readonly SExpr[] | undefined): CopperLayer | undefined {
 }
 
 function netNameOf(list: readonly SExpr[]): string {
-	const net = child(list, "net");
+	const net = fieldOf(list, "net");
 	if (!net) return "";
 	const v = net[2];
 	return typeof v === "string" ? v : "";
@@ -148,10 +149,10 @@ function copperLayersOf(list: readonly SExpr[] | undefined): CopperLayer[] {
 }
 
 function propertyReference(fp: readonly SExpr[]): string {
-	for (const p of children(fp, "property")) {
+	for (const p of recordsOf(fp, "property")) {
 		if (p[1] === "Reference" && typeof p[2] === "string") return p[2];
 	}
-	for (const t of children(fp, "fp_text")) {
+	for (const t of recordsOf(fp, "fp_text")) {
 		if (t[1] === "reference" && typeof t[2] === "string") return t[2];
 	}
 	return "";
@@ -172,9 +173,9 @@ function padError(shape: string, size: Vec2): number {
 
 /** An arc's end points and its plan, or undefined when a mandatory point is missing. */
 function arcOf(list: readonly SExpr[]): { readonly start: Vec2; readonly end: Vec2; readonly plan: ArcPlan } | undefined {
-	const s = point(child(list, "start"));
-	const m = point(child(list, "mid"));
-	const e = point(child(list, "end"));
+	const s = point(fieldOf(list, "start"));
+	const m = point(fieldOf(list, "mid"));
+	const e = point(fieldOf(list, "end"));
 	if (!s || !m || !e) return undefined;
 	return { start: s, end: e, plan: planArc(s, m, e, MAX_ARC_ERROR, MAX_ARC_PIECES) };
 }
@@ -391,10 +392,6 @@ const REQUIRED_POINTS = new Map<string, readonly string[]>([
 	["fp_circle", ["center", "end"]],
 ]);
 
-function listOf(item: SExpr | undefined): readonly SExpr[] | undefined {
-	return Array.isArray(item) ? (item as readonly SExpr[]) : undefined;
-}
-
 /** The first child of a list that is outside its allowlist, named for the error, or undefined. Zones are skipped. */
 function unexpectedChild(list: readonly SExpr[], allowed: ReadonlySet<string>, atoms: number): string | undefined {
 	const owner = String(list[0]);
@@ -458,7 +455,7 @@ function coordinateProblem(record: readonly SExpr[]): string | undefined {
 
 function requiredProblem(record: readonly SExpr[], names: readonly string[] | undefined): string | undefined {
 	for (const name of names ?? []) {
-		if (!child(record, name)) return `(${name}) missing from (${String(record[0])})`;
+		if (!fieldOf(record, name)) return `(${name}) missing from (${String(record[0])})`;
 	}
 	return undefined;
 }
@@ -466,7 +463,7 @@ function requiredProblem(record: readonly SExpr[], names: readonly string[] | un
 /** A mandatory length field: exactly `count` positive lengths after its head. */
 function lengthsProblem(record: readonly SExpr[], name: string, count: number): string | undefined {
 	const owner = String(record[0]);
-	const field = child(record, name);
+	const field = fieldOf(record, name);
 	if (!field) return `(${name}) missing from (${owner})`;
 	const values = field.slice(1);
 	return values.length === count && values.every(v => isLength(v)) ? undefined : `invalid (${name}) in (${owner})`;
@@ -492,7 +489,7 @@ function numericProblem(record: readonly SExpr[]): string | undefined {
 
 function graphicProblem(g: readonly SExpr[], inFootprint: boolean): string | undefined {
 	const head = String(g[0]);
-	const layer = child(g, "layer")?.[1];
+	const layer = fieldOf(g, "layer")?.[1];
 	if (typeof layer !== "string") return `(${head}) without a layer`;
 	if (layer === "Edge.Cuts") {
 		if (inFootprint || !EDGE_HEADS.has(head)) return `(${head}) on Edge.Cuts`;
@@ -505,8 +502,8 @@ function graphicProblem(g: readonly SExpr[], inFootprint: boolean): string | und
 /** A straight track of no length has no direction, so the checker cannot place its copper. */
 function zeroLengthProblem(t: readonly SExpr[]): string | undefined {
 	if (t[0] !== "segment") return undefined;
-	const a = point(child(t, "start"));
-	const b = point(child(t, "end"));
+	const a = point(fieldOf(t, "start"));
+	const b = point(fieldOf(t, "end"));
 	return a && b && dist(a, b) <= ROUNDOFF ? "(segment) of zero length" : undefined;
 }
 
@@ -516,7 +513,7 @@ function isNetNumber(v: SExpr | undefined): boolean {
 
 /** A track or via names its net by number alone, as KiCad 8 writes it. The name belongs to pad and zone records. */
 function trackNetProblem(t: readonly SExpr[]): string | undefined {
-	const net = child(t, "net");
+	const net = fieldOf(t, "net");
 	if (!net) return undefined;
 	return net.length === 2 && isNetNumber(net[1])
 		? undefined
@@ -525,7 +522,7 @@ function trackNetProblem(t: readonly SExpr[]): string | undefined {
 
 /** A pad names its net by number and name, as KiCad 8 writes it. */
 function padNetProblem(p: readonly SExpr[], name: string, ref: string): string | undefined {
-	const net = child(p, "net");
+	const net = fieldOf(p, "net");
 	if (!net) return undefined;
 	return net.length === 3 && isNetNumber(net[1]) && typeof net[2] === "string"
 		? undefined
@@ -535,7 +532,7 @@ function padNetProblem(p: readonly SExpr[], name: string, ref: string): string |
 function trackProblem(t: readonly SExpr[]): string | undefined {
 	const bad = unexpectedChild(t, TRACK_HEADS, 0);
 	if (bad) return bad;
-	const layer = child(t, "layer")?.[1];
+	const layer = fieldOf(t, "layer")?.[1];
 	if (layer !== "F.Cu" && layer !== "B.Cu") return `(${String(t[0])}) on layer ${String(layer)}`;
 	return numericProblem(t) ?? trackNetProblem(t) ?? lengthsProblem(t, "width", 1) ?? zeroLengthProblem(t);
 }
@@ -545,7 +542,7 @@ function trackProblem(t: readonly SExpr[]): string | undefined {
  * either order. Every other span (same layer, inner, three layers, missing, repeated) is refused, not bridged to B.Cu.
  */
 function viaSpanProblem(v: readonly SExpr[]): string | undefined {
-	const lists = children(v, "layers");
+	const lists = recordsOf(v, "layers");
 	if (lists.length === 0) return "(via) without a layer span";
 	if (lists.length > 1) return "(via) with a repeated layer span";
 	const span = lists[0]?.slice(1).map(x => String(x)) ?? [];
@@ -574,8 +571,8 @@ function boreProblem(p: readonly SExpr[], name: string, ref: string, shape: stri
 	const drillProblem = lengthsProblem(p, "drill", 1);
 	if (drillProblem) return drillProblem;
 	if (!copper) return undefined;
-	const drill = num(child(p, "drill"), 1);
-	const size = point(child(p, "size"));
+	const drill = num(fieldOf(p, "drill"), 1);
+	const size = point(fieldOf(p, "size"));
 	const exact =
 		shape === "circle" &&
 		drill !== undefined &&
@@ -594,7 +591,7 @@ function padProblem(p: readonly SExpr[], ref: string): string | undefined {
 	if (typeof name !== "string") return `pad without a name on ${ref}`;
 	if (typeof type !== "string" || !PAD_TYPES.has(type)) return `pad type ${String(type)} on ${ref}`;
 	if (typeof shape !== "string" || !PAD_SHAPES.has(shape)) return `pad shape ${String(shape)} on ${ref}`;
-	const layers = child(p, "layers");
+	const layers = fieldOf(p, "layers");
 	for (const layer of (layers ?? []).slice(1)) {
 		if (typeof layer !== "string" || !PAD_LAYER.test(layer)) return `pad layer ${String(layer)} on ${ref}`;
 	}
@@ -606,7 +603,7 @@ function padProblem(p: readonly SExpr[], ref: string): string | undefined {
 	if (type === "np_thru_hole") return boreProblem(p, name, ref, shape, copper.length > 0);
 	// An SMD pad is a flat land and never carries a hole. A through-hole pad needs its drill.
 	return type === "smd"
-		? child(p, "drill")
+		? fieldOf(p, "drill")
 			? `smd pad ${name} on ${ref} carries a drill`
 			: undefined
 		: lengthsProblem(p, "drill", 1);
@@ -616,7 +613,7 @@ function footprintProblem(fp: readonly SExpr[]): string | undefined {
 	const bad = unexpectedChild(fp, FOOTPRINT_HEADS, 1);
 	if (bad) return bad;
 	if (typeof fp[1] !== "string") return "footprint without a library name";
-	const layer = child(fp, "layer")?.[1];
+	const layer = fieldOf(fp, "layer")?.[1];
 	if (layer === undefined) return "footprint without a (layer ...) value; only front-side footprints are supported";
 	if (layer !== "F.Cu") return `footprint on layer ${String(layer)}; only front-side footprints are supported`;
 	const ref = propertyReference(fp) || String(fp[1]);
@@ -675,25 +672,25 @@ function containsZone(root: readonly SExpr[]): boolean {
  * exceeded is named.
  */
 function admissionProblem(root: readonly SExpr[]): string | undefined {
-	const onEdge = (g: readonly SExpr[]): boolean => child(g, "layer")?.[1] === "Edge.Cuts";
+	const onEdge = (g: readonly SExpr[]): boolean => fieldOf(g, "layer")?.[1] === "Edge.Cuts";
 	let edges = 0;
 	let vertices = 0;
 	let copper = 0;
-	for (const g of children(root, "gr_line")) if (onEdge(g)) edges += 1;
-	for (const g of children(root, "gr_rect")) if (onEdge(g)) edges += 4;
-	for (const g of children(root, "gr_arc")) {
+	for (const g of recordsOf(root, "gr_line")) if (onEdge(g)) edges += 1;
+	for (const g of recordsOf(root, "gr_rect")) if (onEdge(g)) edges += 4;
+	for (const g of recordsOf(root, "gr_arc")) {
 		const pieces = arcPieces(g);
 		vertices += pieces;
 		if (onEdge(g)) edges += pieces;
 	}
-	for (const g of children(root, "gr_circle")) if (onEdge(g)) vertices += CIRCLE_VERTICES;
-	for (const a of children(root, "arc")) {
+	for (const g of recordsOf(root, "gr_circle")) if (onEdge(g)) vertices += CIRCLE_VERTICES;
+	for (const a of recordsOf(root, "arc")) {
 		const pieces = arcPieces(a);
 		vertices += pieces;
 		copper += pieces;
 	}
-	copper += children(root, "segment").length + children(root, "via").length;
-	for (const fp of children(root, "footprint")) copper += children(fp, "pad").length;
+	copper += recordsOf(root, "segment").length + recordsOf(root, "via").length;
+	for (const fp of recordsOf(root, "footprint")) copper += recordsOf(fp, "pad").length;
 	if (edges > MAX_OUTLINE_EDGES) return `outline has more than ${MAX_OUTLINE_EDGES} edges`;
 	if (vertices > MAX_VERTICES) return `too many flattened vertices (more than ${MAX_VERTICES})`;
 	if (copper > MAX_COPPER_ITEMS) return `too many copper items (more than ${MAX_COPPER_ITEMS})`;
@@ -708,6 +705,9 @@ export function readBoard(text: string): Board {
 	if (!root || root[0] !== "kicad_pcb") return { ...EMPTY, error: "not a single kicad_pcb board" };
 
 	const hasZones = containsZone(root);
+	// The record layer runs first: a field held twice must fail as a repeat, not as whichever copy a reader sees.
+	const record = recordProblem(root);
+	if (record) return { ...EMPTY, hasZones, error: `malformed record: ${record}` };
 	const problem = boardProblem(root);
 	if (problem) return { ...EMPTY, hasZones, error: `unsupported construct: ${problem}` };
 	const limit = admissionProblem(root);
@@ -715,31 +715,31 @@ export function readBoard(text: string): Board {
 
 	const edges: [Vec2, Vec2][] = [];
 	const circles: Vec2[][] = [];
-	for (const g of children(root, "gr_line")) {
-		if (child(g, "layer")?.[1] !== "Edge.Cuts") continue;
-		const a = point(child(g, "start"));
-		const b = point(child(g, "end"));
+	for (const g of recordsOf(root, "gr_line")) {
+		if (fieldOf(g, "layer")?.[1] !== "Edge.Cuts") continue;
+		const a = point(fieldOf(g, "start"));
+		const b = point(fieldOf(g, "end"));
 		if (a && b) edges.push([a, b]);
 	}
-	for (const g of children(root, "gr_rect")) {
-		if (child(g, "layer")?.[1] !== "Edge.Cuts") continue;
-		const a = point(child(g, "start"));
-		const b = point(child(g, "end"));
+	for (const g of recordsOf(root, "gr_rect")) {
+		if (fieldOf(g, "layer")?.[1] !== "Edge.Cuts") continue;
+		const a = point(fieldOf(g, "start"));
+		const b = point(fieldOf(g, "end"));
 		if (!a || !b) continue;
 		const c: Vec2 = [b[0], a[1]];
 		const d: Vec2 = [a[0], b[1]];
 		edges.push([a, c], [c, b], [b, d], [d, a]);
 	}
-	for (const g of children(root, "gr_arc")) {
-		if (child(g, "layer")?.[1] !== "Edge.Cuts") continue;
+	for (const g of recordsOf(root, "gr_arc")) {
+		if (fieldOf(g, "layer")?.[1] !== "Edge.Cuts") continue;
 		const pts = arcTrack(g);
 		if (!pts) continue;
 		for (let i = 0; i + 1 < pts.length; i++) edges.push([pts[i] as Vec2, pts[i + 1] as Vec2]);
 	}
-	for (const g of children(root, "gr_circle")) {
-		if (child(g, "layer")?.[1] !== "Edge.Cuts") continue;
-		const c = point(child(g, "center"));
-		const e = point(child(g, "end"));
+	for (const g of recordsOf(root, "gr_circle")) {
+		if (fieldOf(g, "layer")?.[1] !== "Edge.Cuts") continue;
+		const c = point(fieldOf(g, "center"));
+		const e = point(fieldOf(g, "end"));
 		if (c && e) circles.push(circlePolygon(c, dist(c, e)));
 	}
 	const edgeProblem = outlineEdgesProblem(edges);
@@ -750,17 +750,17 @@ export function readBoard(text: string): Board {
 	if (loopProblem) return { ...EMPTY, hasZones, error: `unsupported construct: ${loopProblem}` };
 
 	const tracks: Track[] = [];
-	for (const seg of children(root, "segment")) {
-		const layer = layerOf(child(seg, "layer"));
-		const a = point(child(seg, "start"));
-		const b = point(child(seg, "end"));
-		const width = num(child(seg, "width"), 1);
+	for (const seg of recordsOf(root, "segment")) {
+		const layer = layerOf(fieldOf(seg, "layer"));
+		const a = point(fieldOf(seg, "start"));
+		const b = point(fieldOf(seg, "end"));
+		const width = num(fieldOf(seg, "width"), 1);
 		if (!layer || !a || !b || width === undefined) continue;
 		tracks.push({ id: `track-${tracks.length}`, layer, a, b, width, netName: netNameOf(seg), slop: 0 });
 	}
-	for (const arc of children(root, "arc")) {
-		const layer = layerOf(child(arc, "layer"));
-		const width = num(child(arc, "width"), 1);
+	for (const arc of recordsOf(root, "arc")) {
+		const layer = layerOf(fieldOf(arc, "layer"));
+		const width = num(fieldOf(arc, "width"), 1);
 		const pts = arcTrack(arc);
 		if (!layer || width === undefined || !pts) continue;
 		for (let i = 0; i + 1 < pts.length; i++) {
@@ -779,10 +779,10 @@ export function readBoard(text: string): Board {
 
 	// Every via kept here is an F.Cu to B.Cu through via: viaSpanProblem refuses any other span before this runs.
 	const vias: Via[] = [];
-	for (const v of children(root, "via")) {
-		const at = point(child(v, "at"));
-		const size = num(child(v, "size"), 1);
-		const drill = num(child(v, "drill"), 1);
+	for (const v of recordsOf(root, "via")) {
+		const at = point(fieldOf(v, "at"));
+		const size = num(fieldOf(v, "size"), 1);
+		const drill = num(fieldOf(v, "drill"), 1);
 		if (!at || size === undefined || drill === undefined) continue;
 		vias.push({
 			id: `via-${vias.length}`,
@@ -798,25 +798,25 @@ export function readBoard(text: string): Board {
 	const footprints: Footprint[] = [];
 	const pads: PadInst[] = [];
 	const holes: Hole[] = [];
-	for (const fp of children(root, "footprint")) {
-		const at0 = point(child(fp, "at"));
+	for (const fp of recordsOf(root, "footprint")) {
+		const at0 = point(fieldOf(fp, "at"));
 		const origin: Vec2 = at0 ?? [0, 0];
-		const rot = num(child(fp, "at"), 3) ?? 0;
+		const rot = num(fieldOf(fp, "at"), 3) ?? 0;
 		const ref = propertyReference(fp);
 		const fpPads: PadInst[] = [];
-		for (const p of children(fp, "pad")) {
+		for (const p of recordsOf(fp, "pad")) {
 			const name = typeof p[1] === "string" ? p[1] : "";
 			const typeAtom = typeof p[2] === "string" ? p[2] : "";
 			const shape = typeof p[3] === "string" ? p[3] : "";
-			const offset = point(child(p, "at")) ?? [0, 0];
-			const size = point(child(p, "size"));
+			const offset = point(fieldOf(p, "at")) ?? [0, 0];
+			const size = point(fieldOf(p, "size"));
 			if (!size) continue;
 			// The offset is stored in the footprint's unrotated frame, so the footprint turn moves it. The stored pad angle
 			// is already the pad's absolute board orientation, so the footprint turn is not added to it again.
-			const padRot = num(child(p, "at"), 3) ?? 0;
+			const padRot = num(fieldOf(p, "at"), 3) ?? 0;
 			const center = add(origin, rotate(offset, rot));
 			const angle = padRot;
-			const drillList = child(p, "drill");
+			const drillList = fieldOf(p, "drill");
 			const drill = num(drillList, 1);
 			const type: PadInst["type"] =
 				typeAtom === "smd" ? "smd" : typeAtom === "thru_hole" ? "thru_hole" : typeAtom === "np_thru_hole" ? "np_thru_hole" : "other";
@@ -830,7 +830,7 @@ export function readBoard(text: string): Board {
 				size,
 				angle,
 				poly: padPolygon(center, shape, size, angle),
-				layers: copperLayersOf(child(p, "layers")),
+				layers: copperLayersOf(fieldOf(p, "layers")),
 				drill,
 				netName: netNameOf(p),
 				footprintRot: rot,
