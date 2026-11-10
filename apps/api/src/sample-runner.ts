@@ -268,9 +268,11 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 			if (outcome.kind === "DENIED") {
 				// The House took no bid. A transient refusal (busy, short of credits, a state or onboarding step still
 				// open) clears by itself, so the record goes and the visitor waits out the retry window before the next
-				// bid. Any other refusal is the run's outcome: the job is never bid on again, and the status shows the
-				// refusal for a day.
-				if (isTransientBidRefusal(outcome.reason)) {
+				// bid. PRICE_CANNOT_FUND keeps no record either: the fundable-floor check already refuses an unfundable
+				// floor before any bid, so the core's own refusal means the House's quote moved under the bid, and a
+				// day-long hold would punish the starter for a price rule it did not break. Any other refusal is the
+				// run's outcome: the job is never bid on again, and the status shows the refusal for a day.
+				if (isTransientBidRefusal(outcome.reason) || outcome.reason === "PRICE_CANNOT_FUND") {
 					ports.db.prepare("DELETE FROM sample_runner_runs WHERE job_id = ?").run(action.jobId);
 					retryAt.set(visitor.id, Date.parse(ports.now()) + TRANSIENT_RETRY_MS);
 					log(`sample runner: ${action.jobId} bid not placed: ${outcome.reason}; the bid is retried in 2 minutes`);

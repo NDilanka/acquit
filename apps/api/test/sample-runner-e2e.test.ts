@@ -641,6 +641,29 @@ test("a bid the job is busy for leaves no run record, and the bid is sent again 
 	assert.equal(recordOf(db)?.phase, "BID");
 });
 
+test("a PRICE_CANNOT_FUND refusal keeps no run and no day's hold, and the starter is bid again two minutes later", async () => {
+	// The runner's own floor check refuses an unfundable floor before any bid, so this refusal only reaches the
+	// runner when the House's quote moved under a fundable bid. It must not hold the runner for a day.
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	world.refuseBids("PRICE_CANNOT_FUND");
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	assert.equal(recordOf(db), undefined, "PRICE_CANNOT_FUND keeps no run record");
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: PRICE_CANNOT_FUND; the bid is retried in 2 minutes`)));
+	assert.notEqual(runner.statusOf(VISITOR).decision.reason, "BID_DENIED", "PRICE_CANNOT_FUND does not hold the runner for a day");
+
+	world.refuseBids(null);
+	world.advance(30_000);
+	await runner.kick();
+	assert.equal(placeBids(world).length, 1, "the visitor is not asked again within the retry window");
+
+	world.advance(90_000);
+	await runner.kick();
+	assert.deepEqual(placeBids(world).map(command => command.jobId), [JOB_ID, JOB_ID], "two minutes on, the same starter is bid on");
+	assert.equal(recordOf(db)?.phase, "BID");
+});
+
 /** A command edge that waits on the gate before it reaches the fake, so a test can hold a tick inside one command. */
 function gatedExecute(world: World, gate: Promise<void>): SampleRunnerPorts["execute"] {
 	return async (actor, key, command) => {
