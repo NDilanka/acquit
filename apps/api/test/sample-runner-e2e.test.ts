@@ -14,7 +14,8 @@ import type { JobRow } from "../../../packages/core/src/job.ts";
 import { manifestOf } from "../../../packages/core/src/fixtures.ts";
 import { demoFixture, jpyFixture } from "../../../packages/core/test/hidden-fixture.ts";
 import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
-import { SAMPLE_RUNS_PER_DAY, type SampleOrders } from "../../../packages/core/src/sample-runner.ts";
+import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
+import { SAMPLE_RUNS_PER_DAY, SAMPLE_VERIFIER_RETRIES, type SampleOrders } from "../../../packages/core/src/sample-runner.ts";
 import { activityJson, activityLimit, ACTIVITY_LABELS } from "../src/sample-activity.ts";
 import { createSampleRunner, sampleRunJobIds, type SampleFixtureRule, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
 
@@ -47,11 +48,11 @@ function storedRow(id: string, fields: { client: string; tenant: string | null; 
 
 const openState = { status: "OPEN", phase: { kind: "BIDDING" } };
 
-function heldState(at: string, phase: "READY" | "VERIFYING" = "READY") {
+function heldState(at: string, phase: "READY" | "VERIFYING" = "READY", runsStarted = 0) {
 	return {
 		status: "IN_PROGRESS",
 		escrow: { payee: { operator: OPERATOR }, book: [{ kind: "HELD", cents: BUDGET_CENTS, at }] },
-		attempts: { phase, history: [], runsStarted: 1, failure: null },
+		attempts: { phase, history: [], runsStarted, failure: null },
 	};
 }
 
@@ -68,6 +69,8 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 	let lastRecord: object = {};
 	const actors: Actor[] = [];
 	const commands: UserCommand[] = [];
+	/** Every command with the request key it was sent under, so a test can check which key each step used. */
+	const sent: { readonly command: UserCommand; readonly key: RequestKey }[] = [];
 	const pushes: CommitSha[] = [];
 	const logs: string[] = [];
 
@@ -80,10 +83,12 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 	const patch = (fields: Record<string, unknown>) => {
 		rows = rows.map(row => (row.id === JOB_ID ? ({ ...row, ...fields } as unknown as JobRow) : row));
 	};
+	const runsStarted = () => (jobRow().state as { readonly attempts: { readonly runsStarted: number } }).attempts.runsStarted;
 
-	const execute = async (actor: Actor, _key: RequestKey, command: UserCommand): Promise<CommandOutcome> => {
+	const execute = async (actor: Actor, key: RequestKey, command: UserCommand): Promise<CommandOutcome> => {
 		actors.push(actor);
 		commands.push(command);
+		sent.push({ command, key });
 		if (command.type === "PlaceBid") {
 			const bid = { id: `bid_${commands.length}`, operator: OPERATOR, agent: command.agent, price: command.price,
 				eta: command.eta, pitch: command.pitch, placedAt: now(), status: "PENDING" };
@@ -91,7 +96,8 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 			return { kind: "COMMITTED", result: { kind: "BID", job: { id: JOB_ID }, bid, creditsLeft: 4 } } as unknown as CommandOutcome;
 		}
 		if (command.type === "Submit") {
-			patch({ state: heldState(now(), "VERIFYING") });
+			// Each Submit starts the next verifier run, as job.ts does: runsStarted counts every run, verdict or not.
+			patch({ state: heldState(now(), "VERIFYING", runsStarted() + 1) });
 			return { kind: "COMMITTED", result: { kind: "JOB", job: { id: JOB_ID } } } as unknown as CommandOutcome;
 		}
 		throw new Error(`the fake has no ${command.type}`);
@@ -107,18 +113,20 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 	};
 
 	return {
-		actors, commands, pushes, logs, now, rows: () => rows, jobRow, execute, workspace,
+		actors, commands, sent, pushes, logs, now, rows: () => rows, jobRow, execute, workspace,
 		advance: (ms: number) => { at += ms; },
 		log: (line: string) => { logs.push(line); },
 		/** The House client accepts the bid and funds the job. */
 		houseAccepts: () => patch({ bids: jobRow().bids.map(bid => ({ ...bid, status: "ACCEPTED" })), state: heldState(now()) }),
+		/** The verifier run ends with no verdict, as a publish or deadline failure does: the attempt is READY again, nothing is judged. */
+		verifierRunFails: () => patch({ state: heldState(now(), "READY", runsStarted()) }),
 		/** The real verifier passes the commit. */
 		verifierPasses: (commit: CommitSha) => {
 			lastRecord = { ordinal: 1, verdict: { result: "VERIFIED", runId: "run_sample_1", sourceCommit: commit,
 				mergeCommit: "f".repeat(40), frozen: { passed: 3, expected: 3 }, hidden: { passed: 4, expected: 4 },
 				reportDigest: "0".repeat(64), at: now() } };
 			patch({ state: { status: "VERIFIED", escrow: { payee: { operator: OPERATOR }, book: [{ kind: "HELD", cents: BUDGET_CENTS, at: now() }] },
-				history: [lastRecord], passed: true, review: { phase: "AWAITING_CLIENT", endsAt: new Date(at + 60_000).toISOString() }, runsStarted: 1 } });
+				history: [lastRecord], passed: true, review: { phase: "AWAITING_CLIENT", endsAt: new Date(at + 60_000).toISOString() }, runsStarted: runsStarted() } });
 		},
 		/** The House client approves, and the payout is captured. */
 		houseApproves: () => patch({ state: { status: "PAID", payee: { operator: OPERATOR }, book: [{ kind: "HELD", cents: BUDGET_CENTS, at: now() }],
@@ -150,6 +158,27 @@ function recordOf(db: DatabaseSync) {
 
 function placeBids(world: World): PlaceBid[] {
 	return world.commands.filter((command): command is PlaceBid => command.type === "PlaceBid");
+}
+
+function submitsOf(world: World) {
+	return world.sent.filter(entry => entry.command.type === "Submit");
+}
+
+/** Standing orders the test can change between reads, so an owner's switch can land inside one tick. */
+function ordersSwitch() {
+	let current: SampleOrders = ORDERS;
+	let reads = 0;
+	let flipOnRead = -1;
+	return {
+		ordersOf: (): SampleOrders => {
+			reads += 1;
+			if (reads === flipOnRead) current = { ...ORDERS, autopilot: false };
+			return current;
+		},
+		set: (autopilot: boolean) => { current = { ...ORDERS, autopilot }; },
+		/** Turns autopilot off between a tick's decision and its send. The decision reads the orders once, the send again. */
+		flipBeforeSend: () => { flipOnRead = reads + 2; },
+	};
 }
 
 function activityFor(db: DatabaseSync, world: World, runner: ReturnType<typeof createSampleRunner>) {
@@ -313,6 +342,96 @@ test("a fork that keeps refusing the push closes the run after five failures, an
 	assert.equal(placeBids(world).length, 1, "a closed run is not bid on again");
 	assert.ok(world.logs.some(line => line.includes("closed after 5 failures")));
 	assert.ok(!world.logs.some(line => line.includes("FAKE-PUSH-TOKEN-FOR-TEST")), "the error message never reaches the log");
+});
+
+test("a verifier run that ends with no verdict is resubmitted under a new key, and the run closes once its retries fail", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	world.houseAccepts();
+	await runner.kick();
+	const commit = world.pushes[0]!;
+	await runner.kick(); // submit, verifier run 1
+	// Each run ends with no verdict. The next tick resubmits, and the last tick closes the run.
+	for (let run = 1; run <= SAMPLE_VERIFIER_RETRIES + 1; run++) {
+		world.verifierRunFails();
+		await runner.kick();
+	}
+	const submits = submitsOf(world);
+	assert.deepEqual(submits.map(entry => entry.key), [1, 2, 3].map(run => stepKey(`sample:${JOB_ID}`, `submit:${run}`)),
+		"each verifier run is submitted under its own key, so a replay cannot return the first answer");
+	assert.ok(submits.every(entry => entry.command.type === "Submit" && entry.command.sourceCommit === commit), "every run judges the pushed commit");
+	assert.equal(recordOf(db)?.phase, "DONE");
+	assert.equal(recordOf(db)?.outcome, "CLOSED");
+	assert.ok(world.logs.some(line => line.includes("verifier gave no verdict in 3 runs")));
+	await runner.kick();
+	assert.equal(submitsOf(world).length, submits.length, "a closed run is not submitted again");
+});
+
+test("a retry the verifier judges is recorded as VERIFIED, like a first run", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	world.houseAccepts();
+	await runner.kick();
+	const commit = world.pushes[0]!;
+	await runner.kick(); // submit, verifier run 1
+	world.verifierRunFails();
+	await runner.kick(); // submit, verifier run 2
+	assert.deepEqual(submitsOf(world).map(entry => entry.key), [1, 2].map(run => stepKey(`sample:${JOB_ID}`, `submit:${run}`)));
+	world.verifierPasses(commit);
+	await runner.kick();
+	assert.equal(recordOf(db)?.outcome, "VERIFIED");
+	assert.equal(submitsOf(world).length, 2, "a judged run is not submitted again");
+});
+
+test("an owner who turns autopilot off stops the run's next push or submit, the status says why, and a verdict is still recorded", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	const orders = ordersSwitch();
+	const runner = createSampleRunner(portsOf(db, world, { ordersOf: orders.ordersOf }));
+	await runner.kick();
+	world.houseAccepts();
+	orders.set(false);
+	await runner.kick();
+	assert.equal(world.pushes.length, 0, "no push while autopilot is off");
+	assert.equal(recordOf(db)?.phase, "BID");
+	const paused = runner.statusOf(VISITOR, world.rows());
+	assert.equal(paused.decision.status, "REFUSED");
+	assert.equal(paused.decision.reason, "AUTOPILOT_OFF");
+
+	// Autopilot is back on, but the owner switches it off again between the tick's decision and its push.
+	orders.set(true);
+	orders.flipBeforeSend();
+	await runner.kick();
+	assert.equal(world.pushes.length, 0, "a switch between the decision and the push stops the push");
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} push not sent: autopilot is off`)));
+
+	orders.set(true);
+	await runner.kick();
+	assert.equal(world.pushes.length, 1, "with autopilot on, the push goes ahead");
+	const commit = world.pushes[0]!;
+	assert.equal(recordOf(db)?.phase, "RAN");
+
+	orders.flipBeforeSend();
+	await runner.kick();
+	assert.equal(submitsOf(world).length, 0, "a switch between the decision and the submit stops the submit");
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} submit not sent: autopilot is off`)));
+	assert.equal(recordOf(db)?.phase, "RAN");
+
+	orders.set(true);
+	await runner.kick();
+	assert.equal(submitsOf(world).length, 1, "with autopilot on, the submit goes ahead");
+
+	orders.set(false);
+	const sentBefore = world.sent.length;
+	world.verifierPasses(commit);
+	await runner.kick();
+	assert.equal(recordOf(db)?.outcome, "VERIFIED", "the real verdict is recorded even while autopilot is off");
+	assert.equal(world.sent.length, sentBefore, "a recorded verdict sends nothing");
+	assert.equal(runner.statusOf(VISITOR, world.rows()).decision.status, "IDLE");
 });
 
 test("the activity limit reads 1 to 50, defaults to 20, and refuses anything else", () => {

@@ -11,7 +11,7 @@ const floor = 1000;
 const commit = "a".repeat(40);
 
 function job(id: string, fields: Partial<SampleJob> = {}): SampleJob {
-	return { id, status: "OPEN", vertical: "code", budgetCents: 5000, starter: true, fixtureMatched: true, attemptsPhase: null, bids: [], history: [], ...fields };
+	return { id, status: "OPEN", vertical: "code", budgetCents: 5000, starter: true, fixtureMatched: true, attemptsPhase: null, attemptsRunsStarted: null, bids: [], history: [], ...fields };
 }
 
 function bid(status: string, placedAt = minutesAgo(1), fields: Partial<SampleBid> = {}): SampleBid {
@@ -207,7 +207,78 @@ test("a pushed run submits its commit once the job is ready", () => {
 		runs: [run("job_a", { phase: "RAN", commit })],
 		globalActive: 1,
 	}));
-	assert.deepEqual(decision.actions, [{ kind: "submit", jobId: "job_a", sourceCommit: commit }]);
+	assert.deepEqual(decision.actions, [{ kind: "submit", jobId: "job_a", sourceCommit: commit, run: 1 }]);
+});
+
+test("each submit names the verifier run it starts, so a retry after a run with no verdict is a new request", () => {
+	const retry = decideSampleTick(facts({
+		jobs: [job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsRunsStarted: 1, bids: [bid("ACCEPTED")] })],
+		runs: [run("job_a", { phase: "SUBMITTED", commit })],
+		globalActive: 1,
+	}));
+	assert.deepEqual(retry.actions, [{ kind: "submit", jobId: "job_a", sourceCommit: commit, run: 2 }]);
+});
+
+test("a run closes once its verifier runs have all ended with no verdict", () => {
+	const lastRetry = decideSampleTick(facts({
+		jobs: [job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsRunsStarted: 2, bids: [bid("ACCEPTED")] })],
+		runs: [run("job_a", { phase: "SUBMITTED", commit })],
+		globalActive: 1,
+	}));
+	assert.deepEqual(lastRetry.actions, [{ kind: "submit", jobId: "job_a", sourceCommit: commit, run: 3 }]);
+
+	const exhausted = decideSampleTick(facts({
+		jobs: [job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsRunsStarted: 3, bids: [bid("ACCEPTED")] })],
+		runs: [run("job_a", { phase: "SUBMITTED", commit })],
+		globalActive: 1,
+	}));
+	assert.deepEqual(exhausted.actions, [{ kind: "finish", jobId: "job_a", outcome: "CLOSED", reason: "verifier gave no verdict in 3 runs" }]);
+});
+
+test("a verdict that arrives after failed verifier runs still ends the run as the verdict says", () => {
+	const decision = decideSampleTick(facts({
+		jobs: [job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsRunsStarted: 3, bids: [bid("ACCEPTED")], history: [{ sourceCommit: commit, result: "VERIFIED" }] })],
+		runs: [run("job_a", { phase: "SUBMITTED", commit })],
+		globalActive: 1,
+	}));
+	assert.deepEqual(decision.actions, [{ kind: "finish", jobId: "job_a", outcome: "VERIFIED", reason: "verifier passed the commit" }]);
+});
+
+test("a run that is waiting on consent pushes and submits nothing, and keeps the reason it waits", () => {
+	const lost: [SampleFacts["orders"], SampleFacts["agent"], boolean, string][] = [
+		[{ autopilot: false, runsOn: "acquit", priceFloorCents: floor }, facts().agent, true, "AUTOPILOT_OFF"],
+		[{ autopilot: true, runsOn: "owner", priceFloorCents: floor }, facts().agent, true, "NOT_HOSTED"],
+		[null, facts().agent, true, "NO_STANDING_ORDERS"],
+		[{ autopilot: true, runsOn: "acquit", priceFloorCents: floor }, { ...facts().agent, acquitted: false }, true, "NO_ACQUITTAL"],
+		[{ autopilot: true, runsOn: "acquit", priceFloorCents: floor }, facts().agent, false, "NO_FORK"],
+	];
+	for (const [orders, agent, hasFork, reason] of lost) {
+		const pushReady = facts({
+			orders, agent, hasFork,
+			jobs: [job("job_a", { status: "IN_PROGRESS", attemptsPhase: "READY", bids: [bid("ACCEPTED")] })],
+			runs: [run("job_a", { phase: "BID" })],
+			globalActive: 1,
+		});
+		const paused = decideSampleTick(pushReady);
+		assert.deepEqual(paused.actions, [], reason);
+		assert.equal(paused.status, "REFUSED", reason);
+		assert.equal(paused.reason, reason);
+
+		const submitReady = decideSampleTick({ ...pushReady, runs: [run("job_a", { phase: "RAN", commit })] });
+		assert.deepEqual(submitReady.actions, [], reason);
+		assert.equal(submitReady.reason, reason);
+	}
+});
+
+test("a paused run still records its verdict, but bids nothing new", () => {
+	const decision = decideSampleTick(facts({
+		orders: { autopilot: false, runsOn: "acquit", priceFloorCents: floor },
+		jobs: [job("job_done", { status: "VERIFIED", bids: [bid("ACCEPTED")], history: [{ sourceCommit: commit, result: "VERIFIED" }] }), job("job_next")],
+		runs: [run("job_done", { phase: "SUBMITTED", commit })],
+		globalActive: 1,
+	}));
+	assert.deepEqual(decision.actions, [{ kind: "finish", jobId: "job_done", outcome: "VERIFIED", reason: "verifier passed the commit" }]);
+	assert.equal(decision.status, "IDLE");
 });
 
 test("a submitted run waits for its verdict while the attempt is verifying", () => {

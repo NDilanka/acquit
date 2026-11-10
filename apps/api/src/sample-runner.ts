@@ -17,7 +17,7 @@ import { storedDefinitionOfDone, storedVertical, type JobRow } from "../../../pa
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
 import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts";
 import {
-	decideSampleTick, runsInWindow, type SampleAction, type SampleDecision, type SampleFacts, type SampleJob,
+	decideSampleTick, runsInWindow, sampleConsentStop, type SampleAction, type SampleDecision, type SampleFacts, type SampleJob,
 	type SampleOrders, type SampleRun,
 } from "../../../packages/core/src/sample-runner.ts";
 
@@ -160,12 +160,25 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		return decideSampleTick(facts);
 	}
 
+	/** The consent that holds now, read again from the standing orders and the agent, not from the tick's snapshot. */
+	function consentNow(visitor: SampleRunnerVisitor, agentId: string): { readonly reason: string; readonly note: string } | null {
+		const agent = ports.agentsOf(visitor.operatorHandle).find(entry => entry.id === agentId);
+		if (agent === undefined) return { reason: "NOT_A_SAMPLE", note: "the agent is no longer the visitor's" };
+		return sampleConsentStop({ orders: ports.ordersOf(agentId), agent, hasFork: visitor.repository !== null });
+	}
+
 	async function perform(visitor: SampleRunnerVisitor, agentId: string, action: SampleAction): Promise<void> {
 		const operator: Actor = { role: "OPERATOR", operatorId: visitor.operatorHandle as OperatorId, tenant: visitor.id };
 		const step = (name: string) => stepKey(`sample:${action.jobId}`, name);
 		if (action.kind === "finish") {
 			ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = ? WHERE job_id = ?").run(action.outcome, action.jobId);
 			log(`sample runner: ${action.jobId} ${action.outcome}: ${action.reason}`);
+			return;
+		}
+		// Nothing is sent once consent is gone. The run keeps its record and waits, and its status shows the reason.
+		const stop = consentNow(visitor, agentId);
+		if (stop !== null) {
+			log(`sample runner: ${action.jobId} ${action.kind} not sent: ${stop.note}`);
 			return;
 		}
 		if (action.kind === "bid") {
@@ -194,7 +207,9 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 			}
 			return;
 		}
-		const outcome = await send(operator, step("submit"), { type: "Submit", jobId: action.jobId as JobId, sourceCommit: action.sourceCommit as CommitSha });
+		// One key per verifier run. A run that ends without a verdict leaves the attempt READY, and its retry is a new run
+		// with a new key. Reusing the first key would replay the stored answer and never start the retry.
+		const outcome = await send(operator, step(`submit:${action.run}`), { type: "Submit", jobId: action.jobId as JobId, sourceCommit: action.sourceCommit as CommitSha });
 		if (outcome.kind === "DENIED") {
 			if (outcome.reason !== "BUSY") failed(action.jobId, `submit denied: ${outcome.reason}`);
 			return;
@@ -262,6 +277,8 @@ function isScenarioStarter(row: JobRow, visitor: SampleRunnerVisitor, rule: Samp
 /** The fields of a stored job the decision reads. */
 function sampleJobOf(row: JobRow, fixtureMatched: boolean): SampleJob {
 	const state = row.state;
+	// A refund in progress carries no run count, and the decision waits on it anyway.
+	const attempts = state.status === "IN_PROGRESS" ? state.attempts : null;
 	return {
 		id: row.id,
 		status: state.status,
@@ -269,7 +286,8 @@ function sampleJobOf(row: JobRow, fixtureMatched: boolean): SampleJob {
 		budgetCents: row.contract.budget,
 		starter: isStarterJob(row),
 		fixtureMatched,
-		attemptsPhase: state.status === "IN_PROGRESS" ? state.attempts.phase : null,
+		attemptsPhase: attempts?.phase ?? null,
+		attemptsRunsStarted: attempts !== null && attempts.phase !== "REFUND_PENDING" ? attempts.runsStarted : null,
 		bids: row.bids.map(bid => ({ operator: bid.operator, agent: bid.agent, status: bid.status, placedAt: bid.placedAt })),
 		history: attemptHistory(state).map(record => ({ sourceCommit: record.verdict.sourceCommit, result: record.verdict.result })),
 	};
