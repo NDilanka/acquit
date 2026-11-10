@@ -6,41 +6,42 @@
   ],
   "area": [
     [
-      0,
-      0
+      51.5,
+      -0.12
     ],
     [
-      100,
-      0
+      51.5,
+      -0.1185553
     ],
     [
-      100,
-      120
+      51.5010792,
+      -0.1185553
     ],
     [
-      0,
-      120
+      51.5010792,
+      -0.12
     ]
   ],
   "zones": [
     {
       "id": "pump-house",
+      "heightM": 30,
       "polygon": [
         [
-          60,
-          38
+          51.5003417,
+          -0.1191332
         ],
         [
-          70,
-          38
+          51.5003417,
+          -0.1189887
         ],
         [
-          70,
-          42
+          51.5003777,
+          -0.1189887
         ],
         [
-          60,
-          42
+          51.5003777,
+          -0.1191332
         ]
       ]
     }
@@ -49,9 +50,11 @@
     "sensorWidthMm": 13.2,
     "sensorHeightMm": 8.8,
     "focalMm": 8.8,
-    "imageWidthPx": 5472
+    "imageWidthPx": 5472,
+    "imageHeightPx": 3648
   },
   "maxAltitudeM": 120,
+  "minAltitudeM": 20,
   "maxGsdCm": 2.5,
   "minFrontOverlap": 0.7,
   "minSideOverlap": 0.6,
@@ -59,10 +62,13 @@
     "min": 5,
     "max": 20
   },
+  "enduranceS": 1800,
+  "reserveS": 300,
+  "geofenceMarginM": 5,
   "gridM": 10,
   "rules": [
-    "altitude-ceiling",
-    "gsd",
+    "altitude-limits",
+    "ground-resolution",
     "front-overlap",
     "side-overlap",
     "no-fly",

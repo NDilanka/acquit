@@ -94,7 +94,7 @@ test("a spec with a wrong rule name or a missing camera is refused", () => {
 });
 
 test("the honest verdict reports the overlap and resolution it measured", () => {
-	const verdict = verify(loadSpec(), buildSamples()["honest.plan"]!, { checkpoints: [], windMs: 0, cruiseToWindRatio: 1 });
+	const verdict = verify(loadSpec(), buildSamples()["honest.plan"]!, { checkpoints: [], windMs: 0, cruiseToWindRatio: 1, minPhotos: 1 });
 	assert.ok(Math.abs(Number(verdict.measured.frontOverlap) - 0.75) < 1e-9);
 	assert.ok(Math.abs(Number(verdict.measured.sideOverlap) - 2 / 3) < 0.001);
 	assert.ok(Math.abs(Number(verdict.measured.maxGsdCm) - 1.0965) < 0.0005);

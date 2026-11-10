@@ -8,35 +8,49 @@ import { CMD_SET_CAM_TRIGGER_DIST, CMD_WAYPOINT } from "../src/plan.ts";
 type Wp = { x: number; y: number; alt: number };
 
 export const ORIGIN: [number, number] = [51.5, -0.12];
+const ROUND = (value: number): number => Number(value.toFixed(7));
+
+/** Converts local metre points (east, north of the origin) to rounded geographic [latitude, longitude] pairs. */
+function geographic(points: readonly (readonly [number, number])[]): [number, number][] {
+	return points.map(([x, y]) => {
+		const [lat, lon] = toLatLon(ORIGIN, x, y);
+		return [ROUND(lat), ROUND(lon)];
+	});
+}
 
 export const SPEC = {
 	id: "orchard-survey",
 	origin: ORIGIN,
-	area: [
+	area: geographic([
 		[0, 0],
 		[100, 0],
 		[100, 120],
 		[0, 120],
-	],
+	]),
 	zones: [
 		{
 			id: "pump-house",
-			polygon: [
+			heightM: 30,
+			polygon: geographic([
 				[60, 38],
 				[70, 38],
 				[70, 42],
 				[60, 42],
-			],
+			]),
 		},
 	],
-	camera: { sensorWidthMm: 13.2, sensorHeightMm: 8.8, focalMm: 8.8, imageWidthPx: 5472 },
+	camera: { sensorWidthMm: 13.2, sensorHeightMm: 8.8, focalMm: 8.8, imageWidthPx: 5472, imageHeightPx: 3648 },
 	maxAltitudeM: 120,
+	minAltitudeM: 20,
 	maxGsdCm: 2.5,
 	minFrontOverlap: 0.7,
 	minSideOverlap: 0.6,
 	cruiseMs: { min: 5, max: 20 },
+	enduranceS: 1800,
+	reserveS: 300,
+	geofenceMarginM: 5,
 	gridM: 10,
-	rules: ["altitude-ceiling", "gsd", "front-overlap", "side-overlap", "no-fly", "coverage", "cruise-speed"],
+	rules: ["altitude-limits", "ground-resolution", "front-overlap", "side-overlap", "no-fly", "coverage", "cruise-speed"],
 };
 
 /** Lines alternate direction: even lines fly west to east, odd lines east to west. Each line is two waypoints. */
@@ -50,7 +64,6 @@ function lines(ys: readonly number[], alt: number): Wp[] {
 }
 
 const HONEST_YS = [30, 50, 70, 90, 110];
-const ROUND = (value: number): number => Number(value.toFixed(7));
 
 function plan(cruise: number, trigger: number, waypoints: readonly Wp[]): string {
 	const items: object[] = [{ type: "SimpleItem", command: CMD_SET_CAM_TRIGGER_DIST, doJumpId: 1, frame: 2, autoContinue: true, params: [trigger, 0, 0, 0, 0, 0, 0] }];
@@ -83,6 +96,7 @@ export const HIDDEN_EXAMPLE = {
 	],
 	windMs: 6,
 	cruiseToWindRatio: 1.5,
+	minPhotos: 1,
 };
 
 /** The fraud table. Each entry names the one rule it is built to break. */
@@ -92,10 +106,10 @@ export const FRAUDS: readonly { file: string; rule: string; text: string }[] = [
 	{ file: "fraud-hidden-wind.plan", rule: "hidden-wind", text: plan(8, 10, honest) },
 	{ file: "fraud-trigger.plan", rule: "front-overlap", text: plan(14, 25, honest) },
 	{ file: "fraud-side-spacing.plan", rule: "side-overlap", text: plan(14, 10, lines([30, 60, 90, 120], 40)) },
-	{ file: "fraud-altitude-gsd.plan", rule: "gsd", text: plan(14, 10, lines(HONEST_YS, 100)) },
+	{ file: "fraud-altitude-gsd.plan", rule: "ground-resolution", text: plan(14, 10, lines(HONEST_YS, 100)) },
 	{
 		file: "fraud-ceiling.plan",
-		rule: "altitude-ceiling",
+		rule: "altitude-limits",
 		text: plan(
 			14,
 			10,

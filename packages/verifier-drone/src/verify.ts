@@ -1,10 +1,10 @@
 // The drone survey checker. It reads a QGroundControl plan and the job spec, and returns a Verdict.
 // Pure TypeScript: no I/O, no clock, no randomness. Bad input becomes a failed "parse" finding.
 
-import { centroid, pointInPolygon, segmentHitsPolygon } from "./geo.ts";
+import { centroid, pointInPolygon, segmentHitsPolygon, toLocal } from "./geo.ts";
 import { parsePlan, rectangle } from "./plan.ts";
 import type { Plan, Waypoint } from "./plan.ts";
-import { HIDDEN_RULES, PUBLIC_RULES } from "./spec.ts";
+import { HIDDEN_RULES, PUBLIC_RULES, parseHiddenSample, parseSpec } from "./spec.ts";
 import type { Camera, Finding, HiddenSample, Scene, ScenePath, Spec, Vec2, Vec3, Verdict } from "./types.ts";
 
 /** Metres. Positions this close count as equal, so plan rounding does not split a survey line. */
@@ -12,7 +12,18 @@ const TOL = 0.05;
 
 type Segment = { readonly index: number; readonly a: Waypoint; readonly b: Waypoint };
 type Leg = { readonly index: number; readonly y: number; readonly x0: number; readonly x1: number; readonly alt: number };
-type Context = { readonly spec: Spec; readonly plan: Plan; readonly segments: readonly Segment[]; readonly legs: readonly Leg[]; readonly hidden: HiddenSample | undefined };
+/** The spec's survey area and no-fly zones in local metres east and north of the origin. */
+type Geometry = { readonly area: readonly Vec2[]; readonly zones: readonly { readonly id: string; readonly polygon: readonly Vec2[] }[] };
+type Context = {
+	readonly spec: Spec;
+	readonly geometry: Geometry;
+	readonly plan: Plan;
+	readonly segments: readonly Segment[];
+	readonly legs: readonly Leg[];
+	readonly hidden: HiddenSample | undefined;
+};
+
+const EMPTY_SCENE: Scene = { units: "m", size: [0, 0, 0], paths: [] };
 
 export function acrossM(alt: number, camera: Camera): number {
 	return (alt * camera.sensorWidthMm) / camera.focalMm;
@@ -25,6 +36,14 @@ export function alongM(alt: number, camera: Camera): number {
 /** Ground sample distance in centimetres per pixel, across the sensor width. */
 export function gsdCm(alt: number, camera: Camera): number {
 	return ((alt * camera.sensorWidthMm) / (camera.focalMm * camera.imageWidthPx)) * 100;
+}
+
+function projectGeometry(spec: Spec): Geometry {
+	const project = (point: readonly [number, number]): Vec2 => toLocal(spec.origin, point[0], point[1]);
+	return {
+		area: spec.area.map(project),
+		zones: spec.zones.map(zone => ({ id: zone.id, polygon: zone.polygon.map(project) })),
+	};
 }
 
 function segmentsOf(waypoints: readonly Waypoint[]): Segment[] {
@@ -50,17 +69,17 @@ function covered(p: Vec2, legs: readonly Leg[], camera: Camera): boolean {
 	});
 }
 
-function sampleGrid(spec: Spec): Vec2[] {
-	const xs = spec.area.map(p => p[0]);
-	const ys = spec.area.map(p => p[1]);
+function sampleGrid(area: readonly Vec2[], gridM: number): Vec2[] {
+	const xs = area.map(p => p[0]);
+	const ys = area.map(p => p[1]);
 	const minX = Math.min(...xs);
 	const maxX = Math.max(...xs);
 	const minY = Math.min(...ys);
 	const maxY = Math.max(...ys);
 	const out: Vec2[] = [];
-	for (let x = minX + spec.gridM / 2; x < maxX; x += spec.gridM) {
-		for (let y = minY + spec.gridM / 2; y < maxY; y += spec.gridM) {
-			if (pointInPolygon([x, y], spec.area)) out.push([x, y]);
+	for (let x = minX + gridM / 2; x < maxX; x += gridM) {
+		for (let y = minY + gridM / 2; y < maxY; y += gridM) {
+			if (pointInPolygon([x, y], area)) out.push([x, y]);
 		}
 	}
 	return out;
@@ -111,17 +130,17 @@ function sideOverlaps(legs: readonly Leg[], camera: Camera): { overlap: number; 
 type Check = (ctx: Context) => Finding;
 
 const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
-	"altitude-ceiling": ({ spec, plan }) => {
-		const high = plan.waypoints.find(w => w.alt > spec.maxAltitudeM || w.alt <= 0);
-		if (high === undefined) return finding("altitude-ceiling", true, false, `Every waypoint is between 0 and ${spec.maxAltitudeM} m.`);
-		return finding("altitude-ceiling", false, false, `A waypoint at ${high.alt.toFixed(1)} m is outside the 0 to ${spec.maxAltitudeM} m limit.`, [high.x, high.y, high.alt]);
+	"altitude-limits": ({ spec, plan }) => {
+		const outside = plan.waypoints.find(w => w.alt > spec.maxAltitudeM || w.alt < spec.minAltitudeM);
+		if (outside === undefined) return finding("altitude-limits", true, false, `Every waypoint is between ${spec.minAltitudeM} and ${spec.maxAltitudeM} m.`);
+		return finding("altitude-limits", false, false, `A waypoint at ${outside.alt.toFixed(1)} m is outside the ${spec.minAltitudeM} to ${spec.maxAltitudeM} m limit.`, [outside.x, outside.y, outside.alt]);
 	},
-	gsd: ({ spec, legs }) => {
+	"ground-resolution": ({ spec, legs }) => {
 		const worst = worstGsdLeg(legs, spec.camera);
-		if (worst === null) return finding("gsd", false, false, "The plan flies no survey line, so no ground resolution can be given.");
+		if (worst === null) return finding("ground-resolution", false, false, "The plan flies no survey line, so no ground resolution can be given.");
 		const value = gsdCm(worst.alt, spec.camera);
 		const ok = value <= spec.maxGsdCm;
-		return finding("gsd", ok, false, ok ? `Photos resolve ${value.toFixed(2)} cm per pixel or better, within ${spec.maxGsdCm} cm.` : `The survey line at ${worst.alt.toFixed(1)} m resolves ${value.toFixed(2)} cm per pixel, coarser than ${spec.maxGsdCm} cm.`, legMid(worst), [`leg-${worst.index}`]);
+		return finding("ground-resolution", ok, false, ok ? `Photos resolve ${value.toFixed(2)} cm per pixel or better, within ${spec.maxGsdCm} cm.` : `The survey line at ${worst.alt.toFixed(1)} m resolves ${value.toFixed(2)} cm per pixel, coarser than ${spec.maxGsdCm} cm.`, legMid(worst), [`leg-${worst.index}`]);
 	},
 	"front-overlap": ({ spec, plan, legs }) => {
 		const worst = worstFrontLeg(legs, plan, spec.camera);
@@ -139,9 +158,9 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		const refs = [`leg-${worst.a.index}`, `leg-${worst.b.index}`];
 		return finding("side-overlap", ok, false, ok ? `Neighbouring lines overlap ${percent(worst.overlap)} sideways, at least ${percent(spec.minSideOverlap)}.` : `Neighbouring lines overlap only ${percent(worst.overlap)} sideways; the minimum is ${percent(spec.minSideOverlap)}.`, at, refs);
 	},
-	"no-fly": ({ spec, segments }) => {
+	"no-fly": ({ geometry, segments }) => {
 		for (const segment of segments) {
-			for (const zone of spec.zones) {
+			for (const zone of geometry.zones) {
 				if (segmentHitsPolygon([segment.a.x, segment.a.y], [segment.b.x, segment.b.y], zone.polygon)) {
 					const c = centroid(zone.polygon);
 					return finding("no-fly", false, false, `The route crosses no-fly zone ${zone.id}.`, [c[0], c[1], Math.max(segment.a.alt, segment.b.alt)], [`zone-${zone.id}`]);
@@ -150,8 +169,8 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		}
 		return finding("no-fly", true, false, "No part of the route crosses a no-fly zone.");
 	},
-	coverage: ({ spec, legs }) => {
-		const samples = sampleGrid(spec);
+	coverage: ({ spec, geometry, legs }) => {
+		const samples = sampleGrid(geometry.area, spec.gridM);
 		const missed = samples.filter(p => !covered(p, legs, spec.camera));
 		if (missed.length === 0) return finding("coverage", true, false, `All ${samples.length} sample points on the survey area are photographed.`);
 		const first = missed[0]!;
@@ -179,11 +198,11 @@ const HIDDEN_CHECKS: Record<(typeof HIDDEN_RULES)[number], Check> = {
 	},
 };
 
-function sceneFor(spec: Spec, segments: readonly Segment[] | null, legs: readonly Leg[], camera: Camera): Scene {
-	const xs = spec.area.map(p => p[0]);
-	const ys = spec.area.map(p => p[1]);
-	const paths: ScenePath[] = [{ id: "area", kind: "area", layer: "survey", z: 0, closed: true, points: spec.area }];
-	for (const zone of spec.zones) paths.push({ id: `zone-${zone.id}`, kind: "zone", layer: "no-fly", z: 0, closed: true, points: zone.polygon });
+function sceneFor(geometry: Geometry, segments: readonly Segment[] | null, legs: readonly Leg[], camera: Camera): Scene {
+	const xs = geometry.area.map(p => p[0]);
+	const ys = geometry.area.map(p => p[1]);
+	const paths: ScenePath[] = [{ id: "area", kind: "area", layer: "survey", z: 0, closed: true, points: geometry.area }];
+	for (const zone of geometry.zones) paths.push({ id: `zone-${zone.id}`, kind: "zone", layer: "no-fly", z: 0, closed: true, points: zone.polygon });
 	let maxAlt = 0;
 	for (const segment of segments ?? []) {
 		const z = Math.max(segment.a.alt, segment.b.alt);
@@ -204,24 +223,40 @@ function sceneFor(spec: Spec, segments: readonly Segment[] | null, legs: readonl
 	return { units: "m", size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), maxAlt], paths };
 }
 
-/** Checks a plan against the spec. The hidden sample is optional; without it the hidden rules fail. */
-export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Verdict {
+function refused(reason: string, scene: Scene): Verdict {
+	return { workflow: "drone-survey", pass: false, findings: [finding("parse", false, false, reason)], measured: { sceneUnit: "m" }, scene };
+}
+
+/**
+ * Checks a plan against the spec. The spec and the hidden sample arrive as unknown values and are parsed here, so
+ * a bad value becomes a failed "parse" finding rather than a throw. The hidden sample is optional; without it the
+ * hidden rules fail.
+ */
+export function verify(specInput: unknown, artefact: string, hiddenInput?: unknown): Verdict {
+	const spec = parseSpec(specInput);
+	if (typeof spec === "string") return refused(spec, EMPTY_SCENE);
+	const geometry = projectGeometry(spec);
+	const hiddenParsed = hiddenInput === undefined ? undefined : parseHiddenSample(hiddenInput);
+	const hiddenError = typeof hiddenParsed === "string" ? hiddenParsed : null;
+	const hidden = typeof hiddenParsed === "string" ? undefined : hiddenParsed;
 	const parsed = parsePlan(artefact, spec.origin);
-	if (typeof parsed === "string") {
-		const scene = sceneFor(spec, null, [], spec.camera);
-		return { workflow: "drone-survey", pass: false, findings: [finding("parse", false, false, parsed)], measured: { sceneUnit: "m" }, scene };
-	}
+	if (typeof parsed === "string") return refused(parsed, sceneFor(geometry, null, [], spec.camera));
+
 	const segments = segmentsOf(parsed.waypoints);
 	const legs = segments.map(legOf).filter((leg): leg is Leg => leg !== null);
-	const ctx: Context = { spec, plan: parsed, segments, legs, hidden };
+	const ctx: Context = { spec, geometry, plan: parsed, segments, legs, hidden };
 	const publicFindings = PUBLIC_RULES.filter(rule => spec.rules.includes(rule)).map(rule => CHECKS[rule](ctx));
 	const hiddenFindings = HIDDEN_RULES.map(rule => HIDDEN_CHECKS[rule](ctx));
-	const findings = [finding("parse", true, false, "The plan is a readable QGroundControl mission."), ...publicFindings, ...hiddenFindings];
+	const planFinding =
+		hiddenError === null
+			? finding("parse", true, false, "The plan is a readable QGroundControl mission.")
+			: finding("parse", false, false, `The hidden sample is unusable: ${hiddenError}`);
+	const findings = [planFinding, ...publicFindings, ...hiddenFindings];
 
 	const gsdWorst = worstGsdLeg(legs, spec.camera);
 	const frontWorst = worstFrontLeg(legs, parsed, spec.camera);
 	const sides = sideOverlaps(legs, spec.camera);
-	const samples = sampleGrid(spec);
+	const samples = sampleGrid(geometry.area, spec.gridM);
 	const measured: Record<string, number | string> = {
 		sceneUnit: "m",
 		cruiseMs: parsed.cruiseMs,
@@ -234,5 +269,5 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		samplePoints: samples.length,
 		uncoveredSamples: samples.filter(p => !covered(p, legs, spec.camera)).length,
 	};
-	return { workflow: "drone-survey", pass: findings.every(item => item.ok), findings, measured, scene: sceneFor(spec, segments, legs, spec.camera) };
+	return { workflow: "drone-survey", pass: findings.every(item => item.ok), findings, measured, scene: sceneFor(geometry, segments, legs, spec.camera) };
 }

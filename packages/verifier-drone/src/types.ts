@@ -1,9 +1,12 @@
-// Shared contract types for the drone survey checker. Units here are metres, not millimetres: the flight
-// plan and the survey area are in metres, so the scene declares units "m" (a contract extension).
+// Shared contract types for the drone survey checker, as a superset of the workstream contract. Every shared
+// member and union value is still accepted. The drone checker works in metres, so Scene.units also allows "m".
 
 /** A 2D point in metres, east (x) and north (y) of the spec origin. */
 export type Vec2 = readonly [number, number];
 export type Vec3 = readonly [number, number, number];
+
+/** A geographic position in degrees: latitude first, then longitude. */
+export type LatLon = readonly [number, number];
 
 export type Finding = {
 	readonly rule: string;
@@ -16,22 +19,40 @@ export type Finding = {
 
 export type ScenePath = {
 	readonly id: string;
-	readonly kind: "flight" | "zone" | "area" | "footprint" | "travel";
+	readonly kind:
+		| "outline"
+		| "cut"
+		| "engrave"
+		| "copper"
+		| "pad"
+		| "via"
+		| "drill"
+		| "part"
+		| "extrusion"
+		| "travel"
+		| "flight"
+		| "zone"
+		| "area"
+		| "footprint";
 	readonly layer: string;
 	readonly z: number;
+	readonly width?: number;
 	readonly closed: boolean;
+	readonly net?: string;
 	readonly order?: number;
 	readonly points: readonly Vec2[];
 };
 
 export type Scene = {
-	readonly units: "m";
+	readonly units: "mm" | "m";
 	readonly size: Vec3;
+	readonly stock?: { readonly size: Vec3; readonly material: string };
 	readonly paths: readonly ScenePath[];
+	readonly probes?: readonly { readonly a: Vec3; readonly b: Vec3; readonly expect: "continuity" | "isolation"; readonly ok: boolean }[];
 };
 
 export type Verdict = {
-	readonly workflow: "drone-survey";
+	readonly workflow: "laser-cut" | "pcb" | "print-fdm" | "drone-survey" | "sql" | "data-clean";
 	readonly pass: boolean;
 	readonly findings: readonly Finding[];
 	readonly measured: Readonly<Record<string, number | string>>;
@@ -43,29 +64,36 @@ export type Camera = {
 	readonly sensorHeightMm: number;
 	readonly focalMm: number;
 	readonly imageWidthPx: number;
+	readonly imageHeightPx: number;
 };
 
-export type Zone = { readonly id: string; readonly polygon: readonly Vec2[] };
+/** A no-fly zone: a polygon of geographic points and the height of the volume above the ground, in metres. */
+export type Zone = { readonly id: string; readonly heightM: number; readonly polygon: readonly LatLon[] };
 
 /** The published job spec. Public rules are the ones named in `rules`. */
 export type Spec = {
 	readonly id: string;
-	readonly origin: readonly [number, number];
-	readonly area: readonly Vec2[];
+	readonly origin: LatLon;
+	readonly area: readonly LatLon[];
 	readonly zones: readonly Zone[];
 	readonly camera: Camera;
 	readonly maxAltitudeM: number;
+	readonly minAltitudeM: number;
 	readonly maxGsdCm: number;
 	readonly minFrontOverlap: number;
 	readonly minSideOverlap: number;
 	readonly cruiseMs: { readonly min: number; readonly max: number };
+	readonly enduranceS: number;
+	readonly reserveS: number;
+	readonly geofenceMarginM: number;
 	readonly gridM: number;
 	readonly rules: readonly string[];
 };
 
-/** Hidden sample points and wind. The verifier runs these checks; the agent never sees the values. */
+/** Hidden sample points and wind, in metres from the origin. The verifier runs these checks; the agent never sees the values. */
 export type HiddenSample = {
 	readonly checkpoints: readonly Vec2[];
 	readonly windMs: number;
 	readonly cruiseToWindRatio: number;
+	readonly minPhotos: number;
 };
