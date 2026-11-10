@@ -27,4 +27,4 @@ A judge scenario, like Try Acquit, creates a visitor whose repository fork the G
 
 ## After submission
 
-Submission closes on 2026-11-12, with a hard stop at 09:00 PT. From then until 2026-12-21 no commits are made to this repository; only restarts of the submitted build happen. The uptime workflow makes no commits, so it keeps running through that period.
+Submission closes on Thursday 12 November 2026, 12:00 pm Pacific. From then until 2026-12-21 no commits are made to this repository; only restarts of the submitted build happen. The uptime workflow makes no commits, so it keeps running through that period.
