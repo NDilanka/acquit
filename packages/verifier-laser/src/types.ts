@@ -73,14 +73,17 @@ export type HiddenSample = { readonly keepMaterialMm: readonly Vec2[] };
 export const RULES = [
 	"parse",
 	"units-mm",
-	"layers",
+	"colours",
 	"closed-paths",
-	"feature-cut",
-	"kerf-compensation",
-	"cut-order",
-	"no-duplicate-cuts",
+	"no-duplicates",
 	"fits-bed",
+	"outer-size",
+	"holes",
+	"cutouts",
+	"engrave-inside",
 	"min-web",
+	"cut-order",
+	"no-self-intersection",
 	"hidden-material",
 ] as const;
 export type Rule = (typeof RULES)[number];
@@ -105,6 +108,6 @@ export type SvgDoc = {
 	readonly paths: readonly SvgPath[];
 };
 
-/** The laser colours. Anything else on a drawn path is a failed layers finding. */
+/** The laser colours. Anything else on a drawn path is a failed colours finding. */
 export const CUT_STROKE = "#ff0000";
 export const ENGRAVE_STROKE = "#0000ff";

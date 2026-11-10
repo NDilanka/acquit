@@ -33,11 +33,11 @@ test("garbage input gives one failed parse finding and never throws", () => {
 test("the honest panel passes every rule and reports the measured values", () => {
 	const verdict = verify(loadSpec(), sample("honest.svg"), hidden);
 	assert.equal(verdict.pass, true);
-	assert.deepEqual(verdict.findings.map(finding => finding.rule), [
-		"parse", "units-mm", "layers", "closed-paths", "feature-cut", "kerf-compensation", "cut-order", "no-duplicate-cuts", "fits-bed", "min-web", "hidden-material",
-	]);
-	assert.equal(verdict.measured.featuresMatched, 5);
-	assert.equal(verdict.measured.featuresExpected, 5);
+	assert.deepEqual(verdict.findings.map(finding => finding.rule), [...RULES]);
+	assert.equal(verdict.measured.holesMatched, 4);
+	assert.equal(verdict.measured.holesExpected, 4);
+	assert.equal(verdict.measured.cutoutsMatched, 1);
+	assert.equal(verdict.measured.cutoutsExpected, 1);
 	assert.equal(verdict.measured.outlineWidthMm, 120.2);
 	assert.equal(verdict.measured.outlineHeightMm, 80.2);
 	assert.deepEqual(verdict.scene.size, [300, 200, 3]);

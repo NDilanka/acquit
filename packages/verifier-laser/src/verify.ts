@@ -1,11 +1,11 @@
-// One verdict for a laser-cut panel. The file is read as text and flattened to millimetres, then the rules run in
-// RULES order. The verdict passes only when every finding is ok. The hidden-material rule runs only when the
-// verifier holds samples, so a verdict without them carries no hidden finding.
+// One verdict for a laser-cut panel. The file is read as text and flattened to millimetres, then every rule runs.
+// Findings come back in RULES order. The verdict passes only when every finding is ok. The hidden-material rule
+// runs only when the verifier holds samples, so a verdict without them carries no hidden finding.
 
-import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, pointInPolygon, roundMm, shapeKey, widthOf } from "./geometry.ts";
+import { boundsOf, centreOf, edgeListDistance, edgesOf, heightOf, pointInPolygon, roundMm, selfCrosses, shapeKey, widthOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { parseSvg } from "./svg.ts";
-import { CUT_STROKE, ENGRAVE_STROKE } from "./types.ts";
+import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
 import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SvgPath, Verdict, Vec2 } from "./types.ts";
 
 type Outline = { readonly path: SvgPath; readonly box: Bounds };
@@ -79,7 +79,9 @@ function sceneOf(paths: readonly SvgPath[], size: Scene["size"], spec: Spec): Sc
 }
 
 function verdictOf(findings: readonly Finding[], measured: Verdict["measured"], scene: Scene): Verdict {
-	return { workflow: "laser-cut", pass: findings.every(finding => finding.ok), findings, measured, scene };
+	const order: readonly string[] = RULES;
+	const ordered = [...findings].sort((a, b) => order.indexOf(a.rule) - order.indexOf(b.rule));
+	return { workflow: "laser-cut", pass: ordered.every(finding => finding.ok), findings: ordered, measured, scene };
 }
 
 /** Checks a laser cut panel file against the spec. Never throws: an unreadable file fails the parse rule. */
@@ -119,7 +121,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 	const misdrawn = doc.paths.filter(path => path.stroke !== CUT_STROKE && path.stroke !== ENGRAVE_STROKE).map(path => path.id);
 	findings.push(
 		check(
-			"layers",
+			"colours",
 			misdrawn.length === 0,
 			"every drawn path is cut red or engrave blue",
 			`${misdrawn.length} path(s) carry no laser colour`,
@@ -132,7 +134,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 
 	const candidates = outline === null ? [] : cut.map(path => candidateOf(path, outline.box)).filter((c): c is Candidate => c !== null);
 	const used = new Set<Candidate>();
-	const missing: string[] = [];
+	const holeMisses: string[] = [];
 	for (const hole of spec.holes) {
 		const [cx, cy] = hole.centreMm;
 		const d = hole.diameterMm;
@@ -141,27 +143,55 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			used,
 			c => c.path.closed && near(c.width, d, tol) && near(c.height, d, tol) && near(c.centre[0], cx, tol) && near(c.centre[1], cy, tol),
 		);
-		if (!found) missing.push(`hole ${hole.id}`);
+		if (!found) holeMisses.push(`hole ${hole.id}`);
 	}
+	const cutoutMisses: string[] = [];
 	for (const slot of spec.slots) {
 		const [sx, sy] = slot.sizeMm;
 		const found = claim(candidates, used, c => c.path.closed && near(c.width, sx, tol) && near(c.height, sy, tol));
-		if (!found) missing.push(`slot ${slot.id}`);
+		if (!found) cutoutMisses.push(`slot ${slot.id}`);
 	}
-	const featureCount = spec.holes.length + spec.slots.length;
-	measured.featuresMatched = featureCount - missing.length;
-	measured.featuresExpected = featureCount;
+	measured.holesMatched = spec.holes.length - holeMisses.length;
+	measured.holesExpected = spec.holes.length;
+	measured.cutoutsMatched = spec.slots.length - cutoutMisses.length;
+	measured.cutoutsExpected = spec.slots.length;
 	findings.push(
 		check(
-			"feature-cut",
-			missing.length === 0,
-			`all ${featureCount} holes and slots are cut at their spec position and size`,
-			`not cut as specified: ${missing.join(", ")}`,
+			"holes",
+			holeMisses.length === 0,
+			`all ${spec.holes.length} holes are cut at their spec position and diameter`,
+			`not cut as specified: ${holeMisses.join(", ")}`,
+		),
+	);
+	findings.push(
+		check(
+			"cutouts",
+			cutoutMisses.length === 0,
+			`all ${spec.slots.length} cutouts are cut at their spec size`,
+			`not cut as specified: ${cutoutMisses.join(", ")}`,
+		),
+	);
+
+	const outlineBox = outline?.box ?? null;
+	const insidePart = (point: Vec2): boolean => {
+		if (outline === null || outlineBox === null) return false;
+		const [x, y] = point;
+		if (x < outlineBox.minX || x > outlineBox.maxX || y < outlineBox.minY || y > outlineBox.maxY) return false;
+		return !cut.some(path => path !== outline.path && path.closed && pointInPolygon(point, path.points));
+	};
+	const stray = engrave.filter(path => !path.points.every(insidePart)).map(path => path.id);
+	findings.push(
+		check(
+			"engrave-inside",
+			stray.length === 0,
+			"every engraving lies inside the part and clear of the cuts",
+			`${stray.length} engraving(s) lie outside the part or inside a cut`,
+			stray,
 		),
 	);
 
 	if (outline === null) {
-		findings.push(check("kerf-compensation", false, "", "no outer cut outline"));
+		findings.push(check("outer-size", false, "", "no outer cut outline"));
 		findings.push(check("cut-order", false, "", "no outer cut outline to order against"));
 	} else {
 		const [px, py] = spec.partMm;
@@ -175,7 +205,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		measured.kerfHeightMm = roundMm(height - py);
 		findings.push(
 			check(
-				"kerf-compensation",
+				"outer-size",
 				near(width, expectWidth, tol) && near(height, expectHeight, tol),
 				`the outer cut is ${roundMm(width)} x ${roundMm(height)} mm, the finished part plus kerf`,
 				`the outer cut is ${roundMm(width)} x ${roundMm(height)} mm; the finished part plus kerf is ${roundMm(expectWidth)} x ${roundMm(expectHeight)} mm`,
@@ -205,7 +235,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		else seen.set(key, path.id);
 	}
 	findings.push(
-		check("no-duplicate-cuts", duplicates.length === 0, "no shape is cut twice", `${duplicates.length} cut(s) repeat an earlier cut`, duplicates),
+		check("no-duplicates", duplicates.length === 0, "no shape is cut twice", `${duplicates.length} cut(s) repeat an earlier cut`, duplicates),
 	);
 
 	const [bedX, bedY] = spec.bedMm;
@@ -238,6 +268,17 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			`every web between cuts is at least ${spec.minWebMm} mm`,
 			`${thinPairs.length / 2} pair(s) of cuts leave a web under ${spec.minWebMm} mm`,
 			[...new Set(thinPairs)],
+		),
+	);
+
+	const crossing = cut.filter(path => selfCrosses(path.points, path.closed)).map(path => path.id);
+	findings.push(
+		check(
+			"no-self-intersection",
+			crossing.length === 0,
+			"no cut crosses itself",
+			`${crossing.length} cut(s) cross themselves`,
+			crossing,
 		),
 	);
 

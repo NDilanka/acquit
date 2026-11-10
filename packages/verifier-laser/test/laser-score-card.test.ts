@@ -19,17 +19,17 @@ const hidden = JSON.parse(sample("enclosure-panel.hidden.json")) as HiddenSample
 // part, so no rule sees the missing corner.
 const cases: { id: string; kind: "cheat" | "honest"; expected: string }[] = [
 	{ id: "honest", kind: "honest", expected: VERIFIED },
-	{ id: "fraud-no-kerf", kind: "cheat", expected: "kerf-compensation" },
+	{ id: "fraud-no-kerf", kind: "cheat", expected: "outer-size" },
 	{ id: "fraud-open-path", kind: "cheat", expected: "closed-paths" },
-	{ id: "fraud-hole-engraved", kind: "cheat", expected: "feature-cut" },
-	{ id: "fraud-hole-moved", kind: "cheat", expected: "feature-cut" },
+	{ id: "fraud-hole-engraved", kind: "cheat", expected: "holes" },
+	{ id: "fraud-hole-moved", kind: "cheat", expected: "holes" },
 	{ id: "fraud-pixel-units", kind: "cheat", expected: "units-mm" },
-	{ id: "fraud-duplicate-cut", kind: "cheat", expected: "no-duplicate-cuts" },
+	{ id: "fraud-duplicate-cut", kind: "cheat", expected: "no-duplicates" },
 	{ id: "fraud-oversize-bed", kind: "cheat", expected: "fits-bed" },
 	{ id: "fraud-order", kind: "cheat", expected: "cut-order" },
 	{ id: "fraud-thin-web", kind: "cheat", expected: "min-web" },
 	{ id: "fraud-hidden-notch", kind: "cheat", expected: "hidden-material" },
-	{ id: "fraud-wrong-colour", kind: "cheat", expected: "layers" },
+	{ id: "fraud-wrong-colour", kind: "cheat", expected: "colours" },
 	{ id: "fraud-chamfered-corner", kind: "cheat", expected: "ACCEPTED (gap)" },
 ];
 

@@ -77,6 +77,49 @@ export function edgeListDistance(first: readonly (readonly [Vec2, Vec2])[], seco
 	return best;
 }
 
+/** Orientation noise below this, in mm squared, counts as collinear. */
+const TOUCH_EPS = 1e-9;
+
+function onSegment(a: Vec2, b: Vec2, p: Vec2): boolean {
+	return (
+		Math.min(a[0], b[0]) - TOUCH_EPS <= p[0] &&
+		p[0] <= Math.max(a[0], b[0]) + TOUCH_EPS &&
+		Math.min(a[1], b[1]) - TOUCH_EPS <= p[1] &&
+		p[1] <= Math.max(a[1], b[1]) + TOUCH_EPS
+	);
+}
+
+/** True when segments ab and cd share any point, touching at an end included. */
+export function segmentsTouch(a: Vec2, b: Vec2, c: Vec2, d: Vec2): boolean {
+	const d1 = orientation(c, d, a);
+	const d2 = orientation(c, d, b);
+	const d3 = orientation(a, b, c);
+	const d4 = orientation(a, b, d);
+	const straddles = (x: number, y: number): boolean => (x > TOUCH_EPS && y < -TOUCH_EPS) || (x < -TOUCH_EPS && y > TOUCH_EPS);
+	if (straddles(d1, d2) && straddles(d3, d4)) return true;
+	if (Math.abs(d1) <= TOUCH_EPS && onSegment(c, d, a)) return true;
+	if (Math.abs(d2) <= TOUCH_EPS && onSegment(c, d, b)) return true;
+	if (Math.abs(d3) <= TOUCH_EPS && onSegment(a, b, c)) return true;
+	return Math.abs(d4) <= TOUCH_EPS && onSegment(a, b, d);
+}
+
+/**
+ * True when two edges that do not share a vertex meet. Edges that share a vertex are skipped, so a corner is
+ * never a crossing; a closed path's last and first edges share its start point.
+ */
+export function selfCrosses(points: readonly Vec2[], closed: boolean): boolean {
+	const edges = edgesOf(points, closed);
+	for (let i = 0; i < edges.length; i++) {
+		for (let j = i + 2; j < edges.length; j++) {
+			if (closed && i === 0 && j === edges.length - 1) continue;
+			const [a, b] = edges[i]!;
+			const [c, d] = edges[j]!;
+			if (segmentsTouch(a, b, c, d)) return true;
+		}
+	}
+	return false;
+}
+
 /**
  * A key that ignores start point, direction and rounding noise, so a path cut twice is found whatever its
  * starting corner. Two paths with the same key draw the same shape.
