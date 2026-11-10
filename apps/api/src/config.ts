@@ -25,6 +25,8 @@ export const webOrigin = new URL(process.env.WEB_ORIGIN ?? `http://localhost:${p
 export const devEnabled = process.env.ACQUIT_DEV === "1";
 /** Whether a bid must pass the agent exam gate. Off unless ACQUIT_EXAM_GATE=1; the API hands it to job.ts at boot. */
 export const examGateEnforced = process.env.ACQUIT_EXAM_GATE === "1";
+/** Whether the hosted sample runner takes starter jobs for each visitor's built-in sample agent. Off unless ACQUIT_SAMPLE_RUNNER=1. */
+export const sampleRunnerEnabled = process.env.ACQUIT_SAMPLE_RUNNER === "1";
 /**
  * The platform role's own credential, minting the one session that may read the whole book. A
  * deployment that exposes the dashboards outside dev mode sets it; the value is never logged.
