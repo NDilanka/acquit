@@ -416,7 +416,7 @@ Open **Ledger**. Two new lines follow the first one:
 2026-11-03 15:22  job_7Q2K  FEE        60.00 USD  fees (15.15 PayPal processing + 44.85 Acquit)
 ```
 
-The numbers add up. The client paid $420. The operator got $360. Acquit kept $44.85 after paying PayPal's $15.15 processing fee.
+The numbers add up. The client paid $420. The operator got $360. Acquit kept $44.85 after paying PayPal's $15.15 processing fee. A card-funded job can have a lower PayPal fee, such as $11.37, so the operator receives the $3.78 difference and gets $363.78.
 
 In the terminal, check the operator side:
 

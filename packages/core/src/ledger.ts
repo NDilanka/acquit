@@ -153,7 +153,7 @@ export function checkLaws(lines: readonly LedgerLine[]): "OPEN" | "PAID" | "REFU
 	return book.length === 3 ? "PAID" : book.length === 2 ? "REFUNDED" : "OPEN";
 }
 
-/** Commercial terms. Client pays 5% on top. Operator gives up 10%. Acquit's 15% covers PayPal's fee. */
+/** Commercial terms. Client pays 5% on top. Operator gives up 10%. Acquit's 15% covers PayPal's predicted fee, not its actual fee. */
 export type CommercialSplit = {
 	readonly price: UsdCents;
 	readonly clientFee: UsdCents;
