@@ -105,3 +105,18 @@ test("a root transform fails parse alone, and no scene places the panel where th
 	assert.deepEqual(verdict.measured, {});
 	assert.equal(verdict.scene.paths.length, 0);
 });
+
+test("XML the grammar forbids fails parse alone, even when the drawing it wraps is the honest panel", () => {
+	const honest = sample("honest.svg");
+	const cases: [string, string][] = [
+		["comment with --", honest.replace("<circle", "<!--a--b--><circle")],
+		["xml prefix rebound", honest.replace("<svg ", '<svg xmlns:xml="urn:wrong" ')],
+		["malformed declaration", `<?xml a="b"?>${honest}`],
+	];
+	for (const [name, text] of cases) {
+		const verdict = verify(loadSpec(), text, hidden);
+		assert.equal(verdict.pass, false, name);
+		assert.deepEqual(verdict.findings.map(finding => finding.rule), ["parse"], name);
+		assert.deepEqual(verdict.measured, {}, name);
+	}
+});

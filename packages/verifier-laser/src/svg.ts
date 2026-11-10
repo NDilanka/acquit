@@ -55,6 +55,9 @@ const RGB_PERCENT = /^rgb\(\s*(\d{1,3}(?:\.\d+)?)%\s*,\s*(\d{1,3}(?:\.\d+)?)%\s*
 const NUMBER_TOKEN = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/y;
 const SEPARATOR = /[\s,]*/y;
 const TRANSFORM = /\s*(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)\s*,?/y;
+/** The XML declaration: version 1.0, then optionally an encoding and a standalone flag, and nothing else. */
+const XML_DECLARATION = /^<\?xml\s+version\s*=\s*(["'])1\.0\1(?:\s+encoding\s*=\s*(["'])([A-Za-z][\w.-]*)\2)?(?:\s+standalone\s*=\s*(["'])(?:yes|no)\4)?\s*\?>$/;
+const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
 
 /** Affine matrix [a, b, c, d, e, f]: x' = a x + c y + e, y' = b x + d y + f. */
 type Matrix = readonly [number, number, number, number, number, number];
@@ -126,9 +129,30 @@ function parseAttributes(text: string): Map<string, string> {
 	return attrs;
 }
 
+/** Refuses a declaration that is not the XML grammar for version 1.0, or that declares an encoding other than UTF-8. */
+function checkDeclaration(declaration: string): void {
+	const match = XML_DECLARATION.exec(declaration);
+	if (match === null) throw new SvgError("the XML declaration is malformed; it must read version 1.0");
+	const encoding = match[3];
+	if (encoding !== undefined && encoding.toLowerCase() !== "utf-8") throw new SvgError("the XML declaration must declare UTF-8 encoding");
+}
+
+/**
+ * Binds a prefix on the root. The reserved names keep their namespaces: xml is only ever the XML namespace, xmlns is
+ * never declared, and neither namespace is bound to any other prefix or to the default namespace.
+ */
+function declareNamespace(scope: Map<string, string>, key: string, value: string): void {
+	const prefix = key === "xmlns" ? "" : key.slice(6);
+	if (prefix === "xmlns") throw new SvgError("the xmlns prefix cannot be declared");
+	if (prefix === "xml" && value !== XML_NS) throw new SvgError("the xml prefix is bound to the XML namespace and cannot be rebound");
+	if (prefix !== "xml" && (value === XML_NS || value === XMLNS_NAMESPACE)) throw new SvgError("the XML and xmlns namespaces cannot be bound to another prefix");
+	scope.set(prefix, value);
+}
+
 /**
  * Parses the markup into one element tree. Only the XML declaration may open a file, so stylesheets and other
- * instructions are refused. DOCTYPE and CDATA are refused. Namespace declarations are only accepted on the root.
+ * instructions are refused. DOCTYPE and CDATA are refused. Comments may not contain --, as XML requires. Namespace
+ * declarations are only accepted on the root.
  */
 function parseXml(text: string): Element {
 	const stack: Element[] = [];
@@ -145,14 +169,19 @@ function parseXml(text: string): Element {
 		if (text.startsWith("<!--", lt)) {
 			const end = text.indexOf("-->", lt + 4);
 			if (end < 0) throw new SvgError("a comment is never closed");
+			const body = text.slice(lt + 4, end);
+			if (body.includes("--") || body.endsWith("-")) throw new SvgError("a comment cannot contain -- or end with -");
 			pos = end + 3;
 		} else if (text.startsWith("<?", lt)) {
 			const end = text.indexOf("?>", lt + 2);
 			if (end < 0) throw new SvgError("a processing instruction is never closed");
-			if (lt !== 0 || !/^<\?xml\s/.test(text.slice(lt, end + 2))) throw new SvgError("processing instructions are not accepted");
+			if (lt !== 0 || !/^<\?xml\s/.test(text)) throw new SvgError("processing instructions other than the XML declaration are not accepted");
+			checkDeclaration(text.slice(lt, end + 2));
 			pos = end + 2;
+		} else if (text.startsWith("<![CDATA[", lt)) {
+			throw new SvgError("CDATA sections are not accepted");
 		} else if (text.startsWith("<!", lt)) {
-			throw new SvgError("DOCTYPE and CDATA are not accepted");
+			throw new SvgError("DOCTYPE and other markup declarations are not accepted");
 		} else if (text.startsWith("</", lt)) {
 			END_TAG.lastIndex = lt;
 			const match = END_TAG.exec(text);
@@ -171,8 +200,7 @@ function parseXml(text: string): Element {
 			if (stack.length + 1 > MAX_DEPTH) throw new SvgError("the file nests its elements too deeply");
 			if (root === null) {
 				for (const [key, value] of attrs) {
-					if (key === "xmlns") scope.set("", value);
-					else if (key.startsWith("xmlns:")) scope.set(key.slice(6), value);
+					if (key === "xmlns" || key.startsWith("xmlns:")) declareNamespace(scope, key, value);
 				}
 			} else {
 				if (stack.length === 0) throw new SvgError("more than one root element");

@@ -271,6 +271,35 @@ test("the XML declaration and comments are accepted, and entities decode in valu
 	assert.deepEqual(doc.paths.map(path => [path.id, path.stroke]), [["a&b", "#ff0000"]]);
 });
 
+test("XML that the grammar does not allow is refused, and the refusal names the construct", () => {
+	const cases: [string, string, RegExp][] = [
+		["comment with --", `<!--a--b-->${root(RECT)}`, /comment/],
+		["comment ending in a dash", `<!-- a --->${root(RECT)}`, /comment/],
+		["declaration with no version", `<?xml encoding="UTF-8"?>${root(RECT)}`, /XML declaration/],
+		["declaration with a stray attribute", `<?xml a="b"?>${root(RECT)}`, /XML declaration/],
+		["declaration of version 1.1", `<?xml version="1.1"?>${root(RECT)}`, /XML declaration/],
+		["declaration in another encoding", `<?xml version="1.0" encoding="ISO-8859-1"?>${root(RECT)}`, /UTF-8/],
+		["xml prefix rebound", root(RECT, `xmlns:xml="urn:wrong" ${DEFAULT_ROOT}`), /xml prefix/],
+		["xmlns prefix declared", root(RECT, `xmlns:xmlns="http://www.w3.org/2000/xmlns/" ${DEFAULT_ROOT}`), /xmlns prefix/],
+		["XML namespace on another prefix", root(RECT, `xmlns:q="http://www.w3.org/XML/1998/namespace" ${DEFAULT_ROOT}`), /another prefix/],
+		["xmlns namespace on another prefix", root(RECT, `xmlns:q="http://www.w3.org/2000/xmlns/" ${DEFAULT_ROOT}`), /another prefix/],
+	];
+	for (const [name, text, pattern] of cases) {
+		const result = parseSvg(text);
+		assert.equal(result.ok, false, name);
+		if (!result.ok) assert.match(result.errors[0]!.message, pattern, name);
+	}
+});
+
+test("valid comments, declarations and the xml prefix bound to its own namespace are still accepted", () => {
+	const valid = [
+		`<?xml version='1.0' encoding='UTF-8' standalone='no' ?><!-- a - b -->${root(RECT)}`,
+		`<?xml version="1.0"?><!----><!-- end -->${root(RECT)}`,
+		root(RECT, `xmlns:xml="http://www.w3.org/XML/1998/namespace" ${DEFAULT_ROOT}`),
+	];
+	for (const text of valid) assert.equal(parseSvg(text).ok, true, text);
+});
+
 test("colour forms that name the same colour read to one canonical value", () => {
 	const red = [
 		'stroke="#ff0000"', 'stroke="#F00"', 'stroke="red"', 'stroke="RED"', 'stroke="rgb(255,0,0)"', 'stroke="rgb(100%, 0%, 0%)"',
