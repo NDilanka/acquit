@@ -288,7 +288,6 @@ export const HIDDEN = {
 		{ a: "U1.3", b: "U1.2", expect: "isolation" },
 		{ a: "R1.1", b: "D1.2", expect: "isolation" },
 		{ a: "C1.1", b: "C2.2", expect: "isolation" },
-		{ a: "H4.1", b: "J2.4", expect: "isolation" },
 		{ a: "J2.3", b: "J2.4", expect: "isolation" },
 	],
 	minClearance: 0.25,
@@ -359,9 +358,9 @@ export const FRAUDS: readonly { readonly id: string; readonly rule: string; read
 		text: build({ viaDY: 109.23 }),
 	},
 	{
-		id: "fraud-11-hidden-probe",
-		rule: "hidden-probe",
-		hidden: true,
+		id: "fraud-11-bore-cut",
+		rule: "clearance",
+		hidden: false,
 		text: build({ extra: [seg([135.62, 118], [138, 123], 0.2, "F.Cu", "SIG2")] }),
 	},
 ];

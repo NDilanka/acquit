@@ -2,7 +2,7 @@
 // sample is given. Connectivity is geometric: a track joins a pad only where the copper touches, and the
 // file's net labels on tracks are never used for it.
 
-import { readBoard, type Board, type CopperLayer, type PadInst, type Via } from "./board.ts";
+import { readBoard, type Board, type CopperLayer, type Hole, type PadInst, type Via } from "./board.ts";
 import {
 	circlePolygon,
 	dist,
@@ -43,6 +43,7 @@ type PolyGeo = {
 	readonly slop: number;
 	readonly pad?: PadInst;
 	readonly via?: Via;
+	readonly hole?: Hole; // a bore: removed material, never copper and never a contact
 };
 type Geo = TrackGeo | PolyGeo;
 
@@ -197,6 +198,28 @@ function worstClearance(geos: readonly Geo[], comp: readonly number[], limit: nu
 	return worst;
 }
 
+/**
+ * The copper item that comes closest to a bore while breaking the limit, or undefined. Every copper item is checked
+ * against every bore, whatever its net, since a bore has no net. The same slop allowance as worstClearance applies.
+ */
+function worstBoreClearance(
+	geos: readonly Geo[],
+	bores: readonly PolyGeo[],
+	limit: number,
+	budget: Budget,
+): { geo: Geo; bore: PolyGeo; g: number } | undefined {
+	let worst: { geo: Geo; bore: PolyGeo; g: number } | undefined;
+	for (const bore of bores) {
+		for (const geo of geos) {
+			if (boxGap(geo.box, bore.box) > limit + geo.slop + bore.slop) continue;
+			if (!take(budget, edgesOf(geo) * edgesOf(bore))) return worst;
+			const g = gap(geo, bore);
+			if (g - (geo.slop + bore.slop) < limit - EPS && (!worst || g < worst.g)) worst = { geo, bore, g };
+		}
+	}
+	return worst;
+}
+
 /** Names the curved item of an undecidable contact, so the parse failure says what the checker cannot model. */
 function curvedName(g: Geo): string {
 	if (g.kind === "track") return "an arc";
@@ -272,6 +295,12 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 	}
 	for (const v of board.vias) {
 		geos.push({ kind: "poly", layers: ["F.Cu", "B.Cu"], poly: v.poly, box: boxOf(v.poly, 0), slop: v.slop, via: v });
+	}
+	// Bores are kept apart from geos: they conduct nothing, so they take no part in connectivity or net checks. Copper
+	// must still clear them, and they must lie inside the board.
+	const bores: PolyGeo[] = [];
+	for (const h of board.holes) {
+		bores.push({ kind: "poly", layers: ["F.Cu", "B.Cu"], poly: h.poly, box: boxOf(h.poly, 0), slop: h.slop, hole: h });
 	}
 	const budget: Budget = { left: MAX_SEGMENT_TESTS, spent: false };
 	const { comp, ambiguous } = connectedComponents(geos, budget);
@@ -384,8 +413,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			for (let i = 0; i < boardPoly.length; i++) {
 				edges.push([boardPoly[i] as Vec2, boardPoly[(i + 1) % boardPoly.length] as Vec2]);
 			}
-			let worst: { g: number; at: Vec2; layer: CopperLayer | undefined; outside: boolean } | undefined;
-			geos.forEach(g => {
+			let worst: { g: number; at: Vec2; layer: CopperLayer | undefined; outside: boolean; hole: boolean } | undefined;
+			[...geos, ...bores].forEach(g => {
 				const pts = g.kind === "track" ? [g.a, g.b] : g.poly;
 				// Each item is tested against every outline edge, and each of its points against the whole outline.
 				if (!take(budget, (edgesOf(g) + pts.length) * edges.length)) return;
@@ -397,20 +426,22 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 				}
 				if (outside || minEdge < spec.rules.edgeClearance - EPS) {
 					const score = outside ? -1 : minEdge;
-					if (!worst || score < worst.g) worst = { g: score, at: representative(g), layer: g.layers[0], outside };
+					if (!worst || score < worst.g)
+						worst = { g: score, at: representative(g), layer: g.layers[0], outside, hole: g.kind === "poly" && g.hole !== undefined };
 				}
 			});
 			if (!worst) {
-				findings.push(okFinding("inside-board", "All copper is inside the board, clear of the edge."));
+				findings.push(okFinding("inside-board", "All copper and every drilled hole is inside the board, clear of the edge."));
 			} else {
-				const w = worst as { g: number; at: Vec2; layer: CopperLayer | undefined; outside: boolean };
+				const w = worst as { g: number; at: Vec2; layer: CopperLayer | undefined; outside: boolean; hole: boolean };
+				const item = w.hole ? "A drilled hole" : "A copper item";
 				findings.push({
 					rule: "inside-board",
 					ok: false,
 					hidden: false,
 					message: w.outside
-						? "A copper item lies outside the board outline."
-						: `A copper item is ${fmt(w.g)} mm from the board edge; the minimum is ${fmt(spec.rules.edgeClearance)} mm.`,
+						? `${item} lies outside the board outline.`
+						: `${item} is ${fmt(w.g)} mm from the board edge; the minimum is ${fmt(spec.rules.edgeClearance)} mm.`,
 					at: [w.at[0], w.at[1], zOf(w.layer)],
 				});
 			}
@@ -504,12 +535,29 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		);
 	}
 
-	// clearance
+	// clearance: copper of different nets, and any copper against a drilled hole (a bore has no net, so the net rule
+	// does not excuse copper entering it). The closer breaking pair is reported.
 	{
-		const worst = worstClearance(geos, comp, spec.rules.minClearance, budget);
-		if (!worst) {
-			findings.push(okFinding("clearance", `Copper of different nets keeps at least ${fmt(spec.rules.minClearance)} mm apart.`));
-		} else {
+		const limit = spec.rules.minClearance;
+		const worst = worstClearance(geos, comp, limit, budget);
+		const bore = worstBoreClearance(geos, bores, limit, budget);
+		if (!worst && !bore) {
+			findings.push(
+				okFinding(
+					"clearance",
+					`Copper of different nets keeps at least ${fmt(limit)} mm apart, and copper keeps at least ${fmt(limit)} mm from every drilled hole.`,
+				),
+			);
+		} else if (bore && (!worst || bore.g <= worst.g)) {
+			const at = representative(bore.geo);
+			findings.push({
+				rule: "clearance",
+				ok: false,
+				hidden: false,
+				message: `Copper is ${fmt(bore.g)} mm from a drilled hole; the minimum is ${fmt(limit)} mm.`,
+				at: [at[0], at[1], zOf(sharedLayer(bore.geo, bore.bore))],
+			});
+		} else if (worst) {
 			const a = geos[worst.i] as Geo;
 			const b = geos[worst.j] as Geo;
 			const mid = representative(a);
@@ -519,7 +567,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 				rule: "clearance",
 				ok: false,
 				hidden: false,
-				message: `Copper of two different nets is ${fmt(worst.g)} mm apart; the minimum is ${fmt(spec.rules.minClearance)} mm.`,
+				message: `Copper of two different nets is ${fmt(worst.g)} mm apart; the minimum is ${fmt(limit)} mm.`,
 				at: [at[0], at[1], zOf(sharedLayer(a, b))],
 			});
 		}
@@ -593,6 +641,25 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		);
 	}
 
+	// pad-rules: a plated pad's drill must leave the minimum annular ring around it, measured across its smallest copper
+	// dimension so an oval or rectangle cannot hide a thin ring behind a wide one.
+	{
+		let bad: { message: string; at: Vec2 } | undefined;
+		for (const p of board.pads) {
+			if (p.type !== "thru_hole" || p.drill === undefined) continue;
+			const ring = (Math.min(p.size[0], p.size[1]) - p.drill) / 2;
+			if (ring < spec.rules.minAnnularRing - EPS) {
+				bad = { message: `A pad annular ring is ${fmt(ring)} mm; the minimum is ${fmt(spec.rules.minAnnularRing)} mm.`, at: p.center };
+				break;
+			}
+		}
+		findings.push(
+			bad
+				? missingFinding("pad-rules", bad.message, bad.at, TOP_Z)
+				: okFinding("pad-rules", "Every plated pad leaves the minimum annular ring around its drill."),
+		);
+	}
+
 	// keepouts
 	{
 		let bad: { name: string; at: Vec2 } | undefined;
@@ -619,10 +686,9 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 	// mounting-holes
 	{
 		let bad: { at: Vec2; drill: number } | undefined;
+		// A required mounting hole is a non-plated bore of the required diameter, matched on both sides of the tolerance.
 		for (const h of spec.mountingHoles) {
-			const found = board.pads.some(
-				p => p.drill !== undefined && dist(p.center, h.at) <= 0.05 && p.drill >= h.drill - DRILL_TOL,
-			);
+			const found = board.holes.some(b => dist(b.center, h.at) <= 0.05 && Math.abs(b.drill - h.drill) <= DRILL_TOL);
 			if (!found && !bad) bad = h;
 		}
 		findings.push(
@@ -679,8 +745,9 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		if (hidden.minClearance !== undefined) {
 			const limit = hidden.minClearance;
 			const tighter = worstClearance(geos, comp, limit, budget);
+			const tighterBore = worstBoreClearance(geos, bores, limit, budget);
 			findings.push(
-				tighter
+				tighter || tighterBore
 					? { rule: "hidden-clearance", ok: false, hidden: true, message: "A copper gap is narrower than the hidden limit." }
 					: okFinding("hidden-clearance", "Every copper gap meets the hidden limit.", true),
 			);
@@ -770,6 +837,9 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 	}
 	for (const v of board.vias) {
 		paths.push({ id: `drill-${v.id}`, kind: "drill", layer: "drill", z: 0, closed: true, points: circlePolygon(v.at, v.drill / 2) });
+	}
+	for (const h of board.holes) {
+		paths.push({ id: `drill-${h.id}`, kind: "drill", layer: "drill", z: 0, closed: true, points: circlePolygon(h.center, h.drill / 2) });
 	}
 	for (const fp of board.footprints) {
 		if (fp.pads.length === 0) continue;

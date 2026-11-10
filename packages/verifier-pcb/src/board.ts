@@ -1,5 +1,6 @@
 // Reads a KiCad 7/8 .kicad_pcb file into a plain board model. Only the copper that the rules need is kept:
-// F.Cu and B.Cu tracks, pads, and vias, plus the Edge.Cuts outline. Metadata layers (silkscreen, fab, courtyard)
+// F.Cu and B.Cu tracks, pads, and vias, plus the Edge.Cuts outline. A non-plated hole is kept apart as a bore,
+// since it removes material and conducts nothing. Metadata layers (silkscreen, fab, courtyard)
 // are accepted and not modelled. Any construct outside the supported subset fails the parse with its name. A
 // recognised record with a missing, non-finite, out-of-range, or non-positive mandatory field fails the parse too,
 // and a parse that cannot be read comes back with an error instead of a throw.
@@ -69,6 +70,17 @@ export type Via = {
 	readonly slop: number; // mm; how far the modelled polygon may differ from the true via
 };
 
+/** A non-plated hole. It is removed material on every layer: it conducts nothing and no copper may enter it. */
+export type Hole = {
+	readonly id: string; // "hole-N"; the file's own labels are not trusted for identity
+	readonly ref: string;
+	readonly name: string;
+	readonly center: Vec2;
+	readonly drill: number; // mm; the bore's diameter
+	readonly poly: readonly Vec2[]; // the bore's outline
+	readonly slop: number; // mm; how far the modelled bore may differ from the true bore
+};
+
 export type Footprint = {
 	readonly ref: string;
 	readonly name: string;
@@ -84,8 +96,9 @@ export type Board = {
 	readonly outlineLoops: readonly (readonly Vec2[])[];
 	readonly outlineOpen: boolean; // true when an Edge.Cuts chain does not close
 	readonly tracks: readonly Track[];
-	readonly pads: readonly PadInst[];
+	readonly pads: readonly PadInst[]; // conducting pads only; a non-plated hole is in holes
 	readonly vias: readonly Via[];
+	readonly holes: readonly Hole[];
 	readonly footprints: readonly Footprint[];
 };
 
@@ -97,6 +110,7 @@ const EMPTY: Board = {
 	tracks: [],
 	pads: [],
 	vias: [],
+	holes: [],
 	footprints: [],
 };
 
@@ -289,6 +303,8 @@ const VIA_HEADS = new Set(["at", "size", "drill", "layers", "net", "free", "lock
 const PAD_TYPES = new Set(["smd", "thru_hole", "np_thru_hole"]);
 const PAD_SHAPES = new Set(["rect", "circle", "oval", "roundrect"]);
 const PAD_LAYER = /^(F|B|\*)\.(Cu|Mask|Paste)$/;
+/** Two lengths within this of each other are the same length, mm. */
+const BORE_TOL = 0.001;
 const EDGE_HEADS = new Set(["gr_line", "gr_rect", "gr_arc", "gr_circle"]);
 const METADATA_LAYER = /^(F|B)\.(SilkS|Fab|CrtYd)$|^(Dwgs|Cmts|Eco1|Eco2)\.User$|^User\.[1-9]$/;
 // A finite decimal written in plain notation. Longer forms such as 0x10 or NaN are rejected as malformed.
@@ -446,6 +462,26 @@ function viaProblem(v: readonly SExpr[]): string | undefined {
 	);
 }
 
+/**
+ * A non-plated hole is a round bore of its drill. Copper around it is unsupported, since the bore would then not be
+ * the only removed material. Copper is allowed only when it is exactly the bore: a round pad of the drill's diameter.
+ * A hole with mask layers only has no copper at all, so it is a bore and nothing more.
+ */
+function boreProblem(p: readonly SExpr[], name: string, ref: string, shape: string, copper: boolean): string | undefined {
+	const drillProblem = lengthsProblem(p, "drill", 1);
+	if (drillProblem) return drillProblem;
+	if (!copper) return undefined;
+	const drill = num(child(p, "drill"), 1);
+	const size = point(child(p, "size"));
+	const exact =
+		shape === "circle" &&
+		drill !== undefined &&
+		size !== undefined &&
+		Math.abs(size[0] - drill) <= BORE_TOL &&
+		Math.abs(size[1] - drill) <= BORE_TOL;
+	return exact ? undefined : `non-plated hole ${name} on ${ref} has copper beyond its bore, which is unsupported`;
+}
+
 function padProblem(p: readonly SExpr[], ref: string): string | undefined {
 	const bad = unexpectedChild(p, PAD_HEADS, 3);
 	if (bad) return bad;
@@ -459,11 +495,18 @@ function padProblem(p: readonly SExpr[], ref: string): string | undefined {
 	for (const layer of (layers ?? []).slice(1)) {
 		if (typeof layer !== "string" || !PAD_LAYER.test(layer)) return `pad layer ${String(layer)} on ${ref}`;
 	}
-	if (copperLayersOf(layers).length === 0) return `pad ${name} on ${ref} has no copper layer`;
+	const copper = copperLayersOf(layers);
+	// A through-hole or SMD pad is copper, so it needs a copper layer. A non-plated hole may be a mask-only bore.
+	if (type !== "np_thru_hole" && copper.length === 0) return `pad ${name} on ${ref} has no copper layer`;
+	const structural = numericProblem(p) ?? lengthsProblem(p, "size", 2);
+	if (structural) return structural;
+	if (type === "np_thru_hole") return boreProblem(p, name, ref, shape, copper.length > 0);
 	// An SMD pad is a flat land and never carries a hole. A through-hole pad needs its drill.
-	const drill =
-		type === "smd" ? (child(p, "drill") ? `smd pad ${name} on ${ref} carries a drill` : undefined) : lengthsProblem(p, "drill", 1);
-	return numericProblem(p) ?? lengthsProblem(p, "size", 2) ?? drill;
+	return type === "smd"
+		? child(p, "drill")
+			? `smd pad ${name} on ${ref} carries a drill`
+			: undefined
+		: lengthsProblem(p, "drill", 1);
 }
 
 function footprintProblem(fp: readonly SExpr[]): string | undefined {
@@ -645,6 +688,7 @@ export function readBoard(text: string): Board {
 
 	const footprints: Footprint[] = [];
 	const pads: PadInst[] = [];
+	const holes: Hole[] = [];
 	for (const fp of children(root, "footprint")) {
 		const at0 = point(child(fp, "at"));
 		const origin: Vec2 = at0 ?? [0, 0];
@@ -684,7 +728,22 @@ export function readBoard(text: string): Board {
 				slop: padError(shape, size),
 			};
 			fpPads.push(inst);
-			if (inst.layers.length > 0) pads.push(inst);
+			if (type === "np_thru_hole") {
+				// A non-plated hole is removed material on every layer. It is not copper, so it joins no net.
+				if (drill !== undefined) {
+					holes.push({
+						id: `hole-${holes.length}`,
+						ref,
+						name,
+						center,
+						drill,
+						poly: circlePolygon(center, drill / 2),
+						slop: circleError(drill / 2),
+					});
+				}
+			} else if (inst.layers.length > 0) {
+				pads.push(inst);
+			}
 		}
 		footprints.push({ ref, name: typeof fp[1] === "string" ? fp[1] : "", at: origin, rotation: rot, pads: fpPads });
 	}
@@ -697,6 +756,7 @@ export function readBoard(text: string): Board {
 		tracks,
 		pads,
 		vias,
+		holes,
 		footprints,
 	};
 }

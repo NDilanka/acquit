@@ -14,7 +14,7 @@ const FRAUD_CASES: readonly { id: string; rule: string }[] = [
 	{ id: "fraud-08-track-misses-pad", rule: "connected" },
 	{ id: "fraud-09-wrong-pad-net", rule: "pad-nets" },
 	{ id: "fraud-10-hidden-clearance", rule: "hidden-clearance" },
-	{ id: "fraud-11-hidden-probe", rule: "hidden-probe" },
+	{ id: "fraud-11-bore-cut", rule: "clearance" },
 ];
 
 const card = runPcbScoreCard();

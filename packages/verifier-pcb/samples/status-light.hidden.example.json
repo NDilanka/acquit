@@ -56,11 +56,6 @@
 			"expect": "isolation"
 		},
 		{
-			"a": "H4.1",
-			"b": "J2.4",
-			"expect": "isolation"
-		},
-		{
 			"a": "J2.3",
 			"b": "J2.4",
 			"expect": "isolation"
