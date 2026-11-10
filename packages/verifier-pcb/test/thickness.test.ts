@@ -171,7 +171,10 @@ test("harmless general and title metadata still passes, and so does a board with
 		SAMPLE_HONEST_PCB.replace(GENERAL, "(general (thickness 1.6) (legacy_teardrops no))"),
 		SAMPLE_HONEST_PCB.replace(GENERAL, "(general (thickness 1.6) (drawings 4) (tracks 12) (zones 0) (modules 3) (nets 7))"),
 		SAMPLE_HONEST_PCB.replace('(paper "A4")', '(paper "A3")'),
-		SAMPLE_HONEST_PCB.replace("(kicad_pcb ", '(kicad_pcb (title_block (title "Test") (rev "1")) '),
+		SAMPLE_HONEST_PCB.replace(
+			'(title_block (title "status-light") (date "2026-01-01") (rev "A"))',
+			'(title_block (title "Test") (rev "1"))',
+		),
 		SAMPLE_HONEST_PCB.replace(`\t${GENERAL}\n`, ""),
 	];
 	for (const text of variants) {

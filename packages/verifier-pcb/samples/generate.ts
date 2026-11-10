@@ -22,7 +22,22 @@ type PadDef = {
 	readonly drill?: number;
 	readonly net: string;
 };
-type PartDef = { readonly ref: string; readonly lib: string; readonly at: Xy; readonly pads: readonly PadDef[] };
+type PartDef = {
+	readonly ref: string;
+	readonly lib: string;
+	readonly value: string;
+	readonly descr: string;
+	readonly at: Xy;
+	readonly pads: readonly PadDef[];
+};
+
+// KiCad 8 stamps every footprint and via with a uuid. The samples use deterministic ids so the generator's
+// output is stable run to run (samples-sync.test.ts compares it byte for byte).
+let uuidCounter = 0;
+function uuid(): string {
+	uuidCounter += 1;
+	return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, "0")}`;
+}
 
 const SMD_RECT = { kind: "smd", shape: "rect", size: [1.0, 1.3] } as const;
 const SOT = { kind: "smd", shape: "rect", size: [0.6, 0.7] } as const;
@@ -34,6 +49,8 @@ function parts(): PartDef[] {
 		{
 			ref: "J1",
 			lib: "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+			value: "Conn_01x02",
+			descr: "Generic connector, single row, 01x02, 2.54mm pitch, vertical",
 			at: [102, 106],
 			pads: [
 				{ name: "1", off: [0, 0], net: "VIN", ...HEADER },
@@ -43,6 +60,8 @@ function parts(): PartDef[] {
 		{
 			ref: "U1",
 			lib: "Package_TO_SOT_SMD:SOT-23",
+			value: "MCP1700T-3302E/TT",
+			descr: "3.3V low-dropout regulator, SOT-23",
 			at: [112, 106],
 			pads: [
 				{ name: "1", off: [-1, -0.95], net: "VIN", ...SOT },
@@ -53,6 +72,8 @@ function parts(): PartDef[] {
 		{
 			ref: "C1",
 			lib: "Capacitor_SMD:C_0805_2012Metric",
+			value: "100nF",
+			descr: "Unpolarized capacitor, 0805",
 			at: [108, 112],
 			pads: [
 				{ name: "1", off: [-0.95, 0], net: "VIN", ...SMD_RECT, size: [1.0, 1.3] },
@@ -62,6 +83,8 @@ function parts(): PartDef[] {
 		{
 			ref: "C2",
 			lib: "Capacitor_SMD:C_0805_2012Metric",
+			value: "100nF",
+			descr: "Unpolarized capacitor, 0805",
 			at: [118, 112],
 			pads: [
 				{ name: "1", off: [-0.95, 0], net: "3V3", ...SMD_RECT, size: [1.0, 1.3] },
@@ -71,6 +94,8 @@ function parts(): PartDef[] {
 		{
 			ref: "R1",
 			lib: "Resistor_SMD:R_0805_2012Metric",
+			value: "1k",
+			descr: "Resistor, 0805",
 			at: [122, 106],
 			pads: [
 				{ name: "1", off: [-0.95, 0], net: "3V3", ...SMD_RECT, size: [1.0, 1.3] },
@@ -80,6 +105,8 @@ function parts(): PartDef[] {
 		{
 			ref: "D1",
 			lib: "LED_SMD:LED_0805_2012Metric",
+			value: "LED",
+			descr: "Light emitting diode, 0805",
 			at: [127, 106],
 			pads: [
 				{ name: "1", off: [-0.95, 0], net: "GND", ...SMD_RECT, size: [1.0, 1.3] },
@@ -89,6 +116,8 @@ function parts(): PartDef[] {
 		{
 			ref: "J2",
 			lib: "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
+			value: "Conn_01x04",
+			descr: "Generic connector, single row, 01x04, 2.54mm pitch, vertical",
 			at: [128, 118],
 			pads: [
 				{ name: "1", off: [0, 0], net: "3V3", ...HEADER },
@@ -97,10 +126,38 @@ function parts(): PartDef[] {
 				{ name: "4", off: [7.62, 0], net: "SIG2", ...HEADER },
 			],
 		},
-		{ ref: "H1", lib: "MountingHole:MountingHole_3.2mm", at: [102, 102], pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }] },
-		{ ref: "H2", lib: "MountingHole:MountingHole_3.2mm", at: [138, 102], pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }] },
-		{ ref: "H3", lib: "MountingHole:MountingHole_3.2mm", at: [102, 123], pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }] },
-		{ ref: "H4", lib: "MountingHole:MountingHole_3.2mm", at: [138, 123], pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }] },
+		{
+			ref: "H1",
+			lib: "MountingHole:MountingHole_3.2mm",
+			value: "MountingHole_3.2mm",
+			descr: "Mounting hole 3.2 mm, no copper",
+			at: [102, 102],
+			pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }],
+		},
+		{
+			ref: "H2",
+			lib: "MountingHole:MountingHole_3.2mm",
+			value: "MountingHole_3.2mm",
+			descr: "Mounting hole 3.2 mm, no copper",
+			at: [138, 102],
+			pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }],
+		},
+		{
+			ref: "H3",
+			lib: "MountingHole:MountingHole_3.2mm",
+			value: "MountingHole_3.2mm",
+			descr: "Mounting hole 3.2 mm, no copper",
+			at: [102, 123],
+			pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }],
+		},
+		{
+			ref: "H4",
+			lib: "MountingHole:MountingHole_3.2mm",
+			value: "MountingHole_3.2mm",
+			descr: "Mounting hole 3.2 mm, no copper",
+			at: [138, 123],
+			pads: [{ name: "1", off: [0, 0], net: "", ...HOLE }],
+		},
 	];
 }
 
@@ -147,9 +204,23 @@ function footprintText(part: PartDef, o: Options): string {
 		if (part.ref === "J2" && p.name === "3" && o.relabelJ23) label = o.relabelJ23;
 		return padText(p, off, label);
 	});
+	const hidden = (name: string, value: string): string[] => [
+		`\t\t(property "${name}" "${value}" (at 0 0 0) (layer "F.Fab") (hide yes) (uuid "${uuid()}")`,
+		"\t\t\t(effects (font (size 1.27 1.27)))",
+		"\t\t)",
+	];
 	return [
 		`\t(footprint "${part.lib}" (layer "F.Cu") (at ${part.at[0]} ${part.at[1]})`,
-		`\t\t(property "Reference" "${part.ref}" (at 0 -2 0) (layer "F.SilkS"))`,
+		`\t\t(uuid "${uuid()}")`,
+		`\t\t(property "Reference" "${part.ref}" (at 0 -2 0) (layer "F.SilkS") (uuid "${uuid()}")`,
+		"\t\t\t(effects (font (size 1 1) (thickness 0.15)))",
+		"\t\t)",
+		`\t\t(property "Value" "${part.value}" (at 0 2 0) (layer "F.Fab") (uuid "${uuid()}")`,
+		"\t\t\t(effects (font (size 1 1) (thickness 0.15)))",
+		"\t\t)",
+		...hidden("Footprint", part.lib),
+		...hidden("Datasheet", ""),
+		...hidden("Description", part.descr),
 		...pads,
 		"\t)",
 	].join("\n");
@@ -160,7 +231,8 @@ function seg(a: Xy, b: Xy, w: number, layer: string, net: string): string {
 }
 
 function via(at: Xy, drill: number, net: string): string {
-	return `\t(via (at ${at[0]} ${at[1]}) (size 0.6) (drill ${drill}) (layers "F.Cu" "B.Cu")${trackNetAttr(net)})`;
+	const head = `\t(via (at ${at[0]} ${at[1]}) (size 0.6) (drill ${drill}) (layers "F.Cu" "B.Cu")`;
+	return `${head}${trackNetAttr(net)} (uuid "${uuid()}"))`;
 }
 
 function edge(a: Xy, b: Xy): string {
@@ -168,6 +240,7 @@ function edge(a: Xy, b: Xy): string {
 }
 
 export function build(o: Options = {}): string {
+	uuidCounter = 0;
 	const via1: Xy = [111, 109.3];
 	const via2: Xy = [108.95, 109.3];
 	const via3: Xy = [118.95, 115];
@@ -224,14 +297,32 @@ export function build(o: Options = {}): string {
 	];
 	const nets = Object.entries(NET).map(([name, n]) => `\t(net ${n} "${name}")`);
 	return [
-		`(kicad_pcb (version 20240108) (generator "verifier-pcb-samples")`,
+		`(kicad_pcb (version 20240108) (generator "pcbnew") (generator_version "8.0")`,
 		`\t(general (thickness 1.6))`,
 		`\t(paper "A4")`,
+		`\t(title_block (title "status-light") (date "2026-01-01") (rev "A"))`,
+		// The layer table KiCad 8 writes for a two-layer board, in its numbering order.
 		`\t(layers`,
 		`\t\t(0 "F.Cu" signal)`,
 		`\t\t(31 "B.Cu" signal)`,
-		`\t\t(37 "F.SilkS" user)`,
+		`\t\t(32 "B.Adhes" user "B.Adhesive")`,
+		`\t\t(33 "F.Adhes" user "F.Adhesive")`,
+		`\t\t(34 "B.Paste" user)`,
+		`\t\t(35 "F.Paste" user)`,
+		`\t\t(36 "B.SilkS" user "B.Silkscreen")`,
+		`\t\t(37 "F.SilkS" user "F.Silkscreen")`,
+		`\t\t(38 "B.Mask" user)`,
+		`\t\t(39 "F.Mask" user)`,
+		`\t\t(40 "Dwgs.User" user "User.Drawings")`,
+		`\t\t(41 "Cmts.User" user "User.Comments")`,
+		`\t\t(42 "Eco1.User" user "User.Eco1")`,
+		`\t\t(43 "Eco2.User" user "User.Eco2")`,
 		`\t\t(44 "Edge.Cuts" user)`,
+		`\t\t(45 "Margin" user)`,
+		`\t\t(46 "B.CrtYd" user "B.Courtyard")`,
+		`\t\t(47 "F.CrtYd" user "F.Courtyard")`,
+		`\t\t(48 "B.Fab" user)`,
+		`\t\t(49 "F.Fab" user)`,
 		`\t)`,
 		`\t(setup (pad_to_mask_clearance 0))`,
 		...nets,
