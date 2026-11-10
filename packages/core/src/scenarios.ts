@@ -537,9 +537,12 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 		if (code === null) console.error(`scenario run ${runId} step ${stepName} failed: ${logTextOf(error)}`);
 		return `FAILED ${code ?? "STEP_FAILED"}`;
 	};
+	// A step starts where the step before it ended. The progress written between two steps is then inside the step it
+	// leads into, so the steps cover the run from its first start to its last end.
+	const startOfNext = (): string => steps.at(-1)?.endedAt ?? new Date().toISOString();
 	// Runs one step and records it. A throw is recorded as FAILED and returned, so the caller decides.
 	const record = async (step: ChainStep): Promise<{ readonly thrown: unknown } | null> => {
-		const startedAt = new Date().toISOString();
+		const startedAt = startOfNext();
 		stepReach.clear();
 		let outcome: string;
 		let failure: { readonly thrown: unknown } | null = null;
@@ -560,7 +563,7 @@ export async function startScenario(deps: ScenarioDeps, name: ScenarioName, visi
 	// reached. A tick that ran nothing for the job is the step's own bookkeeping, so its time joins the step before it.
 	// A tick that throws is a settle step with its coded outcome, and it ends the run.
 	const settle = async (): Promise<{ readonly thrown: unknown } | null> => {
-		const startedAt = new Date().toISOString();
+		const startedAt = startOfNext();
 		let ran: readonly OutboxRan[];
 		try {
 			ran = (await deps.acquit.tick()).ran.filter(effect => effect.jobId === ctx.jobId);
