@@ -15,7 +15,7 @@ test("a client's navigation is My jobs and Post a job, then the two public pages
   ]);
 });
 
-test("an operator's navigation is Find work, My bids, My work, Earnings, Dashboards, and Sample book, then the two public pages", () => {
+test("an operator keeps the work pages and gains the six durable Agents destinations", () => {
   assert.deepEqual(pairs(navFor("OPERATOR")), [
     ["Find work", "/operator"],
     ["My bids", "/operator/bids"],
@@ -23,19 +23,38 @@ test("an operator's navigation is Find work, My bids, My work, Earnings, Dashboa
     ["Earnings", "/operator/earnings"],
     ["Dashboards", "/studio"],
     ["Sample book", "/studio/sample"],
+    ["Plug in", "/specialists"],
+    ["Exam", "/specialists/exam"],
+    ["Standing orders", "/specialists/orders"],
+    ["Night", "/specialists/night"],
+    ["Morning", "/specialists/morning"],
+    ["Floor", "/specialists/floor"],
     ["Verifiers", "/verifiers"],
     ["Print verifier", "/print"],
     ["Scenarios", "/tour"],
   ]);
 });
 
-test("the public pages sit under the Public label, and CLI sign-in, Tutorials, and Agents are not listed", () => {
+test("Public and Agents are separate groups, without inventing a CLI or Tutorials page", () => {
   const publicPages = navFor("OPERATOR").filter((item) => item.group === "Public").map((item) => item.label);
   assert.deepEqual(publicPages, ["Verifiers", "Print verifier", "Scenarios"]);
   const labels = navFor("OPERATOR").map((item) => item.label);
   assert.equal(labels.includes("CLI sign-in"), false);
   assert.equal(labels.includes("Tutorials"), false);
   assert.equal(labels.includes("Agents"), false);
+  assert.deepEqual(pairs(navFor("OPERATOR").filter((item) => item.group === "Agents")), [
+    ["Plug in", "/specialists"], ["Exam", "/specialists/exam"], ["Standing orders", "/specialists/orders"],
+    ["Night", "/specialists/night"], ["Morning", "/specialists/morning"], ["Floor", "/specialists/floor"],
+  ]);
+  assert.equal(navFor("CLIENT").some((item) => item.group === "Agents"), false);
+});
+
+test("an agent-specific step and trailing slash light only their own Agents destination", () => {
+  for (const path of ["/specialists/exam/agent-one", "/specialists/orders/agent-one/", "/specialists/night/agent-one"]) {
+    const lit = navFor("OPERATOR").filter((item) => isNavActive(item, path, "OPERATOR"));
+    assert.equal(lit.length, 1);
+    assert.equal(lit[0]?.to, path.split("/").slice(0, 3).join("/"));
+  }
 });
 
 test("a platform user's navigation is Dashboards and Sample book, then the two public pages", () => {

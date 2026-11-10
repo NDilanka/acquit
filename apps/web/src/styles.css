@@ -59,7 +59,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .topbar-right { display: flex; align-items: center; gap: 12px; flex: none; padding-top: 0; }
 .topbar-date { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; line-height: var(--leading-sm); }
 .sandbox { font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--amber); background: var(--amber-bg); border: 1px solid var(--amber-line); padding: 4px 8px; border-radius: var(--r-pill); line-height: var(--leading-xs); }
-/* Below 760 px the sidebar is a sheet behind a slim top bar, and the white panel takes the full width. The sheet is hidden from keyboard and screen readers until it opens. */
+/* Below 900 px the sidebar is a sheet behind a slim top bar, and the white panel takes the full width. The sheet is hidden from keyboard and screen readers until it opens. */
 @media (max-width: 900px) {
  .mbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; top: 0; z-index: 30; height: 60px; padding: 0 16px; background: var(--paper); }
  .mbar-menu { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border: 1px solid var(--raised-edge); border-radius: var(--r); background: var(--card); color: var(--ink); box-shadow: var(--shadow-raised); }
@@ -121,7 +121,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .idchip.copied { color: var(--green-text); background: var(--green-bg); border-color: var(--green-line); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
-/* Buttons: the primary is green; the secondary is a white boxy control with the raised edge; ghost is text only; danger is red. All have the sidebar item's 10 radius. */
+/* One primary, a quiet secondary, and text-first destructive actions. */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 16px; border: 1px solid var(--primary-line); border-radius: var(--r); background: var(--green); color: var(--white); font-weight: 600; font-size: var(--text-ui); text-decoration: none; white-space: nowrap; line-height: var(--leading-ui); }
 .btn:hover { background: var(--green-2); border-color: var(--primary-line); }
 .btn.sm { min-height: 32px; padding: 0 12px; font-size: var(--text-sm); line-height: var(--leading-sm); }
@@ -304,7 +304,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
 .scrim { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 60; }
-.modal { width: min(480px, calc(100vw - 32px)); background: var(--card); color: var(--ink); border-radius: var(--r-card); box-shadow: var(--shadow-raised); padding: 24px; max-height: calc(100dvh - 32px); overflow-y: auto; }
+.modal { width: min(480px, calc(100vw - 32px)); background: var(--card); color: var(--ink); border-radius: var(--r-panel); box-shadow: var(--shadow-raised); padding: 24px; max-height: calc(100dvh - 32px); overflow-y: auto; }
 .modal h3 { margin: 0 0 4px; font-size: var(--text-section); line-height: var(--leading-section); }
 .modal p { margin: 0; color: var(--muted); }
 
@@ -407,7 +407,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .print-run > p { margin: 0; }
 /* The select's longest option is wider than a phone, so the row takes the column's width and the select shrinks inside it. */
 .print-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; max-width: 100%; }
-.print-controls select { flex: 1 1 220px; min-width: 0; max-width: 100%; font: inherit; padding: 8px 8px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--card); color: var(--ink); }
+.print-controls select { flex: 1 1 220px; min-width: 0; max-width: 100%; font: inherit; padding: 8px 8px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card); color: var(--ink); }
 .print-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
 .print-list li { display: grid; gap: 4px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); min-width: 0; overflow-wrap: anywhere; }
 .print-list small { color: var(--muted); }
@@ -483,7 +483,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tl-dot { position: absolute; left: -20px; top: 5px; box-sizing: border-box; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--muted); background: var(--card); }
 .tl-node.open .tl-dot { border-color: var(--blue); }
 .tl-node.held .tl-dot { border-color: var(--amber); }
-.tl-node.ok .tl-dot { border-color: var(--green); }
+.tl-node.ok .tl-dot { border-color: var(--green-text); }
 .tl-node.alert .tl-dot { border-color: var(--red); background: var(--red); }
 .tl-body { min-width: 0; overflow-wrap: anywhere; }
 .tl-head { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; }
@@ -508,6 +508,7 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 :where(button, input, select, textarea, summary, [role="switch"]) { min-width: 24px; min-height: 24px; }
 :where(code, pre, kbd, samp) { font-family: var(--mono); }
 :where(b, strong) { font-weight: 600; }
+:where(small) { font-size: var(--text-sm); line-height: var(--leading-sm); }
 :where(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
 :where(input, select, textarea) { accent-color: var(--green); }
 :is(.form, .field) :is(input:not([type="checkbox"]):not([type="radio"]), select), .wrap select { min-height: var(--control); }

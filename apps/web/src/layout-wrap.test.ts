@@ -18,3 +18,15 @@ test("the PAID job's timeline text and payout ids wrap instead of widening a 390
   assert.match(oneLineRule(".tl-ids"), /flex-wrap:\s*wrap/);
   assert.match(timeline, /className="tl-ids"/);
 });
+
+test("the shell's single title wraps and mobile navigation contains background interaction", () => {
+  const shell = readFileSync(new URL("./shell.tsx", import.meta.url), "utf8");
+  const router = readFileSync(new URL("./router.tsx", import.meta.url), "utf8");
+  assert.equal((shell.match(/<h1\b/g) ?? []).length, 1);
+  assert.match(css, /\.topbar-h \{[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(shell, /el\.inert = true/);
+  assert.match(shell, /el\.inert = previous\[i\]/);
+  assert.match(shell, /menuButton\.current\.focus\(\)/);
+  assert.match(router, /document\.title =/);
+  assert.match(router, /heading\.focus\(\{ preventScroll: true \}\)/);
+});
