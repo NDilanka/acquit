@@ -9,6 +9,13 @@ import type { Checked, SvgDoc, SvgPath, Vec2 } from "./types.ts";
 /** Curves are flattened to chords within this distance of the true curve, in mm. The contract allows 0.05. */
 export const FLATTEN_TOL_MM = 0.02;
 
+/**
+ * The least fit tolerance the spec accepts, in mm: twice the flattening error. A fit compares a flattened curve with
+ * its ideal shape, and the flattening alone can reach FLATTEN_TOL_MM, so a smaller tolerance could refuse an honest
+ * drawing. The spec refuses such a tolerance rather than raising it.
+ */
+export const MIN_TOLERANCE_MM = 2 * FLATTEN_TOL_MM;
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 const XML_NS = "http://www.w3.org/XML/1998/namespace";
 

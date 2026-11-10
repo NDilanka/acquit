@@ -84,6 +84,16 @@ test("a panel without a viewBox fails parse and reports nothing else", () => {
 	assert.equal(verdict.scene.paths.length, 0);
 });
 
+test("a spec tolerance under the supported resolution fails parse, and a 0.04 mm notch is not passed under a raised floor", () => {
+	const notched = sample("honest.svg").replace("V90.2 H10 Z", "V90.16 H130.16 V90.2 H10 Z");
+	const verdict = verify({ ...loadSpec(), toleranceMm: 0.001 }, notched, hidden);
+	assert.equal(verdict.pass, false);
+	assert.deepEqual(verdict.findings.map(finding => finding.rule), ["parse"]);
+	assert.equal(verdict.findings[0]?.ok, false);
+	assert.ok(verdict.findings[0]?.message.includes("tolerance"));
+	assert.deepEqual(verdict.measured, {});
+});
+
 test("a root transform fails parse alone, and no scene places the panel where the transform would move it", () => {
 	const text = sample("honest.svg")
 		.replace('viewBox="0 0 300 200"', 'viewBox="0 0 3000 2000" transform="translate(1000 0)"')

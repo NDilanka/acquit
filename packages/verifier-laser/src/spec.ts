@@ -1,3 +1,4 @@
+import { MIN_TOLERANCE_MM } from "./svg.ts";
 import type { Checked, FieldError, Spec, SpecHole, SpecRect, SpecSlot, Vec2 } from "./types.ts";
 
 const SPEC_FIELDS = [
@@ -21,6 +22,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isPositive = (value: unknown): value is number => isFiniteNumber(value) && value > 0;
+/** A tolerance the fits can judge. A smaller one is refused, never raised. */
+const isSupportedTolerance = (value: unknown): value is number => isFiniteNumber(value) && value >= MIN_TOLERANCE_MM;
+const TOLERANCE_MESSAGE = `tolerance must be at least ${MIN_TOLERANCE_MM} mm`;
 
 type Refuse = (path: string, message: string) => void;
 
@@ -49,8 +53,8 @@ function idOf(entry: Record<string, unknown>, path: string, seen: Set<string>, r
 /** A feature's own tolerance when it sets one, otherwise the spec's global tolerance. */
 function toleranceOf(entry: Record<string, unknown>, path: string, fallback: number, refuse: Refuse): number {
 	if (entry.toleranceMm === undefined) return fallback;
-	if (isPositive(entry.toleranceMm)) return entry.toleranceMm;
-	refuse(`${path}.toleranceMm`, "tolerance must be greater than 0");
+	if (isSupportedTolerance(entry.toleranceMm)) return entry.toleranceMm;
+	refuse(`${path}.toleranceMm`, TOLERANCE_MESSAGE);
 	return fallback;
 }
 
@@ -92,14 +96,14 @@ export function validateSpec(input: unknown): Checked<Spec> {
 	const part = vec2Of(partMm, true);
 	if (part === null) refuse("partMm", "part must be two positive numbers in mm");
 	if (!(isFiniteNumber(kerfMm) && kerfMm >= 0 && kerfMm < 1)) refuse("kerfMm", "kerf must be from 0 up to 1 mm");
-	if (!isPositive(toleranceMm)) refuse("toleranceMm", "tolerance must be greater than 0");
+	if (!isSupportedTolerance(toleranceMm)) refuse("toleranceMm", TOLERANCE_MESSAGE);
 	if (!isPositive(minWebMm)) refuse("minWebMm", "minimum web must be greater than 0");
 	if (!isFiniteNumber(cornerRadiusMm) || cornerRadiusMm < 0) refuse("cornerRadiusMm", "corner radius must be 0 or more");
 	else if (part !== null && cornerRadiusMm * 2 >= Math.min(part[0], part[1]))
 		refuse("cornerRadiusMm", "corner radius must be less than half the smaller part side");
 	const label = labelOf(input.labelRegionMm, part, refuse);
 
-	const globalTolerance = isPositive(toleranceMm) ? toleranceMm : 0;
+	const globalTolerance = isSupportedTolerance(toleranceMm) ? toleranceMm : 0;
 	const seen = new Set<string>();
 	const holes: SpecHole[] = [];
 	listOf(input.holes, "holes", refuse).forEach((entry, i) => {

@@ -37,6 +37,8 @@ the drawn line could sit up to 0.02 mm away from the chords the reader sees:
 - **Engraving** must lie inside the label region by more than 0.02 mm on each side, and every engraved segment must
   stay more than kerf/2 + 0.04 mm from every outer and inner edge.
 - **Minimum web** subtracts 2 × 0.02 mm from the drawn gap, so the reported web is a lower bound too.
+- **Tolerance** must be at least 0.04 mm, twice the flattening error. A smaller tolerance, on the spec or on a hole or
+  slot, fails `parse`. The checker never raises a tolerance to a floor.
 
 The chord count for a curve is bounded by the limits in `src/limits.ts`. A curve that needs more chords than
 `MAX_CHORDS` fails the `parse` rule.

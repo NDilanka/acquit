@@ -9,7 +9,7 @@ import type { FinishedPart } from "./finished.ts";
 import { MAX_PAIR_TESTS } from "./limits.ts";
 import { validateSpec } from "./spec.ts";
 import { FLATTEN_TOL_MM, parseSvg } from "./svg.ts";
-import { fitTolerance, fitsRectangle, fitsRing, isRoundCut, RING_POINTS_MAX, roundedRectRing } from "./shapes.ts";
+import { fitsRectangle, fitsRing, isRoundCut, RING_POINTS_MAX, roundedRectRing } from "./shapes.ts";
 import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
 import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SpecRect, SvgPath, Verdict, Vec2 } from "./types.ts";
 
@@ -356,7 +356,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 				near(c.height, d, tol) &&
 				near(c.centre[0], cx, tol) &&
 				near(c.centre[1], cy, tol) &&
-				isRoundCut(c.path.points, c.path.closed, fitTolerance(tol)),
+				isRoundCut(c.path.points, c.path.closed, tol),
 		);
 		if (!found) holeMisses.push(`hole ${hole.id}`);
 	}
@@ -372,7 +372,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 				c.path.closed &&
 				near(c.width, sx, tol) &&
 				near(c.height, sy, tol) &&
-				fitsRectangle(c.path.points, c.path.closed, fitTolerance(tol)),
+				fitsRectangle(c.path.points, c.path.closed, tol),
 		);
 		if (!found) cutoutMisses.push(`slot ${slot.id}`);
 	}
@@ -391,7 +391,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		const atHole = spec.holes.some(
 			hole => Math.hypot(c.centre[0] - hole.centreMm[0], c.centre[1] - hole.centreMm[1]) <= hole.diameterMm / 2 + hole.toleranceMm,
 		);
-		if (atHole || isRoundCut(c.path.points, c.path.closed, fitTolerance(spec.toleranceMm))) extraHoles.push(c.path.id);
+		if (atHole || isRoundCut(c.path.points, c.path.closed, spec.toleranceMm)) extraHoles.push(c.path.id);
 		else extraCutouts.push(c.path.id);
 	}
 	measured.holesMatched = spec.holes.length - holeMisses.length;
@@ -446,7 +446,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		// The drawn outline must be the declared rectangle: every edge straight, every corner at the declared radius.
 		// A chamfer or a triangle keeps the box, so the size check alone would pass it.
 		const ideal = roundedRectRing(centreOf(outline.box), widthOf(outline.box), heightOf(outline.box), drawnCornerMm(spec));
-		const shaped = fitsRing(outline.path.points, outline.path.closed, ideal, fitTolerance(spec.toleranceMm));
+		const shaped = fitsRing(outline.path.points, outline.path.closed, ideal, spec.toleranceMm);
 		const corners = spec.cornerRadiusMm > 0 ? `${spec.cornerRadiusMm} mm corners` : "square corners";
 		findings.push(
 			check(

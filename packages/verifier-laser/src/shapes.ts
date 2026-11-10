@@ -15,15 +15,6 @@ const SIDE_STEPS = 4;
 /** The most points any ideal ring has. Used to bound the work a shape test can cost. */
 export const RING_POINTS_MAX = Math.max(CIRCLE_SIDES, 4 * (ARC_STEPS + 1) + 4 * (SIDE_STEPS - 1));
 
-/**
- * The least fit tolerance, in mm. Curves are flattened to 0.02 mm and an ideal polygon adds under 0.01 mm of chord
- * error, so a tolerance below this would reject honest curves.
- */
-const FIT_FLOOR_MM = 0.05;
-
-/** The tolerance a shape fit uses for a spec tolerance: the spec's own, but never under the floor. */
-export const fitTolerance = (toleranceMm: number): number => Math.max(toleranceMm, FIT_FLOOR_MM);
-
 /** A circle as a polygon, starting at angle zero and running counter-clockwise in the drawing's frame. */
 export function circleRing(centre: Vec2, radius: number): Vec2[] {
 	const ring: Vec2[] = [];

@@ -159,13 +159,27 @@ test("a hole or a slot may set its own tolerance, falling back to the global one
 	assert.equal(result.value.slots[0]?.toleranceMm, 0.3);
 });
 
-test("a feature tolerance must be greater than 0", () => {
+test("a feature tolerance that is not positive is refused", () => {
 	const hole = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2, toleranceMm: 0 }] });
 	assert.equal(hole.ok, false);
 	if (!hole.ok) assert.ok(hole.errors.some(error => error.path === "holes[0].toleranceMm"));
 	const slot = validateSpec({ ...validSpec(), slots: [{ id: "window", sizeMm: [30, 12], toleranceMm: -0.1 }] });
 	assert.equal(slot.ok, false);
 	if (!slot.ok) assert.ok(slot.errors.some(error => error.path === "slots[0].toleranceMm"));
+});
+
+test("a tolerance under 0.04 mm, twice the flattening error, is refused and never raised to a floor", () => {
+	const global = validateSpec({ ...validSpec(), toleranceMm: 0.039 });
+	assert.equal(global.ok, false);
+	if (!global.ok) assert.ok(global.errors.some(error => error.path === "toleranceMm"));
+	const hole = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2, toleranceMm: 0.001 }] });
+	assert.equal(hole.ok, false);
+	if (!hole.ok) assert.ok(hole.errors.some(error => error.path === "holes[0].toleranceMm"));
+	const slot = validateSpec({ ...validSpec(), slots: [{ id: "window", sizeMm: [30, 12], toleranceMm: 0.039 }] });
+	assert.equal(slot.ok, false);
+	if (!slot.ok) assert.ok(slot.errors.some(error => error.path === "slots[0].toleranceMm"));
+	const atMinimum = validateSpec({ ...validSpec(), toleranceMm: 0.04 });
+	assert.equal(atMinimum.ok, true);
 });
 
 test("an id used by a hole and a slot is refused", () => {
