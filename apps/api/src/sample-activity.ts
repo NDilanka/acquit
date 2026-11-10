@@ -66,9 +66,12 @@ export type ActivityRow = {
 export type ActivityInput = {
 	readonly operatorId: OperatorId;
 	readonly limit: number;
-	/** Every stored job row. The rows the operator holds or bids on are picked here. */
+	/**
+	 * The stored rows that name the operator somewhere. A superset is fine: the rows the operator holds or bids on are
+	 * picked here exactly, so the route only has to avoid reading the whole book.
+	 */
 	readonly rows: readonly JobRow[];
-	/** The job ids the sample runner holds a record for. */
+	/** The job ids the operator's sample runner holds a record for. */
 	readonly sampleJobIds: ReadonlySet<string>;
 	readonly enabled: boolean;
 	/** The runner's status for the operator's visitor, or null when the operator has no visitor. */
@@ -116,7 +119,7 @@ function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean): Acti
 		simulated: sampled,
 		label: sampled ? ACTIVITY_LABELS.sample : null,
 		agentId: bid === null ? null : bid.agent,
-		state: stateOf(row.state),
+		state: stateOf(row.state, bid),
 		updatedAt: latest(times) ?? row.openedAt,
 		bid: bid === null ? null : { id: bid.id, priceCents: bid.price, placedAt: bid.placedAt },
 		moneyHeld: held === null ? null : { heldCents: held.cents, heldAt: held.at },
@@ -138,9 +141,10 @@ function latest(times: readonly string[]): string | null {
 	return newest;
 }
 
-function stateOf(state: JobState): ActivityState {
+/** The job's state as the operator sees it. An open job reads FUNDING only when the operator's own bid was chosen. */
+function stateOf(state: JobState, bid: Bid | null): ActivityState {
 	switch (state.status) {
-		case "OPEN": return state.phase.kind === "FUNDING" ? "FUNDING" : "BID_PLACED";
+		case "OPEN": return bid?.status === "CHOSEN" ? "FUNDING" : "BID_PLACED";
 		case "IN_PROGRESS": {
 			if (state.attempts.phase === "VERIFYING") return "VERIFYING";
 			if (state.attempts.phase === "REFUND_PENDING") return "REFUNDING";

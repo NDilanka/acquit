@@ -17,7 +17,7 @@ import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts"
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
 import { SAMPLE_RUNS_PER_DAY, SAMPLE_VERIFIER_RETRIES, type SampleOrders } from "../../../packages/core/src/sample-runner.ts";
 import { activityJson, activityLimit, ACTIVITY_LABELS } from "../src/sample-activity.ts";
-import { createSampleRunner, sampleRunJobIds, type SampleFixtureRule, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
+import { createSampleRunner, sampleRunJobIds, type SampleFixtureRule, type SampleRunnerAgent, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
 
 const OPERATOR = "op_sample_visitor";
 /** The visitor's own fork, named the way the registry's `acquit-forks/` prefix names a visitor's workspace repository. */
@@ -65,6 +65,8 @@ function starterManifest(fixture = SCENARIO): DefinitionOfDone {
 function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone | null = starterManifest()) {
 	let at = START;
 	let failure = pushError;
+	/** The reason every bid is refused with, or null for the House taking bids. */
+	let refusal: string | null = null;
 	let rows: JobRow[] = [storedRow(JOB_ID, { client: HOUSE_CLIENT_ID, tenant: VISITOR.id, state: openState, bids: [], definition })];
 	let lastRecord: object = {};
 	const actors: Actor[] = [];
@@ -80,9 +82,10 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 		if (row === undefined) throw new Error("the fake job is missing");
 		return row;
 	};
-	const patch = (fields: Record<string, unknown>) => {
-		rows = rows.map(row => (row.id === JOB_ID ? ({ ...row, ...fields } as unknown as JobRow) : row));
+	const patchJob = (jobId: string, fields: Record<string, unknown>) => {
+		rows = rows.map(row => (row.id === jobId ? ({ ...row, ...fields } as unknown as JobRow) : row));
 	};
+	const patch = (fields: Record<string, unknown>) => patchJob(JOB_ID, fields);
 	const runsStarted = () => (jobRow().state as { readonly attempts: { readonly runsStarted: number } }).attempts.runsStarted;
 
 	const execute = async (actor: Actor, key: RequestKey, command: UserCommand): Promise<CommandOutcome> => {
@@ -90,9 +93,10 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 		commands.push(command);
 		sent.push({ command, key });
 		if (command.type === "PlaceBid") {
+			if (refusal !== null) return { kind: "DENIED", reason: refusal } as unknown as CommandOutcome;
 			const bid = { id: `bid_${commands.length}`, operator: OPERATOR, agent: command.agent, price: command.price,
 				eta: command.eta, pitch: command.pitch, placedAt: now(), respondBy: new Date(at + 72 * 60 * 60_000).toISOString(), status: "PENDING" };
-			patch({ bids: [bid] });
+			patchJob(command.jobId, { bids: [bid] });
 			return { kind: "COMMITTED", result: { kind: "BID", job: { id: JOB_ID }, bid, creditsLeft: 4 } } as unknown as CommandOutcome;
 		}
 		if (command.type === "Submit") {
@@ -115,6 +119,10 @@ function fakeWorld(pushError: Error | null = null, definition: DefinitionOfDone 
 	return {
 		actors, commands, sent, pushes, logs, now, rows: () => rows, jobRow, execute, workspace,
 		advance: (ms: number) => { at += ms; },
+		/** A second starter on the visitor's fork, for a test that needs the runner to bid again. */
+		addStarter: (id: string) => { rows = [...rows, storedRow(id, { client: HOUSE_CLIENT_ID, tenant: VISITOR.id, state: openState, bids: [], definition: starterManifest() })]; },
+		/** Every bid is refused with this reason, or the House takes bids again when it is null. */
+		refuseBids: (reason: string | null) => { refusal = reason; },
 		log: (line: string) => { logs.push(line); },
 		/** The House client accepts the bid and funds the job. */
 		houseAccepts: () => patch({ bids: jobRow().bids.map(bid => ({ ...bid, status: "ACCEPTED" })), state: heldState(now()) }),
@@ -141,7 +149,7 @@ function portsOf(db: DatabaseSync, world: World, overrides: Partial<SampleRunner
 	return {
 		db, enabled: true, now: world.now, log: world.log,
 		visitors: () => [VISITOR],
-		jobs: world.rows,
+		jobsOf: () => world.rows(),
 		agentsOf: handle => (handle === OPERATOR ? [AGENT] : []),
 		ordersOf: () => ORDERS,
 		fixtureRule: FIXTURE_RULE,
@@ -183,8 +191,8 @@ function ordersSwitch() {
 
 function activityFor(db: DatabaseSync, world: World, runner: ReturnType<typeof createSampleRunner>) {
 	return activityJson({
-		operatorId: OPERATOR as OperatorId, limit: 20, rows: world.rows(), sampleJobIds: sampleRunJobIds(db), enabled: true,
-		runner: runner.statusOf(VISITOR, world.rows()),
+		operatorId: OPERATOR as OperatorId, limit: 20, rows: world.rows(), sampleJobIds: sampleRunJobIds(db, OPERATOR), enabled: true,
+		runner: runner.statusOf(VISITOR),
 	});
 }
 
@@ -205,7 +213,7 @@ test("a visitor's sample agent bids, is accepted, pushes, is verified and is pai
 	assert.equal(bid?.price, ORDERS.priceFloorCents);
 	assert.deepEqual(bid?.eta, hours(48));
 	assert.equal(bid?.agent, AGENT.id);
-	assert.deepEqual([...sampleRunJobIds(db)], [JOB_ID]);
+	assert.deepEqual([...sampleRunJobIds(db, OPERATOR)], [JOB_ID]);
 	assert.deepEqual(stateList(db, world, runner), ["BID_PLACED"]);
 
 	world.advance(30_000);
@@ -261,8 +269,8 @@ test("with the flag off, no tick reads, sends or writes, and the status reads OF
 	const runner = createSampleRunner(portsOf(db, world, { enabled: false }));
 	await runner.kick();
 	assert.equal(world.commands.length, 0);
-	assert.equal(sampleRunJobIds(db).size, 0);
-	assert.equal(runner.statusOf(VISITOR, world.rows()).decision.status, "OFF");
+	assert.equal(sampleRunJobIds(db, OPERATOR).size, 0);
+	assert.equal(runner.statusOf(VISITOR).decision.status, "OFF");
 });
 
 test("a visitor with no fork is refused and nothing is bid, since a run never pushes upstream", async () => {
@@ -271,7 +279,7 @@ test("a visitor with no fork is refused and nothing is bid, since a run never pu
 	const runner = createSampleRunner(portsOf(db, world, { visitors: () => [{ ...VISITOR, repository: null }] }));
 	await runner.kick();
 	assert.equal(world.commands.length, 0);
-	const status = runner.statusOf({ ...VISITOR, repository: null }, world.rows());
+	const status = runner.statusOf({ ...VISITOR, repository: null });
 	assert.equal(status.decision.status, "REFUSED");
 	assert.equal(status.decision.reason, "NO_FORK");
 });
@@ -296,7 +304,7 @@ test("the runner bids only on a starter the registry's own rule matches to the s
 	const world = fakeWorld(null, starterManifest(OTHER_ISSUE));
 	const runner = createSampleRunner(portsOf(db, world));
 	await runner.kick();
-	assert.equal(runner.statusOf(VISITOR, world.rows()).decision.status, "IDLE", "no matching starter is an idle visitor, not a refusal");
+	assert.equal(runner.statusOf(VISITOR).decision.status, "IDLE", "no matching starter is an idle visitor, not a refusal");
 });
 
 test("the daily limit counts runs by bid time: three in 24 hours refuse a new bid, and an older run does not count", async () => {
@@ -312,7 +320,7 @@ test("the daily limit counts runs by bid time: three in 24 hours refuse a new bi
 	seed(full, Array.from({ length: SAMPLE_RUNS_PER_DAY }, (_, index) => hoursAgo(index + 1)));
 	await fullRunner.kick();
 	assert.equal(fullWorld.commands.length, 0, "no bid once the day's limit is reached");
-	const refused = fullRunner.statusOf(VISITOR, fullWorld.rows());
+	const refused = fullRunner.statusOf(VISITOR);
 	assert.equal(refused.decision.reason, "DAILY_LIMIT");
 	assert.equal(refused.runsToday, SAMPLE_RUNS_PER_DAY);
 
@@ -322,7 +330,7 @@ test("the daily limit counts runs by bid time: three in 24 hours refuse a new bi
 	seed(aged, [...Array.from({ length: SAMPLE_RUNS_PER_DAY - 1 }, (_, index) => hoursAgo(index + 1)), hoursAgo(25)]);
 	await agedRunner.kick();
 	assert.equal(placeBids(agedWorld).length, 1, "a run older than 24 hours leaves the count, so the next bid goes ahead");
-	assert.equal(agedRunner.statusOf(VISITOR, agedWorld.rows()).runsToday, SAMPLE_RUNS_PER_DAY - 1 + 1);
+	assert.equal(agedRunner.statusOf(VISITOR).runsToday, SAMPLE_RUNS_PER_DAY - 1 + 1);
 });
 
 test("a fork that keeps refusing the push closes the run after five failures, and the error text stays out of the log", async () => {
@@ -398,7 +406,7 @@ test("an owner who turns autopilot off stops the run's next push or submit, the 
 	await runner.kick();
 	assert.equal(world.pushes.length, 0, "no push while autopilot is off");
 	assert.equal(recordOf(db)?.phase, "BID");
-	const paused = runner.statusOf(VISITOR, world.rows());
+	const paused = runner.statusOf(VISITOR);
 	assert.equal(paused.decision.status, "REFUSED");
 	assert.equal(paused.decision.reason, "AUTOPILOT_OFF");
 
@@ -431,7 +439,7 @@ test("an owner who turns autopilot off stops the run's next push or submit, the 
 	await runner.kick();
 	assert.equal(recordOf(db)?.outcome, "VERIFIED", "the real verdict is recorded even while autopilot is off");
 	assert.equal(world.sent.length, sentBefore, "a recorded verdict sends nothing");
-	assert.equal(runner.statusOf(VISITOR, world.rows()).decision.status, "IDLE");
+	assert.equal(runner.statusOf(VISITOR).decision.status, "IDLE");
 });
 
 test("the activity limit reads 1 to 50, defaults to 20, and refuses anything else", () => {
@@ -469,4 +477,143 @@ test("the activity lists only the operator's own jobs, labels the runner's, and 
 	assert.doesNotMatch(JSON.stringify(json), /op_other/);
 	assert.equal(activityJson({ ...input, limit: 1 }).activity.length, 1);
 	assert.equal(activityJson({ ...input, enabled: true }).runner.status, "IDLE");
+});
+
+test("an open job reads FUNDING only when this operator's own bid was chosen, never for another operator's choice", () => {
+	const chosen = storedRow("job_own_chosen", { client: "maya-client", tenant: null, state: { status: "OPEN", phase: { kind: "FUNDING" } },
+		bids: [{ id: "bid_own", operator: OPERATOR, agent: "owner-agent", price: 1_000, placedAt: "2026-11-11T11:00:00.000Z", status: "CHOSEN" }] });
+	const contested = storedRow("job_contested", { client: "maya-client", tenant: null, state: { status: "OPEN", phase: { kind: "FUNDING" } },
+		bids: [
+			{ id: "bid_mine", operator: OPERATOR, agent: "owner-agent", price: 1_000, placedAt: "2026-11-11T11:00:00.000Z", status: "PENDING" },
+			{ id: "bid_theirs", operator: "op_other", agent: "other-agent", price: 900, placedAt: "2026-11-11T11:01:00.000Z", status: "CHOSEN" },
+		] });
+	const json = activityJson({ operatorId: OPERATOR as OperatorId, limit: 20, rows: [chosen, contested], sampleJobIds: new Set(), enabled: false, runner: null });
+	const states = new Map(json.activity.map(item => [item.jobId, item.state]));
+	assert.equal(states.get("job_own_chosen"), "FUNDING");
+	assert.equal(states.get("job_contested"), "BID_PLACED", "the other operator's chosen bid is not this operator's funding");
+	assert.doesNotMatch(JSON.stringify(json), /op_other/);
+});
+
+const SECOND_JOB_ID = "job_starter_2";
+
+test("a bid the House refuses holds the runner for a day, and the next starter is bid on after that", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	world.refuseBids("INSUFFICIENT_CREDITS");
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	assert.equal(placeBids(world).length, 1);
+	assert.equal(recordOf(db)?.phase, "DONE");
+	assert.equal(recordOf(db)?.outcome, "BID_DENIED");
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} BID_DENIED: INSUFFICIENT_CREDITS`)));
+	const held = runner.statusOf(VISITOR);
+	assert.equal(held.decision.status, "REFUSED");
+	assert.equal(held.decision.reason, "BID_DENIED");
+	assert.equal(held.runsToday, 0, "a refused bid is not one of the day's runs");
+
+	world.refuseBids(null);
+	world.addStarter(SECOND_JOB_ID);
+	world.advance(23 * 3_600_000);
+	await runner.kick();
+	assert.equal(placeBids(world).length, 1, "no bid within 24 hours of the refusal");
+	assert.equal(runner.statusOf(VISITOR).decision.reason, "BID_DENIED");
+
+	world.advance(2 * 3_600_000);
+	await runner.kick();
+	assert.deepEqual(placeBids(world).map(command => command.jobId), [JOB_ID, SECOND_JOB_ID],
+		"the next starter is bid on once the hold lapses, and the refused job is not bid on again");
+});
+
+test("a bid the job is busy for leaves no run record, so the next tick bids again", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	world.refuseBids("BUSY");
+	const runner = createSampleRunner(portsOf(db, world));
+	await runner.kick();
+	assert.equal(placeBids(world).length, 4, "the bid is retried while the job is busy, then the tick gives up");
+	assert.equal(recordOf(db), undefined, "no record is kept for a bid the House never took");
+	assert.ok(world.logs.some(line => line.includes(`${JOB_ID} bid not placed: the job is busy`)));
+
+	world.refuseBids(null);
+	await runner.kick();
+	assert.equal(placeBids(world).length, 5, "the next tick bids again");
+	assert.equal(recordOf(db)?.phase, "BID");
+});
+
+/** A command edge that waits on the gate before it reaches the fake, so a test can hold a tick inside one command. */
+function gatedExecute(world: World, gate: Promise<void>): SampleRunnerPorts["execute"] {
+	return async (actor, key, command) => {
+		await gate;
+		return world.execute(actor, key, command);
+	};
+}
+
+test("shutdown waits for the tick in flight, and a kick during that tick joins it rather than starting another", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const runner = createSampleRunner(portsOf(db, world, { execute: gatedExecute(world, gate) }));
+	const tick = runner.kick();
+	assert.strictEqual(runner.kick(), tick, "a kick while a tick runs returns that tick");
+	let drained = false;
+	const draining = runner.drain().then(() => { drained = true; });
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(drained, false, "drain waits while the bid is still in flight");
+	release();
+	await draining;
+	assert.equal(placeBids(world).length, 1, "one tick placed one bid");
+	assert.equal(recordOf(db)?.phase, "BID");
+});
+
+test("two processes on one database take turns through the lease, so a second tick never bids while the first holds it", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	let release!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const first = createSampleRunner(portsOf(db, world, { execute: gatedExecute(world, gate) }));
+	const second = createSampleRunner(portsOf(db, world));
+	const firstTick = first.kick();
+	await second.kick();
+	assert.equal(world.commands.length, 0, "the second process waits while the first holds the lease");
+	release();
+	await firstTick;
+	assert.equal(placeBids(world).length, 1);
+	await second.kick();
+	assert.equal(placeBids(world).length, 1, "the next tick sees the run in flight and bids on nothing else");
+});
+
+test("a tick that never finishes frees the lease two minutes later, and a bid it never sent ends its run as BID_LOST", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	// The first process hangs inside its bid. It wrote the run record and holds the lease, and it never returns.
+	const hung = createSampleRunner(portsOf(db, world, { execute: () => new Promise<CommandOutcome>(() => {}) }));
+	void hung.kick();
+	const survivor = createSampleRunner(portsOf(db, world));
+	world.advance(2 * 60_000 - 1_000);
+	await survivor.kick();
+	assert.equal(world.commands.length, 0, "the lease is still held inside its two minutes");
+	world.advance(2_000);
+	await survivor.kick();
+	assert.equal(recordOf(db)?.outcome, "BID_LOST", "the bid was never sent, so the run ends without a bid");
+	assert.equal(placeBids(world).length, 0, "the job is not bid on again once a run holds it");
+});
+
+test("a run keeps its own agent until it finishes, even once that agent is no longer a sample, and takes its verdict", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	let agents: SampleRunnerAgent[] = [AGENT];
+	const runner = createSampleRunner(portsOf(db, world, { agentsOf: handle => (handle === OPERATOR ? agents : []) }));
+	await runner.kick();
+	world.houseAccepts();
+	await runner.kick(); // push
+	await runner.kick(); // submit, verifier run 1
+	const commit = world.pushes[0]!;
+	agents = [{ ...AGENT, sample: false }, { ...AGENT, id: "code-second-sample" }];
+	assert.equal(runner.statusOf(VISITOR).decision.reason, "NOT_A_SAMPLE", "the run waits while its agent is not a sample");
+	world.verifierPasses(commit);
+	await runner.kick();
+	assert.equal(recordOf(db)?.outcome, "VERIFIED", "the run still takes its verdict");
+	assert.equal(submitsOf(world).length, 1, "no further submit once consent is gone");
+	assert.equal(runner.statusOf(VISITOR).decision.status, "IDLE", "the sample agent listed now has no starter to bid on");
 });

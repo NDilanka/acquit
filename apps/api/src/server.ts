@@ -42,7 +42,7 @@ import { isTask, parseStandingOrders, standingOrdersRefusal } from "../../../pac
 import type { ExamRefusal } from "../../../packages/core/src/exam.ts";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Agent } from "../../../packages/core/src/operator.ts";
-import { acquittalJson, agentListJson, agentViewJson, allJobRows, examJson, examRunById, floorJson, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
+import { acquittalJson, agentListJson, agentViewJson, examJson, examRunById, floorJson, jobRowsNaming, jobRowsOfTenant, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -1463,9 +1463,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const limit = activityLimit(url.searchParams.get("limit"));
 		if (limit === null) { json(res, 400, { error: "BAD_REQUEST" }); return; }
 		const visitor = visitorOfHandle(db, current.actor.operatorId);
-		const rows = allJobRows(db);
-		const runner = visitor === null ? null : sampleRunner.statusOf(visitor, rows);
-		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobIds: sampleRunJobIds(db), enabled: sampleRunnerEnabled, runner }));
+		// Only the rows that name this operator are read and parsed; the activity filter then picks the exact set.
+		const rows = jobRowsNaming(db, current.actor.operatorId);
+		const runner = visitor === null ? null : sampleRunner.statusOf(visitor);
+		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobIds: sampleRunJobIds(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner }));
 		return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
@@ -1601,7 +1602,7 @@ const sampleFixture = scenarioFixtureOf(fixtures, scenarioFixtureKey);
 const sampleRunner = createSampleRunner({
 	db, enabled: sampleRunnerEnabled, now: () => clock.now(),
 	visitors: () => lastingAccounts(db).map(visitor => ({ id: visitor.id, operatorHandle: visitor.operatorHandle, repository: visitor.repository })),
-	jobs: () => allJobRows(db),
+	jobsOf: visitorId => jobRowsOfTenant(db, visitorId),
 	agentsOf: handle => listAgentRows(db, handle).map(agent => ({ id: agent.id, task: agent.task, sample: agent.sample !== null, acquitted: agent.acquittal !== null })),
 	ordersOf: agentId => {
 		const orders = standingOrdersOf(db, agentId);
@@ -1649,7 +1650,8 @@ function stop(): void {
 	clearInterval(scenarioSweepTimer);
 	// An open stream never ends on its own, and server.close waits for every connection.
 	platformLive.close();
-	server.close(() => { db.close(); closeAcquit(acquit); });
+	// A sample tick in flight finishes, or its lease lapses, before the database closes under it.
+	void sampleRunner.drain().then(() => server.close(() => { db.close(); closeAcquit(acquit); }));
 }
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);

@@ -5,6 +5,7 @@
 // accepts, funds and approves inside the core's own tick. The real verifier decides every submit. The runner is off
 // unless the deployment turns it on.
 
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Actor, CommandOutcome, UserCommand } from "../../../packages/core/src/acquit.ts";
 import type { AgentId, CommitSha, JobId, OperatorId, RequestKey, VisitorId } from "../../../packages/core/src/ids.ts";
@@ -26,6 +27,11 @@ const SAMPLE_TREE = "honest-reference-table";
 /** Push or submit failures a run may take before it is closed, so a broken fork cannot hold the slot forever. */
 const MAX_FAILURES = 5;
 const BID_PITCH = "Hosted sample bid at the price floor";
+/**
+ * How long one tick's lease lasts. A tick takes the lease again, so a tick that stopped without releasing it frees
+ * the lease within this time, and a second process on the same database waits.
+ */
+const LEASE_MS = 2 * 60 * 1000;
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS sample_runner_runs (
 	job_id TEXT PRIMARY KEY,
@@ -38,19 +44,25 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS sample_runner_runs (
 	failures INTEGER NOT NULL DEFAULT 0
 )`;
 
+const LEASE_SCHEMA = `CREATE TABLE IF NOT EXISTS sample_runner_lease (
+	name TEXT PRIMARY KEY,
+	holder TEXT NOT NULL,
+	expires_at TEXT NOT NULL
+)`;
+
 export type SampleRunnerVisitor = { readonly id: VisitorId; readonly operatorHandle: string; readonly repository: string | null };
 export type SampleRunnerAgent = { readonly id: string; readonly task: string; readonly sample: boolean; readonly acquitted: boolean };
 
 export type SampleRunnerPorts = {
-	/** Holds the runner's own run records, in the deployment's database. */
+	/** Holds the runner's own run records and its tick lease, in the deployment's database. */
 	readonly db: DatabaseSync;
 	/** The deployment flag. Off means every tick is a no-op and the status reads OFF. */
 	readonly enabled: boolean;
 	readonly now: () => string;
 	/** The visitors whose accounts last, the same ones the House client opens starters for. */
 	readonly visitors: () => readonly SampleRunnerVisitor[];
-	/** Every stored job row, read through the store boundary. The runner picks each visitor's own by tenant. */
-	readonly jobs: () => readonly JobRow[];
+	/** The stored job rows of one visitor's world, read through the store boundary. */
+	readonly jobsOf: (visitorId: VisitorId) => readonly JobRow[];
 	/** The agents an operator owns. */
 	readonly agentsOf: (operatorHandle: string) => readonly SampleRunnerAgent[];
 	/** The standing orders of one agent, or null when it has none. */
@@ -77,53 +89,86 @@ export type SampleFixtureRule = {
 
 export type SampleRunnerStatus = { readonly decision: SampleDecision; readonly queuedSince: string | null; readonly runsToday: number };
 
-/** The runner's loop and its status reads. Kick it from a timer; it returns at once when a tick is already running. */
+/**
+ * The runner's loop and its status reads. `kick` starts a tick, or returns the tick already running. `drain` waits for
+ * the tick in flight, so a shutdown can close the database after it. A tick runs only while it holds the database lease.
+ */
 export function createSampleRunner(ports: SampleRunnerPorts): {
 	readonly kick: () => Promise<void>;
-	readonly statusOf: (visitor: SampleRunnerVisitor, rows: readonly JobRow[]) => SampleRunnerStatus;
+	readonly drain: () => Promise<void>;
+	readonly statusOf: (visitor: SampleRunnerVisitor) => SampleRunnerStatus;
 } {
 	const log = ports.log ?? ((line: string) => console.log(line));
 	ports.db.exec(SCHEMA);
-	let running = false;
+	ports.db.exec(LEASE_SCHEMA);
+	// This process's identity on the lease.
+	const holder = randomUUID();
+	// The tick in flight, if any.
+	let current: Promise<void> | null = null;
 	// When each visitor's run first waited for a free runner. Process-local, and it only feeds the status line.
 	const queuedSince = new Map<string, string>();
 	// The last idle or refused reason logged per visitor, so a quiet visitor logs once rather than every tick.
 	const lastNote = new Map<string, string>();
 
-	async function kick(): Promise<void> {
-		if (running) return;
-		running = true;
+	function kick(): Promise<void> {
+		if (current === null) {
+			current = tick()
+				.catch(error => { log(`sample runner: scan failed; the next tick retries (${failureName(error)})`); })
+				.finally(() => { current = null; });
+		}
+		return current;
+	}
+
+	async function drain(): Promise<void> {
+		await current;
+	}
+
+	async function tick(): Promise<void> {
+		if (!ports.enabled) return;
+		if (!claimLease()) return;
 		try {
-			if (!ports.enabled) return;
-			const rows = ports.jobs();
 			for (const visitor of ports.visitors()) {
 				try {
-					await tickVisitor(visitor, rows);
+					await tickVisitor(visitor);
 				} catch (error) {
 					log(`sample runner: a visitor's tick failed; the next tick retries (${failureName(error)})`);
 				}
 			}
-		} catch (error) {
-			log(`sample runner: scan failed; the next tick retries (${failureName(error)})`);
 		} finally {
-			running = false;
+			releaseLease();
 		}
 	}
 
-	/** The status a read shows, from the job rows the caller already read. It reads only: nothing is written and no command is sent. */
-	function statusOf(visitor: SampleRunnerVisitor, rows: readonly JobRow[]): SampleRunnerStatus {
+	/** Takes the lease when it is free, expired, or already this process's. False means another process is ticking. */
+	function claimLease(): boolean {
+		const now = new Date(ports.now()).toISOString();
+		const expires = new Date(Date.parse(now) + LEASE_MS).toISOString();
+		const result = ports.db.prepare(`INSERT INTO sample_runner_lease (name, holder, expires_at) VALUES ('tick', ?, ?)
+			ON CONFLICT(name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+			WHERE sample_runner_lease.expires_at <= ? OR sample_runner_lease.holder = excluded.holder`).run(holder, expires, now);
+		return Number(result.changes) > 0;
+	}
+
+	function releaseLease(): void {
+		ports.db.prepare("UPDATE sample_runner_lease SET expires_at = ? WHERE name = 'tick' AND holder = ?")
+			.run(new Date(ports.now()).toISOString(), holder);
+	}
+
+	/** The status a read shows. It reads only: nothing is written and no command is sent. */
+	function statusOf(visitor: SampleRunnerVisitor): SampleRunnerStatus {
 		const runsToday = runsInWindow(runsOf(visitor.operatorHandle), ports.now());
 		if (!ports.enabled) return { decision: { status: "OFF", reason: null, actions: [], note: null }, queuedSince: null, runsToday };
 		const agent = sampleAgentOf(visitor);
 		if (agent === undefined) return { decision: idle("no sample agent"), queuedSince: null, runsToday };
-		const decision = decisionOf(visitor, agent, rows);
+		const decision = decisionOf(visitor, agent);
 		return { decision, queuedSince: decision.status === "QUEUED" ? queuedSince.get(visitor.id) ?? null : null, runsToday };
 	}
 
-	async function tickVisitor(visitor: SampleRunnerVisitor, rows: readonly JobRow[]): Promise<void> {
+	async function tickVisitor(visitor: SampleRunnerVisitor): Promise<void> {
 		const agent = sampleAgentOf(visitor);
+		// A visitor with no sample agent reads no job rows at all.
 		if (agent === undefined) return;
-		const decision = decisionOf(visitor, agent, rows);
+		const decision = decisionOf(visitor, agent);
 		if (decision.status === "QUEUED") {
 			if (!queuedSince.has(visitor.id)) queuedSince.set(visitor.id, ports.now());
 		} else {
@@ -139,13 +184,25 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		for (const action of decision.actions) await perform(visitor, agent.id, action);
 	}
 
+	/**
+	 * The agent the runner acts for. A live run keeps its own agent even if that agent no longer counts as a sample,
+	 * so the run still finishes and frees its slot (consent stops its pushes and submits). Otherwise the first acquitted
+	 * sample, else the first sample, so an unacquitted sample listed first never shadows an acquitted one.
+	 */
 	function sampleAgentOf(visitor: SampleRunnerVisitor): SampleRunnerAgent | undefined {
-		return ports.agentsOf(visitor.operatorHandle).find(entry => entry.sample);
+		const agents = ports.agentsOf(visitor.operatorHandle);
+		const live = runsOf(visitor.operatorHandle).find(run => run.phase !== "DONE");
+		const own = agents.find(entry => entry.id === live?.agentId);
+		if (own !== undefined) return own;
+		const samples = agents.filter(entry => entry.sample);
+		return samples.find(entry => entry.acquitted) ?? samples[0];
 	}
 
-	/** One decision for one visitor's sample agent, from the stored rows and the run records as they stand. */
-	function decisionOf(visitor: SampleRunnerVisitor, agent: SampleRunnerAgent, rows: readonly JobRow[]): SampleDecision {
-		const jobs = rows.filter(row => row.tenant === visitor.id).map(row => sampleJobOf(row, isScenarioStarter(row, visitor, ports.fixtureRule)));
+	/** One decision for one visitor's sample agent, from the visitor's own stored rows and the run records as they stand. */
+	function decisionOf(visitor: SampleRunnerVisitor, agent: SampleRunnerAgent): SampleDecision {
+		const jobs = ports.jobsOf(visitor.id)
+			.filter(row => row.tenant === visitor.id)
+			.map(row => sampleJobOf(row, isScenarioStarter(row, visitor, ports.fixtureRule)));
 		const facts: SampleFacts = {
 			enabled: ports.enabled,
 			now: ports.now(),
@@ -183,14 +240,21 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		}
 		if (action.kind === "bid") {
 			// The record is written before the bid is sent, so a crash between the two leaves a run that loses its slot
-			// (BID_LOST) rather than a bid no run tracks. A bid the House refuses removes its record again.
+			// (BID_LOST) rather than a bid no run tracks.
 			ports.db.prepare("INSERT INTO sample_runner_runs (job_id, operator_id, agent_id, phase, placed_at, commit_sha, outcome, failures) VALUES (?, ?, ?, 'BID', ?, NULL, NULL, 0)")
 				.run(action.jobId, visitor.operatorHandle, agentId, ports.now());
 			const outcome = await send(operator, step("place-bid"), { type: "PlaceBid", jobId: action.jobId as JobId,
 				price: action.priceCents as UsdCents, eta: hours(action.etaHours), agent: agentId as AgentId, pitch: BID_PITCH });
 			if (outcome.kind === "DENIED") {
-				ports.db.prepare("DELETE FROM sample_runner_runs WHERE job_id = ?").run(action.jobId);
-				log(`sample runner: ${action.jobId} bid denied: ${outcome.reason}`);
+				// Busy means the House took no bid, so the record goes and the next tick bids again. Any other refusal is
+				// the run's outcome: the job is never bid on again, and the status shows the refusal for a day.
+				if (outcome.reason === "BUSY") {
+					ports.db.prepare("DELETE FROM sample_runner_runs WHERE job_id = ?").run(action.jobId);
+					log(`sample runner: ${action.jobId} bid not placed: the job is busy; the next tick retries`);
+				} else {
+					ports.db.prepare("UPDATE sample_runner_runs SET phase = 'DONE', outcome = 'BID_DENIED' WHERE job_id = ?").run(action.jobId);
+					log(`sample runner: ${action.jobId} BID_DENIED: ${outcome.reason}`);
+				}
 				return;
 			}
 			if (outcome.result.kind !== "BID") { log(`sample runner: ${action.jobId} bid returned ${outcome.result.kind}`); return; }
@@ -251,7 +315,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		return Number(row.count);
 	}
 
-	return { kick, statusOf };
+	return { kick, drain, statusOf };
 }
 
 type RunRecord = { readonly job_id: string; readonly agent_id: string; readonly phase: string; readonly placed_at: string; readonly commit_sha: string | null; readonly outcome: string | null };
@@ -293,9 +357,9 @@ function sampleJobOf(row: JobRow, fixtureMatched: boolean): SampleJob {
 	};
 }
 
-/** The job ids the runner holds a record for. Such a job is the hosted sample agent's work; no other path writes a record. */
-export function sampleRunJobIds(db: DatabaseSync): ReadonlySet<string> {
-	const rows = db.prepare("SELECT job_id FROM sample_runner_runs").all() as unknown as readonly { readonly job_id: string }[];
+/** The job ids one operator's runner holds a record for. Such a job is the hosted sample agent's work; no other path writes a record. */
+export function sampleRunJobIds(db: DatabaseSync, operatorId: string): ReadonlySet<string> {
+	const rows = db.prepare("SELECT job_id FROM sample_runner_runs WHERE operator_id = ?").all(operatorId) as unknown as readonly { readonly job_id: string }[];
 	return new Set(rows.map(row => String(row.job_id)));
 }
 

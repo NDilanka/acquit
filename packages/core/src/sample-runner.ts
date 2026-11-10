@@ -98,7 +98,7 @@ export type SampleStatus = "OFF" | "IDLE" | "QUEUED" | "RUNNING" | "REFUSED";
 
 /** Why the runner cannot act for this visitor. The closed set the activity route shows. */
 export type SampleRefusal = "NO_FORK" | "DAILY_LIMIT" | "NO_ACQUITTAL" | "NO_STANDING_ORDERS" | "NOT_A_SAMPLE"
-	| "AUTOPILOT_OFF" | "NOT_HOSTED";
+	| "AUTOPILOT_OFF" | "NOT_HOSTED" | "BID_DENIED";
 
 export type SampleDecision = {
 	readonly status: SampleStatus;
@@ -121,7 +121,8 @@ export function runsInWindow(runs: readonly SampleRun[], now: string): number {
  * to submit, submit to verdict. A run that finishes frees its slot in the same tick. Consent is checked first: while
  * it does not hold, a run may still finish from the real verdict or the House's bid outcome, but nothing is pushed
  * or submitted. A new bid starts only when consent holds, the visitor has no run in flight, the day's limit is not
- * reached, and a global slot is free. Otherwise the status says why the visitor waits or is refused.
+ * reached, the House has not refused a bid in the last day, and a global slot is free. Otherwise the status says why
+ * the visitor waits or is refused.
  */
 export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	if (!facts.enabled) return decision("OFF", null, [], null);
@@ -146,6 +147,10 @@ export function decideSampleTick(facts: SampleFacts): SampleDecision {
 	const orders = facts.orders;
 	if (orders === null) return decision("REFUSED", "NO_STANDING_ORDERS", actions, null);
 	if (runsInWindow(facts.runs, facts.now) >= SAMPLE_RUNS_PER_DAY) return decision("REFUSED", "DAILY_LIMIT", actions, null);
+	// The House refused a bid recently, so the next bid waits a day. The status shows the refusal until then.
+	if (facts.runs.some(run => run.outcome === "BID_DENIED" && now - Date.parse(run.placedAt) < DAY_MS)) {
+		return decision("REFUSED", "BID_DENIED", actions, "the House refused a sample bid in the last 24 hours; no new bid until then");
+	}
 
 	const candidates = facts.jobs.filter(job => biddable(job, facts, orders.priceFloorCents));
 	if (candidates.length === 0) return decision("IDLE", null, actions, "no open starter on the matching fixture");

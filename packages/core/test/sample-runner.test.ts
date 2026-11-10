@@ -109,6 +109,22 @@ test("a run placed more than 24 hours ago no longer counts toward the limit", ()
 	assert.deepEqual(decision.actions, [{ kind: "bid", jobId: "job_a", priceCents: floor, etaHours: 48 }]);
 });
 
+test("a bid the House refused holds new bids for 24 hours, and counts toward no limit", () => {
+	const runs = [run("job_denied", { phase: "DONE", outcome: "BID_DENIED", placedAt: minutesAgo(60) })];
+	assert.equal(runsInWindow(runs, now), 0);
+	const decision = decideSampleTick(facts({ jobs: [job("job_denied"), job("job_a")], runs }));
+	assert.equal(decision.status, "REFUSED");
+	assert.equal(decision.reason, "BID_DENIED");
+	assert.deepEqual(decision.actions, []);
+});
+
+test("the refusal hold ends 24 hours after the bid, and the refused job is never bid on again", () => {
+	const runs = [run("job_denied", { phase: "DONE", outcome: "BID_DENIED", placedAt: minutesAgo(25 * 60) })];
+	const decision = decideSampleTick(facts({ jobs: [job("job_denied"), job("job_a")], runs }));
+	assert.equal(decision.status, "RUNNING");
+	assert.deepEqual(decision.actions, [{ kind: "bid", jobId: "job_a", priceCents: floor, etaHours: 48 }]);
+});
+
 test("bids once, at the price floor, on an open starter of the agent's task on the scripted fixture", () => {
 	const decision = decideSampleTick(facts({
 		jobs: [
