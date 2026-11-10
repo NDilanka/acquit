@@ -47,14 +47,15 @@
 .owner-track-row nav { flex: 1; min-width: 0; }
 .owner-track { display: grid; grid-template-columns: 1fr 3fr 2fr 2fr 1fr; }
 .owner-track li { position: relative; min-width: 0; }
-.owner-track li::before { content: ""; position: absolute; top: var(--space-3); left: var(--space-3); right: calc(-1 * var(--space-3)); height: 2px; background: var(--line-2); }
-.owner-track li.done::before { background: var(--ink); }
-.owner-track li.current::before { background: linear-gradient(to right,var(--ink) 50%,var(--line-2) 50%); }
-.owner-track li:last-child::before { display: none; }
-.owner-track a { position: relative; display: flex; flex-direction: column; align-items: start; gap: var(--space-2); min-height: 56px; width: max-content; max-width: 100%; color: var(--muted); text-decoration: none; font-size: var(--text-xs); line-height: var(--leading-xs); }
-.owner-track .track-number { display: grid; place-items: center; width: var(--space-6); height: var(--space-6); border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--panel); font-family: var(--mono); }
-.owner-track .done .track-number { background: var(--ink); color: var(--panel); border-color: var(--ink); }
-.owner-track .current .track-number { border: 2px solid var(--ink); color: var(--ink); }
+.owner-track { gap: var(--space-1); }
+.owner-track a { position: relative; display: flex; flex-direction: column; gap: var(--space-2); min-height: var(--control-lg); color: var(--muted); text-decoration: none; font-size: var(--text-ui); line-height: var(--leading-ui); }
+.track-rail { height: 4px; border-radius: var(--r-pill); background: var(--line-2); width: 100%; }
+.done .track-rail { background: var(--ink); }
+.current .track-rail { background: linear-gradient(to right,var(--ink) 50%,var(--line-2) 50%); }
+.track-label { display: flex; align-items: baseline; gap: var(--space-1); }
+.owner-track .track-number { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
+.owner-track-current { display: none; }
+.owner-honesty { font-weight: 500; }
 .owner-track .current a { color: var(--ink); }
 .owner-provenance { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 24ch; font: 400 var(--text-xs)/var(--leading-xs) var(--mono); color: var(--muted); }
 .owner-provenance::before { content: ""; width: 6px; height: 6px; flex: none; border: 1px solid currentColor; border-radius: var(--r-pill); }
@@ -98,7 +99,7 @@
 .record-cell-rows { display: grid; gap: var(--space-2); }
 .record-check-cell { height: 56px; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-1); border: 1px solid var(--line-2); border-radius: var(--r); background: var(--surface); color: var(--ink); font-size: var(--text-xs); line-height: var(--leading-xs); }
 .hidden-group .record-check-cell { height: 40px; }
-.record-check-bar { height: 40px; border-radius: var(--r); background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(100% / var(--segments) - 2px), var(--card) calc(100% / var(--segments) - 2px), var(--card) calc(100% / var(--segments))), linear-gradient(90deg, var(--ink) 0 var(--passed), var(--bar-rest) var(--passed) 100%); }
+.record-check-bar { height: 8px; margin-block: var(--space-4); border-radius: var(--r-pill); background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(100% / var(--segments) - 2px), var(--card) calc(100% / var(--segments) - 2px), var(--card) calc(100% / var(--segments))), linear-gradient(90deg, var(--green-text) 0 var(--passed), var(--bar-rest) var(--passed) 100%); }
 .record-check-cell[data-tone="fail"] { color: var(--red); border-color: var(--red-line); background: var(--red-bg); }
 .check-symbol { font-size: var(--text-section); line-height: var(--leading-section); }
 .record-envelope { width: var(--space-6); height: 28px; stroke: currentColor; fill: var(--surface); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
@@ -189,8 +190,10 @@
   .owner-grade > span { font-size: var(--text-xs); }
   .owner-money { padding: var(--space-1) var(--space-4); font-size: var(--text-xs); line-height: var(--leading-xs); }
   .owner-track-row { display: grid; gap: 0; padding: var(--space-1) var(--space-4) 0; }
-  .owner-track { grid-template-columns: 44px 3fr 2fr 2fr 1.5fr; }
-  .owner-track a { min-height: var(--control-lg); gap: var(--space-1); white-space: nowrap; }
+  .owner-track { grid-template-columns: 1fr 3fr 2fr 2fr 1fr; gap: var(--space-2); }
+  .owner-track a { min-height: 44px; justify-content: center; }
+  .owner-track .track-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .owner-track-current { display: block; font-size: var(--text-ui); line-height: var(--leading-ui); }
   .owner-provenance { max-width: none; font-family: var(--sans); font-size: var(--text-xs); line-height: var(--leading-xs); }
   .owner-deck { padding: var(--space-1) var(--space-4) var(--space-6); }
   .owner-deck .spec { gap: var(--space-4); }
@@ -208,7 +211,7 @@
   .record-check-cell { border-radius: var(--r); }
   .check-group-label { padding-bottom: var(--space-2); }
   .record-foot { grid-template-columns: 1fr; gap: 0 var(--space-3); padding-top: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-xs); }
-  .owner-actions { position: fixed; z-index: 20; bottom: 0; left: var(--space-3); right: var(--space-3); padding: var(--space-3) var(--space-4) max(var(--space-4),env(safe-area-inset-bottom)); background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-card) var(--r-card) 0 0; margin-top: var(--space-6) !important; flex-wrap: wrap; gap: var(--space-2); box-shadow: var(--shadow-raised); }
+  .owner-actions { position: sticky; z-index: 20; top: calc(100dvh - 80px); bottom: auto; min-height: 80px; padding: var(--space-4); margin-inline: calc(-1 * var(--space-4)); background: var(--paper); border-top: 1px solid var(--line); border-radius: 0; margin-top: var(--space-6) !important; flex-wrap: wrap; gap: var(--space-2); box-shadow: none; }
   .owner-actions .btn { width: 100%; }
   .owner-actions > p { font-size: var(--text-xs); line-height: var(--leading-xs); }
   .owner-entry, .agent-picker, .owner-leaderboard { padding: var(--space-6) var(--space-4); }

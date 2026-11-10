@@ -82,7 +82,7 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
       <div className="owner-identity"><p className="owner-name">{agent?.name ?? "No agent plugged in yet"}</p>
         {agent && <div className="owner-identity-meta"><p className="owner-task">{taskLabel(agent.task)}</p>
           {coming && step !== 2 ? <p className="owner-verdict">Exam coming</p> : !coming && <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
-            {step !== 2 && agent.acquitted && agent.simulated && <> <span className="sandbox">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
+            {step !== 2 && agent.acquitted && agent.simulated && <> · <span className="owner-honesty">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
       {agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
         {gradeDelta !== undefined && <span className="owner-delta">{gradeDelta ? `${gradeChangeWords(gradeDelta)} since you last looked` : "No change since you last looked"}</span>}</div>}
     </header>
@@ -91,10 +91,11 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
       <nav aria-label="Agent setup"><ol className="owner-track">{STEPS.map((s) => {
         const to = s.step === 1 || s.step === 5 ? `${s.to}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}` : `${s.to}${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
         return <li key={s.step} className={s.step < step ? "done" : s.step === step ? "current" : ""}>
-          <Link to={to}><span className="track-number" aria-hidden="true">{s.step < step ? "✓" : s.step}</span>
-            <span aria-current={s.step === step ? "step" : undefined}>{s.label}</span></Link>
+          <Link to={to} aria-current={s.step === step ? "step" : undefined}><span className="track-rail" aria-hidden="true" />
+            <span className="track-label"><span className="track-number" aria-hidden="true">{s.step < step ? "✓" : s.step}</span><span>{s.label}</span></span></Link>
         </li>;
       })}</ol></nav>
+      <p className="owner-track-current">Step {step} of 5 · {STEPS.find(s => s.step === step)?.label}</p>
       {step !== 2 && provenance && <p className="owner-provenance">{provenance}</p>}
     </div>
     </aside><div className="owner-deck">{children}</div></>;
