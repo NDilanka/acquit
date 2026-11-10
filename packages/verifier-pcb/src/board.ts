@@ -617,6 +617,7 @@ function footprintProblem(fp: readonly SExpr[]): string | undefined {
 	if (bad) return bad;
 	if (typeof fp[1] !== "string") return "footprint without a library name";
 	const layer = child(fp, "layer")?.[1];
+	if (layer === undefined) return "footprint without a (layer ...) value; only front-side footprints are supported";
 	if (layer !== "F.Cu") return `footprint on layer ${String(layer)}; only front-side footprints are supported`;
 	const ref = propertyReference(fp) || String(fp[1]);
 	const structural = numericProblem(fp);
