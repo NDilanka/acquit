@@ -302,6 +302,18 @@ test("pre-approves a submit under decision D1 and submits without typed confirma
 	assert.match(h.out.join(""), /finished: VERIFIED/);
 });
 
+for (const status of ["VERIFIED", "PAID"]) {
+	test(`a submitted commit whose verdict the ${status} job keeps is recorded VERIFIED`, async () => {
+		const h = harness();
+		track(h, { "job-1": { phase: "SUBMITTED", commit: COMMIT } });
+		h.jobs.set("job-1", won("job-1", { status, attempts: { used: 1, left: 2, history: [{ sourceCommit: COMMIT, result: "VERIFIED" }] } }));
+		assert.equal(await tick(h), 0);
+		assert.deepEqual(h.calls.submits, []);
+		assert.equal(readState(h).jobs["job-1"].phase, "DONE");
+		assert.match(h.out.join(""), /Job job-1 finished: VERIFIED, verifier passed the commit\./);
+	});
+}
+
 for (const fixtureMatched of ["true", 1, null]) {
 	test(`waits for typed confirmation when fixtureMatched is ${JSON.stringify(fixtureMatched)}`, async () => {
 		const h = harness();

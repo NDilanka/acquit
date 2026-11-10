@@ -150,6 +150,18 @@ test("a submitted commit on a settled job with no verdict for it is closed", () 
 	assert.deepEqual(decision.actions, [{ kind: "finish", jobId: "job_p", outcome: "CLOSED", reason: "job is PAID with no verdict for this commit" }]);
 });
 
+test("a submitted commit whose VERIFIED verdict is kept on a paid job finishes VERIFIED", () => {
+	const paid = job("job_p", { status: "PAID", bids: [bid("ACCEPTED")], attempts: { left: 2, history: [{ sourceCommit: commit, result: "VERIFIED" }] } });
+	const decision = decideTick(input([paid], { job_p: { phase: "SUBMITTED", commit } }));
+	assert.deepEqual(decision.actions, [{ kind: "finish", jobId: "job_p", outcome: "VERIFIED", reason: "verifier passed the commit" }]);
+});
+
+test("a verdict for another commit on a paid job does not finish the submitted commit", () => {
+	const paid = job("job_p", { status: "PAID", bids: [bid("ACCEPTED")], attempts: { left: 2, history: [{ sourceCommit: "b".repeat(40), result: "VERIFIED" }] } });
+	const decision = decideTick(input([paid], { job_p: { phase: "SUBMITTED", commit } }));
+	assert.deepEqual(decision.actions, [{ kind: "finish", jobId: "job_p", outcome: "CLOSED", reason: "job is PAID with no verdict for this commit" }]);
+});
+
 test("a tracked job missing from the list is closed", () => {
 	const decision = decideTick(input([], { job_gone: { phase: "BID", commit: null } }));
 	assert.deepEqual(decision.actions, [{ kind: "finish", jobId: "job_gone", outcome: "CLOSED", reason: "job is no longer listed" }]);
