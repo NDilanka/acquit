@@ -11,7 +11,8 @@ import type { Camera, Finding, HiddenSample, Scene, ScenePath, Spec, Vec2, Vec3,
 const TOL = 0.05;
 
 type Segment = { readonly index: number; readonly a: Waypoint; readonly b: Waypoint };
-type Leg = { readonly index: number; readonly y: number; readonly x0: number; readonly x1: number; readonly alt: number };
+/** A survey leg. triggerM is the distance it is photographed at, or null when triggering is off for any part of it. */
+type Leg = { readonly index: number; readonly y: number; readonly x0: number; readonly x1: number; readonly alt: number; readonly triggerM: number | null };
 /** The spec's survey area and no-fly zones in local metres east and north of the origin. */
 type Geometry = { readonly area: readonly Vec2[]; readonly zones: readonly { readonly id: string; readonly polygon: readonly Vec2[] }[] };
 type Context = {
@@ -52,21 +53,38 @@ function segmentsOf(waypoints: readonly Waypoint[]): Segment[] {
 	return out;
 }
 
+/**
+ * The trigger distance a leg is flown with. Photographs need triggering on at both ends. Where the two ends differ,
+ * the sparser (larger) setting applies, so a setting changed mid-leg cannot earn the tighter spacing.
+ */
+function legTrigger(a: Waypoint, b: Waypoint): number | null {
+	if (a.triggerM === null || b.triggerM === null) return null;
+	return Math.max(a.triggerM, b.triggerM);
+}
+
 /** A survey leg is a straight run at one altitude along one line. Anything else is a transit. */
 function legOf(segment: Segment): Leg | null {
 	const { a, b } = segment;
 	const along = Math.abs(a.x - b.x);
 	const across = Math.abs(a.y - b.y);
 	if (across > TOL || along <= TOL || a.alt !== b.alt) return null;
-	return { index: segment.index, y: a.y, x0: a.x, x1: b.x, alt: a.alt };
+	return { index: segment.index, y: a.y, x0: a.x, x1: b.x, alt: a.alt, triggerM: legTrigger(a, b) };
 }
 
+/** Whether a point lies in the footprint of a photographed leg. A leg with triggering off photographs nothing. */
 function covered(p: Vec2, legs: readonly Leg[], camera: Camera): boolean {
 	return legs.some(leg => {
+		if (leg.triggerM === null) return false;
 		const half = acrossM(leg.alt, camera) / 2;
 		const reach = alongM(leg.alt, camera) / 2;
 		return Math.abs(p[1] - leg.y) <= half + TOL && p[0] >= Math.min(leg.x0, leg.x1) - reach - TOL && p[0] <= Math.max(leg.x0, leg.x1) + reach + TOL;
 	});
+}
+
+/** Along-track overlap of a leg's photographs. With triggering off, or no height above the ground, there is none. */
+function frontOverlapOf(leg: Leg, camera: Camera): number {
+	if (leg.triggerM === null || leg.alt <= 0) return 0;
+	return 1 - leg.triggerM / alongM(leg.alt, camera);
 }
 
 function sampleGrid(area: readonly Vec2[], gridM: number): Vec2[] {
@@ -103,12 +121,9 @@ function worstGsdLeg(legs: readonly Leg[], camera: Camera): Leg | null {
 	return worst;
 }
 
-function worstFrontLeg(legs: readonly Leg[], plan: Plan, camera: Camera): Leg | null {
+function worstFrontLeg(legs: readonly Leg[], camera: Camera): Leg | null {
 	let worst: Leg | null = null;
-	for (const leg of legs) {
-		const overlap = 1 - plan.triggerM / alongM(leg.alt, camera);
-		if (worst === null || overlap < 1 - plan.triggerM / alongM(worst.alt, camera)) worst = leg;
-	}
+	for (const leg of legs) if (worst === null || frontOverlapOf(leg, camera) < frontOverlapOf(worst, camera)) worst = leg;
 	return worst;
 }
 
@@ -132,8 +147,10 @@ type Check = (ctx: Context) => Finding;
 const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 	"altitude-limits": ({ spec, plan }) => {
 		const outside = plan.waypoints.find(w => w.alt > spec.maxAltitudeM || w.alt < spec.minAltitudeM);
-		if (outside === undefined) return finding("altitude-limits", true, false, `Every waypoint is between ${spec.minAltitudeM} and ${spec.maxAltitudeM} m.`);
-		return finding("altitude-limits", false, false, `A waypoint at ${outside.alt.toFixed(1)} m is outside the ${spec.minAltitudeM} to ${spec.maxAltitudeM} m limit.`, [outside.x, outside.y, outside.alt]);
+		if (outside !== undefined) return finding("altitude-limits", false, false, `A waypoint at ${outside.alt.toFixed(1)} m is outside the ${spec.minAltitudeM} to ${spec.maxAltitudeM} m limit.`, [outside.x, outside.y, outside.alt]);
+		const takeoff = plan.events.find(e => e.kind === "takeoff" && (e.alt > spec.maxAltitudeM || e.alt < spec.minAltitudeM));
+		if (takeoff !== undefined && takeoff.kind === "takeoff") return finding("altitude-limits", false, false, `The takeoff climbs to ${takeoff.alt.toFixed(1)} m, outside the ${spec.minAltitudeM} to ${spec.maxAltitudeM} m limit.`, [0, 0, takeoff.alt]);
+		return finding("altitude-limits", true, false, `Every waypoint and takeoff is between ${spec.minAltitudeM} and ${spec.maxAltitudeM} m.`);
 	},
 	"ground-resolution": ({ spec, legs }) => {
 		const worst = worstGsdLeg(legs, spec.camera);
@@ -142,10 +159,10 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		const ok = value <= spec.maxGsdCm;
 		return finding("ground-resolution", ok, false, ok ? `Photos resolve ${value.toFixed(2)} cm per pixel or better, within ${spec.maxGsdCm} cm.` : `The survey line at ${worst.alt.toFixed(1)} m resolves ${value.toFixed(2)} cm per pixel, coarser than ${spec.maxGsdCm} cm.`, legMid(worst), [`leg-${worst.index}`]);
 	},
-	"front-overlap": ({ spec, plan, legs }) => {
-		const worst = worstFrontLeg(legs, plan, spec.camera);
+	"front-overlap": ({ spec, legs }) => {
+		const worst = worstFrontLeg(legs, spec.camera);
 		if (worst === null) return finding("front-overlap", false, false, "The plan flies no survey line, so photo overlap along track cannot be checked.");
-		const overlap = 1 - plan.triggerM / alongM(worst.alt, spec.camera);
+		const overlap = frontOverlapOf(worst, spec.camera);
 		const ok = overlap >= spec.minFrontOverlap;
 		return finding("front-overlap", ok, false, ok ? `Photos overlap ${percent(overlap)} along track, at least ${percent(spec.minFrontOverlap)}.` : `Photos overlap only ${percent(overlap)} along track; the minimum is ${percent(spec.minFrontOverlap)}.`, legMid(worst), [`leg-${worst.index}`]);
 	},
@@ -178,8 +195,13 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 	},
 	"cruise-speed": ({ spec, plan }) => {
 		const { min, max } = spec.cruiseMs;
-		const ok = plan.cruiseMs >= min && plan.cruiseMs <= max;
-		return finding("cruise-speed", ok, false, ok ? `Cruise speed ${plan.cruiseMs} m/s is within ${min} to ${max} m/s.` : `Cruise speed ${plan.cruiseMs} m/s is outside ${min} to ${max} m/s.`);
+		const ok = plan.minSpeedMs >= min && plan.cruiseMs <= max;
+		return finding(
+			"cruise-speed",
+			ok,
+			false,
+			ok ? `Every speed in force is within ${min} to ${max} m/s.` : `The mission flies between ${plan.minSpeedMs} and ${plan.cruiseMs} m/s, outside ${min} to ${max} m/s at some point.`,
+		);
 	},
 };
 
@@ -251,20 +273,26 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		hiddenError === null
 			? finding("parse", true, false, "The plan is a readable QGroundControl mission.")
 			: finding("parse", false, false, `The hidden sample is unusable: ${hiddenError}`);
-	const findings = [planFinding, ...publicFindings, ...hiddenFindings];
+	// Always run: the checker cannot vouch for items it does not model, and the spec cannot switch this off.
+	const unsupportedFinding =
+		parsed.unsupported.length === 0
+			? finding("unsupported-item", true, false, "Every mission item is one the checker models.")
+			: finding("unsupported-item", false, false, `${parsed.unsupported.length} mission item${parsed.unsupported.length === 1 ? "" : "s"} the checker does not model. First: ${parsed.unsupported[0]}`);
+	const findings = [planFinding, unsupportedFinding, ...publicFindings, ...hiddenFindings];
 
 	const gsdWorst = worstGsdLeg(legs, spec.camera);
-	const frontWorst = worstFrontLeg(legs, parsed, spec.camera);
+	const frontWorst = worstFrontLeg(legs, spec.camera);
 	const sides = sideOverlaps(legs, spec.camera);
 	const samples = sampleGrid(geometry.area, spec.gridM);
 	const measured: Record<string, number | string> = {
 		sceneUnit: "m",
 		cruiseMs: parsed.cruiseMs,
-		triggerM: parsed.triggerM,
+		minSpeedMs: parsed.minSpeedMs,
+		...(parsed.triggerM === null ? {} : { triggerM: parsed.triggerM }),
 		surveyLines: legs.length,
 		maxAltitudeM: Math.max(...parsed.waypoints.map(w => w.alt)),
 		maxGsdCm: gsdWorst === null ? 0 : gsdCm(gsdWorst.alt, spec.camera),
-		frontOverlap: frontWorst === null ? 0 : 1 - parsed.triggerM / alongM(frontWorst.alt, spec.camera),
+		frontOverlap: frontWorst === null ? 0 : frontOverlapOf(frontWorst, spec.camera),
 		sideOverlap: sides.length === 0 ? 1 : Math.min(...sides.map(pair => pair.overlap)),
 		samplePoints: samples.length,
 		uncoveredSamples: samples.filter(p => !covered(p, legs, spec.camera)).length,

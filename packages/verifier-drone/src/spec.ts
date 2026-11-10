@@ -11,6 +11,7 @@ export const HIDDEN_RULES = ["hidden-checkpoint", "hidden-wind"] as const;
 
 /** Limits that keep verification bounded. Inputs above them are refused by the parsers. */
 export const LIMITS = {
+	missionItems: 2000,
 	areaPoints: 500,
 	zones: 50,
 	zonePoints: 200,

@@ -67,7 +67,7 @@ test("the honest plan parses to ten waypoints, a 10 m trigger and a 14 m/s cruis
 });
 
 test("a plan with no camera trigger is refused with the reason, not thrown", () => {
-	const text = JSON.stringify({ fileType: "Plan", mission: { cruiseSpeed: 14, items: [{ type: "SimpleItem", command: 16, params: [0, 0, 0, 0, 51.5, -0.12, 40] }] } });
+	const text = JSON.stringify({ fileType: "Plan", mission: { cruiseSpeed: 14, plannedHomePosition: [51.5, -0.12, 0], items: [{ type: "SimpleItem", command: 16, frame: 3, autoContinue: true, params: [0, 0, 0, 0, 51.5, -0.12, 40] }] } });
 	const plan = parsePlan(text, ORIGIN);
 	assert.equal(typeof plan, "string");
 	assert.match(String(plan), /trigger distance/);
