@@ -1,8 +1,21 @@
-import type { Checked, FieldError, Spec, SpecHole, SpecSlot, Vec2 } from "./types.ts";
+import type { Checked, FieldError, Spec, SpecHole, SpecRect, SpecSlot, Vec2 } from "./types.ts";
 
-const SPEC_FIELDS = ["material", "thicknessMm", "bedMm", "partMm", "kerfMm", "toleranceMm", "minWebMm", "holes", "slots"];
-const HOLE_FIELDS = ["id", "centreMm", "diameterMm"];
-const SLOT_FIELDS = ["id", "sizeMm"];
+const SPEC_FIELDS = [
+	"material",
+	"thicknessMm",
+	"bedMm",
+	"partMm",
+	"kerfMm",
+	"toleranceMm",
+	"minWebMm",
+	"cornerRadiusMm",
+	"labelRegionMm",
+	"holes",
+	"slots",
+];
+const HOLE_FIELDS = ["id", "centreMm", "diameterMm", "toleranceMm"];
+const SLOT_FIELDS = ["id", "sizeMm", "toleranceMm"];
+const RECT_FIELDS = ["originMm", "sizeMm"];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
@@ -33,6 +46,34 @@ function idOf(entry: Record<string, unknown>, path: string, seen: Set<string>, r
 	return typeof id === "string" ? id : "";
 }
 
+/** A feature's own tolerance when it sets one, otherwise the spec's global tolerance. */
+function toleranceOf(entry: Record<string, unknown>, path: string, fallback: number, refuse: Refuse): number {
+	if (entry.toleranceMm === undefined) return fallback;
+	if (isPositive(entry.toleranceMm)) return entry.toleranceMm;
+	refuse(`${path}.toleranceMm`, "tolerance must be greater than 0");
+	return fallback;
+}
+
+function labelOf(value: unknown, part: Vec2 | null, refuse: Refuse): SpecRect {
+	if (!isRecord(value)) {
+		refuse("labelRegionMm", "label region must be an object with originMm and sizeMm");
+		return { originMm: [0, 0], sizeMm: [0, 0] };
+	}
+	for (const key of Object.keys(value)) if (!RECT_FIELDS.includes(key)) refuse(`labelRegionMm.${key}`, "unknown field");
+	const origin = vec2Of(value.originMm, false);
+	const size = vec2Of(value.sizeMm, true);
+	if (origin === null) refuse("labelRegionMm.originMm", "origin must be two numbers in mm");
+	if (size === null) refuse("labelRegionMm.sizeMm", "size must be two positive numbers in mm");
+	if (
+		origin !== null &&
+		size !== null &&
+		part !== null &&
+		(origin[0] < 0 || origin[1] < 0 || origin[0] + size[0] > part[0] || origin[1] + size[1] > part[1])
+	)
+		refuse("labelRegionMm", "label region must lie inside the part");
+	return { originMm: origin ?? [0, 0], sizeMm: size ?? [0, 0] };
+}
+
 /** Checks the job spec a verifier is given. Unknown fields are refused, so a typo cannot silently drop a rule. */
 export function validateSpec(input: unknown): Checked<Spec> {
 	if (!isRecord(input)) return { ok: false, errors: [{ path: "", message: "spec must be an object" }] };
@@ -43,7 +84,7 @@ export function validateSpec(input: unknown): Checked<Spec> {
 
 	for (const key of Object.keys(input)) if (!SPEC_FIELDS.includes(key)) refuse(key, "unknown field");
 
-	const { material, thicknessMm, bedMm, partMm, kerfMm, toleranceMm, minWebMm } = input;
+	const { material, thicknessMm, bedMm, partMm, kerfMm, toleranceMm, minWebMm, cornerRadiusMm } = input;
 	if (typeof material !== "string" || material.trim() === "") refuse("material", "material is required");
 	if (!isPositive(thicknessMm)) refuse("thicknessMm", "thickness must be greater than 0");
 	const bed = vec2Of(bedMm, true);
@@ -53,7 +94,12 @@ export function validateSpec(input: unknown): Checked<Spec> {
 	if (!(isFiniteNumber(kerfMm) && kerfMm >= 0 && kerfMm < 1)) refuse("kerfMm", "kerf must be from 0 up to 1 mm");
 	if (!isPositive(toleranceMm)) refuse("toleranceMm", "tolerance must be greater than 0");
 	if (!isPositive(minWebMm)) refuse("minWebMm", "minimum web must be greater than 0");
+	if (!isFiniteNumber(cornerRadiusMm) || cornerRadiusMm < 0) refuse("cornerRadiusMm", "corner radius must be 0 or more");
+	else if (part !== null && cornerRadiusMm * 2 >= Math.min(part[0], part[1]))
+		refuse("cornerRadiusMm", "corner radius must be less than half the smaller part side");
+	const label = labelOf(input.labelRegionMm, part, refuse);
 
+	const globalTolerance = isPositive(toleranceMm) ? toleranceMm : 0;
 	const seen = new Set<string>();
 	const holes: SpecHole[] = [];
 	listOf(input.holes, "holes", refuse).forEach((entry, i) => {
@@ -62,11 +108,20 @@ export function validateSpec(input: unknown): Checked<Spec> {
 		for (const key of Object.keys(entry)) if (!HOLE_FIELDS.includes(key)) refuse(`${path}.${key}`, "unknown field");
 		const id = idOf(entry, path, seen, refuse);
 		const centre = vec2Of(entry.centreMm, false);
+		const diameter = entry.diameterMm;
 		if (centre === null) refuse(`${path}.centreMm`, "centre must be two numbers in mm");
-		else if (part !== null && (centre[0] < 0 || centre[1] < 0 || centre[0] > part[0] || centre[1] > part[1]))
-			refuse(`${path}.centreMm`, "centre must lie within the part");
-		if (!isPositive(entry.diameterMm)) refuse(`${path}.diameterMm`, "diameter must be greater than 0");
-		holes.push({ id, centreMm: centre ?? [0, 0], diameterMm: entry.diameterMm as number });
+		if (!isPositive(diameter)) refuse(`${path}.diameterMm`, "diameter must be greater than 0");
+		else if (centre !== null && part !== null) {
+			const radius = diameter / 2;
+			if (centre[0] - radius < 0 || centre[1] - radius < 0 || centre[0] + radius > part[0] || centre[1] + radius > part[1])
+				refuse(`${path}.centreMm`, "hole must lie wholly inside the part");
+		}
+		holes.push({
+			id,
+			centreMm: centre ?? [0, 0],
+			diameterMm: isPositive(diameter) ? diameter : 0,
+			toleranceMm: toleranceOf(entry, path, globalTolerance, refuse),
+		});
 	});
 
 	const slots: SpecSlot[] = [];
@@ -77,7 +132,9 @@ export function validateSpec(input: unknown): Checked<Spec> {
 		const id = idOf(entry, path, seen, refuse);
 		const size = vec2Of(entry.sizeMm, true);
 		if (size === null) refuse(`${path}.sizeMm`, "size must be two positive numbers in mm");
-		slots.push({ id, sizeMm: size ?? [0, 0] });
+		else if (part !== null && (size[0] >= part[0] || size[1] >= part[1]))
+			refuse(`${path}.sizeMm`, "slot must be smaller than the part in each direction");
+		slots.push({ id, sizeMm: size ?? [0, 0], toleranceMm: toleranceOf(entry, path, globalTolerance, refuse) });
 	});
 
 	if (errors.length > 0) return { ok: false, errors };
@@ -91,6 +148,8 @@ export function validateSpec(input: unknown): Checked<Spec> {
 			kerfMm: kerfMm as number,
 			toleranceMm: toleranceMm as number,
 			minWebMm: minWebMm as number,
+			cornerRadiusMm: cornerRadiusMm as number,
+			labelRegionMm: label,
 			holes,
 			slots,
 		},

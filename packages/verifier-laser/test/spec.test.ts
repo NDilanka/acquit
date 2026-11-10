@@ -10,6 +10,8 @@ const validSpec = (): Record<string, unknown> => ({
 	kerfMm: 0.2,
 	toleranceMm: 0.1,
 	minWebMm: 3,
+	cornerRadiusMm: 0,
+	labelRegionMm: { originMm: [8, 8], sizeMm: [44, 6] },
 	holes: [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2 }],
 	slots: [{ id: "window", sizeMm: [30, 12] }],
 });
@@ -21,8 +23,10 @@ test("a complete spec reads into typed mm values", () => {
 	assert.deepEqual(result.value.partMm, [120, 80]);
 	assert.deepEqual(result.value.bedMm, [300, 200]);
 	assert.equal(result.value.kerfMm, 0.2);
-	assert.deepEqual(result.value.holes, [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2 }]);
-	assert.deepEqual(result.value.slots, [{ id: "window", sizeMm: [30, 12] }]);
+	assert.equal(result.value.cornerRadiusMm, 0);
+	assert.deepEqual(result.value.labelRegionMm, { originMm: [8, 8], sizeMm: [44, 6] });
+	assert.deepEqual(result.value.holes, [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2, toleranceMm: 0.1 }]);
+	assert.deepEqual(result.value.slots, [{ id: "window", sizeMm: [30, 12], toleranceMm: 0.1 }]);
 });
 
 test("a spec with no holes or slots is valid", () => {
@@ -78,6 +82,90 @@ test("a hole outside the part is refused", () => {
 	const result = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [121, 6], diameterMm: 3.2 }] });
 	assert.equal(result.ok, false);
 	if (!result.ok) assert.ok(result.errors.some(error => error.path === "holes[0].centreMm"));
+});
+
+test("a hole must lie wholly inside the part, not only its centre", () => {
+	const edge = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [1, 6], diameterMm: 3.2 }] });
+	assert.equal(edge.ok, false);
+	if (!edge.ok) assert.ok(edge.errors.some(error => error.path === "holes[0].centreMm"));
+	const tooWide = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [60, 40], diameterMm: 82 }] });
+	assert.equal(tooWide.ok, false);
+	if (!tooWide.ok) assert.ok(tooWide.errors.some(error => error.path === "holes[0].centreMm"));
+	const inside = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [3, 6], diameterMm: 3.2 }] });
+	assert.equal(inside.ok, true);
+});
+
+test("a slot must fit inside the part at its finished size", () => {
+	const wide = validateSpec({ ...validSpec(), slots: [{ id: "window", sizeMm: [120, 12] }] });
+	assert.equal(wide.ok, false);
+	if (!wide.ok) assert.ok(wide.errors.some(error => error.path === "slots[0].sizeMm"));
+	const tall = validateSpec({ ...validSpec(), slots: [{ id: "window", sizeMm: [30, 80] }] });
+	assert.equal(tall.ok, false);
+	if (!tall.ok) assert.ok(tall.errors.some(error => error.path === "slots[0].sizeMm"));
+	const fits = validateSpec({ ...validSpec(), slots: [{ id: "window", sizeMm: [30, 12] }] });
+	assert.equal(fits.ok, true);
+});
+
+test("a corner radius is required; zero means square corners", () => {
+	const absent = { ...validSpec() };
+	delete absent.cornerRadiusMm;
+	const missing = validateSpec(absent);
+	assert.equal(missing.ok, false);
+	if (!missing.ok) assert.ok(missing.errors.some(error => error.path === "cornerRadiusMm"));
+	const square = validateSpec({ ...validSpec(), cornerRadiusMm: 0 });
+	assert.equal(square.ok, true);
+	const rounded = validateSpec({ ...validSpec(), cornerRadiusMm: 39.9 });
+	assert.equal(rounded.ok, true);
+	for (const radius of [-1, Number.NaN, "3", 40, 45]) {
+		const result = validateSpec({ ...validSpec(), cornerRadiusMm: radius });
+		assert.equal(result.ok, false, String(radius));
+		if (!result.ok) assert.ok(result.errors.some(error => error.path === "cornerRadiusMm"), String(radius));
+	}
+});
+
+test("the engraving label region is required and must lie inside the part", () => {
+	const absent = { ...validSpec() };
+	delete absent.labelRegionMm;
+	const missing = validateSpec(absent);
+	assert.equal(missing.ok, false);
+	if (!missing.ok) assert.ok(missing.errors.some(error => error.path === "labelRegionMm"));
+	const cases: [string, unknown][] = [
+		["outside the part", { originMm: [110, 8], sizeMm: [20, 6] }],
+		["zero size", { originMm: [8, 8], sizeMm: [0, 6] }],
+		["negative origin", { originMm: [-1, 8], sizeMm: [44, 6] }],
+		["not a rectangle", [8, 8, 44, 6]],
+		["unknown field", { originMm: [8, 8], sizeMm: [44, 6], colour: "blue" }],
+	];
+	for (const [name, region] of cases) {
+		const result = validateSpec({ ...validSpec(), labelRegionMm: region });
+		assert.equal(result.ok, false, name);
+		if (!result.ok) assert.ok(result.errors.some(error => error.path.startsWith("labelRegionMm")), name);
+	}
+});
+
+test("a hole or a slot may set its own tolerance, falling back to the global one", () => {
+	const result = validateSpec({
+		...validSpec(),
+		holes: [
+			{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2, toleranceMm: 0.05 },
+			{ id: "mount-b", centreMm: [114, 6], diameterMm: 3.2 },
+		],
+		slots: [{ id: "window", sizeMm: [30, 12], toleranceMm: 0.3 }],
+	});
+	assert.equal(result.ok, true);
+	if (!result.ok) return;
+	assert.equal(result.value.holes[0]?.toleranceMm, 0.05);
+	assert.equal(result.value.holes[1]?.toleranceMm, 0.1);
+	assert.equal(result.value.slots[0]?.toleranceMm, 0.3);
+});
+
+test("a feature tolerance must be greater than 0", () => {
+	const hole = validateSpec({ ...validSpec(), holes: [{ id: "mount-a", centreMm: [6, 6], diameterMm: 3.2, toleranceMm: 0 }] });
+	assert.equal(hole.ok, false);
+	if (!hole.ok) assert.ok(hole.errors.some(error => error.path === "holes[0].toleranceMm"));
+	const slot = validateSpec({ ...validSpec(), slots: [{ id: "window", sizeMm: [30, 12], toleranceMm: -0.1 }] });
+	assert.equal(slot.ok, false);
+	if (!slot.ok) assert.ok(slot.errors.some(error => error.path === "slots[0].toleranceMm"));
 });
 
 test("an id used by a hole and a slot is refused", () => {

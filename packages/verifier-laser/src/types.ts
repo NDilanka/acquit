@@ -45,10 +45,16 @@ export type Verdict = {
  * A hole the panel must carry. Centre is in the part frame: origin at the lower-left corner of the outer cut,
  * y up, in mm. The part frame is the file's own drawing, so a hole only moves when its drawn position moves.
  */
-export type SpecHole = { readonly id: string; readonly centreMm: Vec2; readonly diameterMm: number };
+export type SpecHole = { readonly id: string; readonly centreMm: Vec2; readonly diameterMm: number; readonly toleranceMm: number };
 
-/** A rectangular cut of this finished size. Its position is free: the thin-web rule constrains where it can go. */
-export type SpecSlot = { readonly id: string; readonly sizeMm: Vec2 };
+/**
+ * A rectangular cut of this finished size. Its position is free: the drawing places it, and its finished geometry must
+ * lie inside the part. Its toleranceMm is resolved from the feature's own override, or the spec's toleranceMm.
+ */
+export type SpecSlot = { readonly id: string; readonly sizeMm: Vec2; readonly toleranceMm: number };
+
+/** A rectangle in the part frame: lower-left corner and size, in mm. */
+export type SpecRect = { readonly originMm: Vec2; readonly sizeMm: Vec2 };
 
 /**
  * The job the panel is cut for. Dimensions are finished sizes. The outer cut must be partMm plus kerfMm in each
@@ -62,6 +68,10 @@ export type Spec = {
 	readonly kerfMm: number;
 	readonly toleranceMm: number;
 	readonly minWebMm: number;
+	/** The finished outline's corner radius. Zero means square corners. */
+	readonly cornerRadiusMm: number;
+	/** Where the engraved label must sit, in the part frame. */
+	readonly labelRegionMm: SpecRect;
 	readonly holes: readonly SpecHole[];
 	readonly slots: readonly SpecSlot[];
 };

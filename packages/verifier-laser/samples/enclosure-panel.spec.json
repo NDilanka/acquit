@@ -6,6 +6,8 @@
 	"kerfMm": 0.2,
 	"toleranceMm": 0.1,
 	"minWebMm": 3,
+	"cornerRadiusMm": 0,
+	"labelRegionMm": { "originMm": [8, 8], "sizeMm": [44, 6] },
 	"holes": [
 		{ "id": "mount-a", "centreMm": [6, 6], "diameterMm": 3.2 },
 		{ "id": "mount-b", "centreMm": [114, 6], "diameterMm": 3.2 },

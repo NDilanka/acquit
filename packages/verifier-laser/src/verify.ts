@@ -152,7 +152,6 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		return refused("the drawing has too many segments to check in one pass", sceneOf(doc.paths, size, spec));
 	}
 	const outline = outlineOf(cut);
-	const tol = spec.toleranceMm;
 	const findings: Finding[] = [];
 	const measured: Record<string, number | string> = {
 		unit: doc.unit,
@@ -193,6 +192,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	for (const hole of spec.holes) {
 		const [cx, cy] = hole.centreMm;
 		const d = hole.diameterMm;
+		const tol = hole.toleranceMm;
 		const found = claim(
 			candidates,
 			used,
@@ -203,6 +203,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 	const cutoutMisses: string[] = [];
 	for (const slot of spec.slots) {
 		const [sx, sy] = slot.sizeMm;
+		const tol = slot.toleranceMm;
 		const found = claim(candidates, used, c => c.path.closed && near(c.width, sx, tol) && near(c.height, sy, tol));
 		if (!found) cutoutMisses.push(`slot ${slot.id}`);
 	}
@@ -261,7 +262,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		findings.push(
 			check(
 				"outer-size",
-				near(width, expectWidth, tol) && near(height, expectHeight, tol),
+				near(width, expectWidth, spec.toleranceMm) && near(height, expectHeight, spec.toleranceMm),
 				`the outer cut is ${roundMm(width)} x ${roundMm(height)} mm, the finished part plus kerf`,
 				`the outer cut is ${roundMm(width)} x ${roundMm(height)} mm; the finished part plus kerf is ${roundMm(expectWidth)} x ${roundMm(expectHeight)} mm`,
 				[outline.path.id],
