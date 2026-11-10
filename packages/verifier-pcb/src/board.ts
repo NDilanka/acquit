@@ -142,7 +142,7 @@ function netNameOf(list: readonly SExpr[]): string {
 	return typeof v === "string" ? v : "";
 }
 
-/** The bare net number a track, via or pad writes first. Quoted or malformed numbers are refused by the admission checks. */
+/** The bare net number a track, via or pad writes first. Quoted or malformed numbers fail the admission checks. */
 function netNumberOf(list: readonly SExpr[]): string {
 	const v = fieldOf(list, "net")?.[1];
 	return typeof v === "string" && /^\d+$/.test(v) ? v : "";
@@ -677,9 +677,9 @@ const GENERAL_FIELDS = new Set(["thickness", "legacy_teardrops", "drawings", "tr
 /**
  * The first problem in the substrate declarations, or undefined. A repeated general record, a general field the
  * checker does not read, a repeated field, and a thickness that is not one finite positive number are malformed. A
- * positive thickness other than BOARD_THICKNESS, and any custom stackup in setup, are unsupported: the checker models
- * one 1.6 mm board, so it refuses the file rather than draw a different board as 1.6 mm. A board with no general
- * record declares no thickness and takes KiCad's default, BOARD_THICKNESS.
+ * positive thickness other than BOARD_THICKNESS is unsupported: the checker models one 1.6 mm board, so it refuses the
+ * file rather than draw a different board as 1.6 mm. A stackup in setup is checked by stackupProblem. A board with no
+ * general record declares no thickness and takes KiCad's default, BOARD_THICKNESS.
  */
 function substrateProblem(root: readonly SExpr[]): string | undefined {
 	const generals = recordsOf(root, "general");
@@ -690,9 +690,99 @@ function substrateProblem(root: readonly SExpr[]): string | undefined {
 		if (problem) return problem;
 	}
 	for (const setup of recordsOf(root, "setup")) {
-		if (recordsOf(setup, "stackup").length > 0) {
-			return "unsupported construct: (stackup) in (setup); the checker models one 1.6 mm board without a stackup";
+		const stackups = recordsOf(setup, "stackup");
+		if (stackups.length > 1) return "malformed record: (stackup) repeated in (setup)";
+		const stackup = stackups[0];
+		if (stackup) {
+			const problem = stackupProblem(stackup);
+			if (problem) return problem;
 		}
+	}
+	return undefined;
+}
+
+/** The records a stackup may hold. Any other record in a stackup is unsupported. */
+const STACKUP_HEADS = new Set(["layer", "copper_finish", "dielectric_constraints"]);
+/** The fields a stackup layer may hold. Each is read or is inert for the modelled board. */
+const STACKUP_LAYER_FIELDS = new Set(["type", "thickness", "material", "epsilon_r", "loss_tangent", "color"]);
+/** How far a stackup total may differ from BOARD_THICKNESS, in millimetres: the precision KiCad writes layers to. */
+const STACKUP_TOLERANCE = 0.01;
+
+type StackupLayer = {
+	readonly kind: "copper" | "core" | "other";
+	readonly name: string;
+	readonly thickness: number | undefined;
+};
+
+/** One stackup layer as the checker reads it, or the problem with it. A copper layer and a core need a thickness. */
+function stackupLayerOf(list: readonly SExpr[]): StackupLayer | string {
+	const name = list[1];
+	if (typeof name !== "string") return "malformed record: (layer) in (stackup) has no name";
+	const fields = new Map<string, string>();
+	for (const item of list.slice(2)) {
+		const field = listOf(item);
+		if (!field) return `malformed record: an unnamed value sits in (layer "${name}")`;
+		const head = field[0];
+		if (typeof head !== "string" || !STACKUP_LAYER_FIELDS.has(head)) {
+			return `unsupported construct: (${typeof head === "string" ? head : "?"}) in (layer "${name}")`;
+		}
+		if (fields.has(head)) return `malformed record: (${head}) repeated in (layer "${name}")`;
+		if (field.length !== 2 || typeof field[1] !== "string") {
+			return `malformed record: (${head}) in (layer "${name}") must hold one value`;
+		}
+		fields.set(head, field[1]);
+	}
+	const type = fields.get("type");
+	if (type === undefined) return `malformed record: (layer "${name}") has no type`;
+	const kind = type === "copper" ? "copper" : type === "core" || type === "prepreg" ? "core" : "other";
+	const raw = fields.get("thickness");
+	const thickness = raw === undefined ? undefined : NUMBER.test(raw) ? Number(raw) : Number.NaN;
+	if (thickness !== undefined && (!Number.isFinite(thickness) || thickness <= 0)) {
+		return `malformed record: (thickness) of layer "${name}" must be one finite positive number`;
+	}
+	if (kind !== "other" && thickness === undefined) return `malformed record: (layer "${name}") has no thickness`;
+	return { kind, name, thickness };
+}
+
+/**
+ * The first problem in one stackup, or undefined. The checker models one two-layer board: F.Cu and B.Cu with a single
+ * core between them, stacked in that order. A stackup that declares exactly that is accepted when its total is
+ * BOARD_THICKNESS, counting either the copper and core alone or the whole stack with solder masks, each within
+ * STACKUP_TOLERANCE. Any other copper layer, a second core, another order, or another total is unsupported, so the
+ * file is refused rather than drawn as a board it is not. Silkscreen, paste, mask and finish layers do not change the
+ * modelled copper, so they are accepted.
+ */
+function stackupProblem(stackup: readonly SExpr[]): string | undefined {
+	const layers: StackupLayer[] = [];
+	for (const item of stackup.slice(1)) {
+		const list = listOf(item);
+		const head = list?.[0];
+		if (!list || typeof head !== "string") return "malformed record: an unnamed value sits in (stackup)";
+		if (!STACKUP_HEADS.has(head)) return `unsupported construct: (${head}) in (stackup)`;
+		if (head !== "layer") continue;
+		const layer = stackupLayerOf(list);
+		if (typeof layer === "string") return layer;
+		layers.push(layer);
+	}
+	const copper = layers.filter(l => l.kind === "copper").map(l => l.name);
+	if (copper.length !== 2 || !copper.includes("F.Cu") || !copper.includes("B.Cu")) {
+		return "unsupported construct: (stackup) must hold exactly the copper layers F.Cu and B.Cu";
+	}
+	if (layers.filter(l => l.kind === "core").length !== 1) {
+		return "unsupported construct: (stackup) must hold exactly one core between F.Cu and B.Cu";
+	}
+	const front = layers.findIndex(l => l.kind === "copper" && l.name === "F.Cu");
+	const core = layers.findIndex(l => l.kind === "core");
+	const back = layers.findIndex(l => l.kind === "copper" && l.name === "B.Cu");
+	if (!(front < core && core < back)) return "unsupported construct: (stackup) must stack F.Cu, the core, then B.Cu";
+	const sum = (keep: (l: StackupLayer) => boolean): number =>
+		layers.filter(keep).reduce((total, l) => total + (l.thickness ?? 0), 0);
+	const copperAndCore = sum(l => l.kind !== "other");
+	const whole = sum(() => true);
+	const near = (t: number): boolean => Math.abs(t - BOARD_THICKNESS) <= STACKUP_TOLERANCE;
+	if (!near(copperAndCore) && !near(whole)) {
+		const shown = Math.round(whole * 1000) / 1000;
+		return `unsupported construct: (stackup) is ${shown} mm thick; the checker models only a ${BOARD_THICKNESS} mm board`;
 	}
 	return undefined;
 }
