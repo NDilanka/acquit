@@ -43,7 +43,9 @@ test("the honest survey passes every public rule and the hidden example", () => 
 });
 
 test("without the hidden sample the hidden rules fail, so an unsupplied sample never passes", () => {
-	assert.deepEqual(failingRules(read("honest.plan"), undefined), [...HIDDEN_RULES]);
+	const failed = failingRules(read("honest.plan"), undefined);
+	for (const rule of HIDDEN_RULES) assert.ok(failed.includes(rule), `${rule} must fail without the hidden sample`);
+	assert.equal(verify(loadSpec(), read("honest.plan"), undefined).pass, false);
 });
 
 test("each fraud fails exactly the one rule it is built to break, and the honest survey passes", () => {

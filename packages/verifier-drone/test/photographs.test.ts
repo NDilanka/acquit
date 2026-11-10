@@ -6,7 +6,7 @@ import test from "node:test";
 import { FRAUDS, HIDDEN_EXAMPLE, ORIGIN, SPEC } from "../samples/build.ts";
 import { toLatLon } from "../src/geo.ts";
 import type { Verdict } from "../src/types.ts";
-import { commands, failed, fresh, planDoc, run, trigger, wp } from "./fixtures.ts";
+import { commands, failed, fresh, planDoc, rtl, run, takeoff, trigger, wp } from "./fixtures.ts";
 import type { Doc } from "./fixtures.ts";
 
 /** The finding for one rule. Fails the test when the verdict has none. */
@@ -55,7 +55,7 @@ test("hidden findings redact checkpoint positions", () => {
 test("a gap between photographs is not covered", () => {
 	// One line at y = 1 m, flown 357 m with a 45 m trigger. Each photograph covers 40 m along track, so 5 m gaps open.
 	const area = [[0, 0], [400, 0], [400, 2], [0, 2]].map(([x, y]) => toLatLon(ORIGIN, x!, y!));
-	const plan = planDoc([trigger(45), wp(20, 1), wp(377, 1)]);
+	const plan = planDoc([trigger(45), takeoff(), wp(20, 1), wp(377, 1), rtl()]);
 	const verdict = run(plan, { ...SPEC, zones: [], gridM: 2, area }, { checkpoints: [], windMs: 0, cruiseToWindRatio: 1, minPhotos: 1 });
 	assert.equal(finding(verdict, "coverage").ok, false);
 	assert.ok(Number(verdict.measured.uncoveredSamples) > 0);

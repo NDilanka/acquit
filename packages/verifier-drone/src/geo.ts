@@ -93,14 +93,88 @@ export function segmentHitsPolygon(a: Vec2, b: Vec2, polygon: readonly Vec2[]): 
 	return false;
 }
 
-export function centroid(points: readonly Vec2[]): Vec2 {
-	let sx = 0;
-	let sy = 0;
-	for (const p of points) {
-		sx += p[0];
-		sy += p[1];
+function pointSegmentDistance(p: Vec2, a: Vec2, b: Vec2): number {
+	const dx = b[0] - a[0];
+	const dy = b[1] - a[1];
+	const len2 = dx * dx + dy * dy;
+	const raw = len2 > 0 ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2 : 0;
+	const t = Math.min(1, Math.max(0, raw));
+	return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
+
+/** The distance from a point to the nearest edge of the polygon. */
+function boundaryDistance(p: Vec2, polygon: readonly Vec2[]): number {
+	let best = Infinity;
+	for (let i = 0; i < polygon.length; i++) {
+		best = Math.min(best, pointSegmentDistance(p, polygon[i]!, polygon[(i + 1) % polygon.length]!));
 	}
-	return [sx / points.length, sy / points.length];
+	return best;
+}
+
+/**
+ * The shortest distance from the segment ab to the polygon, interior included. It is 0 when the segment touches or
+ * enters the polygon, including a grazed corner or a segment running along an edge.
+ */
+export function segmentDistanceToPolygon(a: Vec2, b: Vec2, polygon: readonly Vec2[]): number {
+	if (segmentHitsPolygon(a, b, polygon)) return 0;
+	let best = Infinity;
+	for (let i = 0; i < polygon.length; i++) {
+		const c = polygon[i]!;
+		const d = polygon[(i + 1) % polygon.length]!;
+		best = Math.min(
+			best,
+			pointSegmentDistance(a, c, d),
+			pointSegmentDistance(b, c, d),
+			pointSegmentDistance(c, a, b),
+			pointSegmentDistance(d, a, b),
+		);
+	}
+	return best;
+}
+
+/**
+ * Whether the whole segment ab lies inside the polygon, boundary included, to within tol metres. The segment is cut
+ * at every point where it meets the boundary, and each piece is tested at its midpoint, so a notch between the two
+ * ends of a concave polygon is seen.
+ */
+export function segmentInsidePolygon(a: Vec2, b: Vec2, polygon: readonly Vec2[], tol: number): boolean {
+	const inside = (p: Vec2): boolean => pointInPolygon(p, polygon) || boundaryDistance(p, polygon) <= tol;
+	if (!inside(a) || !inside(b)) return false;
+	const rx = b[0] - a[0];
+	const ry = b[1] - a[1];
+	const len2 = rx * rx + ry * ry;
+	if (len2 === 0) return true;
+	const cuts = [0, 1];
+	for (let i = 0; i < polygon.length; i++) {
+		const c = polygon[i]!;
+		const d = polygon[(i + 1) % polygon.length]!;
+		const sx = d[0] - c[0];
+		const sy = d[1] - c[1];
+		const qx = c[0] - a[0];
+		const qy = c[1] - a[1];
+		const denom = rx * sy - ry * sx;
+		if (Math.abs(denom) > 1e-12 * Math.sqrt(len2) * Math.hypot(sx, sy)) {
+			const t = (qx * sy - qy * sx) / denom;
+			const u = (qx * ry - qy * rx) / denom;
+			if (t >= 0 && t <= 1 && u >= 0 && u <= 1) cuts.push(t);
+		}
+		// Collinear or nearly collinear edge ends: their projections bound any overlap with the segment.
+		for (const p of [c, d]) {
+			if (Math.abs(rx * (p[1] - a[1]) - ry * (p[0] - a[0])) / Math.sqrt(len2) <= tol) {
+				const t = ((p[0] - a[0]) * rx + (p[1] - a[1]) * ry) / len2;
+				if (t > 0 && t < 1) cuts.push(t);
+			}
+		}
+	}
+	cuts.sort((x, y) => x - y);
+	for (let i = 0; i + 1 < cuts.length; i++) {
+		const t0 = cuts[i]!;
+		const t1 = cuts[i + 1]!;
+		if (t1 - t0 <= 1e-12) continue;
+		const tm = (t0 + t1) / 2;
+		if (!inside([a[0] + tm * rx, a[1] + tm * ry])) return false;
+	}
+	return true;
 }
 
 /**

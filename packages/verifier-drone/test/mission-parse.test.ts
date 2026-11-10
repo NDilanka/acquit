@@ -6,7 +6,7 @@ import test from "node:test";
 import { ORIGIN } from "../samples/build.ts";
 import { parsePlan } from "../src/plan.ts";
 import { LIMITS } from "../src/spec.ts";
-import { base, commands, failed, fresh, planDoc, run, trigger, wp } from "./fixtures.ts";
+import { base, commands, failed, fresh, planDoc, run, takeoff, trigger, wp } from "./fixtures.ts";
 
 test("rejects ComplexItem survey instead of ignoring it", () => {
 	const p = fresh();
@@ -81,7 +81,8 @@ test("refuses a mission longer than the item limit without throwing", () => {
 	// The trigger setting stays in place, so the only reason to refuse this mission is its length.
 	const p = fresh();
 	const setting = structuredClone(base.mission.items[0]);
-	p.mission.items = [setting, ...Array.from({ length: LIMITS.missionItems }, () => structuredClone(base.mission.items.at(-1)))];
+	const waypoint = commands(base, 16).at(-1);
+	p.mission.items = [setting, ...Array.from({ length: LIMITS.missionItems }, () => structuredClone(waypoint))];
 	let verdict: ReturnType<typeof run> | undefined;
 	assert.doesNotThrow(() => {
 		verdict = run(p);
@@ -115,7 +116,8 @@ test("a command the checker does not model is reported as unsupported-item", () 
 });
 
 test("each survey waypoint carries the speed and camera trigger in force when it is reached", () => {
-	const text = JSON.stringify(planDoc([trigger(10), wp(-20, 30), wp(120, 30), trigger(25), wp(120, 50), wp(-20, 50)]));
+	// Takeoff comes first, so every survey waypoint is airborne and can take photographs.
+	const text = JSON.stringify(planDoc([trigger(10), takeoff(), wp(0, 30), wp(100, 30), trigger(25), wp(100, 50), wp(0, 50)]));
 	const plan = parsePlan(text, ORIGIN);
 	assert.equal(typeof plan, "object", String(plan));
 	if (typeof plan === "string") return;
@@ -130,7 +132,7 @@ test("each survey waypoint carries the speed and camera trigger in force when it
 });
 
 test("a camera trigger distance of zero switches triggering off for later waypoints", () => {
-	const text = JSON.stringify(planDoc([trigger(10), wp(-20, 30), wp(120, 30), trigger(0), wp(120, 50)]));
+	const text = JSON.stringify(planDoc([trigger(10), takeoff(), wp(0, 30), wp(100, 30), trigger(0), wp(100, 50)]));
 	const plan = parsePlan(text, ORIGIN);
 	assert.equal(typeof plan, "object", String(plan));
 	if (typeof plan === "string") return;

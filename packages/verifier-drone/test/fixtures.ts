@@ -47,6 +47,22 @@ export function trigger(metres: number): Item {
 	return { type: "SimpleItem", command: 206, frame: 2, autoContinue: true, params: [metres, 0, 0, 0, 0, 0, 0] };
 }
 
+/** A takeoff (command 22) from home at the origin, climbing to the given height above home. Ground waypoints earn no photographs. */
+export function takeoff(alt = 40): Item {
+	const [lat, lon] = ORIGIN;
+	return { type: "SimpleItem", command: 22, frame: 3, autoContinue: true, params: [0, 0, 0, 0, lat, lon, alt] };
+}
+
+/** A land (command 21) in place. */
+export function land(): Item {
+	return { type: "SimpleItem", command: 21, frame: 3, autoContinue: true, params: [0, 0, 0, 0, 0, 0, 0] };
+}
+
+/** Return to launch (command 20). */
+export function rtl(): Item {
+	return { type: "SimpleItem", command: 20, frame: 2, autoContinue: true, params: [0, 0, 0, 0, 0, 0, 0] };
+}
+
 /** The items of one command, in mission order. */
 export function commands(doc: Doc, command: number): Item[] {
 	return doc.mission.items.filter((item): item is Item => typeof item === "object" && item !== null && (item as Item).command === command);

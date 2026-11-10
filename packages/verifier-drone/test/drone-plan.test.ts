@@ -62,7 +62,8 @@ test("the honest plan parses to ten waypoints, a 10 m trigger and a 14 m/s cruis
 	assert.equal(plan.waypoints.length, 10);
 	assert.equal(plan.triggerM, 10);
 	assert.equal(plan.cruiseMs, 14);
-	assert.ok(Math.abs(plan.waypoints[0]!.x + 20) < 0.05);
+	// The regenerated honest survey starts at the west edge of its first line, which runs from x = 0 to x = 100.
+	assert.ok(Math.abs(plan.waypoints[0]!.x) < 0.05);
 	assert.ok(Math.abs(plan.waypoints[0]!.y - 30) < 0.05);
 });
 

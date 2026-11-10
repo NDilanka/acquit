@@ -1,10 +1,10 @@
 // The drone survey checker. It reads a QGroundControl plan and the job spec, and returns a Verdict.
 // Pure TypeScript: no I/O, no clock, no randomness. Bad input becomes a failed "parse" finding.
 
-import { centroid, fromFrame, frameFrom, pointInPolygon, segmentHitsPolygon, toFrame, toLocal } from "./geo.ts";
+import { fromFrame, frameFrom, pointInPolygon, segmentDistanceToPolygon, segmentInsidePolygon, toFrame, toLocal } from "./geo.ts";
 import type { Frame } from "./geo.ts";
 import { parsePlan } from "./plan.ts";
-import type { Plan, Waypoint } from "./plan.ts";
+import type { Move, Plan, Waypoint } from "./plan.ts";
 import { photographs } from "./photos.ts";
 import type { Flight, Shot } from "./photos.ts";
 import { HIDDEN_RULES, LIMITS, PUBLIC_RULES, parseHiddenSample, parseSpec } from "./spec.ts";
@@ -14,6 +14,8 @@ import type { Camera, Finding, HiddenSample, Scene, ScenePath, Spec, Vec2, Vec3,
 const TOL = 0.05;
 /** Metres of altitude. Altitudes this close count as level, so float noise cannot split a survey line. */
 const ALT_TOL = 1e-6;
+/** Metres. A route this close to a no-fly clearance counts as touching it, so float noise cannot slip a graze past. */
+const CONTACT_M = 1e-6;
 /** The most photograph footprints the scene carries. A longer flight is sampled evenly down to this many. */
 const SCENE_FOOTPRINTS = 200;
 
@@ -34,7 +36,10 @@ type Leg = {
 	readonly triggerM: number | null;
 };
 /** The spec's survey area and no-fly zones in local metres east and north of the origin. */
-type Geometry = { readonly area: readonly Vec2[]; readonly zones: readonly { readonly id: string; readonly polygon: readonly Vec2[] }[] };
+type Geometry = {
+	readonly area: readonly Vec2[];
+	readonly zones: readonly { readonly id: string; readonly heightM: number; readonly polygon: readonly Vec2[] }[];
+};
 type Context = {
 	readonly spec: Spec;
 	readonly geometry: Geometry;
@@ -67,7 +72,7 @@ function projectGeometry(spec: Spec): Geometry {
 	const project = (point: readonly [number, number]): Vec2 => toLocal(spec.origin, point[0], point[1]);
 	return {
 		area: spec.area.map(project),
-		zones: spec.zones.map(zone => ({ id: zone.id, polygon: zone.polygon.map(project) })),
+		zones: spec.zones.map(zone => ({ id: zone.id, heightM: zone.heightM, polygon: zone.polygon.map(project) })),
 	};
 }
 
@@ -207,6 +212,11 @@ function legMid(leg: Leg): Vec3 {
 	return [(leg.a[0] + leg.b[0]) / 2, (leg.a[1] + leg.b[1]) / 2, leg.alt];
 }
 
+/** The midpoint of a flight move, in local metres and altitude. */
+function moveMid(move: Move): Vec3 {
+	return [(move.a.x + move.b.x) / 2, (move.a.y + move.b.y) / 2, (move.a.alt + move.b.alt) / 2];
+}
+
 function worstGsdLeg(legs: readonly Leg[], camera: Camera): Leg | null {
 	let worst: Leg | null = null;
 	for (const leg of legs) if (worst === null || gsdCm(leg.alt, camera) > gsdCm(worst.alt, camera)) worst = leg;
@@ -271,16 +281,28 @@ const CHECKS: Record<(typeof PUBLIC_RULES)[number], Check> = {
 		const refs = [`leg-${worst.a.index}`, `leg-${worst.b.index}`];
 		return finding("side-overlap", ok, false, ok ? `Neighbouring lines overlap ${percent(worst.overlap)} sideways, at least ${percent(spec.minSideOverlap)}.` : `Neighbouring lines overlap only ${percent(worst.overlap)} sideways; the minimum is ${percent(spec.minSideOverlap)}.`, at, refs);
 	},
-	"no-fly": ({ geometry, segments }) => {
-		for (const segment of segments) {
+	"no-fly": ({ spec, geometry, plan }) => {
+		const margin = spec.geofenceMarginM;
+		for (const move of plan.moves) {
+			// The clearance around a zone is its footprint grown by the margin, up to its height grown by the margin.
+			// A move is tested whole: its entire altitude band and its entire horizontal run.
+			const low = Math.min(move.a.alt, move.b.alt);
+			const high = Math.max(move.a.alt, move.b.alt);
 			for (const zone of geometry.zones) {
-				if (segmentHitsPolygon([segment.a.x, segment.a.y], [segment.b.x, segment.b.y], zone.polygon)) {
-					const c = centroid(zone.polygon);
-					return finding("no-fly", false, false, `The route crosses no-fly zone ${zone.id}.`, [c[0], c[1], Math.max(segment.a.alt, segment.b.alt)], [`zone-${zone.id}`]);
-				}
+				if (low > zone.heightM + margin + ALT_TOL) continue;
+				const gap = segmentDistanceToPolygon([move.a.x, move.a.y], [move.b.x, move.b.y], zone.polygon);
+				if (gap > margin + CONTACT_M) continue;
+				return finding(
+					"no-fly",
+					false,
+					false,
+					`The route comes within ${margin} m of no-fly zone ${zone.id}, which is ${zone.heightM} m high, at ${low.toFixed(1)} to ${high.toFixed(1)} m.`,
+					moveMid(move),
+					[`zone-${zone.id}`],
+				);
 			}
 		}
-		return finding("no-fly", true, false, "No part of the route crosses a no-fly zone.");
+		return finding("no-fly", true, false, "No part of the route comes within the no-fly clearance of any zone.");
 	},
 	coverage: ({ spec, geometry, shots, frame }) => {
 		const samples = sampleGrid(geometry.area, spec.gridM);
@@ -393,7 +415,21 @@ export function verify(specInput: unknown, artefact: string, hiddenInput?: unkno
 		parsed.unsupported.length === 0
 			? finding("unsupported-item", true, false, "Every mission item is one the checker models.")
 			: finding("unsupported-item", false, false, `${parsed.unsupported.length} mission item${parsed.unsupported.length === 1 ? "" : "s"} the checker does not model. First: ${parsed.unsupported[0]}`);
-	const findings = [planFinding, unsupportedFinding, ...publicFindings, ...hiddenFindings];
+	// Always run, like unsupported-item: they check the lifecycle and the path the aircraft actually flies, which a spec
+	// cannot switch off.
+	const takeoffFinding =
+		parsed.lifecycleProblem === null
+			? finding("starts-with-takeoff", true, false, "The aircraft takes off before its survey and stays airborne for every survey waypoint.")
+			: finding("starts-with-takeoff", false, false, parsed.lifecycleProblem);
+	const endFinding = parsed.endsSafely
+		? finding("ends-safely", true, false, "The mission ends with a landing or a return to launch.")
+		: finding("ends-safely", false, false, "The mission does not end with a landing (command 21) or a return to launch (command 20).");
+	const leaving = parsed.moves.find(move => !segmentInsidePolygon([move.a.x, move.a.y], [move.b.x, move.b.y], geometry.area, TOL));
+	const areaFinding =
+		leaving === undefined
+			? finding("inside-area", true, false, "Every flight segment stays inside the survey area.")
+			: finding("inside-area", false, false, "A flight segment leaves the survey area.", moveMid(leaving));
+	const findings = [planFinding, unsupportedFinding, takeoffFinding, endFinding, areaFinding, ...publicFindings, ...hiddenFindings];
 
 	const gsdWorst = worstGsdLeg(legs, spec.camera);
 	const frontWorst = worstFrontLeg(legs, spec.camera);

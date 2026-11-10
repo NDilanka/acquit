@@ -97,17 +97,24 @@ test("a survey crossing the antimeridian passes the geometry findings", () => {
 		area: at([[0, 0], [100, 0], [100, 120], [0, 120]]),
 		zones: [{ ...SPEC.zones[0]!, polygon: at([[60, 38], [70, 38], [70, 42], [60, 42]]) }],
 	};
-	const items: unknown[] = [{ type: "SimpleItem", command: 206, frame: 2, autoContinue: true, params: [10, 0, 0, 0, 0, 0, 0] }];
+	// The shared fixtures are pinned to the orchard origin, so this lifecycle is written out for the antimeridian home.
+	const [homeLat, homeLon] = toLatLon(origin, 0, 0);
+	const items: unknown[] = [
+		{ type: "SimpleItem", command: 206, frame: 2, autoContinue: true, params: [10, 0, 0, 0, 0, 0, 0] },
+		{ type: "SimpleItem", command: 22, frame: 3, autoContinue: true, params: [0, 0, 0, 0, homeLat, homeLon, 40] },
+	];
 	[30, 50, 70, 90, 110].forEach((y, k) => {
-		const row: number[] = k % 2 === 0 ? [-20, 120] : [120, -20];
+		const row: number[] = k % 2 === 0 ? [0, 100] : [100, 0];
 		for (const x of row) {
 			const [lat, lon] = toLatLon(origin, x, y);
 			items.push({ type: "SimpleItem", command: 16, frame: 3, autoContinue: true, params: [0, 0, 0, 0, lat, lon, 40] });
 		}
 	});
+	items.push({ type: "SimpleItem", command: 20, frame: 2, autoContinue: true, params: [0, 0, 0, 0, 0, 0, 0] });
 	const doc = { fileType: "Plan", mission: { cruiseSpeed: 14, plannedHomePosition: [origin[0], origin[1], 0], items } };
 	const verdict = verify(spec, JSON.stringify(doc), h);
-	assert.deepEqual(notOk(verdict, SURVEY_RULES), [], JSON.stringify(verdict.findings.filter(item => !item.ok)));
+	const lifecycle = ["starts-with-takeoff", "ends-safely", "inside-area"] as const;
+	assert.deepEqual(notOk(verdict, [...SURVEY_RULES, ...lifecycle]), [], JSON.stringify(verdict.findings.filter(item => !item.ok)));
 	assert.equal(verdict.measured.surveyLines, 5);
 });
 
