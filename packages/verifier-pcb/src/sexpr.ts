@@ -7,6 +7,24 @@ import { MAX_ELEMENTS, MAX_INPUT_CHARS, MAX_NESTING } from "./limits.ts";
 export type SExpr = string | readonly SExpr[];
 export type ParseResult = { readonly ok: true; readonly value: readonly SExpr[] } | { readonly ok: false; readonly error: string };
 
+// The indices of the quoted atoms in each list. The tree keeps a quoted atom and a bare atom alike as a string, so a
+// reader that must tell `(net 4)` from `(net "4")` asks isQuoted.
+const quotedAt = new WeakMap<readonly SExpr[], Set<number>>();
+
+function quotedIn(list: readonly SExpr[]): Set<number> {
+	let set = quotedAt.get(list);
+	if (!set) {
+		set = new Set<number>();
+		quotedAt.set(list, set);
+	}
+	return set;
+}
+
+/** True when the atom at `index` of `list` was written in double quotes. */
+export function isQuoted(list: readonly SExpr[] | undefined, index: number): boolean {
+	return list !== undefined && quotedAt.get(list)?.has(index) === true;
+}
+
 export function parseSexprs(text: string): ParseResult {
 	if (text.length > MAX_INPUT_CHARS) return { ok: false, error: `input longer than ${MAX_INPUT_CHARS} characters` };
 	const stack: SExpr[][] = [[]];
@@ -47,7 +65,9 @@ export function parseSexprs(text: string): ParseResult {
 				}
 			}
 			if (!closed) return { ok: false, error: "unterminated string" };
-			(stack[stack.length - 1] as SExpr[]).push(s);
+			const parent = stack[stack.length - 1] as SExpr[];
+			quotedIn(parent).add(parent.length);
+			parent.push(s);
 			elements++;
 		} else {
 			let s = "";

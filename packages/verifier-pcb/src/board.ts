@@ -30,7 +30,7 @@ import {
 	MAX_VERTICES,
 } from "./limits.ts";
 import { fieldOf, listOf, recordProblem, recordsOf } from "./fields.ts";
-import { num, parseSexprs, type SExpr } from "./sexpr.ts";
+import { isQuoted, num, parseSexprs, type SExpr } from "./sexpr.ts";
 import type { Vec2 } from "./types.ts";
 
 export type CopperLayer = "F.Cu" | "B.Cu";
@@ -507,25 +507,32 @@ function zeroLengthProblem(t: readonly SExpr[]): string | undefined {
 	return a && b && dist(a, b) <= ROUNDOFF ? "(segment) of zero length" : undefined;
 }
 
-function isNetNumber(v: SExpr | undefined): boolean {
+/** A run of digits, the form of a net number. Whether it is bare or quoted is a separate question. */
+function isDigits(v: SExpr | undefined): boolean {
 	return typeof v === "string" && /^\d+$/.test(v);
 }
 
-/** A track or via names its net by number alone, as KiCad 8 writes it. The name belongs to pad and zone records. */
+/**
+ * A track or via names its net by number alone, as KiCad 8 writes it: a bare number. A quoted number is a name, not a
+ * net number. The name belongs to pad and zone records.
+ */
 function trackNetProblem(t: readonly SExpr[]): string | undefined {
 	const net = fieldOf(t, "net");
 	if (!net) return undefined;
-	return net.length === 2 && isNetNumber(net[1])
-		? undefined
-		: `(${String(t[0])}) has a net that is not a single net number`;
+	const head = String(t[0]);
+	if (net.length === 2 && isDigits(net[1]) && !isQuoted(net, 1)) return undefined;
+	return net.length === 2 && isDigits(net[1])
+		? `(${head}) has a quoted net number`
+		: `(${head}) has a net that is not a single net number`;
 }
 
-/** A pad names its net by number and name, as KiCad 8 writes it. */
+/** A pad names its net by number and name, as KiCad 8 writes it: a bare number, then a quoted name. */
 function padNetProblem(p: readonly SExpr[], name: string, ref: string): string | undefined {
 	const net = fieldOf(p, "net");
 	if (!net) return undefined;
-	return net.length === 3 && isNetNumber(net[1]) && typeof net[2] === "string"
-		? undefined
+	if (net.length === 3 && isDigits(net[1]) && !isQuoted(net, 1) && typeof net[2] === "string") return undefined;
+	return net.length === 3 && isDigits(net[1]) && isQuoted(net, 1)
+		? `pad ${name} on ${ref} has a quoted net number`
 		: `pad ${name} on ${ref} has a net that is not a number and a name`;
 }
 
