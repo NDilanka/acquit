@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { boundsOf, centreOf, edgeListDistance, edgesOf, edgesOverlap, heightOf, pointInPolygon, roundMm, segmentDistance, selfOverlaps, widthOf } from "../src/geometry.ts";
+import { areaOf, boundsOf, centreOf, edgeListDistance, edgesOf, edgesOverlap, heightOf, pointInPolygon, roundMm, segmentDistance, selfOverlaps, widthOf, windingAround } from "../src/geometry.ts";
 
 const square: [number, number][] = [[0, 0], [4, 0], [4, 2], [0, 2]];
 
@@ -55,4 +55,16 @@ test("a path that doubles back on itself overlaps itself, a plain square and a c
 test("rounding keeps three decimal places of mm", () => {
 	assert.equal(roundMm(1.23456), 1.235);
 	assert.equal(roundMm(0.0004), 0);
+});
+
+test("the area of a closed path is 8 mm squared for the square, and negative when the path runs the other way", () => {
+	assert.equal(areaOf(square), 8);
+	assert.equal(areaOf([...square].reverse()), -8);
+});
+
+test("a closed path winds once round a point it encloses, twice round one it loops over twice, and not at all round one it misses", () => {
+	assert.equal(windingAround(square, [2, 1]), 1);
+	assert.equal(windingAround([...square].reverse(), [2, 1]), -1);
+	assert.equal(windingAround([...square, ...square], [2, 1]), 2);
+	assert.equal(Math.abs(windingAround(square, [10, 10])), 0);
 });

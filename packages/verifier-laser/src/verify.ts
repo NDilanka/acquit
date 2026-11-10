@@ -9,7 +9,7 @@ import type { FinishedPart } from "./finished.ts";
 import { MAX_PAIR_TESTS } from "./limits.ts";
 import { validateSpec } from "./spec.ts";
 import { FLATTEN_TOL_MM, parseSvg } from "./svg.ts";
-import { fitsRectangle, fitsRing, isRoundCut, RING_POINTS_MAX, roundedRectRing } from "./shapes.ts";
+import { fitsRoundedRect, isRoundCut } from "./shapes.ts";
 import { CUT_STROKE, ENGRAVE_STROKE, RULES } from "./types.ts";
 import type { Finding, HiddenSample, Rule, Scene, ScenePath, Spec, SpecRect, SvgPath, Verdict, Vec2 } from "./types.ts";
 
@@ -246,16 +246,19 @@ function engravingHolds(part: FinishedPart, region: SpecRect, path: SvgPath): bo
 	return edges.every(([a, b]) => inRegion(part, region, a) && inRegion(part, region, b) && isMaterialSegment(part, a, b));
 }
 
+// Work one ideal-shape fit costs per cut edge: its distance tests against the outline, counted at a fixed allowance.
+const FIT_POINTS_ALLOWANCE = 160;
+
 /**
  * The pair and point tests the rules will run. Cut against cut costs about three times the square of the cut edge
  * count: the repeat, web and enclosure tests each visit the pairs of cut edges. Each engraving point and hidden sample
- * costs one pass over the cut edges. Each spec feature, the outline and the extra cuts are fitted against an ideal
- * shape of at most RING_POINTS_MAX points, one pass over the cut edges each. Counted before any of them runs.
+ * costs one pass over the cut edges. Each spec feature, the outline and the extra cuts are fitted against their ideal
+ * shape by one pass over the cut edges each, with a fixed allowance per pass. Counted before any of them runs.
  */
 function workOf(cut: readonly SvgPath[], engrave: readonly SvgPath[], samples: number, features: number): number {
 	const edges = cut.reduce((sum, path) => sum + edgesOf(path.points, path.closed).length, 0);
 	const points = engrave.reduce((sum, path) => sum + path.points.length, 0);
-	return 3 * edges * edges + (points + samples) * edges + (features + 2) * edges * RING_POINTS_MAX * 2;
+	return 3 * edges * edges + (points + samples) * edges + (features + 2) * edges * FIT_POINTS_ALLOWANCE;
 }
 
 /**
@@ -383,7 +386,7 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 				c.path.closed &&
 				near(c.width, sx, tol) &&
 				near(c.height, sy, tol) &&
-				fitsRectangle(c.path.points, c.path.closed, tol),
+				fitsRoundedRect(c.path.points, c.path.closed, 0, tol),
 		);
 		if (!found) cutoutMisses.push(`slot ${slot.id}`);
 	}
@@ -460,10 +463,9 @@ function checkPanel(input: Spec, artefact: string, hidden: HiddenSample | undefi
 		measured.finishedWidthMm = roundMm(part.widthMm);
 		measured.finishedHeightMm = roundMm(part.heightMm);
 		const sized = near(part.widthMm, px, spec.toleranceMm) && near(part.heightMm, py, spec.toleranceMm);
-		// The drawn outline must be the declared rectangle: every edge straight, every corner at the declared radius.
+		// The drawn outline must be the declared rectangle: every edge straight, every corner on the declared radius.
 		// A chamfer or a triangle keeps the box, so the size check alone would pass it.
-		const ideal = roundedRectRing(centreOf(outline.box), widthOf(outline.box), heightOf(outline.box), drawnCornerMm(spec));
-		const shaped = fitsRing(outline.path.points, outline.path.closed, ideal, spec.toleranceMm);
+		const shaped = fitsRoundedRect(outline.path.points, outline.path.closed, drawnCornerMm(spec), spec.toleranceMm);
 		const corners = spec.cornerRadiusMm > 0 ? `${spec.cornerRadiusMm} mm corners` : "square corners";
 		findings.push(
 			check(

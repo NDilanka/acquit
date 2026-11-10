@@ -1,87 +1,85 @@
-// Ideal shapes that drawn cuts are matched against, in mm. A cut fits a shape when every drawn vertex lies on the
-// shape's outline and every sample of that outline lies on the cut, each within a tolerance. Bounding boxes are not
-// enough: a diamond, a triangle or a chamfered corner has the right box and fails here.
+// Ideal shapes that drawn cuts are matched against, in mm. A closed cut fits a rounded rectangle when every drawn vertex and
+// every edge midpoint lies within a tolerance of the exact outline, and the cut runs once round the centre. A round hole
+// fits when its loop is simple, runs once round the centre, and every point of it lies within a tolerance of the true
+// circle. Bounding boxes are not enough: a diamond, a triangle, a chamfered corner, or a polygon whose chords stand off a
+// true arc has the right box and fails here.
 
-import { boundsOf, centreOf, edgesOf, heightOf, pointEdgeDistance, widthOf } from "./geometry.ts";
+import { areaOf, boundsOf, centreOf, edgesOf, heightOf, pointEdgeDistance, selfCrosses, selfOverlaps, widthOf, windingAround } from "./geometry.ts";
 import type { Vec2 } from "./types.ts";
 
-/** Segments per quarter of a rounded corner. */
-const ARC_STEPS = 16;
-/** Segments along each straight side, so a cut cannot hide a bulge between two samples. */
-const SIDE_STEPS = 4;
-
-/** The most points any ideal ring has. Used to bound the work a shape test can cost. */
-export const RING_POINTS_MAX = 4 * (ARC_STEPS + 1) + 4 * (SIDE_STEPS - 1);
-
 const TWO_PI = 2 * Math.PI;
+const HALF_PI = Math.PI / 2;
+
+/** Distance from a point to the arc of a circle that starts at the given angle and runs a quarter turn. */
+function arcDistance(point: Vec2, centre: Vec2, radius: number, start: number): number {
+	const vx = point[0] - centre[0];
+	const vy = point[1] - centre[1];
+	const turned = (((Math.atan2(vy, vx) - start) % TWO_PI) + TWO_PI) % TWO_PI;
+	if (turned <= HALF_PI) return Math.abs(Math.hypot(vx, vy) - radius);
+	const first: Vec2 = [centre[0] + radius * Math.cos(start), centre[1] + radius * Math.sin(start)];
+	const last: Vec2 = [centre[0] + radius * Math.cos(start + HALF_PI), centre[1] + radius * Math.sin(start + HALF_PI)];
+	return Math.min(Math.hypot(point[0] - first[0], point[1] - first[1]), Math.hypot(point[0] - last[0], point[1] - last[1]));
+}
 
 /**
- * An axis-aligned rectangle with rounded corners, from its centre, size and corner radius. The radius is clamped to
- * half the smaller side, so a radius of zero gives square corners.
+ * Exact distance from a point to the outline of a rounded rectangle: four straight sides and four quarter-circle arcs.
+ * The radius is clamped to half the smaller side, and zero gives square corners.
  */
-export function roundedRectRing(centre: Vec2, width: number, height: number, radius: number): Vec2[] {
-	const [cx, cy] = centre;
-	const hw = width / 2;
-	const hh = height / 2;
-	const r = Math.max(0, Math.min(radius, hw, hh));
-	// Each corner's arc centre and start angle, clockwise in the y-down drawing: top-right, bottom-right,
-	// bottom-left, top-left. Each arc runs a quarter turn.
-	const corners: readonly (readonly [number, number, number])[] = [
-		[cx + hw - r, cy - hh + r, -Math.PI / 2],
-		[cx + hw - r, cy + hh - r, 0],
-		[cx - hw + r, cy + hh - r, Math.PI / 2],
-		[cx - hw + r, cy - hh + r, Math.PI],
+function outlineDistance(point: Vec2, centre: Vec2, halfWidth: number, halfHeight: number, radius: number): number {
+	const r = Math.max(0, Math.min(radius, halfWidth, halfHeight));
+	const left = centre[0] - halfWidth;
+	const right = centre[0] + halfWidth;
+	const top = centre[1] - halfHeight;
+	const bottom = centre[1] + halfHeight;
+	const sides: (readonly [Vec2, Vec2])[] = [
+		[[left + r, top], [right - r, top]],
+		[[right, top + r], [right, bottom - r]],
+		[[right - r, bottom], [left + r, bottom]],
+		[[left, bottom - r], [left, top + r]],
 	];
-	const arcs: Vec2[][] = corners.map(([ox, oy, start]) => {
-		const arc: Vec2[] = [];
-		for (let i = 0; i <= ARC_STEPS; i++) {
-			const angle = start + (Math.PI / 2) * (i / ARC_STEPS);
-			arc.push([ox + r * Math.cos(angle), oy + r * Math.sin(angle)]);
-		}
-		return arc;
-	});
-	const ring: Vec2[] = [];
-	for (let k = 0; k < arcs.length; k++) {
-		const arc = arcs[k]!;
-		const next = arcs[(k + 1) % arcs.length]![0]!;
-		ring.push(...arc);
-		const last = arc[arc.length - 1]!;
-		for (let s = 1; s < SIDE_STEPS; s++) {
-			const t = s / SIDE_STEPS;
-			ring.push([last[0] + (next[0] - last[0]) * t, last[1] + (next[1] - last[1]) * t]);
-		}
+	let best = pointEdgeDistance(point, sides);
+	if (r > 0) {
+		// Each corner's arc centre and start angle, clockwise in the y-down drawing: top-right, bottom-right, bottom-left,
+		// top-left.
+		const arcs: readonly (readonly [number, number, number])[] = [
+			[right - r, top + r, -HALF_PI],
+			[right - r, bottom - r, 0],
+			[left + r, bottom - r, HALF_PI],
+			[left + r, top + r, Math.PI],
+		];
+		for (const [ox, oy, start] of arcs) best = Math.min(best, arcDistance(point, [ox, oy], r, start));
 	}
-	return ring;
+	return best;
 }
 
 /**
- * True when a cut fits an ideal outline: the cut is closed, every vertex lies within tol of the outline, and every
- * outline sample lies within tol of the cut. An open cut never fits.
+ * True when a closed cut is a rectangle with rounded corners of the given radius, at its own bounding box. Every vertex and
+ * every edge midpoint must lie within tol of the exact outline, and the cut must run once round the centre. A radius of
+ * zero gives square corners. An open cut never fits.
  */
-export function fitsRing(points: readonly Vec2[], closed: boolean, ring: readonly Vec2[], tol: number): boolean {
-	if (!closed || points.length === 0 || ring.length === 0) return false;
-	const ringEdges = edgesOf(ring, true);
-	const cutEdges = edgesOf(points, true);
-	if (!points.every(point => pointEdgeDistance(point, ringEdges) <= tol)) return false;
-	return ring.every(point => pointEdgeDistance(point, cutEdges) <= tol);
-}
-
-/** True when a closed cut is an axis-aligned rectangle with square corners, at its own bounding box. */
-export function fitsRectangle(points: readonly Vec2[], closed: boolean, tol: number): boolean {
+export function fitsRoundedRect(points: readonly Vec2[], closed: boolean, radius: number, tol: number): boolean {
+	if (!closed || points.length < 3) return false;
 	const box = boundsOf(points);
 	if (box === null) return false;
-	return fitsRing(points, closed, roundedRectRing(centreOf(box), widthOf(box), heightOf(box), 0), tol);
+	const centre = centreOf(box);
+	const halfWidth = widthOf(box) / 2;
+	const halfHeight = heightOf(box) / 2;
+	const near = (point: Vec2): boolean => outlineDistance(point, centre, halfWidth, halfHeight, radius) <= tol;
+	if (!points.every(near)) return false;
+	if (!edgesOf(points, true).every(([a, b]) => near([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]))) return false;
+	return Math.abs(windingAround(points, centre)) === 1;
 }
 
 /**
- * True when a closed cut is a circle within tol. Its box must be square within tol. Every vertex must lie within tol of
- * the circle at the box's centre and size, and no point of the cut may lie inside that circle by more than tol. The
- * cut must then cover every direction round the circle, apart from gaps no longer than 2 tol of arc. The test works on
- * the cut's edges, not on samples, so a polygon with the right vertices but straight sides fails, and so does a loop
- * that runs round only part of a circle.
+ * True when a closed cut is a circle within tol. Its box must be square within tol, and every vertex and every edge
+ * midpoint must lie within tol of the circle at the box's centre and size. No edge may come within radius - tol of the
+ * centre. The loop must not cross or double back on itself, must run once round the centre, and must enclose an area the
+ * tolerance allows. No arc of the circle may be left uncut for longer than 2 tol. The test works on the cut's edges, not
+ * on samples, so a polygon with the right vertices but straight sides fails, and so do a loop that runs round only part
+ * of a circle and a C-shaped loop whose two arcs lie within tol of the circle.
  */
 export function isRoundCut(points: readonly Vec2[], closed: boolean, tol: number): boolean {
-	if (!closed) return false;
+	if (!closed || points.length < 3) return false;
 	const box = boundsOf(points);
 	if (box === null) return false;
 	const width = widthOf(box);
@@ -93,10 +91,19 @@ export function isRoundCut(points: readonly Vec2[], closed: boolean, tol: number
 	const centre = centreOf(box);
 	const edges = edgesOf(points, true);
 	if (edges.length === 0) return false;
-	// Distance from the centre is convex along each edge, so the furthest point of an edge is an end: checking the
-	// vertices bounds the whole cut from outside, and the nearest point of the cut bounds it from inside.
-	if (!points.every(([x, y]) => Math.hypot(x - centre[0], y - centre[1]) <= radius + tol)) return false;
+	// Every vertex and every edge midpoint must lie within tol of the circle. Distance from the centre is convex along
+	// each edge, so the furthest point of an edge is an end, and the nearest point of the cut bounds it from inside.
+	const onCircle = (point: Vec2): boolean => Math.abs(Math.hypot(point[0] - centre[0], point[1] - centre[1]) - radius) <= tol;
+	if (!points.every(onCircle)) return false;
+	if (!edges.every(([a, b]) => onCircle([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]))) return false;
 	if (pointEdgeDistance(centre, edges) < radius - tol) return false;
+	// A simple loop that runs once round the centre encloses the disc of radius - tol and lies inside the disc of
+	// radius + tol, so its area falls between the two. The annulus test alone does not give this: a loop can keep to the
+	// annulus and still cross itself, or run round the centre zero or two times.
+	if (selfCrosses(points, true) || selfOverlaps(points, true)) return false;
+	if (Math.abs(windingAround(points, centre)) !== 1) return false;
+	const area = Math.abs(areaOf(points));
+	if (area < Math.PI * (radius - tol) ** 2 || area > Math.PI * (radius + tol) ** 2) return false;
 	return roundIsCovered(edges, centre, radius, tol);
 }
 
