@@ -33,7 +33,7 @@ import { operatorPayouts } from "./payouts.ts";
 import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
-import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, droidAskPort, openrouterAskPort, OPERATOR_ASK_TOOL_NAMES, OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
+import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, askModelPortFor, OPERATOR_ASK_TOOL_NAMES, OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
 import type { AskMessage, AskToolExecutor, AskToolSchema, AskTurnOutcome } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import { matchFixture } from "../../../packages/core/src/fixtures.ts";
@@ -217,7 +217,7 @@ const askExecutor = askToolExecutor({
 	paypal: askPaypal,
 	traceFigure: (figure) => traceFor({ role: "PLATFORM" }, figure),
 });
-const askModel = modelProvider() === "openrouter" ? openrouterAskPort() : droidAskPort();
+const askModel = askModelPortFor(modelProvider());
 const askTools = askToolList(askPaypal !== null);
 const askOperatorTools = askOperatorToolList();
 // An operator's turn passes this admission before the shared budget reserves, so one operator cannot spend the deployment's minute.

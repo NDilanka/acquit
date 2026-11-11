@@ -16,7 +16,7 @@ import { instant } from "../../../packages/core/src/ids.ts";
 import type { CaptureId, ClientId, JobId, MerchantId, OperatorId, OrderId } from "../../../packages/core/src/ids.ts";
 import type { PlatformJobLedger } from "../../../packages/core/src/platform.ts";
 import { PayPalHttpError } from "../../../packages/mcp/src/paypal.ts";
-import { ASK_TOOL_NAMES, askLedgerTurn, askToolExecutor, askToolList, buildAskPrompt, droidAskPort, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
+import { ASK_TOOL_NAMES, askKeyConfigured, askLedgerTurn, askModelName, askToolExecutor, askToolList, buildAskPrompt, droidAskPort, fireworksAskPort, openrouterAskPort, parseAskEnvelope } from "../src/ask.ts";
 
 /** One held job's ledger row, the projection the platform route serves, as the executor reads it. */
 const heldBookRow = (): PlatformJobLedger => ({
@@ -71,12 +71,12 @@ test("a model turn is relayed: the envelope's message and calls ride back, and t
 			{ messages: question, tools },
 		);
 		assert.deepEqual(outcome, {
-			ok: true, message: null, model: "glm-5.3-flash", sessionId: "sess-1", factoryCredits: 5,
+			ok: true, message: null, model: "accounts/fireworks/models/glm-5p3-flash", sessionId: "sess-1", factoryCredits: 5,
 			calls: [{ id: "c1", name: "platform_totals", arguments: {} }],
 		});
 		assert.equal(seen.length, 1);
 		const records = await modelCallLog(log.path).records();
-		assert.deepEqual(records.map(r => [r.caller, r.phase, r.model]), [["ask-ledger", "START", "glm-5.3-flash"], ["ask-ledger", "END", "glm-5.3-flash"]]);
+		assert.deepEqual(records.map(r => [r.caller, r.phase, r.model]), [["ask-ledger", "START", "accounts/fireworks/models/glm-5p3-flash"], ["ask-ledger", "END", "accounts/fireworks/models/glm-5p3-flash"]]);
 	} finally { await log.close(); }
 });
 
@@ -101,6 +101,91 @@ test("prose without the envelope still reaches the reader as the message", () =>
 		message: "held: 378.00",
 		calls: [{ id: null, name: "get_order", arguments: { id: "O1" } }],
 	});
+});
+
+test("under fireworks the one retry runs on the ask fallback model, and the answer names the model that answered", async () => {
+	const models: string[] = [];
+	const model = async (_prompt: string, _signal?: AbortSignal, name?: string) => {
+		models.push(name ?? "");
+		return models.length === 1
+			? { ok: false as const, reason: "PROVIDER_ERROR" as const, detail: "upstream answered 503" }
+			: { ok: true as const, text: '{"message":"done","calls":[]}', sessionId: null, factoryCredits: null };
+	};
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-fallback-"));
+	try {
+		const path = join(root, "model-calls.jsonl");
+		const outcome = await askLedgerTurn({ model, callLog: modelCallLog(path) }, { messages: question, tools });
+		assert.deepEqual(models, ["accounts/fireworks/models/glm-5p3-flash", "accounts/fireworks/models/kimi-k3p1-pro"]);
+		assert.ok(outcome.ok, "the fallback answers the turn");
+		if (outcome.ok) assert.equal(outcome.model, "accounts/fireworks/models/kimi-k3p1-pro");
+		const records = await modelCallLog(path).records();
+		assert.deepEqual(records.map(r => [r.phase, r.model, r.outcome ?? null]), [
+			["START", "accounts/fireworks/models/glm-5p3-flash", null],
+			["END", "accounts/fireworks/models/glm-5p3-flash", "PROVIDER_ERROR"],
+			["START", "accounts/fireworks/models/kimi-k3p1-pro", null],
+			["END", "accounts/fireworks/models/kimi-k3p1-pro", "answered"],
+		]);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+/** The fireworks port over an injected transport: every attempt answers 200 with the content and finish reason the
+ * script gives for that attempt, and the port records the model each attempt named. */
+function fireworksScripted(answer: (attempt: number) => { content: string; finish: string }): { port: ReturnType<typeof fireworksAskPort>; models: string[] } {
+	const models: string[] = [];
+	const port = fireworksAskPort({ env: { FIREWORKS_API_KEY: "test-key-not-real" }, fetch: (async (_url, init) => {
+		models.push((JSON.parse(String(init?.body)) as { model: string }).model);
+		const { content, finish } = answer(models.length);
+		return new Response(JSON.stringify({ id: `req-${models.length}`, choices: [{ finish_reason: finish, message: { content } }],
+			usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 } }), { status: 200 });
+	}) as typeof fetch });
+	return { port, models };
+}
+
+test("a fireworks answer cut off at the token cap is never relayed: one retry, and a second cut-off answer is a provider error", async () => {
+	const { port, models } = fireworksScripted(() => ({ content: '{"message":"378.00 USD is hel', finish: "length" }));
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-cutoff-"));
+	try {
+		const path = join(root, "model-calls.jsonl");
+		const outcome = await askLedgerTurn({ model: port, callLog: modelCallLog(path) }, { messages: question, tools });
+		assert.deepEqual(models, ["accounts/fireworks/models/glm-5p3-flash", "accounts/fireworks/models/kimi-k3p1-pro"], "one primary and at most one fallback");
+		assert.ok(!outcome.ok && outcome.reason === "MODEL_PROVIDER_ERROR", "a cut-off answer is a provider failure, not a message");
+		assert.equal("message" in outcome, false, "no partial answer rides back");
+		const ends = (await modelCallLog(path).records()).filter(record => record.phase === "END").map(record => record.outcome);
+		assert.deepEqual(ends, ["PROVIDER_ERROR", "PROVIDER_ERROR"], "each attempt records its own failed END");
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a cut-off first answer retries once on the fallback, and only the fallback's whole answer is relayed", async () => {
+	const { port, models } = fireworksScripted(attempt => attempt === 1
+		? { content: '{"message":"378.00 USD is hel', finish: "length" }
+		: { content: '{"message":"378.00 USD is held.","calls":[]}', finish: "stop" });
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-cutoff-retry-"));
+	try {
+		const outcome = await askLedgerTurn({ model: port, callLog: modelCallLog(join(root, "model-calls.jsonl")) }, { messages: question, tools });
+		assert.equal(models.length, 2, "the cut-off answer is retried exactly once");
+		assert.ok(outcome.ok, "the fallback answers the turn");
+		if (!outcome.ok) throw new Error("expected a completed turn");
+		assert.equal(outcome.message, "378.00 USD is held.");
+		assert.equal(outcome.model, "accounts/fireworks/models/kimi-k3p1-pro");
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("the fireworks ask port posts the envelope as the one user message on the model the attempt names", async () => {
+	let requested: { model?: string; messages?: { role: string; content: string }[] } = {};
+	const port = fireworksAskPort({ env: { FIREWORKS_API_KEY: "test-key-not-real" }, fetch: (async (_url, init) => {
+		requested = JSON.parse(String(init?.body)) as typeof requested;
+		return new Response(JSON.stringify({ choices: [{ message: { content: '{"message":"ok","calls":[]}' }, finish_reason: "stop" }] }), { status: 200 });
+	}) as typeof fetch });
+	const result = await port("ENVELOPE BODY", undefined, "accounts/fireworks/models/kimi-k3p1-pro");
+	assert.ok(result.ok, "a 200 with content answers");
+	assert.equal(requested.model, "accounts/fireworks/models/kimi-k3p1-pro");
+	assert.deepEqual(requested.messages, [{ role: "user", content: "ENVELOPE BODY" }]);
+});
+
+test("the fireworks readiness names the ask primary and says only whether a key is configured", async () => {
+	assert.equal(askModelName({}), "accounts/fireworks/models/glm-5p3-flash");
+	assert.equal(await askKeyConfigured({}), false, "no FIREWORKS_API_KEY in the environment, no key");
+	assert.equal(await askKeyConfigured({ FIREWORKS_API_KEY: "test-key-not-real" }), true);
 });
 
 test("a provider error retries once and then fails; a rate limit never retries", async () => {

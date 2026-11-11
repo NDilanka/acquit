@@ -1,6 +1,6 @@
 // The model provider switch and the droid client. Every app model call -- the House runner now,
 // A3 "Ask the ledger" and A1 scoping later -- reads the same switch, `ACQUIT_MODEL_PROVIDER`,
-// default `droid`. The droid client is pure logic: the exact `droid exec` argv the sandbox runs,
+// default `fireworks`. The droid client is pure logic: the exact `droid exec` argv the sandbox runs,
 // the classification of the `-o json` result stream, and the in-process key lookup. No network, no
 // Docker, no key value in a log: the key travels from `factoryApiKey` to the sandbox in-process,
 // the way the provider key always has.
@@ -12,9 +12,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { boundedDetail } from "./verifier.ts";
 
-/** The providers the switch can name. `droid` is the operator's ruled default; `openrouter` keeps
- * the path the M3 prototype proved, selectable for the hackathon submission. */
-export type ModelProvider = "droid" | "openrouter";
+/** The providers the switch can name. `fireworks` is the default: the product's own model calls (Ask and
+ * scoping) run through the fetch-based chat-completions client in `llm.ts`. `droid` and `openrouter` keep
+ * their paths working; the House coding agent stays on droid unless it is explicitly given openrouter. */
+export type ModelProvider = "fireworks" | "droid" | "openrouter";
 
 export const MODEL_PROVIDER_ENV = "ACQUIT_MODEL_PROVIDER";
 
@@ -25,13 +26,13 @@ export const DROID_MODEL = "glm-5.3-flash";
  * ACQUIT_INSTRUCTION. The droid runner reads its prompt from a file (`-f`), never argv. */
 export const DROID_INSTRUCTION_PATH = "/tmp/acquit-instruction.txt";
 
-/** The provider this deployment runs: unset or `droid` is droid; `openrouter` selects the
- * OpenRouter path; anything else is a configuration error, never a silent fallback. */
+/** The provider this deployment runs: unset is fireworks; `droid` and `openrouter` select their paths;
+ * anything else is a configuration error, never a silent fallback. */
 export function modelProvider(env: NodeJS.ProcessEnv = process.env): ModelProvider {
 	const named = env[MODEL_PROVIDER_ENV]?.trim().toLowerCase();
-	if (named === undefined || named === "") return "droid";
-	if (named === "droid" || named === "openrouter") return named;
-	throw new Error(`${MODEL_PROVIDER_ENV} must be droid or openrouter, not ${JSON.stringify(env[MODEL_PROVIDER_ENV])}`);
+	if (named === undefined || named === "") return "fireworks";
+	if (named === "fireworks" || named === "droid" || named === "openrouter") return named;
+	throw new Error(`${MODEL_PROVIDER_ENV} must be fireworks, droid, or openrouter, not ${JSON.stringify(env[MODEL_PROVIDER_ENV])}`);
 }
 
 /** The `droid exec` argv a model run executes inside the sandbox: medium autonomy, the pinned
@@ -147,6 +148,9 @@ export type ModelCallRecord = {
 	readonly outcome?: string;
 	readonly sessionId?: string | null;
 	readonly factoryCredits?: number | null;
+	/** The provider's request id and token usage for a chat-completions attempt; null or absent for the other providers. */
+	readonly requestId?: string | null;
+	readonly usage?: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } | null;
 };
 
 export type ModelCallLog = {
