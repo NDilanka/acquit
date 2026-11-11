@@ -9,6 +9,7 @@ import type {
   DemoAccessResponse,
   FigureId,
   FigureTrace,
+  FundingMode,
   JobDetailResponse,
   JobView,
   OperatorEscrowRow,
@@ -111,6 +112,8 @@ export const api = {
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),
   job: (id: string) => request<JobDetailResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
+  chooseJobFunding: (id: string, mode: FundingMode, init?: CallOptions) =>
+    request<{ mode: FundingMode }>("POST", `/api/jobs/${encodeURIComponent(id)}/funding`, { mode }, init),
   scoping: (id: string) => request<ScopingResponse>("GET", `/api/jobs/${encodeURIComponent(id)}/scoping`),
   approveScoping: (id: string, leaveOut: readonly string[]) =>
     request<ScopingApproveResponse>("POST", `/api/jobs/${encodeURIComponent(id)}/scoping/approve`, { leaveOut }),
