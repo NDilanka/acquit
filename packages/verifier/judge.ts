@@ -31,6 +31,9 @@ export interface JudgeSource {
 	materialize(commit: CommitSha): { readonly path: string; readonly link: string | null; readonly remove: () => void };
 }
 
+/** Tree modes of a regular file. A symlink (120000) or a submodule (160000) is never read as file bytes. */
+const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
+
 export function gitSource(repoDir: string): JudgeSource {
 	const run = (args: readonly string[], encoding: "utf8" | "buffer"): string | Buffer => {
 		const result = spawnSync("git", ["-C", repoDir, ...args], { encoding, maxBuffer: 64 * 1024 * 1024 });
@@ -58,7 +61,14 @@ export function gitSource(repoDir: string): JudgeSource {
 				return patch.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n");
 			}
 		},
-		readFile: (commit, path) => run(["show", `${commit}:${path}`], "utf8") as string,
+		readFile(commit, path) {
+			// The tree entry decides before anything is read. A link's target text or a submodule's commit is never the file's bytes,
+			// so only a regular file is read. Every other entry, and a missing one, is refused by name.
+			const entry = (run(["ls-tree", "-z", commit, "--", path], "utf8") as string).split("\0")
+				.find(line => line.slice(line.indexOf("\t") + 1) === path);
+			if (entry === undefined || !REGULAR_FILE_MODES.has(entry.split(" ")[0])) throw new Error(`${path} is not a regular file at ${commit}`);
+			return run(["show", `${commit}:${path}`], "utf8") as string;
+		},
 		materialize(commit) {
 			const path = join(tmpdir(), `acquit-tree-${commit.slice(0, 12)}-${process.pid}-${Date.now()}`);
 			try {

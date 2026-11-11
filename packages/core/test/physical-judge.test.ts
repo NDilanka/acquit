@@ -3,11 +3,12 @@
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { runJudge } from "../../verifier/judge.ts";
+import { gitSource, runJudge } from "../../verifier/judge.ts";
 import type { JudgeDeps, JudgeOutcome, JudgeSource, PhysicalJudgeDeps } from "../../verifier/judge.ts";
 import { createVerifierService } from "../../verifier/service.ts";
 import type { VerifierService } from "../../verifier/service.ts";
@@ -225,4 +226,63 @@ test("a physical definition crosses the signed run boundary and is judged, and a
 	}
 	assert.equal(service.runs.size, 1);
 	await service.close();
+});
+
+/** Runs git in a repository and returns its trimmed output. */
+function gitIn(repo: string, args: readonly string[], input?: string): string {
+	const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", input });
+	if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
+	return result.stdout.trim();
+}
+
+/**
+ * A two-commit repository whose submitted commit holds what `entry` stages at delivery/part.svg. A link is staged from
+ * its index entry, so nothing is written to disk for it, and the judge reads the tree entry a push would deliver.
+ */
+function deliveryRepository(entry: (repo: string) => void): { readonly repo: string; readonly head: CommitSha; readonly remove: () => void } {
+	const repo = mkdtempSync(join(tmpdir(), "acquit-physical-tree-"));
+	gitIn(repo, ["init", "-q"]);
+	gitIn(repo, ["config", "user.email", "fixture@example.invalid"]);
+	gitIn(repo, ["config", "user.name", "fixture"]);
+	writeFileSync(join(repo, "README.md"), "fixture\n");
+	gitIn(repo, ["add", "-A"]);
+	gitIn(repo, ["commit", "-qm", "frozen"]);
+	entry(repo);
+	gitIn(repo, ["commit", "-qm", "submitted"]);
+	return { repo, head: gitIn(repo, ["rev-parse", "HEAD"]) as CommitSha, remove: () => rmSync(repo, { recursive: true, force: true }) };
+}
+
+/** Judges a physical run whose delivery is the tree entry `entry` stages, read through the real git source. */
+async function judgedDelivery(entry: (repo: string) => void): Promise<Verdict> {
+	const delivery = deliveryRepository(entry);
+	try {
+		return verdictOf(await runJudge({ ...request, sourceCommit: delivery.head }, { ...depsFor("good"), source: gitSource(delivery.repo) }));
+	} finally { delivery.remove(); }
+}
+
+test("a physical delivery that is a symlink is refused by name, and its target text is never judged", async () => {
+	// The link's target text is a path, and the stub checker would pass any text it is given, so a read of the link fails the test.
+	const verdict = await judgedDelivery(repo => {
+		const target = gitIn(repo, ["hash-object", "-w", "--stdin"], "delivery/real.svg");
+		gitIn(repo, ["update-index", "--add", "--cacheinfo", `120000,${target},delivery/part.svg`]);
+	});
+	assert.equal(verdict.result, "REJECTED");
+	if (verdict.result !== "REJECTED") return;
+	assert.deepEqual(verdict.reasons, [{ kind: "DELIVERY_MISSING", path: "delivery/part.svg" }]);
+});
+
+test("a physical delivery that is a submodule is refused by name", async () => {
+	const verdict = await judgedDelivery(repo => gitIn(repo, ["update-index", "--add", "--cacheinfo", `160000,${"2".repeat(40)},delivery/part.svg`]));
+	assert.equal(verdict.result, "REJECTED");
+	if (verdict.result !== "REJECTED") return;
+	assert.deepEqual(verdict.reasons, [{ kind: "DELIVERY_MISSING", path: "delivery/part.svg" }]);
+});
+
+test("a physical delivery that is a regular file is judged through the git source", async () => {
+	const verdict = await judgedDelivery(repo => {
+		mkdirSync(join(repo, "delivery"));
+		writeFileSync(join(repo, "delivery", "part.svg"), "good");
+		gitIn(repo, ["add", "-A"]);
+	});
+	assert.equal(verdict.result, "VERIFIED");
 });
