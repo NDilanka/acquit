@@ -24,7 +24,7 @@
 .public-record .public-proof { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: start; gap: var(--space-8); min-height: 240px; }
 .public-verdict { align-items: start; }
 .public-score { display: grid; gap: var(--space-6); }
-.public-score .public-checks { margin-top: 0 !important; padding-top: var(--space-4); gap: var(--space-6); }
+.public-exam { min-width: 0; }
 .public-checks .record-check-group { min-width: 0; }
 .public-checks .check-group-label { display: grid; gap: var(--space-1); }
 @media (max-width: 640px) {

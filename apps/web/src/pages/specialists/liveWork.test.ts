@@ -1,12 +1,39 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySummary, closedMoneyWords, closedReasonWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySteps, activitySummary, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
 const released = example.activity[0]!;
 const held = example.activity[1]!;
+
+test("the four-step track uses each stored amount and time without fee arithmetic", () => {
+  const job = {...released,bid:{...released.bid!,priceCents:4000},moneyHeld:{...released.moneyHeld!,heldCents:4200},
+    attempts:[{...released.attempts[0]!,frozen:{passed:48,expected:48},hidden:{passed:8,expected:8}}],
+    release:{...released.release!,payoutCents:3638}};
+  const steps = activitySteps(job);
+  assert.deepEqual(steps.map(step => step.title),["Bid placed $40.00","Money held $42.00","Verified","Released $36.38"]);
+  assert.deepEqual(steps.map(step => step.at),[job.bid.placedAt,job.moneyHeld.heldAt,job.attempts[0]!.at,job.release.at]);
+  assert.equal(steps[2]!.detail,"48 of 48 visible, 8 of 8 hidden");
+  assert.equal(steps.some(step => step.current),false);
+  assert.match(MONEY_FLOW_WORDS,/Acquit's fixed fee/);
+  assert.match(MONEY_FLOW_WORDS,/PayPal's processing fee comes out of the held amount/);
+  assert.doesNotMatch(MONEY_FLOW_WORDS,/\d|%|\$/);
+});
+
+test("live steps are marked by state, and absent verdicts, tallies and payouts are not invented", () => {
+  const working = activitySteps(held);
+  assert.equal(working.find(step => step.current)?.key,"held");
+  assert.equal(working[2]!.at,null);
+  assert.equal(working[2]!.detail,null);
+  assert.equal(working[3]!.at,null);
+  const checking = activitySteps({...held,state:"VERIFYING",attempts:[{...released.attempts[0]!,result:"REJECTED"}]});
+  assert.equal(checking.find(step => step.current)?.title,"Verifying");
+  assert.equal(checking[2]!.at,null);
+  assert.equal(activitySteps({...released,release:{...released.release!,payoutCents:null}})[3]!.title,"Released");
+  assert.equal(activitySteps({...held,state:"CLOSED"}).some(step => step.current),false);
+});
 
 test("Activity headlines distinguish no run, current work, a paid run and an unknown payout", () => {
   const idle = {...example,runner:{...example.runner,status:"IDLE" as const},activity:[]};

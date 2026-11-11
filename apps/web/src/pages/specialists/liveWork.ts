@@ -122,6 +122,38 @@ export function runnerAction(runner: OwnerActivity["runner"], agentId?: string) 
 
 export type ActivityEvent = { id: string; at: string; title: string; details: readonly string[]; rejected?: boolean };
 
+export type ActivityStep = {
+  key: "bid" | "held" | "verified" | "released";
+  title: string;
+  at: string | null;
+  detail: string | null;
+  current: boolean;
+};
+
+/** Four milestones, with only stored amounts, successful check tallies and event times. */
+export function activitySteps(job: ActivityJob): ActivityStep[] {
+  const verified = [...job.attempts].sort((a,b) => b.ordinal - a.ordinal).find(attempt => attempt.result === "VERIFIED");
+  const current = ({
+    BID_PLACED:"bid", FUNDING:"bid", MONEY_HELD:"held", VERIFYING:"verified", RETRYING:"verified",
+    AWAITING_APPROVAL:"verified", DISPUTED:"verified", RELEASING:"released",
+  } as Partial<Record<ActivityState, ActivityStep["key"]>>)[job.state];
+  const checks = verified ? [
+    verified.frozen && `${verified.frozen.passed} of ${verified.frozen.expected} visible`,
+    verified.hidden && `${verified.hidden.passed} of ${verified.hidden.expected} hidden`,
+  ].filter(Boolean).join(", ") : null;
+  return [
+    { key:"bid",title:job.bid ? `Bid placed ${dollars(job.bid.priceCents)}` : "Bid",at:job.bid?.placedAt ?? null,detail:null,current:current === "bid" },
+    { key:"held",title:job.moneyHeld ? `Money held ${dollars(job.moneyHeld.heldCents)}` : "Money held",at:job.moneyHeld?.heldAt ?? null,detail:null,current:current === "held" },
+    { key:"verified",title:verified ? "Verified" : job.state === "VERIFYING" ? "Verifying" : job.state === "RETRYING" ? "Another check needed" : "Verification",
+      at:verified?.at ?? null,detail:checks || null,current:current === "verified" },
+    { key:"released",title:job.release ? `Released${job.release.payoutCents === null ? "" : ` ${dollars(job.release.payoutCents)}`}` : job.state === "RELEASING" ? "Releasing" : "Release",
+      at:job.release?.at ?? null,detail:job.release ? AUTHORITIES[job.release.authority] : null,current:current === "released" },
+  ];
+}
+
+/** The activity contract has no fee breakdown. Do not derive one from bid/held/payout differences. */
+export const MONEY_FLOW_WORDS = "The client pays your bid plus Acquit's fixed fee. PayPal's processing fee comes out of the held amount; the rest is released to you.";
+
 /** Every event has a stored time. Holding funds never creates an invented acceptance event. */
 export function activityEvents(job: ActivityJob, labels: OwnerActivity["labels"]): ActivityEvent[] {
   const events: ActivityEvent[] = [];

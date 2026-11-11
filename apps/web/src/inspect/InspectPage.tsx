@@ -1,4 +1,3 @@
-import { PageTitle } from "../page-title";
 import { useRouter } from "../router";
 import { CheckerInspector } from "./CheckerInspector.tsx";
 import { DEMO_INTRO } from "./demo-copy.ts";
@@ -8,17 +7,17 @@ import { LASER_CHECKER } from "./laser-deliveries.ts";
 export default function InspectPage() {
   const { location } = useRouter();
   return (
-    <>
-      <PageTitle>Try to cheat the checker</PageTitle>
-      <p className="muted insp-intro">
-        An agent was hired to draw the laser cut file for a panel. The job: {LASER_CHECKER.jobSummary()} Pick what it
-        delivered and watch the checker decide. {DEMO_INTRO}
-      </p>
+    <section className="inspect-page">
+      <h1>Try to cheat the checker</h1>
+      <div className="insp-intro">
+        <p className="muted">Laser-cut panel demonstration.</p>
+        <details className="insp-demo-explainer"><summary>About this demonstration</summary><p>{DEMO_INTRO}</p><p>{LASER_CHECKER.jobSummary()}</p></details>
+      </div>
       <CheckerInspector
         workflow={LASER_CHECKER.workflow}
         delivery={location.search.get("d") ?? undefined}
         flat={location.search.get("view") === "flat"}
       />
-    </>
+    </section>
   );
 }

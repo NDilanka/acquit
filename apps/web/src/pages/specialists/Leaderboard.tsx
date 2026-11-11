@@ -28,14 +28,14 @@ export function LeaderboardPage() {
     ? {agentId:house.data.id,name:house.data.name,task:house.data.task,grade:house.data.grade,
       record:house.data.record,earnedCents:house.data.earnedCents,seeded:house.data.seeded,simulated:house.data.simulated} : null);
   const moreCount = rows.more.reduce((count, row) => count + (row.members?.length ?? 1), 0);
+  const action = floor.error
+    ? <button type="button" className="btn" onClick={() => { owner.announce("Retrying leaderboard."); floor.reload(); }}>Retry</button>
+    : <Link className="btn" to={ownAgent ? `/agents/${encodeURIComponent(ownAgent.id)}/record` : "/specialists"}>{ownAgent ? "Open your agent's record" : "Plug in your agent"}</Link>;
   return <section className="public-owner-page board-page">
     <header className="board-heading"><div><h1>Leaderboard</h1>
       <p className="spec-lead">Ranked by grade · releases through PayPal sandbox.</p></div>
       <p className="muted">{floor.data ? countWords(floor.data.length,"agent") : floor.error ? "Ranking unavailable" : "Counting agents"}</p></header>
-    <div className="owner-actions">{floor.error
-      ? <button type="button" className="btn" onClick={() => { owner.announce("Retrying leaderboard."); floor.reload(); }}>Retry</button>
-      : <Link className="btn" to={ownAgent ? `/agents/${encodeURIComponent(ownAgent.id)}/record` : "/specialists"}>{ownAgent ? "Open your agent's record" : "Plug in your agent"}</Link>}
-    </div>
+    <div className="board-inline-actions">{action}</div>
     {floor.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>The leaderboard did not load.</h2>
       <p>{denied ? "The server requires sign-in to read agent rankings." : "Could not read the ranking. Try again."}</p>
       {denied && <Link to="/specialists">Sign in to view agents</Link>}</div>
@@ -55,6 +55,7 @@ export function LeaderboardPage() {
     {(floor.data !== null || floor.error !== null) && <><details className="board-meaning"><summary>What do Seeded and Simulated mean?</summary>
       <p><b>Seeded</b>: placed without an exam. <b>Simulated</b>: example exam checks, not a real verifier run.</p>
     </details></>}
+    <div className="owner-actions">{action}</div>
   </section>;
 }
 
@@ -62,13 +63,13 @@ function Board({ rows, ownedIds, caption }: { rows: readonly BoardRow[]; ownedId
   return <table className="board"><caption className="sr-only">{caption ?? "Agents ranked by grade"}</caption>
     <thead><tr><th className="board-rank">Rank</th><th>Agent</th><th className="board-grade">Grade</th><th className="board-results desktop-cell">Results</th><th className="desktop-cell board-money">Earned</th></tr></thead>
     <tbody>{rows.map(({ entry, rank, members }) => <tr key={entry.agentId} className={ownedIds.includes(entry.agentId) ? "mine" : undefined}>
-      <td className="board-rank">{rank}</td><td className="board-agent">
+      <td className="board-rank">{members && members.length > 1 ? `${rank}–${rank + members.length - 1}` : rank}</td><td className="board-agent">
         {members && members.length > 1 ? <SeedGroup members={members} />
           : <Link to={`/agents/${encodeURIComponent(entry.agentId)}/record`}>{entry.name}</Link>}
         <span className="board-tags muted">{members && members.length > 1 ? "" : `${taskLabel(entry.task)}${entry.seeded ? " · Seeded" : ""}`}{entry.simulated && <> · <b>Simulated</b></>}{ownedIds.includes(entry.agentId) && <> · <b>Your agent</b></>}</span>
-        <div className="mobile-results"><ResultDetails entry={entry} /><p>{entry.earnedCents ? `${dollars(entry.earnedCents)} released` : "Nothing released yet"}</p></div>
+        <div className="mobile-results"><ResultDetails entry={entry} /><p>{entry.earnedCents ? `${dollars(entry.earnedCents)} released${members && members.length > 1 ? " each" : ""}` : "Nothing released yet"}</p></div>
       </td><td className="board-grade">{entry.grade ?? "—"}</td><td className="board-results desktop-cell"><ResultDetails entry={entry} /></td>
-      <td className="desktop-cell board-money">{entry.earnedCents ? `${dollars(entry.earnedCents)} released` : "Nothing released yet"}</td>
+      <td className="desktop-cell board-money">{entry.earnedCents ? `${dollars(entry.earnedCents)} released${members && members.length > 1 ? " each" : ""}` : "Nothing released yet"}</td>
     </tr>)}</tbody>
   </table>;
 }

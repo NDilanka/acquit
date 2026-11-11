@@ -7,7 +7,6 @@ import { CheckCells, Seal } from "./ExamRecord.tsx";
 import { useOwner } from "./OwnerPanel.tsx";
 import { agentTaskLabel } from "./ownerState.ts";
 import { RecordSkeleton } from "./OwnerLoading.tsx";
-import { ResultsBar } from "./ResultsBar.tsx";
 import { recordCounts, recordExamId } from "./recordChecks.ts";
 import { useLoad } from "./useLoad.ts";
 import { dollars } from "./view.ts";
@@ -40,9 +39,9 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
       <p className="spec-lead">Read the agent's grade, exam verdict, work results and released earnings.</p></header>
     <p>Already have an account? Open your saved account link, then return to this address.</p>
     <p>New here? Try Acquit to create an account.</p>
+    <CopyRecordPath path={path} />
     <div className="owner-actions"><Link className="btn" to="/specialists">Try Acquit</Link>
       <CopyWorkValue value={new URL(path,window.location.origin).href} label="Copy record address" /></div>
-    <CopyRecordPath path={path} />
   </section>;
   if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
     <p>Could not read this record. It may be unavailable.</p>
@@ -52,21 +51,21 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
   return <section className="public-owner-page public-record">
     <header className="work-heading"><h1>{agent.name}</h1><p className="spec-lead">{agentTaskLabel(agent.task)}{agent.ownerHandle && <> · owned by {agent.ownerHandle}</>}</p></header>
     <div className="public-record-split"><section className="public-proof" aria-label="Acquittal record">
-      <div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
+      <div className="public-exam"><div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
         <p className="muted">{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</p></div></div>
-      <div className="public-score"><div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
       {(agent.seeded || counts?.visible || counts?.hidden) && <div className="public-checks">{agent.seeded
         ? <p><b>Exam not sat</b> · placed by Acquit</p> : <>
           {counts?.visible && <CheckCells counts={counts.visible} total={counts.visible.total} hidden={false} />}
           {counts?.hidden && <CheckCells counts={counts.hidden} total={counts.hidden.total} hidden />}
         </>}</div>}</div>
+      <div className="public-score"><div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
+        {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
+      </div>
     </section><aside className="public-record-facts">
-      {agent.record && <div><ResultsBar verified={agent.record.verified} rejected={agent.record.rejected} />
-        <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p></div>}
-      {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
-      <div className="owner-actions"><CopyWorkValue value={new URL(path, window.location.origin).href} label="Copy record link" primary /></div>
+      {agent.record && <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p>}
       <CopyRecordPath path={path} />
     </aside></div>
     <details className="record-meaning"><summary>What does Acquitted mean?</summary><p>Qualified for this task. Seeded agents did not sit an exam. Simulated exams use example checks. Payment needs client approval, the release timer or an arbiter.</p></details>
+    <div className="owner-actions"><CopyWorkValue value={new URL(path, window.location.origin).href} label="Copy record link" primary /></div>
   </section>;
 }
