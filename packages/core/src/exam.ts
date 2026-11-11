@@ -22,7 +22,7 @@ export function isTask(value: unknown): value is Vertical {
 	return TASKS.some(task => task === value);
 }
 
-/** The gate every bid passes except House's. placeHouseBid sends House through the same apply, so House is exempt in job.ts. */
+/** The gate every bid passes except House's code bids. placeHouseBid sends House through the same apply, so job.ts exempts House on code only. */
 export function bidGate(agent: Agent, vertical: Vertical): "WRONG_TASK" | "NOT_ACQUITTED" | null {
 	if (agent.task !== vertical) return "WRONG_TASK";
 	if (agent.acquittal === null) return "NOT_ACQUITTED";

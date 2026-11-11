@@ -82,15 +82,15 @@ const mayaOnOwnRepo: Actor = { role: "CLIENT", clientId: "maya-client" as Client
 const laserOpenCommand: UserCommand = { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 1,
 	budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), vertical: LASER_VERTICAL };
 
-function laserFixture(agent: Partial<Pick<Agent, "task" | "acquittal">>) {
-	const f = fixture(agent);
+function laserFixture(agent: Partial<Pick<Agent, "task" | "acquittal">>, kind: "INDEPENDENT" | "HOUSE" = "INDEPENDENT") {
+	const f = fixture(agent, kind);
 	const ports: Ports = { ...f.ports, physical: { sealed: () => sealedChecks },
 		verifiers: { [CODE_VERTICAL]: codeVerifier(f.ports), [LASER_VERTICAL]: laserVerifier(f.ports) } };
 	return { store: f.store, ports };
 }
 
-async function laserOpenedAndBid(agent: Partial<Pick<Agent, "task" | "acquittal">>): Promise<CommandOutcome> {
-	const f = laserFixture(agent);
+async function laserOpenedAndBid(agent: Partial<Pick<Agent, "task" | "acquittal">>, kind: "INDEPENDENT" | "HOUSE" = "INDEPENDENT"): Promise<CommandOutcome> {
+	const f = laserFixture(agent, kind);
 	try {
 		const jobId = openedJobId(await executeCommand(f.ports, mayaOnOwnRepo, parseRequestKey(randomUUID()), laserOpenCommand));
 		return await placeBid(f.ports, jobId);
@@ -156,6 +156,17 @@ test("flag off, a laser job still refuses a code agent as WRONG_TASK", async () 
 test("flag off, an acquitted laser agent bids on the laser job", async () => {
 	const bid = await laserOpenedAndBid({ task: LASER_VERTICAL, acquittal: { examId: "exam_1", at: now } });
 	assert.notEqual(bid.kind, "DENIED");
+});
+
+test("House never bids on a laser job, flag off or enforced, whatever its agent holds", async () => {
+	for (const enforced of [false, true]) {
+		setExamGateEnforced(enforced);
+		try {
+			const bid = await laserOpenedAndBid({ task: LASER_VERTICAL, acquittal: { examId: "exam_1", at: now } }, "HOUSE");
+			assert.equal(bid.kind, "DENIED");
+			if (bid.kind === "DENIED") assert.equal(bid.reason, "WRONG_TASK");
+		} finally { setExamGateEnforced(false); }
+	}
 });
 
 test("a row written before the exam reads with the code task, no acquittal, no sample", async () => {

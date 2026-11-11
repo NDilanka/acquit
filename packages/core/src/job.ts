@@ -668,10 +668,12 @@ function transitionTable(): {
 			if (facts.actor.role !== "OPERATOR" || facts.loaded.kind !== "PLACE_BID") return "NOT_OWNER";
 			const { operator, agent, credits, fundable } = facts.loaded;
 			if (operator.id !== facts.actor.operatorId || agent.owner !== operator.id || agent.id !== command.agent) return "NOT_OWNER";
-			// House is exempt: placeHouseBid sends its bids through this same apply. The gate refuses only when enforced.
-			// A physical job is new, so its gate always applies: the flag governs the code vertical alone.
+			// House is exempt on the code vertical: placeHouseBid sends its code bids through this same apply, and the gate
+			// refuses only when enforced. A physical job is won by an agent for its own vertical, so a House bid there is
+			// the wrong task, whatever the House agent holds. A physical job's gate always applies: the flag governs code alone.
+			const vertical = storedVertical(row);
+			if (operator.kind === "HOUSE" && vertical !== CODE_VERTICAL) return "WRONG_TASK";
 			if (operator.kind !== "HOUSE") {
-				const vertical = storedVertical(row);
 				const gate = bidGate(agent, vertical);
 				if (gate !== null && (examGateEnforced || vertical !== CODE_VERTICAL)) return gate;
 			}
