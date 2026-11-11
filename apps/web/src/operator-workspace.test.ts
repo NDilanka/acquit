@@ -207,3 +207,11 @@ test("My Work explains the client fee and actual processing fee, not a percentag
   assert.match(source, /· PayPal sandbox/);
   assert.doesNotMatch(source, /10%|price less|operator fee/i);
 });
+
+test("Activity's autopilot links describe setting Orders and keep their original targets", () => {
+  const source = readFileSync(new URL("./pages/specialists/Activity.tsx",import.meta.url),"utf8");
+  assert.match(source,/to=\{ordersPath\}>Set standing orders to turn on autopilot<\/Link>/);
+  assert.match(source,/to=\{`\/specialists\/orders\$\{suffix\}`\}>Set standing orders to turn on autopilot<\/Link>/);
+  assert.equal((source.match(/>Set standing orders to turn on autopilot<\/Link>/g) ?? []).length,2);
+  assert.doesNotMatch(source,/>Turn on autopilot<\/Link>/);
+});
