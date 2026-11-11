@@ -300,7 +300,7 @@ const PHASE_WORDS: Readonly<Record<Frame["phase"], string>> = {
   trace: "machine run",
   drop: "pieces falling away",
   checks: "public rules",
-  sealed: "the check the agent never sees",
+  sealed: "the second check",
   verdict: "verdict",
 };
 
