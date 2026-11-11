@@ -474,8 +474,10 @@ export class SqliteStore implements Store {
 				// registered demo fork of the upstream matches, and every other job matches exactly.
 				const frozen = storedDefinitionOfDone(row);
 				if (frozen) {
-					const fixture = matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, frozen.issue.repository, this.#upstream);
-					const done = fixture ? { ...frozen, frozenTestPath: fixture.frozenTestPath }
+					// A physical definition is its own contract: its label names no code fixture, so none is matched to it.
+					const fixture = frozen.physical === undefined ? matchFixture(this.#fixtures, frozen.issue.repository, frozen.issue.number, frozen.issue.repository, this.#upstream) : null;
+					const done = frozen.physical !== undefined ? frozen
+						: fixture ? { ...frozen, frozenTestPath: fixture.frozenTestPath }
 						: frozen.frozenTestPath !== undefined ? frozen : null;
 					if (done) this.db.prepare("INSERT OR IGNORE INTO job_manifests VALUES (?, ?)").run(row.id, JSON.stringify(done));
 				}

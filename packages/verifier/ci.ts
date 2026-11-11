@@ -5,6 +5,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
+import { physicalWorkflowOf } from "../core/src/physical.ts";
 import { boundedDetail, isRunFailureName, unconfiguredVerifier } from "../core/src/verifier.ts";
 import type { RejectReason, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
 import { randomBytes } from "node:crypto";
@@ -104,18 +105,20 @@ export function parseCallbackBody(value: unknown): { readonly jobId: JobId; read
 	const body = value as Record<string, unknown>;
 	const jobId = typeof body.jobId === "string" && /^job_[A-Za-z0-9_-]{4,80}$/.test(body.jobId) ? body.jobId as JobId : null;
 	const ordinal = body.ordinal === 1 || body.ordinal === 2 || body.ordinal === 3 ? body.ordinal : null;
-	const report = parseReport(body.report);
 	const vertical = body.vertical === undefined ? undefined : nonEmptyString(body.vertical);
 	if (vertical === null) return null;
+	// Only a physical vertical's verdict may carry no pull request. The server still checks this vertical against the job.
+	const physical = vertical !== undefined && physicalWorkflowOf(vertical) !== null;
+	const report = parseReport(body.report, physical);
 	return jobId && ordinal && report ? { jobId, ordinal, report, ...(vertical === undefined ? {} : { vertical }) } : null;
 }
 
 /** A report is a verdict or a named failure. Anything else is refused rather than guessed at. */
-export function parseReport(value: unknown): VerifierReport | null {
+export function parseReport(value: unknown, physical = false): VerifierReport | null {
 	if (!value || typeof value !== "object") return null;
 	const raw = value as Record<string, unknown>;
 	if (raw.kind === "VERDICT") {
-		const verdict = parseVerdict(raw.verdict);
+		const verdict = parseVerdict(raw.verdict, physical);
 		return verdict === null ? null : { kind: "VERDICT", verdict };
 	}
 	if (raw.kind === "RUN_FAILED") {
@@ -138,7 +141,8 @@ export function parseRunFailure(value: unknown): RunFailure | null {
 	return { runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha, name, detail, at };
 }
 
-export function parseVerdict(value: unknown): Verdict | null {
+/** A physical verdict publishes nothing, so its pullRequest is null. Any other verdict must name a positive pull request. */
+export function parseVerdict(value: unknown, physical = false): Verdict | null {
 	if (!value || typeof value !== "object") return null;
 	const raw = value as Record<string, unknown>;
 	const runId = nonEmptyString(raw.runId);
@@ -162,7 +166,13 @@ export function parseVerdict(value: unknown): Verdict | null {
 	const frozen = parseTally(raw.frozen);
 	const hidden = parseTally(raw.hidden);
 	const reportDigest = typeof raw.reportDigest === "string" && /^[0-9a-f]{64}$/.test(raw.reportDigest) ? raw.reportDigest as Digest : null;
-	if (!mergeCommit || !pullRequest || !frozen || !hidden || !reportDigest) return null;
+	if (!mergeCommit || !frozen || !hidden || !reportDigest) return null;
+	if (physical) {
+		if (raw.pullRequest !== null) return null;
+		return { result: "VERIFIED", runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha,
+			mergeCommit: mergeCommit as CommitSha, pullRequest: null, frozen, hidden, reportDigest, at };
+	}
+	if (!pullRequest) return null;
 	return { result: "VERIFIED", runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha,
 		mergeCommit: mergeCommit as CommitSha, pullRequest, frozen, hidden, reportDigest, at };
 }
@@ -207,6 +217,15 @@ function parseRejectReason(value: unknown): RejectReason | null {
 		}
 		case "SUBJECT_FAULT": case "CHECK_FAILED":
 			return nonEmptyString(reason.detail) ? { kind: reason.kind, detail: reason.detail as string } : null;
+		case "SPEC_RULES_FAILED": {
+			const rules = Array.isArray(reason.rules) && reason.rules.length > 0 && reason.rules.every(rule => nonEmptyString(rule) !== null)
+				? reason.rules as string[] : null;
+			return rules ? { kind: reason.kind, rules } : null;
+		}
+		case "SEALED_CHECKS_FAILED": {
+			const failed = positiveCount(reason.failed);
+			return failed !== null ? { kind: reason.kind, failed } : null;
+		}
 		case "SUBJECT_REPLY_MALFORMED": return { kind: reason.kind };
 		case "TREE_SYMLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
 		case "TREE_GITLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;

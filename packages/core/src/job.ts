@@ -231,7 +231,8 @@ export type Receipt = {
 	readonly jobId: JobId;
 	readonly operator: OperatorId;
 	readonly agent: AgentId;
-	readonly pullRequest: number;
+	/** Null on a physical job: no pull request is published, and the judged commit is the artefact. */
+	readonly pullRequest: number | null;
 	readonly mergeCommit: CommitSha;
 	readonly frozen: TestTally;
 	readonly hidden: TestTally;
@@ -490,7 +491,8 @@ export type DomainFailure =
 	| "VERIFIER_PENDING"
 	| "ARTIFACT_CHANGED"
 	| "REVIEW_CLOSED"
-	| "PAYMENT_IN_PROGRESS";
+	| "PAYMENT_IN_PROGRESS"
+	| "PHYSICAL_NOT_CONFIGURED";
 
 /** Rows the shell loads before calling the table. The table never reads storage. */
 export type Loaded =
@@ -537,7 +539,8 @@ function artifactOf(command: JudgedArtifact): CommitSha {
 }
 
 function transitionTable(): {
-	OpenJob: Edge<null, { readonly repository: string; readonly issueNumber: number; readonly budget: UsdCents; readonly deliveryEndsAt: Instant }, Open, "CLIENT">;
+	// A vertical names a physical job's judge. Absent is the code vertical, and the row then stores no vertical at all.
+	OpenJob: Edge<null, { readonly repository: string; readonly issueNumber: number; readonly budget: UsdCents; readonly deliveryEndsAt: Instant; readonly vertical?: Vertical }, Open, "CLIENT">;
 	PlaceBid: Edge<Open, JobRef & { readonly price: UsdCents; readonly eta: Hours; readonly agent: AgentId; readonly pitch: string }, Open, "OPERATOR">;
 	// An accept with no bidId is the House client's starter accept: executeCommand names the lowest PENDING bid it can fund of the row it commits.
 	AcceptBid: Edge<Open, JobRef & { readonly bidId?: BidId }, Open, "CLIENT">;
@@ -656,6 +659,7 @@ function transitionTable(): {
 			// counted under their own cap, so they never spend the account's own job allowance.
 			return { next: { id, version: 0 as Version,
 				client: facts.actor.clientId, tenant, title: facts.loaded.title, contract: facts.loaded.contract,
+				...(command.vertical === undefined ? {} : { vertical: command.vertical }),
 				openedAt: facts.now, bids: [], state: { status: "OPEN", phase: { kind: "BIDDING", fundingRounds: 0 } } },
 				credits: [], effects: [],
 				reservations: tenant === null ? [] : [{ kind: isHouseClient(facts.actor) ? "STARTER" : "JOB", scope: tenant, ref: id, cents: command.budget, at: facts.now }] };
@@ -914,7 +918,9 @@ function transitionTable(): {
 			const treasury = releaseTreasury({ jobId: row.id, operator: escrow.payee.operator, promisedNet: escrow.quote.split.operatorNet,
 				observedNet: release.paid, predictedProcessorFee: escrow.quote.predictedProcessorFee,
 				observedProcessorFee: escrow.capture.processorFee, at: release.at });
-			const effects: JobEffect[] = [{ kind: "MERGE", jobId: row.id, pullRequest: receipt.pullRequest,
+			// A physical job publishes no pull request, so there is nothing to merge: its judged commit is the artefact, and the merge is settled here.
+			const pullRequest = receipt.pullRequest;
+			const effects: JobEffect[] = pullRequest === null ? [] : [{ kind: "MERGE", jobId: row.id, pullRequest,
 				mergeCommit: receipt.mergeCommit, repository: done.issue.repository }];
 			// The money is already out. A shortfall cannot be unwound, so it is owed back and named.
 			if (treasury.some(entry => entry.kind === "OPERATOR_REIMBURSEMENT_OWED")) effects.push({ kind: "ALERT", jobId: row.id, reason: "OPERATOR_REIMBURSEMENT_OWED" });
@@ -922,7 +928,7 @@ function transitionTable(): {
 			if (row.providerDispute !== undefined && releaseHeld(row)) effects.push({ kind: "ALERT", jobId: row.id, reason: "PROVIDER_DISPUTE_ON_PAID", disputeId: row.providerDispute.id });
 			return { next: { ...row, version: (row.version + 1) as Version,
 				state: { status: "PAID", payee: escrow.payee, book, receipt, release, releaseAuthority: row.state.review.release.authority,
-					history: row.state.history, merge: { phase: "PENDING" }, treasury } }, credits: [], effects };
+					history: row.state.history, merge: pullRequest === null ? { phase: "MERGED", at: release.at, sha: null } : { phase: "PENDING" }, treasury } }, credits: [], effects };
 		} },
 		RefundSettled: { by: "SYSTEM", apply: (row, command) => {
 			// The refund a REFUNDED row already holds is a no-op whichever of the outbox and the webhook lands
@@ -1583,7 +1589,8 @@ function evidenceNotesOf(row: JobRow): string {
 			`Receipt ${receipt.id} (receipt id) records job ${receipt.jobId} as delivered on attempt ${receipt.attemptsUsed} (attemptsUsed).`,
 			`Frozen tests ${receipt.frozen.passed}/${receipt.frozen.expected} passed (frozen).`,
 			`Hidden tests ${receipt.hidden.passed}/${receipt.hidden.expected} passed (hidden).`,
-			`Pull request #${receipt.pullRequest} carries judged commit ${receipt.mergeCommit} (pullRequest, mergeCommit).`,
+			receipt.pullRequest === null ? `No pull request: judged commit ${receipt.mergeCommit} is the delivered artefact (pullRequest, mergeCommit).`
+				: `Pull request #${receipt.pullRequest} carries judged commit ${receipt.mergeCommit} (pullRequest, mergeCommit).`,
 		].join(" ");
 	}
 	if (state.status === "VERIFIED") {
@@ -1592,7 +1599,8 @@ function evidenceNotesOf(row: JobRow): string {
 			`Verified attempt ${state.passed.ordinal} for job ${row.id} passed run ${verdict.runId} on source commit ${verdict.sourceCommit} (ordinal, runId, sourceCommit).`,
 			`Frozen tests ${verdict.frozen.passed}/${verdict.frozen.expected} passed (frozen).`,
 			`Hidden tests ${verdict.hidden.passed}/${verdict.hidden.expected} passed (hidden).`,
-			`Pull request #${verdict.pullRequest} is open at judged commit ${verdict.mergeCommit} (pullRequest, mergeCommit).`,
+			verdict.pullRequest === null ? `No pull request: judged commit ${verdict.mergeCommit} is the delivered artefact (pullRequest, mergeCommit).`
+				: `Pull request #${verdict.pullRequest} is open at judged commit ${verdict.mergeCommit} (pullRequest, mergeCommit).`,
 		].join(" ");
 	}
 	return `Acquit has no verified attempt for job ${row.id} to show (status ${state.status}).`;

@@ -92,7 +92,11 @@ export type RejectReason =
 	/** A physical delivery is not at its fixed path on the submitted commit. Nothing is checked. */
 	| { readonly kind: "DELIVERY_MISSING"; readonly path: string }
 	/** The physical checker crashed, timed out, or answered something malformed. A plain reason, never a stall. */
-	| { readonly kind: "CHECK_FAILED"; readonly detail: string };
+	| { readonly kind: "CHECK_FAILED"; readonly detail: string }
+	/** The delivery breaks these public spec rules, by rule name. The spec is visible to the agent, so the names are too. */
+	| { readonly kind: "SPEC_RULES_FAILED"; readonly rules: readonly string[] }
+	/** The delivery fails this many sealed checks. The checks themselves stay sealed, so only the count is named. */
+	| { readonly kind: "SEALED_CHECKS_FAILED"; readonly failed: number };
 
 /** The only verifier type job.ts sees. */
 export type Verdict =
@@ -102,7 +106,8 @@ export type Verdict =
 		readonly sourceCommit: CommitSha;
 		/** Approval, merge, and the receipt bind to this tree, never to a moving PR head. */
 		readonly mergeCommit: CommitSha;
-		readonly pullRequest: number;
+		/** The pull request the judge published. Null on a physical job, which publishes nothing: its judged commit is the artefact. */
+		readonly pullRequest: number | null;
 		readonly frozen: TestTally;
 		readonly hidden: TestTally;
 		readonly reportDigest: Digest;
@@ -623,6 +628,40 @@ export function decideVerdict(
 		at };
 }
 
+/**
+ * What a physical judge found. `rules` counts the public spec rules the checker ran, and `failedRules` names the ones the
+ * delivery broke. `sealed` counts the sealed checks passed, out of all of them. Nothing else crosses into the verdict.
+ */
+export type PhysicalFindings = {
+	readonly rules: TestTally;
+	readonly failedRules: readonly string[];
+	readonly sealed: TestTally;
+};
+
+/**
+ * Fail closed, as decideVerdict does. A physical job publishes no pull request: the judged commit is the artefact, so
+ * VERIFIED carries a null pullRequest. A screen reason (missing file, checker crash, malformed reply) decides the run alone.
+ */
+export function decidePhysicalVerdict(request: VerifierRunRequest, screen: readonly RejectReason[], findings: PhysicalFindings, at: Instant): Verdict {
+	if (screen.length) {
+		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
+			reasons: screen as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies: null, at };
+	}
+	const reasons: RejectReason[] = [];
+	if (findings.failedRules.length) reasons.push({ kind: "SPEC_RULES_FAILED", rules: findings.failedRules });
+	const failedSealed = findings.sealed.expected - findings.sealed.passed;
+	if (failedSealed > 0) reasons.push({ kind: "SEALED_CHECKS_FAILED", failed: failedSealed });
+	if (reasons.length) {
+		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
+			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies: { frozen: findings.rules, hidden: findings.sealed }, at };
+	}
+	return { result: "VERIFIED", runId: request.runId, sourceCommit: request.sourceCommit,
+		mergeCommit: request.sourceCommit, pullRequest: null, frozen: findings.rules, hidden: findings.sealed,
+		reportDigest: digestOf({ runId: request.runId, sourceCommit: request.sourceCommit, frozen: findings.rules, hidden: findings.sealed,
+			mergeCommit: request.sourceCommit }),
+		at };
+}
+
 function digestOf(value: unknown): Digest {
 	const canonical = (input: unknown): string => Array.isArray(input) ? `[${input.map(canonical).join(",")}]`
 		: input && typeof input === "object" ? `{${Object.entries(input).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`
@@ -657,6 +696,10 @@ export function describeRejectReason(reason: RejectReason): string {
 			return `The delivery file ${reason.path} is not on the submitted commit`;
 		case "CHECK_FAILED":
 			return `The delivery could not be checked: ${reason.detail}`;
+		case "SPEC_RULES_FAILED":
+			return `The delivery breaks spec rules: ${reason.rules.join(", ")}`;
+		case "SEALED_CHECKS_FAILED":
+			return `The delivery fails ${reason.failed} sealed ${reason.failed === 1 ? "check" : "checks"}`;
 	}
 }
 

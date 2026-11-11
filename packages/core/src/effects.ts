@@ -31,6 +31,9 @@ import type { OutcomeRegistry } from "./outcome.ts";
 import type { VerifierPort } from "./verifier.ts";
 import type { DefinitionOfDone } from "./verifier.ts";
 import type { PrivateCaseReader } from "./hidden-seal.ts";
+import { physicalDefinitionOf, physicalWorkflowOf } from "./physical.ts";
+import type { SealedCheckSet } from "./physical.ts";
+import type { Vertical } from "./code-manifest.ts";
 import { simulatedDisputeOf } from "./scenario-binding.ts";
 
 type CallbackReport = NonNullable<Awaited<ReturnType<VerifierPort["parseCallback"]>>>;
@@ -227,6 +230,11 @@ export type Ports = {
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	/** The private case set the reveal reads when a sealed job closes. Absent means no sealed job reveals. */
 	readonly privateCases?: PrivateCaseReader;
+	/**
+	 * The physical verticals this deployment opens. Absent, a physical OpenJob is refused. The sealed checks are read
+	 * here to open a job and never leave the deployment: a missing or unreadable set refuses the open.
+	 */
+	readonly physical?: { readonly sealed: (vertical: Vertical) => SealedCheckSet | null };
 	readonly clock: { now(): Instant };
 };
 
@@ -282,7 +290,18 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		let loaded: Loaded = { kind: "NONE" };
 		// What the table applies: the command as sent, except a House accept that named no bid, which takes the bid chosen below.
 		let applied: UserCommand = command;
-		if (command.type === "OpenJob") {
+		if (command.type === "OpenJob" && command.vertical !== undefined) {
+			// A physical job opens on the visitor's own account repository, against its fixed public spec. The judge's sealed
+			// checks and its verifier must both be configured, or the open is refused before any row is written.
+			const workflow = physicalWorkflowOf(command.vertical);
+			if (workflow === null || actor.role !== "CLIENT" || actor.repository !== command.repository) return { kind: "DENIED", reason: "NOT_FOUND" };
+			if (ports.physical?.sealed(workflow.vertical) == null || ports.verifiers?.[workflow.vertical] === undefined) {
+				return { kind: "DENIED", reason: "PHYSICAL_NOT_CONFIGURED" };
+			}
+			loaded = { kind: "OPEN_JOB", title: workflow.title,
+				contract: { definitionOfDone: physicalDefinitionOf(workflow, command.repository, digest(workflow.publicSpec)),
+					budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+		} else if (command.type === "OpenJob") {
 			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs
 			// on a registered fixture repository. Either way the manifest freezes exactly this command's
 			// fixture, keyed by repository and issue, and never a contract compiled into this package.
@@ -344,8 +363,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		if (committed.kind === "CAPPED") return { kind: "DENIED", reason: committed.reason };
 		if (committed.kind !== "COMMITTED") continue;
 		// A starter job is the account's own to win, so the House agent never bids on it, and the House client
-		// takes the fixture's frozen contract as it stands, with no scoping draft to review.
-		if (command.type === "OpenJob" && !isStarterJob(plan.next)) {
+		// takes the fixture's frozen contract as it stands, with no scoping draft to review. A physical job is
+		// won by an agent for its own vertical, so the code House agent never bids on one.
+		if (command.type === "OpenJob" && command.vertical === undefined && !isStarterJob(plan.next)) {
 			await placeHouseBid(ports, plan.next);
 			// The scoping draft starts once the job exists. A fixture without a trusted fix is never
 			// scoped, and a deployment without the port opens exactly as it always did.
@@ -1064,7 +1084,7 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		if (result.kind === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {
-		if (row.state.status === "OPEN" && !isStarterJob(row) && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
+		if (row.state.status === "OPEN" && storedVertical(row) === CODE_VERTICAL && !isStarterJob(row) && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
 		if (row.state.status !== "OPEN" || row.state.phase.kind !== "FUNDING") continue;
 		const checkout = row.state.phase.checkout;
 		if (!("orderId" in checkout)) continue;
