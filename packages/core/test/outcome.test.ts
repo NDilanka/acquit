@@ -67,8 +67,10 @@ function stubJudge(): VerifierPort & { readonly started: VerifierRunRequest[] } 
 		started,
 		async start(request) { started.push(request); },
 		async parseCallback(request) {
-			const body = await request.json() as { readonly stub?: boolean; readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport };
-			return body.stub === true ? { jobId: body.jobId, ordinal: body.ordinal, report: body.report } : null;
+			const body = await request.json() as { readonly stub?: boolean; readonly jobId: JobId; readonly ordinal: 1 | 2 | 3;
+				readonly report: VerifierReport; readonly vertical?: string };
+			return body.stub === true ? { jobId: body.jobId, ordinal: body.ordinal, report: body.report,
+				...(body.vertical === undefined ? {} : { vertical: body.vertical }) } : null;
 		},
 	};
 }
@@ -105,7 +107,8 @@ async function submitAndJudge(vertical: Vertical | undefined, verdict: (runId: V
 	const { ports, codeStarts } = portsFor(store, judge);
 	await executeCommand(ports, devon, parseRequestKey(randomUUID()), { type: "Submit", jobId: row.id, sourceCommit: submittedCommit });
 	const response = await ingestVerifierCallback(ports, new Request("http://api.test/api/verifier/callback", { method: "POST",
-		body: JSON.stringify({ stub: true, jobId: row.id, ordinal: 1, report: { kind: "VERDICT", verdict: verdict(verifierRunId(row.id, 1)) } }) }));
+		body: JSON.stringify({ stub: true, jobId: row.id, ordinal: 1, report: { kind: "VERDICT", verdict: verdict(verifierRunId(row.id, 1)) },
+			...(vertical === undefined ? {} : { vertical }) }) }));
 	const job = await store.readJob(row.id);
 	assert.ok(job !== null);
 	return { ports, judge, codeStarts, response, job };

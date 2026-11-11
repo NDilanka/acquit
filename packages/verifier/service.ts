@@ -14,7 +14,7 @@ import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import { boundedDetail, boundedVerdict } from "../core/src/verifier.ts";
-import type { DefinitionOfDone, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
+import type { DefinitionOfDone, PhysicalDefinition, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
 import type { JudgeOutcome, JudgeSource } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { FixtureBook } from "./fixtures.ts";
@@ -212,7 +212,9 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 	}
 
 	async function deliver(request: VerifierRunRequest, report: VerifierReport): Promise<CallbackState> {
-		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report });
+		const physical = request.definitionOfDone.physical;
+		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report,
+			...(physical === undefined ? {} : { vertical: physical.workflow }) });
 		const headers = { "content-type": "application/json", "x-acquit-signature": `sha256=${callbackSignature(deps.callback.secret, body)}` };
 		for (let attempt = 1; attempt <= CALLBACK_ATTEMPTS; attempt++) {
 			try {
@@ -327,10 +329,22 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const hiddenTests = testIds(value.hiddenTests);
 	const hiddenManifest = idOf(value.hiddenManifest, /^[0-9a-f]{64}$/);
 	const protectedPaths = globList(value.protectedPaths);
+	// A code definition has no physical key, so its parsed shape is unchanged.
+	const physical = value.physical === undefined ? undefined : parsePhysical(value.physical);
 	if (repository === null || number === null || title === null || frozenAt === null || frozenTestPath === null || frozenTests === null
-		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null) return null;
+		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null || physical === null) return null;
 	return { issue: { repository, number, title }, frozenAt: frozenAt as CommitSha, frozenTestPath, frozenTests: frozenTests as readonly TestId[],
-		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"] };
+		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"],
+		...(physical === undefined ? {} : { physical }) };
+}
+
+function parsePhysical(value: unknown): PhysicalDefinition | null {
+	if (!isRecord(value) || value.workflow !== "laser-cut" || !isRecord(value.publicSpec)) return null;
+	const deliveryPath = typeof value.deliveryPath === "string" && value.deliveryPath.length > 0 && value.deliveryPath.length <= 300
+		&& !value.deliveryPath.startsWith("/") && !value.deliveryPath.split("/").includes("..") ? value.deliveryPath : null;
+	const specDigest = idOf(value.specDigest, /^[0-9a-f]{64}$/);
+	if (deliveryPath === null || specDigest === null) return null;
+	return { workflow: "laser-cut", deliveryPath, publicSpec: value.publicSpec, specDigest: specDigest as Digest };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

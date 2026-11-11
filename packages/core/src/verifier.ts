@@ -40,10 +40,25 @@ export type DefinitionOfDone = {
 	readonly protectedPaths: readonly Glob[];
 	/** Set only by an approved AI-drafted case set. A fixture's curated set never carries one. */
 	readonly sealedHiddenCases?: SealedHiddenCases;
+	/**
+	 * A physical job's delivery. Absent on every code job, so a code definition is unchanged. The sealed
+	 * checks never appear here: the judge reads them from its own private directory.
+	 */
+	readonly physical?: PhysicalDefinition;
 };
 
 /** The salted digest of an approved per-job case set. The salt stays in the job's private scoping file until the job closes. */
 export type SealedHiddenCases = { readonly digest: Digest };
+
+/** The physical block of a definition: one delivery file, checked against a public spec the agent can read. */
+export type PhysicalDefinition = {
+	readonly workflow: "laser-cut";
+	/** The one file the agent delivers, repository-relative. */
+	readonly deliveryPath: string;
+	/** The spec the agent reads. Its canonical JSON digest is specDigest. */
+	readonly publicSpec: unknown;
+	readonly specDigest: Digest;
+};
 
 export type VerifierRunRequest = {
 	readonly runId: VerifierRunId;
@@ -73,7 +88,11 @@ export type RejectReason =
 	 * The diff changes more non-binary source paths than the screen reads added text for. Nothing
 	 * starts: a screen in part is not a screen.
 	 */
-	| { readonly kind: "SOURCE_PATHS_OVER_READ_BOUND"; readonly paths: number; readonly limit: number };
+	| { readonly kind: "SOURCE_PATHS_OVER_READ_BOUND"; readonly paths: number; readonly limit: number }
+	/** A physical delivery is not at its fixed path on the submitted commit. Nothing is checked. */
+	| { readonly kind: "DELIVERY_MISSING"; readonly path: string }
+	/** The physical checker crashed, timed out, or answered something malformed. A plain reason, never a stall. */
+	| { readonly kind: "CHECK_FAILED"; readonly detail: string };
 
 /** The only verifier type job.ts sees. */
 export type Verdict =
@@ -634,6 +653,10 @@ export function describeRejectReason(reason: RejectReason): string {
 			return `The submitted tree changes ${reason.paths} paths, over the ${reason.limit}-path screen limit`;
 		case "SOURCE_PATHS_OVER_READ_BOUND":
 			return `The submitted tree changes ${reason.paths} source paths, over the ${reason.limit}-source-path read bound`;
+		case "DELIVERY_MISSING":
+			return `The delivery file ${reason.path} is not on the submitted commit`;
+		case "CHECK_FAILED":
+			return `The delivery could not be checked: ${reason.detail}`;
 	}
 }
 
@@ -651,7 +674,8 @@ export interface VerifierPort {
 	/** Starting the same runId twice reuses the first run. CI retries its own infrastructure within the run budget. */
 	start(request: VerifierRunRequest): Promise<void>;
 	/** Authenticates the judge's signed report. Submitted-program output is never a trusted input here. */
-	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport } | null>;
+	/** `vertical` is set only by a signed body that names one (a physical judge). Absent, the body is a code report. */
+	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport; readonly vertical?: string } | null>;
 }
 
 export class VerifierCiNotConfigured extends Error {

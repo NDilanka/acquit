@@ -535,13 +535,13 @@ export function verifiersOf(ports: Pick<Ports, "verifier" | "verifiers">): Outco
 }
 
 /**
- * The callback names no vertical, so each registered judge authenticates its own signature. The first
- * authentic report wins, and the key it sits under is the vertical whose judge sent it.
+ * Authenticate before reading the job or trusting the body's optional vertical. A shared secret may
+ * authenticate under several registry keys, so the first matching key does not identify the job's judge.
  */
-async function authenticateCallback(ports: Ports, request: Request): Promise<{ readonly vertical: string; readonly parsed: CallbackReport } | null> {
-	for (const [vertical, judge] of Object.entries(verifiersOf(ports))) {
+async function authenticateCallback(ports: Ports, request: Request): Promise<{ readonly verifier: VerifierPort; readonly parsed: CallbackReport } | null> {
+	for (const judge of Object.values(verifiersOf(ports))) {
 		const parsed = await judge.verifier.parseCallback(request.clone());
-		if (parsed) return { vertical, parsed };
+		if (parsed) return { verifier: judge.verifier, parsed };
 	}
 	return null;
 }
@@ -1008,14 +1008,23 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	// Each judge authenticates the judge's signed report. Submitted-program output never reaches this path.
 	const authentic = await authenticateCallback(ports, request);
 	if (!authentic) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
-	const { vertical, parsed } = authentic;
+	const { verifier, parsed } = authentic;
 	const job = await ports.store.readJob(parsed.jobId);
-	const pending = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
+	if (job === null) return Response.json({ ok: true, applied: false });
+	const jobVertical = storedVertical(job);
+	if (parsed.vertical !== undefined && parsed.vertical !== jobVertical) {
+		return Response.json({ error: "VERTICAL_MISMATCH" }, { status: 409 });
+	}
+	// A legacy body names the code vertical, never an implicit physical workflow.
+	if (parsed.vertical === undefined && jobVertical !== CODE_VERTICAL) return Response.json({ ok: true, applied: false });
+	const judge = verifiersOf(ports)[jobVertical];
+	// The stored job chooses its judge. A different, independently keyed judge cannot finish it.
+	const judgedBy = judge !== undefined &&
+		(judge.verifier === verifier || await judge.verifier.parseCallback(request.clone()) !== null);
+	const pending = job.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
 	const report = parsed.report;
 	const runId = report.kind === "VERDICT" ? report.verdict.runId : report.failure.runId;
 	const sourceCommit = report.kind === "VERDICT" ? report.verdict.sourceCommit : report.failure.sourceCommit;
-	// A judge may only finish a job of its own vertical.
-	const judgedBy = job !== null && storedVertical(job) === vertical;
 	const waiting = judgedBy && pending !== null && pending.runId === runId && pending.sourceCommit === sourceCommit;
 	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
 	if (!waiting) return Response.json({ ok: true, applied: false });

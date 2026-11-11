@@ -99,13 +99,15 @@ function signatureMatches(body: string, header: string, secret: string): boolean
 }
 
 /** Untrusted bytes become a typed report here or not at all. */
-export function parseCallbackBody(value: unknown): { readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport } | null {
+export function parseCallbackBody(value: unknown): { readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport; readonly vertical?: string } | null {
 	if (!value || typeof value !== "object") return null;
 	const body = value as Record<string, unknown>;
 	const jobId = typeof body.jobId === "string" && /^job_[A-Za-z0-9_-]{4,80}$/.test(body.jobId) ? body.jobId as JobId : null;
 	const ordinal = body.ordinal === 1 || body.ordinal === 2 || body.ordinal === 3 ? body.ordinal : null;
 	const report = parseReport(body.report);
-	return jobId && ordinal && report ? { jobId, ordinal, report } : null;
+	const vertical = body.vertical === undefined ? undefined : nonEmptyString(body.vertical);
+	if (vertical === null) return null;
+	return jobId && ordinal && report ? { jobId, ordinal, report, ...(vertical === undefined ? {} : { vertical }) } : null;
 }
 
 /** A report is a verdict or a named failure. Anything else is refused rather than guessed at. */
@@ -189,7 +191,8 @@ function parseRejectReason(value: unknown): RejectReason | null {
 	const reason = value as Record<string, unknown>;
 	const ids = (input: unknown): readonly TestId[] | null => Array.isArray(input) && input.every(id => typeof id === "string") ? input as unknown as readonly TestId[] : null;
 	switch (reason.kind) {
-		case "PROTECTED_PATH_MODIFIED": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
+		case "PROTECTED_PATH_MODIFIED": case "DELIVERY_MISSING":
+			return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
 		case "TEST_FRAMEWORK_IN_SOURCE": {
 			const path = nonEmptyString(reason.path);
 			const symbol = nonEmptyString(reason.symbol);
@@ -202,7 +205,8 @@ function parseRejectReason(value: unknown): RejectReason | null {
 			if (!list) return null;
 			return reason.kind === "TESTS_FAILED" ? { kind: reason.kind, suite, failed: list } : { kind: reason.kind, suite, missing: list };
 		}
-		case "SUBJECT_FAULT": return nonEmptyString(reason.detail) ? { kind: reason.kind, detail: reason.detail as string } : null;
+		case "SUBJECT_FAULT": case "CHECK_FAILED":
+			return nonEmptyString(reason.detail) ? { kind: reason.kind, detail: reason.detail as string } : null;
 		case "SUBJECT_REPLY_MALFORMED": return { kind: reason.kind };
 		case "TREE_SYMLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
 		case "TREE_GITLINK": return nonEmptyString(reason.path) ? { kind: reason.kind, path: reason.path as string } : null;
