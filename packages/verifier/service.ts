@@ -15,7 +15,7 @@ import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.
 import type { PublisherPort } from "../core/src/github.ts";
 import { boundedDetail, boundedVerdict } from "../core/src/verifier.ts";
 import type { DefinitionOfDone, PhysicalDefinition, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
-import type { JudgeOutcome, JudgeSource } from "./judge.ts";
+import type { JudgeOutcome, JudgeSource, PhysicalJudgeDeps } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { FixtureBook } from "./fixtures.ts";
 import { loadScopingBook, withScopingCases } from "./fixtures.ts";
@@ -49,6 +49,8 @@ export type VerifierServiceDeps = {
 	readonly publisher: PublisherPort;
 	/** The deployment's fixtures with their private cases; the run's manifest selects its own. */
 	readonly fixtures: FixtureBook;
+	/** The physical workflows' sealed checks and checker. Absent, a physical run is refused by name. */
+	readonly physical?: PhysicalJudgeDeps;
 	/** The deployment's private scoping store, when it keeps one: every approved draft beside the
 	 * curated fixtures, read per run, so a draft approved after this process booted still resolves. */
 	readonly scopingDir?: string;
@@ -183,7 +185,7 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 			built = await deps.source(record.request);
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
 				fixtures: withScopingCases(deps.fixtures, deps.scopingDir === undefined ? new Map() : loadScopingBook(deps.scopingDir)),
-				deadlineMs: deps.subjectDeadlineMs });
+				deadlineMs: deps.subjectDeadlineMs, physical: deps.physical });
 			// What the run view and the callback carry is bounded and redacted here, once, for every source.
 			record.outcome = outcome.kind === "VERDICT" ? { ...outcome, verdict: boundedVerdict(outcome.verdict) }
 				: { ...outcome, failure: { ...outcome.failure, detail: boundedDetail(outcome.failure.detail) } };
