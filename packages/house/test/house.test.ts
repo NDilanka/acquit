@@ -134,7 +134,7 @@ const target: HouseTarget = {
 	id: "job_9e0f6b72-1111-4222-8333-444455556666" as JobId, title: "Totals round wrong for 3-decimal currencies",
 	repository: "NDilanka/acquit-work-9e0f6b72", frozenAt: "0123456789abcdef0123456789abcdef01234567" as CommitSha, tenant: null,
 };
-const fresh: HouseDeliveryState = { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0 };
+const fresh: HouseDeliveryState = { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0, pendingModel: null };
 
 /** Injected delivery: the run port records plans, the work port mints one commit, the state is a map. */
 function fakeDeps(run?: (plan: HouseRunPlan) => Promise<HouseRunOutcome>, overrides: Partial<HouseDeliveryDeps> = {}) {
@@ -333,6 +333,35 @@ test("a budget spent on the retry keeps the job's first call", async () => {
 		assert.equal(outcome, "FAILED");
 		assert.equal(plans.length, 1, "the retry is refused before the run port is touched again");
 		assert.equal(states.get(target.id)?.calls, 1, "the job keeps its first call; a later tick may use the second");
+	} finally { rmSync(budget, { recursive: true, force: true }); }
+});
+
+test("a retry refused on the budget stays pending: the next tick runs the fallback model, not the primary", async () => {
+	const kimi = "accounts/fireworks/models/kimi-k3p1-pro";
+	const glm = "accounts/fireworks/models/glm-5p3";
+	const budget = mkdtempSync(join(tmpdir(), "acquit-house-budget-"));
+	try {
+		const callLog = modelCallLog(join(budget, "model-calls.jsonl"));
+		let calls = 0;
+		const run = async (): Promise<HouseRunOutcome> => {
+			calls += 1;
+			if (calls > 1) return { ok: true, sessionId: "fw-retry" };
+			// While the first call is out, the rest of the deployment spends the minute window.
+			const recent = new Date().toISOString();
+			for (let index = 0; index < 18; index += 1) {
+				await callLog.append({ at: recent, caller: "house", jobId: "job_other", provider: "fireworks", model: kimi, phase: "START" });
+			}
+			return { ok: false, reason: "PROVIDER_ERROR", detail: "503 upstream" };
+		};
+		const { deps, plans, states, commits } = fakeDeps(run, { callLog, mode: houseMode({ FIREWORKS_API_KEY: "fw-CANARY" }) });
+		assert.equal(await runHouseDelivery(deps, target), "FAILED", "the first tick keeps the first call and stops");
+		assert.equal(states.get(target.id)?.calls, 1);
+		// The next tick, a minute later: the window is clear, and the retry must still be GLM.
+		const nextTick = { ...deps, now: () => new Date(Date.now() + 120_000).toISOString() };
+		assert.equal(await runHouseDelivery(nextTick, target), "SUBMITTED");
+		assert.deepEqual(plans.map(plan => (plan.runner === "model" ? plan.model : plan.runner)), [kimi, glm],
+			"the refused retry runs on GLM on the next tick, never a second Kimi call");
+		assert.equal(commits.length, 1, "the retry's work is submitted once");
 	} finally { rmSync(budget, { recursive: true, force: true }); }
 });
 
@@ -672,8 +701,11 @@ test("the delivery state round-trips through a file and a fresh job starts at ze
 	try {
 		const store = stateStore(dir);
 		assert.deepEqual(await store.readState(target.id), fresh);
-		await store.writeState(target.id, { calls: 2, submittedCommit: "aabb" as CommitSha, submitAttempts: 1, prepareFailures: 3 });
-		assert.deepEqual(await store.readState(target.id), { calls: 2, submittedCommit: "aabb", submitAttempts: 1, prepareFailures: 3 });
+		await store.writeState(target.id, { calls: 2, submittedCommit: "aabb" as CommitSha, submitAttempts: 1, prepareFailures: 3, pendingModel: null });
+		assert.deepEqual(await store.readState(target.id), { calls: 2, submittedCommit: "aabb", submitAttempts: 1, prepareFailures: 3, pendingModel: null });
+		// A retry left pending by a refused reservation survives a restart, and a blank value reads as no pending retry.
+		await store.writeState(target.id, { ...fresh, calls: 1, pendingModel: "accounts/fireworks/models/glm-5p3" });
+		assert.equal((await store.readState(target.id)).pendingModel, "accounts/fireworks/models/glm-5p3");
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -683,8 +715,8 @@ test("the state store accepts the job_-prefixed ids the id parser mints", async 
 		const store = stateStore(dir);
 		const realId = "job_8c7501ff-c2ff-4559-b4b7-b2cd470991cf" as JobId;
 		assert.deepEqual(await store.readState(realId), fresh);
-		await store.writeState(realId, { calls: 1, submittedCommit: "ccdd" as CommitSha, submitAttempts: 0, prepareFailures: 0 });
-		assert.deepEqual(await store.readState(realId), { calls: 1, submittedCommit: "ccdd", submitAttempts: 0, prepareFailures: 0 });
+		await store.writeState(realId, { calls: 1, submittedCommit: "ccdd" as CommitSha, submitAttempts: 0, prepareFailures: 0, pendingModel: null });
+		assert.deepEqual(await store.readState(realId), { calls: 1, submittedCommit: "ccdd", submitAttempts: 0, prepareFailures: 0, pendingModel: null });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

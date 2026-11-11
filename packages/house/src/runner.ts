@@ -142,6 +142,9 @@ export type HouseDeliveryState = {
 	readonly submittedCommit: CommitSha | null;
 	readonly submitAttempts: number;
 	readonly prepareFailures: number;
+	/** The model a provider error left for the job's one retry. It is persisted before that retry's reservation, so a
+	 * refused reservation keeps the retry pending for the next tick. Null means the primary model. */
+	readonly pendingModel: string | null;
 };
 
 /** The work-repo side of one series: the clone at the frozen commit, and the commit-and-push that
@@ -250,26 +253,31 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		};
 
 		let calls = state.calls;
-		const reserved = await reserve(primaryModel);
+		// The model this tick's call runs on: the retry a provider error left pending, or the primary.
+		const callModel = state.pendingModel !== null && state.pendingModel === retryModel ? retryModel : primaryModel;
+		const reserved = await reserve(callModel);
 		if (!reserved.ok) {
 			deps.log(`house: ${job.id} call budget spent; the next tick retries${reserved.detail === undefined ? "" : ` (${reserved.detail})`}`);
 			return "BUDGET";
 		}
 		calls += 1;
 		await deps.writeState(job.id, { ...state, calls });
-		let outcome = await deps.run(planFor(primaryModel));
-		await recordCall(outcome, calls, primaryModel);
+		let outcome = await deps.run(planFor(callModel));
+		await recordCall(outcome, calls, callModel);
 		// One retry, only on a provider error, only while the persisted cap allows it: the same model
 		// again on droid and openrouter, the fallback model on fireworks. A rate or usage limit is the
 		// exception the operator ruled: its own terminal class, no retry at all, and the scan stops.
 		if (outcome.ok === false && outcome.reason === "PROVIDER_ERROR" && calls < MAX_CALLS) {
+			// The retry is persisted as pending before its reservation: a refused reservation leaves it for the
+			// next tick, which runs the same fallback model rather than the primary again.
+			await deps.writeState(job.id, { ...state, calls, pendingModel: retryModel });
 			const retried = await reserve(retryModel);
 			if (!retried.ok) {
-				deps.log(`house: ${job.id} run stopped: BUDGET on the retry; the job keeps its first call${retried.detail === undefined ? "" : ` (${retried.detail})`}`);
+				deps.log(`house: ${job.id} run stopped: BUDGET on the retry; the job keeps its first call and the retry runs on the next tick${retried.detail === undefined ? "" : ` (${retried.detail})`}`);
 				return "FAILED";
 			}
 			calls += 1;
-			await deps.writeState(job.id, { ...state, calls });
+			await deps.writeState(job.id, { ...state, calls, pendingModel: retryModel });
 			if (retryModel !== primaryModel) deps.log(`house: ${job.id} retrying on the fallback model ${retryModel} after a provider error`);
 			outcome = await deps.run(planFor(retryModel));
 			await recordCall(outcome, calls, retryModel);
@@ -303,7 +311,7 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 }
 
 export function freshState(): HouseDeliveryState {
-	return { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0 };
+	return { calls: 0, submittedCommit: null, submitAttempts: 0, prepareFailures: 0, pendingModel: null };
 }
 
 // ---- the scan ----------------------------------------------------------------------------------
@@ -362,6 +370,7 @@ export function stateStore(dir: string): {
 					submittedCommit: typeof parsed?.submittedCommit === "string" ? parsed.submittedCommit : null,
 					submitAttempts: Number.isInteger(parsed?.submitAttempts) && (parsed?.submitAttempts ?? 0) >= 0 ? parsed?.submitAttempts ?? 0 : 0,
 					prepareFailures: Number.isInteger(parsed?.prepareFailures) && (parsed?.prepareFailures ?? 0) >= 0 ? parsed?.prepareFailures ?? 0 : 0,
+					pendingModel: typeof parsed?.pendingModel === "string" && parsed.pendingModel !== "" ? parsed.pendingModel : null,
 				};
 			} catch {
 				return freshState();
