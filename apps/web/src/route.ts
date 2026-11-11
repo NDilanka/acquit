@@ -103,8 +103,8 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
     case "specialistLeaderboard":
     case "howWorkIsChecked":
     case "inspect":
-      return "public";
     case "receipt":
+      return "public";
     case "verifiers":
     case "print":
     case "start":

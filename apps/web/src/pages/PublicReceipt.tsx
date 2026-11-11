@@ -12,9 +12,11 @@ import {
   operatorLine,
   outcomeLine,
   paypalLines,
+  receiptJsonHref,
   SANDBOX_NOTE,
   SCRIPTED_NOTE,
   scoreCardLines,
+  sumCheck,
   type DigestCheck,
   type PublicReceipt,
 } from "../receipt-view";
@@ -67,6 +69,9 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
   const r = load.receipt;
   const verdict = digestVerdict(r.hiddenCases, check);
   const committed = r.hiddenCases?.committedAt ? ` Committed ${utc(r.hiddenCases.committedAt)}, before the work started.` : "";
+  const sum = sumCheck(r.money);
+  // A PayPal id the API did not serve gets no row, so no blank or invented id is shown.
+  const ids = paypalLines(r.paypal).filter((line) => line.id !== null);
   return (
     <>
       <div className="crumbs">Receipt</div>
@@ -97,6 +102,15 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
             </div>
           ))}
         </div>
+        {sum !== null && (
+          <p className="sum-check">
+            <b>{sum.equation}:</b> <span className="num">{sum.figures}</span>
+            {!sum.holds && <span className="alert"> The served amounts do not add up.</span>}
+          </p>
+        )}
+        <p>
+          <a href={receiptJsonHref(r.id)}>Receipt as JSON</a>
+        </p>
       </section>
 
       <section className="card pad">
@@ -153,20 +167,22 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
         )}
       </section>
 
-      <section className="card pad money">
-        <h2>PayPal ids</h2>
-        <div className="rows">
-          {paypalLines(r.paypal).map((line) => (
-            <div key={line.label}>
-              <span>
-                {line.label}
-                <small>{line.note}</small>
-              </span>
-              {line.id === null ? <b className="muted">None</b> : <IdChip value={line.id} />}
-            </div>
-          ))}
-        </div>
-      </section>
+      {ids.length > 0 && (
+        <section className="card pad money">
+          <h2>PayPal ids</h2>
+          <div className="rows">
+            {ids.map((line) => (
+              <div key={line.label}>
+                <span>
+                  {line.label}
+                  <small>{line.note}</small>
+                </span>
+                {line.id !== null && <IdChip value={line.id} />}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="card pad">
         <h2>Verifier score card</h2>

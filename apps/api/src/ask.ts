@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL, type TurnWindow } from "../../../packages/core/src/turn-limit.ts";
 import { boundedDetail } from "../../../packages/core/src/verifier.ts";
 import { classifyDroidRun, droidResultText, DROID_MODEL, factoryApiKey, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
 import type { ModelCallAllowance, ModelCallLog, ModelProvider } from "../../../packages/core/src/model.ts";
@@ -74,6 +75,8 @@ export type AskTurnDeps = {
 	readonly caller?: string;
 	/** A caller group's own ceiling inside the shared budget. Its calls, retries included, count against it. */
 	readonly allowance?: ModelCallAllowance;
+	/** The visitor keys (digests) the turn's calls count under, for the allowance's per-key ceiling. Every attempt carries them. */
+	readonly keys?: readonly string[];
 };
 
 /** The instruction every turn runs under, whatever the agent's own definition adds: one JSON
@@ -206,7 +209,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	};
 	// A turn already cancelled (its request ended, or its deadline passed) reserves nothing and runs nothing.
 	if (isCancelled()) return cancelled;
-	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model: models.primary }, deps.allowance);
+	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model: models.primary, keys: deps.keys }, deps.allowance);
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
 	// Cancelled while the reservation was being written: the START stands, its END records the cancel, and no model call runs.
 	if (isCancelled()) {
@@ -220,7 +223,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	// the request ended, spends budget on an answer nobody reads.
 	if (!result.ok && result.reason === "PROVIDER_ERROR" && !isCancelled()) {
 		model = models.fallback;
-		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model }, deps.allowance);
+		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model, keys: deps.keys }, deps.allowance);
 		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: retried.detail ?? "the shared model budget refused the one retry" };
 		if (isCancelled()) {
 			await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" }, model);
@@ -557,18 +560,20 @@ export const OPERATOR_TURNS_PER_DAY = 60;
 
 /**
  * The admission an operator's turn passes before the shared budget reserves: the operator's own rolling
- * counts, kept in memory. A refused turn reserves nothing. The platform's turns do not pass it.
+ * counts, kept in memory. A refused turn reserves nothing. The platform's turns do not pass it. Returns the
+ * window that refused the turn, or null when it is admitted.
  */
-export function operatorTurnLimiter(now: () => number = Date.now): (operatorId: string) => boolean {
+export function operatorTurnLimiter(now: () => number = Date.now): (operatorId: string) => TurnWindow | null {
 	const admitted = new Map<string, number[]>();
 	return operatorId => {
 		const at = now();
 		const day = (admitted.get(operatorId) ?? []).filter(stamp => at - stamp < DAY_MS);
 		const minute = day.filter(stamp => at - stamp < MINUTE_MS).length;
-		const allowed = minute < OPERATOR_TURNS_PER_MINUTE && day.length < OPERATOR_TURNS_PER_DAY;
-		if (allowed) day.push(at);
+		const refusal: TurnWindow | null = minute >= OPERATOR_TURNS_PER_MINUTE ? TURN_LIMIT_MINUTE_DETAIL
+			: day.length >= OPERATOR_TURNS_PER_DAY ? TURN_LIMIT_DAY_DETAIL : null;
+		if (refusal === null) day.push(at);
 		admitted.set(operatorId, day);
-		return allowed;
+		return refusal;
 	};
 }
 

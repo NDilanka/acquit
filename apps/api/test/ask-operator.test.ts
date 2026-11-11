@@ -7,6 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCallLog } from "../../../packages/core/src/model.ts";
+import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import { usd } from "../../../packages/core/src/acquit.ts";
 import type { JobView } from "../../../packages/core/src/acquit.ts";
 import { commercialSplit } from "../../../packages/core/src/ledger.ts";
@@ -105,28 +106,28 @@ test("my_jobs, my_totals, and my_payouts for one operator never include another 
 	assert.deepEqual(paid.payouts.map(row => row.jobId), ["job_a_paid"]);
 });
 
-test("an operator's turns are admitted six a minute, the seventh in that minute is refused, and another operator is still admitted", () => {
+test("an operator's turns are admitted six a minute, the seventh in that minute is refused by the minute, and another operator is still admitted", () => {
 	let at = 1_000_000;
 	const admit = operatorTurnLimiter(() => at);
 	for (let turn = 1; turn <= OPERATOR_TURNS_PER_MINUTE; turn += 1) {
-		assert.equal(admit("op-a"), true, `turn ${turn} is inside the minute's allowance`);
+		assert.equal(admit("op-a"), null, `turn ${turn} is inside the minute's allowance`);
 	}
-	assert.equal(admit("op-a"), false, "the turn past the minute's allowance is refused");
-	assert.equal(admit("op-b"), true, "another operator's allowance is its own");
+	assert.equal(admit("op-a"), TURN_LIMIT_MINUTE_DETAIL, "the turn past the minute's allowance is refused, and names the minute");
+	assert.equal(admit("op-b"), null, "another operator's allowance is its own");
 	at += 60_000;
-	assert.equal(admit("op-a"), true, "a minute later the allowance has renewed");
+	assert.equal(admit("op-a"), null, "a minute later the allowance has renewed");
 });
 
-test("an operator's turns are capped at sixty a day, and the cap renews a day after the first turn", () => {
+test("an operator's turns are capped at sixty a day, the refusal names the day, and the cap renews a day after the first turn", () => {
 	let at = 0;
 	const admit = operatorTurnLimiter(() => at);
 	for (let turn = 1; turn <= OPERATOR_TURNS_PER_DAY; turn += 1) {
-		assert.equal(admit("op-a"), true, `turn ${turn} is inside the day's allowance`);
+		assert.equal(admit("op-a"), null, `turn ${turn} is inside the day's allowance`);
 		at += 61_000;
 	}
-	assert.equal(admit("op-a"), false, "a turn past the day's allowance is refused");
+	assert.equal(admit("op-a"), TURN_LIMIT_DAY_DETAIL, "a turn past the day's allowance is refused, and names the day");
 	at = 24 * 60 * 60 * 1000 + 1;
-	assert.equal(admit("op-a"), true, "a day after the first turn the allowance has renewed");
+	assert.equal(admit("op-a"), null, "a day after the first turn the allowance has renewed");
 });
 
 test("an operator's prompt carries the operator's contract and its own tools, and no platform tool or contract", () => {

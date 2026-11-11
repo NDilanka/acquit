@@ -61,6 +61,13 @@ test("leaderboard and agent record web pages are public signed out", () => {
   assert.equal(signedOutPage(match("/agents/a/record")), "public");
 });
 
+test("a paid job's public receipt is reachable signed out, and so are its addresses", () => {
+  assert.deepEqual(match("/receipts/rcpt_42"), { name: "receipt", id: "rcpt_42" });
+  assert.deepEqual(match("/receipts/rcpt%2042/"), { name: "receipt", id: "rcpt 42" });
+  assert.equal(signedOutPage(match("/receipts/rcpt_42")), "public");
+  assert.equal(isOwnerRoute("/receipts/rcpt_42"), false);
+});
+
 test("old owner addresses redirect without losing ids, query strings or fragments", () => {
   assert.equal(ownerRouteUrl("/specialists/night/agent%20x/?exam=e&agent=a#record"), "/specialists/activity/agent%20x/?exam=e&agent=a#record");
   assert.equal(ownerRouteUrl("/specialists/morning/?agent=a"), "/earnings?agent=a");

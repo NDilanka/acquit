@@ -12,6 +12,11 @@ export function receiptPageHref(receiptId: string): string {
   return `/receipts/${encodeURIComponent(receiptId)}`;
 }
 
+/** The same receipt as the API serves it, for a judge who wants the bytes. */
+export function receiptJsonHref(receiptId: string): string {
+  return `/api/receipts/${encodeURIComponent(receiptId)}`;
+}
+
 /** The browser's recomputation, as the page holds it: not started, unavailable (no secure context), or the digest it computed. */
 export type DigestCheck = { readonly kind: "PENDING" } | { readonly kind: "UNAVAILABLE" } | { readonly kind: "COMPUTED"; readonly digest: string };
 
@@ -87,15 +92,41 @@ export function outcomeLine(receipt: PublicReceipt): string {
 
 export type MoneyLine = { readonly label: string; readonly value: string };
 
-/** The money the receipt holds: the gross the capture held, the payout, and the two parts of the fee. */
+/**
+ * The money the receipt holds: the gross the capture held, the released amount, and the two parts of the fee.
+ * A figure the API did not serve gets no row, so the page never shows an invented or blank amount.
+ */
 export function moneyLines(money: PublicReceipt["money"]): readonly MoneyLine[] {
-  const cents = (value: number | null) => (value === null ? "Not recorded" : usd(value));
-  return [
-    { label: "Held in escrow (gross)", value: cents(money.heldCents) },
-    { label: "Paid to the operator", value: usd(money.paidCents) },
-    { label: "Processing fee (PayPal)", value: cents(money.processorFeeCents) },
-    { label: "Platform fee (Acquit)", value: cents(money.acquitFeeCents) },
+  const rows: { label: string; cents: number | null }[] = [
+    { label: "Held in escrow (gross)", cents: money.heldCents },
+    { label: "Released to the operator", cents: money.paidCents },
+    { label: "Processing fee (PayPal)", cents: money.processorFeeCents },
+    { label: "Platform fee (Acquit)", cents: money.acquitFeeCents },
   ];
+  return rows.flatMap(({ label, cents }) => (cents === null ? [] : [{ label, value: usd(cents) }]));
+}
+
+export type SumCheck = {
+  /** The identity the page names, in words. */
+  readonly equation: string;
+  /** The same identity with the served amounts in place of the words. */
+  readonly figures: string;
+  /** Whether the served amounts satisfy the identity exactly, in whole cents. */
+  readonly holds: boolean;
+};
+
+/**
+ * Held = Released + PayPal fee + Acquit fee, checked on the amounts the API served. Null when any of the
+ * four figures is missing, so no check is shown rather than one built from a guess.
+ */
+export function sumCheck(money: PublicReceipt["money"]): SumCheck | null {
+  const { heldCents, paidCents, processorFeeCents, acquitFeeCents } = money;
+  if (heldCents === null || processorFeeCents === null || acquitFeeCents === null) return null;
+  return {
+    equation: "Held = Released + PayPal fee + Acquit fee",
+    figures: `${usd(heldCents)} = ${usd(paidCents)} + ${usd(processorFeeCents)} + ${usd(acquitFeeCents)}`,
+    holds: heldCents === paidCents + processorFeeCents + acquitFeeCents,
+  };
 }
 
 export type PayPalLine = { readonly label: string; readonly id: string | null; readonly note: string };

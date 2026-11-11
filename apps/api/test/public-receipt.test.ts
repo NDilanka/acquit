@@ -178,6 +178,30 @@ test("a private set that does not open the seal, or cannot be read, reveals noth
 	} finally { store.close(); }
 });
 
+// A key a private field would carry. The body's own keys (releaseAuthority, salt in the revealed set) match none of these.
+const PRIVATE_KEY = /email|token|secret|password|cookie|session|payer|merchant|account|phone|address/i;
+
+function keyPaths(value: unknown, path = "$"): string[] {
+	if (Array.isArray(value)) return value.flatMap((item, index) => keyPaths(item, `${path}[${index}]`));
+	if (value === null || typeof value !== "object") return [];
+	return Object.entries(value).flatMap(([key, child]) => [`${path}.${key}`, ...keyPaths(child, `${path}.${key}`)]);
+}
+
+test("a row holding an email, a payer, or a token never reaches the body, and no body key names a private field", () => {
+	const store = new SqliteStore(":memory:");
+	try {
+		const job = paidJob("PAID", RECEIPT);
+		seed(store, true, { ...job, client: { email: "maya-private@example.com" },
+			state: { ...job.state, payer: { email: "payer-private@example.com" }, accessToken: "PAYPAL-TOKEN-PRIVATE" } });
+		const body = publicReceipt(store.db, RECEIPT, reader);
+		const text = JSON.stringify(body);
+		for (const secret of ["maya-private@example.com", "payer-private@example.com", "PAYPAL-TOKEN-PRIVATE"]) {
+			assert.equal(text.includes(secret), false, `${secret} reached the public body`);
+		}
+		assert.deepEqual(keyPaths(body).filter(path => PRIVATE_KEY.test(path.slice(path.lastIndexOf(".") + 1))), []);
+	} finally { store.close(); }
+});
+
 test("nothing private reaches the body: no merchant id, no citation, no failed test id, no verdict internals", () => {
 	const store = new SqliteStore(":memory:");
 	try {
