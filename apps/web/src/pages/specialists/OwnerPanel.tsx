@@ -17,6 +17,8 @@ type OwnerState = {
   requestedId?: string;
   selectionPending: boolean;
   activity: { data: { activity: OwnerActivity | null } | null; error: unknown; reload: () => void };
+  agentDetails: { data: SpecialistAgent | null; error: unknown; reload: () => void };
+  recordedWork: boolean;
   provenance: string;
   setProvenance: (words: string) => void;
   orders: StandingOrders | null;
@@ -54,6 +56,9 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   const agent = defaultWork ? workAgent(load.data ?? [], [...reportWorkDates(recent.data?.report ?? null),
     ...(activity.data?.activity?.activity.map(job => ({ agentId:job.agentId,at:job.updatedAt })) ?? [])])
     : ownerAgent(load.data ?? [], requestedId, lastId);
+  const agentDetails = useLoad(async () => agent ? await specialists.agent(agent.id) : null, `${storageKey}:${agent?.id ?? ""}`);
+  const recordedWork = !!agent && ((agentDetails.data?.id === agent.id && (agentDetails.data.record?.jobsTaken ?? 0) > 0)
+    || !!activity.data?.activity?.activity.some(job => job.agentId === agent.id));
   useEffect(() => {
     if (!agent) return;
     setRemembered({ key:storageKey,id:agent.id });
@@ -66,7 +71,7 @@ export function OwnerProvider({ session, children }: { session: Session | null |
   useEffect(() => { setProvenance(""); setDrafting(false); setAck(null); announce(""); }, [storageKey]);
   const orders = ack?.id === agent?.id ? ack?.orders ?? null : agent?.standingOrders ?? null;
   return <Context.Provider value={{ agents: load.data, error: load.error, reload: load.reload, agent, requestedId, selectionPending, activity,
-    provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
+    agentDetails, recordedWork, provenance, setProvenance, orders, drafting, setDrafting, announcement, announce,
     heldCents: held.data === null ? null : held.data.escrow.reduce((sum, row) => sum + row.cents, 0),
     moneyError: held.error, reloadMoney: held.reload,
     setOrders: (next) => { if (agent) setAck({ id: agent.id, orders: next }); } }}>{children}</Context.Provider>;
@@ -91,11 +96,11 @@ export function MoneyLine() {
 export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
   agent: SpecialistAgent | null; step: number; provenance: string; children: ReactNode; gradeDelta?: number;
 }) {
-  const { orders } = useOwner();
+  const { orders, recordedWork } = useOwner();
   const coming = agent !== null && !hasLiveExam(agent.task);
   // Plug In starts a new agent: the panel introduces that agent instead of naming an existing one.
   const fresh = step === 1;
-  const done = completedSetup(fresh ? null : agent, fresh ? null : orders);
+  const done = completedSetup(fresh ? null : agent, fresh ? null : orders, !fresh && recordedWork);
   return <><aside className="owner-panel" data-owner-step={step} aria-label={fresh ? "New agent" : "Your agent"}>
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name" title={fresh ? undefined : agent?.name}>{fresh ? "New agent" : agent?.name ?? "No agent plugged in yet"}</p>

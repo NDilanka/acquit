@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "../../router.tsx";
-import { specialists } from "./client.ts";
 import { useOwner } from "./OwnerPanel.tsx";
 import { SpecialistPage } from "./SpecialistPage.tsx";
-import { useLoad } from "./useLoad.ts";
 import { useReport } from "./useReport.ts";
 import { countWords, dollars, paidTotalCents } from "./view.ts";
 import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
-import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes, type WorkEvent } from "./work.ts";
-import { releasedWorkHref } from "./liveWork.ts";
+import { agentDelta, earningsEvents, groupJobs, jobFacts, jobLabel, jobLanes, type WorkEvent } from "./work.ts";
+import { MONEY_FLOW_WORDS, releasedWorkHref } from "./liveWork.ts";
 import { EarningsHeadingSkeleton } from "./OwnerLoading.tsx";
 import { REPORT_WINDOW_RULE } from "./reportWindow.ts";
 
@@ -20,9 +18,8 @@ export function AgentEarningsPage() {
 }
 
 function Earnings() {
-  const { agent, announce, activity } = useOwner();
+  const { agent, announce, activity, agentDetails:totals } = useOwner();
   const report = useReport();
-  const totals = useLoad(async () => agent ? specialists.agent(agent.id) : null, agent?.id ?? "");
   useEffect(() => { announce(report.error ? "Earnings did not load." : report.data ? "Earnings loaded." : "Loading earnings."); }, [report.data, report.error, announce]);
   const data = report.data;
   const events = data ? earningsEvents(data) : [];
@@ -58,7 +55,8 @@ function Earnings() {
             {groupJobs(events).map(({ id, entries }, index) => {
                 const latest = entries[0]!;
                 return <TimelineMark key={id} at={latest.at} index={index} tone={latest.kind === "rejected" ? "fail" : ""}
-                  title={latest.jobId ? <Link to={`/jobs/${encodeURIComponent(latest.jobId)}`}>{jobLabel(latest.jobId)}</Link> : "Workspace activity"}>
+                  title={latest.jobId ? <><Link to={`/jobs/${encodeURIComponent(latest.jobId)}`}>{jobFacts(latest.jobId,data,activity.data?.activity).title}</Link>
+                    <span className="earnings-job-id">{jobLabel(latest.jobId)}</span></> : "Workspace activity"}>
                   <p className="work-status">{latest.kind === "released" && latest.jobId
                     ? <Link to={releasedWorkHref(latest.jobId,activity.data?.activity)}>{latest.status} · PayPal sandbox</Link> : latest.status}</p>
                   <EarlierEarnings entries={entries.slice(1)} />
@@ -67,14 +65,24 @@ function Earnings() {
             {!events.length && <TimelineMark title="Grade updated"><p className="work-status">No job events supplied in this report.</p></TimelineMark>}
           </ol>}
           </div><aside className="work-side" aria-label="Earnings summary">
-            {!quiet && <JobStrip lanes={jobLanes(events)} through={report.through} />}
-            {data.payouts.map((payout) => <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
-              <p><Link to={releasedWorkHref(payout.jobId,activity.data?.activity)}>{jobLabel(payout.jobId)} proof · PayPal sandbox</Link></p>
+            {!quiet && <JobStrip lanes={jobLanes(events).map(lane => events.some(event=>event.jobId===lane.id)
+              ? {...lane,label:jobFacts(lane.id,data,activity.data?.activity).title} : lane)} through={report.through} />}
+            {data.payouts.map((payout) => {
+              const facts = jobFacts(payout.jobId,data,activity.data?.activity);
+              return <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
+              <h2>Payment breakdown</h2>
+              <dl className="payment-breakdown">
+                {facts.bidCents !== null && <div><dt>Bid placed</dt><dd>{dollars(facts.bidCents)}</dd></div>}
+                {facts.heldCents !== null && <div><dt>Money held</dt><dd>{dollars(facts.heldCents)}</dd></div>}
+                <div><dt>Released</dt><dd>{dollars(payout.amountCents)}</dd></div>
+              </dl>
+              <p><Link to={releasedWorkHref(payout.jobId,activity.data?.activity)}>{facts.title} · proof · PayPal sandbox</Link></p>
               <p className="muted">Reference <code>{payout.reference.match(/.{1,4}/g)?.join(" ")}</code></p>
               <CopyWorkValue value={payout.reference} label="Copy reference" />
-            </div>)}
+            </div>;})}
             {totals.error !== null && <p className="muted">Agent totals did not load. <button className="text-button" onClick={totals.reload}>Retry totals</button></p>}
           </aside></div>}
+          {!!data.payouts.length && <p className="work-money-flow">{MONEY_FLOW_WORDS}</p>}
           <p className="muted">Verified is not paid. Release needs client approval, the release timer or an arbiter.</p>
         </>}
       {actions}
