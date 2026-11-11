@@ -30,22 +30,17 @@ export function JobStrip({ lanes, through }: { lanes: readonly WorkLane[]; throu
   const first = new Date(range.start).toISOString();
   const last = new Date(range.end).toISOString();
   return <figure className="work-strip">
-    <svg viewBox={`0 0 1000 ${lanes.length * 56}`} preserveAspectRatio="none" style={{ height: lanes.length * 56 }}
-      role="img" aria-label={`${lanes.map((lane) => lane.label).join("; ")}. ${timeWords(first, true)} to ${timeWords(last, true)}.`}>
-      {lanes.map((lane, i) => {
+      {lanes.map((lane) => {
         const x = (Date.parse(lane.start) - range.start) / range.span * 1000;
         const width = Math.max(4, (Date.parse(lane.end) - Date.parse(lane.start)) / range.span * 1000);
-        return <g key={lane.id}><rect className="strip-rule" x="0" y={i * 56 + 44} width="1000" height="2" />
-          <rect className={`strip-bar ${lane.tone}`} x={Math.min(x, 996)} y={i * 56 + 40} width={Math.min(width, 1000 - Math.min(x, 996))} height="8" /></g>;
+        return <div className="work-strip-lane" key={lane.id}><p className="strip-label">{lane.label}</p>
+          <svg viewBox="0 0 1000 16" preserveAspectRatio="none" style={{ height:16 }} role="img"
+            aria-label={`${lane.label}. ${timeWords(lane.start,true)} to ${timeWords(lane.end,true)}.`}>
+            <rect className="strip-rule" x="0" y="8" width="1000" height="2" />
+            <rect className={`strip-bar ${lane.tone}`} x={Math.min(x,996)} y="4" width={Math.min(width,1000 - Math.min(x,996))} height="8" />
+            {through && <rect className="strip-now" x="998" y="0" width="2" height="16" />}
+          </svg></div>;
       })}
-      {through && <rect className="strip-now" x="998" y="0" width="2" height={lanes.length * 56} />}
-    </svg>
-    {lanes.map((lane, i) => {
-      const x = (Date.parse(lane.start) - range.start) / range.span;
-      const end = (Date.parse(lane.end) - range.start) / range.span;
-      return <span key={lane.id} className={`strip-label ${x > .6 ? "end" : ""}`}
-        style={{ top: i * 56 + 8, left: `${(x > .6 ? end : x) * 100}%`, maxWidth: `${(x > .6 ? end : 1 - x) * 100}%` }}>{lane.label}</span>;
-    })}
     <figcaption className="strip-ends"><WorkTime at={first} /><span>{through && "Now · "}<WorkTime at={last} /></span></figcaption>
   </figure>;
 }

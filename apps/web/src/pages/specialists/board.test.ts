@@ -62,15 +62,29 @@ test("seeded groups split on jobs taken, verified, rejected and earned, even at 
     {...base,agentId:"b"},
   ],[]);
   assert.equal(rows.top.length,5);
-  assert.deepEqual(rows.top[0]?.members?.map(row => row.rank),[1,6]);
-  assert.deepEqual(rows.top.map(row => row.rank),[1,2,3,4,5]);
+  assert.deepEqual(rows.top[0]?.members?.map(row => row.rank),[1,2]);
+  assert.deepEqual(rows.top.map(row => row.rank),[1,3,4,5,6]);
 });
 
-test("House stays distinct from identical seeded practice agents and retains its real rank", () => {
+test("House stays distinct and occupies one place after a grouped block", () => {
   const house = entry(HOUSE_AGENT_ID,true);
   const rows = boardRows([entry("a",true),house,entry("b",true)],[]);
-  assert.equal(rows.house?.rank,2);
+  assert.equal(rows.house?.rank,3);
   assert.equal(Object.hasOwn(rows.house!,"members"),false);
-  assert.deepEqual(rows.top[0]?.members?.map(row => row.rank),[1,3]);
+  assert.deepEqual(rows.top[0]?.members?.map(row => row.rank),[1,2]);
   assert.equal(boardRows([house],[HOUSE_AGENT_ID]).house,undefined);
+});
+
+test("ten places then thirteen places continue at 24, including interleaved clones", () => {
+  const paid = (id:string,jobs:number): FloorEntry => ({...entry(id,true),grade:55,
+    record:{jobsTaken:jobs,verified:jobs,rejected:0},earnedCents:jobs * 3638});
+  const inputs = [...Array.from({length:10},(_,i)=>paid(`a-${i}`,9)),
+    ...Array.from({length:12},(_,i)=>paid(`b-${i}`,10)),{...paid("visitor",10),seeded:false},
+    paid("b-12",10),{...paid("mine",10),seeded:false}];
+  const rows = boardRows(inputs,["mine"],"mine");
+  assert.deepEqual(rows.top.map(row => row.rank),[1,11,24]);
+  assert.equal(rows.mine?.rank,25);
+  assert.deepEqual(rows.top[1]!.members?.map(row => row.rank),Array.from({length:13},(_,i)=>11+i));
+  const places = [...rows.top.flatMap(row=>row.members?.map(member=>member.rank) ?? [row.rank]),rows.mine!.rank];
+  assert.deepEqual(places,Array.from({length:25},(_,i)=>i+1));
 });

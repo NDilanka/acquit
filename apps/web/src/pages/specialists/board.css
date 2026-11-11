@@ -6,7 +6,7 @@
 .board th { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); text-align: left; color: var(--muted); }
 .board :is(th,td) { padding: var(--space-4) var(--space-8) var(--space-4) 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .board :is(th,td):last-child { padding-right: 0; }
-.board .board-rank { width: 64px; color: var(--muted); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
+.board .board-rank { width: 80px; padding-right: var(--space-4); color: var(--muted); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
 .board .board-grade { width: 96px; text-align: right; }
 .board td.board-grade { font-size: var(--text-display); line-height: var(--leading-display); font-weight: 500; }
 .board .board-results { width: 25%; }
@@ -17,7 +17,7 @@
 .results-pass { fill: var(--green-text); }
 .results-fail { fill: var(--red); }
 .mobile-results { display: none; }
-.board-mine { position: static; background: var(--panel); border-top: 1px solid var(--line-2); padding-inline: var(--space-4); margin-inline: calc(-1 * var(--space-4)); }
+.board-mine { position: static; background: var(--panel); border-top: 1px solid var(--line-2); }
 .board-mine thead { clip-path: inset(50%); }
 .board-mine th { height: 0; padding-block: 0; font-size: 0; line-height: 0; border: 0; }
 .board-house { display: flex; align-items: center; flex-wrap: wrap; column-gap: var(--space-4); min-height: 88px; border-bottom: 1px solid var(--line); }
@@ -31,7 +31,10 @@
 .board-tags { margin-left: var(--space-3); font-size: var(--text-xs); }
 .board-clones ul { display: grid; gap: var(--space-2); padding-bottom: var(--space-4); }
 .board-clones a { display: inline-flex; align-items: center; min-height: 44px; }
+.board-inline-actions { display: none; }
 @media (min-width: 641px) {
+  .board-inline-actions { display: flex; }
+  .board-page > .owner-actions { display: none; }
   .board :is(th,td) { padding-block: var(--space-2); }
   .board-agent > a { display: inline-flex; align-items: center; min-height: 44px; max-width: 65%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; }
   .board-money { white-space: nowrap; }
@@ -45,7 +48,7 @@
 @media (max-width: 640px) {
   .board-heading { display: grid; gap: var(--space-2); }
   .board .desktop-cell { display: none; }
-  .board .board-rank { width: 32px; }
+  .board .board-rank { width: 64px; }
   .board .board-grade { width: 64px; }
   .board :is(th,td) { padding-right: var(--space-4); }
   .mobile-results { display: block; color: var(--muted); }

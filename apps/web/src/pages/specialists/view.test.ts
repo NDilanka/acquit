@@ -37,11 +37,16 @@ import {
   recordWords,
   sinceIso,
   parsePrice,
+  dollars,
   provenanceWords,
 } from "./view.ts";
 import type { StandingOrders } from "./types.ts";
 
 describe("counted copy", () => {
+  it("uses the shared grouped money format and keeps saved grouped prices valid", () => {
+    assert.equal(dollars(510202),"$5,102.02");
+    assert.equal(parsePrice(dollars(510202)),510202);
+  });
   it("uses singular nouns for one and plural nouns for zero or several", () => {
     for (const noun of ["bid","job","agent","earlier event","earlier example event"]) {
       assert.equal(countWords(0,noun),`0 ${noun}s`);

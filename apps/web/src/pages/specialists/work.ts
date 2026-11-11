@@ -1,4 +1,4 @@
-import type { MorningReport } from "./types.ts";
+import type { MorningReport, OwnerActivity } from "./types.ts";
 import { dollars } from "./view.ts";
 
 export type WorkEvent = {
@@ -38,6 +38,17 @@ export function reportActivitySummary(report: MorningReport | null, active: bool
 
 export function jobLabel(id: string | null): string {
   return id ? `Job ${id.replace(/^job[_-]/, "").slice(0, 8)}` : "Workspace activity";
+}
+
+/** Join only matching job ids; a missing fee/held figure stays missing, never a derived difference. */
+export function jobFacts(id: string, report: MorningReport, activity?: OwnerActivity | null) {
+  const job = activity?.activity.find(entry => entry.jobId === id);
+  const entries = [...report.bids,...report.wins,...report.verified,...report.rejected,...report.preApprovals];
+  return {
+    title:job?.title || entries.find(entry => entry.jobId === id && entry.title)?.title || jobLabel(id),
+    bidCents:job?.bid?.priceCents ?? report.bids.find(entry => entry.jobId === id && entry.amountCents !== undefined)?.amountCents ?? null,
+    heldCents:job?.moneyHeld?.heldCents ?? null,
+  };
 }
 
 /** Workspace payouts have no agentId. They may join a job, never an agent. */
