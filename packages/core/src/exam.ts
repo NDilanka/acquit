@@ -132,7 +132,7 @@ export type Sample = { readonly id: string; readonly name: string; readonly task
 export const SAMPLES: readonly Sample[] = [
 	{ id: "code-fixer", name: "Code fixer", task: CODE_VERTICAL, runner: "claude-code", blurb: "Fixes a failing TypeScript test on the practice repository. Takes the code exam." },
 	{ id: "print-fdm", name: "FDM print tuner", task: PRINT_VERTICAL, runner: "simulated-fdm", blurb: "Qualifies a simulated FDM printer. Takes the print exam." },
-	{ id: "laser-cut", name: "Laser cut designer", task: LASER_VERTICAL, runner: "simulated-laser", blurb: "Design only. Not examinable and cannot bid yet." },
+	{ id: "laser-cut", name: "Laser cut designer", task: LASER_VERTICAL, runner: "simulated-laser", blurb: "Designs laser cuts. Takes the simulated laser exam. Bids on paid laser jobs through the API." },
 ];
 
 export function sampleOf(id: string): Sample | null {

@@ -173,7 +173,7 @@ describe("honest labels", () => {
 
   it("marks simulated machines and never claims hardware", () => {
     assert.equal(simulatedNote("print-fdm"), "Simulated · No real hardware");
-    assert.equal(simulatedNote("laser-cut"), "Simulated · coming");
+    assert.equal(simulatedNote("laser-cut"), "Simulated · No real hardware");
     assert.equal(simulatedNote("code"), null);
   });
 
