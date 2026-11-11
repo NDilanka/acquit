@@ -121,8 +121,8 @@ test("Submit on the tamper-test commit prints the tutorial's REJECTED block, the
 		"Submitted job_7Q2K (attempt 2 of 3)",
 		"Verifier result: VERIFIED",
 		"\tFrozen tests: 48 passed (suite frozen at a3b6ead)",
-		"\tHidden tests: 6 passed",
-		"\tRequired tests: 54 completed, 0 skipped or missing",
+		"\tHidden tests: 8 passed",
+		"\tRequired tests: 56 completed, 0 skipped or missing",
 		"\tProtected paths: none touched",
 		"Pull request opened: maya-client/invoice-app#13",
 		"Job status: VERIFIED",
@@ -182,7 +182,7 @@ test("a store locked past its busy timeout answers 503 so the report is retried,
 		github: { merge: unimplemented }, alerts: { raise: async () => {} },
 		paypal: { dispatch: unimplemented, reconcile: unimplemented, getOrder: unimplemented, parseWebhook: unimplemented, verifyWebhookDelivery: unimplemented, readResource: unimplemented } };
 	const verdict: Verdict = { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: honestCommit, mergeCommit: honestCommit,
-		pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, reportDigest: "b".repeat(64) as Digest, at: now };
+		pullRequest: 13, frozen: { expected: 48, passed: 48 }, hidden: { expected: 8, passed: 8 }, reportDigest: "b".repeat(64) as Digest, at: now };
 	const body = JSON.stringify({ jobId: row.id, ordinal: 1, report: { kind: "VERDICT", verdict } });
 	const callback = () => ingestVerifierCallback(ports, new Request("http://api.test/api/verifier/callback", { method: "POST",
 		headers: { "x-acquit-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}` }, body }));
