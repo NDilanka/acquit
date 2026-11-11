@@ -569,7 +569,7 @@ function sentences(parts: readonly (string | false | null | undefined)[]): strin
 }
 
 /** The arbiter's decision. Its title says which way it went, and the note is the arbiter's own words. */
-function arbiterEvent(job: TimelineJob, note: string): TimelineEvent {
+export function arbiterEvent(job: TimelineJob, note: string): TimelineEvent {
   if (job.releaseAuthority === "ARBITER_UPHELD") {
     return { at: null, kind: "ARBITER", title: "Arbiter upheld the work", detail: note, tone: "ok", ids: [], href: null, reasons: [] };
   }
