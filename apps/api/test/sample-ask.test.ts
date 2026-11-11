@@ -181,17 +181,17 @@ test("a sample turn cancelled at its deadline stops its model call and starts no
 		const log = join(root, "log.jsonl");
 		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
 		let modelCalls = 0;
-		// The model answers a provider error only once its signal aborts: the cancel is what ends it.
+		const controller = new AbortController();
+		// The deadline lands while the model call is in flight, so the cancel is what ends it. The abort is
+		// raised from inside the call rather than on a timer, so a slow reservation cannot cancel the turn first.
 		const model = async (_prompt: string, signal?: AbortSignal): Promise<AskModelResult> => {
 			modelCalls += 1;
+			controller.abort();
 			await new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener("abort", () => resolve(), { once: true }); });
 			return { ok: false, reason: "PROVIDER_ERROR", detail: "the request was aborted" };
 		};
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 30);
 		const outcome = await askLedgerTurn({ model, callLog: modelCallLog(log), caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
 			{ messages, tools: sampleAskToolList(), scope: "SAMPLE", signal: controller.signal });
-		clearTimeout(timer);
 		assert.equal(outcome.ok, false, "a cancelled turn is not an answer");
 		assert.equal(modelCalls, 1, "the cancelled call is the only model call: the one retry never starts");
 		const phases = (await readFile(log, "utf8")).split("\n").filter(Boolean).map(line => (JSON.parse(line) as { phase: string }).phase);
