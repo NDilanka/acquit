@@ -329,9 +329,11 @@ for arg in "$@"; do
 done
 echo '{"type":"result","is_error":false,"result":"{\\"message\\":\\"Widget added.\\",\\"calls\\":[]}","session_id":"fake-session","usage":{"factory_credits":1}}'
 `, { mode: 0o755 });
+		// The fake droid is the port this turn runs on, so the server is pinned to the droid provider; the default is fireworks.
 		child = await bootServer(port, join(dir, "test.db"), join(dir, "homeless"), {
 			PATH: `${bin}:${process.env.PATH ?? ""}`,
 			FACTORY_API_KEY: "test-factory-key-not-real",
+			ACQUIT_MODEL_PROVIDER: "droid",
 		});
 		const minted = await post(port, "/api/platform/session", { key: "test-platform-key-0123456789abcdef" });
 		assert.equal(minted.status, 201);

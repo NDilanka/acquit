@@ -217,8 +217,10 @@ test("the A1 scoping caller runs droid read-only: no --auto, json output, the pi
 		const result = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: goodDraft, session_id: "s-a1", usage: { factory_credits: 1 } });
 		await writeFile(join(bin, "droid"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argvFile}'\nprintf '%s' "$FACTORY_API_KEY" > '${envFile}'\nprintf '%s\\n' '${result}'\n`, { mode: 0o700 });
 		const log = modelCallLog(join(dir, "model-calls.jsonl"));
-		const model = scopeDraftModel({ env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, ACQUIT_MODEL_PROVIDER: "droid", FACTORY_API_KEY: "test-key-in-process" } });
-		const outcome = await scopeDraftTurn({ model, callLog: log, jobId }, goodDraft);
+		// The same droid environment reaches the model port and the turn, so the turn logs the droid model it runs.
+		const env = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, ACQUIT_MODEL_PROVIDER: "droid", FACTORY_API_KEY: "test-key-in-process" };
+		const model = scopeDraftModel({ env });
+		const outcome = await scopeDraftTurn({ model, callLog: log, jobId, env }, goodDraft);
 		assert.ok(outcome.ok, "the shim's answer rides back");
 		const argv = (await readFile(argvFile, "utf8")).split("\n").filter(line => line !== "");
 		// The shim sees the argv after "droid": exec, the pinned model, json output, the prompt by
