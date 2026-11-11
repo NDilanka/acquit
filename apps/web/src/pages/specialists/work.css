@@ -23,8 +23,8 @@
 .strip-bar.ok { fill: var(--green-text); }
 .strip-bar.fail { fill: var(--red); }
 .strip-now { fill: var(--ink); }
-.strip-label { position: absolute; max-width: 100%; font: 400 var(--text-xs)/var(--leading-xs) var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.strip-label.end { transform: translateX(-100%); }
+.work-strip-lane { display: grid; gap: var(--space-2); margin-top: var(--space-4); }
+.strip-label { font: 400 var(--text-ui)/var(--leading-ui) var(--sans); overflow-wrap: anywhere; }
 .strip-ends { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: var(--space-4); margin-top: var(--space-2); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); color: var(--muted); }
 .strip-ends > :last-child { text-align: right; white-space: nowrap; }
 .strip-ends time { white-space: nowrap; }
@@ -43,6 +43,12 @@
 .owner-app .earnings-key { font-size: var(--text-key); line-height: var(--leading-key); color: var(--green-text); letter-spacing: -.03em; }
 .earnings-refs { display: grid; gap: var(--space-4); font-size: var(--text-ui); line-height: var(--leading-ui); }
 .earnings-reference { display: grid; justify-items: start; gap: var(--space-1); }
+.earnings-reference h2 { font-size: var(--text-section); line-height: var(--leading-section); }
+.earnings-job-id { display: block; color: var(--muted); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
+.payment-breakdown { display: grid; gap: var(--space-3); width: 100%; padding-block: var(--space-4); }
+.payment-breakdown > div { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-4); border-bottom: 1px solid var(--line); padding-bottom: var(--space-2); }
+.payment-breakdown dt { color: var(--muted); }
+.payment-breakdown dd { font-size: var(--text-section); line-height: var(--leading-section); font-variant-numeric: tabular-nums; }
 .earnings-page :is(.work-what,.work-status,.earnings-reference) a { display: inline-flex; align-items: center; min-height: 44px; }
 .earnings-reference code { color: var(--ink); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); overflow-wrap: anywhere; }
 .earnings-events { display: grid; gap: var(--space-1); padding-top: var(--space-2) !important; color: var(--muted); font: 400 var(--text-xs)/var(--leading-xs) var(--mono); }
@@ -51,8 +57,15 @@
 .report-window { display: grid; gap: var(--space-3); font-size: var(--text-ui); line-height: var(--leading-ui); }
 .runner-status { display: grid; gap: var(--space-3); padding: var(--space-6); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--panel); }
 .runner-status h2 { font-size: var(--text-section); line-height: var(--leading-section); }
-.runner-count { font-size: var(--text-key); line-height: var(--leading-key); font-variant-numeric: tabular-nums; }
-.runner-count span { font-size: var(--text-section); color: var(--muted); }
+.runner-count { font-size: var(--text-body); line-height: var(--leading-body); font-variant-numeric: tabular-nums; }
+.activity-feed .activity-track { display: grid; gap: var(--space-4); margin-top: var(--space-4); }
+.activity-track > li { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: var(--space-3); font: 400 var(--text-ui)/var(--leading-ui) var(--sans); }
+.activity-step-icon { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--line-2); border-radius: var(--r-pill); color: var(--muted); }
+.activity-track [aria-current="step"] .activity-step-icon { border-color: var(--ink); color: var(--ink); background: var(--surface); }
+.activity-track [aria-current="step"] .activity-step-main { font-weight: 500; }
+.activity-step-main { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 var(--space-3); }
+.activity-step-main time, .activity-step-detail { color: var(--muted); }
+.work-money-flow { margin-top: var(--space-4) !important; font-size: var(--text-ui); line-height: var(--leading-ui); color: var(--muted); }
 .earnings-history summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .runner-action { display: inline-flex; align-items: center; min-height: 48px; text-underline-offset: 4px; }
 .owner-app .orders-limits select.sentence-control { min-height: 48px; font: 500 var(--text-section)/var(--leading-section) var(--sans); padding: var(--space-2); border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
@@ -66,4 +79,7 @@
   .earnings-overview { grid-template-columns: minmax(0,1fr); }
   .work-mark { grid-template-columns: 56px 16px minmax(0,1fr); gap: var(--space-2); }
   .work-mark::before { left: 71px; }
+}
+@media (min-width: 641px) {
+  .earnings-page { gap: var(--space-4); }
 }

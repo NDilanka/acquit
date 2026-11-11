@@ -30,6 +30,7 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [edited, setEdited] = useState(false);
+  const [limitsOpen, setLimitsOpen] = useState(false);
   const [runsOn,setRunsOn] = useState<"owner" | "acquit">(() => initial?.runsOn ?? (agent.sample ? "acquit" : "owner"));
   const dirty = ordersDirty(form, saved) || runsOn !== (saved?.runsOn ?? (agent.sample ? "acquit" : "owner"));
   const gated = !hasLiveExam(agent.task) || !agent.acquitted;
@@ -67,9 +68,11 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
           {" "}<span className="sentence-select"><label className="sr-only" htmlFor={`${id}-jobs`}>Jobs at a time</label>
             <select id={`${id}-jobs`} className="sentence-control" value={form.maxConcurrent} onChange={(e) => change({ ...form, maxConcurrent: Number(e.target.value) })}>
               <option value={1}>one</option><option value={2}>two</option><option value={3}>three</option>
-            </select><SelectChevron /></span> at a time.
+            </select><SelectChevron /></span> at a time.{" "}
+          <button type="button" className="text-button orders-change" aria-expanded={limitsOpen}
+            aria-controls={`${id}-limits`} onClick={() => setLimitsOpen(open => !open)}>Change limits</button>
         </p>
-        <details className="orders-help orders-limits"><summary>Change limits</summary>
+        <div className="orders-help orders-limits" id={`${id}-limits`} hidden={!limitsOpen}>
           {agent.sample && <label className="orders-run-location">Run on
             <select className="sentence-control" value={runsOn} onChange={event => { setRunsOn(event.target.value as "owner" | "acquit"); setEdited(true); }}>
               <option value="acquit">Acquit</option><option value="owner">My machine</option>
@@ -78,9 +81,10 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
             <select id={`${id}-cap`} className="sentence-control" value={form.preApproveCap} onChange={(e) => change({ ...form, preApproveCap: Number(e.target.value) })}>
               <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
             </select><SelectChevron /></span>
-        </details>
+        </div>
         {touched && problems?.priceUsd && <p className="field-error" role="alert" data-tone="fail">{problems.priceUsd}</p>}
         <p className="orders-echo" id={`${id}-echo`}>{cents !== null ? "Pending until accepted · PayPal sandbox." : "Example: 40 or 40.00."}</p>
+        <p className="orders-fees">Acquit keeps a fixed fee. PayPal's actual processing fee comes out of held money; you receive the rest.</p>
         {(dirty || !saved?.autopilot) && <div className="orders-master">
           <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving." : "Off. Confirm each submit."}</p>
             {!autopilotSupported(agent.runner) && <p>Autopilot runs Claude Code agents only.</p>}</div>
@@ -92,7 +96,7 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
         {error !== null && <ErrorNote error={error} />}
         <div className="owner-actions">
           {dirty ? <><button type="submit" className="btn" disabled={saving}>{saving && <Spinner />}{saving ? "Saving…" : "Save standing orders"}</button><p>Unsaved.</p></>
-            : <><Link to={`/specialists/activity/${agent.id}`} className="btn">Watch activity</Link><p>{saved?.autopilot ? "Saved." : "Saved. Autopilot is off."}</p></>}
+            : <><Link to={`/specialists/activity/${agent.id}`} className="btn">Watch activity</Link><p>Saved. You can close this tab now.</p></>}
         </div>
       </form>}
   </section>;

@@ -6,13 +6,14 @@ export function agentTaskLabel(task: Task): string {
 }
 
 /** A screen visit is not evidence that an exam passed or orders were saved. */
-export function completedSetup(agent: SpecialistAgent | null, orders: StandingOrders | null): ReadonlySet<number> {
+export function completedSetup(agent: SpecialistAgent | null, orders: StandingOrders | null, recordedWork = false): ReadonlySet<number> {
   const done = new Set<number>();
   if (!agent) return done;
   done.add(1);
   if (!hasLiveExam(agent.task) || !agent.acquitted) return done;
   if (!agent.seeded) done.add(2);
   if (orders) done.add(3);
+  if (recordedWork) done.add(4);
   return done;
 }
 

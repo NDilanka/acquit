@@ -13,7 +13,7 @@ export function boardRows(entries: readonly FloorEntry[], ownedIds: readonly str
   const groups = new Map<string, BoardRow>();
   const rows: BoardRow[] = [];
   for (const row of ranked) {
-    if (row === mine || row === house) continue;
+    if (row === mine || row === house) { rows.push(row); continue; }
     if (!row.entry.seeded || ownedIds.includes(row.entry.agentId)) { rows.push(row); continue; }
     const { entry } = row;
     const key = JSON.stringify([entry.task,entry.grade,entry.simulated,entry.record.jobsTaken,
@@ -22,5 +22,14 @@ export function boardRows(entries: readonly FloorEntry[], ownedIds: readonly str
     if (group) group.members!.push(row);
     else { const next = { ...row,members:[row] }; groups.set(key,next); rows.push(next); }
   }
-  return { mine, house, top:rows.slice(0,7), more:rows.slice(7) };
+  // A group occupies consecutive places, even when equal-grade API rows were interleaved.
+  // Rank before lifting the owner/House, so their places still count in the public list.
+  let nextRank = 1;
+  for (const row of rows) {
+    row.rank = nextRank;
+    if (row.members) row.members = row.members.map((member,index) => ({ ...member,rank:nextRank + index }));
+    nextRank += row.members?.length ?? 1;
+  }
+  const publicRows = rows.filter(row => row !== mine && row !== house);
+  return { mine, house, top:publicRows.slice(0,7), more:publicRows.slice(7) };
 }

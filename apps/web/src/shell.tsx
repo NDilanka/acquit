@@ -68,7 +68,7 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
     finally { setPending(false); }
   };
   const leaderboard = location.path.startsWith("/leaderboard");
-  const publicRecord = ["agentRecord", "howWorkIsChecked"].includes(match(location.path).name);
+  const publicRecord = ["agentRecord", "howWorkIsChecked", "inspect"].includes(match(location.path).name);
   return <div className="owner-app">
     <p id="live" role="status" className="sr-only">{owner.announcement}</p>
     <a href="#content" className="skip-link" onClick={skipToContent}>Skip to content</a>

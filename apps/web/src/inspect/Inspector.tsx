@@ -170,9 +170,9 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
     <section className="inspector" aria-label="Try to cheat the checker">
       <Picker checker={checker} selected={delivery} onPick={pick} />
       <div className="insp-about">
-        <p className="insp-blurb">
-          <b>{delivery.title}.</b> {delivery.blurb}
-        </p>
+        <details className="insp-blurb"><summary>About this file</summary>
+          <p><b>{delivery.title}.</b> {delivery.blurb}</p>
+        </details>
         <p className="insp-honest">
           <span className="sandbox">Simulated</span>
           {HONEST_LINE}
@@ -364,7 +364,6 @@ const Checks = memo(function Checks({ checker, checks, frame }: { checker: Check
             <li key={row.rule} className={`insp-rule ${state}`} tabIndex={shown ? 0 : undefined}>
               <Mark state={state} />
               <span className="insp-rule-name">{ruleName(checker, row.rule)}</span>
-              <span className="insp-rule-id">{row.rule}</span>
               {shown && <span className="insp-rule-desc">{row.ok ? row.message : failText(checker, row)}</span>}
             </li>
           );
@@ -463,8 +462,8 @@ const Measured = memo(function Measured({ checker, measured }: { checker: Checke
   const entries = Object.entries(measured);
   if (entries.length === 0) return null;
   return (
-    <section className="insp-measured card">
-      <h2 className="insp-h">Measured by the checker</h2>
+    <details className="insp-measured">
+      <summary>Show measurements</summary>
       <dl>
         {entries.map(([key, raw]) => {
           const { label, value, unit } = formatMeasured(key, raw, checker.measured[key]);
@@ -479,6 +478,6 @@ const Measured = memo(function Measured({ checker, measured }: { checker: Checke
           );
         })}
       </dl>
-    </section>
+    </details>
   );
 });

@@ -7,14 +7,14 @@ export function usd(cents: number): string {
   const abs = Math.abs(Math.trunc(cents));
   const whole = Math.floor(abs / 100);
   const frac = String(abs % 100).padStart(2, "0");
-  return `${sign}${whole}.${frac} USD`;
+  return `${sign}${whole.toLocaleString("en-US")}.${frac} USD`;
 }
 
 /** Parses a whole-or-decimal dollar string into cents without floating point. */
 export function parseUsd(input: string): number | null {
-  const m = /^\s*(\d+)(?:\.(\d{1,2}))?\s*$/.exec(input);
+  const m = /^\s*(\d+|[1-9]\d{0,2}(?:,\d{3})+)(?:\.(\d{1,2}))?\s*$/.exec(input);
   if (!m) return null;
-  const whole = Number(m[1]);
+  const whole = Number(m[1]!.replaceAll(",",""));
   const frac = Number((m[2] ?? "").padEnd(2, "0"));
   const cents = whole * 100 + frac;
   return Number.isSafeInteger(cents) ? cents : null;

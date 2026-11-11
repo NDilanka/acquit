@@ -14,6 +14,9 @@ test("setup ticks use acknowledgements, not a visited screen, including seeded a
   assert.deepEqual([...completedSetup({ ...code,acquitted:false }, orders)], [1]);
   assert.deepEqual([...completedSetup({ ...code,seeded:true }, null)], [1]);
   assert.deepEqual([...completedSetup(print, orders)], [1]);
+  assert.deepEqual([...completedSetup(code, orders, true)], [1,2,3,4]);
+  assert.deepEqual([...completedSetup(code, orders, false)], [1,2,3]);
+  assert.deepEqual([...completedSetup(null, orders, true)], []);
 });
 
 test("simulated hardware is named explicitly and never treated as autonomous code work", () => {
