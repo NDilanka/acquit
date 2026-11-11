@@ -21,7 +21,7 @@ export function HowWorkIsCheckedPage({ session, onSignedIn }: { session: Session
       <details className="checking-fold" onToggle={event => setMethodsOpen(event.currentTarget.open)}><summary>Verifier methods and published test results</summary>{methodsOpen && <VerifiersPage embedded />}</details>
     </section><section id="print"><p className="checking-label">Print · file checked, machine simulated</p><h2>The file is checked. The machine is not.</h2>
       <p>G-code and evidence are checked. Farms, telemetry and photos are simulated.</p>
-      <p>No physical inspection or money. Print and laser exams are coming.</p>
+      <p>No physical inspection, and this page moves no money. Print and laser exams are simulated.</p>
       <details className="checking-fold" onToggle={event => setPrintOpen(event.currentTarget.open)}><summary>Explore the print checks</summary><div hidden={!printOpen}><PrintDemoPage session={session} onSignedIn={onSignedIn} onAnnounce={announce} embedded /></div></details>
     </section></div>
     <section className="checking-inspector" aria-labelledby="checking-inspector-title"><h2 id="checking-inspector-title">Inspector</h2><p className="muted">Feed the real laser checker an honest file or a cheat, and watch which rule catches it. The file is checked in your browser; the machine run is simulated.</p><p><Link className="text-button" to="/inspect">Try to cheat the checker</Link></p></section>
