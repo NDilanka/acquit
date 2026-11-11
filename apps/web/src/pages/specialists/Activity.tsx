@@ -7,10 +7,11 @@ import { SpecialistPage } from "./SpecialistPage.tsx";
 import { useLoad } from "./useLoad.ts";
 import { useReport } from "./useReport.ts";
 import { EventMark, JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
-import { agentDelta, jobLanes, reportEvents, type WorkLane } from "./work.ts";
+import { agentDelta, jobLanes, reportActivitySummary, reportEvents, type WorkLane } from "./work.ts";
 import type { SpecialistAgent } from "./types.ts";
 import { ActivityFeed } from "./ActivityFeed.tsx";
-import { runnerStatusWords } from "./liveWork.ts";
+import { activitySummary } from "./liveWork.ts";
+import { countWords } from "./view.ts";
 
 export function ActivityPage({ agentId }: { readonly agentId?: string }) {
   const { agent } = useOwner();
@@ -24,7 +25,7 @@ function LiveActivity() {
   const { activity, agent, orders, announce } = useOwner();
   const active = autopilotIsOn(agent,orders);
   const feed = activity.data?.activity;
-  const refused = feed?.runner.status === "REFUSED";
+  const summary = activitySummary(feed ?? undefined,active,agent?.id);
   useEffect(() => {
     if (feed === null) return;
     const timer = window.setInterval(() => { if (!document.hidden) activity.reload(); },15000);
@@ -38,11 +39,11 @@ function LiveActivity() {
   const ordersPath = `/specialists/orders${agent ? `/${encodeURIComponent(agent.id)}` : ""}`;
   return <SpecialistPage step={4} lead="" provenance="Live workspace activity">
     <section className="work-page"><header className="work-heading">
-      <h1>{refused ? "Your sample needs attention." : active ? "You can close this tab now." : "Autopilot is off"}</h1>
-      <p className="spec-lead">{refused ? runnerStatusWords(feed.runner) : active ? <><b>{agent?.name}</b> works within your orders.</> : "No new bids are placed automatically."}</p>
+      <h1>{summary.heading}{summary.moneyLabel && <span className="work-money-label">{summary.moneyLabel}</span>}</h1>
+      {!summary.moneyLabel && <p className="spec-lead">{summary.detail}</p>}
     </header>
       <div className="owner-actions">{activity.error ? <button className="btn" type="button" onClick={activity.reload}>Retry</button>
-        : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
+        : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
         : <Link className="btn" to={ordersPath}>Turn on autopilot</Link>}
         <Link to={ordersPath}>Review standing orders</Link></div>
       {activity.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2><p>Retry to read your jobs and runner state.</p></div>
@@ -61,17 +62,18 @@ function LegacyActivity() {
   }, [report.data, report.error, announce]);
   const events = report.data ? reportEvents(report.data).filter((entry) => entry.agentId === agent?.id) : [];
   const active = autopilotIsOn(agent, orders);
+  const summary = reportActivitySummary(report.data,active,agent?.id);
   const jobs = new Set(events.flatMap((event) => event.jobId ? [event.jobId] : []));
   const suffix = agent ? `/${encodeURIComponent(agent.id)}` : "";
   return <SpecialistPage step={4} lead="" gradeDelta={agentDelta(report.data, agent?.id)} provenance="Live workspace activity">
     <section className="work-page">
-      <header className="work-heading"><h1>{active ? "You can close this tab now." : "Autopilot is off"}</h1>
+      <header className="work-heading"><h1>{summary.heading}{summary.moneyLabel && <span className="work-money-label">{summary.moneyLabel}</span>}</h1>
         <p className="spec-lead">{active
           ? <><b>{agent?.name}</b> works on its own, within your orders.</>
           : <>Autopilot is off. No new bids are placed automatically.</>}</p></header>
       <div className="owner-actions">{report.error
         ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
-        : active ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
+        : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
         : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
         <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
         {!report.error && <button className="text-button" type="button" onClick={report.reload}>Refresh activity</button>}
@@ -88,7 +90,7 @@ function LegacyActivity() {
             <p className="muted">Bids follow your saved limits.</p></section>
           {!!events.length && <JobStrip lanes={jobLanes(events)} through={readAt} />}
           <dl className="work-facts"><div><dt>Since <WorkTime at={report.data.since} full /></dt>
-            <dd>{jobs.size} jobs · {events.filter((event) => event.kind === "bid").length} bids recorded</dd></div></dl>
+            <dd>{countWords(jobs.size,"job")} · {countWords(events.filter((event) => event.kind === "bid").length,"bid")} recorded</dd></div></dl>
           <p className="muted">Held money is workspace-wide. Verified is not paid.</p>
         </aside></div>}
       {agent?.task === "code" && <Link className="work-replay-link" to={`/specialists/activity${suffix}?replay=1`}>View an example run</Link>}
@@ -124,7 +126,7 @@ function ReplayActivity({ agent }: { agent: SpecialistAgent }) {
             const earlier = ordered.slice(6);
             return <>{ordered.slice(0,6).map(mark)}
               {!!earlier.length && <li><details className="earnings-history" onToggle={event => setEarlierOpen(event.currentTarget.open)}>
-                <summary>{earlier.length} earlier example events</summary>{earlierOpen && <ol>{earlier.map((event, i) => mark(event, i + 6))}</ol>}</details></li>}</>;
+                <summary>{countWords(earlier.length,"earlier example event")}</summary>{earlierOpen && <ol>{earlier.map((event, i) => mark(event, i + 6))}</ol>}</details></li>}</>;
           })()}
         </ol><aside className="work-side"><JobStrip lanes={lanes} /><p className="muted">Example, not live. Release needs client approval, the release timer or an arbiter.</p></aside></div>}
     </section>

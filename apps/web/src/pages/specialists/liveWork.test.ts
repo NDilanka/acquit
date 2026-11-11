@@ -1,12 +1,53 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, closedMoneyWords, closedReasonWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySummary, closedMoneyWords, closedReasonWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
 const released = example.activity[0]!;
 const held = example.activity[1]!;
+
+test("Activity headlines distinguish no run, current work, a paid run and an unknown payout", () => {
+  const idle = {...example,runner:{...example.runner,status:"IDLE" as const},activity:[]};
+  assert.equal(activitySummary(undefined,true).heading,"Loading activity.");
+  assert.equal(activitySummary(idle,true).heading,"You can close this tab now.");
+  assert.equal(activitySummary(idle,false).heading,"Autopilot is off");
+  const working = activitySummary({...idle,activity:[held]},true,held.agentId);
+  assert.equal(working.heading,"Your agent is working on a job.");
+  assert.equal(working.detail,activityStateWords(held.state));
+  const paid = {...released,release:{...released.release!,payoutCents:3638}};
+  const summary = activitySummary({...idle,activity:[paid]},false,paid.agentId);
+  assert.equal(summary.heading,"Your agent was paid $36.38.");
+  assert.equal(summary.detail,example.labels.money);
+  assert.equal(summary.moneyLabel,example.labels.money);
+  assert.equal(summary.earnings,true);
+  assert.equal(activitySummary({...idle,activity:[{...paid,release:{...paid.release,payoutCents:null}}]},false).heading,"Your agent's payment was released.");
+  assert.equal(activitySummary({...idle,activity:[{...paid,release:null}]},false).heading,"Your agent's payment was released.");
+});
+
+test("Activity uses the newest selected-agent job, not array order or another agent's payout", () => {
+  const old = {...released,agentId:"mine",updatedAt:"2026-11-09T01:00:00Z"};
+  const current = {...held,agentId:"mine",updatedAt:"2026-11-10T01:00:00Z"};
+  const other = {...released,agentId:"other",updatedAt:"2026-11-11T01:00:00Z"};
+  for (const activity of [[old,other,current],[current,old,other]])
+    assert.equal(activitySummary({...example,activity},true,"mine").heading,"Your agent is working on a job.");
+  assert.equal(activitySummary({...example,activity:[other]},true,"mine").heading,"You can close this tab now.");
+  const running = activitySummary({...example,runner:{...example.runner,status:"RUNNING"},activity:[other]},true,"mine");
+  assert.equal(running.heading,"The sample runner is running.");
+  assert.equal(running.detail,"No job has been recorded for this agent yet.");
+});
+
+test("closed and refused headlines use safe reasons while a paid run survives autopilot being off", () => {
+  const stopped = {...held,state:"CLOSED" as const,closedReason:"verifier gave no verdict in 3 runs"};
+  const summary = activitySummary({...example,activity:[stopped]},true);
+  assert.equal(summary.heading,"The verifier returned no verdict for this delivery.");
+  assert.match(summary.detail,/Money is still held/);
+  const refused = {...example,runner:{...example.runner,status:"REFUSED" as const,reason:"BID_DENIED"},activity:[]};
+  assert.equal(activitySummary(refused,true).heading,"The client declined this bid");
+  assert.equal(activitySummary({...refused,runner:{...refused.runner,reason:"AUTOPILOT_OFF"},activity:[released]},false).earnings,true);
+  assert.equal(activitySummary({...example,activity:[{...held,state:"REFUNDED"}]},false).heading,"The payment was refunded.");
+});
 
 test("the contract example displays exact stored times, gross held money and net released money", () => {
   const events = activityEvents(released,example.labels);

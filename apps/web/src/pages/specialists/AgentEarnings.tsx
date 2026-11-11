@@ -5,7 +5,7 @@ import { useOwner } from "./OwnerPanel.tsx";
 import { SpecialistPage } from "./SpecialistPage.tsx";
 import { useLoad } from "./useLoad.ts";
 import { useReport } from "./useReport.ts";
-import { dollars, paidTotalCents } from "./view.ts";
+import { countWords, dollars, paidTotalCents } from "./view.ts";
 import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
 import { agentDelta, earningsEvents, groupJobs, jobLabel, jobLanes, type WorkEvent } from "./work.ts";
 import { releasedWorkHref } from "./liveWork.ts";
@@ -48,7 +48,7 @@ function Earnings() {
           <header className="earnings-overview"><div className="work-heading">
             <h1 className="earnings-key">{dollars(paid)} released</h1>
             <p className="spec-lead">PayPal sandbox · workspace earnings</p>
-            <p>{quiet ? "No work recorded in this report." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${data.bids.length} bids recorded.`}</p>
+            <p>{quiet ? "No work recorded in this report." : `${data.verified.length} verified · ${data.rejected.length} rejected · ${countWords(data.bids.length,"bid")} recorded.`}</p>
           </div><section className="report-window" aria-label="Report window">
             <p>From <WorkTime at={data.since} full />{report.through && <> to <WorkTime at={report.through} full /></>}</p>
             <WindowRule />
@@ -92,7 +92,7 @@ function EarlierEarnings({ entries }: { entries: readonly WorkEvent[] }) {
   const [open,setOpen] = useState(false);
   if (!entries.length) return null;
   return <details className="earnings-history" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{entries.length} earlier events</summary>
+    <summary>{countWords(entries.length,"earlier event")}</summary>
     {open && <ul className="earnings-events">{entries.map(entry => <li key={entry.id}>{entry.status} · <WorkTime at={entry.at} /></li>)}</ul>}
   </details>;
 }

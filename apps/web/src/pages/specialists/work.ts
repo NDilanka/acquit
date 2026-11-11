@@ -7,8 +7,10 @@ export type WorkEvent = {
   status: string;
 };
 export type WorkLane = { id: string; label: string; start: string; end: string; tone: "ok" | "fail" | "open" };
+export type ActivityHeadline = { heading: string; earnings: boolean; moneyLabel?: string };
 
 export function reportEvents(report: MorningReport): WorkEvent[] {
+  const paidJobs = new Set(report.payouts.map(payout => payout.jobId).filter(Boolean));
   const kinds = ["bid", "win", "verified", "rejected", "submit"] as const;
   const lists = [report.bids, report.wins, report.verified, report.rejected, report.preApprovals];
   return lists.flatMap((entries, i) => entries.map((entry, n) => ({
@@ -16,10 +18,22 @@ export function reportEvents(report: MorningReport): WorkEvent[] {
     at: entry.at, jobId: entry.jobId, agentId: entry.agentId, kind: kinds[i]!,
     status: kinds[i] === "bid" ? entry.amountCents === undefined ? "Bid placed · pending" : `${dollars(entry.amountCents)} pending`
       : kinds[i] === "win" ? "Won · work started"
-      : kinds[i] === "verified" ? "Verified · release not confirmed"
+      : kinds[i] === "verified" ? entry.jobId && paidJobs.has(entry.jobId) ? "Verified" : "Verified · release not confirmed"
       : kinds[i] === "rejected" ? "Rejected"
       : "Submit pre-approved",
   }))).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+/** Older servers expose events, not current job state. Do not infer work in flight. */
+export function reportActivitySummary(report: MorningReport | null, active: boolean, agentId?: string): ActivityHeadline {
+  if (!report) return { heading:"Loading activity.",earnings:false };
+  const events = reportEvents(report).filter(event => event.agentId === agentId);
+  const jobs = new Set(events.flatMap(event => event.jobId ? [event.jobId] : []));
+  const payout = [...report.payouts].filter(item => jobs.has(item.jobId))
+    .sort((a,b) => Date.parse(b.at) - Date.parse(a.at))[0];
+  if (payout && Date.parse(payout.at) >= Date.parse(events[0]!.at))
+    return { heading:`Your agent was paid ${dollars(payout.amountCents)}.`,earnings:true,moneyLabel:report.sandbox ? "PayPal sandbox" : "Payment released" };
+  return { heading:events.length ? "Your agent has work recorded." : active ? "You can close this tab now." : "Autopilot is off",earnings:active };
 }
 
 export function jobLabel(id: string | null): string {

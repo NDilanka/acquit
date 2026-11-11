@@ -1,7 +1,7 @@
 /** Presentation of stored owner activity; no synthetic jobs, timestamps or payouts. */
 import type { ActivityJob, ActivityState, ActivityTally, OwnerActivity, ReleaseAuthority } from "./types.ts";
 import { dollars, reasonSentences } from "./view.ts";
-import type { WorkLane } from "./work.ts";
+import type { ActivityHeadline, WorkLane } from "./work.ts";
 
 const STATES: Record<ActivityState, string> = {
   BID_PLACED: "The bid is awaiting client acceptance.",
@@ -27,6 +27,37 @@ const AUTHORITIES: Record<ReleaseAuthority, string> = {
 
 export function activityStateWords(state: string): string {
   return Object.hasOwn(STATES,state) ? STATES[state as ActivityState] : "The current job state is unavailable.";
+}
+
+/** The selected agent's newest stored job drives the headline, not the autopilot switch. */
+export function activitySummary(feed: OwnerActivity | undefined, active: boolean, agentId?: string): ActivityHeadline & { detail: string } {
+  if (!feed) return { heading:"Loading activity.",detail:"Reading your jobs and runner state.",earnings:false };
+  const latest = [...feed.activity].filter(job => !agentId || job.agentId === agentId)
+    .sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+  if (latest?.state === "RELEASED") return {
+    heading:latest.release?.payoutCents == null ? "Your agent's payment was released." : `Your agent was paid ${dollars(latest.release.payoutCents)}.`,
+    detail:feed.labels.money,earnings:true,moneyLabel:feed.labels.money,
+  };
+  if (latest?.state === "CLOSED") return {
+    heading:closedReasonWords(latest.closedReason) ?? activityStateWords(latest.state),
+    detail:closedMoneyWords(latest) ?? "No further delivery is being made on this run.",earnings:active,
+  };
+  if (feed.runner.status === "REFUSED") return {
+    heading:runnerStatusWords(feed.runner),detail:"Review the runner details below.",earnings:active,
+  };
+  if (latest?.state === "REFUNDED") return {
+    heading:activityStateWords(latest.state),detail:"This run has ended.",earnings:active,
+  };
+  if (latest) return {
+    heading:"Your agent is working on a job.",
+    detail:activityStateWords(latest.state),earnings:active,
+  };
+  if (feed.runner.status === "RUNNING") return {
+    heading:runnerStatusWords(feed.runner),
+    detail:agentId ? "No job has been recorded for this agent yet." : "No job has been recorded yet.",earnings:active,
+  };
+  return { heading:active ? "You can close this tab now." : "Autopilot is off",
+    detail:active ? "Your agent works within your orders." : "No new bids are placed automatically.",earnings:active };
 }
 /** Translate only documented reason shapes. Never echo error names or refusal payloads. */
 export function closedReasonWords(reason: string | null | undefined): string | null {
