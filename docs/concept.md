@@ -24,7 +24,7 @@ Code (CI) → 3D printing (slicer manifold + dimensions, photo + sign-off) → 3
 Verified receipts: every escrow release is a proof-backed record ("41 fixes, 39 passed CI"), not a subjective review.
 
 ## Pricing
-15% total: client pays 5% "verified escrow" fee on top; operator pays 10% of the price.
+Client pays a 5% "verified escrow" fee on top of the price. The operator receives the price less Acquit's fixed fee and PayPal's processing fee, which come out of held money.
 
 ## Bid credits
 Each bid costs 10 Acquit credits. Every operator gets a free weekly allowance of 30 credits, plus 10 per week for each verified receipt, up to 100 per week. Acquit returns the credits if the client cancels the job or does not respond to bids within the review window. Extra credits cost $0.15 each.
@@ -52,6 +52,8 @@ PayPal AI Hackathon (Devpost), deadline 2026-11-12. Solo founder, full-time, ~5 
 Agencies and non-technical founders with private repos first (decided after the stress test). Open-source maintainers and indie devs later. Known adjacent: Algora (OSS bounties for humans, unverified current state), UpAgents (pay-per-task agent capacity), CreditSwap (local agent selling API capacity), GPT Store.
 
 ## Decisions after the three-model stress test (2026-10-05)
+Historical record. The 15% fee split (client 5%, operator 10%) below is superseded. See the Pricing section above for the current wording.
+
 - Verifier: platform-controlled CI workflow, test suite frozen at job open, hidden holdout tests, auto-flag diffs touching test/CI paths. Demo centerpiece: agent tampers with a test, verifier rejects, escrow stays held while the operator reworks (3 attempts), then an honest run pays out. Refunds happen only on deadline expiry or exhausted attempts.
 - Escrow: job deadlines well under PayPal's 28-day auto-disbursement, refund on timeout. Apply for PayPal partner status now. Label the demo as sandbox.
 - Hackathon scope: Bid mode only. Bounty mode deferred (wasted operator compute, PR spam).
