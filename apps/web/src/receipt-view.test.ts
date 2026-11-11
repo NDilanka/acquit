@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PublicAttempt } from "./api-types.ts";
 import {
@@ -51,6 +52,17 @@ function receipt(overrides: Partial<PublicReceipt> = {}): PublicReceipt {
 
 const MATCH: DigestCheck = { kind: "COMPUTED", digest: DIGEST };
 const TAMPERED: DigestCheck = { kind: "COMPUTED", digest: "54842b81de0e36a4b6cd715776f339b52f76ca88af06637e219d5747b64f0485" };
+
+test("public receipt amounts keep the currency with the amount while narrow labels can wrap", () => {
+  const page = readFileSync(new URL("./pages/PublicReceipt.tsx",import.meta.url),"utf8");
+  const css = readFileSync(new URL("./public-receipt.css",import.meta.url),"utf8");
+  assert.match(page,/import "\.\.\/public-receipt\.css"/);
+  assert.match(page,/className="rows receipt-money-rows"/);
+  assert.match(page,/className="num receipt-money-value">\{line\.value\}/);
+  assert.match(css,/\.receipt-money-rows \.receipt-money-value \{[^}]*flex-shrink: 0;[^}]*white-space: nowrap;[^}]*overflow-wrap: normal;/);
+  assert.match(css,/\.receipt-money-rows > div > span \{ min-width: 0; overflow-wrap: anywhere;/);
+  assert.ok(moneyLines({...receipt().money,paidCents:3638}).some(line => line.value === "36.38 USD"));
+});
 
 test("the receipt link is the public page for a receipt id, with the id encoded", () => {
   assert.equal(receiptPageHref("rcpt_abc"), "/receipts/rcpt_abc");

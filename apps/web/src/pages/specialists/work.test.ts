@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { agentDelta, groupJobs, jobFacts, jobLanes, reportActivitySummary, reportEvents, stripRange, timeWords } from "./work.ts";
+import { agentDelta, groupJobs, jobFacts, jobLanes, reportActivitySummary, reportEvents, reportReleasePending, stripRange, timeWords } from "./work.ts";
 import type { MorningReport, OwnerActivity } from "./types.ts";
 const report: MorningReport = { since: "2026-11-09T00:00:00Z", sandbox: true, bids: [], wins: [], verified: [], rejected: [], payouts: [], gradeChanges: [], preApprovals: [] };
 test("Earnings names the exact job and uses only supplied bid and held amounts", () => {
@@ -36,6 +36,27 @@ test("verification is not payment release", () => {
   const rows = reportEvents({ ...report, verified: [{ at: report.since, jobId: "a", agentId: "x", title: null }] });
   assert.equal(rows[0]?.status, "Verified · release not confirmed");
   assert.equal(jobLanes(rows)[0]?.tone, "open");
+});
+test("the release notice follows only the matching verified, unreleased job", () => {
+  const verified = {...report,verified:[{at:report.since,jobId:"mine",agentId:"a",title:null}]};
+  assert.equal(reportReleasePending("mine",verified),true);
+  assert.equal(reportReleasePending(null,verified),false);
+  assert.equal(reportReleasePending("other",verified),false);
+  const payout = {at:report.since,jobId:"mine",reference:"ref",amountCents:3638};
+  assert.equal(reportReleasePending("mine",{...verified,payouts:[payout]}),false);
+  assert.equal(reportReleasePending("mine",{...verified,payouts:[{...payout,jobId:"other"}]}),true);
+  assert.equal(reportReleasePending("mine",{...verified,rejected:[{...verified.verified[0]!,at:"2026-11-10T00:00:00Z"}]}),false);
+  const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
+  assert.equal(reportReleasePending("mine",verified,{...example,activity:[{...example.activity[0]!,jobId:"mine"}]}),false);
+  assert.equal(reportReleasePending("mine",{...verified,payouts:[payout]},
+    {...example,activity:[{...example.activity[0]!,jobId:"mine",state:"AWAITING_APPROVAL",release:null}]}),false);
+});
+test("all release notices are job-scoped and conditional, not static summary footnotes", () => {
+  const source = (file: string) => readFileSync(new URL(file,import.meta.url),"utf8");
+  assert.doesNotMatch(source("./Activity.tsx"),/Held money is workspace-wide\. Verified is not paid/);
+  assert.match(source("./WorkTimeline.tsx"),/event\.kind === "verified" && releasePending &&/);
+  assert.match(source("./ActivityFeed.tsx"),/activityReleasePending\(job\) && <p className="muted">Verified is not paid/);
+  assert.match(source("./AgentEarnings.tsx"),/latest\.kind === "verified" && reportReleasePending\(latest\.jobId,data,activity\.data\?\.activity\) &&/);
 });
 test("only a payout for the same non-null job removes the unconfirmed-release warning", () => {
   const verified = ["paid","unpaid",null].map(jobId => ({at:report.since,jobId,agentId:"a",title:null}));

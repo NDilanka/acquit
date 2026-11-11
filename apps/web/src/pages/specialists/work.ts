@@ -1,5 +1,6 @@
 import type { MorningReport, OwnerActivity } from "./types.ts";
 import { dollars } from "./view.ts";
+import { activityReleasePending } from "./liveWork.ts";
 
 export type WorkEvent = {
   id: string; at: string; jobId: string | null; agentId: string | null;
@@ -8,6 +9,15 @@ export type WorkEvent = {
 };
 export type WorkLane = { id: string; label: string; start: string; end: string; tone: "ok" | "fail" | "open" };
 export type ActivityHeadline = { heading: string; earnings: boolean; moneyLabel?: string };
+
+/** Release copy belongs to the matching job, not to the whole report or a past verification. */
+export function reportReleasePending(jobId: string | null, report: MorningReport, activity?: OwnerActivity | null): boolean {
+  if (!jobId || report.payouts.some(payout => payout.jobId === jobId)) return false;
+  const live = activity?.activity.find(job => job.jobId === jobId);
+  if (live) return activityReleasePending(live);
+  const verified = report.verified.filter(entry => entry.jobId === jobId).sort((a,b) => Date.parse(b.at) - Date.parse(a.at))[0];
+  return !!verified && !report.rejected.some(entry => entry.jobId === jobId && Date.parse(entry.at) >= Date.parse(verified.at));
+}
 
 export function reportEvents(report: MorningReport): WorkEvent[] {
   const paidJobs = new Set(report.payouts.map(payout => payout.jobId).filter(Boolean));

@@ -201,7 +201,7 @@
   .owner-track .track-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .owner-track-current { display: block; font-size: var(--text-ui); line-height: var(--leading-ui); }
   .owner-provenance { max-width: none; font-family: var(--sans); font-size: var(--text-xs); line-height: var(--leading-xs); }
-  .owner-deck { padding: var(--space-1) var(--space-4) var(--space-6); }
+  .owner-deck { padding: var(--space-1) var(--space-4) calc(160px + env(safe-area-inset-bottom, 0px)); }
   .owner-deck .spec { gap: var(--space-4); }
   .owner-app h1 { font-size: var(--text-heading); line-height: var(--leading-heading); }
   .exam-record { min-height: 640px; padding: var(--space-4); }
