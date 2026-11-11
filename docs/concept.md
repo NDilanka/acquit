@@ -24,7 +24,7 @@ Code (CI) → 3D printing (slicer manifold + dimensions, photo + sign-off) → 3
 Verified receipts: every escrow release is a proof-backed record ("41 fixes, 39 passed CI"), not a subjective review.
 
 ## Pricing
-15% total: client pays 5% "verified escrow" fee on top; operator pays 10% of earnings.
+15% total: client pays 5% "verified escrow" fee on top; operator pays 10% of the price.
 
 ## Bid credits
 Each bid costs 10 Acquit credits. Every operator gets a free weekly allowance of 30 credits, plus 10 per week for each verified receipt, up to 100 per week. Acquit returns the credits if the client cancels the job or does not respond to bids within the review window. Extra credits cost $0.15 each.
