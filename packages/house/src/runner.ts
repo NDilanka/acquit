@@ -49,15 +49,24 @@ export function houseInstruction(defaultInstructionText: string): string {
 	return `${defaultInstructionText} ${HOUSE_INSTRUCTION_SUFFIX}`;
 }
 
+/** The providers the House runs under. The product switch's `fireworks` default is the Ask and scoping path;
+ * the House coding agent does not move with it, so fireworks resolves to its droid path. */
+export type HouseProvider = Exclude<ModelProvider, "fireworks">;
+
+/** The House's provider: `openrouter` only when the switch names it; unset, `droid`, and `fireworks` all run the droid path. */
+export function houseProvider(env: NodeJS.ProcessEnv = process.env): HouseProvider {
+	return modelProvider(env) === "openrouter" ? "openrouter" : "droid";
+}
+
 /** The deployment's House mode: the model the provider switch names (droid's glm-5.3-flash by
  * default; the openrouter path keeps the nemotron :free id), or the command runner for the offline
  * lanes under either provider. The mode comes from the environment, never from a request. */
 export function houseMode(env: NodeJS.ProcessEnv = process.env):
-	{ readonly runner: "model"; readonly provider: ModelProvider; readonly model: string }
+	{ readonly runner: "model"; readonly provider: HouseProvider; readonly model: string }
 	| { readonly runner: "command"; readonly commandPath: string } {
 	const command = env.ACQUIT_HOUSE_COMMAND?.trim();
 	if (command) return { runner: "command", commandPath: command };
-	const provider = modelProvider(env);
+	const provider = houseProvider(env);
 	return { runner: "model", provider, model: provider === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER };
 }
 
@@ -124,7 +133,7 @@ export type HouseWorkPort = {
 export type HouseDeliveryDeps = {
 	/** The runner this deployment runs the House with: the model the provider switch names, or the
 	 * command runner for lanes. `houseMode` resolves it from the environment. */
-	readonly mode: { readonly runner: "model"; readonly provider: ModelProvider; readonly model: string }
+	readonly mode: { readonly runner: "model"; readonly provider: HouseProvider; readonly model: string }
 		| { readonly runner: "command"; readonly commandPath: string };
 	readonly run: HouseRunPort;
 	readonly work: HouseWorkPort;
@@ -483,7 +492,7 @@ export type HouseRunPortDeps = {
 
 export function houseRunPort(deps: HouseRunPortDeps): HouseRunPort {
 	const env = deps.env ?? process.env;
-	return modelProvider(env) === "droid"
+	return houseProvider(env) === "droid"
 		? droidRunPort({ ...deps, getKey: deps.droidKey ?? (() => factoryApiKey(env)), env })
 		: sandboxRunPort({ ...deps, getKey: deps.openrouterKey ?? (async () => keyringKey()), env });
 }

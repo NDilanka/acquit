@@ -3,7 +3,8 @@
 // filters against the real frozen and fix commits, and parks the survivors for the client's
 // approval. The store row holds ids and counts only; the case values live in the deployment's
 // private scoping store, one file per job, mode 600. A draft that cannot finish — a provider
-// error, a malformed answer, a draft every filter drops — freezes nothing and is never retried.
+// error that the one fallback call did not recover, a malformed answer, a draft every filter
+// drops — freezes nothing and the job is never re-drafted.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -11,7 +12,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DROID_MODEL, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
-import type { ModelCallLog } from "../../../packages/core/src/model.ts";
+import type { ModelCallLog, ModelProvider } from "../../../packages/core/src/model.ts";
+import { llmModelFor } from "../../../packages/core/src/llm.ts";
 import type { CurrencyFamily, FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import type { Instant, JobId, TestId } from "../../../packages/core/src/ids.ts";
 import { parseScopeDraft, runScopeFilters, ScopeDraftError } from "../../../packages/core/src/scoping.ts";
@@ -21,7 +23,7 @@ import type { SubjectCall } from "../../../packages/core/src/verifier.ts";
 import { gitSource } from "../../../packages/verifier/judge.ts";
 import { subjectFor, verifierSubjectEnv } from "../../../packages/verifier/subject.ts";
 import type { SubjectLauncher } from "../../../packages/verifier/subject.ts";
-import { droidAskPort, openrouterAskPort } from "./ask.ts";
+import { askModelPortFor } from "./ask.ts";
 import type { AskModelPort, AskModelResult } from "./ask.ts";
 import { HOUSE_MODEL_OPENROUTER } from "../../../packages/house/src/runner.ts";
 import type { TokenPort } from "../../../packages/core/src/github.ts";
@@ -29,17 +31,27 @@ import type { TokenPort } from "../../../packages/core/src/github.ts";
 /** The issue body read the draft scopes from: the repository and issue, and the body text. */
 export type IssueBodyPort = (issue: { readonly repository: string; readonly number: number }) => Promise<string | null>;
 
-/** The model id the scoping draft runs on, per the deployment's provider switch. */
+/** The model id the scoping draft runs on, per the deployment's provider switch: under fireworks, the scoping
+ * feature's primary model. */
 export function scopeModelName(env: NodeJS.ProcessEnv = process.env): string {
-	return modelProvider(env) === "openrouter" ? HOUSE_MODEL_OPENROUTER : DROID_MODEL;
+	const provider = modelProvider(env);
+	if (provider === "fireworks") return llmModelFor("scoping", "primary", env);
+	return provider === "openrouter" ? HOUSE_MODEL_OPENROUTER : DROID_MODEL;
 }
 
-/** The scoping model port: the provider switch. Droid is the default and runs read-only — no
- * --auto, json output, the prompt by file, the Factory key in process. The openrouter path keeps
- * the :free id and is tested with injected transports only; this mission makes no live openrouter
- * call. */
+/** The models one scoping draft's attempts run under. Fireworks names the scoping feature's primary and its one
+ * fallback; the other providers keep their single call and no fallback. */
+function scopeAttemptModels(provider: ModelProvider, env: NodeJS.ProcessEnv): { readonly primary: string; readonly fallback: string | null } {
+	if (provider === "fireworks") return { primary: llmModelFor("scoping", "primary", env), fallback: llmModelFor("scoping", "fallback", env) };
+	return { primary: scopeModelName(env), fallback: null };
+}
+
+/** The scoping model port: the deployment's provider switch. Fireworks is the default: one chat-completions attempt
+ * per call. Droid runs read-only -- no --auto, json output, the prompt by file, the Factory key in process. The
+ * openrouter path keeps the :free id and is tested with injected transports only; this mission makes no live
+ * openrouter call. */
 export function scopeDraftModel(deps: { readonly env?: NodeJS.ProcessEnv } = {}): AskModelPort {
-	return modelProvider(deps.env ?? process.env) === "openrouter" ? openrouterAskPort(deps) : droidAskPort(deps);
+	return askModelPortFor(modelProvider(deps.env ?? process.env), deps);
 }
 
 /** A scoping turn's answer: the model port's own result, plus the budget's refusal class. */
@@ -47,23 +59,69 @@ export type ScopeTurnResult = { readonly ok: true; readonly text: string; readon
 	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED" | "NO_KEY" | "BUDGET"; readonly detail: string;
 		readonly sessionId?: string | null; readonly factoryCredits?: number | null };
 
-/** One scoping model turn: reserve from the deployment's shared budget, call once, record the END.
- * A provider error gets no second call here — the scoping draft is a background convenience, and
- * a retry loop would spend the budget drafting the same job twice. */
-export async function scopeDraftTurn(deps: { readonly model: AskModelPort; readonly callLog: ModelCallLog; readonly jobId: JobId | null },
+/** The whole scoping turn's wall-clock bound, primary and fallback together. It matches the Ask turn's outer bound, so a
+ * slow primary cannot leave the fallback a second full attempt on top of it. */
+const SCOPE_TURN_DEADLINE_MS = 120_000;
+
+/** One scoping model turn: reserve from the deployment's shared budget, call, record the END. Under fireworks a
+ * provider error gets exactly one call on the scoping feature's fallback model, reserved and recorded like any
+ * other call; a rate or usage limit is terminal. The other providers make one call, never a second. The draft is
+ * a background convenience, so the fallback is the only retry and the budget refuses it when spent. The primary and
+ * the fallback share one deadline (SCOPE_TURN_DEADLINE_MS unless the caller names another): it cancels the request in
+ * flight, and once it has passed, no fallback is reserved or asked. */
+export async function scopeDraftTurn(deps: { readonly model: AskModelPort; readonly callLog: ModelCallLog; readonly jobId: JobId | null;
+		readonly env?: NodeJS.ProcessEnv; readonly deadlineMs?: number },
 	prompt: string): Promise<ScopeTurnResult> {
-	const provider = modelProvider();
-	const model = scopeModelName();
+	const env = deps.env ?? process.env;
+	const provider = modelProvider(env);
+	const models = scopeAttemptModels(provider, env);
 	const at = (): string => new Date().toISOString();
-	// The budget's lock file lives beside the log; make sure the directory is there before the
-	// reservation asks for it.
-	await mkdir(dirname(deps.callLog.path), { recursive: true });
-	const reserved = await reserveModelCall(deps.callLog, { at: at(), caller: "scoping", jobId: deps.jobId, provider, model });
-	if (!reserved.ok) return { ok: false, reason: "BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
-	const result = await deps.model(prompt);
-	await deps.callLog.append({ at: at(), caller: "scoping", jobId: deps.jobId, provider, model, phase: "END",
-		outcome: result.ok ? "answered" : result.reason, sessionId: result.sessionId ?? null, factoryCredits: result.factoryCredits ?? null });
-	return result;
+	// One controller for the whole turn: its signal reaches every model call, and the timer aborts it at the deadline.
+	const deadline = new AbortController();
+	const timer = setTimeout(() => { deadline.abort(); }, deps.deadlineMs ?? SCOPE_TURN_DEADLINE_MS);
+	const signal = deadline.signal;
+	// A function, not a property read: TypeScript narrows `signal.aborted` after one check, and the later checks must still read it live.
+	const isExpired = (): boolean => signal.aborted;
+	const expired: ScopeTurnResult = { ok: false, reason: "PROVIDER_ERROR", detail: "the scoping turn ran past its deadline" };
+	const cancelledAttempt: AskModelResult = { ok: false, reason: "PROVIDER_ERROR", detail: "the scoping turn ran past its deadline" };
+	try {
+		// The budget's lock file lives beside the log; make sure the directory is there before the
+		// reservation asks for it.
+		await mkdir(dirname(deps.callLog.path), { recursive: true });
+		const reserve = (model: string) => reserveModelCall(deps.callLog, { at: at(), caller: "scoping", jobId: deps.jobId, provider, model });
+		const record = async (model: string, result: AskModelResult): Promise<void> => {
+			await deps.callLog.append({ at: at(), caller: "scoping", jobId: deps.jobId, provider, model, phase: "END",
+				outcome: result.ok ? "answered" : result.reason, sessionId: result.sessionId ?? null, factoryCredits: result.factoryCredits ?? null,
+				requestId: result.requestId ?? null, usage: result.usage ?? null });
+		};
+		// A turn already past its deadline reserves nothing and runs nothing.
+		if (isExpired()) return expired;
+		const reserved = await reserve(models.primary);
+		if (!reserved.ok) return { ok: false, reason: "BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
+		// Expired while the reservation was written: the START stands, its END records the cancel, and no model call runs.
+		if (isExpired()) {
+			await record(models.primary, cancelledAttempt);
+			return expired;
+		}
+		let model = models.primary;
+		let result = await deps.model(prompt, signal, model);
+		await record(model, result);
+		// The fallback never starts past the deadline: a retry that starts then spends budget on an answer nobody reads.
+		if (!result.ok && result.reason === "PROVIDER_ERROR" && models.fallback !== null && !isExpired()) {
+			model = models.fallback;
+			const retried = await reserve(model);
+			if (!retried.ok) return { ok: false, reason: "BUDGET", detail: retried.detail ?? "the shared model budget refused the fallback draft call" };
+			if (isExpired()) {
+				await record(model, cancelledAttempt);
+				return expired;
+			}
+			result = await deps.model(prompt, signal, model);
+			await record(model, result);
+		}
+		return result;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 export type ScopingKickDeps = {
@@ -71,12 +129,14 @@ export type ScopingKickDeps = {
 	/** The fixture the kick is for: its repository, issue, frozen commit, trusted fix, and gate. */
 	readonly fixture: FixtureContract;
 	readonly issueBody: (issue: { readonly repository: string; readonly number: number }) => Promise<string | null>;
-	readonly model: (prompt: string) => Promise<AskModelResult>;
+	readonly model: (prompt: string, signal?: AbortSignal, model?: string) => Promise<AskModelResult>;
 	readonly callLog: ModelCallLog;
 	readonly runPhase: ScopePhaseRunner;
 	/** The deployment's private scoping store: one file per job, outside every repository, never in git. */
 	readonly scopingDir: string;
 	readonly clock: { readonly now: () => Instant };
+	/** The environment the provider switch and the feature's models are read from; the process's when absent. */
+	readonly env?: NodeJS.ProcessEnv;
 	readonly log?: (line: string) => void;
 };
 
@@ -86,7 +146,8 @@ const scopePrompt = (input: { readonly body: string; readonly fixture: FixtureCo
 {"contract": "<at most 4000 chars of prose>",
  "candidates": [{"id": "<unique>", "target": {"module": "<file>", "export": "<name>"},
                  "args": [<json values>], "expected": <json value>, "citation": "<quoted words from the issue that justify the expected value>"}]}
-Rules: 2 to 12 candidates; every candidate must FAIL on the frozen commit and PASS on the trusted
+Rules: the object has exactly the two keys shown, contract and candidates, and no error or other key.
+2 to 12 candidates; every candidate must FAIL on the frozen commit and PASS on the trusted
 fix; every expected value must be justified by words you quote from the issue body; args must be
 bounded JSON; ids unique and at most 64 characters.
 ${families}
@@ -113,7 +174,7 @@ export function scopingKick(deps: ScopingKickDeps): (jobId: JobId) => Promise<vo
 				say(`scoping ${jobId}: the issue body never arrived; nothing was drafted`);
 				return;
 			}
-			const answer = await scopeDraftTurn({ model: deps.model, callLog: deps.callLog, jobId }, scopePrompt({ body, fixture: deps.fixture, families: deps.fixture.coverageFamilies ?? [] }));
+			const answer = await scopeDraftTurn({ model: deps.model, callLog: deps.callLog, jobId, env: deps.env }, scopePrompt({ body, fixture: deps.fixture, families: deps.fixture.coverageFamilies ?? [] }));
 			if (!answer.ok) {
 				await deps.store.writeScoping({ jobId, status: "FAILED", issueBody: body, ids: [], digest: null, reason: `DRAFT_${answer.reason}`, counts: null, updatedAt: deps.clock.now() });
 				say(`scoping ${jobId}: the draft turn failed (${answer.reason}): ${answer.detail}; nothing was frozen and nothing will retry`);
