@@ -20,11 +20,28 @@
 .board-mine { position: static; background: var(--panel); border-top: 1px solid var(--line-2); padding-inline: var(--space-4); margin-inline: calc(-1 * var(--space-4)); }
 .board-mine thead { clip-path: inset(50%); }
 .board-mine th { height: 0; padding-block: 0; font-size: 0; line-height: 0; border: 0; }
+.board-house { display: flex; align-items: center; flex-wrap: wrap; column-gap: var(--space-4); min-height: 88px; border-bottom: 1px solid var(--line); }
+.board-house > a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 500; }
+.board-house > p { font-size: var(--text-ui); line-height: var(--leading-ui); }
 .board-fold { margin-top: var(--space-4); }
 .board-fold > p { padding-block: var(--space-2); font-size: var(--text-ui); }
 .board-page summary { min-height: var(--control-lg); cursor: pointer; text-decoration: underline; text-underline-offset: 4px; display: flex; align-items: center; }
 .board-meaning p { max-width: 56ch; color: var(--muted); margin-top: var(--space-2); }
 .board-skeleton > div { display: grid; grid-template-columns: 1fr 96px; gap: var(--space-8); min-height: 112px; padding-block: var(--space-6); border-bottom: 1px solid var(--line); }
+.board-tags { margin-left: var(--space-3); font-size: var(--text-xs); }
+.board-clones ul { display: grid; gap: var(--space-2); padding-bottom: var(--space-4); }
+.board-clones a { display: inline-flex; align-items: center; min-height: 44px; }
+@media (min-width: 641px) {
+  .board :is(th,td) { padding-block: var(--space-2); }
+  .board-agent > a { display: inline-flex; align-items: center; min-height: 44px; max-width: 65%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; }
+  .board-money { white-space: nowrap; }
+  .board-results .results-bar { width: 64px; margin: 0 var(--space-2) 0 0; display: inline-block; vertical-align: middle; }
+  .board-results p { display: inline; }
+  .board-page { gap: var(--space-6); }
+  .board .board-agent { overflow: hidden; }
+  .board-tags { white-space: nowrap; }
+  .board-clones > summary { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}
 @media (max-width: 640px) {
   .board-heading { display: grid; gap: var(--space-2); }
   .board .desktop-cell { display: none; }
@@ -32,4 +49,5 @@
   .board .board-grade { width: 64px; }
   .board :is(th,td) { padding-right: var(--space-4); }
   .mobile-results { display: block; color: var(--muted); }
+  .board-tags { display: block; margin-left: 0; }
 }

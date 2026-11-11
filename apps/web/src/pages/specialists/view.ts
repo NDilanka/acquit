@@ -28,6 +28,10 @@ export function taskLabel(task: Task): string {
   return TASK_LABEL[task];
 }
 
+export function countWords(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
+}
+
 /** The note under a simulated machine's name. Only the simulated machines carry it. */
 export function simulatedNote(task: Task): string | null {
   if (task === "print-fdm") return "Simulated · No real hardware";

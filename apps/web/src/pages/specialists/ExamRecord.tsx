@@ -70,14 +70,14 @@ export function ExamRecord({ status, simulated, task, grade, date, visible, hidd
     catch { setCopyError(true); announce("Copy failed. Open Record link and copy the address."); }
   };
   return <><section className="exam-record" aria-label="Exam record">
-    <header className="record-heading" aria-live="polite">
+    <div className="record-overview"><header className="record-heading" aria-live="polite">
       <Seal passed={passed} />
       <div><h1 className={passed ? "record-key" : ""}>{passed ? "Acquitted" : open ? "Exam in progress" : status === "ERROR" ? "Exam interrupted" : "Not acquitted"}</h1>
         <div className="record-origin">{simulated ? <span className="owner-honesty">{SIMULATED_WORD}</span> : "Live run"}</div>
+        {grade !== null && <p className="record-exam-grade">Grade <b>{grade}</b></p>}
       </div>
     </header>
-    <div className="record-meta">{grade !== null && <span>Grade {grade}</span>}
-      {date && <span>Examined <WorkTime at={date} full /></span>}</div>
+    <div className="record-meta">{date && <span>Examined <WorkTime at={date} full /></span>}</div></div>
     <div className="record-check-bed">
       {open ? <div className="record-check-waiting"><p>Results arrive together.</p><p>Visible checks · waiting</p><p>Hidden checks · sealed</p></div> : <>
         <CheckCells counts={visible} total={visible?.total ?? 0} hidden={false} />

@@ -30,13 +30,14 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [edited, setEdited] = useState(false);
-  const dirty = ordersDirty(form, saved);
+  const [runsOn,setRunsOn] = useState<"owner" | "acquit">(() => initial?.runsOn ?? (agent.sample ? "acquit" : "owner"));
+  const dirty = ordersDirty(form, saved) || runsOn !== (saved?.runsOn ?? (agent.sample ? "acquit" : "owner"));
   const gated = !hasLiveExam(agent.task) || !agent.acquitted;
   const problems = formProblems(form);
   const cents = parsePrice(form.priceUsd);
   useEffect(() => { setOrders(initial); }, [initial]);
   useEffect(() => {
-    if (!dirty && acknowledged && acknowledged !== saved) { setSaved(acknowledged); setForm(formFrom(acknowledged)); }
+    if (!dirty && acknowledged && acknowledged !== saved) { setSaved(acknowledged); setForm(formFrom(acknowledged)); setRunsOn(acknowledged.runsOn); }
   }, [acknowledged, dirty, saved]);
   useEffect(() => { setDrafting(dirty); return () => setDrafting(false); }, [dirty, setDrafting]);
   useNavigationGuard(edited && dirty, "Leave without saving your standing orders?");
@@ -46,8 +47,8 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
     if (gated || problems || saving) return;
     setSaving(true); setError(null);
     try {
-      const next = await specialists.saveStandingOrders(agent.id, toOrdersInput(form, saved?.runsOn ?? (agent.sample ? "acquit" : "owner")));
-      setSaved(next); setOrders(next); setForm(formFrom(next)); setEdited(false);
+      const next = await specialists.saveStandingOrders(agent.id, toOrdersInput(form, runsOn));
+      setSaved(next); setOrders(next); setForm(formFrom(next)); setRunsOn(next.runsOn); setEdited(false);
       announce(next.autopilot ? "Saved. You can close this tab now." : "Saved. Autopilot is off.");
     } catch (e) { setError(e); }
     finally { setSaving(false); }
@@ -69,16 +70,19 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
             </select><SelectChevron /></span> at a time.
         </p>
         <details className="orders-help orders-limits"><summary>Change limits</summary>
+          {agent.sample && <label className="orders-run-location">Run on
+            <select className="sentence-control" value={runsOn} onChange={event => { setRunsOn(event.target.value as "owner" | "acquit"); setEdited(true); }}>
+              <option value="acquit">Acquit</option><option value="owner">My machine</option>
+            </select></label>}
           <label htmlFor={`${id}-cap`}>Submits a day without asking </label><span className="sentence-select">
             <select id={`${id}-cap`} className="sentence-control" value={form.preApproveCap} onChange={(e) => change({ ...form, preApproveCap: Number(e.target.value) })}>
               <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
             </select><SelectChevron /></span>
-          <p>Daily limit for automatic submits.</p>
         </details>
         {touched && problems?.priceUsd && <p className="field-error" role="alert" data-tone="fail">{problems.priceUsd}</p>}
         <p className="orders-echo" id={`${id}-echo`}>{cents !== null ? "Pending until accepted · PayPal sandbox." : "Example: 40 or 40.00."}</p>
         {(dirty || !saved?.autopilot) && <div className="orders-master">
-          <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving. Bids and delivers within your limits." : "Off. Each submit needs your confirmation."}</p>
+          <div><h2>Autopilot</h2><p>{form.autopilot ? "On after saving." : "Off. Confirm each submit."}</p>
             {!autopilotSupported(agent.runner) && <p>Autopilot runs Claude Code agents only.</p>}</div>
           <button type="button" className="orders-switch" role="switch" aria-label="Autopilot" aria-checked={form.autopilot}
             disabled={!autopilotSupported(agent.runner)} onClick={() => change({ ...form, autopilot: !form.autopilot })}>
@@ -88,7 +92,7 @@ function OrdersEditor({ agent, initial }: { agent: SpecialistAgent; initial: Sta
         {error !== null && <ErrorNote error={error} />}
         <div className="owner-actions">
           {dirty ? <><button type="submit" className="btn" disabled={saving}>{saving && <Spinner />}{saving ? "Saving…" : "Save standing orders"}</button><p>Unsaved.</p></>
-            : <><Link to={`/specialists/activity/${agent.id}`} className="btn">Watch activity</Link><p>{saved?.autopilot ? "Saved. You can close this tab now." : "Saved. Autopilot is off."}</p></>}
+            : <><Link to={`/specialists/activity/${agent.id}`} className="btn">Watch activity</Link><p>{saved?.autopilot ? "Saved." : "Saved. Autopilot is off."}</p></>}
         </div>
       </form>}
   </section>;

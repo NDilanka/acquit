@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentDelta, groupJobs, jobLanes, reportEvents, stripRange, timeWords } from "./work.ts";
+import { agentDelta, groupJobs, jobLanes, reportActivitySummary, reportEvents, stripRange, timeWords } from "./work.ts";
 import type { MorningReport } from "./types.ts";
 const report: MorningReport = { since: "2026-11-09T00:00:00Z", sandbox: true, bids: [], wins: [], verified: [], rejected: [], payouts: [], gradeChanges: [], preApprovals: [] };
+test("legacy Activity uses matching stored payouts without inventing a current job state", () => {
+  const worked = {...report,verified:[{at:report.since,jobId:"mine",agentId:"a",title:null}]};
+  assert.equal(reportActivitySummary(null,true,"a").heading,"Loading activity.");
+  assert.equal(reportActivitySummary(report,true,"a").heading,"You can close this tab now.");
+  assert.equal(reportActivitySummary(worked,true,"a").heading,"Your agent has work recorded.");
+  const paid = {...worked,payouts:[{at:report.since,jobId:"mine",reference:"ref",amountCents:3638}]};
+  assert.deepEqual(reportActivitySummary(paid,false,"a"),{heading:"Your agent was paid $36.38.",earnings:true,moneyLabel:"PayPal sandbox"});
+  assert.equal(reportActivitySummary(paid,true,"other").heading,"You can close this tab now.");
+  assert.equal(reportActivitySummary({...paid,bids:[{at:"2026-11-10T00:00:00Z",jobId:"new",agentId:"a",title:null}]},true,"a").heading,"Your agent has work recorded.");
+});
 test("selected agent events never acquire workspace payouts or null-agent events", () => {
   const rows = reportEvents({ ...report, bids: [{ at: report.since, jobId: "job_a", agentId: "a", title: null, amountCents: 1200 },
     { at: report.since, jobId: "job_b", agentId: null, title: null }],
@@ -14,6 +24,18 @@ test("verification is not payment release", () => {
   const rows = reportEvents({ ...report, verified: [{ at: report.since, jobId: "a", agentId: "x", title: null }] });
   assert.equal(rows[0]?.status, "Verified · release not confirmed");
   assert.equal(jobLanes(rows)[0]?.tone, "open");
+});
+test("only a payout for the same non-null job removes the unconfirmed-release warning", () => {
+  const verified = ["paid","unpaid",null].map(jobId => ({at:report.since,jobId,agentId:"a",title:null}));
+  const rows = reportEvents({...report,verified,payouts:[
+    {at:report.since,jobId:"paid",reference:"paid-ref",amountCents:3638},
+    {at:report.since,jobId:"unrelated",reference:"other-ref",amountCents:9999},
+    {at:report.since,jobId:"",reference:"unscoped-ref",amountCents:123},
+  ]});
+  assert.equal(rows.find(row => row.jobId === "paid")?.status,"Verified");
+  assert.equal(rows.find(row => row.jobId === "unpaid")?.status,"Verified · release not confirmed");
+  assert.equal(rows.find(row => row.jobId === null)?.status,"Verified · release not confirmed");
+  assert.ok(rows.every(row => row.kind === "verified"));
 });
 test("jobs sort newest first, unrelated null jobs remain separate", () => {
   const rows = reportEvents({ ...report, bids: [0, 1].map(i => ({ at: `2026-11-09T0${i}:00:00Z`, jobId: null, agentId: "a", title: null })) });

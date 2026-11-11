@@ -1,12 +1,53 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, releasedWorkHref, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySummary, closedMoneyWords, closedReasonWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
 const released = example.activity[0]!;
 const held = example.activity[1]!;
+
+test("Activity headlines distinguish no run, current work, a paid run and an unknown payout", () => {
+  const idle = {...example,runner:{...example.runner,status:"IDLE" as const},activity:[]};
+  assert.equal(activitySummary(undefined,true).heading,"Loading activity.");
+  assert.equal(activitySummary(idle,true).heading,"You can close this tab now.");
+  assert.equal(activitySummary(idle,false).heading,"Autopilot is off");
+  const working = activitySummary({...idle,activity:[held]},true,held.agentId);
+  assert.equal(working.heading,"Your agent is working on a job.");
+  assert.equal(working.detail,activityStateWords(held.state));
+  const paid = {...released,release:{...released.release!,payoutCents:3638}};
+  const summary = activitySummary({...idle,activity:[paid]},false,paid.agentId);
+  assert.equal(summary.heading,"Your agent was paid $36.38.");
+  assert.equal(summary.detail,example.labels.money);
+  assert.equal(summary.moneyLabel,example.labels.money);
+  assert.equal(summary.earnings,true);
+  assert.equal(activitySummary({...idle,activity:[{...paid,release:{...paid.release,payoutCents:null}}]},false).heading,"Your agent's payment was released.");
+  assert.equal(activitySummary({...idle,activity:[{...paid,release:null}]},false).heading,"Your agent's payment was released.");
+});
+
+test("Activity uses the newest selected-agent job, not array order or another agent's payout", () => {
+  const old = {...released,agentId:"mine",updatedAt:"2026-11-09T01:00:00Z"};
+  const current = {...held,agentId:"mine",updatedAt:"2026-11-10T01:00:00Z"};
+  const other = {...released,agentId:"other",updatedAt:"2026-11-11T01:00:00Z"};
+  for (const activity of [[old,other,current],[current,old,other]])
+    assert.equal(activitySummary({...example,activity},true,"mine").heading,"Your agent is working on a job.");
+  assert.equal(activitySummary({...example,activity:[other]},true,"mine").heading,"You can close this tab now.");
+  const running = activitySummary({...example,runner:{...example.runner,status:"RUNNING"},activity:[other]},true,"mine");
+  assert.equal(running.heading,"The sample runner is running.");
+  assert.equal(running.detail,"No job has been recorded for this agent yet.");
+});
+
+test("closed and refused headlines use safe reasons while a paid run survives autopilot being off", () => {
+  const stopped = {...held,state:"CLOSED" as const,closedReason:"verifier gave no verdict in 3 runs"};
+  const summary = activitySummary({...example,activity:[stopped]},true);
+  assert.equal(summary.heading,"The verifier returned no verdict for this delivery.");
+  assert.match(summary.detail,/Money is still held/);
+  const refused = {...example,runner:{...example.runner,status:"REFUSED" as const,reason:"BID_DENIED"},activity:[]};
+  assert.equal(activitySummary(refused,true).heading,"The client declined this bid");
+  assert.equal(activitySummary({...refused,runner:{...refused.runner,reason:"AUTOPILOT_OFF"},activity:[released]},false).earnings,true);
+  assert.equal(activitySummary({...example,activity:[{...held,state:"REFUNDED"}]},false).heading,"The payment was refunded.");
+});
 
 test("the contract example displays exact stored times, gross held money and net released money", () => {
   const events = activityEvents(released,example.labels);
@@ -53,19 +94,58 @@ test("all stored release authorities remain separate from verification", () => {
 });
 
 test("queued, idle, running, off and refusal states have plain text, not fake job events", () => {
-  assert.equal(runnerStatusWords(example.runner),"Waiting for a free runner");
-  assert.equal(runnerStatusWords({...example.runner,status:"IDLE",reason:null}),"Nothing queued");
-  assert.equal(runnerStatusWords({...example.runner,status:"RUNNING",reason:null}),"Sample runner is running");
-  assert.equal(runnerStatusWords({...example.runner,status:"OFF",enabled:false,reason:null}),"Sample runner is off");
+  assert.equal(runnerStatusWords(example.runner),"The sample is waiting for a free runner.");
+  assert.equal(runnerStatusWords({...example.runner,status:"IDLE",reason:null}),"No sample run is queued.");
+  assert.equal(runnerStatusWords({...example.runner,status:"RUNNING",reason:null}),"The sample runner is running.");
+  assert.equal(runnerStatusWords({...example.runner,status:"OFF",enabled:false,reason:null}),"The sample runner is off.");
   for (const reason of ["NO_FORK","DAILY_LIMIT","NO_ACQUITTAL","NO_STANDING_ORDERS"] as const)
     assert.ok(runnerStatusWords({...example.runner,status:"REFUSED",reason}));
   assert.equal(activityLanes(example.activity,example.labels).length,2);
+});
+
+test("every refusal and unknown state has safe sentence copy", () => {
+  for (const reason of ["AUTOPILOT_OFF","NOT_HOSTED","NOT_A_SAMPLE","BID_DENIED","PRICE_CANNOT_CARRY_FEE","DELIVERY_STOPPED","NO_STANDING_ORDERS","NO_FORK","NO_ACQUITTAL","DAILY_LIMIT"]) {
+    const words=runnerStatusWords({...example.runner,status:"REFUSED",reason});
+    assert.ok(words.length>10);
+    assert.ok(!words.includes(reason));
+  }
+  for (const state of ["UNKNOWN","toString","__proto__"]) assert.equal(activityStateWords(state),"The current job state is unavailable.");
+  assert.equal(runnerStatusWords({...example.runner,status:"FUTURE" as OwnerActivity["runner"]["status"]}),"The sample runner's current state is unavailable.");
+});
+
+test("closed delivery preserves held money without promising a refund or inventing a deadline", () => {
+  const stopped={...held,state:"CLOSED" as const,closedReason:"verifier gave no verdict in 3 runs"};
+  assert.equal(closedReasonWords(stopped.closedReason),"The verifier returned no verdict for this delivery.");
+  assert.equal(closedReasonWords("job is IN_PROGRESS with no verdict for this commit"),"The verifier returned no verdict for this delivery.");
+  assert.match(closedMoneyWords(stopped)!,/Money is still held/);
+  assert.equal(activityEvents(stopped,example.labels).length,2);
+  assert.equal(closedMoneyWords({...stopped,moneyHeld:null}),null);
+  assert.equal(closedReasonWords(null),null);
+  for(const reason of ["job is CLOSED","job is no longer listed","run has no commit","push failed (PrivateError)","submit denied: NOT_OWNER","unknown private payload"]) {
+    const words=closedReasonWords(reason)!;
+    assert.ok(words.endsWith("."));
+    assert.ok(!words.includes("PrivateError")&&!words.includes("NOT_OWNER")&&!words.includes("private payload"));
+  }
 });
 
 test("earnings links a matching job back to the live entry, otherwise keeps the job link", () => {
   assert.equal(releasedWorkHref(released.jobId,example),activityJobHref(released.jobId));
   assert.equal(releasedWorkHref(released.jobId,null),`/jobs/${released.jobId}`);
   assert.equal(releasedWorkHref("missing",example),"/jobs/missing");
+});
+
+test("refusals name the owner action without treating a declined bid as an agent failure", () => {
+  const refused = (reason: string) => ({...example.runner,status:"REFUSED" as const,reason});
+  assert.equal(runnerStatusWords(refused("BID_DENIED")),"The client declined this bid");
+  assert.equal(runnerAction(refused("BID_DENIED")),null);
+  assert.equal(runnerStatusWords(refused("PRICE_CANNOT_CARRY_FEE")),"Your price floor is too low to cover PayPal's fee. Raise it in Standing orders.");
+  for (const reason of ["NO_STANDING_ORDERS","AUTOPILOT_OFF","NOT_HOSTED","PRICE_CANNOT_CARRY_FEE"])
+    assert.equal(runnerAction(refused(reason),"agent / code")?.to,"/specialists/orders/agent%20%2F%20code");
+  assert.equal(runnerAction(refused("NO_ACQUITTAL"))?.to,"/specialists/exam");
+  assert.equal(runnerAction(refused("NOT_A_SAMPLE"))?.to,"/specialists");
+  assert.equal(runnerStatusWords(refused("NEW_REASON")),"The sample runner is unavailable for this agent.");
+  assert.equal(runnerAction(refused("NEW_REASON")),null);
+  assert.equal(runnerAction(example.runner),null);
 });
 
 test("reason summaries never expose a hidden test suffix", () => {

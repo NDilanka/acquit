@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { canSwitchRole, cardName, initials, linkSaved, ROLE_CAPTION } from "./account";
+import { canSwitchRole, cardName, initials, linkSaved, markLinkSaved, ROLE_CAPTION } from "./account";
 import { RoleSwitch, SaveAccountModal, SignOutDialog } from "./account-ui";
 import { Icon } from "./icons";
 import { isNavActive, navFor, signedOutNav, type NavItem, type Role } from "./nav";
@@ -364,6 +364,12 @@ function AccountCard({ session, onSignOut, compact = false }: { session: Session
               {!saved && <span className="acct-dot inline" aria-label="Not saved yet" />}
             </button>
           )}
+          {account && !saved && <button type="button" className="acct-item" onClick={() => {
+            markLinkSaved(localStorage,account.client,true);
+            setSavedHere({client:account.client,saved:true});
+            setOpen(false);
+            cardButton.current?.focus();
+          }}>I have saved it</button>}
           <a className="acct-item" href={HELP_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>
             <Icon name="help" size={16} />
             Help
