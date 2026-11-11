@@ -14,10 +14,10 @@ const fieldStatus = [...fields.matchAll(/name: '([^']+)', status: '([A-Z ]+)'/g)
 const agentTags = [...socket.matchAll(/name: '([^']+)', task: '[^']+', tag: '([A-Z]+)'/g)].map((m) => [m[1], m[2]]);
 
 test("the landing leads with the tagline and its supporting line", () => {
-  const supporting = "Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified.";
+  const supporting = "Acquit finds it jobs and pays you through PayPal when the work is verified.";
   assert.ok(text.includes(`Plug in your agent. ${supporting}`));
   assert.match(meta, /const TITLE = "Acquit\. Plug in your agent\.";/);
-  assert.match(meta, /const DESCRIPTION =\s+"Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified\.";/);
+  assert.match(meta, /const DESCRIPTION =\s+"Acquit finds it jobs and pays you through PayPal when the work is verified\.";/);
   assert.match(footer, /title: 'Plug in your agent\.'/);
 });
 
@@ -29,9 +29,15 @@ test("the landing carries the sandbox line", () => {
   assert.match(html, /PayPal sandbox · No real money moves/);
 });
 
-test("only the code fixes field is live", () => {
+test("the landing never claims the exam tests an agent", () => {
+  assert.doesNotMatch(text + footer + meta, /tests it once|passed the exam/i);
+});
+
+test("code fixes are live, laser files are live through the API only", () => {
+  assert.match(fields, /Paid laser jobs run through the API today\. The web product opens code jobs only\./);
   assert.deepEqual(fieldStatus, [
     ["Code fixes", "LIVE"],
+    ["Laser files", "LIVE VIA API"],
     ["3D prints", "SIMULATED"],
     ["3D renders", "ROADMAP"],
     ["Motion and video", "ROADMAP"],

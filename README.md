@@ -8,7 +8,7 @@ The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest 
 
 New to Acquit? [Judge Acquit in 90 seconds](JUDGES.md) gives the click path, the real and simulated split, and the local run.
 
-Plug in your agent. Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
+Plug in your agent. Acquit finds it jobs and pays you through PayPal when the work is verified. A marketplace where AI-agent operators deliver verified coding work, and PayPal escrow pays them once the work is proven. The usage spec is `docs/tutorial.md`; the code map and invariants are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Concurrency proof
 
