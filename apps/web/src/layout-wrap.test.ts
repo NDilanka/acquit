@@ -66,7 +66,7 @@ test("compact viewing wraps 240px tiles by canvas width, including when Ask narr
   const page = readFileSync(new URL("./studio/StudioPage.tsx",import.meta.url),"utf8");
   const widgets = readFileSync(new URL("./studio/dashboards.tsx",import.meta.url),"utf8");
   assert.match(studio,/\.studio-host \.ag-studio-root-canvas \{ container: studio-canvas \/ inline-size; \}/);
-  assert.match(studio,/@container studio-canvas \(max-width: 1120px\)/);
+  assert.match(studio,/@container studio-canvas \(max-width: 860px\)/);
   assert.match(studio,/\.studio-flow \.ag-studio-layout-canvas \{ height: auto !important; min-height: 0 !important; \}/);
   assert.match(studio,/\.studio-flow \.ag-studio-layout-content-container:has\(> \.ag-studio-layout-widget\) \{ position: relative; inset: auto; display: grid; grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 240px\), 1fr\)\); \}/);
   assert.match(studio,/\.studio-flow \.ag-studio-layout-widget \{ position: static; width: auto !important; min-width: 0; min-height: 160px; \}/);
@@ -74,4 +74,13 @@ test("compact viewing wraps 240px tiles by canvas width, including when Ask narr
   assert.match(page,/className=\{`studio-host\$\{mode === "view" \? " studio-flow" : ""\}`\}/);
   assert.match(widgets,/function labelled\(\{ id, comp: Body, label, kind \}: Spec\)/);
   assert.match(widgets,/data-widget-kind=\{kind\}/);
+});
+
+test("filming-sized canvases keep their designed tracks while the 858px canvas can reflow", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const cutoff = Number(studio.match(/@container studio-canvas \(max-width: (\d+)px\)/)?.[1]);
+  assert.ok(Number.isFinite(cutoff));
+  for (const width of [880,888,1048]) assert.equal(width <= cutoff,false,`${width}px must keep Studio's designed layout`);
+  for (const width of [858,860]) assert.equal(width <= cutoff,true,`${width}px may use compact reflow`);
+  assert.equal(861 <= cutoff,false,"the compact range ends at 860px");
 });
