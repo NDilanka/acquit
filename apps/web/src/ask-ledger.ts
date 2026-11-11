@@ -54,6 +54,7 @@ const DELEGATION_RECIPE = [
   "The widget agent adds the widget if it is new, then configures it.",
   "If no catalogue type fits the request, decline and name the closest types instead of delegating.",
   "Report its result honestly: when it reports an error, tell the reader the widget was not made and why. Never claim the widget was made unless its result says so.",
+  "Say it in plain words: never quote the result's text, and never print a widget type id or a widget id to the reader.",
 ].join("\n");
 
 /** The data and page agents are Studio's built-ins; the ledger agent hands them questions and changes the same way. */
