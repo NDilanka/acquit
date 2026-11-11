@@ -20,6 +20,8 @@ import type { AgentId, ClientId, MerchantId, OperatorId, Version } from "../src/
 import { demoFixture, exampleContract } from "./hidden-fixture.ts";
 import type { HiddenContract } from "../src/fixtures.ts";
 import type { Actor, CommandOutcome, UserCommand } from "../src/acquit.ts";
+import { CODE_VERTICAL, LASER_VERTICAL, codeVerifier, laserVerifier } from "../src/outcome.ts";
+import type { SealedCheckSet } from "../src/physical.ts";
 
 const now = instant("2026-10-06T12:00:00Z");
 const model = { version: "test", rateBps: 349 as Bps, fixed: usd("0.49") };
@@ -74,6 +76,27 @@ async function openedAndBid(agent: Partial<Pick<Agent, "task" | "acquittal">>, k
 	} finally { f.store.close(); }
 }
 
+// A deployment that opens laser jobs: the sealed checks are held, and both judges are registered.
+const sealedChecks: SealedCheckSet = { keepMaterialMm: [[1, 1]], voidMm: [[5, 5]] };
+const mayaOnOwnRepo: Actor = { role: "CLIENT", clientId: "maya-client" as ClientId, tenant: null, repository: "maya-client/invoice-app" };
+const laserOpenCommand: UserCommand = { type: "OpenJob", repository: "maya-client/invoice-app", issueNumber: 1,
+	budget: usd("400.00"), deliveryEndsAt: instant("2026-10-13T12:00:00Z"), vertical: LASER_VERTICAL };
+
+function laserFixture(agent: Partial<Pick<Agent, "task" | "acquittal">>) {
+	const f = fixture(agent);
+	const ports: Ports = { ...f.ports, physical: { sealed: () => sealedChecks },
+		verifiers: { [CODE_VERTICAL]: codeVerifier(f.ports), [LASER_VERTICAL]: laserVerifier(f.ports) } };
+	return { store: f.store, ports };
+}
+
+async function laserOpenedAndBid(agent: Partial<Pick<Agent, "task" | "acquittal">>): Promise<CommandOutcome> {
+	const f = laserFixture(agent);
+	try {
+		const jobId = openedJobId(await executeCommand(f.ports, mayaOnOwnRepo, parseRequestKey(randomUUID()), laserOpenCommand));
+		return await placeBid(f.ports, jobId);
+	} finally { f.store.close(); }
+}
+
 test("off by default, the gate lets an unacquitted agent bid", async () => {
 	const bid = await openedAndBid({ acquittal: null });
 	assert.notEqual(bid.kind, "DENIED");
@@ -116,6 +139,23 @@ test("enforced, House still bids without an acquittal", async () => {
 		const bid = await openedAndBid({ acquittal: null }, "HOUSE");
 		assert.notEqual(bid.kind, "DENIED");
 	} finally { setExamGateEnforced(false); }
+});
+
+test("flag off, a laser job still refuses an unacquitted laser agent as NOT_ACQUITTED", async () => {
+	const bid = await laserOpenedAndBid({ task: LASER_VERTICAL, acquittal: null });
+	assert.equal(bid.kind, "DENIED");
+	if (bid.kind === "DENIED") assert.equal(bid.reason, "NOT_ACQUITTED");
+});
+
+test("flag off, a laser job still refuses a code agent as WRONG_TASK", async () => {
+	const bid = await laserOpenedAndBid({ task: CODE_VERTICAL, acquittal: { examId: "exam_1", at: now } });
+	assert.equal(bid.kind, "DENIED");
+	if (bid.kind === "DENIED") assert.equal(bid.reason, "WRONG_TASK");
+});
+
+test("flag off, an acquitted laser agent bids on the laser job", async () => {
+	const bid = await laserOpenedAndBid({ task: LASER_VERTICAL, acquittal: { examId: "exam_1", at: now } });
+	assert.notEqual(bid.kind, "DENIED");
 });
 
 test("a row written before the exam reads with the code task, no acquittal, no sample", async () => {

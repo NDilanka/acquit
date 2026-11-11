@@ -669,9 +669,11 @@ function transitionTable(): {
 			const { operator, agent, credits, fundable } = facts.loaded;
 			if (operator.id !== facts.actor.operatorId || agent.owner !== operator.id || agent.id !== command.agent) return "NOT_OWNER";
 			// House is exempt: placeHouseBid sends its bids through this same apply. The gate refuses only when enforced.
+			// A physical job is new, so its gate always applies: the flag governs the code vertical alone.
 			if (operator.kind !== "HOUSE") {
-				const gate = bidGate(agent, row.vertical ?? CODE_VERTICAL);
-				if (gate !== null && examGateEnforced) return gate;
+				const vertical = storedVertical(row);
+				const gate = bidGate(agent, vertical);
+				if (gate !== null && (examGateEnforced || vertical !== CODE_VERTICAL)) return gate;
 			}
 			if (!readyToBid(operator)) return "ONBOARDING_REQUIRED";
 			if (facts.now >= row.contract.deliveryEndsAt) return "DEADLINE_PASSED";
