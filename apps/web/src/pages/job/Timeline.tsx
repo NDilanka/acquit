@@ -38,6 +38,7 @@ function EventNode({ event }: { event: TimelineEvent }) {
             {reason}
           </p>
         ))}
+        {event.paypalLine && <p className="tl-detail">{event.paypalLine}</p>}
         {event.href && (
           <p className="tl-link">
             <a href={event.href} target="_blank" rel="noreferrer">

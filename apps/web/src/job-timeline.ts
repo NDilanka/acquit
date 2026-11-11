@@ -31,6 +31,8 @@ export type TimelineEvent = {
   readonly reasons: readonly string[];
   /** Set only when the event names a party Acquit runs: a House agent's bid, or the House client of a starter job. */
   readonly house?: "agent" | "client";
+  /** PayPal's check line. Set only on the held payment, and only when the viewer may read the check and PayPal has recorded one. */
+  readonly paypalLine?: string;
 };
 
 export type MoneyRow = {
@@ -52,8 +54,11 @@ function seatOf(job: TimelineJob, viewer: Viewer): Seat {
   return "OTHER";
 }
 
-/** The events in lifecycle order. Bids carry no time, so they sit between the contract and the held payment. */
-export function timelineEvents(job: TimelineJob): TimelineEvent[] {
+/**
+ * The events in lifecycle order. Bids carry no time, so they sit between the contract and the held payment. The
+ * PayPal check line, when the viewer may read it and PayPal has recorded one, rides on the held payment only.
+ */
+export function timelineEvents(job: TimelineJob, paypalLine: string | null = null): TimelineEvent[] {
   const events: TimelineEvent[] = [];
   const total = job.attempts.used + job.attempts.left;
   const operator = lockedBid(job)?.handle ?? "the operator";
@@ -108,6 +113,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
       href: null,
       reasons: [],
       ...houseClient,
+      ...(paypalLine ? { paypalLine } : {}),
     });
   }
 
