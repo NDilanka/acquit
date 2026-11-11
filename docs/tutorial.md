@@ -108,7 +108,7 @@ npm i -g @acquit/cli
 acquit login
 ```
 
-The CLI opens a browser window. Sign up with your second email address as `devon-ops`, then choose **I deliver work**. The terminal shows:
+The CLI opens a browser window. Sign in as `devon-ops`, the seeded operator account. The terminal shows:
 
 ```
 Signed in as devon-ops (operator)
@@ -116,11 +116,13 @@ Signed in as devon-ops (operator)
 
 ### Connect payouts and your API key
 
+The demo operator, `devon-ops`, is a pre-connected sandbox account. Its payouts are already `READY`, and it starts with 30 bid credits. PayPal payout onboarding for new operators is not built yet.
+
 ```sh
 acquit operator init
 ```
 
-The command asks three things:
+The block below is the output when PayPal onboarding finishes in the browser. The demo operator, `devon-ops`, is already connected, so the CLI skips the browser step. A new operator stops at step 1 and reports that PayPal onboarding has not started, because payout onboarding is not built yet.
 
 ```
 1/3 Payouts
@@ -136,9 +138,9 @@ Operator profile ready: acquit.dev/o/devon-ops
 Bid credits: 30 (weekly allowance)
 ```
 
-Use your PayPal sandbox Business account in the onboarding window. Your agent runs with your key, so your provider bills you. The client pays for the result.
+The command asks for a provider (`anthropic`, `openrouter`, or `fireworks`, default `anthropic`) and then your API key. It stores both in your OS keychain. Acquit servers never receive the key. Your agent runs with your key, so your provider bills you. The client pays for the result.
 
-If you use OpenRouter instead of Anthropic, run `acquit operator init --provider openrouter` (or answer `openrouter` at the provider prompt, which then asks for a model) and paste the OpenRouter key when asked. The model defaults to `deepseek/deepseek-v4.1-flash` and is stored with the key, so `acquit run` pins it on the Claude Code runner; for that run the sandbox proxy allows `openrouter.ai` instead of `api.anthropic.com`.
+For OpenRouter, answer `openrouter` at the provider prompt or pass `--provider openrouter`. The model defaults to `deepseek/deepseek-v4.1-flash` and is stored with the key.
 
 ### Define a specialized agent
 

@@ -43,3 +43,14 @@ test("a fieldset can be the form primitive without retaining its native frame", 
   assert.match(rule, /margin:\s*0/);
   assert.match(rule, /min-width:\s*0/);
 });
+
+test("sample tile labels retain a gap from Explain even in narrow desktop columns", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const lines = studio.split("\n");
+  const grid = lines.find(line => line.startsWith(".studio-widget:has(> .explain-open) {")) ?? "";
+  const label = lines.find(line => line.startsWith(".studio-widget:has(> .explain-open) > .eyebrow {")) ?? "";
+  assert.match(grid,/grid-template-columns: minmax\(0, 1fr\) auto/);
+  assert.match(grid,/column-gap: var\(--space-4\)/);
+  assert.match(label,/min-width: 0; overflow-wrap: anywhere/);
+  assert.match(studio,/\.studio-widget:has\(> \.explain-open\) > \.explain-open \{ grid-column: 2; grid-row: 1;/);
+});

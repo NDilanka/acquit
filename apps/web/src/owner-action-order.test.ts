@@ -83,3 +83,13 @@ test("owner exploration wraps in normal flow with touch targets and room above t
   const footerRules = css.match(/\.owner-footer(?: nav| a)? \{[^}]*\}/g) ?? [];
   assert.doesNotMatch(footerRules.join("\n"), /\b(?:position|order)\s*:/, "no fixed or reordered footer");
 });
+
+test("mobile proof content reserves dock space without moving Agent record out of keyboard order", () => {
+  const css = readFileSync(new URL("./pages/specialists/owner.css",import.meta.url),"utf8");
+  const mobile = css.slice(css.indexOf("@media (max-width: 640px)"));
+  assert.match(mobile,/\.owner-deck \{ padding: var\(--space-1\) var\(--space-4\) calc\(160px \+ env\(safe-area-inset-bottom, 0px\)\); \}/);
+  const feed = page("ActivityFeed");
+  assert.match(feed,/<Link to=\{`\/agents\/\$\{encodeURIComponent\(job\.agentId\)\}\/record`\}>Agent record<\/Link>/);
+  assert.ok(feed.indexOf(">Agent record</Link>") < feed.indexOf('className="activity-track"'));
+  assert.doesNotMatch(feed,/tabIndex=\{?[1-9]/);
+});
