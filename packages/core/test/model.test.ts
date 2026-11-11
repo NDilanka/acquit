@@ -15,10 +15,12 @@ import {
 } from "../src/model.ts";
 import type { ModelCallLog } from "../src/model.ts";
 
-test("the model provider switch defaults to droid with glm-5.3-flash", () => {
-	assert.equal(modelProvider({}), "droid");
-	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "" }), "droid");
-	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "  " }), "droid");
+test("the model provider switch defaults to fireworks; droid stays selectable with glm-5.3-flash", () => {
+	assert.equal(modelProvider({}), "fireworks");
+	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "" }), "fireworks");
+	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "  " }), "fireworks");
+	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "fireworks" }), "fireworks");
+	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "Fireworks " }), "fireworks", "the value is read case-insensitively and trimmed");
 	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "droid" }), "droid");
 	assert.equal(modelProvider({ ACQUIT_MODEL_PROVIDER: "DROID " }), "droid", "the value is read case-insensitively and trimmed");
 	assert.equal(DROID_MODEL, "glm-5.3-flash");
@@ -32,6 +34,7 @@ test("openrouter stays selectable on the same switch", () => {
 test("an unknown provider name is a configuration error, never a silent fallback", () => {
 	assert.throws(() => modelProvider({ ACQUIT_MODEL_PROVIDER: "anthropic" }), /ACQUIT_MODEL_PROVIDER/);
 	assert.throws(() => modelProvider({ ACQUIT_MODEL_PROVIDER: "factory" }), /ACQUIT_MODEL_PROVIDER/);
+	assert.throws(() => modelProvider({ ACQUIT_MODEL_PROVIDER: "meta" }), /ACQUIT_MODEL_PROVIDER/, "meta is a fallback inside llm.ts, not a switch value");
 });
 
 test("the droid client pins the ruled exec argv: auto medium, the model, json output, prompt by file", () => {

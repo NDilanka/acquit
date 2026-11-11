@@ -63,8 +63,9 @@ function deps(overrides: Partial<Parameters<typeof scopingKick>[0]> = {}): Param
 	};
 }
 
-test("the scoping model name follows the provider switch: glm-5.3-flash by default, the :free id on openrouter", () => {
-	assert.equal(scopeModelName(), "glm-5.3-flash");
+test("the scoping model name follows the provider switch: the fireworks scoping primary by default, the droid id on droid, the :free id on openrouter", () => {
+	assert.equal(scopeModelName({}), "accounts/fireworks/models/kimi-k3p1-pro");
+	assert.equal(scopeModelName({ ACQUIT_MODEL_PROVIDER: "fireworks" }), "accounts/fireworks/models/kimi-k3p1-pro");
 	assert.equal(scopeModelName({ ACQUIT_MODEL_PROVIDER: "droid" }), "glm-5.3-flash");
 	assert.equal(scopeModelName({ ACQUIT_MODEL_PROVIDER: "openrouter" }), "nvidia/nemotron-3-ultra-550b-a55b:free");
 });
@@ -88,7 +89,8 @@ test("the draft request carries the stored issue body and the frozen and fix com
 			requested = JSON.parse(String(init?.body)) as { model: string; messages: { content: string }[] };
 			return new Response(JSON.stringify({ choices: [{ message: { content: goodDraft } }] }), { status: 200 });
 		}) as typeof fetch });
-	const turn = await scopeDraftTurn({ model: openrouter, callLog: modelCallLog(join(tmpdir(), `a1-or-${Date.now()}.jsonl`)), jobId }, prompt);
+	const turn = await scopeDraftTurn({ model: openrouter, callLog: modelCallLog(join(tmpdir(), `a1-or-${Date.now()}.jsonl`)), jobId,
+		env: { ACQUIT_MODEL_PROVIDER: "openrouter" } }, prompt);
 	assert.ok(turn.ok, "the injected transport answers");
 	assert.ok(requested!.model!.endsWith(":free"), "the openrouter model id is the free tier's");
 	assert.match(requested!.messages![0]!.content!, /a3b6ead29f4e367d1871e753b516cc9e832871e4/, "the same frozen commit rides in the openrouter request");
@@ -121,22 +123,44 @@ test("a drafted contract parks AWAITING_APPROVAL with the issue body, ids and co
 	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
 
-test("a failed or malformed draft freezes nothing and never retries: FAILED once, no case file", async () => {
-	for (const [name, model] of [["provider error", async () => failed("PROVIDER_ERROR")], ["malformed", async () => answered("not json at all")]] as const) {
+test("a failed or malformed draft freezes nothing and never loops: FAILED once, no case file, at most the one fallback call", async () => {
+	const shapes: readonly [name: string, model: () => Promise<AskModelResult>, env: NodeJS.ProcessEnv, calls: number][] = [
+		["provider error on droid", async () => failed("PROVIDER_ERROR"), { ACQUIT_MODEL_PROVIDER: "droid" }, 1],
+		["provider error on fireworks", async () => failed("PROVIDER_ERROR"), {}, 2],
+		["malformed on fireworks", async () => answered("not json at all"), {}, 1],
+	];
+	for (const [name, model, env, expectedCalls] of shapes) {
 		const rows: JobScopingRow[] = [];
 		const dir = await mkdtemp(join(tmpdir(), "acquit-a1-api-"));
 		let calls = 0;
 		try {
-			const kick = scopingKick(deps({ scopingDir: dir, model: async prompt => { calls++; return model(); },
+			const kick = scopingKick(deps({ scopingDir: dir, env, model: async () => { calls++; return model(); },
 				store: { readScoping: async () => null, writeScoping: async row => { rows.push(row); } } }));
 			await kick(jobId);
-			assert.equal(calls, 1, `${name}: exactly one model call, never a retry loop`);
+			assert.equal(calls, expectedCalls, `${name}: ${expectedCalls} model call(s), never a retry loop`);
 			assert.equal(rows.length, 2);
 			assert.equal(rows[1]!.status, "FAILED");
 			assert.match(rows[1]!.reason ?? "", /draft|provider/i, `${name}: the refusal is named`);
 			await assert.rejects(readFile(join(dir, "job_scope.json")));
 		} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 	}
+});
+
+test("under fireworks a provider error gets one call on the scoping fallback model, and the log names both attempts", async () => {
+	const rows: JobScopingRow[] = [];
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-api-"));
+	const models: string[] = [];
+	try {
+		const kick = scopingKick(deps({ scopingDir: dir, env: {},
+			model: async (_prompt, _signal, model) => { models.push(model ?? ""); return models.length === 1 ? failed("PROVIDER_ERROR") : answered(goodDraft); },
+			store: { readScoping: async () => null, writeScoping: async row => { rows.push(row); } } }));
+		await kick(jobId);
+		assert.deepEqual(models, ["accounts/fireworks/models/kimi-k3p1-pro", "accounts/fireworks/models/glm-5p3"], "the primary, then the fallback");
+		assert.equal(rows[1]!.status, "AWAITING_APPROVAL", "the fallback's answer parks the draft");
+		const log = (await readFile(join(dir, "model-calls.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line) as { phase: string; model: string; outcome?: string });
+		assert.deepEqual(log.filter(record => record.phase === "END").map(record => [record.model, record.outcome]),
+			[["accounts/fireworks/models/kimi-k3p1-pro", "PROVIDER_ERROR"], ["accounts/fireworks/models/glm-5p3", "answered"]]);
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
 
 test("a draft every filter drops parks FAILED with the counts, and never a case file", async () => {

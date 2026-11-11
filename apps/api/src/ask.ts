@@ -3,8 +3,10 @@
 // answers with through POST /api/ask-ledger/tool -- so the model's turns never leave this server,
 // its key never leaves this process, and the tool set is a closed read-only list. The droid turn is
 // read-only by construction: no --auto, so nothing the model asks to run can execute, and the
-// turn's only product is the JSON envelope its answer carries. The openrouter path stays selectable
-// on the same switch and is tested with injected transports only; no live OpenRouter call.
+// turn's only product is the JSON envelope its answer carries. The default fireworks path makes one
+// chat-completions attempt per call through llm.ts; the feature's one fallback is owned here, in the
+// ledger's retry. The openrouter path stays selectable on the same switch and is tested with injected
+// transports only; no live OpenRouter call.
 
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -12,7 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boundedDetail } from "../../../packages/core/src/verifier.ts";
 import { classifyDroidRun, droidResultText, DROID_MODEL, factoryApiKey, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
-import type { ModelCallAllowance, ModelCallLog } from "../../../packages/core/src/model.ts";
+import type { ModelCallAllowance, ModelCallLog, ModelProvider } from "../../../packages/core/src/model.ts";
+import { llmChat, llmKey, llmModelFor, llmTimeoutMs } from "../../../packages/core/src/llm.ts";
+import type { LlmUsage } from "../../../packages/core/src/llm.ts";
 import { platformEscrowTotals } from "../../../packages/core/src/platform.ts";
 import type { PlatformJobLedger, PlatformPayPalEventRow } from "../../../packages/core/src/platform.ts";
 import type { JobView } from "../../../packages/core/src/acquit.ts";
@@ -47,17 +51,21 @@ export type AskTurnOutcome =
 		readonly sessionId: string | null; readonly factoryCredits: number | null }
 	| { readonly ok: false; readonly reason: "MODEL_PROVIDER_ERROR" | "MODEL_RATE_LIMITED" | "MODEL_BUDGET" | "MODEL_KEY_MISSING" | "MODEL_TIMEOUT"; readonly detail: string };
 
-/** The model-turn port, shared by both providers: the composed prompt in, the answer text out. The signal, when given,
- * aborts the provider's work: the port stops its child or request and answers a failure at once. */
-export type AskModelPort = (prompt: string, signal?: AbortSignal) => Promise<AskModelResult>;
+/** The model-turn port, shared by every provider: the composed prompt in, the answer text out. The signal, when given,
+ * aborts the provider's work: the port stops its child or request and answers a failure at once. The model names the
+ * attempt's model; the fireworks port runs it, and the droid and openrouter ports keep their one model and ignore it. */
+export type AskModelPort = (prompt: string, signal?: AbortSignal, model?: string) => Promise<AskModelResult>;
 
 export type AskModelResult =
-	| { readonly ok: true; readonly text: string; readonly sessionId: string | null; readonly factoryCredits: number | null }
+	| { readonly ok: true; readonly text: string; readonly sessionId: string | null; readonly factoryCredits: number | null;
+		/** The provider's request id and token usage, when a chat-completions answer carried them. */
+		readonly requestId?: string | null; readonly usage?: LlmUsage | null }
 	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED" | "NO_KEY"; readonly detail: string;
 		/** What the failed run still reported, when the provider's own answer carried it: the
 		 * session it spent and the credits it charged. A failed call keeps its usage, like the
 		 * House runner's failures do. */
-		readonly sessionId?: string | null; readonly factoryCredits?: number | null };
+		readonly sessionId?: string | null; readonly factoryCredits?: number | null;
+		readonly requestId?: string | null; readonly usage?: LlmUsage | null };
 
 export type AskTurnDeps = {
 	readonly model: AskModelPort;
@@ -155,22 +163,33 @@ function parseAskCall(raw: unknown): AskCall[] {
 }
 
 /** The model id the ask turns run on, per the deployment's provider switch: the one place the
- * route's answer and the turns themselves read the same name from. */
-export function askModelName(): string {
-	return modelProvider() === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER;
+ * route's answer and the turns themselves read the same name from. Under fireworks it is the ask
+ * feature's primary model; the fallback is named per attempt by the ledger. */
+export function askModelName(env: NodeJS.ProcessEnv = process.env): string {
+	const provider = modelProvider(env);
+	if (provider === "fireworks") return llmModelFor("ask", "primary", env);
+	return provider === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER;
+}
+
+/** The model each attempt of one ask turn runs under. Fireworks names the ask feature's primary and its one fallback;
+ * the other providers keep their single model for both attempts, exactly as before. */
+function askAttemptModels(provider: ModelProvider, env: NodeJS.ProcessEnv = process.env): { readonly primary: string; readonly fallback: string } {
+	if (provider === "fireworks") return { primary: llmModelFor("ask", "primary", env), fallback: llmModelFor("ask", "fallback", env) };
+	const model = askModelName(env);
+	return { primary: model, fallback: model };
 }
 
 /** One model turn: reserve from the shared budget, run the provider's port, read the envelope.
  * Every provider attempt is its own budget event -- the retry reserves its own slot and records
  * its own START and END, so the log counts exactly what ran -- and a retry the budget cannot
- * admit is refused, never an unreserved call past the cap. A provider error retries once; a
- * rate or usage limit is terminal for the run, never retried. The budget's stamps are the wall
- * clock: the turn takes no clock at all, so the dev offset clock that governs domain deadlines
- * cannot reach the budget through it. */
+ * admit is refused, never an unreserved call past the cap. A provider error retries once, on the
+ * feature's fallback model under fireworks; a rate or usage limit is terminal for the run, never
+ * retried. The budget's stamps are the wall clock: the turn takes no clock at all, so the dev
+ * offset clock that governs domain deadlines cannot reach the budget through it. */
 export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly messages: readonly AskMessage[]; readonly tools: readonly AskToolSchema[];
 	readonly instructions?: string; readonly scope?: AskScope; readonly signal?: AbortSignal }): Promise<AskTurnOutcome> {
 	const provider = modelProvider();
-	const model = askModelName();
+	const models = askAttemptModels(provider);
 	const contract = input.scope === "OPERATOR" ? ASK_OPERATOR_TURN_CONTRACT : input.scope === "SAMPLE" ? ASK_SAMPLE_TURN_CONTRACT : ASK_TURN_CONTRACT;
 	const prompt = buildAskPrompt({ ...input, contract });
 	const caller = deps.caller ?? "ask-ledger";
@@ -179,33 +198,36 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	const isCancelled = (): boolean => signal?.aborted === true;
 	const cancelled: AskTurnOutcome = { ok: false, reason: "MODEL_PROVIDER_ERROR", detail: "the turn was cancelled before the model answered" };
 	const stamp = (): string => new Date().toISOString();
-	const recordEnd = async (attempt: AskModelResult): Promise<void> => {
+	const recordEnd = async (attempt: AskModelResult, model: string): Promise<void> => {
 		await deps.callLog.append({ at: stamp(), caller, jobId: null, provider, model, phase: "END",
 			outcome: attempt.ok ? "answered" : attempt.reason,
-			sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null });
+			sessionId: attempt.sessionId ?? null, factoryCredits: attempt.factoryCredits ?? null,
+			requestId: attempt.requestId ?? null, usage: attempt.usage ?? null });
 	};
 	// A turn already cancelled (its request ended, or its deadline passed) reserves nothing and runs nothing.
 	if (isCancelled()) return cancelled;
-	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model }, deps.allowance);
+	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model: models.primary }, deps.allowance);
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
 	// Cancelled while the reservation was being written: the START stands, its END records the cancel, and no model call runs.
 	if (isCancelled()) {
-		await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" });
+		await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" }, models.primary);
 		return cancelled;
 	}
-	let result = await deps.model(prompt, signal);
-	await recordEnd(result);
+	let model = models.primary;
+	let result = await deps.model(prompt, signal, model);
+	await recordEnd(result, model);
 	// A provider error retries once, but never once the turn is cancelled: a retry that starts past the deadline, or after
 	// the request ended, spends budget on an answer nobody reads.
 	if (!result.ok && result.reason === "PROVIDER_ERROR" && !isCancelled()) {
+		model = models.fallback;
 		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model }, deps.allowance);
 		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: retried.detail ?? "the shared model budget refused the one retry" };
 		if (isCancelled()) {
-			await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" });
+			await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" }, model);
 			return cancelled;
 		}
-		result = await deps.model(prompt, signal);
-		await recordEnd(result);
+		result = await deps.model(prompt, signal, model);
+		await recordEnd(result, model);
 	}
 	if (!result.ok) {
 		return result.reason === "RATE_LIMITED"
@@ -572,6 +594,32 @@ export function paypalAskReader(config: { readonly clientId: string; readonly cl
 	};
 }
 
+/** The output ceiling one ask attempt asks the provider for; the envelope and its tool calls fit inside it. */
+export const ASK_MAX_TOKENS = 2048;
+
+/** The fireworks ask port, the default provider: one chat-completions attempt per call, on the model the ledger names
+ * for that attempt. The prompt is the one user message, and the key is read in process by llm.ts and never leaves it.
+ * The feature's model names and the timeout are validated here, at construction, so a malformed name fails at boot. */
+export function fireworksAskPort(deps: { readonly fetch?: typeof fetch; readonly env?: NodeJS.ProcessEnv } = {}): AskModelPort {
+	const env = deps.env ?? process.env;
+	const primary = askAttemptModels("fireworks", env).primary;
+	const timeoutMs = llmTimeoutMs(env);
+	return async (prompt, signal, model) => {
+		const result = await llmChat({ provider: "fireworks", model: model ?? primary, prompt, maxTokens: ASK_MAX_TOKENS, timeoutMs, signal },
+			{ fetch: deps.fetch, env });
+		return result.ok
+			? { ok: true, text: result.text, sessionId: null, factoryCredits: null, requestId: result.requestId, usage: result.usage }
+			: { ok: false, reason: result.reason, detail: result.detail, sessionId: null, factoryCredits: null,
+				requestId: result.requestId, usage: result.usage };
+	};
+}
+
+/** The ask port the deployment's provider names: fireworks by default, and openrouter or droid when the switch says so. */
+export function askModelPortFor(provider: ModelProvider, deps: { readonly env?: NodeJS.ProcessEnv; readonly fetch?: typeof fetch } = {}): AskModelPort {
+	if (provider === "fireworks") return fireworksAskPort(deps);
+	return provider === "openrouter" ? openrouterAskPort(deps) : droidAskPort(deps);
+}
+
 /** The OpenRouter ask port, for the openrouter provider. Tested with injected transports only;
  * no live call is made by this mission. The key comes from the session keyring, in process. */
 export function openrouterAskPort(deps: { readonly fetch?: typeof fetch; readonly key?: () => Promise<string | null>; readonly env?: NodeJS.ProcessEnv } = {}): AskModelPort {
@@ -669,6 +717,8 @@ export function droidAskPort(deps: { readonly env?: NodeJS.ProcessEnv } = {}): A
 /** Whether the ask route can run a turn at all: a usable provider key in process. The answer says
  * so without naming one -- the key is never printed, never logged, never in a bundle. */
 export async function askKeyConfigured(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-	if (modelProvider(env) === "openrouter") return keyringKey() !== null;
+	const provider = modelProvider(env);
+	if (provider === "fireworks") return llmKey("fireworks", env) !== null;
+	if (provider === "openrouter") return keyringKey() !== null;
 	return (await factoryApiKey(env)) !== null;
 }

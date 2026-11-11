@@ -83,7 +83,7 @@ test("the ask routes refuse clients and anonymous callers, and the platform's to
 		const listed = await tools.json() as { tools: { name: string }[]; model: string; keyConfigured: boolean };
 		assert.deepEqual(listed.tools.map(tool => tool.name).sort(), ["get_dispute", "get_job", "get_order", "get_refund", "list_disputes",
 			"list_jobs", "list_transactions", "platform_totals", "trace_figure"]);
-		assert.equal(listed.model, "glm-5.3-flash", "the default provider's ask model is the ruled one");
+		assert.equal(listed.model, "accounts/fireworks/models/glm-5p3-flash", "the default provider's ask model is the fireworks ask primary");
 		assert.equal(listed.keyConfigured, false, "a boot with no Factory key says so, without naming one");
 
 		const totals = await post(port, "/api/ask-ledger/tool", { name: "platform_totals", arguments: {} }, token);
