@@ -19,6 +19,7 @@ test("two counted attempts retain visible counts alongside the sparkline", () =>
   ]) }));
   assert.match(html, />48\/48<\/span>/);
   assert.match(html, /<svg[^>]*aria-label="Passing share of 2 counted attempts: 50%, 100%"/);
+  assert.match(html, /<svg[^>]*width="100%"[^>]*viewBox="0 0 96 18"[^>]*preserveAspectRatio="none"/);
   assert.match(html, /<polyline points="2,9 94,2"/);
   assert.doesNotMatch(html, /verdict-single/);
 });
@@ -36,6 +37,16 @@ test("table cells and narrow cards share the tested renderer, whose counts and d
   const css = readFileSync(new URL("./studio/studio.css", import.meta.url), "utf8");
   assert.match(dashboards, /<VerdictPassing passing=\{passingTests\(job\.attempts\)\} \/>/);
   assert.match(dashboards, /<VerdictPassing passing=\{card\.passing\} \/>/);
-  assert.match(css, /\.verdict-grid \.verdict-passing \{ display: inline-flex; flex-direction: column/);
+  assert.match(css, /\.verdict-grid \.verdict-passing \{ display: flex; flex-direction: column;[^}]*min-width: 0; width: 100%;/);
   assert.match(css, /\.verdict-grid \.verdict-single \{ margin-left: 6px; color: var\(--green-text\); \}/);
+});
+
+test("the trend shrinks through Grid's flex wrappers while counts can wrap and grow the row", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./studio/studio.css", import.meta.url), "utf8");
+  assert.match(dashboards, /colId: "passing"[^\n]*cellClass: "verdict-passing-cell", autoHeight: true/);
+  assert.match(css, /\.verdict-grid \.verdict-passing-cell \.ag-cell-wrapper, \.verdict-grid \.verdict-passing-cell \.ag-cell-value \{ min-width: 0; width: 100%; \}/);
+  assert.match(css, /\.verdict-grid \.verdict-passing > \.num \{ white-space: normal; overflow-wrap: anywhere; \}/);
+  assert.match(css, /\.verdict-grid \.verdict-spark \{[^}]*min-width: 0; width: 100%; max-width: 96px; height: 18px;/);
+  assert.doesNotMatch(css, /\.verdict-grid \.verdict-spark \{[^}]*(?:overflow: visible|(?<!max-)width: 96px)/);
 });

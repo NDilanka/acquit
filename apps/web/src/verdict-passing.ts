@@ -10,7 +10,7 @@ export function VerdictPassing({ passing: { text, points } }: { readonly passing
     h("span", { className: "num", title: "Latest recorded test counts" }, text,
       points.length === 1 ? h("span", { className: "verdict-single", "aria-hidden": true }, "●") : null),
     points.length >= 2 ? h("svg", {
-      className: "verdict-spark", width: SPARK.width, height: SPARK.height, viewBox: `0 0 ${SPARK.width} ${SPARK.height}`, role: "img",
+      className: "verdict-spark", width: "100%", height: SPARK.height, viewBox: `0 0 ${SPARK.width} ${SPARK.height}`, preserveAspectRatio: "none", role: "img",
       "aria-label": `Passing share of ${points.length} counted attempts: ${points.map(point => `${Math.round(point * 100)}%`).join(", ")}`,
     }, h("polyline", { points: sparkCoords(points, SPARK.width, SPARK.height) })) : null,
   );

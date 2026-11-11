@@ -24,6 +24,12 @@ export type AttemptRow = { readonly kind: "attempt"; readonly id: string; readon
 export type TotalsRow = { readonly kind: "totals"; readonly id: "totals" } & FundedConserves;
 export type VerdictRow = GroupRow | JobRow | AttemptRow;
 
+export const VERDICT_ROW_HEIGHTS = { group: 34, job: 56, attempt: 40 } as const;
+
+export function verdictRowHeight(row: VerdictRow | undefined): number {
+  return VERDICT_ROW_HEIGHTS[row?.kind ?? "job"];
+}
+
 const byOrdinal = (a: { readonly ordinal: number }, b: { readonly ordinal: number }) => a.ordinal - b.ordinal;
 
 /**
@@ -148,11 +154,12 @@ export function payPalIds(job: PlatformJobLedger): readonly { readonly label: st
 export const VERDICT_MIN_WIDTHS = {
   job: 216,
   status: 136,
-  /** The 96px sparkline, below the always-visible counts. */
+  /** Counts above a sparkline that can shrink below its 96px maximum. */
   passing: 112,
   last: 144,
   escrow: 88,
-  paid: 104,
+  /** "Not recorded" in the mono face, plus cell padding and borders. */
+  paid: 120,
   operator: 180,
   ids: 188,
 } as const;
