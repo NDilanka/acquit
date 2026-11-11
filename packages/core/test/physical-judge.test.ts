@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { gitSource, runJudge } from "../../verifier/judge.ts";
 import type { JudgeDeps, JudgeOutcome, JudgeSource, PhysicalJudgeDeps } from "../../verifier/judge.ts";
-import { createVerifierService } from "../../verifier/service.ts";
+import { createVerifierService, parseRunRequest } from "../../verifier/service.ts";
 import type { VerifierService } from "../../verifier/service.ts";
 import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER, runSignature } from "../../verifier/signing.ts";
 import type { SubjectLauncher } from "../../verifier/subject.ts";
@@ -226,6 +226,22 @@ test("a physical definition crosses the signed run boundary and is judged, and a
 	}
 	assert.equal(service.runs.size, 1);
 	await service.close();
+});
+
+test("a code run ignores physical metadata this service cannot read, as main ignored unknown keys", () => {
+	const codeDefinition = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" }, frozenAt: LASER_CUT_WORKFLOW.frozenAt,
+		frozenTestPath: "tests/totals.test.ts", frozenTests: [], hiddenTests: [], hiddenManifest: digest, protectedPaths: [] };
+	for (const physical of [{ workflow: "pcb", deliveryPath: "delivery/board.gbr", publicSpec: {}, specDigest: digest }, "laser-cut", null]) {
+		const parsed = parseRunRequest(JSON.parse(JSON.stringify({ runId: request.runId, jobId, ordinal: 1, sourceCommit,
+			definitionOfDone: { ...codeDefinition, physical } })));
+		assert.notEqual(parsed, null, `physical ${JSON.stringify(physical)} must not fail a code run`);
+		assert.equal(parsed?.definitionOfDone.physical, undefined);
+		assert.equal(parsed?.definitionOfDone.frozenTestPath, "tests/totals.test.ts");
+	}
+	// A physical definition freezes no test, so its path is empty and its physical block must still read.
+	const unreadable = parseRunRequest(JSON.parse(JSON.stringify({ runId: request.runId, jobId, ordinal: 1, sourceCommit,
+		definitionOfDone: { ...definitionOfDone, physical: "laser-cut" } })));
+	assert.equal(unreadable, null);
 });
 
 /** Runs git in a repository and returns its trimmed output. */

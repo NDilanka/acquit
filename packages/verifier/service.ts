@@ -324,8 +324,9 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const number = typeof value.issue.number === "number" && Number.isSafeInteger(value.issue.number) && value.issue.number > 0 ? value.issue.number : null;
 	const title = boundedText(value.issue.title, 300);
 	const frozenAt = idOf(value.frozenAt, /^[0-9a-f]{7,64}$/);
-	// A code definition has no physical key, so its parsed shape is unchanged.
-	const physical = value.physical === undefined ? undefined : parsePhysical(value.physical);
+	// Physical metadata this service cannot read is ignored, as main ignored unknown keys. A physical definition still
+	// fails below: it freezes no test, so an unreadable block leaves its path empty and that path is refused.
+	const physical = parsePhysical(value.physical) ?? undefined;
 	// A code definition names its frozen test file. A physical definition freezes no test, so its path is empty.
 	const frozenTestPath = physical === undefined ? frozenTestPathOf(value.frozenTestPath) : value.frozenTestPath === "" ? "" : null;
 	const frozenTests = testIds(value.frozenTests);
@@ -333,7 +334,7 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const hiddenManifest = idOf(value.hiddenManifest, /^[0-9a-f]{64}$/);
 	const protectedPaths = globList(value.protectedPaths);
 	if (repository === null || number === null || title === null || frozenAt === null || frozenTestPath === null || frozenTests === null
-		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null || physical === null) return null;
+		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null) return null;
 	if (physical !== undefined && (frozenTests.length > 0 || hiddenTests.length > 0)) return null;
 	return { issue: { repository, number, title }, frozenAt: frozenAt as CommitSha, frozenTestPath, frozenTests: frozenTests as readonly TestId[],
 		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"],
