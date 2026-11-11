@@ -2,6 +2,7 @@
 // order's capture is still held, and records the answer on the job: the order, the status PayPal returned, the amount
 // PayPal reports held, and the time. It only observes and records. The check starts beside the push and nothing waits
 // for it, so a slow or refused read records the check as unavailable and the run goes on exactly as it would without it.
+// The check is claimed in the database before its read, so a restart or a repeated start never reads the order twice.
 
 import type { DatabaseSync } from "node:sqlite";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
@@ -12,6 +13,7 @@ import { paypalReader, PayPalHttpError, type PaypalReader } from "../../../packa
 /** How long the read may take. A read still running at this point records the check as unavailable. */
 export const PAYPAL_CHECK_TIMEOUT_MS = 5_000;
 
+// One row per job. The outcome PENDING is the claim: it is written before the read and replaced by the answer when the read settles.
 const SCHEMA = `CREATE TABLE IF NOT EXISTS job_paypal_checks (
 	job_id TEXT PRIMARY KEY,
 	order_id TEXT NOT NULL,
@@ -111,7 +113,9 @@ export type PayPalCheckPorts = {
 
 /**
  * The check's start and its reads. `start` returns at once: the read runs on its own, and its answer is recorded when
- * it settles. A job is checked once. A start for a job whose read is running, or that already has a record, starts no read.
+ * it settles. A job is checked once. `start` claims the job's row before it reads, so a start for a job that already has
+ * a claim starts no read, whether that claim's read is running or a restart cut it off. A claim cut off by a restart is
+ * recorded as unavailable and is never read again.
  */
 export function createPayPalCheck(ports: PayPalCheckPorts): {
 	readonly start: (row: JobRow) => void;
@@ -120,11 +124,13 @@ export function createPayPalCheck(ports: PayPalCheckPorts): {
 	ports.db.exec(SCHEMA);
 	const log = ports.log ?? ((line: string) => console.log(line));
 	const timeoutMs = ports.timeoutMs ?? PAYPAL_CHECK_TIMEOUT_MS;
-	const inFlight = new Set<string>();
-	const recorded = ports.db.prepare("SELECT 1 FROM job_paypal_checks WHERE job_id = ?");
-	const insert = ports.db.prepare(`INSERT OR IGNORE INTO job_paypal_checks
+	// The claims whose read is running in this process. A claim outside this set has no read behind it.
+	const running = new Set<string>();
+	const claimRow = ports.db.prepare(`INSERT OR IGNORE INTO job_paypal_checks
 		(job_id, order_id, checked_at, outcome, order_status, capture_status, held_value, held_currency, reason)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+		VALUES (?, ?, ?, 'PENDING', NULL, NULL, NULL, NULL, NULL)`);
+	const writeAnswer = ports.db.prepare(`UPDATE job_paypal_checks SET checked_at = ?, outcome = ?, order_status = ?,
+		capture_status = ?, held_value = ?, held_currency = ?, reason = ? WHERE job_id = ? AND outcome = 'PENDING'`);
 	const select = ports.db.prepare(`SELECT job_id, order_id, checked_at, outcome, order_status, capture_status,
 		held_value, held_currency, reason FROM job_paypal_checks WHERE job_id = ?`);
 
@@ -133,8 +139,8 @@ export function createPayPalCheck(ports: PayPalCheckPorts): {
 		try { answer = answerOf(await within(read(orderId, merchant), timeoutMs), orderId); }
 		catch (error) { answer = failureOf(error); }
 		try {
-			insert.run(jobId, orderId, ports.now(), answer.outcome, answer.orderStatus, answer.captureStatus,
-				answer.heldValue, answer.heldCurrency, answer.reason);
+			writeAnswer.run(ports.now(), answer.outcome, answer.orderStatus, answer.captureStatus,
+				answer.heldValue, answer.heldCurrency, answer.reason, jobId);
 			log(`PayPal check for ${jobId}: ${answer.outcome}${answer.reason === null ? "" : ` (${answer.reason})`}`);
 		} catch (error) {
 			log(`PayPal check for ${jobId} was not recorded: ${error instanceof Error ? error.name : "error"}`);
@@ -146,11 +152,12 @@ export function createPayPalCheck(ports: PayPalCheckPorts): {
 			try {
 				if (ports.read === null || row.state.status !== "IN_PROGRESS") return;
 				const jobId = row.id as string;
-				if (inFlight.has(jobId) || recorded.get(jobId) !== undefined) return;
-				inFlight.add(jobId);
 				const { escrow } = row.state;
+				// The claim is stored before the read. A row already there, from this run or a cut-off one, starts no read.
+				if (claimRow.run(jobId, escrow.capture.orderId, ports.now()).changes === 0) return;
+				running.add(jobId);
 				void check(jobId, escrow.capture.orderId, escrow.payee.payee, ports.read)
-					.finally(() => inFlight.delete(jobId));
+					.finally(() => running.delete(jobId));
 			} catch (error) {
 				log(`PayPal check did not start: ${error instanceof Error ? error.name : "error"}`);
 			}
@@ -160,10 +167,16 @@ export function createPayPalCheck(ports: PayPalCheckPorts): {
 			for (const jobId of jobIds) {
 				const row = select.get(jobId) as Record<string, string | null> | undefined;
 				if (row === undefined) continue;
+				// A claim whose read is still running shows nothing until it settles. A claim with no read behind it was cut
+				// off by a restart: it shows as unavailable, and nothing reads the order for it again.
+				const cutOff = row.outcome === "PENDING";
+				if (cutOff && running.has(jobId)) continue;
 				records.set(jobId, {
 					jobId: row.job_id as string, orderId: row.order_id as string, checkedAt: row.checked_at as string,
-					outcome: row.outcome as PayPalCheckOutcome, orderStatus: row.order_status, captureStatus: row.capture_status,
-					heldValue: row.held_value, heldCurrency: row.held_currency, reason: row.reason,
+					outcome: cutOff ? "UNAVAILABLE" : row.outcome as PayPalCheckOutcome,
+					orderStatus: cutOff ? null : row.order_status, captureStatus: cutOff ? null : row.capture_status,
+					heldValue: cutOff ? null : row.held_value, heldCurrency: cutOff ? null : row.held_currency,
+					reason: cutOff ? "INTERRUPTED" : row.reason,
 				});
 			}
 			return records;

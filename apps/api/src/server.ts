@@ -1665,6 +1665,7 @@ const houseKick = createHouseDelivery({
 	recordDiff: async (jobId, commit, files, patch) => {
 		db.prepare("INSERT OR REPLACE INTO house_diffs VALUES (?, ?, ?, ?)").run(jobId, commit, JSON.stringify(files), patch);
 	},
+	paypalCheck: payPalCheck,
 	stateDir: resolve(databasePath, ".."),
 });
 const houseTimer = setInterval(() => { void houseKick.kick().catch(() => console.error("House delivery failed; the next tick retries.")); }, 30_000);

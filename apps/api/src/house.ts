@@ -37,6 +37,8 @@ export type HousePorts = {
 	/** Overrides for tests; the real wiring runs the provider switch's port in the sandbox. */
 	readonly run?: HouseRunPort;
 	readonly work?: HouseWorkPort;
+	/** Starts PayPal's check of a job as its delivery starts. Observe-only: nothing waits for it. */
+	readonly paypalCheck?: { readonly start: (row: JobRow) => void };
 };
 
 /** The loop. Kick it from the tick; it returns at once when a delivery is already in flight. */
@@ -66,7 +68,10 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 		running = true;
 		try {
 			if (existsSync(pausedPath)) { announcePause(); return; }
-			for (const job of await deliverableTargets()) {
+			for (const { target: job, row } of await deliverableTargets()) {
+				// The check starts as the delivery does. Nothing waits for it, and a failure to start never reaches the delivery.
+				try { ports.paypalCheck?.start(row); }
+				catch (error) { log(`PayPal check did not start for ${job.id}: ${error instanceof Error ? error.name : "error"}`); }
 				const outcome = await runHouseDelivery(deps, job);
 				if (outcome === "RATE_LIMITED") {
 					writeFileSync(pausedPath, `${JSON.stringify({ reason: "RATE_LIMITED", at: new Date().toISOString(), jobId: job.id }, null, "\t")}\n`, { mode: 0o600 });
@@ -84,8 +89,8 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 		}
 	}
 
-	async function deliverableTargets(): Promise<readonly HouseTarget[]> {
-		const targets: HouseTarget[] = [];
+	async function deliverableTargets(): Promise<readonly { readonly target: HouseTarget; readonly row: JobRow }[]> {
+		const targets: { target: HouseTarget; row: JobRow }[] = [];
 		for (const row of ports.jobs()) {
 			if (!isDeliverableHouseJob(houseFactsOf(row))) continue;
 			const definition = row.contract.definitionOfDone;
@@ -94,7 +99,7 @@ export function createHouseDelivery(ports: HousePorts): { readonly kick: () => P
 			if (!worthStarting(state)) continue;
 			// The tenant comes from the stored row, the same one the House bid with -- never from a
 			// state file: the submit may act in exactly the world the job belongs to.
-			targets.push({ id: row.id, title: row.title, repository: definition.issue.repository, frozenAt: definition.frozenAt, tenant: row.tenant ?? null });
+			targets.push({ row, target: { id: row.id, title: row.title, repository: definition.issue.repository, frozenAt: definition.frozenAt, tenant: row.tenant ?? null } });
 		}
 		return targets;
 	}

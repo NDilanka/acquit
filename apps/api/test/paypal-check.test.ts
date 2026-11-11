@@ -3,6 +3,9 @@
 // unavailable, and nothing thrown into the run.
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type { MerchantId } from "../../../packages/core/src/ids.ts";
@@ -155,4 +158,37 @@ test("a malformed job row never throws into the run", () => {
 	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, log: line => lines.push(line) });
 	assert.doesNotThrow(() => check.start({ id: "job_a", state: null } as unknown as JobRow));
 	assert.match(lines.join("\n"), /PayPal check did not start/);
+});
+
+test("a claim cut off by a restart is recorded as unavailable, and its order is never read again", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-paypal-check-"));
+	const path = join(dir, "acquit.db");
+	let second: DatabaseSync | null = null;
+	try {
+		// The first process claims the job, then dies before its read settles: its handle closes, so no answer is written.
+		let firstReads = 0;
+		const first = new DatabaseSync(path);
+		const gone = createPayPalCheck({ db: first, read: () => { firstReads++; return new Promise(() => {}); }, now: () => instantNow,
+			timeoutMs: 20, log: () => {} });
+		gone.start(jobRow("job_a"));
+		first.close();
+		await new Promise(resolve => setTimeout(resolve, 40));
+
+		// The restarted process finds the claim with no answer, and the retry of the push starts no read.
+		second = new DatabaseSync(path);
+		let secondReads = 0;
+		const restarted = createPayPalCheck({ db: second, read: async () => { secondReads++; return completed(); }, now: () => instantNow,
+			log: () => {} });
+		const cut = restarted.recordsOf(["job_a"]).get("job_a");
+		assert.equal(cut?.outcome, "UNAVAILABLE");
+		assert.equal(cut?.reason, "INTERRUPTED");
+		restarted.start(jobRow("job_a"));
+		await settle();
+		assert.equal(firstReads, 1);
+		assert.equal(secondReads, 0, "a restart never reads the order a second time");
+		assert.equal(restarted.recordsOf(["job_a"]).get("job_a")?.outcome, "UNAVAILABLE");
+	} finally {
+		second?.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
