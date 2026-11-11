@@ -320,6 +320,74 @@ test("operator init --provider openrouter without --model stores the provider's 
 	assert.equal(transcript.includes("\tModel (deepseek/deepseek-v4.1-flash): deepseek/deepseek-v4.1-flash"), true, transcript);
 });
 
+test("operator init parses fireworks with its model, and refuses a blank model or a model without a model-taking provider", () => {
+	const options = parseOperatorArgs(["init", "--provider", "fireworks", "--model", "accounts/fireworks/models/glm-5p3",
+		"--provider-key-stdin"], { ACQUIT_TOKEN: "t" });
+	assert.equal(options.provider, "fireworks");
+	assert.equal(options.model, "accounts/fireworks/models/glm-5p3");
+	assert.equal(options.keyOnStdin, true);
+	assert.throws(() => parseOperatorArgs(["init", "--provider", "fireworks", "--model", "  "], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "USAGE");
+	assert.throws(() => parseOperatorArgs(["init", "--model", "accounts/fireworks/models/glm-5p3"], { ACQUIT_TOKEN: "t" }),
+		(error: CliError) => error.code === "USAGE");
+});
+
+test("operator init accepts fireworks interactively, defaults its model to Kimi, and stores all three entries", async () => {
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const key = "k".repeat(28);
+	const kimi = "accounts/fireworks/models/kimi-k3p1-pro";
+	const keychain = memoryKeychain();
+	const questions: string[] = [];
+	const written: string[] = [];
+	const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
+		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: text => written.push(text),
+		// The provider prompt admits fireworks; the model prompt then takes a blank as Kimi, the default.
+		ask: async (question, secret) => {
+			questions.push(question);
+			if (secret) return { value: key, echoed: false };
+			if (question.includes("Provider")) return { value: "fireworks", echoed: false };
+			return { value: "", echoed: false };
+		},
+		readStdin: () => "", sleep: async () => {}, now: () => 0,
+	});
+	assert.deepEqual(questions, ["\tProvider (anthropic): ", `\tModel (${kimi}): `, "\tAPI key: "]);
+	assert.equal(keychain.get("acquit:provider"), "fireworks");
+	assert.equal(keychain.get("acquit:provider-model"), kimi);
+	assert.equal(keychain.get("acquit:provider-key"), key);
+	const modelLine = `\tModel (${kimi}): ${kimi}`;
+	assert.equal(written.join("").includes(`${modelLine}\n`), true, written.join(""));
+	assert.equal(transcript.split(modelLine).length - 1, 1, "the transcript keeps one model line");
+});
+
+test("operator init --provider fireworks without --model stores Kimi, and with --model stores the model it names", async () => {
+	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
+		account: "sandbox Business account (payouts enabled)", identityVerified: true,
+		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
+	const key = "k".repeat(28);
+	const kimi = "accounts/fireworks/models/kimi-k3p1-pro";
+	const glm = "accounts/fireworks/models/glm-5p3";
+	const stated = async (model: string | null) => {
+		const keychain = memoryKeychain();
+		const transcript = await runOperatorInit({ apiUrl: API, token: "t", provider: "fireworks", model,
+			keyOnStdin: true, timeoutSeconds: 30, pollMs: 1 }, {
+			client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: () => {},
+			ask: async () => { throw new Error("a stated provider must not be asked about"); },
+			readStdin: () => `${key}\n`, sleep: async () => {}, now: () => 0,
+		});
+		return { keychain, transcript };
+	};
+	const defaulted = await stated(null);
+	assert.equal(defaulted.keychain.get("acquit:provider-model"), kimi);
+	assert.equal(defaulted.transcript.includes(`\tModel (${kimi}): ${kimi}`), true, defaulted.transcript);
+	const named = await stated(glm);
+	assert.equal(named.keychain.get("acquit:provider"), "fireworks");
+	assert.equal(named.keychain.get("acquit:provider-model"), glm);
+	assert.equal(named.transcript.includes("\tProvider (anthropic): fireworks"), true, named.transcript);
+	assert.equal(named.transcript.includes(`\tModel (${kimi}): ${glm}`), true, named.transcript);
+});
+
 test("askQuestion suppresses the echo only when both the reading end and the screen are terminals", () => {
 	// The readers use the real stdin, so each case is a child with one piped line; the injected flags
 	// are what the glue under test reads.
@@ -344,7 +412,7 @@ test("askQuestion suppresses the echo only when both the reading end and the scr
 
 test("operator init refuses an OpenAI provider key no runner can use", async () => {
 	assert.throws(() => parseOperatorArgs(["init", "--provider", "openai"], { ACQUIT_TOKEN: "t" }),
-		(error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic or OpenRouter key runs today.");
+		(error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic, OpenRouter, or Fireworks key runs today.");
 	const ready = { onboarding: { handle: "devon-ops", payouts: "READY", onboardingUrl: null,
 		account: "sandbox Business account (payouts enabled)", identityVerified: true,
 		credits: { available: 30, weeklyAllowance: 30, nextGrantAt: "2026-11-09T00:00:00.000Z", paidReceipts: 0 } } };
@@ -352,7 +420,7 @@ test("operator init refuses an OpenAI provider key no runner can use", async () 
 	await assert.rejects(runOperatorInit({ apiUrl: API, token: "t", provider: null, model: null, keyOnStdin: false, timeoutSeconds: 30, pollMs: 1 }, {
 		client: fakeClient({ "/api/me/onboarding": ready }), keychain, open: () => {}, write: () => {},
 		ask: async (_question, secret) => ({ value: secret ? "sk-ant-canary" : "openai", echoed: false }), readStdin: () => "", sleep: async () => {}, now: () => 0,
-	}), (error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic or OpenRouter key runs today.");
+	}), (error: CliError) => error.code === "PROVIDER_UNSUPPORTED" && error.message === "Only an Anthropic, OpenRouter, or Fireworks key runs today.");
 	assert.equal(keychain.get("acquit:provider-key"), null);
 	assert.equal(keychain.get("acquit:provider"), null);
 	assert.equal(keychain.get("acquit:provider-model"), null);

@@ -18,7 +18,7 @@ import { agentArgv, changedFiles, cleanupArgs, egressNetworkCreateArgs, ensureEm
 	renderFinished, renderPreparing, renderRunning, runAgentInSandbox, runnerRunArgs, runRun, sandboxNames, seedCommitIdentity, signalGuard,
 	submissionCommit } from "../src/run.ts";
 import type { DockerPort, GitRun, RunnerPlan, RunOptions, SandboxNames } from "../src/run.ts";
-import { PROVIDER_SPECS } from "../src/operator.ts";
+import { FIREWORKS_DEFAULT_MODEL, FIREWORKS_FALLBACK_MODEL, PROVIDER_SPECS } from "../src/operator.ts";
 import type { Provider } from "../src/operator.ts";
 import { existingStateCheckout, hardenedGitEnv, recordedWorkTree, stateGitDir, assertSafeScopedConfig, checkoutGitArgs, gitGuardArgs, unsafeGitConfigKeys, writeWorkTreeMarker } from "../src/gitstate.ts";
 import type { JobCheckout } from "../src/gitstate.ts";
@@ -1849,6 +1849,75 @@ test("an openrouter sandbox points the proxy at openrouter.ai and puts the key i
 		assert.equal(env?.ANTHROPIC_API_KEY, undefined, `call ${docker.calls[index].join(" ")}`);
 	}
 	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
+});
+
+test("a Fireworks claude-code run gets the bounded argv with the instruction last and no server-side search", () => {
+	assert.deepEqual(agentArgv("claude-code", "Fix the rounding.", null, "fireworks"),
+		["claude", "--print", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose",
+			"--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
+			"--disallowedTools", "Agent,Task,WebSearch", "--max-turns", "24", "Fix the rounding."]);
+	// Every other provider keeps the argv it always had.
+	for (const provider of ["anthropic", "openrouter"] as const) {
+		assert.deepEqual(agentArgv("claude-code", "Fix the rounding.", null, provider),
+			["claude", "--print", "--dangerously-skip-permissions", "Fix the rounding."], provider);
+	}
+});
+
+test("the Fireworks provider spec names Fireworks' one host and the bearer variable, and a GLM pin covers every model variable", () => {
+	assert.deepEqual(PROVIDER_SPECS.fireworks.hosts, ["api.fireworks.ai"]);
+	assert.equal(PROVIDER_SPECS.fireworks.keyVar, "ANTHROPIC_AUTH_TOKEN");
+	assert.equal(PROVIDER_SPECS.fireworks.defaultModel, FIREWORKS_DEFAULT_MODEL);
+	const glm = PROVIDER_SPECS.fireworks.fixedEnv(FIREWORKS_FALLBACK_MODEL);
+	for (const name of ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"]) {
+		assert.equal(glm[name], FIREWORKS_FALLBACK_MODEL, name);
+	}
+	assert.equal(glm.ANTHROPIC_BASE_URL, "https://api.fireworks.ai/inference");
+	assert.equal(glm.ANTHROPIC_API_KEY, "");
+	assert.equal(glm.CLAUDE_CODE_MAX_RETRIES, "0");
+});
+
+test("a Fireworks runner gets its key by name, Fireworks' base, and the client's own retries switched off", () => {
+	const plan: RunnerPlan = { names: sandboxNames("job_7Q2K"), image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: "/tmp/acquit-run-work", argv: agentArgv("claude-code", "Fix the rounding.", null, "fireworks"), commandPath: null,
+		runner: "claude-code", provider: "fireworks", providerKey: keyCanary, providerModel: null,
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+	const args = runnerRunArgs(plan);
+	assert.equal(args[args.indexOf("ANTHROPIC_AUTH_TOKEN") - 1], "-e");
+	assert.equal(args.includes(`ANTHROPIC_AUTH_TOKEN=${keyCanary}`), false);
+	assert.equal(args.includes("ANTHROPIC_API_KEY="), true);
+	assert.equal(args.includes("ANTHROPIC_BASE_URL=https://api.fireworks.ai/inference"), true);
+	assert.equal(args.includes(`ANTHROPIC_MODEL=${FIREWORKS_DEFAULT_MODEL}`), true);
+	assert.equal(args.includes("CLAUDE_CODE_MAX_RETRIES=0"), true);
+	assert.equal(args.some(arg => arg.includes(keyCanary)), false);
+	// The GLM retry pins every model variable of its own run, so no Kimi name survives into it.
+	const retry = runnerRunArgs({ ...plan, providerModel: FIREWORKS_FALLBACK_MODEL });
+	assert.equal(retry.includes(`ANTHROPIC_MODEL=${FIREWORKS_FALLBACK_MODEL}`), true);
+	assert.equal(retry.includes(`CLAUDE_CODE_SUBAGENT_MODEL=${FIREWORKS_FALLBACK_MODEL}`), true);
+	assert.equal(retry.includes(`ANTHROPIC_MODEL=${FIREWORKS_DEFAULT_MODEL}`), false);
+});
+
+test("a Fireworks sandbox points the proxy at Fireworks and puts the key in ANTHROPIC_AUTH_TOKEN", async t => {
+	const names = sandboxNames("job_7Q2K");
+	const docker = fakeDocker();
+	const plan: RunnerPlan = { names, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		dir: sandboxWorkTree(t), argv: agentArgv("claude-code", "Fix the rounding.", null, "fireworks"), commandPath: null,
+		runner: "claude-code", provider: "fireworks", providerKey: keyCanary, providerModel: FIREWORKS_DEFAULT_MODEL,
+		instruction: "Fix the rounding.", jobId: "job_7Q2K", uid: null, gid: null };
+	assert.equal(await runAgentInSandbox(plan, docker), 0);
+	const proxy = docker.calls.findIndex(args => args[0] === "run" && args.includes("--detach"));
+	assert.equal(proxy >= 0, true);
+	assert.equal(docker.calls[proxy].includes("ACQUIT_PROVIDER_HOST=api.fireworks.ai"), true);
+	const runner = docker.calls.findIndex(args => args[0] === "run" && !args.includes("--detach"));
+	assert.equal(runner >= 0, true);
+	// The key rides only the runner's child environment; no other child sees the bearer variable.
+	assert.equal(docker.envs[runner]?.ANTHROPIC_AUTH_TOKEN, keyCanary);
+	for (const [index, env] of docker.envs.entries()) {
+		assert.equal(env?.ANTHROPIC_AUTH_TOKEN, index === runner ? keyCanary : undefined, `call ${docker.calls[index].join(" ")}`);
+		assert.equal(env?.ANTHROPIC_API_KEY, undefined, `call ${docker.calls[index].join(" ")}`);
+	}
+	assert.equal(docker.calls.flat().some(arg => typeof arg === "string" && arg.includes(keyCanary)), false);
+	assert.equal(docker.calls[runner].includes("--disallowedTools"), true);
 });
 
 test("a droid sandbox points the proxy at Factory's hosts and puts the key in FACTORY_API_KEY", async t => {

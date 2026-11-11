@@ -14,7 +14,7 @@ import type { CommitSha, JobId } from "../../core/src/ids.ts";
 import { houseLine } from "../../core/src/job.ts";
 import {
 	classifyModelRun, droidRunPort, gitWorkPort, houseInstruction, HOUSE_INSTRUCTION_SUFFIX, houseMode, HOUSE_MODEL_OPENROUTER,
-	HOUSE_OPERATOR_ID, houseRunPort, isDeliverableHouseJob, runHouseDelivery, stateStore,
+	HOUSE_OPERATOR_ID, houseProvider, houseRunPort, isDeliverableHouseJob, runHouseDelivery, stateStore,
 	type HouseDeliverableFacts, type HouseDelivery, type HouseDeliveryDeps, type HouseDeliveryState,
 	type HouseRunOutcome, type HouseRunPlan, type HouseTarget,
 } from "../src/runner.ts";
@@ -217,6 +217,34 @@ test("the command runner stays the lane mode under either provider", () => {
 		{ runner: "command", commandPath: "/srv/house/fix.sh" });
 });
 
+test("the House provider resolves from its own switch first, then the product switch, then the keys", () => {
+	// ACQUIT_HOUSE_PROVIDER names the House's provider outright, whatever the product switch says.
+	assert.equal(houseProvider({ ACQUIT_HOUSE_PROVIDER: "fireworks", ACQUIT_MODEL_PROVIDER: "openrouter" }), "fireworks");
+	assert.equal(houseProvider({ ACQUIT_HOUSE_PROVIDER: "droid", FIREWORKS_API_KEY: "fw-CANARY" }), "droid");
+	assert.equal(houseProvider({ ACQUIT_HOUSE_PROVIDER: " OpenRouter " }), "openrouter");
+	assert.throws(() => houseProvider({ ACQUIT_HOUSE_PROVIDER: "mistral" }), /ACQUIT_HOUSE_PROVIDER must be fireworks, droid, or openrouter/);
+	// Without it, an explicit product switch keeps its meaning for the House.
+	assert.equal(houseProvider({ ACQUIT_MODEL_PROVIDER: "openrouter", FIREWORKS_API_KEY: "fw-CANARY" }), "openrouter");
+	assert.equal(houseProvider({ ACQUIT_MODEL_PROVIDER: "droid", FIREWORKS_API_KEY: "fw-CANARY" }), "droid");
+	assert.equal(houseProvider({ ACQUIT_MODEL_PROVIDER: "fireworks" }), "fireworks", "an explicit fireworks runs without its key, so a missing key fails loudly");
+	// Unset, the key decides: Fireworks when its key is configured, droid when none is.
+	assert.equal(houseProvider({ FIREWORKS_API_KEY: "fw-CANARY" }), "fireworks");
+	assert.equal(houseProvider({ FIREWORKS_API_KEY: "   " }), "droid", "a blank key is no key");
+	assert.equal(houseProvider({}), "droid");
+});
+
+test("the Fireworks House runs Kimi first with GLM as its one retry, and the other modes keep theirs", () => {
+	const kimi = "accounts/fireworks/models/kimi-k3p1-pro";
+	const glm = "accounts/fireworks/models/glm-5p3";
+	assert.deepEqual(houseMode({ FIREWORKS_API_KEY: "fw-CANARY" }), { runner: "model", provider: "fireworks", model: kimi, fallbackModel: glm });
+	assert.deepEqual(houseMode({ ACQUIT_HOUSE_PROVIDER: "fireworks" }), { runner: "model", provider: "fireworks", model: kimi, fallbackModel: glm });
+	assert.deepEqual(houseMode({ ACQUIT_HOUSE_PROVIDER: "openrouter" }), { runner: "model", provider: "openrouter", model: HOUSE_MODEL_OPENROUTER });
+	assert.deepEqual(houseMode({ ACQUIT_HOUSE_PROVIDER: "droid" }), { runner: "model", provider: "droid", model: "glm-5.3-flash" });
+	// The command runner keeps the lane whatever provider is configured.
+	assert.deepEqual(houseMode({ ACQUIT_HOUSE_COMMAND: "/srv/house/fix.sh", FIREWORKS_API_KEY: "fw-CANARY" }),
+		{ runner: "command", commandPath: "/srv/house/fix.sh" });
+});
+
 test("one provider error retries once and still submits, with both calls persisted", async () => {
 	let calls = 0;
 	const { deps, plans, commits, states } = fakeDeps(async () => {
@@ -342,6 +370,34 @@ test("two failed calls each record the session and credits they spent", async ()
 	assert.equal(ends[1]?.factoryCredits, 2);
 });
 
+test("a Fireworks provider error retries once on GLM, and each call's record carries its own model", async () => {
+	const kimi = "accounts/fireworks/models/kimi-k3p1-pro";
+	const glm = "accounts/fireworks/models/glm-5p3";
+	const lines: string[] = [];
+	let calls = 0;
+	const { deps, plans, commits, states } = fakeDeps(async () => {
+		calls += 1;
+		return calls === 1 ? { ok: false, reason: "PROVIDER_ERROR", detail: "503 upstream" } : { ok: true, sessionId: "fw-2" };
+	}, { mode: houseMode({ FIREWORKS_API_KEY: "fw-CANARY" }), log: line => lines.push(line) });
+	assert.equal(await runHouseDelivery(deps, target), "SUBMITTED");
+	assert.deepEqual(plans.map(plan => (plan.runner === "model" ? plan.model : plan.runner)), [kimi, glm], "Kimi first, GLM on the retry");
+	assert.equal(states.get(target.id)?.calls, 2, "both calls persist");
+	assert.equal(commits.length, 1, "the retry's work is submitted once");
+	assert.match(lines.join("\n"), /retrying on the fallback model accounts\/fireworks\/models\/glm-5p3/);
+	const ends = (await deps.callLog.records()).filter(record => record.phase === "END");
+	assert.deepEqual(ends.map(record => [record.provider, record.model, record.outcome]), [
+		["fireworks", kimi, "PROVIDER_ERROR"], ["fireworks", glm, "ok"],
+	]);
+});
+
+test("a Fireworks rate limit is terminal: one call on Kimi, no GLM retry, no submit", async () => {
+	const { deps, plans, commits } = fakeDeps(async () => ({ ok: false, reason: "RATE_LIMITED", detail: "429 rate limit exceeded" }),
+		{ mode: houseMode({ FIREWORKS_API_KEY: "fw-CANARY" }) });
+	assert.equal(await runHouseDelivery(deps, target), "RATE_LIMITED");
+	assert.equal(plans.length, 1, "a 429 never reaches the GLM retry");
+	assert.deepEqual(commits, [], "nothing is submitted");
+});
+
 test("a runner whose calls are spent is skipped without a call or a submit", async () => {
 	const { deps, plans, commits } = fakeDeps(undefined, { readState: async () => ({ ...fresh, calls: 2 }) });
 	const outcome = await runHouseDelivery(deps, target);
@@ -464,6 +520,71 @@ test("houseRunPort picks the droid port by default and the openrouter port when 
 	assert.equal(openrouter.calls[runner].env?.ANTHROPIC_AUTH_TOKEN, "or-CANARY");
 	assert.equal(openrouter.calls[runner].env?.FACTORY_API_KEY, undefined, "the droid key never rides the openrouter path");
 	assert.equal(openrouter.calls.flatMap(call => call.args).some(arg => arg.includes("or-CANARY")), false);
+});
+
+test("the Fireworks run port starts claude in the sandbox, with the key by name and Fireworks' one host", async () => {
+	const kimi = "accounts/fireworks/models/kimi-k3p1-pro";
+	const docker = fakeDocker();
+	// The key comes from FIREWORKS_API_KEY in the environment, and the provider is chosen by that key alone.
+	const run = houseRunPort({
+		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		env: { FIREWORKS_API_KEY: "CANARY-FIREWORKS-KEY" },
+	});
+	const outcome = await run({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: kimi, instruction: "Fix it." });
+	assert.deepEqual(outcome, { ok: true });
+	const runner = docker.calls.findIndex(call => call.args[0] === "run" && !call.args.includes("--detach"));
+	assert.equal(runner >= 0, true);
+	const argv = docker.calls[runner].args;
+	assert.deepEqual(argv.slice(argv.indexOf("--exec")), ["--exec", "claude", "--print", "--dangerously-skip-permissions",
+		"--output-format", "stream-json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
+		"--disallowedTools", "Agent,Task,WebSearch", "--max-turns", "24", "Fix it."]);
+	// The key rides by name: `-e` names the variable, and its value comes in the docker child's environment only.
+	assert.equal(argv[argv.indexOf("ANTHROPIC_AUTH_TOKEN") - 1], "-e");
+	assert.equal(docker.calls[runner].env?.ANTHROPIC_AUTH_TOKEN, "CANARY-FIREWORKS-KEY");
+	assert.equal(docker.calls.flatMap(call => call.args).some(arg => arg.includes("CANARY-FIREWORKS-KEY")), false, "the key never rides an argv word");
+	assert.equal(docker.calls[runner].env?.FACTORY_API_KEY, undefined, "the Factory key never rides the Fireworks path");
+	// The Fireworks Messages base, the plan's model pinned on every model variable, and no Claude retry of its own.
+	assert.equal(argv.includes("ANTHROPIC_BASE_URL=https://api.fireworks.ai/inference"), true);
+	assert.equal(argv.includes(`ANTHROPIC_MODEL=${kimi}`), true, "the run pins the plan's model id");
+	assert.equal(argv.includes("CLAUDE_CODE_MAX_RETRIES=0"), true);
+	assert.equal(argv.includes("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"), true, "the claude runner gets the no-phone-home switch");
+	// The proxy allows exactly the one Fireworks host.
+	const proxy = docker.calls.findIndex(call => call.args[0] === "run" && call.args.includes("--detach"));
+	assert.equal(docker.calls[proxy].args.includes("ACQUIT_PROVIDER_HOST=api.fireworks.ai"), true);
+});
+
+test("the Fireworks retry pins GLM on every model variable of its run", async () => {
+	const glm = "accounts/fireworks/models/glm-5p3";
+	const docker = fakeDocker();
+	const run = houseRunPort({
+		docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		env: { ACQUIT_HOUSE_PROVIDER: "fireworks" }, fireworksKey: async () => "CANARY-FIREWORKS-KEY",
+	});
+	await run({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: glm, instruction: "Fix it." });
+	const runner = docker.calls.findIndex(call => call.args[0] === "run" && !call.args.includes("--detach"));
+	const argv = docker.calls[runner].args;
+	for (const name of ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]) {
+		assert.equal(argv.includes(`${name}=${glm}`), true, `${name} carries the retry's model`);
+	}
+});
+
+test("a Fireworks 429 on the result stream is a rate limit, and a missing key starts no sandbox", async () => {
+	const throttled = `{"type":"result","subtype":"error_error","is_error":true,"api_error_status":429,"result":"rate limited"}\n`;
+	const limited = houseRunPort({
+		docker: fakeDocker(throttled), image: "acquit/runner-node20", proxyImage: "acquit/runner-node20",
+		env: { ACQUIT_HOUSE_PROVIDER: "fireworks" }, fireworksKey: async () => "CANARY-FIREWORKS-KEY",
+	});
+	const outcome = await limited({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "accounts/fireworks/models/kimi-k3p1-pro", instruction: "Fix it." });
+	assert.equal(outcome.ok, false);
+	assert.equal((outcome as { reason: string }).reason, "RATE_LIMITED", "the stream's 429 is terminal, never retried");
+
+	const docker = fakeDocker();
+	const missing = houseRunPort({ docker, image: "acquit/runner-node20", proxyImage: "acquit/runner-node20", env: { ACQUIT_HOUSE_PROVIDER: "fireworks" } });
+	const refused = await missing({ runner: "model", jobId: target.id, workDir: "/tmp/house-work", model: "accounts/fireworks/models/kimi-k3p1-pro", instruction: "Fix it." });
+	assert.equal(refused.ok, false);
+	assert.equal((refused as { reason: string }).reason, "RUN_FAILED", "a missing key is not the provider's error, so no retry burns");
+	assert.match((refused as { detail: string }).detail, /FIREWORKS_API_KEY/);
+	assert.equal(docker.calls.length, 0, "no container is started without a key");
 });
 
 test("a command plan runs the command sandbox under either provider, with no key and no droid argv", async () => {
@@ -602,7 +723,7 @@ test("the work port keeps the askpass secret alive from prepare through the push
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the work port keeps preparing when the state home is unwritable", async () => {
+test("the work port keeps preparing when the state home is unwritable", { skip: process.platform === "win32" && "the state home is XDG on POSIX; win32 reads LOCALAPPDATA, which this test does not move" }, async () => {
 	// A hardened unit (ProtectHome) hides the home directory, so the CLI state root's default under
 	// the home fails with EACCES, exactly as the VM's House prepares did before its drop-in: the
 	// port then pins the state root under its own state dir, the deployment's data dir.

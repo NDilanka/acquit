@@ -569,8 +569,18 @@ function mountSafe(what: string, path: string): void {
 
 /** The agent command the container executes. Unit-tested here; run.mjs only starts it. The droid
  * runner never passes through here: its argv is `droidExecArgv`'s, with the model and the prompt
- * file the droid client pins. */
-export function agentArgv(runner: RunnerKind, instruction: string, commandPath: string | null): readonly string[] {
+ * file the droid client pins. A Fireworks claude-code run gets the structured, bounded argv below;
+ * every other provider keeps the argv it always had. */
+export function agentArgv(runner: RunnerKind, instruction: string, commandPath: string | null, provider: Provider = "anthropic"): readonly string[] {
+	if (runner === "claude-code" && provider === "fireworks") {
+		// stream-json puts the final `{"type":"result"}` line where classifyModelRun reads a 429's
+		// api_error_status. WebSearch is disabled: Fireworks rejects Claude's server-side search tool
+		// (WebFetch still works). Subagents are off and the turn count is capped. The instruction stays
+		// last, after the flags, so no variadic option can take it as a value.
+		return ["claude", "--print", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose",
+			"--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
+			"--disallowedTools", "Agent,Task,WebSearch", "--max-turns", "24", instruction];
+	}
 	return runner === "claude-code"
 		// The container is the boundary: the clone is a throwaway fork and the network is the proxy.
 		? ["claude", "--print", "--dangerously-skip-permissions", instruction]
@@ -758,7 +768,7 @@ export async function runRun(options: RunOptions, deps: RunDeps): Promise<void> 
 		print(renderRunning(String(accepted.agent), runner, commandPath, provider, model));
 		const plan: RunnerPlan = { names, image: options.image, proxyImage: options.proxyImage, dir,
 			// The script is mounted at /acquit/command.sh; the host path is only the mount source.
-			argv: agentArgv(runner, instruction, commandPath === null ? null : "/acquit/command.sh"), commandPath,
+			argv: agentArgv(runner, instruction, commandPath === null ? null : "/acquit/command.sh", provider), commandPath,
 			runner, provider, providerKey, providerModel: model, instruction, jobId: view.id,
 			uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null };
 		const started = now();

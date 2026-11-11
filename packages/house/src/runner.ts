@@ -2,9 +2,9 @@
 // submitted, with its own payee and its own receipts. One model per job -- the free tier model the
 // mission ruled -- and one instruction: the CLI default plus the exact suffix from the mission.
 // The runner is plain orchestration: every effect (the sandbox, git, the API submit) arrives as an
-// injectable port, so the whole series is testable without Docker or a model call. The transport is
-// the same OpenRouter path the M3 prototype proved: a claude-code sandbox whose proxy allows
-// openrouter.ai alone.
+// injectable port, so the whole series is testable without Docker or a model call. The transport is a
+// claude-code sandbox whose proxy allows one provider host: api.fireworks.ai (the default when
+// FIREWORKS_API_KEY is configured), openrouter.ai when selected, or the droid path.
 
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
@@ -18,8 +18,10 @@ import {
 	runAgentInSandbox, sandboxNames, seedCommitIdentity, submissionCommit,
 	type ChangedFile, type DockerPort, type GitRun, type RunnerPlan,
 } from "../../acquit-cli/src/run.ts";
-import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, modelProvider, reserveModelCall } from "../../core/src/model.ts";
-import type { ModelCallLog, ModelProvider } from "../../core/src/model.ts";
+import { FIREWORKS_DEFAULT_MODEL, FIREWORKS_FALLBACK_MODEL } from "../../acquit-cli/src/operator.ts";
+import { llmKey } from "../../core/src/llm.ts";
+import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, MODEL_PROVIDER_ENV, modelProvider, reserveModelCall } from "../../core/src/model.ts";
+import type { ModelCallLog } from "../../core/src/model.ts";
 import type { Actor } from "../../core/src/acquit.ts";
 import type { CommitSha, JobId, OperatorId, VisitorId } from "../../core/src/ids.ts";
 import type { JobRow, JobStatus } from "../../core/src/job.ts";
@@ -49,24 +51,44 @@ export function houseInstruction(defaultInstructionText: string): string {
 	return `${defaultInstructionText} ${HOUSE_INSTRUCTION_SUFFIX}`;
 }
 
-/** The providers the House runs under. The product switch's `fireworks` default is the Ask and scoping path;
- * the House coding agent does not move with it, so fireworks resolves to its droid path. */
-export type HouseProvider = Exclude<ModelProvider, "fireworks">;
+/** The providers the House's coding agent runs under: droid (glm-5.3-flash), openrouter (the nemotron
+ * :free id), and fireworks (Kimi, with GLM as its one fallback). */
+export type HouseProvider = "droid" | "openrouter" | "fireworks";
 
-/** The House's provider: `openrouter` only when the switch names it; unset, `droid`, and `fireworks` all run the droid path. */
+/** The House's own provider selector. It is separate from the product switch, so the coding agent can
+ * move to Fireworks while Ask and scoping keep their own path, and the other way round. */
+export const HOUSE_PROVIDER_ENV = "ACQUIT_HOUSE_PROVIDER";
+
+/** The House's provider. `ACQUIT_HOUSE_PROVIDER` names it outright. Without it, an explicit product
+ * switch keeps its meaning for the House (`openrouter` and `droid` run as they always did, and an explicit
+ * `fireworks` runs fireworks even without its key, so a missing key fails loudly). Unset, the House runs
+ * on Fireworks when a Fireworks key is configured, and on droid when none is. */
 export function houseProvider(env: NodeJS.ProcessEnv = process.env): HouseProvider {
-	return modelProvider(env) === "openrouter" ? "openrouter" : "droid";
+	const named = env[HOUSE_PROVIDER_ENV]?.trim().toLowerCase();
+	if (named !== undefined && named !== "") {
+		if (named === "fireworks" || named === "droid" || named === "openrouter") return named;
+		throw new Error(`${HOUSE_PROVIDER_ENV} must be fireworks, droid, or openrouter, not ${JSON.stringify(env[HOUSE_PROVIDER_ENV])}`);
+	}
+	const explicitSwitch = (env[MODEL_PROVIDER_ENV]?.trim() ?? "") !== "";
+	const product = modelProvider(env);
+	if (explicitSwitch && product !== "fireworks") return product;
+	if (explicitSwitch || (env.FIREWORKS_API_KEY?.trim() ?? "") !== "") return "fireworks";
+	return "droid";
 }
 
-/** The deployment's House mode: the model the provider switch names (droid's glm-5.3-flash by
- * default; the openrouter path keeps the nemotron :free id), or the command runner for the offline
- * lanes under either provider. The mode comes from the environment, never from a request. */
-export function houseMode(env: NodeJS.ProcessEnv = process.env):
-	{ readonly runner: "model"; readonly provider: HouseProvider; readonly model: string }
-	| { readonly runner: "command"; readonly commandPath: string } {
+/** The deployment's House mode: the model the provider names (Kimi on fireworks with GLM as the one
+ * retry, droid's glm-5.3-flash, or the openrouter path's nemotron :free id), or the command runner for
+ * the offline lanes under any provider. The mode comes from the environment, never from a request. */
+export type HouseMode = { readonly runner: "model"; readonly provider: HouseProvider; readonly model: string; readonly fallbackModel?: string }
+	| { readonly runner: "command"; readonly commandPath: string };
+
+export function houseMode(env: NodeJS.ProcessEnv = process.env): HouseMode {
 	const command = env.ACQUIT_HOUSE_COMMAND?.trim();
 	if (command) return { runner: "command", commandPath: command };
 	const provider = houseProvider(env);
+	if (provider === "fireworks") {
+		return { runner: "model", provider, model: FIREWORKS_DEFAULT_MODEL, fallbackModel: FIREWORKS_FALLBACK_MODEL };
+	}
 	return { runner: "model", provider, model: provider === "droid" ? DROID_MODEL : HOUSE_MODEL_OPENROUTER };
 }
 
@@ -131,10 +153,9 @@ export type HouseWorkPort = {
 };
 
 export type HouseDeliveryDeps = {
-	/** The runner this deployment runs the House with: the model the provider switch names, or the
-	 * command runner for lanes. `houseMode` resolves it from the environment. */
-	readonly mode: { readonly runner: "model"; readonly provider: HouseProvider; readonly model: string }
-		| { readonly runner: "command"; readonly commandPath: string };
+	/** The runner this deployment runs the House with: the model the provider names, or the command
+	 * runner for lanes. `houseMode` resolves it from the environment. */
+	readonly mode: HouseMode;
 	readonly run: HouseRunPort;
 	readonly work: HouseWorkPort;
 	readonly readState: (jobId: JobId) => Promise<HouseDeliveryState>;
@@ -196,28 +217,32 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		return "FAILED";
 	}
 	try {
-		// The instruction is the CLI default plus the ruled suffix, and the model is the provider's.
-		const plan: HouseRunPlan = deps.mode.runner === "model"
-			? { runner: "model", jobId: job.id, workDir: prepared.workDir, model: deps.mode.model,
-				instruction: houseInstruction(defaultInstruction({ title: job.title })) }
+		// The instruction is the CLI default plus the ruled suffix. The model is the provider's: the
+		// primary for the first call, and the mode's fallback (or the primary again, on the droid and
+		// openrouter paths) for the one retry.
+		const instruction = houseInstruction(defaultInstruction({ title: job.title }));
+		const planFor = (model: string): HouseRunPlan => deps.mode.runner === "model"
+			? { runner: "model", jobId: job.id, workDir: prepared.workDir, model, instruction }
 			: { runner: "command", jobId: job.id, workDir: prepared.workDir, commandPath: deps.mode.commandPath };
+		const primaryModel = deps.mode.runner === "model" ? deps.mode.model : "";
+		const retryModel = deps.mode.runner === "model" ? (deps.mode.fallbackModel ?? deps.mode.model) : "";
 
 		// The shared budget is the deployment's, not the job's: a reservation is refused before the
 		// job's own call count moves, and the START record precedes the run, so crashes, failures,
 		// and retries all count. The command runner makes no model call, so it reserves none.
-		const reserve = (): Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> => deps.mode.runner !== "model" ? Promise.resolve({ ok: true })
-			: reserveModelCall(deps.callLog, { at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model: deps.mode.model });
+		const reserve = (model: string): Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> => deps.mode.runner !== "model" ? Promise.resolve({ ok: true })
+			: reserveModelCall(deps.callLog, { at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model });
 		// Every invocation is recorded once it returns, before any retry decision: the END record
-		// and one operator-readable line carrying the call's own session, credits, and outcome.
-		const recordCall = async (outcome: HouseRunOutcome, call: number): Promise<void> => {
+		// and one operator-readable line carrying the call's own model, session, credits, and outcome.
+		const recordCall = async (outcome: HouseRunOutcome, call: number, model: string): Promise<void> => {
 			if (deps.mode.runner !== "model") return;
 			const outcomeName = outcome.ok ? "ok" : outcome.reason;
 			await deps.callLog.append({
-				at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model: deps.mode.model,
+				at: deps.now(), caller: "house", jobId: job.id, provider: deps.mode.provider, model,
 				phase: "END", outcome: outcomeName, sessionId: outcome.sessionId, factoryCredits: outcome.factoryCredits,
 			});
 			const parts = [
-				`model ${deps.mode.model}`,
+				`model ${model}`,
 				outcome.sessionId == null ? null : `session ${outcome.sessionId}`,
 				outcome.factoryCredits == null ? null : `credits ${outcome.factoryCredits}`,
 			];
@@ -225,28 +250,29 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 		};
 
 		let calls = state.calls;
-		const reserved = await reserve();
+		const reserved = await reserve(primaryModel);
 		if (!reserved.ok) {
 			deps.log(`house: ${job.id} call budget spent; the next tick retries${reserved.detail === undefined ? "" : ` (${reserved.detail})`}`);
 			return "BUDGET";
 		}
 		calls += 1;
 		await deps.writeState(job.id, { ...state, calls });
-		let outcome = await deps.run(plan);
-		await recordCall(outcome, calls);
-		// One retry, only on a provider error, only while the persisted cap allows it: a 429 on the
-		// free tier is the same single retry, never a loop. A rate or usage limit is the exception
-		// the operator ruled: its own terminal class, no retry at all, and the scan stops.
+		let outcome = await deps.run(planFor(primaryModel));
+		await recordCall(outcome, calls, primaryModel);
+		// One retry, only on a provider error, only while the persisted cap allows it: the same model
+		// again on droid and openrouter, the fallback model on fireworks. A rate or usage limit is the
+		// exception the operator ruled: its own terminal class, no retry at all, and the scan stops.
 		if (outcome.ok === false && outcome.reason === "PROVIDER_ERROR" && calls < MAX_CALLS) {
-			const retried = await reserve();
+			const retried = await reserve(retryModel);
 			if (!retried.ok) {
 				deps.log(`house: ${job.id} run stopped: BUDGET on the retry; the job keeps its first call${retried.detail === undefined ? "" : ` (${retried.detail})`}`);
 				return "FAILED";
 			}
 			calls += 1;
 			await deps.writeState(job.id, { ...state, calls });
-			outcome = await deps.run(plan);
-			await recordCall(outcome, calls);
+			if (retryModel !== primaryModel) deps.log(`house: ${job.id} retrying on the fallback model ${retryModel} after a provider error`);
+			outcome = await deps.run(planFor(retryModel));
+			await recordCall(outcome, calls, retryModel);
 		}
 		if (outcome.ok === false) {
 			if (outcome.reason === "RATE_LIMITED") {
@@ -446,20 +472,20 @@ export function droidRunPort(deps: SandboxRunDeps): HouseRunPort {
 	};
 }
 
-/** The OpenRouter run port: the same sandbox, with the OpenRouter proxy path the M3 prototype
- * proved. The key comes from the session keyring, in-process like every provider key. */
-export function sandboxRunPort(deps: SandboxRunDeps): HouseRunPort {
+/** The claude-code run port the OpenRouter and Fireworks paths share: the same sandbox, the provider's
+ * proxy host, and the key in the provider's own variable, by name only. The key is read in-process. */
+function claudeCodeRunPort(deps: SandboxRunDeps, provider: "openrouter" | "fireworks", missingKey: string): HouseRunPort {
 	const env = deps.env ?? process.env;
 	return async plan => {
 		if (plan.runner === "command") return commandPlanRun(deps, plan);
 		const key = await deps.getKey();
 		if (key === null || key === "" || /[\r\n]/.test(key)) {
-			return { ok: false, reason: "RUN_FAILED", detail: "no usable OpenRouter key in the keyring" };
+			return { ok: false, reason: "RUN_FAILED", detail: missingKey };
 		}
 		const built: RunnerPlan = {
 			names: sandboxNames(plan.jobId), image: deps.image, proxyImage: deps.proxyImage, dir: plan.workDir,
-			argv: agentArgv("claude-code", plan.instruction, null), commandPath: null, runner: "claude-code",
-			provider: "openrouter", providerKey: key, providerModel: plan.model, instruction: plan.instruction,
+			argv: agentArgv("claude-code", plan.instruction, null, provider), commandPath: null, runner: "claude-code",
+			provider, providerKey: key, providerModel: plan.model, instruction: plan.instruction,
 			jobId: plan.jobId, uid: process.getuid?.() ?? null, gid: process.getgid?.() ?? null,
 		};
 		try {
@@ -476,25 +502,41 @@ export function sandboxRunPort(deps: SandboxRunDeps): HouseRunPort {
 	};
 }
 
-/** The deployment's run port: the model provider switch picks droid (the ruled default, its key
- * from the environment or the laptop key file) or the OpenRouter path (its key from the session
- * keyring). Both run inside the same sandbox; the command runner keeps its lane mode under either.
- * A3 and A1 reuse the same switch and droid client from `packages/core/src/model.ts`. */
+/** The OpenRouter run port: the same sandbox, with the OpenRouter proxy path the M3 prototype
+ * proved. The key comes from the session keyring, in-process like every provider key. */
+export function sandboxRunPort(deps: SandboxRunDeps): HouseRunPort {
+	return claudeCodeRunPort(deps, "openrouter", "no usable OpenRouter key in the keyring");
+}
+
+/** The Fireworks run port: the same sandbox on the Fireworks Messages base, with the bounded argv
+ * `agentArgv` builds for it. The key is FIREWORKS_API_KEY, read in-process and passed by name only. */
+export function fireworksRunPort(deps: SandboxRunDeps): HouseRunPort {
+	return claudeCodeRunPort(deps, "fireworks", "no usable Fireworks key in FIREWORKS_API_KEY");
+}
+
+/** The deployment's run port: the House provider picks Fireworks (its key from FIREWORKS_API_KEY), droid
+ * (the ruled default, its key from the environment or the laptop key file), or the OpenRouter path (its
+ * key from the session keyring). Every path runs inside the same sandbox; the command runner keeps its
+ * lane mode under any of them. A3 and A1 reuse the product switch and droid client from `core/src/model.ts`. */
 export type HouseRunPortDeps = {
 	readonly docker: DockerPort;
 	readonly image: string;
 	readonly proxyImage: string;
 	readonly env?: NodeJS.ProcessEnv;
-	/** Overrides for tests; the real wiring reads the Factory key source and the session keyring. */
+	/** Overrides for tests; the real wiring reads the Factory key source, the Fireworks key, and the session keyring. */
 	readonly droidKey?: () => Promise<string | null>;
+	readonly fireworksKey?: () => Promise<string | null>;
 	readonly openrouterKey?: () => Promise<string | null>;
 };
 
 export function houseRunPort(deps: HouseRunPortDeps): HouseRunPort {
 	const env = deps.env ?? process.env;
-	return houseProvider(env) === "droid"
-		? droidRunPort({ ...deps, getKey: deps.droidKey ?? (() => factoryApiKey(env)), env })
-		: sandboxRunPort({ ...deps, getKey: deps.openrouterKey ?? (async () => keyringKey()), env });
+	const provider = houseProvider(env);
+	if (provider === "fireworks") {
+		return fireworksRunPort({ ...deps, getKey: deps.fireworksKey ?? (async () => llmKey("fireworks", env)), env });
+	}
+	if (provider === "droid") return droidRunPort({ ...deps, getKey: deps.droidKey ?? (() => factoryApiKey(env)), env });
+	return sandboxRunPort({ ...deps, getKey: deps.openrouterKey ?? (async () => keyringKey()), env });
 }
 
 /** The OpenRouter key from the session keyring, the way the M3 prototype read it: one `keyctl`

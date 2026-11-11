@@ -14,7 +14,8 @@ import { boundedDetail } from "./verifier.ts";
 
 /** The providers the switch can name. `fireworks` is the default: the product's own model calls (Ask and
  * scoping) run through the fetch-based chat-completions client in `llm.ts`. `droid` and `openrouter` keep
- * their paths working; the House coding agent stays on droid unless it is explicitly given openrouter. */
+ * their paths working. The House coding agent has its own selector, `ACQUIT_HOUSE_PROVIDER`, which
+ * `packages/house/src/runner.ts` reads, so the two providers can move independently. */
 export type ModelProvider = "fireworks" | "droid" | "openrouter";
 
 export const MODEL_PROVIDER_ENV = "ACQUIT_MODEL_PROVIDER";
