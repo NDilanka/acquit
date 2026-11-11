@@ -8,7 +8,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Vertical } from "../../../packages/core/src/code-manifest.ts";
 import { bidGate, captureAt, countedAttempts, examRefusal, GRADE_PER_REJECTED, GRADE_PER_VERIFIED, gradeOf, heldPayee, LASER_VERTICAL, PRINT_VERTICAL, recordOf, sampleOf, SAMPLES, settledSimulated, simulatedAcquittal, startedRun } from "../../../packages/core/src/exam.ts";
-import type { ExamCount, ExamRefusal, ExamRun, ExamStart, ExamStatus, StandingOrders } from "../../../packages/core/src/exam.ts";
+import type { ExamCount, ExamRefusal, ExamRun, ExamStart, ExamStatus, LaserExam, StandingOrders } from "../../../packages/core/src/exam.ts";
+import { independentChecksOf, LASER_PUBLIC_RULES, sealedChecksIn } from "../../../packages/core/src/physical.ts";
 import { captureOf, payeeMerchantOf } from "../../../packages/core/src/job.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import type { Acquittal, Agent } from "../../../packages/core/src/operator.ts";
@@ -222,6 +223,20 @@ function writeAcquittal(db: DatabaseSync, agent: Agent, acquittal: Acquittal): v
 	db.prepare("UPDATE agents SET json = ? WHERE id = ?").run(JSON.stringify({ ...agent, acquittal }), agent.id);
 }
 
+/**
+ * The laser exam on this deployment, read on each start. Closed while physical jobs are off. Unbuilt when the sealed checks
+ * cannot be read, since no laser job could open. Otherwise the simulated run shows the public rules and the sealed checks as
+ * counts: every one passes, and the run is labelled simulated. No check name leaves the file.
+ */
+export function laserExamFor(physicalOn: boolean, sealedDir: string): LaserExam {
+	if (!physicalOn) return "CLOSED";
+	const sealed = sealedChecksIn(sealedDir, LASER_VERTICAL);
+	if (sealed === null) return "UNBUILT";
+	const publicRules = LASER_PUBLIC_RULES.length;
+	const sealedChecks = independentChecksOf(sealed).length;
+	return { visible: { passed: publicRules, total: publicRules }, hidden: { passed: sealedChecks, total: sealedChecks } };
+}
+
 export type ExamStartOutcome =
 	| { readonly ok: true; readonly run: ExamRun }
 	| { readonly ok: false; readonly error: ExamRefusal | "EXAM_NOT_BUILT" | "NOT_FOUND" };
@@ -231,18 +246,20 @@ export type ExamStartOutcome =
  * that unit: the caller's Agent supplies only the id, so a value read before an earlier start cannot pass the guard
  * again. A print-fdm agent answers EXAM_NOT_BUILT and writes nothing. A code agent gets the labelled simulated run: the
  * row is inserted RUNNING, settled PASSED with the example fixture's counts, and the simulated acquittal is written, all
- * before the answer.
+ * before the answer. A laser agent settles with its own public and sealed counts (laserExamFor), or answers EXAM_NOT_BUILT
+ * when those are unreadable.
  */
-export function startExam(db: DatabaseSync, snapshot: Agent, id: string, now: Instant): ExamStartOutcome {
+export function startExam(db: DatabaseSync, snapshot: Agent, id: string, now: Instant, laser: LaserExam = "CLOSED"): ExamStartOutcome {
 	return transaction<ExamStartOutcome>(db, () => {
 		const agent = readAgentRow(db, snapshot.id);
 		if (agent === null) return { ok: false, error: "NOT_FOUND" };
-		const refusal = examRefusal(agent, examStartsOf(db, agent.id), now);
+		const refusal = examRefusal(agent, examStartsOf(db, agent.id), now, laser);
 		if (refusal !== null) return { ok: false, error: refusal };
 		if (agent.task === PRINT_VERTICAL) return { ok: false, error: "EXAM_NOT_BUILT" };
+		if (agent.task === LASER_VERTICAL && typeof laser === "string") return { ok: false, error: "EXAM_NOT_BUILT" };
 		const started = startedRun(id, agent, now);
 		insertExamRun(db, started);
-		const settled = settledSimulated(started, now);
+		const settled = settledSimulated(started, now, agent.task === LASER_VERTICAL && typeof laser !== "string" ? laser : undefined);
 		settleExamRun(db, settled);
 		writeAcquittal(db, agent, simulatedAcquittal(settled, now));
 		return { ok: true, run: started };

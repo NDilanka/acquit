@@ -34,9 +34,15 @@ export type ExamRefusal = "ALREADY_ACQUITTED" | "EXAM_RUNNING" | "EXAM_LIMIT" | 
 /** The fields of an exam_runs row that the start guard reads. */
 export type ExamStart = { readonly status: string; readonly startedAt: Instant };
 
+/**
+ * A laser agent's exam on this deployment: CLOSED while physical jobs are off, UNBUILT when the sealed checks cannot be read,
+ * otherwise the simulated counts its run settles with. A code agent ignores it.
+ */
+export type LaserExam = "CLOSED" | "UNBUILT" | SimulatedCounts;
+
 /** The guard in front of POST /api/me/agents/:id/exam. Runs before any row is written. */
-export function examRefusal(agent: Agent, runs: readonly ExamStart[], now: Instant): ExamRefusal | null {
-	if (agent.task === LASER_VERTICAL) return "TASK_NOT_EXAMINABLE";
+export function examRefusal(agent: Agent, runs: readonly ExamStart[], now: Instant, laser: LaserExam = "CLOSED"): ExamRefusal | null {
+	if (agent.task === LASER_VERTICAL && laser === "CLOSED") return "TASK_NOT_EXAMINABLE";
 	if (agent.acquittal !== null) return "ALREADY_ACQUITTED";
 	if (runs.some(run => run.status === "RUNNING" || run.status === "VERIFYING")) return "EXAM_RUNNING";
 	const since = Date.parse(now) - DAY_MS;
@@ -203,15 +209,18 @@ export type ExamRun = {
 export const SIMULATED_VISIBLE: ExamCount = { passed: 48, total: 48 };
 export const SIMULATED_HIDDEN: ExamCount = { passed: 8, total: 8 };
 
+/** The counts a simulated run settles with: the code exam's example fixture, or a laser agent's own public and sealed checks. */
+export type SimulatedCounts = { readonly visible: ExamCount; readonly hidden: ExamCount };
+
 /** The run a simulated start writes first: RUNNING, not yet settled. */
 export function startedRun(id: string, agent: Agent, now: Instant): ExamRun {
 	return { id, agentId: agent.id, task: agent.task, status: "RUNNING", visible: null, hidden: null, reasons: [],
 		startedAt: now, endedAt: null, simulated: true };
 }
 
-/** The same run settled: PASSED with the example fixture's counts, no reasons, ended at the settle time. */
-export function settledSimulated(run: ExamRun, now: Instant): ExamRun {
-	return { ...run, status: "PASSED", visible: SIMULATED_VISIBLE, hidden: SIMULATED_HIDDEN, reasons: [], endedAt: now };
+/** The same run settled: PASSED with the given counts (the code example's by default), no reasons, ended at the settle time. */
+export function settledSimulated(run: ExamRun, now: Instant, counts: SimulatedCounts = { visible: SIMULATED_VISIBLE, hidden: SIMULATED_HIDDEN }): ExamRun {
+	return { ...run, status: "PASSED", visible: counts.visible, hidden: counts.hidden, reasons: [], endedAt: now };
 }
 
 /** The acquittal a settled simulated run writes. It names the run and carries the simulated label. */
