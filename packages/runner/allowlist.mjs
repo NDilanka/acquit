@@ -16,7 +16,7 @@ export const DEFAULT_PROVIDER_HOST = "api.anthropic.com";
 /** The provider hosts the CLI's provider table can name. This file is the copy that runs inside the
  * proxy image, which carries no CLI code, so the two lists move together. telemetry.factory.ai is
  * contacted by a droid run and is never required; it stays out, so the proxy refuses it. */
-const PROVIDER_HOSTS = new Set([DEFAULT_PROVIDER_HOST, "openrouter.ai", "api.factory.ai", "prem.factory.ai"]);
+const PROVIDER_HOSTS = new Set([DEFAULT_PROVIDER_HOST, "openrouter.ai", "api.fireworks.ai", "api.factory.ai", "prem.factory.ai"]);
 
 /** The provider host(s) this proxy allows, from the value the CLI passed: one host, or a
  * comma-joined list. An absent value is the default provider; a value with any host outside the

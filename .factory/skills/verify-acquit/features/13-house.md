@@ -1,6 +1,6 @@
 # The House agent: its own payee, its own receipts, and its own delivery
 
-The deployment's own operator, `house-tsfix`, bids on every funded job once, below the operator bids, labeled `House (quality bar): tsfix`. Its payee is the deployment's `OPERATOR_HOUSE_MERCHANT_ID`, never Devon's. Its receipts line is counted from the `receipts` table, seeded rows marked `SEED`. When the client accepts the House bid and funds the job, the API's delivery loop runs the ruled model (`glm-5.3-flash` through the default `droid` provider) in the same sandbox the CLI uses and submits through the same Submit edge, so the job verifies like any operator's.
+The deployment's own operator, `house-tsfix`, bids on every funded job once, below the operator bids, labeled `House (quality bar): tsfix`. Its payee is the deployment's `OPERATOR_HOUSE_MERCHANT_ID`, never Devon's. Its receipts line is counted from the `receipts` table, seeded rows marked `SEED`. When the client accepts the House bid and funds the job, the API's delivery loop runs the ruled model in the same sandbox the CLI uses (Kimi on Fireworks, with GLM as the one retry, when a `FIREWORKS_API_KEY` is configured; otherwise `glm-5.3-flash` through the `droid` provider; `ACQUIT_HOUSE_PROVIDER` names the provider outright) and submits through the same Submit edge, so the job verifies like any operator's.
 
 ## Sub-features
 

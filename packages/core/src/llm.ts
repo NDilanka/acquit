@@ -122,7 +122,7 @@ export function llmRequestBody(request: Pick<LlmRequest, "provider" | "model" | 
 }
 
 /** A rate or usage limit answers in the provider's own error text. The caller treats it as terminal. */
-const LIMIT_BODY = /rate.?limit|usage limit|quota|too many requests|insufficient (credit|balance)/i;
+export const LIMIT_BODY = /rate.?limit|usage limit|quota|too many requests|insufficient (credit|balance)/i;
 
 /** The first `limit` characters of an error body, read as a stream so a large body is never buffered whole. */
 async function boundedText(response: Response, limit: number): Promise<string> {

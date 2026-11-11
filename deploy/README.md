@@ -25,3 +25,13 @@ allowlist and opens the demo, so check the line in `/etc/acquit/runtime.env` aft
 
 The step-by-step deploy procedure lives in the build's mission notes, outside this repository. The served Caddyfile exists only on the VM at
 `/etc/caddy/Caddyfile`, never in a tracked tree.
+
+## Fireworks Ask, scoping, and House (VM steps)
+
+Ask, scoping, and the House coding agent run on Fireworks by default. The key and the provider choice live on the VM only, never in the repository.
+
+1. Put the key in `/etc/acquit/model-secrets.env` as `FIREWORKS_API_KEY=<key>`. The file is root-owned with mode `0600`.
+2. In `/etc/acquit/runtime.env`, set `ACQUIT_HOUSE_PROVIDER=fireworks` so the House's provider is explicit. Without it, a configured Fireworks key selects Fireworks for the House as well.
+3. Rebuild the runner image from the revision being served, under its own tag so the previous image stays available for rollback: `sudo docker build --platform linux/arm64 -t acquit/runner-node20:claude-2.1.322 packages/runner`. The build runs `claude --version` as a step.
+4. Set `ACQUIT_RUNNER_IMAGE=acquit/runner-node20:claude-2.1.322` in `/etc/acquit/runtime.env`. The proxy reads the same variable, so one tag covers both. Confirm the pinned CLI with `sudo docker run --rm acquit/runner-node20:claude-2.1.322 claude --version`; it must print 2.1.322.
+5. Restart `acquit-api.service`.

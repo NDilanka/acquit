@@ -11,8 +11,9 @@ WorkingDirectory=/opt/acquit
 EnvironmentFile=/etc/acquit/runtime.env
 EnvironmentFile=/etc/acquit/verifier-secrets.env
 # The model provider keys reach the API only; the verifier never loads them. FIREWORKS_API_KEY serves Ask and
-# scoping, the default provider (ACQUIT_MODEL_PROVIDER unset or fireworks). FACTORY_API_KEY serves the House,
-# which stays on droid unless openrouter is named, and any Ask or scoping set to droid.
+# scoping (the default, ACQUIT_MODEL_PROVIDER unset or fireworks) and the House coding agent unless
+# ACQUIT_HOUSE_PROVIDER names another provider. FACTORY_API_KEY and OPENROUTER_API_KEY serve only the runs
+# their provider names (droid, or openrouter).
 EnvironmentFile=/etc/acquit/model-secrets.env
 ExecStart=/usr/bin/node apps/api/src/server.ts
 Restart=always
@@ -26,9 +27,10 @@ ProtectHome=true
 # /home/ubuntu. ProtectHome hides /home inside this unit, so the deployment pins the state root inside
 # ReadWritePaths. The Docker socket needs an explicit writable path for the sandbox proxy connect.
 Environment=XDG_STATE_HOME=/var/lib/acquit/house-state
-# The droid provider runs `droid exec` (the House, and any Ask or scoping set to droid), which needs a writable
-# HOME and a binary outside /home (install.sh copies it to /usr/local/bin). Without both, every House delivery
-# and droid-named Ask turn fails with exit 127. Ask and scoping under the fireworks default make no subprocess call.
+# The droid provider runs `droid exec` (the House when it is set to droid, and any Ask or scoping set to droid),
+# which needs a writable HOME and a binary outside /home (install.sh copies it to /usr/local/bin). Without both,
+# every droid House delivery and droid-named Ask turn fails with exit 127. Ask, scoping, and the House under the
+# fireworks default make no droid subprocess call.
 Environment=HOME=/var/lib/acquit/droid-home
 ReadWritePaths=/var/lib/acquit /var/run/docker.sock
 PrivateTmp=true
