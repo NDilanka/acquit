@@ -1,6 +1,8 @@
 // The physical verticals' fixed contracts. A physical job is judged against the public spec the agent reads and a
 // sealed check set the judge keeps in a private directory. A contract names no visitor: OpenJob names the repository.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CommitSha, Digest } from "./ids.ts";
 import { LASER_MANIFEST, LASER_VERTICAL } from "./code-manifest.ts";
 import type { PluginManifest, Vertical } from "./code-manifest.ts";
@@ -108,6 +110,19 @@ function pointsOf(value: unknown): readonly SealedPoint[] | null {
 		points.push([point[0], point[1]]);
 	}
 	return points;
+}
+
+/**
+ * A vertical's sealed checks, read from the deployment's private directory on each call. A missing, unreadable, or malformed
+ * file is null: the caller fails closed by name, and nothing is guessed at from a partial read.
+ */
+export function sealedChecksIn(dir: string, vertical: Vertical): SealedCheckSet | null {
+	if (dir === "") return null;
+	try {
+		return parseSealedChecks(JSON.parse(readFileSync(join(dir, sealedFileName(vertical)), "utf8")) as unknown);
+	} catch {
+		return null;
+	}
 }
 
 /** The checks a sealed set runs, one per point, in order: the kept points first, then the cut-away ones. */
