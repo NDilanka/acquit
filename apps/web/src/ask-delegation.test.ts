@@ -265,6 +265,23 @@ test("the ledger agent's instructions carry the dashboard's widget catalogue", a
   assert.ok(instructions.length <= 16_000, "the turn route's instruction cap holds");
 });
 
+test("the ledger agent's catalogue names only the types of the dashboard it is on", async () => {
+  const { api } = mockStudioApi([
+    ...HELD_CATALOGUE,
+    { type: "acquit-paid-out", name: "acquit-paid-out", description: "Total paid out.", usage: "...", configuration: "..." },
+    { type: "acquit-reconciliation", name: "acquit-reconciliation", description: "Escrow reconciliation.", usage: "...", configuration: "..." },
+  ]);
+  const { fetch, parentBodies } = scriptedFetch([text("Nothing to chart.")], []);
+  const harness = harnessFor(api, { fetch, dashboard: "sample" });
+  const session = await harness.createThread({ agentId: ASK_AGENT_ID, title: ASK_AGENT_NAME });
+  session.sendMessage("Chart my paid out.");
+  await settle(session);
+  const instructions = parentBodies[0]?.instructions ?? "";
+  assert.doesNotMatch(instructions, /acquit-paid-out/, "an earnings widget type is not offered on the sample dashboard");
+  assert.doesNotMatch(instructions, /acquit-reconciliation/, "an escrow-only widget type is not offered on the sample dashboard");
+  assert.match(instructions, /acquit-held/, "a type the sample dashboard does publish is still offered");
+});
+
 test("every dashboard widget declares its AI catalogue metadata", () => {
   for (const rows of Object.values(WIDGET_ROWS)) {
     for (const spec of rows.flat()) {
@@ -647,8 +664,8 @@ test("an add whose placement does not stick fails and removes the widget", async
   assert.equal(result?.success, false, "a widget with no placement is not a success");
   assert.equal(state.pages[0].widgets["held-escrow-main"], undefined, "the unplaced widget was removed again");
   const message = result?.issues?.[0]?.message ?? "";
-  assert.match(message, /held-escrow-main/, "the failure names the widget");
-  assert.match(message, /not on the dashboard's grid/, "the failure says the widget is not on the grid");
+  assert.doesNotMatch(message, /held-escrow-main/, "the failure names no internal widget id");
+  assert.match(message, /could not be placed on the dashboard/, "the failure says the widget could not be placed");
   const step = askRows(session.messages).find((row) => row.kind === "step" && row.label === "Handing off to the widget builder");
   assert.equal(step?.kind === "step" ? step.state : undefined, "failed", "the drawer shows the hand-off as failed");
 });

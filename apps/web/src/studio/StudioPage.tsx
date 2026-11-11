@@ -68,6 +68,8 @@ const SAVE_DEBOUNCE_MS = 300;
 const NARROW = "(max-width: 640px)";
 /** The width at which the sample book's Ask panel sits beside the widgets without covering them. */
 const WIDE = "(min-width: 1200px)";
+/** Where the sample book's Ask panel is not shown, the page says where to find it instead of showing nothing. */
+const SAMPLE_ASK_NARROW_TEXT = "Ask the ledger sits beside the widgets in a window at least 1200 pixels wide. Widen the window to ask about the sample book.";
 
 export default function StudioPage({ sample = false }: { sample?: boolean }) {
   const { user } = useSession();
@@ -297,6 +299,7 @@ function SampleDashboard() {
   // page keeps its layout with no chat panel; the ask's tool list is still read, but nothing renders from it there.
   const wide = useMedia(WIDE);
   const ask = useAskLedger("sample", "SAMPLE");
+  const askNotice: FreshnessNotice | null = wide ? null : { tone: "warn", text: SAMPLE_ASK_NARROW_TEXT };
   const [load, setLoad] = useState<Load<SampleBook>>({ kind: "loading" });
   useEffect(() => {
     let live = true;
@@ -314,6 +317,7 @@ function SampleDashboard() {
       title="Sample book"
       lead="Simulated sample data: a seeded set of escrow jobs that every signed-in account sees the same way. Each figure and PayPal reference here is labelled sample, and nothing on this page reads a real account or PayPal."
       load={load}
+      notice={askNotice}
       ask={wide ? ask : undefined}
       source={escrowSource}
     >
