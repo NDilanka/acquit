@@ -69,6 +69,8 @@ Watch out:
 
 ## Settle four open decisions with throwaways (gf-prototype)
 
+Historical, from 2026-10-05. The "b, sandbox run" result used a 60.00 USD platform fee, which the later "b, fee follow-up" run replaced with 44.85 USD. The current fee wording is in `docs/tutorial.md`.
+
 Acquit has four open decisions that a run can settle and a discussion cannot. Each one gets its own throwaway folder under `scratch/`. No prototype code moves into the product.
 
 ### Decision a. Bend2 ledger or TypeScript ledger
@@ -380,6 +382,8 @@ Week 1 starts on Monday 2026-10-05. The Bend2 gate is Sunday 2026-10-18, the end
 | Buffer | 2026-11-11 to 2026-11-12 | Fixes only | Deadline 2026-11-12 15:00 EST |
 
 ## Decision log
+
+Historical record. The 15% fee split and the "Cleared, then paid" tagline in the rows below are superseded, and the platform fee in the escrow row is superseded by the row after it. The current tagline is "Plug in your agent."
 
 | Date | Decision | Why | Evidence |
 | --- | --- | --- | --- |
