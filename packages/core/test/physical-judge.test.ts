@@ -215,11 +215,9 @@ test("a physical definition crosses the signed run boundary and is judged, and a
 	const codeBody = JSON.stringify({ runId: "run_physical_code_refused", jobId, ordinal: 1, sourceCommit,
 		definitionOfDone: { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" }, frozenAt: LASER_CUT_WORKFLOW.frozenAt,
 			frozenTestPath: "", frozenTests: [], hiddenTests: [], hiddenManifest: digest, protectedPaths: [] } });
-	const pathed = JSON.stringify({ runId: "run_physical_path_refused", jobId, ordinal: 1, sourceCommit,
-		definitionOfDone: { ...definitionOfDone, frozenTestPath: "tests/totals.test.ts" } });
 	const listed = JSON.stringify({ runId: "run_physical_list_refused", jobId, ordinal: 1, sourceCommit,
 		definitionOfDone: { ...definitionOfDone, frozenTests: ["frozen:1"] } });
-	for (const refused of [codeBody, pathed, listed]) {
+	for (const refused of [codeBody, listed]) {
 		const answer = await service.handle(signedRun(refused));
 		assert.equal(answer.status, 400);
 		assert.deepEqual(await answer.json(), { error: "RUN_BODY_INVALID" });
@@ -242,6 +240,16 @@ test("a code run ignores physical metadata this service cannot read, as main ign
 	const unreadable = parseRunRequest(JSON.parse(JSON.stringify({ runId: request.runId, jobId, ordinal: 1, sourceCommit,
 		definitionOfDone: { ...definitionOfDone, physical: "laser-cut" } })));
 	assert.equal(unreadable, null);
+});
+
+test("a code run ignores a readable physical block beside its test path, as main ignored unknown keys", () => {
+	const codeDefinition = { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" }, frozenAt: LASER_CUT_WORKFLOW.frozenAt,
+		frozenTestPath: "tests/totals.test.ts", frozenTests: [], hiddenTests: [], hiddenManifest: digest, protectedPaths: [] };
+	const parsed = parseRunRequest(JSON.parse(JSON.stringify({ runId: request.runId, jobId, ordinal: 1, sourceCommit,
+		definitionOfDone: { ...codeDefinition, physical: definitionOfDone.physical } })));
+	assert.notEqual(parsed, null);
+	assert.equal(parsed?.definitionOfDone.physical, undefined);
+	assert.equal(parsed?.definitionOfDone.frozenTestPath, "tests/totals.test.ts");
 });
 
 /** Runs git in a repository and returns its trimmed output. */

@@ -168,13 +168,25 @@ for (const [label, vertical] of unreadableVerticals) {
 	});
 }
 
-test("a laser-cut-labelled callback cannot finish a code job", async t => {
+test("a laser-cut-labelled callback cannot finish a code job while this deployment opens the laser-cut workflow", async t => {
 	const { store, ports, row, body } = await fixture(t, "code" as Vertical);
 	const before = await store.readJob(row.id);
 	const response = await ingestVerifierCallback(ports, signed({ ...body, vertical: "laser-cut" }));
 	assert.equal(response.status, 409);
 	assert.deepEqual(await response.json(), { error: "VERTICAL_MISMATCH" });
 	assert.deepEqual(await store.readJob(row.id), before);
+});
+
+test("a laser-cut-labelled callback applies to a code job when this deployment opens no physical workflow, as main did", async t => {
+	const { store, ports, row, body } = await fixture(t, "code" as Vertical);
+	const code = ports.verifiers?.[CODE_VERTICAL];
+	assert.ok(code);
+	// Without physical jobs the registry holds the code judge alone, so the laser-cut name opens nothing.
+	const codeOnly: Ports = { ...ports, verifiers: { [CODE_VERTICAL]: code } };
+	const response = await ingestVerifierCallback(codeOnly, signed({ ...body, vertical: "laser-cut" }));
+	assert.equal(response.status, 200);
+	assert.deepEqual(await response.json(), { ok: true, applied: true });
+	assert.equal((await store.readJob(row.id))?.state.status, "VERIFIED");
 });
 
 // Main ignored the vertical field, so a code job reads a name no physical workflow opens as none: its signed verdict still applies.

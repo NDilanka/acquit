@@ -324,11 +324,12 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const number = typeof value.issue.number === "number" && Number.isSafeInteger(value.issue.number) && value.issue.number > 0 ? value.issue.number : null;
 	const title = boundedText(value.issue.title, 300);
 	const frozenAt = idOf(value.frozenAt, /^[0-9a-f]{7,64}$/);
-	// Physical metadata this service cannot read is ignored, as main ignored unknown keys. A physical definition still
-	// fails below: it freezes no test, so an unreadable block leaves its path empty and that path is refused.
-	const physical = parsePhysical(value.physical) ?? undefined;
+	// Physical metadata is read only beside an empty test path, which a physical definition alone carries. A block beside a
+	// named test file, or one this service cannot read, is ignored as main ignored unknown keys, so the definition parses as code.
+	// A physical definition with an unreadable block still fails below: its path is empty and that path is refused.
+	const physical = value.frozenTestPath === "" ? (parsePhysical(value.physical) ?? undefined) : undefined;
 	// A code definition names its frozen test file. A physical definition freezes no test, so its path is empty.
-	const frozenTestPath = physical === undefined ? frozenTestPathOf(value.frozenTestPath) : value.frozenTestPath === "" ? "" : null;
+	const frozenTestPath = physical === undefined ? frozenTestPathOf(value.frozenTestPath) : "";
 	const frozenTests = testIds(value.frozenTests);
 	const hiddenTests = testIds(value.hiddenTests);
 	const hiddenManifest = idOf(value.hiddenManifest, /^[0-9a-f]{64}$/);

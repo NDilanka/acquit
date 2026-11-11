@@ -1032,9 +1032,11 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	const job = await ports.store.readJob(parsed.jobId);
 	if (job === null) return Response.json({ ok: true, applied: false });
 	const jobVertical = storedVertical(job);
-	// A code job reads a name no physical workflow opens as none, as main did: only a name this build opens can mismatch it.
-	const named = jobVertical === CODE_VERTICAL && parsed.vertical !== undefined && physicalWorkflowOf(parsed.vertical) === null
-		? undefined : parsed.vertical;
+	// A code job reads a name this deployment does not open as none, as main did. A deployment opens a physical workflow
+	// only by registering its judge, so a physical name with no judge registered is no name at all.
+	const opened = parsed.vertical !== undefined && physicalWorkflowOf(parsed.vertical) !== null &&
+		verifiersOf(ports)[parsed.vertical as Vertical] !== undefined;
+	const named = jobVertical === CODE_VERTICAL && parsed.vertical !== undefined && !opened ? undefined : parsed.vertical;
 	if (named !== undefined && named !== jobVertical) {
 		return Response.json({ error: "VERTICAL_MISMATCH" }, { status: 409 });
 	}
