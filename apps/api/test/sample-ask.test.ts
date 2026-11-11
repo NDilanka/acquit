@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
-import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, type AskModelResult } from "../src/ask.ts";
-import { modelCallLog } from "../../../packages/core/src/model.ts";
+import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, OPERATOR_TURNS_PER_MINUTE, type AskModelResult } from "../src/ask.ts";
+import { MODEL_CALLS_MINUTE, modelCallLog } from "../../../packages/core/src/model.ts";
 import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, SAMPLE_MODEL_CALLS_PER_KEY_DAY, SAMPLE_TURNS_PER_DAY, SAMPLE_TURNS_PER_MINUTE, withDeadline } from "../src/sample-ask.ts";
 import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import { sampleExplain } from "../src/sample-book.ts";
@@ -228,6 +228,35 @@ test("the sample's ceiling inside the shared budget refuses a sample turn while 
 		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
 		assert.equal(platform.ok, true, "the platform's turn still runs while the sample is at its ceiling");
 		assert.equal(modelCalls, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the sample's shared minute leaves the operators their whole minute: at the sample's ceiling an operator's turns still run", async () => {
+	// The shared minute refuses its nineteenth call, so the sample and the operators split the other calls of that minute.
+	assert.ok(MODEL_CALLS_MINUTE - 1 - SAMPLE_ALLOWANCE.perMinute >= OPERATOR_TURNS_PER_MINUTE,
+		"the minute's calls the sample leaves are at least the operators' own minute");
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-leave-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perMinute; call += 1) {
+			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
+		};
+		const sample = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.equal(sample.ok, false, "the sample is at its minute");
+		for (let turn = 1; turn <= OPERATOR_TURNS_PER_MINUTE; turn += 1) {
+			const operator = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "OPERATOR" });
+			assert.equal(operator.ok, true, `operator turn ${turn} of the minute runs while the sample is at its ceiling`);
+		}
+		assert.equal(modelCalls, OPERATOR_TURNS_PER_MINUTE);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

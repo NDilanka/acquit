@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SqliteStore } from "../../../packages/core/src/store.ts";
-import { SAMPLE_LABEL, SAMPLE_TURNS_PER_MINUTE } from "../src/sample-ask.ts";
+import { SAMPLE_CALLS_PER_MINUTE, SAMPLE_LABEL, SAMPLE_TURNS_PER_MINUTE } from "../src/sample-ask.ts";
 import { TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -186,12 +186,19 @@ test("a sample turn is admitted per account and per address, a turn past the add
 		assert.equal(((await relayed.json()) as { error: string }).error, "MODEL_KEY_MISSING");
 
 		// The address's allowance is one turn a minute short of its per-minute cap, the relayed turn being the first: seventeen more
-		// admitted turns, the client's and the operator's in turn, so the address is now full.
+		// turns, the client's and the operator's in turn, so the address is now full. The relayed turn is the sample's first model
+		// call, so the next twelve reach the model and the rest are refused by the sample's shared minute, which admits
+		// SAMPLE_CALLS_PER_MINUTE calls, before any call is recorded.
 		const more = Array.from({ length: SAMPLE_TURNS_PER_MINUTE - 1 }, (_, index) => (index % 2 === 0 ? client : operator));
-		for (const token of more) {
+		for (const [index, token] of more.entries()) {
 			const admitted = await post(port, "/api/sample/ask/turn", { messages }, token);
-			assert.equal(admitted.status, 503, "an admitted turn reaches the model, which has no key");
-			assert.equal(((await admitted.json()) as { error: string }).error, "MODEL_KEY_MISSING");
+			if (index < SAMPLE_CALLS_PER_MINUTE - 1) {
+				assert.equal(admitted.status, 503, "an admitted turn reaches the model, which has no key");
+				assert.equal(((await admitted.json()) as { error: string }).error, "MODEL_KEY_MISSING");
+			} else {
+				assert.equal(admitted.status, 429, "the sample's shared minute is full, so the turn is refused before the model");
+				assert.equal(((await admitted.json()) as { error: string }).error, "MODEL_BUDGET");
+			}
 		}
 
 		// The next turn is refused by the address, whichever account sends it, names the minute it ran out in, and reserves no budget record.
@@ -202,7 +209,7 @@ test("a sample turn is admitted per account and per address, a turn past the add
 		assert.equal(refusedBody.detail, TURN_LIMIT_MINUTE_DETAIL, "the refusal names the window that ran out");
 
 		const records = (await readFile(budgetLog, "utf8")).split("\n").filter(Boolean).map(text => JSON.parse(text) as { caller: string; phase: string });
-		assert.equal(records.filter(record => record.caller === "sample-ask").length, 2 * SAMPLE_TURNS_PER_MINUTE, `${SAMPLE_TURNS_PER_MINUTE} admitted turns, each a START and an END`);
+		assert.equal(records.filter(record => record.caller === "sample-ask").length, 2 * SAMPLE_CALLS_PER_MINUTE, `${SAMPLE_CALLS_PER_MINUTE} model calls reserved, each a START and an END`);
 		assert.equal(records.filter(record => record.caller === "ask-ledger").length, 0, "the sample's turns are budgeted under their own caller");
 
 		const sampleCalls = (await logged()).slice(before);

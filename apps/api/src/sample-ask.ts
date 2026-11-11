@@ -35,11 +35,13 @@ export const SAMPLE_MODEL_CALLS_PER_KEY_DAY = 40;
 
 /**
  * The sample book's ceiling inside the shared model budget. Every sample call, retries included, counts here, so the sample
- * as a whole never takes more than 18 a minute or 200 a day, and the platform's and the operators' calls keep the rest. The
- * minute is sized to the per-key minute, so one visitor's three questions in a minute are not cut short by the shared sample.
+ * as a whole never takes more than 13 a minute or 200 a day. The shared budget admits 19 a minute, so the minute's other six
+ * calls stay free for the operators' own minute (OPERATOR_TURNS_PER_MINUTE) and for the platform's calls.
  */
-export const SAMPLE_ALLOWANCE: ModelCallAllowance = { name: "sample", callers: [SAMPLE_CALLER], perMinute: SAMPLE_TURNS_PER_MINUTE, perDay: 200,
-	perKeyDay: SAMPLE_MODEL_CALLS_PER_KEY_DAY };
+export const SAMPLE_CALLS_PER_MINUTE = 13;
+export const SAMPLE_CALLS_PER_DAY = 200;
+export const SAMPLE_ALLOWANCE: ModelCallAllowance = { name: "sample", callers: [SAMPLE_CALLER], perMinute: SAMPLE_CALLS_PER_MINUTE,
+	perDay: SAMPLE_CALLS_PER_DAY, perKeyDay: SAMPLE_MODEL_CALLS_PER_KEY_DAY };
 
 /** A sample turn's model call, its one retry included, is held to this long; at the deadline the call is cancelled and the route answers without it. */
 export const SAMPLE_TURN_DEADLINE_MS = 120_000;
