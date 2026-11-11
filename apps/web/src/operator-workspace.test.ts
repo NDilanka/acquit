@@ -132,7 +132,7 @@ test("a pending bid keeps its job in the open list and adds no work", () => {
 });
 
 test("a locked job in escrow counts at the operator's net and reads Deliver", () => {
-  // A 40000 bid is held at 42000 from the client, and the operator's net after Acquit's fee and PayPal's processing fee is 36000.
+  // A 40000 bid is held at 42000 from the client, and the operator's net after the 10% operator fee is 36000.
   const ws = buildOperatorWorkspace(snapshot([job(LOCKED)], { escrow: [{ jobId: "job_work", cents: 36000 }] }));
   assert.deepEqual(ws.open, []);
   assert.equal(ws.mine.length, 1);
