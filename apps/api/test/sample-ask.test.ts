@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
-import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, type AskModelResult } from "../src/ask.ts";
-import { modelCallLog } from "../../../packages/core/src/model.ts";
-import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, withDeadline } from "../src/sample-ask.ts";
+import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, OPERATOR_TURNS_PER_MINUTE, type AskModelResult } from "../src/ask.ts";
+import { MODEL_CALLS_MINUTE, modelCallLog } from "../../../packages/core/src/model.ts";
+import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, SAMPLE_MODEL_CALLS_PER_KEY_DAY, SAMPLE_TURNS_PER_DAY, SAMPLE_TURNS_PER_MINUTE, withDeadline } from "../src/sample-ask.ts";
+import { SHARED_MINUTE_DETAIL, TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import { sampleExplain } from "../src/sample-book.ts";
 
 const FORGED_REAL_IDS = ["job_real_paid", "job_real_refund", "REFUND_REAL_SENTINEL", "CAP-REAL_SENTINEL", "PAYOUT_REAL_SENTINEL", "rcpt_real", "SAMPLE-ORDER-02"];
@@ -129,26 +130,28 @@ test("a sample turn is sent under the sample contract and budgeted under its own
 	}
 });
 
-test("the sample turn's admission admits six a minute for an account or an address, refuses the seventh, and a refused turn charges neither key", () => {
+test("the sample turn's admission admits eighteen a minute for an account or an address, refuses the nineteenth by the minute, and a refused turn charges neither key", () => {
+	assert.equal(SAMPLE_TURNS_PER_MINUTE, 18, "the per-key minute is eighteen turns, three six-turn questions");
 	let at = 1_000_000;
 	const admit = sampleTurnLimiter(() => at);
-	for (let turn = 1; turn <= 6; turn += 1) assert.equal(admit(["account:a", "ip:x"]), true, `turn ${turn} is inside the allowance`);
-	assert.equal(admit(["account:b", "ip:x"]), false, "a new account on a full address is refused by the address");
-	for (let turn = 1; turn <= 6; turn += 1) {
-		assert.equal(admit(["account:b", `ip:fresh-${turn}`]), true, `account b's turn ${turn} is not charged by the refused turn`);
+	for (let turn = 1; turn <= SAMPLE_TURNS_PER_MINUTE; turn += 1) assert.equal(admit(["account:a", "ip:x"]), null, `turn ${turn} is inside the allowance`);
+	assert.equal(admit(["account:b", "ip:x"]), TURN_LIMIT_MINUTE_DETAIL, "a new account on a full address is refused by the address's minute");
+	for (let turn = 1; turn <= SAMPLE_TURNS_PER_MINUTE; turn += 1) {
+		assert.equal(admit(["account:b", `ip:fresh-${turn}`]), null, `account b's turn ${turn} is not charged by the refused turn`);
 	}
 	at += 60_000;
-	assert.equal(admit(["account:a", "ip:x"]), true, "a minute later the address's allowance has renewed");
+	assert.equal(admit(["account:a", "ip:x"]), null, "a minute later the address's allowance has renewed");
 });
 
-test("the sample turn's admission caps a day at sixty for one key", () => {
+test("the sample turn's admission caps a day at three hundred sixty for one key, and names the day when it refuses", () => {
+	assert.equal(SAMPLE_TURNS_PER_DAY, 360, "the per-key day is three hundred sixty turns, sixty questions");
 	let at = 0;
 	const admit = sampleTurnLimiter(() => at);
-	for (let turn = 1; turn <= 60; turn += 1) {
-		assert.equal(admit(["account:a", `ip:${turn}`]), true, `turn ${turn} is inside the day`);
+	for (let turn = 1; turn <= SAMPLE_TURNS_PER_DAY; turn += 1) {
+		assert.equal(admit(["account:a", `ip:${turn}`]), null, `turn ${turn} is inside the day`);
 		at += 61_000;
 	}
-	assert.equal(admit(["account:a", "ip:61"]), false, "the sixty-first turn in the day is refused by the account");
+	assert.equal(admit(["account:a", "ip:fresh"]), TURN_LIMIT_DAY_DETAIL, "the next turn in the day is refused by the account's day");
 });
 
 test("a model call past its deadline is answered without the model, and a call inside it is answered with it", async () => {
@@ -178,17 +181,17 @@ test("a sample turn cancelled at its deadline stops its model call and starts no
 		const log = join(root, "log.jsonl");
 		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
 		let modelCalls = 0;
-		// The model answers a provider error only once its signal aborts: the cancel is what ends it.
+		const controller = new AbortController();
+		// The deadline lands while the model call is in flight, so the cancel is what ends it. The abort is
+		// raised from inside the call rather than on a timer, so a slow reservation cannot cancel the turn first.
 		const model = async (_prompt: string, signal?: AbortSignal): Promise<AskModelResult> => {
 			modelCalls += 1;
+			controller.abort();
 			await new Promise<void>(resolve => { if (signal?.aborted === true) resolve(); else signal?.addEventListener("abort", () => resolve(), { once: true }); });
 			return { ok: false, reason: "PROVIDER_ERROR", detail: "the request was aborted" };
 		};
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 30);
 		const outcome = await askLedgerTurn({ model, callLog: modelCallLog(log), caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
 			{ messages, tools: sampleAskToolList(), scope: "SAMPLE", signal: controller.signal });
-		clearTimeout(timer);
 		assert.equal(outcome.ok, false, "a cancelled turn is not an answer");
 		assert.equal(modelCalls, 1, "the cancelled call is the only model call: the one retry never starts");
 		const phases = (await readFile(log, "utf8")).split("\n").filter(Boolean).map(line => (JSON.parse(line) as { phase: string }).phase);
@@ -210,8 +213,8 @@ test("the sample's ceiling inside the shared budget refuses a sample turn while 
 		const callLog = modelCallLog(join(root, "log.jsonl"));
 		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
 		const now = Date.now();
-		// Six sample calls in the last minute fill the sample's per-minute ceiling.
-		for (let call = 0; call < 6; call += 1) {
+		// The sample's per-minute ceiling's worth of calls in the last minute fill it.
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perMinute; call += 1) {
 			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
 		}
 		let modelCalls = 0;
@@ -220,11 +223,40 @@ test("the sample's ceiling inside the shared budget refuses a sample turn while 
 			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
 		};
 		const sample = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
-		assert.deepEqual(sample, { ok: false, reason: "MODEL_BUDGET", detail: "the sample allowance inside the shared model budget is spent for now" });
+		assert.deepEqual(sample, { ok: false, reason: "MODEL_BUDGET", detail: SHARED_MINUTE_DETAIL }, "the sample's full minute names the shared minute");
 		assert.equal(modelCalls, 0, "a refused sample turn runs no model call");
 		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
 		assert.equal(platform.ok, true, "the platform's turn still runs while the sample is at its ceiling");
 		assert.equal(modelCalls, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the sample's shared minute leaves the operators their whole minute: at the sample's ceiling an operator's turns still run", async () => {
+	// The shared minute refuses its nineteenth call, so the sample and the operators split the other calls of that minute.
+	assert.ok(MODEL_CALLS_MINUTE - 1 - SAMPLE_ALLOWANCE.perMinute >= OPERATOR_TURNS_PER_MINUTE,
+		"the minute's calls the sample leaves are at least the operators' own minute");
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-leave-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perMinute; call += 1) {
+			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
+		};
+		const sample = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.equal(sample.ok, false, "the sample is at its minute");
+		for (let turn = 1; turn <= OPERATOR_TURNS_PER_MINUTE; turn += 1) {
+			const operator = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "OPERATOR" });
+			assert.equal(operator.ok, true, `operator turn ${turn} of the minute runs while the sample is at its ceiling`);
+		}
+		assert.equal(modelCalls, OPERATOR_TURNS_PER_MINUTE);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -236,8 +268,8 @@ test("a sample retry that would pass the sample's ceiling is refused, so a provi
 		const callLog = modelCallLog(join(root, "log.jsonl"));
 		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
 		const now = Date.now();
-		// Five sample calls in the minute leave one: the first call takes it, and the retry finds the ceiling full.
-		for (let call = 0; call < 5; call += 1) {
+		// One call short of the sample's per-minute ceiling leaves one: the first call takes it, and the retry finds the ceiling full.
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perMinute - 1; call += 1) {
 			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
 		}
 		let modelCalls = 0;
@@ -275,6 +307,37 @@ test("the sample's daily ceiling refuses sample calls for the rest of the day, a
 		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
 		assert.equal(platform.ok, true, "the platform's day is not the sample's");
 		assert.equal(modelCalls, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("one visitor's model calls in a day stop at the per-visitor ceiling, another visitor still runs, and the call log holds the digest keys", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-visitor-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		// The visitor's calls spread over the last day, half an hour apart: the minute and the shared day are never what is full.
+		for (let call = 0; call < SAMPLE_MODEL_CALLS_PER_KEY_DAY; call += 1) {
+			await callLog.append({ at: new Date(now - 1_800_000 * (call + 1)).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid",
+				model: "m", phase: "START", keys: ["account:visitor-a", "ip:address-a"] });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
+		};
+		const visitor = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE, keys: ["account:visitor-a", "ip:address-a"] },
+			{ messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.deepEqual(visitor, { ok: false, reason: "MODEL_BUDGET", detail: "per-key-day" }, "the visitor's day of calls is spent");
+		assert.equal(modelCalls, 0, "a refused turn runs no model call");
+		const other = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE, keys: ["account:visitor-b", "ip:address-b"] },
+			{ messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.equal(other.ok, true, "another visitor still runs");
+		const records = await callLog.records();
+		const started = records.filter(record => record.phase === "START" && record.keys?.includes("account:visitor-b") === true);
+		assert.deepEqual(started.map(record => record.keys), [["account:visitor-b", "ip:address-b"]], "the admitted turn's START names its keys");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

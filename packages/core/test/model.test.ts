@@ -14,6 +14,7 @@ import {
 	reserveModelCall,
 } from "../src/model.ts";
 import type { ModelCallLog } from "../src/model.ts";
+import { SHARED_DAY_DETAIL, SHARED_MINUTE_DETAIL } from "../src/turn-limit.ts";
 
 test("the model provider switch defaults to fireworks; droid stays selectable with glm-5.3-flash", () => {
 	assert.equal(modelProvider({}), "fireworks");
@@ -100,7 +101,8 @@ test("the shared budget refuses the 20th call in a rolling minute and the 1000th
 			caller: "house", jobId: "job_x", provider: "droid", model: "glm-5.3-flash" });
 		for (let index = 0; index < 18; index += 1) assert.deepEqual(await reserveModelCall(log, call(index * 1_000)), { ok: true });
 		assert.deepEqual(await reserveModelCall(log, call(18_000)), { ok: true }, "18 calls in the window still admit the 19th");
-		assert.deepEqual(await reserveModelCall(log, call(19_000)), { ok: false, reason: "BUDGET" }, "the 20th call in a minute is refused");
+		assert.deepEqual(await reserveModelCall(log, call(19_000)), { ok: false, reason: "BUDGET", detail: SHARED_MINUTE_DETAIL },
+			"the 20th call in a minute is refused, and the refusal names the shared minute");
 		const starts = (await log.records()).filter(record => record.phase === "START");
 		assert.equal(starts.length, 19, "every admitted call wrote its START record before anything ran");
 
@@ -110,12 +112,52 @@ test("the shared budget refuses the 20th call in a rolling minute and the 1000th
 		for (let index = 0; index < 999; index += 1) {
 			await day.append({ at: recent, caller: "house", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
 		}
-		assert.deepEqual(await reserveModelCall(day, call(0)), { ok: false, reason: "BUDGET" }, "999 calls in the day refuse the 1000th");
+		assert.deepEqual(await reserveModelCall(day, call(0)), { ok: false, reason: "BUDGET", detail: SHARED_DAY_DETAIL },
+			"999 calls in the day refuse the 1000th, and the refusal names the shared day");
 		const old = modelCallLog(join(dir, "old.jsonl"));
 		for (let index = 0; index < 999; index += 1) {
 			await old.append({ at: dayAgo, caller: "house", jobId: null, provider: "droid", model: "glm-5.3-flash", phase: "START" });
 		}
 		assert.deepEqual(await reserveModelCall(old, call(0)), { ok: true }, "calls older than a day do not count");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a key's calls in a day stop at the group's per-key ceiling, another key still runs, and a call outside the group is not counted", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-key-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const group = { name: "sample", callers: ["sample-ask"], perMinute: 13, perDay: 200, perKeyDay: 40 };
+		const base = Date.parse("2026-10-12T00:00:00Z");
+		const call = (offsetMs: number, keys: readonly string[], caller = "sample-ask") => ({ at: new Date(base + offsetMs).toISOString(),
+			caller, jobId: null, provider: "droid", model: "glm-5.3-flash", keys });
+		// Forty calls half an hour apart, written straight to the log: the minute and the group's shared day are never what is full.
+		for (let index = 0; index < 40; index += 1) {
+			await log.append({ ...call(index * 1_800_000, ["account:a", "ip:x"]), phase: "START" });
+		}
+		assert.deepEqual(await reserveModelCall(log, call(40 * 1_800_000, ["account:a", "ip:x"]), group),
+			{ ok: false, reason: "BUDGET", detail: "per-key-day" }, "the forty-first call of one key in a day is refused by that key's day");
+		assert.deepEqual(await reserveModelCall(log, call(40 * 1_800_000, ["account:b", "ip:y"]), group), { ok: true },
+			"another key in the same group still runs");
+		assert.deepEqual(await reserveModelCall(log, call(40 * 1_800_000, ["account:a", "ip:x"], "ask-ledger"), group), { ok: true },
+			"a call from outside the group is not counted against the group's keys");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a caller group's full minute refuses its next call as the shared minute, and the calls outside the group still run", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-group-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const group = { name: "sample", callers: ["sample-ask"], perMinute: 13, perDay: 200 };
+		const at = Date.parse("2026-10-12T00:00:00Z");
+		const call = (offsetMs: number, caller: string) => ({ at: new Date(at + offsetMs).toISOString(), caller, jobId: null,
+			provider: "droid", model: "glm-5.3-flash" });
+		for (let index = 0; index < 13; index += 1) {
+			await log.append({ ...call(index * 1_000, "sample-ask"), phase: "START" });
+		}
+		assert.deepEqual(await reserveModelCall(log, call(13_000, "sample-ask"), group),
+			{ ok: false, reason: "BUDGET", detail: SHARED_MINUTE_DETAIL }, "the group's fourteenth call in the minute is refused as the shared minute");
+		assert.deepEqual(await reserveModelCall(log, call(13_000, "ask-ledger"), group), { ok: true },
+			"a call from outside the group still runs in the minute the group filled");
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

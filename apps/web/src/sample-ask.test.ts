@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ASK_ROUTE, labelledSampleTurn, OPERATOR_ASK_INSTRUCTIONS, SAMPLE_ANSWER_LABEL, SAMPLE_ASK_INSTRUCTIONS, SAMPLE_ASK_PROMPT_STARTERS, SAMPLE_ASK_TOOL_NAMES, askToolLabel } from "./ask-ledger.ts";
+import { ASK_MAX_TURNS, ASK_ROUTE, labelledSampleTurn, OPERATOR_ASK_INSTRUCTIONS, SAMPLE_ANSWER_LABEL, SAMPLE_ASK_INSTRUCTIONS, SAMPLE_ASK_PROMPT_STARTERS, SAMPLE_ASK_TOOL_NAMES, askToolLabel } from "./ask-ledger.ts";
 
 // The platform's and operator's tool names. The sample book's copy must name none of them.
 const PLATFORM_TOOL = /\b(platform_totals|list_jobs|get_job|get_order|list_disputes|get_dispute|get_refund|list_transactions|trace_figure|my_jobs|my_job|my_payouts|my_totals)\b/;
@@ -67,10 +67,21 @@ test("the sample page asks over the sample scope, and shows its panel only at th
   assert.ok(sample.length > 0, "the sample dashboard is declared in the page");
   assert.match(sample, /useAskLedger\("sample", "SAMPLE"\)/, "the sample page builds its ask for the sample scope");
   assert.match(sample, /ask=\{wide \? ask : undefined\}/, "the sample page hands its ask to the panel only at the wide width");
+  assert.match(sample, /notice=\{askNotice\}/, "below the wide width the sample page shows where Ask is, not nothing");
+  assert.match(page, /const SAMPLE_ASK_NARROW_TEXT = "Ask the ledger sits beside the widgets in a window at least 1200 pixels wide\./,
+    "the narrow-width notice says the width Ask needs");
   assert.match(page, /const WIDE = "\(min-width: 1200px\)";/, "the panel's width is 1200 pixels and wider");
   // The escrow and earnings pages keep their own asks.
   assert.match(page, /useAskLedger\("escrow"\)/, "the escrow page keeps the platform's ask");
   assert.match(page, /useAskLedger\("earnings", "OPERATOR"\)/, "the earnings page keeps the operator's ask");
+});
+
+test("three starters in a row fit the sample's per-visitor turn minute, even when each runs the full turn cap", () => {
+  const server = readFileSync(new URL("../../api/src/sample-ask.ts", import.meta.url), "utf8");
+  const perMinute = Number(/export const SAMPLE_TURNS_PER_MINUTE = (\d+);/.exec(server)?.[1]);
+  assert.ok(perMinute > 0, "the server declares the sample's per-visitor turn minute as a literal");
+  assert.ok(SAMPLE_ASK_PROMPT_STARTERS.length * ASK_MAX_TURNS <= perMinute,
+    `${SAMPLE_ASK_PROMPT_STARTERS.length} starters at ${ASK_MAX_TURNS} turns each fit the ${perMinute} turns a minute one visitor gets`);
 });
 
 test("the sample book's copy names no platform tool, and its starters and labels are worded for the sample book", () => {
