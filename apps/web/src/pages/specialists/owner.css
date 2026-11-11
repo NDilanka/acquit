@@ -151,6 +151,8 @@
 .plug-own p { font-size: var(--text-ui); color: var(--muted); margin-bottom: var(--space-3); }
 .plug-command { font: 400 var(--text-xs)/var(--leading-xs) var(--mono); overflow-wrap: anywhere; }
 .orders-limits { margin-top: var(--space-4); }
+.orders-change { font-size: var(--text-ui); line-height: var(--leading-ui); letter-spacing: 0; }
+.orders-fees { max-width: 64ch; margin-top: var(--space-2) !important; font-size: var(--text-ui); line-height: var(--leading-ui); color: var(--muted); }
 .owner-app .wrap .orders-limits select { appearance: none; min-height: var(--control-lg); width: 72px; padding: 0 var(--space-8) 0 var(--space-2); border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--panel); color: var(--ink); font: inherit; }
 .orders-sentence { font-size: var(--text-section); }
 .plug-existing { margin-top: var(--space-2); }

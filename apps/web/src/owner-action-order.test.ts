@@ -31,3 +31,14 @@ test("Record docks after both address and meaning controls, including signed-out
   assert.ok(denied.indexOf('className="owner-actions"') > denied.indexOf("<CopyRecordPath"));
   assert.ok(source.lastIndexOf('className="owner-actions"') > source.indexOf('className="record-meaning"'));
 });
+
+test("Orders keeps its limits disclosure inline and confirms a saved safe-to-close state", () => {
+  const source = page("StandingOrders");
+  const sentence = source.slice(source.indexOf('<p className="orders-sentence">'),source.indexOf('<div className="orders-help orders-limits"'));
+  assert.match(sentence,/aria-expanded=\{limitsOpen\}/);
+  assert.match(sentence,/onClick=\{\(\) => setLimitsOpen\(open => !open\)\}>Change limits<\/button>/);
+  assert.match(source,/hidden=\{!limitsOpen\}/);
+  assert.match(source,/<p>Saved\. You can close this tab now\.<\/p>/);
+  assert.match(source,/PayPal's actual processing fee/);
+  assert.doesNotMatch(source,/10%|0\.9|0\.1|netCents/);
+});
