@@ -7,11 +7,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import type { CommandOutcome, UserCommand } from "../../../packages/core/src/acquit.ts";
 import type { JobId } from "../../../packages/core/src/ids.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
 import { HOUSE_OPERATOR_ID, type HouseDelivery, type HouseRunOutcome, type HouseRunPlan, type HouseWorkPort } from "../../../packages/house/src/runner.ts";
-import { createHouseDelivery } from "../src/house.ts";
+import { createHouseDelivery, type HousePorts } from "../src/house.ts";
+import { createPayPalCheck } from "../src/paypal-check.ts";
 
 /** A deliverable held House row, carrying exactly the fields the scan and its predicate read. */
 function deliverableRow(jobId: string, tenant: string | null): JobRow {
@@ -122,5 +124,99 @@ test("a spent call budget stops the scan for this tick without a latch", async (
 		assert.equal(house.plans.length, 0, "no model call starts on a spent budget");
 		assert.equal(existsSync(join(stateDir, "house", "paused.json")), false, "a budget pause is not a latch");
 		assert.equal(readdirSync(join(stateDir, "house")).includes("job_house_first.json"), false, "the job's call count never moved");
+	} finally { rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+
+/** A held House row whose escrow carries the order and merchant PayPal's check reads, as a funded job's row does. */
+function checkedHouseRow(jobId: string): JobRow {
+	const row = deliverableRow(jobId, null);
+	const escrow = { payee: { operator: HOUSE_OPERATOR_ID, payee: "HOUSE-MERCHANT" }, capture: { orderId: "ORDER1" } };
+	return { ...row, state: { ...row.state, escrow } } as unknown as JobRow;
+}
+
+/** One House scan over the job on the re-submit path (no checkout, no model run), with the given PayPal check port. */
+function houseWithCheck(stateDir: string, jobId: string, paypalCheck?: HousePorts["paypalCheck"]) {
+	const commands: UserCommand[] = [];
+	const house = createHouseDelivery({
+		jobs: () => [checkedHouseRow(jobId)],
+		mint: async () => ({ repository: "acquit-forks/invoice-app-x", token: "GHT-TEST-TOKEN" }),
+		execute: async (_actor, command) => {
+			commands.push(command);
+			return { kind: "COMMITTED", result: { kind: "JOB", job: { id: jobId } } } as unknown as CommandOutcome;
+		},
+		recordDiff: async () => {},
+		stateDir,
+		env: { ACQUIT_HOUSE_COMMAND: "/srv/house/fix.sh" },
+		paypalCheck,
+	});
+	return { house, commands };
+}
+
+/** One scan in a fresh state dir: the submits the House made, how long the scan took, and its state file. */
+async function houseTick(jobId: string, paypalCheck?: HousePorts["paypalCheck"]) {
+	const stateDir = mkdtempSync(join(tmpdir(), "acquit-house-api-"));
+	try {
+		writeStateFile(stateDir, jobId, { calls: 1, submittedCommit: "a".repeat(40), submitAttempts: 0, prepareFailures: 0 });
+		const { house, commands } = houseWithCheck(stateDir, jobId, paypalCheck);
+		const started = Date.now();
+		await house.kick();
+		return { commands: commands.map(command => command.type), elapsedMs: Date.now() - started,
+			state: readFileSync(join(stateDir, "house", `${jobId}.json`), "utf8") };
+	} finally { rmSync(stateDir, { recursive: true, force: true }); }
+}
+
+test("a PayPal read that throws leaves the House's delivery exactly as it is without the check", async () => {
+	const jobId = "job_house_check_throws";
+	const without = await houseTick(jobId);
+	let reads = 0;
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), now: () => "2026-11-10T21:00:00.000Z", log: () => {},
+		read: async () => { reads++; throw new Error("FAKE-PUSH-TOKEN-FOR-TEST refused"); } });
+	const withCheck = await houseTick(jobId, check);
+	await settle();
+	assert.equal(reads, 1, "the check starts with the delivery");
+	assert.deepEqual(withCheck.commands, ["Submit"]);
+	assert.deepEqual(withCheck.commands, without.commands);
+	assert.equal(withCheck.state, without.state);
+	assert.equal(check.recordsOf([jobId]).get(jobId)?.reason, "READ_FAILED");
+});
+
+test("a PayPal read that never settles does not hold the House's delivery, and times out on its own", async () => {
+	const jobId = "job_house_check_hangs";
+	const without = await houseTick(jobId);
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), now: () => "2026-11-10T21:00:00.000Z", log: () => {},
+		timeoutMs: 1_000, read: () => new Promise(() => {}) });
+	const withCheck = await houseTick(jobId, check);
+	assert.deepEqual(withCheck.commands, without.commands);
+	assert.equal(withCheck.state, without.state);
+	assert.ok(withCheck.elapsedMs < 1_000, `the scan returned in ${withCheck.elapsedMs} ms, before the read's 1000 ms cap`);
+	assert.equal(check.recordsOf([jobId]).size, 0, "a check still running records nothing");
+	await new Promise(resolve => setTimeout(resolve, 1_100));
+	assert.equal(check.recordsOf([jobId]).get(jobId)?.reason, "TIMEOUT");
+});
+
+test("a PayPal check that fails to start leaves the House's delivery exactly as it is", async () => {
+	const jobId = "job_house_check_start";
+	const without = await houseTick(jobId);
+	const withCheck = await houseTick(jobId, { start: () => { throw new Error("FAKE-PUSH-TOKEN-FOR-TEST"); } });
+	assert.deepEqual(withCheck.commands, without.commands);
+	assert.equal(withCheck.state, without.state);
+});
+
+test("two scans start the House's check once: one read for the job", async () => {
+	const jobId = "job_house_check_once";
+	const stateDir = mkdtempSync(join(tmpdir(), "acquit-house-api-"));
+	try {
+		writeStateFile(stateDir, jobId, { calls: 1, submittedCommit: "a".repeat(40), submitAttempts: 0, prepareFailures: 0 });
+		let reads = 0;
+		const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), now: () => "2026-11-10T21:00:00.000Z", log: () => {},
+			read: async () => { reads++; throw new Error("READ-FAILED-FOR-TEST"); } });
+		const { house, commands } = houseWithCheck(stateDir, jobId, check);
+		await house.kick();
+		await house.kick();
+		await settle();
+		assert.equal(reads, 1, "the second scan finds the job's claim and starts no read");
+		assert.equal(commands.length, 2, "the House still submits on each scan");
 	} finally { rmSync(stateDir, { recursive: true, force: true }); }
 });

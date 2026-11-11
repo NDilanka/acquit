@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Link, useRouter } from "../../router.tsx";
-import { activityDomId, activityEvents, activityLanes, activityReleasePending, activityStateWords, activitySteps, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, runnerAction, runnerStatusWords, sampleActivityLabel } from "./liveWork.ts";
+import { activityDomId, activityEvents, activityLanes, activityReleasePending, activityStateWords, activitySteps, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, paypalCheckWords, runnerAction, runnerStatusWords, sampleActivityLabel } from "./liveWork.ts";
 import { useOwner } from "./OwnerPanel.tsx";
 import type { OwnerActivity } from "./types.ts";
 import { JobStrip, TimelineMark, WorkTime } from "./WorkTimeline.tsx";
@@ -29,8 +29,9 @@ export function ActivityFeed({ feed }: { feed: OwnerActivity }) {
         {job.state === "CLOSED" && closedReasonWords(job.closedReason) && <p className="work-status">{closedReasonWords(job.closedReason)}</p>}
         {closedMoneyWords(job) && <p className="work-status">{closedMoneyWords(job)}</p>}
         <p className="work-status">{[sampleActivityLabel(job),feed.labels.verifier,feed.labels.money].filter(Boolean).join(" · ")}</p>
+        {job.paypalCheck && <p className="work-status">{paypalCheckWords(job.paypalCheck,feed.labels)}</p>}
         <p className="work-status"><Link to={`/agents/${encodeURIComponent(job.agentId)}/record`}>Agent record</Link></p>
-        <ol className="activity-track" aria-label="Job progress">{activitySteps(job).map(step =>
+        <ol className="activity-track" aria-label="Job progress">{activitySteps(job,feed.labels).map(step =>
           <li key={step.key} aria-current={step.current ? "step" : undefined} data-recorded={step.at ? "true" : "false"}>
             <span className="activity-step-icon" aria-hidden="true">{step.at ? "✓" : step.current ? "•" : "—"}</span>
             <div><p className="activity-step-main"><span>{step.title}</span>{step.at

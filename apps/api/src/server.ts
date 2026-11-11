@@ -59,6 +59,7 @@ import { traceFigure } from "./figure-trace.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
 import { activityJson, activityLimit } from "./sample-activity.ts";
 import { createSampleRunner, sampleRunJobs } from "./sample-runner.ts";
+import { createPayPalCheck, paypalOrderRead } from "./paypal-check.ts";
 import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_CALLER, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
@@ -1291,6 +1292,25 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
+	const checkMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/paypal-check$/);
+	if (checkMatch && method === "GET") {
+		// PayPal's recorded check of the job's money at work start, read from the stored record only: no PayPal call
+		// happens here. A job nobody has checked answers null, and so does a deployment without PayPal credentials.
+		// Open jobs are visible to every operator, so the check is narrower: the owning client and the operators who bid.
+		const jobId = validJobId(decodeURIComponent(checkMatch[1]));
+		const result = await acquit.query(current.actor, { type: "Job", jobId });
+		if (result.kind !== "JOB") {
+			json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
+			return;
+		}
+		const actor = current.actor;
+		// The House's bid sits apart from the independent bids, so the House operator is a bidder through `house`.
+		const bidders = [...result.job.bids.operators, result.job.bids.house];
+		const party = actor.role === "CLIENT" && result.job.client === actor.clientId
+			|| actor.role === "OPERATOR" && bidders.some(bid => bid?.operator === actor.operatorId);
+		if (!party) { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { check: payPalCheck.recordsOf([jobId]).get(jobId) ?? null }); return;
+	}
 	if (url.pathname === "/api/me/onboarding" && method === "GET") {
 		// The merchant status the server already holds, so the CLI never talks to PayPal with a secret.
 		const result = await acquit.query(current.actor, { type: "Operator" });
@@ -1487,7 +1507,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// Only the rows that name this operator are read and parsed; the activity filter then picks the exact set.
 		const rows = jobRowsNaming(db, current.actor.operatorId);
 		const runner = visitor === null ? null : sampleRunner.statusOf(visitor);
-		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobs: sampleRunJobs(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner }));
+		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobs: sampleRunJobs(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner,
+			paypalChecks: payPalCheck.recordsOf(rows.map(row => row.id)) }));
 		return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
@@ -1620,6 +1641,9 @@ const sampleState = join(resolve(databasePath, ".."), "sample-runner");
 mkdirSync(sampleState, { recursive: true, mode: 0o700 });
 const sampleWork = gitWorkPort({ stateRoot: join(sampleState, "checkouts"), workRoot: join(sampleState, "work"), mint: workMint, env: process.env });
 const sampleFixture = scenarioFixtureOf(fixtures, scenarioFixtureKey);
+// PayPal's check of a funded job's order when its agent's work starts. It reads only when the deployment has PayPal
+// credentials, and it records the answer without holding the run.
+const payPalCheck = createPayPalCheck({ db, read: moneyRead === null ? null : paypalOrderRead(reconcileConfig), now: () => clock.now() });
 const sampleRunner = createSampleRunner({
 	db, enabled: sampleRunnerEnabled, now: () => clock.now(),
 	visitors: () => lastingAccounts(db).map(visitor => ({ id: visitor.id, operatorHandle: visitor.operatorHandle, repository: visitor.repository })),
@@ -1634,6 +1658,7 @@ const sampleRunner = createSampleRunner({
 	feeModel: settings.paypal.feeModel,
 	execute: (actor, key, command) => acquit.execute(actor, key, command),
 	workspace: scriptedWorkspace({ work: sampleWork, readJob: id => scenarioStore.readJob(id) }),
+	paypalCheck: payPalCheck,
 });
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
@@ -1653,6 +1678,7 @@ const houseKick = createHouseDelivery({
 	recordDiff: async (jobId, commit, files, patch) => {
 		db.prepare("INSERT OR REPLACE INTO house_diffs VALUES (?, ?, ?, ?)").run(jobId, commit, JSON.stringify(files), patch);
 	},
+	paypalCheck: payPalCheck,
 	stateDir: resolve(databasePath, ".."),
 });
 const houseTimer = setInterval(() => { void houseKick.kick().catch(() => console.error("House delivery failed; the next tick retries.")); }, 30_000);

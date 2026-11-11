@@ -82,6 +82,8 @@ export type SampleRunnerPorts = {
 	readonly execute: (actor: Actor, key: RequestKey, command: UserCommand) => Promise<CommandOutcome>;
 	/** Pushes the scripted tree to the job's own fork and answers with the commit. */
 	readonly workspace: ScenarioWorkspace;
+	/** Records PayPal's check of the job's order when the agent first pushes. Nothing waits for it. */
+	readonly paypalCheck?: { readonly start: (row: JobRow) => void };
 	readonly log?: (line: string) => void;
 };
 
@@ -287,6 +289,7 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 			return;
 		}
 		if (action.kind === "push") {
+			startPayPalCheck(visitor, action.jobId);
 			try {
 				const commit = await ports.workspace.push(action.jobId as JobId, SAMPLE_TREE);
 				ports.db.prepare("UPDATE sample_runner_runs SET phase = 'RAN', commit_sha = ? WHERE job_id = ?").run(commit, action.jobId);
@@ -305,6 +308,16 @@ export function createSampleRunner(ports: SampleRunnerPorts): {
 		}
 		ports.db.prepare("UPDATE sample_runner_runs SET phase = 'SUBMITTED' WHERE job_id = ?").run(action.jobId);
 		log(`sample runner: submitted ${action.jobId}`);
+	}
+
+	/** The PayPal check starts beside the push and nothing waits for it. A failure to start it never stops the push. */
+	function startPayPalCheck(visitor: SampleRunnerVisitor, jobId: string): void {
+		try {
+			const row = ports.jobsOf(visitor.id).find(entry => entry.id === jobId);
+			if (row !== undefined) ports.paypalCheck?.start(row);
+		} catch (error) {
+			log(`sample runner: ${jobId} PayPal check did not start (${failureName(error)})`);
+		}
 	}
 
 	/** A command retried at once while the job is busy, as the scenario steps do. Any other refusal is the caller's. */

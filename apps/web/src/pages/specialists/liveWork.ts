@@ -134,8 +134,21 @@ export type ActivityStep = {
   current: boolean;
 };
 
+/** PayPal's recorded check, in one plain line. Only the stored amount and a short order reference; PayPal's status names stay off the page. */
+export function paypalCheckWords(check: NonNullable<ActivityJob["paypalCheck"]>, labels: OwnerActivity["labels"]): string {
+  const order = `order ${check.orderId.slice(0, 3)}…`;
+  const claim = check.outcome === "HELD" ? `PayPal confirms ${heldWords(check)} is held`
+    : check.outcome === "NOT_HELD" ? "PayPal does not confirm this money is held"
+    : "PayPal's check is unavailable";
+  return `${claim} · ${order} · ${labels.money}`;
+}
+function heldWords(check: NonNullable<ActivityJob["paypalCheck"]>): string {
+  if (check.heldValue === null || check.heldCurrency === null) return "this money";
+  return check.heldCurrency === "USD" ? dollars(Math.round(Number(check.heldValue) * 100)) : `${check.heldCurrency} ${check.heldValue}`;
+}
+
 /** Four milestones, with only stored amounts, successful check tallies and event times. */
-export function activitySteps(job: ActivityJob): ActivityStep[] {
+export function activitySteps(job: ActivityJob, labels: OwnerActivity["labels"]): ActivityStep[] {
   const verified = [...job.attempts].sort((a,b) => b.ordinal - a.ordinal).find(attempt => attempt.result === "VERIFIED");
   const current = ({
     BID_PLACED:"bid", FUNDING:"bid", MONEY_HELD:"held", VERIFYING:"verified", RETRYING:"verified",
@@ -147,7 +160,8 @@ export function activitySteps(job: ActivityJob): ActivityStep[] {
   ].filter(Boolean).join(", ") : null;
   return [
     { key:"bid",title:job.bid ? `Bid placed ${dollars(job.bid.priceCents)}` : "Bid",at:job.bid?.placedAt ?? null,detail:null,current:current === "bid" },
-    { key:"held",title:job.moneyHeld ? `Money held ${dollars(job.moneyHeld.heldCents)}` : "Money held",at:job.moneyHeld?.heldAt ?? null,detail:null,current:current === "held" },
+    { key:"held",title:job.moneyHeld ? `Money held ${dollars(job.moneyHeld.heldCents)}` : "Money held",at:job.moneyHeld?.heldAt ?? null,
+      detail:job.paypalCheck ? paypalCheckWords(job.paypalCheck,labels) : null,current:current === "held" },
     { key:"verified",title:verified ? "Verified" : job.state === "VERIFYING" ? "Verifying" : job.state === "RETRYING" ? "Another check needed" : "Verification",
       at:verified?.at ?? null,detail:checks || null,current:current === "verified" },
     { key:"released",title:job.release ? `Released${job.release.payoutCents === null ? "" : ` ${dollars(job.release.payoutCents)}`}` : job.state === "RELEASING" ? "Releasing" : "Release",

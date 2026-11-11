@@ -13,6 +13,7 @@ import { reasonCode } from "../../../packages/core/src/score-card.ts";
 import type { ReasonCode } from "../../../packages/core/src/score-card.ts";
 import type { TestTally } from "../../../packages/core/src/verifier.ts";
 import type { SampleRunnerStatus } from "./sample-runner.ts";
+import type { PayPalCheck, PayPalCheckOutcome } from "./paypal-check.ts";
 
 export const ACTIVITY_LABELS = { sample: "Sample agent · Simulated", verifier: "Real verifier run", money: "PayPal sandbox" } as const;
 const LIMIT_DEFAULT = 20;
@@ -45,6 +46,14 @@ type RunnerView = {
 	readonly runsPerDay: number;
 };
 type ReleaseView = { readonly at: string; readonly payoutCents: number; readonly authority: string | null; readonly payoutItemId: string } | null;
+/** PayPal's check of the job's money at work start, as recorded. Only what PayPal returned: its order, outcome and amount. */
+type PayPalCheckView = {
+	readonly orderId: string;
+	readonly checkedAt: string;
+	readonly outcome: PayPalCheckOutcome;
+	readonly heldValue: string | null;
+	readonly heldCurrency: string | null;
+};
 
 export type ActivityRow = {
 	readonly jobId: string;
@@ -60,6 +69,8 @@ export type ActivityRow = {
 	readonly updatedAt: string;
 	readonly bid: { readonly id: string; readonly priceCents: number; readonly placedAt: string } | null;
 	readonly moneyHeld: { readonly heldCents: number; readonly heldAt: string } | null;
+	/** PayPal's recorded check at work start, or null when none was recorded. */
+	readonly paypalCheck: PayPalCheckView | null;
 	readonly attempts: readonly AttemptView[];
 	readonly review: ReviewView;
 	readonly release: ReleaseView;
@@ -78,6 +89,8 @@ export type ActivityInput = {
 	readonly enabled: boolean;
 	/** The runner's status for the operator's visitor, or null when the operator has no visitor. */
 	readonly runner: SampleRunnerStatus | null;
+	/** The PayPal checks recorded for the jobs, by job id. Stored rows only: nothing here calls PayPal. */
+	readonly paypalChecks?: ReadonlyMap<string, PayPalCheck>;
 };
 
 /** The limit a request asks for: 1 to 50, default 20. Null when the value is malformed. */
@@ -91,7 +104,7 @@ export function activityLimit(raw: string | null): number | null {
 export function activityJson(input: ActivityInput) {
 	const activity = input.rows
 		.filter(row => involved(row, input.operatorId))
-		.map(row => activityOf(row, input.operatorId, input.sampleJobs.has(row.id), input.sampleJobs.get(row.id) ?? null))
+		.map(row => activityOf(row, input.operatorId, input.sampleJobs.has(row.id), input.sampleJobs.get(row.id) ?? null, input.paypalChecks?.get(row.id) ?? null))
 		.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.jobId.localeCompare(b.jobId))
 		.slice(0, input.limit);
 	return { sandbox: true, labels: ACTIVITY_LABELS, runner: runnerOf(input), activity };
@@ -103,7 +116,7 @@ function involved(row: JobRow, operatorId: OperatorId): boolean {
 		|| row.bids.some(bid => bid.operator === operatorId && ACTIVE_BIDS.has(bid.status));
 }
 
-function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean, closedReason: string | null): ActivityRow {
+function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean, closedReason: string | null, check: PayPalCheck | null): ActivityRow {
 	const bid = bidOf(row, operatorId);
 	const held = heldLineOf(row.state);
 	const attempts = attemptsOf(row.state);
@@ -126,6 +139,7 @@ function activityOf(row: JobRow, operatorId: OperatorId, sampled: boolean, close
 		updatedAt: latest(times) ?? row.openedAt,
 		bid: bid === null ? null : { id: bid.id, priceCents: bid.price, placedAt: bid.placedAt },
 		moneyHeld: held === null ? null : { heldCents: held.cents, heldAt: held.at },
+		paypalCheck: check === null ? null : checkOf(check),
 		attempts,
 		review: reviewOf(row.state),
 		release,
@@ -170,6 +184,10 @@ function stateOf(state: JobState, bid: Bid | null, closedReason: string | null):
 		case "REFUNDED": return "REFUNDED";
 		case "CLOSED": return "CLOSED";
 	}
+}
+
+function checkOf(check: PayPalCheck): PayPalCheckView {
+	return { orderId: check.orderId, checkedAt: check.checkedAt, outcome: check.outcome, heldValue: check.heldValue, heldCurrency: check.heldCurrency };
 }
 
 /** The HELD ledger line, the money the job holds now, or the one a settled job held. Null when no hold was ever booked. */

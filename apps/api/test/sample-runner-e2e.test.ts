@@ -19,6 +19,7 @@ import type { ScenarioWorkspace } from "../../../packages/core/src/scenarios.ts"
 import { stepKey } from "../../../packages/core/src/scenario-binding.ts";
 import { SAMPLE_RUNS_PER_DAY, SAMPLE_VERIFIER_RETRIES, type SampleOrders } from "../../../packages/core/src/sample-runner.ts";
 import { activityJson, activityLimit, ACTIVITY_LABELS } from "../src/sample-activity.ts";
+import type { PayPalCheck } from "../src/paypal-check.ts";
 import { createSampleRunner, sampleRunJobs, type SampleFixtureRule, type SampleRunnerAgent, type SampleRunnerPorts, type SampleRunnerVisitor } from "../src/sample-runner.ts";
 
 const OPERATOR = "op_sample_visitor";
@@ -270,6 +271,34 @@ test("a visitor's sample agent bids, is accepted, pushes, is verified and is pai
 	assert.equal(item?.release?.authority, "CLIENT_APPROVAL");
 	assert.equal(item?.release?.payoutItemId, "PAYOUT_SAMPLE_1");
 	assert.doesNotMatch(JSON.stringify(activityFor(db, world, restarted)), /CAPTURE_SAMPLE_1|op_other/, "no capture id or other operator leaves the server");
+});
+
+test("the push starts PayPal's check of the funded job, and a check that fails to start never stops the push", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	const started: JobRow[] = [];
+	const runner = createSampleRunner(portsOf(db, world, { paypalCheck: { start: row => { started.push(row); } } }));
+	await runner.kick();
+	world.advance(30_000);
+	world.houseAccepts();
+	await runner.kick();
+	assert.equal(world.pushes.length, 1, "the runner pushes the scripted tree once the job is funded");
+	assert.deepEqual(started.map(row => row.id), [JOB_ID], "the check starts once, for the job that was pushed");
+	assert.equal(started[0]?.state.status, "IN_PROGRESS", "the check sees the job while it is funded");
+	assert.deepEqual(recordOf(db)?.phase, "RAN");
+
+	const brokenDb = new DatabaseSync(":memory:");
+	const brokenWorld = fakeWorld();
+	const brokenRunner = createSampleRunner(portsOf(brokenDb, brokenWorld, {
+		paypalCheck: { start: () => { throw new Error("the check broke"); } },
+	}));
+	await brokenRunner.kick();
+	brokenWorld.advance(30_000);
+	brokenWorld.houseAccepts();
+	await brokenRunner.kick();
+	assert.equal(brokenWorld.pushes.length, 1, "a check that cannot start leaves the push as it was");
+	assert.deepEqual(recordOf(brokenDb)?.phase, "RAN");
+	assert.ok(brokenWorld.logs.some(line => /PayPal check did not start/.test(line)), "the refusal to start is logged");
 });
 
 test("with the flag off, no tick reads, sends or writes, and the status reads OFF", async () => {
@@ -547,6 +576,19 @@ test("the activity lists only the operator's own jobs, labels the runner's, and 
 	assert.doesNotMatch(JSON.stringify(json), /op_other/);
 	assert.equal(activityJson({ ...input, limit: 1 }).activity.length, 1);
 	assert.equal(activityJson({ ...input, enabled: true }).runner.status, "IDLE");
+});
+
+test("the owner's row carries PayPal's recorded check, and only the fields the page shows", () => {
+	const owned = storedRow("job_owner_cli", { client: "maya-client", tenant: VISITOR.id, state: heldState("2026-11-11T11:00:30.000Z"),
+		bids: [{ id: "bid_owner", operator: OPERATOR, agent: "owner-agent", price: 2_000, placedAt: "2026-11-11T11:00:00.000Z", status: "ACCEPTED" }] });
+	const check: PayPalCheck = { jobId: "job_owner_cli", orderId: "8AB12345CD678901E", checkedAt: "2026-11-11T11:01:00.000Z", outcome: "HELD",
+		orderStatus: "APPROVED", captureStatus: "COMPLETED", heldValue: "20.00", heldCurrency: "USD", reason: null };
+	const input = { operatorId: OPERATOR as OperatorId, limit: 20, rows: [owned], sampleJobs: new Map(), enabled: false, runner: null };
+
+	const [row] = activityJson({ ...input, paypalChecks: new Map([["job_owner_cli", check]]) }).activity;
+	assert.deepEqual(row?.paypalCheck, { orderId: "8AB12345CD678901E", checkedAt: "2026-11-11T11:01:00.000Z", outcome: "HELD", heldValue: "20.00", heldCurrency: "USD" });
+	assert.equal(activityJson(input).activity[0]?.paypalCheck, null, "no recorded check reads as null, not as an invented answer");
+	assert.doesNotMatch(JSON.stringify(row), /COMPLETED|APPROVED|CAPTURE_|ORDER_/, "PayPal's status words stay in the record, not on the page");
 });
 
 test("an open job reads FUNDING only when this operator's own bid was chosen, never for another operator's choice", () => {

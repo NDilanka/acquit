@@ -1,6 +1,7 @@
-// The Acquit MCP server's surface: exactly the six tools the mission approved, acting with the
-// operator's token and never exposing it. Every tool is one authenticated call the API has
-// already decided; a refusal the API names comes back as an MCP error result, not as a success.
+// The Acquit MCP server's surface: the six tools the mission approved and verify_escrow_hold, a
+// read-only view of PayPal's recorded check. Acting with the operator's token, never exposing it.
+// Every tool is one authenticated call the API has already decided; a refusal the API names comes
+// back as an MCP error result, not as a success.
 
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -32,6 +33,11 @@ export type ServerOptions = {
 type ToolText = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 const text = (payload: unknown): ToolText => ({ content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] });
+
+/** The sandbox the recorded check reads: the deployment's PayPal reader is sandbox-only. */
+const PAYPAL_ENVIRONMENT = "PayPal sandbox";
+/** The fields of a recorded check the tool returns. Nothing else the record holds leaves the server. */
+const CHECK_FIELDS = ["orderId", "checkedAt", "outcome", "orderStatus", "captureStatus", "heldValue", "heldCurrency", "reason"] as const;
 
 /** A refusal keeps its name: the API's denial reason leads the error the model reads. */
 function toolError(error: unknown): never {
@@ -171,6 +177,24 @@ export function buildServer(options: ServerOptions): McpServer {
 			const reader = await options.paypal();
 			const item = referencedPayoutItem(await reader.get(`/v1/payments/referenced-payouts-items/${encodeURIComponent(payout.payoutItemId)}`), payout.payoutItemId);
 			return text({ jobId, payoutItemId: item.payoutItemId, status: item.status, amount: item.amount });
+		} catch (error) { return toolError(error); }
+	}));
+
+	server.registerTool("verify_escrow_hold", {
+		title: "Read PayPal's recorded check of a job's money",
+		description: "Reads the check the deployment recorded when the job's agent started work: whether PayPal confirmed the client's "
+			+ "money was held, the order id, the amount PayPal reports, and when it was checked. It reads the stored record only; "
+			+ "PayPal is not called from here. Read-only.",
+		inputSchema: { jobId: z.string().describe("The job id, as list_jobs named it.") },
+	}, async ({ jobId }) => withClient(async client => {
+		try {
+			const body = await client.get(`/api/jobs/${encodeURIComponent(jobId)}/paypal-check`) as { check?: Record<string, unknown> | null } | null;
+			const check = body?.check ?? null;
+			if (check === null) {
+				return text({ jobId, environment: PAYPAL_ENVIRONMENT, check: null, note: "No PayPal check is recorded for this job yet." });
+			}
+			const picked = Object.fromEntries(CHECK_FIELDS.map(field => [field, check[field] ?? null]));
+			return text({ jobId, environment: PAYPAL_ENVIRONMENT, check: picked });
 		} catch (error) { return toolError(error); }
 	}));
 
