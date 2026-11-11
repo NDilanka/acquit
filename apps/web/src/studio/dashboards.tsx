@@ -1,7 +1,7 @@
 import { Component, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type ReactNode, type RefObject } from "react";
 import type { AgPageLayoutState, AgWidgetsConfig } from "ag-studio";
 import { createWidgets } from "ag-studio-react";
-import type { ColDef, ICellRendererParams, RowClickedEvent, RowHeightParams } from "ag-grid-community";
+import type { ColDef, GridApi, ICellRendererParams, RowClickedEvent, RowHeightParams } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
 import type { PayoutRow, PlatformJobLedger, PlatformReconcileReason, PlatformReconcileRow, PlatformReconciliation, ReceiptRow, SampleBook } from "../api-types";
 import { acquitTheme } from "../grid";
@@ -11,18 +11,19 @@ import { COLUMNS, WIDGET_ROWS, type AcquitRegistry, type AcquitWidgetId, type Da
 import { conserves, earnings, escrowTotals, newestReceipt, seededPlacements, seededWidgets, verifierStats } from "../studio-data";
 import { listedLinks, type ChangeLog, type ChangeSnapshot } from "../change-chain";
 import {
+  VERDICT_COLUMN_PRIORITY,
   VERDICT_MIN_WIDTHS,
   attemptWords,
   cardRows,
   groupWords,
   lastVerdictWords,
   payPalIds,
+  passingTests,
   platformStatusWord,
-  sparkCoords,
-  sparkPoints,
   toggleExpanded,
   totalsRow,
   verdictRows,
+  verdictColumnsForWidth,
   type AttemptRow,
   type CardRow,
   type GroupRow,
@@ -30,6 +31,7 @@ import {
   type TotalsRow,
   type VerdictRow,
 } from "../verdict-grid";
+import { VerdictPassing } from "../verdict-passing";
 import { FigureExplain } from "./FigureExplain";
 
 export type { AcquitRegistry, AcquitWidgetId, DashboardId, DashboardState };
@@ -284,8 +286,7 @@ type GridRow = VerdictRow | TotalsRow;
 
 const jobOf = (row: GridRow | undefined): PlatformJobLedger | null => (row?.kind === "job" ? row.job : null);
 
-const VERDICT_HEIGHT: Record<GridRow["kind"], number> = { group: 34, job: 46, attempt: 40, totals: 44 };
-const SPARK = { width: 96, height: 18 } as const;
+const VERDICT_HEIGHT: Record<GridRow["kind"], number> = { group: 34, job: 56, attempt: 40, totals: 44 };
 
 /** The tenant on a job's second line, shortened the way a job id is; the deployment's own world has no tenant id. */
 const tenantLabel = (tenant: string | null): string => (tenant === null ? "Deployment" : shortId(tenant));
@@ -298,28 +299,17 @@ function TitleCell({ data }: ICellRendererParams<GridRow>) {
     <span className="verdict-title">
       <span className="verdict-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
       <span>
-        <b>{job.title}</b>
+        <b title={job.title}>{job.title}</b>
         <small className="muted mono">{shortId(job.jobId)} · {tenantLabel(job.tenant)}</small>
       </span>
     </span>
   );
 }
 
-/** The passing-share sparkline: one point per judged attempt, in ordinal order. Shared by the wide cell and the narrow card. */
-function Spark({ points }: { readonly points: readonly number[] }) {
-  return (
-    <svg className="verdict-spark" width={SPARK.width} height={SPARK.height} viewBox={`0 0 ${SPARK.width} ${SPARK.height}`} role="img"
-      aria-label={`Passing share of ${points.length} attempts: ${points.map((point) => percent(point)).join(", ")}`}>
-      <polyline points={sparkCoords(points, SPARK.width, SPARK.height)} />
-    </svg>
-  );
-}
-
-function SparkCell({ data }: ICellRendererParams<GridRow>) {
+function PassingCell({ data }: ICellRendererParams<GridRow>) {
   const job = jobOf(data);
   if (!job) return null;
-  const points = sparkPoints(job.attempts);
-  return points.length === 0 ? <span className="muted">No counts yet</span> : <Spark points={points} />;
+  return <VerdictPassing passing={passingTests(job.attempts)} />;
 }
 
 /** One PayPal id as a chip; the full id sits in the title. */
@@ -335,26 +325,36 @@ function IdsCell({ data }: ICellRendererParams<GridRow>) {
   return <span>{ids.map(({ label, id }) => <IdChip key={label} label={label} id={id} />)}</span>;
 }
 
-/** The wide grid's columns. The tenant sits on the Job cell's second line, and the attempts show as the passing sparkline and the expanded rows. */
+/** Columns read in priority order; lower-priority facts disappear as the grid's own body narrows. */
 const VERDICT_COLUMNS: ColDef<GridRow>[] = [
   { colId: "job", headerName: "Job", flex: 3, minWidth: VERDICT_MIN_WIDTHS.job, cellRenderer: TitleCell },
-  { colId: "operator", headerName: "Operator", minWidth: VERDICT_MIN_WIDTHS.operator, valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
-  { colId: "status", headerName: "Status", flex: 2, minWidth: VERDICT_MIN_WIDTHS.status, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
-  { colId: "escrow", headerName: "Escrow", minWidth: VERDICT_MIN_WIDTHS.escrow, valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
-  { colId: "passing", headerName: "Passing tests", flex: 2, minWidth: VERDICT_MIN_WIDTHS.passing, sortable: false, cellRenderer: SparkCell },
+  { colId: "status", headerName: "Status", flex: 2, minWidth: VERDICT_MIN_WIDTHS.status, wrapText: true, autoHeight: true, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
+  { colId: "passing", headerName: "Passing tests", minWidth: VERDICT_MIN_WIDTHS.passing, sortable: false, cellRenderer: PassingCell },
   {
     colId: "last",
     headerName: "Last verdict",
     flex: 2,
     minWidth: VERDICT_MIN_WIDTHS.last,
+    wrapText: true,
+    autoHeight: true,
     valueGetter: ({ data }) => { const job = jobOf(data); return job ? lastVerdictWords(job) : ""; },
   },
+  { colId: "escrow", headerName: "Escrow", minWidth: VERDICT_MIN_WIDTHS.escrow, valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
   { colId: "paid", headerName: "Paid", cellClass: "num", minWidth: VERDICT_MIN_WIDTHS.paid, valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
+  { colId: "operator", headerName: "Operator", minWidth: VERDICT_MIN_WIDTHS.operator, valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
   { colId: "ids", headerName: "PayPal ids", flex: 2, minWidth: VERDICT_MIN_WIDTHS.ids, sortable: false, cellRenderer: IdsCell },
 ];
 
-// Compact CSS wraps header text; let Grid measure the resulting height instead of clipping it.
-const VERDICT_DEFAULTS: ColDef<GridRow> = { sortable: false, resizable: false, suppressMovable: true, flex: 1, minWidth: 56, headerClass: "grid-head", autoHeaderHeight: true };
+const VERDICT_DEFAULTS: ColDef<GridRow> = { sortable: false, resizable: false, suppressMovable: true, flex: 1, minWidth: 56, headerClass: "grid-head", wrapHeaderText: true, autoHeaderHeight: true };
+
+function fitVerdictColumns({ api }: { readonly api: GridApi<GridRow> }) {
+  // The body range excludes the vertical scrollbar, unlike the tile or the viewport width.
+  const { left, right } = api.getHorizontalPixelRange();
+  if (right <= left) return;
+  const visible = verdictColumnsForWidth(right - left);
+  api.setColumnsVisible(VERDICT_COLUMN_PRIORITY.filter(column => !visible.includes(column)), false);
+  api.setColumnsVisible(visible, true);
+}
 
 function AttemptLine({ row }: { row: AttemptRow }) {
   const { verdict, detail } = attemptWords(row.attempt);
@@ -443,7 +443,7 @@ function JobCardView({ card, expanded, onToggle }: { readonly card: JobCard; rea
         <dt>Last verdict</dt>
         <dd>{card.lastVerdict}</dd>
         <dt>Passing tests</dt>
-        <dd>{card.passing.length === 0 ? <span className="muted">No counts yet</span> : <Spark points={card.passing} />}</dd>
+        <dd><VerdictPassing passing={card.passing} /></dd>
         <dt>Paid</dt>
         <dd className="num">{card.paidCents === null ? "Not recorded" : dollars(card.paidCents)}</dd>
       </dl>
@@ -494,6 +494,9 @@ function VerdictTimeline() {
           rowData={rows as GridRow[]}
           columnDefs={VERDICT_COLUMNS}
           defaultColDef={VERDICT_DEFAULTS}
+          onGridSizeChanged={fitVerdictColumns}
+          onFirstDataRendered={fitVerdictColumns}
+          onViewportChanged={fitVerdictColumns}
           getRowId={({ data }) => data.id}
           isFullWidthRow={({ rowNode }) => rowNode.data?.kind !== "job"}
           fullWidthCellRenderer={VerdictFullWidth}
