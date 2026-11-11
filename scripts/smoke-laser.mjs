@@ -4,9 +4,14 @@
 // holds every credential; this script holds only the one work-repo token the operator's own call returns, for one push.
 // Each run opens a new visitor, agent, and job under fresh names and keys, so a rerun never disturbs an earlier run.
 // A refused step names itself and exits 1.
+// Two optional settings, both off by default, leave a job for a person to open. ACQUIT_SMOKE_ACCOUNT_LINK_FILE names a
+// file that receives the new visitor's saved account link, written with mode 0600 once the account exists; the link is
+// never printed. It opens on ACQUIT_SMOKE_WEB_ORIGIN, which defaults to the origin of ACQUIT_API_URL, so set that to the
+// public site when the API is local. ACQUIT_SMOKE_STOP_AT=verified ends the run successfully once the delivery is
+// VERIFIED, before the client approves it.
 
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +26,8 @@ const vertical = LASER_CUT_WORKFLOW.vertical;
 const LABEL_ISSUE = 1;
 const PRICE = 5000;
 const svgPath = join(root, 'packages', 'verifier-laser', 'samples', 'honest.svg');
+const accountLinkFile = process.env.ACQUIT_SMOKE_ACCOUNT_LINK_FILE ?? '';
+const stopAt = process.env.ACQUIT_SMOKE_STOP_AT ?? '';
 
 let current = 'preflight';
 let secret = null;
@@ -78,7 +85,19 @@ async function workRepoToken(token, jobId) {
   }
 }
 
+// The saved account link the web's "Save your account" action makes: a new recovery token in the /welcome-back fragment,
+// built as recoveryLink does in apps/web/src/account.ts. The link goes to the file only; it is never logged.
+async function saveAccountLink(token, file) {
+  const made = expect('account link', await send('/api/account/recovery', { method: 'POST', token, payload: {} }));
+  if (typeof made.recoveryToken !== 'string') throw new Error('account link: the answer named no token');
+  const origin = new URL(process.env.ACQUIT_SMOKE_WEB_ORIGIN ?? base).origin;
+  writeFileSync(file, `${origin}/welcome-back#${made.recoveryToken}\n`, { mode: 0o600 });
+  chmodSync(file, 0o600);
+  log('account-link', { saved: true });
+}
+
 async function main() {
+  if (stopAt !== '' && stopAt !== 'verified') throw new Error('ACQUIT_SMOKE_STOP_AT must be verified or unset');
   at('preflight: demo open to this address');
   const access = expect('demo access', await send('/api/demo/access'));
   if (access.open !== true) throw new Error('the demo is closed to this address, so no visitor can open; run the smoke from an allowed address');
@@ -95,6 +114,10 @@ async function main() {
   const fork = created.account?.repository;
   if (typeof token !== 'string' || typeof fork !== 'string') throw new Error('create account: the answer named no session or repository');
   log('account', { repository: fork });
+  if (accountLinkFile !== '') {
+    at('account link');
+    await saveAccountLink(token, accountLinkFile);
+  }
 
   at('register laser agent');
   await role('role operator', token, 'OPERATOR');
@@ -150,6 +173,10 @@ async function main() {
   await role('role client', token, 'CLIENT');
   const verified = await waitFor('verify', token, jobId, job => job.status === 'VERIFIED', 600);
   log('verified', { mergeCommit: verified.mergeCommit });
+  if (stopAt === 'verified') {
+    log('done', { ok: true, jobId, deliveryCommit: delivery.commit, status: verified.status, stoppedAt: 'verified', sealedChecks: checks });
+    return;
+  }
 
   at('approve delivery');
   await command('approve', token, { type: 'Approve', jobId, mergeCommit: verified.mergeCommit });
