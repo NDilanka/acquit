@@ -192,7 +192,7 @@ test("malformed JSON and an answer with no choices are provider errors", async (
 		usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 } });
 });
 
-test("empty, length-truncated, and reasoning-only answers are failures; a length answer that has text is kept", async () => {
+test("empty, length-truncated, and reasoning-only answers are failures; a length answer is refused even when it has text", async () => {
 	const empty = await llmChat(fireworksRequest(), { fetch: fakeFetch(() => jsonResponse(completion(""))).fetch, env });
 	assert.equal(empty.ok === false && empty.detail, "Fireworks returned no answer text");
 	const truncated = await llmChat(fireworksRequest(), { fetch: fakeFetch(() => jsonResponse(completion("", {}, "length"))).fetch, env });
@@ -202,8 +202,12 @@ test("empty, length-truncated, and reasoning-only answers are failures; a length
 	});
 	assert.equal(reasoned.ok === false && reasoned.detail, "Fireworks returned reasoning without an answer");
 	const partial = await llmChat(fireworksRequest(), { fetch: fakeFetch(() => jsonResponse(completion("partial but usable", {}, "length"))).fetch, env });
-	assert.equal(partial.ok, true);
-	assert.equal(partial.ok && partial.finishReason, "length");
+	assert.equal(partial.ok === false && partial.reason, "PROVIDER_ERROR", "a cut-off answer is never a success, even with text");
+	assert.equal(partial.ok === false && partial.detail, "Fireworks hit the token cap before the answer ended");
+	assert.equal(partial.ok === false && partial.requestId, "req-1", "the request id survives the refusal");
+	assert.equal(partial.ok === false && partial.usage?.totalTokens, 15, "the usage survives the refusal");
+	const truncatedJson = await llmChat(fireworksRequest(), { fetch: fakeFetch(() => jsonResponse(completion('{"message":"unfinished","calls":[', {}, "length"))).fetch, env });
+	assert.equal(truncatedJson.ok, false, "truncated JSON is never handed to the caller as an answer");
 });
 
 test("redirects are refused: the request asks fetch to error on a redirect, and a refused redirect is a provider error", async () => {

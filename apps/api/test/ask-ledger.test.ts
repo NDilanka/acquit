@@ -128,6 +128,48 @@ test("under fireworks the one retry runs on the ask fallback model, and the answ
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
+/** The fireworks port over an injected transport: every attempt answers 200 with the content and finish reason the
+ * script gives for that attempt, and the port records the model each attempt named. */
+function fireworksScripted(answer: (attempt: number) => { content: string; finish: string }): { port: ReturnType<typeof fireworksAskPort>; models: string[] } {
+	const models: string[] = [];
+	const port = fireworksAskPort({ env: { FIREWORKS_API_KEY: "test-key-not-real" }, fetch: (async (_url, init) => {
+		models.push((JSON.parse(String(init?.body)) as { model: string }).model);
+		const { content, finish } = answer(models.length);
+		return new Response(JSON.stringify({ id: `req-${models.length}`, choices: [{ finish_reason: finish, message: { content } }],
+			usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 } }), { status: 200 });
+	}) as typeof fetch });
+	return { port, models };
+}
+
+test("a fireworks answer cut off at the token cap is never relayed: one retry, and a second cut-off answer is a provider error", async () => {
+	const { port, models } = fireworksScripted(() => ({ content: '{"message":"378.00 USD is hel', finish: "length" }));
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-cutoff-"));
+	try {
+		const path = join(root, "model-calls.jsonl");
+		const outcome = await askLedgerTurn({ model: port, callLog: modelCallLog(path) }, { messages: question, tools });
+		assert.deepEqual(models, ["accounts/fireworks/models/glm-5p3-flash", "accounts/fireworks/models/kimi-k3p1-pro"], "one primary and at most one fallback");
+		assert.ok(!outcome.ok && outcome.reason === "MODEL_PROVIDER_ERROR", "a cut-off answer is a provider failure, not a message");
+		assert.equal("message" in outcome, false, "no partial answer rides back");
+		const ends = (await modelCallLog(path).records()).filter(record => record.phase === "END").map(record => record.outcome);
+		assert.deepEqual(ends, ["PROVIDER_ERROR", "PROVIDER_ERROR"], "each attempt records its own failed END");
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a cut-off first answer retries once on the fallback, and only the fallback's whole answer is relayed", async () => {
+	const { port, models } = fireworksScripted(attempt => attempt === 1
+		? { content: '{"message":"378.00 USD is hel', finish: "length" }
+		: { content: '{"message":"378.00 USD is held.","calls":[]}', finish: "stop" });
+	const root = await mkdtemp(join(tmpdir(), "acquit-ask-cutoff-retry-"));
+	try {
+		const outcome = await askLedgerTurn({ model: port, callLog: modelCallLog(join(root, "model-calls.jsonl")) }, { messages: question, tools });
+		assert.equal(models.length, 2, "the cut-off answer is retried exactly once");
+		assert.ok(outcome.ok, "the fallback answers the turn");
+		if (!outcome.ok) throw new Error("expected a completed turn");
+		assert.equal(outcome.message, "378.00 USD is held.");
+		assert.equal(outcome.model, "accounts/fireworks/models/kimi-k3p1-pro");
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("the fireworks ask port posts the envelope as the one user message on the model the attempt names", async () => {
 	let requested: { model?: string; messages?: { role: string; content: string }[] } = {};
 	const port = fireworksAskPort({ env: { FIREWORKS_API_KEY: "test-key-not-real" }, fetch: (async (_url, init) => {

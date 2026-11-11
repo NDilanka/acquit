@@ -213,6 +213,9 @@ export async function llmChat(request: LlmRequest, deps: LlmDeps = {}): Promise<
 					: "returned no answer text";
 			return fail("PROVIDER_ERROR", `${spec.name} ${why}`, requestId, usage);
 		}
+		// A reply that ran into the token cap is missing its end, and a caller cannot tell a truncated draft or envelope
+		// from a complete one. It is a provider error, so the one fallback attempt may still answer the turn.
+		if (finishReason === "length") return fail("PROVIDER_ERROR", `${spec.name} hit the token cap before the answer ended`, requestId, usage);
 		return { ok: true, text, requestId, finishReason, usage };
 	} catch (error) {
 		if (timedOut) return fail("PROVIDER_ERROR", `${spec.name} did not answer in time`);
