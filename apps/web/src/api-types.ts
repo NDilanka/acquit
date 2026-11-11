@@ -37,7 +37,8 @@ export interface Receipt {
   readonly jobId: string;
   readonly operator: string;
   readonly agent: string;
-  readonly pullRequest: number;
+  /** Null for a laser-cut job, whose verdict names no pull request. */
+  readonly pullRequest: number | null;
   readonly mergeCommit: string;
   readonly frozen: TestTally;
   readonly hidden: TestTally;
@@ -537,7 +538,7 @@ export type JobDetailResponse = JobResponse & { readonly diff: JobDiff | null };
 export type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readonly at: string } & (
   | { readonly result: "REJECTED"; readonly reasons: readonly string[]; readonly reasonsTruncated: number;
       readonly frozen: TestTally | null; readonly hidden: TestTally | null }
-  | { readonly result: "VERIFIED"; readonly frozen: TestTally; readonly hidden: TestTally; readonly pullRequest: number }
+  | { readonly result: "VERIFIED"; readonly frozen: TestTally; readonly hidden: TestTally; readonly pullRequest: number | null }
 );
 
 /** The attempt fields the projection serves on a job, which JobView above does not mirror. */

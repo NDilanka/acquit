@@ -58,7 +58,7 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
   const total = job.attempts.used + job.attempts.left;
   const operator = lockedBid(job)?.handle ?? "the operator";
   const repository = job.contract?.repository ?? null;
-  const prHref = (pr: number) => (repository === null ? null : `https://github.com/${repository}/pull/${pr}`);
+  const prHref = (pr: number | null) => (repository === null || pr === null ? null : `https://github.com/${repository}/pull/${pr}`);
   const arbiter = arbiterNoteLine(job);
   const houseClient = job.starter ? { house: "client" as const } : {};
 
@@ -523,14 +523,17 @@ function filedAnswerEvent(job: TimelineJob, dispute: ProviderDisputeView, entry:
   return null;
 }
 
-function attemptEvent(attempt: Attempt, total: number, status: JobView["status"], prHref: (pr: number) => string | null): TimelineEvent {
+function attemptEvent(attempt: Attempt, total: number, status: JobView["status"], prHref: (pr: number | null) => string | null): TimelineEvent {
   const title = `Attempt ${attempt.ordinal} of ${total}`;
   if (attempt.result === "VERIFIED") {
     return {
       at: attempt.at,
       kind: "ATTEMPT",
       title: `${title} verified`,
-      detail: `${attempt.frozen.passed} of ${attempt.frozen.expected} visible and ${attempt.hidden.passed} of ${attempt.hidden.expected} hidden tests passed. Pull request #${attempt.pullRequest}.`,
+      detail: sentences([
+        `${attempt.frozen.passed} of ${attempt.frozen.expected} visible and ${attempt.hidden.passed} of ${attempt.hidden.expected} hidden tests passed.`,
+        attempt.pullRequest !== null && `Pull request #${attempt.pullRequest}.`,
+      ]),
       tone: "ok",
       ids: [{ value: attempt.sourceCommit }],
       href: prHref(attempt.pullRequest),

@@ -321,6 +321,22 @@ test("rejected attempt: a refunded job does not claim escrow is held", () => {
   assert.equal(nextStep(attemptsExhausted(), CLIENT), "Refunded to the client. No money is held.");
 });
 
+test("a verified attempt and receipt with no pull request link nowhere and never print a null pull request", () => {
+  // A laser-cut verdict names no pull request, so its attempt and receipt carry none.
+  const job = paidJob({
+    pullRequest: null,
+    attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [{ ...verified, pullRequest: null }], pending: null, failure: null },
+    receipt: { ...RECEIPT, pullRequest: null },
+  });
+  const events = timelineEvents(job);
+  const attempt = events.find((e) => e.kind === "ATTEMPT");
+  const receipt = events.find((e) => e.kind === "RECEIPT");
+  assert.equal(attempt?.detail, "48 of 48 visible and 6 of 6 hidden tests passed.");
+  assert.equal(attempt?.href, null);
+  assert.equal(receipt?.href, null);
+  assert.ok(events.every((e) => !e.detail.includes("#null") && !e.ids.some((id) => id.value.includes("null"))));
+});
+
 test("rework: the arbiter's note sits after the verified attempt, and the operator is still asked to deliver", () => {
   const job = locked({
     attempts: { used: 1, left: 2, last: "VERIFIED", reasons: [], history: [verified], pending: null, failure: null },
