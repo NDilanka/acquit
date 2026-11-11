@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, middleTruncate, refundNote, runnerLabel, shortId, usd } from "./format.ts";
+import { arbiterNoteLine, authorityNote, budgetProblem, creditLine, denied, deadlineOutcome, disputeNote, dollars, ledgerNote, mergeNote, middleTruncate, parseUsd, refundNote, runnerLabel, shortId, usd } from "./format.ts";
 
 const at = "2026-11-03T15:22:00.000Z";
 const devon = { handle: "devon-ops", price: 40000 };
+
+test("all money formats group thousands and grouped input round-trips without accepting malformed commas", () => {
+  assert.equal(usd(510202),"5,102.02 USD");
+  assert.equal(dollars(510202),"$5,102.02");
+  assert.equal(dollars(-123456789),"-$1,234,567.89");
+  assert.equal(parseUsd("5,102.02"),510202);
+  assert.equal(parseUsd("1,234,567.89"),123456789);
+  for (const value of ["51,02.02","5,10,202","0,100.00","1,,000","1,000.001"]) assert.equal(parseUsd(value),null);
+});
 
 test("the paid book reads like the tutorial's ledger", () => {
   const rows = [
