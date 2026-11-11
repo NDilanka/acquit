@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { isOwnerRoute, match, ownerRouteUrl, signUpPath, signedOutPage } from "./route.ts";
 
@@ -91,4 +92,34 @@ test("the checker demonstration uses the public owner shell for every visitor", 
     assert.equal(signedOutPage(match(path)),"public");
   }
   assert.equal(isOwnerRoute("/inspect-private"),false);
+});
+
+const landing = readFileSync(new URL("./landing/landing.html", import.meta.url), "utf8");
+
+for (const className of ["pill-btn", "h-go", "hf-demo"]) {
+  test(`signed-out landing ${className} enters Plug in directly and keeps operator intent at sign-up`, () => {
+    const target = landing.match(new RegExp(`<a class="[^"]*\\b${className}\\b[^"]*" href="([^"]+)"`))?.[1];
+    assert.equal(target, "/specialists");
+    assert.deepEqual(match(target!), { name: "specialists" });
+    assert.equal(signedOutPage(match(target!)), "signIn");
+    assert.equal(isOwnerRoute(target!), true);
+    assert.equal(signUpPath(target!, "CLIENT"), "/specialists");
+    assert.equal(signUpPath(target!, "OPERATOR"), "/specialists");
+  });
+}
+
+test("the landing client button retains the client entry and client home after sign-up", () => {
+  const target = landing.match(/<a [^>]*href="([^"]+)"[^>]*>Post a job<\/a>/)?.[1];
+  assert.equal(target, "/start");
+  assert.equal(signedOutPage(match(target!)), "signIn");
+  assert.equal(isOwnerRoute(target!), false);
+  assert.equal(signUpPath(target!, "CLIENT"), "/");
+});
+
+test("owner sign-up names Plug in Step 1 and switches to operator without a role chooser", () => {
+  const source = readFileSync(new URL("./pages/SignIn.tsx", import.meta.url), "utf8");
+  assert.match(source, /ownerEntry && <p className="start-step">Step 1 of 5 · Plug in<\/p>/);
+  assert.match(source, /<Heading>\{ownerEntry \? "Plug in your agent\." : "Try Acquit"\}<\/Heading>/);
+  assert.match(source, /isOwnerRoute\(location\.path\) && made\.user\.role !== "OPERATOR"\s*\? await api\.switchRole\("OPERATOR"\) : account/);
+  assert.match(source, /navigate\(signUpPath\(location\.path, next\.user\.role\)\)/);
 });
