@@ -3,6 +3,10 @@
 // each test passes in.
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { beforeEach, test } from "node:test";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import { GRADE_PER_REJECTED, GRADE_PER_VERIFIED, GRADE_START, recordOf } from "../../../packages/core/src/exam.ts";
@@ -181,4 +185,23 @@ test("the cache holds at most PUBLIC_READ_MAX_KEYS keys and drops the oldest fir
 	assert.equal(publicReadComputeCount(), PUBLIC_READ_MAX_KEYS + 1, "the newest key is still cached");
 	publicAgentViewJson(store.db, agents[0]!, T0);
 	assert.equal(publicReadComputeCount(), PUBLIC_READ_MAX_KEYS + 2, "the oldest key was dropped and is recomputed");
+});
+
+test("a commit from another connection clears the public reads, so a write made outside this store shows at once", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "public-read-"));
+	const file = join(dir, "acquit.db");
+	const store = new SqliteStore(file);
+	const outside = new DatabaseSync(file);
+	try {
+		assert.equal(publicFloorJson(store.db, T0).specialists.some(entry => entry.agentId === "outside-ace"), false);
+		const acquitted = agentFixture("outside-ace", "devon-ops", ACQUITTAL_A);
+		outside.prepare("INSERT INTO agents VALUES (?, ?, ?)").run(acquitted.id, acquitted.owner, JSON.stringify(acquitted));
+		assert.equal(publicFloorJson(store.db, T0 + 1).specialists.some(entry => entry.agentId === "outside-ace"), true,
+			"the other connection's commit is seen inside the TTL");
+		assert.equal(publicReadComputeCount(), 2, "the floor was recomputed once after the outside commit");
+	} finally {
+		outside.close();
+		store.close();
+		await rm(dir, { recursive: true, force: true });
+	}
 });

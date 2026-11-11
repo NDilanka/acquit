@@ -168,27 +168,36 @@ export function floorJson(db: DatabaseSync, nowMs: number = Date.now()) {
  * The public read cache. The signed-out floor and agent view each scan the whole book, and anyone can request them
  * without a session. Each body is kept for PUBLIC_READ_TTL_MS per database, then recomputed. The cache is keyed by route
  * and id, holds at most PUBLIC_READ_MAX_KEYS entries per database (the oldest entry is dropped first), and is cleared by
- * every acquittal write, so an owner's new pass shows at once. The public routes never read the session, so one body
- * serves every caller and a cached body is safe to return to any of them.
+ * every acquittal write on this connection, so an owner's new pass shows at once. A body is also dropped when another
+ * connection commits to the database (SQLite's data_version moves), so a write made outside this process is not hidden
+ * for the TTL. The public routes never read the session, so one body serves every caller and a cached body is safe to
+ * return to any of them.
  */
 export const PUBLIC_READ_TTL_MS = 15_000;
 export const PUBLIC_READ_MAX_KEYS = 200;
-type PublicRead = { readonly at: number; readonly body: unknown };
+type PublicRead = { readonly at: number; readonly version: number; readonly body: unknown };
 let publicReads = new WeakMap<DatabaseSync, Map<string, PublicRead>>();
 let publicComputeCount = 0;
+
+/** SQLite's data_version. It moves when another connection commits, and not for commits made on this connection. */
+function dataVersionOf(db: DatabaseSync): number {
+	return Number((db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version);
+}
 
 function publicRead<T>(db: DatabaseSync, key: string, nowMs: number, compute: () => T): T {
 	let entries = publicReads.get(db);
 	if (entries === undefined) { entries = new Map(); publicReads.set(db, entries); }
+	// Read the version before computing: a commit that lands during the computation leaves the entry stale, so the next read recomputes.
+	const version = dataVersionOf(db);
 	const hit = entries.get(key);
-	if (hit !== undefined && nowMs - hit.at < PUBLIC_READ_TTL_MS) return hit.body as T;
+	if (hit !== undefined && hit.version === version && nowMs - hit.at < PUBLIC_READ_TTL_MS) return hit.body as T;
 	publicComputeCount += 1;
 	const body = compute();
 	if (!entries.has(key) && entries.size >= PUBLIC_READ_MAX_KEYS) {
 		const oldest = entries.keys().next();
 		if (!oldest.done) entries.delete(oldest.value);
 	}
-	entries.set(key, { at: nowMs, body });
+	entries.set(key, { at: nowMs, version, body });
 	return body;
 }
 
