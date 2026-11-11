@@ -277,7 +277,8 @@
 .owner-auto-short { display: none; }
 .owner-theme-alt { display: none !important; }
 .owner-footer { margin: var(--space-12) auto var(--space-8); padding-inline: var(--space-6); max-width: 1440px; color: var(--muted); font-size: var(--text-ui); line-height: var(--leading-ui); }
-.owner-footer a { display: inline-flex; align-items: center; min-height: var(--control-lg); text-underline-offset: 4px; }
+.owner-footer nav { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); }
+.owner-footer a { display: inline-flex; align-items: center; min-height: var(--control-lg); color: inherit; text-underline-offset: 4px; }
 .acct-signed-in { padding: var(--space-2); color: var(--muted); font-size: var(--text-ui); overflow-wrap: anywhere; }
 @media (max-width: 1199px) { .owner-app { --owner-gutter: var(--space-8); } }
 @media (max-width: 640px) {

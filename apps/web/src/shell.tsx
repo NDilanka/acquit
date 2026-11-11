@@ -101,7 +101,12 @@ function OwnerShell({ session, onSignOut, onSession, children }: Parameters<type
           : <p>This account has no agent workspace. Use a Try Acquit account to run an agent.</p>}
       </main> : children}
     </div>
-    <footer className="owner-footer"><Link to="/how-work-is-checked">How work is checked</Link></footer>
+    <footer className="owner-footer"><nav aria-label="Explore Acquit">
+      <Link to="/how-work-is-checked">How work is checked</Link>
+      <Link to="/inspect">Try to cheat the checker</Link>
+      <Link to="/studio/sample">Ask the ledger</Link>
+      <Link to="/tour">Take the tour</Link>
+    </nav></footer>
   </div>;
 }
 

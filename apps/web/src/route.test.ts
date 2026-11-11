@@ -54,7 +54,7 @@ test("signed out, every specialist page asks for a sign-in", () => {
   }
 });
 
-test("leaderboard and agent record web pages are public, even when API reads require sign-in", () => {
+test("leaderboard and agent record web pages are public signed out", () => {
   assert.equal(signedOutPage(match("/leaderboard")), "public");
   assert.deepEqual(match("/agents/code%20fixer/record/"), { name: "agentRecord", agentId: "code fixer" });
   assert.equal(isOwnerRoute("/agents/a/record"), true);
