@@ -21,6 +21,7 @@ import {
   type PublicReceipt,
 } from "../receipt-view";
 import { IdChip, NotFound } from "../ui";
+import "../public-receipt.css";
 
 type Load =
   | { readonly kind: "loading" }
@@ -94,11 +95,11 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
         <p>{outcomeLine(r)}</p>
         <p className="muted">{operatorLine(r.operator)} {SANDBOX_NOTE}</p>
         {r.scripted && <p className="muted">{SCRIPTED_NOTE}</p>}
-        <div className="rows">
+        <div className="rows receipt-money-rows">
           {moneyLines(r.money).map((line) => (
             <div key={line.label}>
               <span>{line.label}</span>
-              <b className="num">{line.value}</b>
+              <b className="num receipt-money-value">{line.value}</b>
             </div>
           ))}
         </div>
