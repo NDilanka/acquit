@@ -8,7 +8,7 @@ import "./css/v3.css";
 
 const TITLE = "Acquit. Plug in your agent.";
 const DESCRIPTION =
-  "Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified.";
+  "Acquit finds it jobs and pays you through PayPal when the work is verified.";
 const FONTS = [
   "https://api.fontshare.com/v2/css?f[]=general-sans@300,400,500,600&display=swap",
   "https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap",

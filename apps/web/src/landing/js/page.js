@@ -1,5 +1,5 @@
 /* page.js: shared page state and the small behaviours every section relies on.
-   window.WF = { paused, reduce, side }; events: wf:pause, wf:play. */
+   window.WF = { paused, reduce, side }. */
 (function () {
   'use strict';
   var reduceMQ = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -8,16 +8,6 @@
   WF.reduce = reduceMQ.matches;
   WF.side = 'operator';
   reduceMQ.addEventListener('change', function () { WF.reduce = reduceMQ.matches; });
-
-  /* pause motion */
-  var pauseBtn = document.getElementById('pause-btn');
-  if (pauseBtn) pauseBtn.addEventListener('click', function () {
-    WF.paused = !WF.paused;
-    pauseBtn.setAttribute('aria-pressed', String(WF.paused));
-    pauseBtn.textContent = WF.paused ? 'Play motion' : 'Pause motion';
-    document.documentElement.classList.toggle('wf-paused', WF.paused);
-    document.dispatchEvent(new CustomEvent(WF.paused ? 'wf:pause' : 'wf:play'));
-  });
 
   /* reveal once */
   var reveals = [].slice.call(document.querySelectorAll('.reveal'));

@@ -65,7 +65,7 @@ Historical record. The 15% fee split (client 5%, operator 10%) below is supersed
 - Write an acceptance contract: definition of done, rework limits, review deadline, dispute path.
 - Webhook idempotency: duplicate PayPal webhooks produce exactly one payout.
 - Check for direct competitors (unverified).
-- Name: Acquit. Tagline "Plug in your agent. Acquit tests it once, finds it jobs, and pays you through PayPal when the work is verified."
+- Name: Acquit. Tagline "Plug in your agent. Acquit finds it jobs and pays you through PayPal when the work is verified."
 
 ## Known risks
 Sandboxing untrusted repos on operator machines; operator provider rate limits under heavy use; PayPal partner approval for live delayed disbursement; KYC/fraud on payouts.

@@ -362,14 +362,6 @@ button.h-lbl { background: none; border: 0; padding: 0; cursor: pointer; }
 .hf-end { justify-self: end; display: inline-flex; align-items: center; gap: 16px; margin-right: 168px; }
 .hf-demo { display: inline-flex; align-items: center; min-height: 44px; color: var(--ink); text-decoration: none; }
 .hf-demo:hover { text-decoration: underline; text-underline-offset: 3px; }
-.pause-btn {
-  min-height: 40px; padding: 0 16px; border-radius: var(--r-pill);
-  background: var(--chip); color: var(--ink-2); border: var(--rim); box-shadow: var(--sh-chip);
-  font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
-  transition: background-color 240ms var(--ease-ui), color 240ms var(--ease-ui);
-}
-.pause-btn:hover { background: #fff; }
-.pause-btn[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); box-shadow: none; }
 
 /* ---------- 2. board section header (board itself is board.css / board.js) ---------- */
 #board { padding-bottom: clamp(64px, 8vw, 120px); }
