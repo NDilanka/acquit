@@ -7,7 +7,8 @@ import { FIGURE_IDS, isFigureId, type FigureId } from "../../../packages/core/sr
 import type { ModelCallAllowance } from "../../../packages/core/src/model.ts";
 import { answerEndsWithLabel } from "../../../packages/core/src/sample-label.ts";
 import { attemptResultWord, escrowWord, ledgerKindWord, paypalCheckWord, reasonWord, statusWord } from "./ask-words.ts";
-import { OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, type AskToolExecutor } from "./ask.ts";
+import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL, type TurnWindow } from "../../../packages/core/src/turn-limit.ts";
+import type { AskToolExecutor } from "./ask.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
 
 /** Every sample answer names itself as sample data, so none reads as the platform's money. */
@@ -19,10 +20,18 @@ export const SAMPLE_ASK_TOOL_NAMES = ["sample_totals", "list_sample_jobs", "get_
 export const SAMPLE_CALLER = "sample-ask";
 
 /**
- * The sample book's ceiling inside the shared model budget. Every sample call, retries included, counts here, so the sample
- * as a whole never takes more than 6 a minute or 200 a day, and the platform's and the operators' calls keep the rest.
+ * The model turns one account or one address may run in a rolling minute and in a rolling day. A question runs up to six
+ * model turns (the ledger's turn cap), so these caps hold three questions a minute and sixty a day for each key.
  */
-export const SAMPLE_ALLOWANCE: ModelCallAllowance = { name: "sample", callers: [SAMPLE_CALLER], perMinute: 6, perDay: 200 };
+export const SAMPLE_TURNS_PER_MINUTE = 18;
+export const SAMPLE_TURNS_PER_DAY = 360;
+
+/**
+ * The sample book's ceiling inside the shared model budget. Every sample call, retries included, counts here, so the sample
+ * as a whole never takes more than 18 a minute or 200 a day, and the platform's and the operators' calls keep the rest. The
+ * minute is sized to the per-key minute, so one visitor's three questions in a minute are not cut short by the shared sample.
+ */
+export const SAMPLE_ALLOWANCE: ModelCallAllowance = { name: "sample", callers: [SAMPLE_CALLER], perMinute: SAMPLE_TURNS_PER_MINUTE, perDay: 200 };
 
 /** A sample turn's model call, its one retry included, is held to this long; at the deadline the call is cancelled and the route answers without it. */
 export const SAMPLE_TURN_DEADLINE_MS = 120_000;
@@ -144,21 +153,21 @@ export async function withDeadline<T>(work: (signal: AbortSignal) => Promise<T>,
 }
 
 /**
- * The admission a sample turn passes before the shared budget reserves. The caps are the operator turns' own, so an
- * account and an address each get the same allowance. Every key the turn names must be under its rolling minute and day,
- * and only then does each count the turn; a turn one key refuses counts against neither.
+ * The admission a sample turn passes before the shared budget reserves. An account and an address each get the same
+ * allowance. Every key the turn names must be under its rolling minute and day, and only then does each count the turn;
+ * a turn one key refuses counts against neither. Returns the window that refused the turn, or null when it is admitted.
  */
-export function sampleTurnLimiter(now: () => number = Date.now): (keys: readonly string[]) => boolean {
+export function sampleTurnLimiter(now: () => number = Date.now): (keys: readonly string[]) => TurnWindow | null {
 	const admitted = new Map<string, number[]>();
 	const withinDay = (key: string, at: number) => (admitted.get(key) ?? []).filter(stamp => at - stamp < DAY_MS);
 	return keys => {
 		const at = now();
-		const open = keys.every(key => {
+		for (const key of keys) {
 			const day = withinDay(key, at);
-			return day.length < OPERATOR_TURNS_PER_DAY && day.filter(stamp => at - stamp < MINUTE_MS).length < OPERATOR_TURNS_PER_MINUTE;
-		});
-		if (!open) return false;
+			if (day.filter(stamp => at - stamp < MINUTE_MS).length >= SAMPLE_TURNS_PER_MINUTE) return TURN_LIMIT_MINUTE_DETAIL;
+			if (day.length >= SAMPLE_TURNS_PER_DAY) return TURN_LIMIT_DAY_DETAIL;
+		}
 		for (const key of keys) admitted.set(key, [...withinDay(key, at), at]);
-		return true;
+		return null;
 	};
 }

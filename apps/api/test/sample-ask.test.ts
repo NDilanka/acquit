@@ -11,7 +11,8 @@ import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, type AskModelResult } from "../src/ask.ts";
 import { modelCallLog } from "../../../packages/core/src/model.ts";
-import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, withDeadline } from "../src/sample-ask.ts";
+import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, SAMPLE_TURNS_PER_DAY, SAMPLE_TURNS_PER_MINUTE, withDeadline } from "../src/sample-ask.ts";
+import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import { sampleExplain } from "../src/sample-book.ts";
 
 const FORGED_REAL_IDS = ["job_real_paid", "job_real_refund", "REFUND_REAL_SENTINEL", "CAP-REAL_SENTINEL", "PAYOUT_REAL_SENTINEL", "rcpt_real", "SAMPLE-ORDER-02"];
@@ -129,26 +130,28 @@ test("a sample turn is sent under the sample contract and budgeted under its own
 	}
 });
 
-test("the sample turn's admission admits six a minute for an account or an address, refuses the seventh, and a refused turn charges neither key", () => {
+test("the sample turn's admission admits eighteen a minute for an account or an address, refuses the nineteenth by the minute, and a refused turn charges neither key", () => {
+	assert.equal(SAMPLE_TURNS_PER_MINUTE, 18, "the per-key minute is eighteen turns, three six-turn questions");
 	let at = 1_000_000;
 	const admit = sampleTurnLimiter(() => at);
-	for (let turn = 1; turn <= 6; turn += 1) assert.equal(admit(["account:a", "ip:x"]), true, `turn ${turn} is inside the allowance`);
-	assert.equal(admit(["account:b", "ip:x"]), false, "a new account on a full address is refused by the address");
-	for (let turn = 1; turn <= 6; turn += 1) {
-		assert.equal(admit(["account:b", `ip:fresh-${turn}`]), true, `account b's turn ${turn} is not charged by the refused turn`);
+	for (let turn = 1; turn <= SAMPLE_TURNS_PER_MINUTE; turn += 1) assert.equal(admit(["account:a", "ip:x"]), null, `turn ${turn} is inside the allowance`);
+	assert.equal(admit(["account:b", "ip:x"]), TURN_LIMIT_MINUTE_DETAIL, "a new account on a full address is refused by the address's minute");
+	for (let turn = 1; turn <= SAMPLE_TURNS_PER_MINUTE; turn += 1) {
+		assert.equal(admit(["account:b", `ip:fresh-${turn}`]), null, `account b's turn ${turn} is not charged by the refused turn`);
 	}
 	at += 60_000;
-	assert.equal(admit(["account:a", "ip:x"]), true, "a minute later the address's allowance has renewed");
+	assert.equal(admit(["account:a", "ip:x"]), null, "a minute later the address's allowance has renewed");
 });
 
-test("the sample turn's admission caps a day at sixty for one key", () => {
+test("the sample turn's admission caps a day at three hundred sixty for one key, and names the day when it refuses", () => {
+	assert.equal(SAMPLE_TURNS_PER_DAY, 360, "the per-key day is three hundred sixty turns, sixty questions");
 	let at = 0;
 	const admit = sampleTurnLimiter(() => at);
-	for (let turn = 1; turn <= 60; turn += 1) {
-		assert.equal(admit(["account:a", `ip:${turn}`]), true, `turn ${turn} is inside the day`);
+	for (let turn = 1; turn <= SAMPLE_TURNS_PER_DAY; turn += 1) {
+		assert.equal(admit(["account:a", `ip:${turn}`]), null, `turn ${turn} is inside the day`);
 		at += 61_000;
 	}
-	assert.equal(admit(["account:a", "ip:61"]), false, "the sixty-first turn in the day is refused by the account");
+	assert.equal(admit(["account:a", "ip:fresh"]), TURN_LIMIT_DAY_DETAIL, "the next turn in the day is refused by the account's day");
 });
 
 test("a model call past its deadline is answered without the model, and a call inside it is answered with it", async () => {
@@ -210,8 +213,8 @@ test("the sample's ceiling inside the shared budget refuses a sample turn while 
 		const callLog = modelCallLog(join(root, "log.jsonl"));
 		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
 		const now = Date.now();
-		// Six sample calls in the last minute fill the sample's per-minute ceiling.
-		for (let call = 0; call < 6; call += 1) {
+		// The sample's per-minute ceiling's worth of calls in the last minute fill it.
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perMinute; call += 1) {
 			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
 		}
 		let modelCalls = 0;
@@ -236,8 +239,8 @@ test("a sample retry that would pass the sample's ceiling is refused, so a provi
 		const callLog = modelCallLog(join(root, "log.jsonl"));
 		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
 		const now = Date.now();
-		// Five sample calls in the minute leave one: the first call takes it, and the retry finds the ceiling full.
-		for (let call = 0; call < 5; call += 1) {
+		// One call short of the sample's per-minute ceiling leaves one: the first call takes it, and the retry finds the ceiling full.
+		for (let call = 0; call < SAMPLE_ALLOWANCE.perMinute - 1; call += 1) {
 			await callLog.append({ at: new Date(now - 1_000 * call).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid", model: "m", phase: "START" });
 		}
 		let modelCalls = 0;

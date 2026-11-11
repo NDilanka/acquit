@@ -33,7 +33,8 @@ import { operatorPayouts } from "./payouts.ts";
 import { operatorEscrow } from "./escrow.ts";
 import { createHouseDelivery } from "./house.ts";
 import { transaction } from "./transaction.ts";
-import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, askModelPortFor, OPERATOR_ASK_TOOL_NAMES, OPERATOR_TURNS_PER_DAY, OPERATOR_TURNS_PER_MINUTE, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
+import { askKeyConfigured, askLedgerTurn, askModelName, askOperatorToolExecutor, askOperatorToolList, askToolExecutor, askToolList, askModelPortFor, OPERATOR_ASK_TOOL_NAMES, operatorTurnLimiter, paypalAskReader } from "./ask.ts";
+import { TURN_BUSY_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import type { AskMessage, AskToolExecutor, AskToolSchema, AskTurnOutcome } from "./ask.ts";
 import { modelCallLog, modelProvider } from "../../../packages/core/src/model.ts";
 import { matchFixture } from "../../../packages/core/src/fixtures.ts";
@@ -864,13 +865,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// At most SAMPLE_MAX_IN_FLIGHT sample turns run their model work at once. A turn refused for want of a slot is refused
 		// before it is admitted, so it charges no key.
 		const releaseSlot = acquireSampleSlot();
-		if (releaseSlot === null) { json(res, 429, { error: "MODEL_BUDGET", detail: "Sample Ask is busy with other turns. Try again in a moment." }); return; }
+		if (releaseSlot === null) { json(res, 429, { error: "MODEL_BUDGET", detail: TURN_BUSY_DETAIL }); return; }
 		try {
 			// The turn is admitted by its account and by its address before the shared budget reserves, so a refused turn reserves nothing.
-			if (!admitSampleTurn([`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`])) {
-				json(res, 429, { error: "MODEL_BUDGET", detail: `A sample turn is limited to ${OPERATOR_TURNS_PER_MINUTE} a minute and ${OPERATOR_TURNS_PER_DAY} a day for each account and each address.` });
-				return;
-			}
+			// The refusal names the window that ran out, so the browser can say which limit it was.
+			const refusal = admitSampleTurn([`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`]);
+			if (refusal !== null) { json(res, 429, { error: "MODEL_BUDGET", detail: refusal }); return; }
 			// A client that leaves before the answer ends the turn too: no retry starts for a response nobody reads.
 			const clientGone = new AbortController();
 			res.once("close", () => { if (!res.writableFinished) clientGone.abort(); });
@@ -991,9 +991,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		} catch (error) { json(res, 400, { error: "BAD_REQUEST", detail: error instanceof Error ? error.message : "Invalid body" }); return; }
 		// An operator's turns are admitted before the shared budget reserves; a refused turn reserves nothing. A demo
 		// visitor is counted by its network address, because anyone can mint more visitors to multiply the allowance.
-		if (current.actor.role === "OPERATOR" && !admitOperatorTurn(current.visitor ? `ip:${current.visitor.ipKey}` : current.actor.operatorId)) {
-			json(res, 429, { error: "MODEL_BUDGET", detail: `An operator may run ${OPERATOR_TURNS_PER_MINUTE} Ask the ledger turns a minute and ${OPERATOR_TURNS_PER_DAY} a day.` });
-			return;
+		if (current.actor.role === "OPERATOR") {
+			const refusal = admitOperatorTurn(current.visitor ? `ip:${current.visitor.ipKey}` : current.actor.operatorId);
+			if (refusal !== null) { json(res, 429, { error: "MODEL_BUDGET", detail: refusal }); return; }
 		}
 		// The turn ends at its deadline, or when the client leaves, so a stalled model call cannot hold this route and its droid open.
 		const clientGone = new AbortController();

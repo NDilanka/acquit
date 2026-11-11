@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL, type TurnWindow } from "../../../packages/core/src/turn-limit.ts";
 import { boundedDetail } from "../../../packages/core/src/verifier.ts";
 import { classifyDroidRun, droidResultText, DROID_MODEL, factoryApiKey, modelProvider, reserveModelCall } from "../../../packages/core/src/model.ts";
 import type { ModelCallAllowance, ModelCallLog, ModelProvider } from "../../../packages/core/src/model.ts";
@@ -557,18 +558,20 @@ export const OPERATOR_TURNS_PER_DAY = 60;
 
 /**
  * The admission an operator's turn passes before the shared budget reserves: the operator's own rolling
- * counts, kept in memory. A refused turn reserves nothing. The platform's turns do not pass it.
+ * counts, kept in memory. A refused turn reserves nothing. The platform's turns do not pass it. Returns the
+ * window that refused the turn, or null when it is admitted.
  */
-export function operatorTurnLimiter(now: () => number = Date.now): (operatorId: string) => boolean {
+export function operatorTurnLimiter(now: () => number = Date.now): (operatorId: string) => TurnWindow | null {
 	const admitted = new Map<string, number[]>();
 	return operatorId => {
 		const at = now();
 		const day = (admitted.get(operatorId) ?? []).filter(stamp => at - stamp < DAY_MS);
 		const minute = day.filter(stamp => at - stamp < MINUTE_MS).length;
-		const allowed = minute < OPERATOR_TURNS_PER_MINUTE && day.length < OPERATOR_TURNS_PER_DAY;
-		if (allowed) day.push(at);
+		const refusal: TurnWindow | null = minute >= OPERATOR_TURNS_PER_MINUTE ? TURN_LIMIT_MINUTE_DETAIL
+			: day.length >= OPERATOR_TURNS_PER_DAY ? TURN_LIMIT_DAY_DETAIL : null;
+		if (refusal === null) day.push(at);
 		admitted.set(operatorId, day);
-		return allowed;
+		return refusal;
 	};
 }
 
