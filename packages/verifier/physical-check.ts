@@ -28,7 +28,7 @@ export function runChecker(entry: string, input: CheckerInput, publicRules: read
 			clearTimeout(timer);
 			resolveRun(run);
 		};
-		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", entry], { env: { PATH: process.env.PATH ?? "" }, stdio: ["pipe", "pipe", "ignore"] });
+		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "--max-old-space-size=256", entry], { env: { PATH: process.env.PATH ?? "" }, stdio: ["pipe", "pipe", "ignore"] });
 		const stop = (detail: string): void => {
 			finish({ kind: "fault", detail });
 			child.kill("SIGKILL");
