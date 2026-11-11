@@ -42,12 +42,12 @@ function LiveActivity() {
       <h1>{summary.heading}{summary.moneyLabel && <span className="work-money-label">{summary.moneyLabel}</span>}</h1>
       {!summary.moneyLabel && <p className="spec-lead">{summary.detail}</p>}
     </header>
+      {activity.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2><p>Retry to read your jobs and runner state.</p></div>
+        : !feed ? <WorkSkeleton count={5} label="Loading activity." /> : <ActivityFeed feed={feed} />}
       <div className="owner-actions">{activity.error ? <button className="btn" type="button" onClick={activity.reload}>Retry</button>
         : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
         : <Link className="btn" to={ordersPath}>Turn on autopilot</Link>}
         <Link to={ordersPath}>Review standing orders</Link></div>
-      {activity.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2><p>Retry to read your jobs and runner state.</p></div>
-        : !feed ? <WorkSkeleton count={5} label="Loading activity." /> : <ActivityFeed feed={feed} />}
     </section>
   </SpecialistPage>;
 }
@@ -71,13 +71,6 @@ function LegacyActivity() {
         <p className="spec-lead">{active
           ? <><b>{agent?.name}</b> works on its own, within your orders.</>
           : <>Autopilot is off. No new bids are placed automatically.</>}</p></header>
-      <div className="owner-actions">{report.error
-        ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
-        : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
-        : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
-        <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
-        {!report.error && <button className="text-button" type="button" onClick={report.reload}>Refresh activity</button>}
-      </div>
       {report.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>Activity did not load.</h2>
         <p>Could not read the server. Try again to see the latest events.</p></div>
         : !report.data ? <WorkSkeleton count={5} label="Loading activity." />
@@ -94,6 +87,13 @@ function LegacyActivity() {
           <p className="muted">Held money is workspace-wide. Verified is not paid.</p>
         </aside></div>}
       {agent?.task === "code" && <Link className="work-replay-link" to={`/specialists/activity${suffix}?replay=1`}>View an example run</Link>}
+      <div className="owner-actions">{report.error
+        ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
+        : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
+        : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
+        <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
+        {!report.error && <button className="text-button" type="button" onClick={report.reload}>Refresh activity</button>}
+      </div>
     </section>
   </SpecialistPage>;
 }
@@ -112,7 +112,6 @@ function ReplayActivity({ agent }: { agent: SpecialistAgent }) {
   return <SpecialistPage step={4} lead="" provenance={provenance}>
     <section className="work-page"><header className="work-heading"><h1>{recording?.source === "recorded" ? "A recorded run" : "An example run"}</h1>
       <p className="spec-lead">This is not {agent.name}’s live activity.</p></header>
-      <div className="owner-actions"><Link className="btn" to={`/specialists/activity/${encodeURIComponent(agent.id)}`}>Run it live</Link></div>
       {!replay.data ? <WorkSkeleton count={5} label="Loading example activity." /> : !recording
         ? <p>No activity replay is available for this task.</p>
         : <div className="work-split"><ol className="work-timeline" aria-label="Example activity, newest first">
@@ -129,6 +128,7 @@ function ReplayActivity({ agent }: { agent: SpecialistAgent }) {
                 <summary>{countWords(earlier.length,"earlier example event")}</summary>{earlierOpen && <ol>{earlier.map((event, i) => mark(event, i + 6))}</ol>}</details></li>}</>;
           })()}
         </ol><aside className="work-side"><JobStrip lanes={lanes} /><p className="muted">Example, not live. Release needs client approval, the release timer or an arbiter.</p></aside></div>}
+      <div className="owner-actions"><Link className="btn" to={`/specialists/activity/${encodeURIComponent(agent.id)}`}>Run it live</Link></div>
     </section>
   </SpecialistPage>;
 }

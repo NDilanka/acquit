@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentDelta, groupJobs, jobLanes, reportActivitySummary, reportEvents, stripRange, timeWords } from "./work.ts";
-import type { MorningReport } from "./types.ts";
+import { readFileSync } from "node:fs";
+import { agentDelta, groupJobs, jobFacts, jobLanes, reportActivitySummary, reportEvents, stripRange, timeWords } from "./work.ts";
+import type { MorningReport, OwnerActivity } from "./types.ts";
 const report: MorningReport = { since: "2026-11-09T00:00:00Z", sandbox: true, bids: [], wins: [], verified: [], rejected: [], payouts: [], gradeChanges: [], preApprovals: [] };
+test("Earnings names the exact job and uses only supplied bid and held amounts", () => {
+  const data = {...report,bids:[{at:report.since,jobId:"j",agentId:"a",title:"Fix currency rounding",amountCents:4000}]};
+  assert.deepEqual(jobFacts("j",data),{title:"Fix currency rounding",bidCents:4000,heldCents:null});
+  assert.deepEqual(jobFacts("missing",data),{title:"Job missing",bidCents:null,heldCents:null});
+  const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
+  const job = example.activity[0]!;
+  const live: OwnerActivity = {...example,activity:[{...job,jobId:"j",title:"Stored live title",
+    bid:{...job.bid!,priceCents:4011},moneyHeld:{...job.moneyHeld!,heldCents:4234}}]};
+  assert.deepEqual(jobFacts("j",data,live),{title:"Stored live title",bidCents:4011,heldCents:4234});
+  assert.equal(jobFacts("other",data,live).heldCents,null);
+});
 test("legacy Activity uses matching stored payouts without inventing a current job state", () => {
   const worked = {...report,verified:[{at:report.since,jobId:"mine",agentId:"a",title:null}]};
   assert.equal(reportActivitySummary(null,true,"a").heading,"Loading activity.");

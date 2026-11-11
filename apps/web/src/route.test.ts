@@ -83,3 +83,12 @@ test("owner starts stay in the owner workspace; client starts retain their home"
   assert.equal(isOwnerRoute("/operator/earnings"), false);
   assert.equal(isOwnerRoute("/specialists-wrong"), false);
 });
+
+test("the checker demonstration uses the public owner shell for every visitor", () => {
+  for (const path of ["/inspect","/inspect/"]) {
+    assert.equal(isOwnerRoute(path),true);
+    assert.deepEqual(match(path),{name:"inspect"});
+    assert.equal(signedOutPage(match(path)),"public");
+  }
+  assert.equal(isOwnerRoute("/inspect-private"),false);
+});

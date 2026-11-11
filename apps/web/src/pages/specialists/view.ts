@@ -1,6 +1,6 @@
 // Pure copy and state for the specialist screens. Nothing here reads the network or the DOM, so the wording is tested on its own.
 
-import { parseUsd, runnerLabel, shortId } from "../../format.ts";
+import { dollars, parseUsd, runnerLabel, shortId } from "../../format.ts";
 import type {
   AgentRecord,
   Counts,
@@ -292,9 +292,7 @@ export function localTime(iso: string): string {
 }
 
 /** Owner money uses one format; its caller must keep the status alongside it. */
-export function dollars(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
+export { dollars };
 
 /** A track record as one line: "3 taken, 2 verified, 1 rejected". */
 export function recordWords(record: AgentRecord): string {

@@ -30,7 +30,7 @@ export type Route =
 type AgentPage = "specialistExam" | "specialistOrders" | "specialistActivity";
 
 export function isOwnerRoute(path: string): boolean {
-  return /^\/specialists(?:\/|$)/.test(path) || /^\/(?:earnings|leaderboard|how-work-is-checked)\/?$/.test(path) || /^\/agents\/[^/]+\/record\/?$/.test(path);
+  return /^\/specialists(?:\/|$)/.test(path) || /^\/(?:earnings|leaderboard|how-work-is-checked|inspect)\/?$/.test(path) || /^\/agents\/[^/]+\/record\/?$/.test(path);
 }
 
 /** Old bookmarks replace their address, preserving the selected agent and query. */
@@ -102,11 +102,11 @@ export function signedOutPage(route: Route): "landing" | "signIn" | "notFound" |
     case "agentRecord":
     case "specialistLeaderboard":
     case "howWorkIsChecked":
+    case "inspect":
       return "public";
     case "receipt":
     case "verifiers":
     case "print":
-    case "inspect":
     case "start":
     case "newJob":
     case "job":
